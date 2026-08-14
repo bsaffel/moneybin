@@ -26,7 +26,10 @@ from moneybin.matching.persistence import (
     get_active_dedup_edges,
     get_rejected_pairs,
 )
-from moneybin.matching.reconciliation import retire_transfers_invalidated_by_dedup
+from moneybin.matching.reconciliation import (
+    ReconciliationError,
+    retire_transfers_invalidated_by_dedup,
+)
 from moneybin.matching.scoring import (
     CandidatePair,
     get_candidates_cross_source,
@@ -208,14 +211,16 @@ class TransactionMatcher:
         # include the edges this run just wrote, and the transfers it reverses
         # are gone before the exclusion set below is built, so a leg it frees
         # is a Tier 4 candidate in this same run rather than the next one.
-        result.transfers_retired = retire_transfers_invalidated_by_dedup(
-            self._db, decisions=self._decisions, actor=self._actor
-        )
-
-        # Everything past the reconciliation runs under this guard: the
-        # reversals above are committed and destructive, so an exception that
-        # discards `result` would take the only record of them with it.
+        # The reconciliation and everything after it run under this guard: its
+        # reversals commit as it goes and are destructive, so an exception that
+        # discards `result` would take the only record of them with it. The
+        # guard has to start at the reconciliation rather than after it — a
+        # crash inside its own loop leaves the same durable reversals behind.
         try:
+            result.transfers_retired = retire_transfers_invalidated_by_dedup(
+                self._db, decisions=self._decisions, actor=self._actor
+            )
+
             # Tier 4: transfer detection (runs after dedup).
             # Exclude transactions in active transfers AND the non-primary side
             # of each dedup group. Without this, duplicate source rows (e.g.,
@@ -233,6 +238,9 @@ class TransactionMatcher:
                 result=result,
                 auto_accept=auto_accept_transfers,
             )
+        except ReconciliationError as exc:
+            # Its own count, not `result`'s: the assignment above never ran.
+            raise MatchRunError(exc, transfers_retired=exc.transfers_retired) from exc
         except Exception as exc:
             raise MatchRunError(
                 exc, transfers_retired=result.transfers_retired

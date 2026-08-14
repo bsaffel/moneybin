@@ -177,9 +177,21 @@ def _review_matches_noninteractive(
         with get_database(read_only=False) as db:
             svc = MatchingService(db)
             if confirm_all:
-                n, retired = svc.accept_all_pending(actor="cli")
-                logger.info(f"✅ Accepted {n} pending match(es)")
-                warn_transfers_retired(retired, cause=RETIRED_BY_THIS_DECISION)
+                bulk = svc.accept_all_pending(actor="cli")
+                logger.info(f"✅ Accepted {bulk.accepted} pending match(es)")
+                if bulk.reversed_by_reconciliation:
+                    # Named separately from the retirement warning below: that
+                    # one counts every transfer this call reversed, most of
+                    # which the user accepted in some earlier session. This
+                    # counts the rows they just asked for and did not get.
+                    logger.warning(
+                        f"⚠️  {bulk.reversed_by_reconciliation} of them did not "
+                        "stand: an accepted transfer already claims the merged "
+                        "pair, and the earlier decision stands"
+                    )
+                warn_transfers_retired(
+                    bulk.transfers_retired, cause=RETIRED_BY_THIS_DECISION
+                )
                 return
             # Independent ifs (not elif): `--confirm X --reject Y` targets two
             # different matches in one invocation.

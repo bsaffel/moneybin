@@ -8,6 +8,7 @@ projections the matcher and CLI consume.
 """
 
 import logging
+from collections.abc import Sequence
 from typing import Any, Literal, get_args
 
 from moneybin.database import Database
@@ -113,6 +114,28 @@ def get_match_decision(db: Database, match_id: str) -> dict[str, Any] | None:
     if row is None:
         return None
     return dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True))
+
+
+def count_matches_with_status(
+    db: Database, match_ids: Sequence[str], *, status: str
+) -> int:
+    """How many of ``match_ids`` currently carry ``match_status = status``.
+
+    One query rather than a read per id: the bulk accept asks this about every
+    row it just flipped, and the answer is only meaningful read after the
+    reconciliation that may have reversed some of them.
+    """
+    if not match_ids:
+        return 0
+    placeholders = ", ".join("?" for _ in match_ids)
+    row = db.execute(
+        f"""
+        SELECT COUNT(*) FROM app.match_decisions
+        WHERE match_status = ? AND match_id IN ({placeholders})
+        """,  # noqa: S608 — placeholders are '?' literals; every value is parameterized
+        [status, *match_ids],
+    ).fetchone()
+    return int(row[0]) if row else 0
 
 
 def get_active_dedup_edges(

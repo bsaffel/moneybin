@@ -336,6 +336,12 @@ class MatchDecisionsRepo(BaseRepo):
                             in_outer_txn=True,
                         )
                     )
+                # The fourth status, `reversed`, needs nothing further and is
+                # named here because two branches covering three of four reads
+                # like an omission. The re-key above already ran unconditionally,
+                # so the row still points at a live account; there is no standing
+                # decision left to undo, and re-reversing it would overwrite the
+                # original reversal's audit trail.
             return RepointAccountResult(
                 events=tuple(events),
                 accepted_transfers_retired=accepted_transfers_retired,
@@ -393,14 +399,20 @@ class MatchDecisionsRepo(BaseRepo):
         decided_by: str,
         actor: str,
         in_outer_txn: bool = False,
-    ) -> int:
+    ) -> list[str]:
         """Accept every pending, non-reversed match (optionally filtered by type).
 
         Bulk acceptance is the per-row ``update_status`` applied inside one
         transaction, so each acceptance emits its own paired ``app.audit_log``
         row (Invariant 10) and the batch is all-or-nothing. ``match_type`` is a
         code-supplied filter (validated by the caller); ``decided_by`` is the
-        domain column, ``actor`` the audit surface. Returns the count accepted.
+        domain column, ``actor`` the audit surface.
+
+        Returns the ids it flipped rather than their count: a caller that also
+        runs the transfer reconciliation needs to know *which* rows were its
+        own, because the reconciliation can reverse one of them inside the same
+        transaction. Re-deriving that set from the filter would duplicate this
+        predicate and drift from it.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
@@ -421,4 +433,4 @@ class MatchDecisionsRepo(BaseRepo):
                     actor=actor,
                     in_outer_txn=True,
                 )
-            return len(rows)
+            return [match_id for (match_id,) in rows]

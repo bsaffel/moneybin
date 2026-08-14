@@ -123,6 +123,60 @@ def test_review_modes_are_mutually_exclusive(extra: list[str]) -> None:
     assert "pass only one" in result.output
 
 
+def _bulk_outcome(*, accepted: int, reversed_: int, retired: int) -> MagicMock:
+    outcome = MagicMock()
+    outcome.accepted = accepted
+    outcome.reversed_by_reconciliation = reversed_
+    outcome.transfers_retired = retired
+    return outcome
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_reports_only_the_rows_that_stayed_accepted(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """The bulk path owes the same effective count the single path reports.
+
+    Three rows flipped, one reversed by the reconciliation the same call ran, so
+    two stood. Printing the pre-reconciliation three calls a row accepted that
+    committed as ``reversed``.
+    """
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.accept_all_pending.return_value = _bulk_outcome(
+        accepted=2, reversed_=1, retired=1
+    )
+
+    result = runner.invoke(app, ["review", "--type", "matches", "--confirm-all"])
+
+    assert result.exit_code == 0
+    assert "Accepted 2 pending match(es)" in result.output
+    assert "Accepted 3" not in result.output
+    assert "1 of them did not stand" in result.output
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_is_silent_about_reversals_when_none_happened(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """Negative twin: the ordinary bulk accept says nothing about reversals.
+
+    Without it, a message printed unconditionally would satisfy the assertion
+    above while telling every user that part of their bulk accept was refused.
+    """
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.accept_all_pending.return_value = _bulk_outcome(
+        accepted=3, reversed_=0, retired=0
+    )
+
+    result = runner.invoke(app, ["review", "--type", "matches", "--confirm-all"])
+
+    assert result.exit_code == 0
+    assert "Accepted 3 pending match(es)" in result.output
+    assert "did not stand" not in result.output
+
+
 @patch("moneybin.cli.commands.transactions.review.get_database")
 @patch("moneybin.config.get_settings")
 def test_review_status_flag(

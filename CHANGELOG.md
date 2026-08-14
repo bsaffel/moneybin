@@ -873,10 +873,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now report the committed status instead of the requested one.
   `transactions_matches_set` returns the re-read value in `data.match_status`;
   `moneybin transactions matches set` and `moneybin review --confirm` print a
-  refusal naming the standing decision rather than a success mark. A crashed
-  match step no longer drops the count either: the matcher wraps no transaction
-  around a run, so reversals already committed are reported even when a later
-  tier raises.
+  refusal naming the standing decision rather than a success mark.
+  `moneybin review --confirm-all` counts only the rows that stood and names the
+  rest separately, since a batch can hold both a duplicate and the transfer that
+  duplicate invalidates. A crashed match step no longer drops the count either:
+  the matcher wraps no transaction around a run, so reversals already committed
+  are reported even when the reconciliation or a later tier raises.
 
   `refresh_run` and `moneybin refresh` now disclose what the match step decided
   — `matches_auto_merged`, `matches_pending_review`,

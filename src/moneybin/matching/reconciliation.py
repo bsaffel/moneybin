@@ -22,6 +22,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ReconciliationError(Exception):
+    """A reconciliation that raised after committing some of its reversals.
+
+    Reversals commit one at a time when the caller holds no transaction, so the
+    count is durable state by the time anything can fail — but it lives in a
+    local until the function returns, which an exception never lets it do. The
+    matcher maps this to its own carrier; the accept paths never see it, because
+    their rollback means nothing was retired.
+    """
+
+    def __init__(self, cause: BaseException, *, transfers_retired: int) -> None:
+        """Wrap ``cause``, carrying the reversals that had already committed."""
+        super().__init__(str(cause))
+        self.transfers_retired = transfers_retired
+
+
 def retire_transfers_invalidated_by_dedup(
     db: Database,
     *,
@@ -107,12 +123,22 @@ def retire_transfers_invalidated_by_dedup(
         if comp_a != comp_b and comp_a not in claimed and comp_b not in claimed:
             claimed.update((comp_a, comp_b))
             continue
-        decisions.reverse(
-            match_id,
-            reversed_by="system",
-            actor=actor,
-            in_outer_txn=in_outer_txn,
-        )
+        try:
+            decisions.reverse(
+                match_id,
+                reversed_by="system",
+                actor=actor,
+                in_outer_txn=in_outer_txn,
+            )
+        except Exception as exc:
+            # `retired` is a local, so without this the reversals already made
+            # die with the exception and the caller reports zero. Only when the
+            # caller holds no transaction: with `in_outer_txn` its rollback
+            # restores every one of them, and a count there would name as undone
+            # a decision that is still standing.
+            if in_outer_txn:
+                raise
+            raise ReconciliationError(exc, transfers_retired=retired) from exc
         retired += 1
     if retired:
         logger.info(f"Retired {retired} transfer decision(s) invalidated by dedup")

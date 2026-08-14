@@ -380,6 +380,95 @@ def _transfer_statuses(db: Database) -> dict[str, str]:
     )
 
 
+def _dedup_statuses(db: Database) -> dict[str, str]:
+    return dict(
+        db.execute(
+            "SELECT match_id, match_status FROM app.match_decisions "
+            "WHERE match_type = 'dedup'"
+        ).fetchall()
+    )
+
+
+def _seed_two_doomed_transfers(db: Database, *, edge_status: str = "accepted") -> None:
+    """One surviving transfer and two that lose the same component to it.
+
+    Two retirements is the minimum that can distinguish "the count survived the
+    exception" from "the count was zero anyway": with one, a carrier that always
+    reported zero would still be reporting the truth.
+    """
+    _setup_tables(db)
+    _insert_transfer(
+        db,
+        match_id="tx_keep00001",
+        stid_a="ofx_p",
+        stid_b="ofx_x",
+        account_id="checking",
+        account_id_b="brokerage",
+        decided_at="2026-01-01 00:00:00",
+    )
+    for n, (stid, counterpart, month) in enumerate(
+        (("csv_c", "ofx_y", "02"), ("csv_d", "ofx_z", "03")), start=1
+    ):
+        _insert_transfer(
+            db,
+            match_id=f"tx_drop0000{n}",
+            stid_a=stid,
+            stid_b=counterpart,
+            type_a="csv",
+            account_id="checking",
+            account_id_b="savings",
+            decided_at=f"2026-{month}-01 00:00:00",
+        )
+        _insert_dedup(
+            db,
+            match_id=f"dd_100000000{n}",
+            stid_a="ofx_p",
+            stid_b=stid,
+            account_id="checking",
+            status=edge_status,
+        )
+
+
+def _seed_a_stale_pending_transfer(db: Database) -> None:
+    """An accepted transfer, a merged component, and a queued transfer over it.
+
+    ``tx_stale00001`` was proposed before ``dd_1000000001`` merged the leg
+    ``tx_keep00001`` already claims. Tier 4 refuses to raise that shape and never
+    revisits what it raised earlier, so the queue is the only place it survives —
+    which makes accepting it the one way a decision can reverse itself.
+    """
+    _setup_tables(db)
+    _insert_transfer(
+        db,
+        match_id="tx_keep00001",
+        stid_a="ofx_p",
+        stid_b="ofx_x",
+        account_id="checking",
+        account_id_b="brokerage",
+        decided_at="2026-01-01 00:00:00",
+    )
+    _insert_dedup(
+        db,
+        match_id="dd_1000000001",
+        stid_a="ofx_p",
+        stid_b="csv_c",
+        account_id="checking",
+    )
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type,
+            match_tier, account_id_b, match_status, match_reason, decided_by,
+            decided_at
+        ) VALUES ('tx_stale00001', 'csv_c', 'csv', 'bank', 'ofx_y', 'ofx',
+                  'bank', 'checking', 0.95, '{}', 'transfer', '4', 'savings',
+                  'pending', NULL, 'auto', '2026-02-01 00:00:00')
+        """  # noqa: S608 — test input, not user data
+    )
+
+
 class TestTransferRetirement:
     """The matcher's own reconciliation of transfers its dedup pass invalidated.
 
@@ -808,13 +897,41 @@ class TestRetirementOnDedupAccept:
         """
         _seed_two_transfers_one_pending_edge(db, edge_status="pending")
 
-        accepted, retired = MatchingService(db).accept_all_pending(actor="cli")
+        outcome = MatchingService(db).accept_all_pending(actor="cli")
 
-        assert accepted == 1
-        assert retired == 1
+        assert outcome.accepted == 1
+        assert outcome.transfers_retired == 1
+        # The row this call flipped is not the row the reconciliation reversed,
+        # so the accepted count stands. Twin of the self-reversing case below:
+        # without it, reporting `accepted - transfers_retired` would pass there
+        # and quietly report 0 here.
+        assert outcome.reversed_by_reconciliation == 0
         assert _transfer_statuses(db) == {
             "tx_keep00001": "accepted",
             "tx_drop00001": "reversed",
+        }
+
+    def test_bulk_accept_does_not_count_a_row_its_own_reconciliation_reversed(
+        self, db: Database
+    ) -> None:
+        """The bulk twin of the self-reversing accept.
+
+        ``accept_pending`` flips the stale transfer, then the reconciliation in
+        the same transaction reverses it because an earlier transfer already
+        claims the component. Reporting the pre-reconciliation count calls that
+        row accepted while it committed as ``reversed``, and the aggregate
+        retirement warning underneath does not contradict it.
+        """
+        _seed_a_stale_pending_transfer(db)
+
+        outcome = MatchingService(db).accept_all_pending(actor="cli")
+
+        assert outcome.accepted == 0
+        assert outcome.reversed_by_reconciliation == 1
+        assert outcome.transfers_retired == 1
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_stale00001": "reversed",
         }
 
     def test_accepting_a_stale_queued_transfer_refuses_the_claimed_component(
@@ -828,36 +945,7 @@ class TestRetirementOnDedupAccept:
         accepts. The newest claimant loses, so the effect is that the stale
         accept is refused rather than the standing decision undone.
         """
-        _setup_tables(db)
-        _insert_transfer(
-            db,
-            match_id="tx_keep00001",
-            stid_a="ofx_p",
-            stid_b="ofx_x",
-            account_id="checking",
-            account_id_b="brokerage",
-            decided_at="2026-01-01 00:00:00",
-        )
-        _insert_dedup(
-            db,
-            match_id="dd_1000000001",
-            stid_a="ofx_p",
-            stid_b="csv_c",
-            account_id="checking",
-        )
-        db.execute(
-            """
-            INSERT INTO app.match_decisions (
-                match_id, source_transaction_id_a, source_type_a, source_origin_a,
-                source_transaction_id_b, source_type_b, source_origin_b,
-                account_id, confidence_score, match_signals, match_type,
-                match_tier, account_id_b, match_status, match_reason, decided_by,
-                decided_at
-            ) VALUES ('tx_stale00001', 'csv_c', 'csv', 'bank', 'ofx_y', 'ofx',
-                      'bank', 'checking', 0.95, '{}', 'transfer', '4', 'savings',
-                      'pending', NULL, 'auto', '2026-02-01 00:00:00')
-            """  # noqa: S608 — test input, not user data
-        )
+        _seed_a_stale_pending_transfer(db)
 
         outcome = MatchingService(db).set_status(
             "tx_stale00001", status="accepted", actor="cli"
@@ -906,4 +994,66 @@ class TestPartialMatchRunDisclosure:
         assert _transfer_statuses(db) == {
             "tx_keep00001": "accepted",
             "tx_drop00001": "reversed",
+        }
+
+    def test_a_reconciliation_failure_still_reports_the_reversals_it_committed(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guard has to cover the reconciliation, not just what follows it.
+
+        Its reversals commit one at a time, so a crash partway through the loop
+        leaves the earlier ones durable — the same shape the Tier 4 test above
+        pins, one call earlier. The count lives only in a local until the
+        function returns, so an exception inside it loses every reversal it had
+        already made.
+        """
+        from moneybin.matching.engine import MatchRunError
+
+        _seed_two_doomed_transfers(db)
+        real_reverse = MatchDecisionsRepo.reverse
+        calls = {"n": 0}
+
+        def _flaky(self: MatchDecisionsRepo, match_id: str, **kwargs: object) -> object:
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise RuntimeError("reconciliation boom")
+            return real_reverse(self, match_id, **kwargs)  # pyright: ignore[reportArgumentType]  # passthrough kwargs
+
+        monkeypatch.setattr(MatchDecisionsRepo, "reverse", _flaky)
+
+        with pytest.raises(MatchRunError) as excinfo:
+            TransactionMatcher(db, MatchingSettings(), table="main._test_unioned").run()
+
+        assert excinfo.value.transfers_retired == 1
+        assert str(excinfo.value) == "reconciliation boom"
+        statuses = _transfer_statuses(db)
+        assert sum(1 for s in statuses.values() if s == "reversed") == 1
+        assert statuses["tx_keep00001"] == "accepted"
+
+    def test_a_rolled_back_reconciliation_reports_no_reversals(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Negative twin: the count is only owed when the reversals are durable.
+
+        An accept path folds the reconciliation into its own transaction, so a
+        crash inside it takes the reversals down with the accept. Reporting a
+        count there would name a decision as undone that the rollback restored
+        — the same over-reporting the committed-status re-read exists to stop.
+        """
+        _seed_two_doomed_transfers(db, edge_status="pending")
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("reconciliation boom")
+
+        monkeypatch.setattr(MatchDecisionsRepo, "reverse", _boom)
+
+        with pytest.raises(RuntimeError, match="reconciliation boom"):
+            MatchingService(db).accept_all_pending(actor="cli")
+
+        assert "reversed" not in set(_transfer_statuses(db).values())
+        # The accepts rolled back with the reversals, which is what makes the
+        # count meaningless rather than merely unavailable.
+        assert _dedup_statuses(db) == {
+            "dd_1000000001": "pending",
+            "dd_1000000002": "pending",
         }

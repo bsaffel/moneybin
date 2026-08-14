@@ -241,10 +241,13 @@ def test_accept_pending_filters_by_type_and_audits_each(db: Database) -> None:
         account_id_b="acct2",
     )
 
-    n = repo.accept_pending(match_type="dedup", decided_by="user", actor="cli")
+    flipped = repo.accept_pending(match_type="dedup", decided_by="user", actor="cli")
 
-    # count reflects exactly the matching rows; transfer is untouched.
-    assert n == 2
+    # The ids name exactly the matching rows; transfer is untouched. Asserted as
+    # a set rather than a length because the caller uses them to ask which of
+    # its own rows survived the reconciliation — a right-sized wrong list would
+    # answer that question wrongly and still pass a count check.
+    assert set(flipped) == {"d1", "d2"}
     assert _statuses(db) == {"d1": "accepted", "d2": "accepted", "t1": "pending"}
 
     # each acceptance emitted its own audited update_status row (Invariant 10).
@@ -260,7 +263,7 @@ def test_accept_pending_no_filter_accepts_all_pending(db: Database) -> None:
     _insert(repo, match_id="p2", match_status="pending")
     _insert(repo, match_id="r1", match_status="rejected")  # not pending — skipped
 
-    n = repo.accept_pending(decided_by="user", actor="cli")
+    flipped = repo.accept_pending(decided_by="user", actor="cli")
 
-    assert n == 2
+    assert set(flipped) == {"p1", "p2"}
     assert _statuses(db) == {"p1": "accepted", "p2": "accepted", "r1": "rejected"}

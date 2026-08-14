@@ -612,7 +612,12 @@ class TestLinksSet:
         assert any("stopped partway" in m for m in warnings), (
             f"no warning covers the failed match: {warnings}"
         )
-        assert any("not\nreflected" in m or "not reflected" in m for m in warnings), (
+        # Collapsed before matching because the production message is wrapped
+        # across source lines: a substring spanning the wrap point matches the
+        # source and never the runtime string, which is how the previous
+        # `"not\nreflected"` half of this assertion came to be permanently inert.
+        collapsed = [" ".join(m.split()) for m in warnings]
+        assert any("not reflected in your accounts" in m for m in collapsed), (
             f"no warning covers the failed rebuild: {warnings}"
         )
 

@@ -22,6 +22,7 @@ from moneybin.matching.assignment import NodeKey, connected_components
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import (
     VALID_MATCH_TYPES,
+    count_matches_with_status,
     get_active_dedup_edges,
     get_match_decision,
     get_match_log,
@@ -64,6 +65,25 @@ class MatchDecisionOutcome:
     """
 
     match_status: str
+    transfers_retired: int
+
+
+@dataclass(frozen=True)
+class BulkAcceptOutcome:
+    """What :meth:`MatchingService.accept_all_pending` actually committed.
+
+    The bulk twin of :class:`MatchDecisionOutcome`, and it needs both counts for
+    the same reason. A batch can hold a dedup edge and a transfer that edge
+    invalidates; the reconciliation reverses the loser inside this transaction,
+    so the number of rows flipped is not the number that stood.
+
+    ``transfers_retired`` is the wider figure — it also counts transfers accepted
+    long before this batch — so it never substitutes for
+    ``reversed_by_reconciliation``, which is only ever this call's own rows.
+    """
+
+    accepted: int
+    reversed_by_reconciliation: int
     transfers_retired: int
 
 
@@ -449,25 +469,29 @@ class MatchingService:
 
     def accept_all_pending(
         self, *, match_type: str | None = None, actor: str = "system"
-    ) -> tuple[int, int]:
+    ) -> BulkAcceptOutcome:
         """Accept every pending match decision in scope.
 
-        Returns ``(accepted, transfers_retired)``. Routes through
-        ``MatchDecisionsRepo.accept_pending`` so each acceptance emits a paired
-        ``app.audit_log`` row (Invariant 10), all inside one transaction
-        (all-or-nothing) that the reconciliation joins — a bulk accept is the
-        sharpest way to collide two transfers' legs, since it folds every queued
-        edge at once. ``actor`` is the audit surface (``cli``/``mcp``, default
-        ``"system"``). ``match_type``, when given, is validated here (the repo's
-        filter is parameterized but unguarded) so a bad value raises instead of
-        silently accepting nothing.
+        Routes through ``MatchDecisionsRepo.accept_pending`` so each acceptance
+        emits a paired ``app.audit_log`` row (Invariant 10), all inside one
+        transaction (all-or-nothing) that the reconciliation joins — a bulk
+        accept is the sharpest way to collide two transfers' legs, since it
+        folds every queued edge at once. ``actor`` is the audit surface
+        (``cli``/``mcp``, default ``"system"``). ``match_type``, when given, is
+        validated here (the repo's filter is parameterized but unguarded) so a
+        bad value raises instead of silently accepting nothing.
+
+        The accepted count is re-read after the reconciliation for the same
+        reason ``set_status`` re-reads one row: the batch can contain both a
+        dedup edge and a transfer the edge invalidates, and the reconciliation
+        reverses the loser inside this transaction.
         """
         if match_type is not None and match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
         repo = self._match_repo()
         self._db.begin()
         try:
-            accepted = repo.accept_pending(
+            flipped = repo.accept_pending(
                 match_type=match_type,
                 decided_by="user",
                 actor=actor,
@@ -479,11 +503,21 @@ class MatchingService:
                 retire_transfers_invalidated_by_dedup(
                     self._db, decisions=repo, actor=actor, in_outer_txn=True
                 )
-                if accepted
+                if flipped
                 else 0
+            )
+            # Counted over the ids this call flipped, not over `retired`: that
+            # total also covers transfers accepted long before this batch, so
+            # subtracting it would under-report an ordinary bulk accept.
+            still_accepted = count_matches_with_status(
+                self._db, flipped, status="accepted"
             )
             self._db.commit()
         except BaseException:
             self._db.rollback()
             raise
-        return accepted, retired
+        return BulkAcceptOutcome(
+            accepted=still_accepted,
+            reversed_by_reconciliation=len(flipped) - still_accepted,
+            transfers_retired=retired,
+        )

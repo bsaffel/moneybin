@@ -656,6 +656,17 @@ Guard-2 free-text resolution):
   `review --confirm` print a refusal instead of a success mark. A count-shaped
   warning alone does not correct a "✅ accepted" line printed above it.
 
+  The bulk path owes the same correction and cannot get it from one row.
+  `review --confirm-all` folds every queued edge at once, so a batch holding a
+  dedup edge *and* a transfer that edge invalidates reverses one of its own rows
+  inside its own transaction. `accept_all_pending` therefore returns
+  `BulkAcceptOutcome` (`accepted`, `reversed_by_reconciliation`,
+  `transfers_retired`): `accept_pending` hands back the ids it flipped, and the
+  accepted count is re-read over exactly those after the reconciliation.
+  `transfers_retired` cannot stand in for the subtraction — it also counts
+  transfers accepted in earlier sessions, so netting it against the batch would
+  under-report an ordinary bulk accept.
+
   Components here are built from **accepted dedup edges only**, which is
   narrower than the accepted+pending graph the matcher seeds union-find with
   and the review queue clusters by. Those two want the *prospective* shape —
@@ -697,10 +708,17 @@ Guard-2 free-text resolution):
   independently. `RefreshResult.matching_error` means the proposals are
   incomplete — but not that nothing happened. The matcher wraps no transaction
   around the run and the reconciliation commits each reversal as it goes, so a
-  failure anywhere after it leaves those reversals durable. `TransactionMatcher`
-  raises `MatchRunError` carrying `transfers_retired`, and `refresh` takes the
-  count off the exception: a dropped count would report a decision the user made
-  as untouched when it has in fact been undone. Catching it before the
+  failure anywhere after it — or *inside* it — leaves those reversals durable.
+  The guard therefore starts at the reconciliation, not after it: a crash
+  partway through its own loop leaves the same committed reversals behind, and
+  its running total lives in a local the exception never lets it return. It
+  raises `ReconciliationError` carrying that total, `TransactionMatcher` maps
+  that to `MatchRunError`, and `refresh` takes the count off the exception: a
+  dropped count would report a decision the user made as untouched when it has
+  in fact been undone. The carrier is raised only when the caller holds no
+  transaction — an accept path folds the reversals into its own, so its rollback
+  restores every one of them and a count there would be the same over-report in
+  the opposite direction. Catching it before the
   first-load `CatalogException` branch is part of the same rule — a *late*
   catalog failure is not a skipped match step, and calling it one claims nothing
   was examined after the tiers had already written decisions.
