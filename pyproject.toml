@@ -215,6 +215,10 @@ dev = [
     "respx>=0.21",
     "pytest-memray>=1.8.0",
     "pytest-split>=0.11.0",
+    # Property-based testing. Named by multi-currency.md's testing strategy for
+    # the conversion and lot-conservation properties, where the claim quantifies
+    # over all amounts and rates and examples cannot establish it.
+    "hypothesis>=6.100",
 ]
 
 docs = [

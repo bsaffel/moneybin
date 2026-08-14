@@ -98,6 +98,22 @@ class RateUnavailableError(UserError):
     """
 
 
+def apply_rate(amount: Decimal, rate: Decimal) -> Decimal:
+    """Convert one amount at one already-resolved rate.
+
+    ``ROUND_HALF_UP`` is stated rather than inherited — Decimal's context
+    default is ``ROUND_HALF_EVEN``, which would send half of all exact ties the
+    other way and drift every converted total against the accounting convention
+    the rest of the ledger uses.
+
+    Separate from :meth:`CurrencyService.convert` so a caller converting many
+    rows resolves the rate once, and so the arithmetic is testable over the
+    whole amount x rate space without a database round trip per example
+    (``tests/property/test_currency_conversion.py``).
+    """
+    return (amount * rate).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+
+
 class CurrencyService:
     """Reads rates; writes the provider cache and the user's corrections."""
 
@@ -166,17 +182,9 @@ class CurrencyService:
         The ``ResolvedRate`` is not optional context: Requirement 10 requires
         showing the exact rate behind any converted figure, and a caller that
         received only the number could not comply.
-
-        ``ROUND_HALF_UP`` is stated rather than inherited — Decimal's context
-        default is ``ROUND_HALF_EVEN``, which would send half of all exact ties
-        the other way and drift every converted total against the accounting
-        convention the rest of the ledger uses.
         """
         resolved = self.resolve_rate(from_currency, to_currency, on)
-        converted = (amount * resolved.rate).quantize(
-            MONEY_QUANTUM, rounding=ROUND_HALF_UP
-        )
-        return converted, resolved
+        return apply_rate(amount, resolved.rate), resolved
 
     def list_rates(
         self, from_currency: str, to_currency: str, *, since: date | None = None
