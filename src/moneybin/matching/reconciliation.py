@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from moneybin.database import Database
 from moneybin.matching.assignment import connected_components
 from moneybin.matching.persistence import get_active_dedup_edges
+from moneybin.metrics.registry import TRANSFER_RETIREMENTS_TOTAL
 from moneybin.tables import MATCH_DECISIONS
 
 if TYPE_CHECKING:
@@ -140,6 +141,10 @@ def retire_transfers_invalidated_by_dedup(
                 raise
             raise ReconciliationError(exc, transfers_retired=retired) from exc
         retired += 1
+        # Per reversal, not once per call: the counter has to survive the
+        # exception above, which returns through ReconciliationError rather than
+        # reaching the summary below.
+        TRANSFER_RETIREMENTS_TOTAL.labels(cause="dedup_component").inc()
     if retired:
         logger.info(f"Retired {retired} transfer decision(s) invalidated by dedup")
     return retired

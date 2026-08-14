@@ -180,6 +180,7 @@ Metric definitions live in `src/moneybin/metrics/registry.py` (single source of 
 | `moneybin_import_errors_total` | Counter | `source_type`, `error_type` |
 | `moneybin_sqlmesh_run_duration_seconds` | Histogram | `model` |
 | `moneybin_dedup_matches_total` | Counter | `match_tier`, `decided_by` |
+| `moneybin_transfer_retirements_total` | Counter | `cause` |
 | `moneybin_categorization_auto_rate` | Gauge | — |
 | `moneybin_categorization_rules_fired_total` | Counter | `rule_id` |
 | `moneybin_profile_currencies` | Gauge | — |

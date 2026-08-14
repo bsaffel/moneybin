@@ -865,6 +865,27 @@ class TestRetirementOnDedupAccept:
             "tx_drop00001": "reversed",
         }
 
+    def test_a_retirement_increments_its_own_counter(self, db: Database) -> None:
+        """The one counter that measures an undo of something the user decided.
+
+        A regression that starts retiring more often is invisible in the match
+        counts — those go up when the matcher *finds* things — and shows up only
+        as transfers quietly going missing. Asserted as a delta rather than an
+        absolute so it survives other tests sharing the process registry.
+        """
+        from moneybin.metrics.registry import TRANSFER_RETIREMENTS_TOTAL
+
+        counter = TRANSFER_RETIREMENTS_TOTAL.labels(cause="dedup_component")
+        before = counter._value.get()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # prometheus has no public read
+
+        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
+        outcome = MatchingService(db).set_status(
+            "dd_1000000001", status="accepted", actor="cli"
+        )
+
+        assert outcome.transfers_retired == 1
+        assert counter._value.get() - before == 1  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
     def test_rejecting_the_queued_dedup_retires_nothing(self, db: Database) -> None:
         """Negative twin: the same fixture, decided the other way.
 
@@ -928,7 +949,11 @@ class TestRetirementOnDedupAccept:
 
         assert outcome.accepted == 0
         assert outcome.reversed_by_reconciliation == 1
-        assert outcome.transfers_retired == 1
+        # Zero, not one: the only row reversed is the proposal this very call
+        # flipped, which `reversed_by_reconciliation` already reports. Counting
+        # it again as a retirement claims a standing decision of the user's was
+        # undone, and sends them to an undo that only returns it to `pending`.
+        assert outcome.transfers_retired == 0
         assert _transfer_statuses(db) == {
             "tx_keep00001": "accepted",
             "tx_stale00001": "reversed",
@@ -951,7 +976,10 @@ class TestRetirementOnDedupAccept:
             "tx_stale00001", status="accepted", actor="cli"
         )
 
-        assert outcome.transfers_retired == 1
+        # Zero for the same reason as the bulk twin above: the one reversal is
+        # this call's own row, and `match_status` below is what reports it. A
+        # retirement count is a claim about *standing* decisions.
+        assert outcome.transfers_retired == 0
         # The row this call asked to accept is the one the reconciliation
         # reversed. Echoing the requested status here reports the opposite of
         # what committed, and both surfaces print it as a success.

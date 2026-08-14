@@ -2582,7 +2582,19 @@ class DoctorService:
                     WHERE file_b IS NOT NULL
                 )
                 -- The two clauses below are assign_components' two skips, in
-                -- its own order (assignment.py). Both are component-grain, not
+                -- its own order (assignment.py) -- but read from *persisted*
+                -- decisions only. assign_components additionally unions
+                -- candidates as it walks them inside one run, which nothing here
+                -- can see: a cluster of N mutually-duplicate rows with no prior
+                -- decision has no edges yet, so all N*(N-1)/2 pairs survive
+                -- while the matcher will persist N-1. The count is therefore an
+                -- upper bound on the proposals a rematch produces, and the
+                -- detail below says so rather than promising one each. It is
+                -- not a false positive -- those pairs genuinely have no decision
+                -- -- and the next doctor run, reading the now-persisted edges,
+                -- reports the settled number.
+                --
+                -- Both clauses are component-grain, not
                 -- node-grain: two endpoints carrying *unrelated* decisions in
                 -- disjoint components are still a live candidate the matcher
                 -- would evaluate, and suppressing those hides exactly the
@@ -2628,21 +2640,25 @@ class DoctorService:
                 name=name,
                 status="warn",
                 detail=(
-                    f"{total} cross-source transaction pair(s) across "
+                    f"up to {total} cross-source transaction pair(s) across "
                     f"{len(rows)} account(s) match on amount and date but have "
                     "never been considered by the matcher — neither side "
                     "carries a match decision. This is what an accepted "
                     "account link leaves behind when nothing re-runs matching "
                     "afterwards: the rows became comparable, but no pass ever "
-                    "looked. Run `moneybin refresh --step match --step "
-                    "transform` to propose them, then "
+                    "looked. The figure is an upper bound — three mutually "
+                    "duplicate rows count as three pairs here and become two "
+                    "proposals, because the matcher links them into one "
+                    "component as it goes. Run `moneybin refresh --step match "
+                    "--step transform` to propose them, then "
                     "`moneybin review --type matches` to decide. Note that "
                     "`doctor`'s dedup reconciliation cannot see this — its "
                     "staging counts balance whether or not a duplicate was "
                     "ever proposed"
                 ),
                 affected_ids=[
-                    f"{account_id} ({pairs} unreviewed pair{'' if pairs == 1 else 's'})"
+                    f"{account_id} (up to {pairs} unreviewed "
+                    f"pair{'' if pairs == 1 else 's'})"
                     for account_id, pairs in rows
                 ],
             )

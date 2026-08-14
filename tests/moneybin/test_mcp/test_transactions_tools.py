@@ -478,6 +478,40 @@ async def test_matches_run_discloses_merges_that_outlived_a_crash(
 @pytest.mark.unit
 @patch("moneybin.mcp.tools.transactions.get_database")
 @patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_keeps_the_raw_cause_out_of_the_mcp_error(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """The committed-count summary may cross to the model; the cause may not.
+
+    Everything downstream of the tiers is DuckDB and repository work, so the
+    wrapped cause carries binder text, file paths, and column or row values
+    verbatim. `.claude/rules/security.md` puts those on the wrong side of an MCP
+    boundary: log the detail, return a generic message. The counts stay because
+    they are counts.
+    """
+    from moneybin.errors import UserError
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    mock_run.side_effect = MatchRunError(
+        RuntimeError(
+            'Binder Error: no column "acct_9876543210" in /Users/someone/db.duckdb'
+        ),
+        partial=MatchResult(auto_merged=4),
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        transactions_matches_run()
+
+    message = str(excinfo.value)
+    assert "4" in message, "the generic message dropped the committed count"
+    assert "acct_9876543210" not in message
+    assert "/Users/someone/db.duckdb" not in message
+    assert "Binder Error" not in message
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
 async def test_matches_run_lets_a_crash_that_committed_nothing_through_bare(
     mock_run: MagicMock, mock_get_db: MagicMock
 ) -> None:
@@ -671,6 +705,49 @@ def test_matches_set_points_a_retiring_accept_at_the_operation_undo() -> None:
 
     actions = envelope.to_dict()["actions"]
     assert any("system_audit_undo" in action for action in actions)
+
+
+def test_matches_set_points_a_retiring_accept_at_the_rematch_it_owes() -> None:
+    """The reversal freed two legs, and this call runs no Tier 4 over them.
+
+    ``set_status`` reconciles inside its own transaction and returns; only a
+    matcher pass can propose the transfer those freed legs may now form. Without
+    this hint an agent has no way to know the run is unfinished, and the
+    replacement waits for an unrelated refresh.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="accepted", transfers_retired=2
+        )
+        envelope = transactions_matches_set("dd_100000001", "accepted")
+
+    actions = envelope.to_dict()["actions"]
+    # refresh_run, not the granular matcher callback: only registered standard
+    # tools may be named in emitted text, and an agent cannot call what the
+    # surface does not expose.
+    assert any("refresh_run" in action for action in actions), (
+        f"no action points at the follow-up matcher pass: {actions}"
+    )
+
+
+def test_matches_set_asks_for_no_rematch_when_it_retired_nothing() -> None:
+    """Negative twin: an ordinary accept freed no legs, so it owes no pass.
+
+    Without it, a hint appended unconditionally would send an agent through a
+    full matcher run after every routine decision.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="accepted", transfers_retired=0
+        )
+        envelope = transactions_matches_set("dd_100000001", "accepted")
+
+    actions = envelope.to_dict()["actions"]
+    assert not any("refresh_run" in action for action in actions)
 
 
 def test_matches_set_stays_quiet_about_undo_when_nothing_was_retired() -> None:

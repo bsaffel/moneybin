@@ -19,6 +19,7 @@ surface-budget tests.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
@@ -75,6 +76,8 @@ from moneybin.services.transaction_service import (
     TransactionGetResult,
     TransactionService,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _decimal_from_json_number(value: object) -> Decimal:
@@ -753,7 +756,9 @@ def transactions_matches_set(
             0,
             f"This accept retired {outcome.transfers_retired} previously "
             "accepted transfer(s) — inspect with system_audit(), "
-            "restore with system_audit_undo() if that was wrong",
+            "restore with system_audit_undo() if that was wrong, then "
+            "refresh_run(steps=['match']) to re-propose over the legs the "
+            "reversal freed",
         )
     return build_envelope(
         data=MatchSetPayload(
@@ -888,8 +893,15 @@ def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
                     f"reversing {exc.partial.transfers_retired} previously "
                     "accepted transfer(s)"
                 )
+            # The cause stays local. Everything downstream of the tiers is
+            # DuckDB and repository work, so it carries binder text, file
+            # paths, and column or row values verbatim — the wrong side of an
+            # MCP boundary (`.claude/rules/security.md`). The counts are counts,
+            # so they cross.
+            logger.error(f"Matching failed during matches_run: {exc}", exc_info=True)
             raise UserError(
-                f"Matching failed after {' and '.join(committed)}: {exc}",
+                f"Matching failed after {' and '.join(committed)}; "
+                "see the local logs for the cause",
                 code=error_codes.REFRESH_MATCH_FAILED,
                 recovery_actions=[
                     RecoveryAction(

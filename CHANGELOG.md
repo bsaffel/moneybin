@@ -932,6 +932,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the retirement count alone, so all four surfaces report the merges as well as
   the reversals. A run that committed nothing is still left unwrapped, which is
   what keeps a genuine first load quiet.
+
+  Four smaller corrections to the same disclosure. `transfers_retired` counted
+  the row the *caller* had just accepted whenever the reconciliation reversed it,
+  so an accept that refused itself reported a standing transfer as undone and
+  pointed at an undo that only returns the proposal to `pending`; both the single
+  and bulk accept paths now discount their own flipped rows, which
+  `match_status` and `reversed_by_reconciliation` already report. Those accept
+  paths reconcile and return without a transfer-detection pass, so a leg the
+  reversal freed stayed unproposed until an unrelated refresh — they now say so
+  and name the pass. The MCP matcher error interpolated the raw cause, sending
+  DuckDB binder text and file paths through the tool boundary; the cause is
+  logged locally and the counts still cross. And retirements now increment
+  `moneybin_transfer_retirements_total`, labelled by which collapse caused them —
+  the only counter here that measures an undo of something the user decided,
+  which the match counts cannot show.
+
+  `doctor`'s unproposed-duplicates finding now reports its pair count as an upper
+  bound. Its component closure reads persisted decisions, while the matcher also
+  links candidates as it walks them, so three mutually duplicate rows with no
+  prior decision count as three pairs and become two proposals — the remedy the
+  finding recommends under-delivered against its own number.
 - **An accepted merge no longer strands the match decisions made under the old
   account, which could silently reverse a rejection.** Accepting a link
   re-points `app.account_links`, but a row in `app.match_decisions` stores the

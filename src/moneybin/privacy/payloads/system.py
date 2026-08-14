@@ -477,7 +477,7 @@ class RefreshRunPayload:
     matching_error: Annotated[str | None, DataClass.DESCRIPTION]
     categorization_error: Annotated[str | None, DataClass.DESCRIPTION]
     identity_errors: Annotated[list[str], DataClass.TXN_TYPE]
-    # What the match step decided on its own. AGGREGATE (Tier.MEDIUM) — plain
+    # What the match step decided on its own. AGGREGATE (Tier.LOW) — plain
     # counts of decisions, naming no transaction. Emitted because the step acts
     # without asking: it auto-merges above the confidence threshold and reverses
     # transfers a dedup collapse invalidated. ``matching_skipped`` is what

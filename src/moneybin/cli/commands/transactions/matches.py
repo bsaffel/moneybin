@@ -229,7 +229,11 @@ def matches_set(
             f"{outcome.match_status} — an accepted transfer already claims the "
             "merged pair, and the earlier decision stands"
         )
-    warn_transfers_retired(outcome.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
+    warn_transfers_retired(
+        outcome.transfers_retired,
+        cause=RETIRED_SIDES_COLLAPSED,
+        rematch_follow_up=True,
+    )
 
 
 @app.command("backfill")

@@ -230,12 +230,15 @@ class MatchingService:
         (``user``/``system``); ``actor`` is the audit surface (``cli``/``mcp``,
         default ``"system"``).
 
-        ``transfers_retired`` counts the accepted transfers this acceptance
-        invalidated and therefore reversed — see
+        ``transfers_retired`` counts the *standing* accepted transfers this
+        acceptance invalidated and therefore reversed — see
         :func:`~moneybin.matching.reconciliation.retire_transfers_invalidated_by_dedup`.
         Zero on a rejection and on the idempotent no-op: neither collapses
-        anything, so neither can invalidate a transfer. Surfaces are expected to
-        report a non-zero count rather than swallow it.
+        anything, so neither can invalidate a transfer. Also zero when the only
+        row reversed is *this* one: a proposal accepted and reversed inside this
+        transaction was never standing, ``match_status`` below is what reports
+        it, and undo returns it to ``pending`` rather than to accepted. Surfaces
+        are expected to report a non-zero count rather than swallow it.
 
         ``match_status`` is what committed, which is not always ``status``: that
         same reconciliation can reverse *this* row when it loses the
@@ -333,6 +336,16 @@ class MatchingService:
                     # the request here tells the caller the opposite of what
                     # committed.
                     committed_status = self._read_status(match_id)
+                    if committed_status == "reversed":
+                        # Discount this call's own row. `transfers_retired` is a
+                        # claim about *standing* decisions the user made and
+                        # this call undid; the row flipped moments ago inside
+                        # this transaction is neither standing nor undone —
+                        # `match_status` above is what reports it, and undo
+                        # returns it to `pending` rather than to accepted. Exact
+                        # rather than a floor: only a transfer row can be
+                        # self-reversed, so it is counted exactly once.
+                        retired -= 1
             # current_status == status falls through as an idempotent no-op.
             self._db.commit()
         except BaseException:
@@ -484,7 +497,10 @@ class MatchingService:
         The accepted count is re-read after the reconciliation for the same
         reason ``set_status`` re-reads one row: the batch can contain both a
         dedup edge and a transfer the edge invalidates, and the reconciliation
-        reverses the loser inside this transaction.
+        reverses the loser inside this transaction. Those self-reversals are
+        reported as ``reversed_by_reconciliation`` and excluded from
+        ``transfers_retired``, which counts only *standing* transfers this batch
+        undid.
         """
         if match_type is not None and match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
@@ -516,8 +532,15 @@ class MatchingService:
         except BaseException:
             self._db.rollback()
             raise
+        # Discount the rows this call itself flipped, for the reason `set_status`
+        # discounts its one row: `transfers_retired` claims standing decisions
+        # were undone, and a proposal accepted and reversed inside this same
+        # transaction is neither. `reversed_by_reconciliation` is exactly that
+        # set — the reconciliation only ever reverses transfers, so every flipped
+        # row that did not stay accepted is one of `retired`.
+        self_reversed = len(flipped) - still_accepted
         return BulkAcceptOutcome(
             accepted=still_accepted,
-            reversed_by_reconciliation=len(flipped) - still_accepted,
-            transfers_retired=retired,
+            reversed_by_reconciliation=self_reversed,
+            transfers_retired=retired - self_reversed,
         )

@@ -65,6 +65,41 @@ def test_only_the_merge_clause_claims_two_accounts_collapsed() -> None:
     )
 
 
+def test_an_accept_path_retirement_points_at_the_rematch_it_owes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A reversal frees legs, and only the matcher can re-propose over them.
+
+    `set_status` and `accept_all_pending` reconcile inside their own transaction
+    and return without a Tier 4 pass, so a transfer the freed leg now allows
+    stays unproposed until some unrelated refresh runs. `TransactionMatcher.run`
+    closes that gap by re-running Tier 4 itself; the accept paths cannot, so they
+    owe the user the follow-up in words.
+    """
+    with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
+        warn_transfers_retired(2, cause=RETIRED_SIDES_COLLAPSED, rematch_follow_up=True)
+
+    assert caplog.messages, "the warning did not fire, so nothing was checked"
+    assert "matches run" in caplog.messages[-1]
+    assert_published_commands_resolve(caplog.messages[-1])
+
+
+def test_a_matcher_run_retirement_does_not_ask_for_another_run(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Negative twin: the matcher already ran Tier 4 after its own reconciliation.
+
+    Without this, a helper that always appended the follow-up would send the
+    user back through a pass that just completed — and the noise would teach
+    them to ignore the sentence that matters on the accept paths.
+    """
+    with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
+        warn_transfers_retired(2, cause=RETIRED_SIDES_COLLAPSED)
+
+    assert caplog.messages, "the warning did not fire, so nothing was checked"
+    assert "matches run" not in caplog.messages[-1]
+
+
 def test_retirement_warning_is_silent_on_zero(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

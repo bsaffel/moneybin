@@ -162,8 +162,10 @@ RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED = (
 )
 
 
-def warn_transfers_retired(count: int, *, cause: str) -> None:
-    """Warn that ``count`` transfers the user had accepted were reversed.
+def warn_transfers_retired(
+    count: int, *, cause: str, rematch_follow_up: bool = False
+) -> None:
+    """Warn that ``count`` standing transfers the user had accepted were reversed.
 
     One helper rather than a line per surface because the thing being reported
     is the same everywhere and its recovery route must not drift: every path
@@ -173,13 +175,25 @@ def warn_transfers_retired(count: int, *, cause: str) -> None:
     always this call's doing, so the sentence may claim that much; what it may
     not claim is that this call caused the invalidation. Silent on zero, so the
     warning keeps its meaning.
+
+    ``rematch_follow_up`` is for the accept paths only — see the branch below.
     """
     if not count:
         return
+    follow_up = (
+        # Only the accept paths. They reconcile inside their own transaction and
+        # return, so a transfer the freed legs now allow stays unproposed until
+        # some later pass; `TransactionMatcher.run` re-runs Tier 4 itself and
+        # would be sending the user back through a pass that just finished.
+        "; then run 'moneybin transactions matches run' — the reversal freed "
+        "transaction legs a new transfer may now pair"
+        if rematch_follow_up
+        else ""
+    )
     logger.warning(
         f"⚠️  Retired {count} previously accepted transfer(s) — {cause}; "
         "inspect with 'moneybin system audit list' and restore with "
-        "'moneybin system audit undo <operation-id>' if that was wrong"
+        f"'moneybin system audit undo <operation-id>' if that was wrong{follow_up}"
     )
 
 

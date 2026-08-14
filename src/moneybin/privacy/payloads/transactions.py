@@ -309,7 +309,7 @@ class MatchSetPayload:
     once a dedup component holds both of their legs they name the same physical
     transaction, which would double-count it in ``core.bridge_transfers``. The
     reversal is this call's; the invalidation need not be, since the pass walks
-    every accepted transfer. AGGREGATE (Tier.MEDIUM) — a count, naming no
+    every accepted transfer. AGGREGATE (Tier.LOW) — a count, naming no
     transaction. Always zero on a rejection.
     """
 

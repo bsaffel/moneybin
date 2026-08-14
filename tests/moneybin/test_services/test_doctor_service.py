@@ -3310,7 +3310,39 @@ def test_cross_source_pair_with_no_decision_either_side_warns(
     result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "warn"
-    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_a_fresh_three_way_cluster_reports_pairs_as_an_upper_bound(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three mutually-duplicate rows, no prior decision: 3 pairs, 2 proposals.
+
+    The closure CTEs read *persisted* decisions, while ``assign_components``
+    additionally unions candidates as it walks them inside one run. With nothing
+    persisted there are no edges to read, so all three pairwise combinations
+    survive, while a rematch links them into one component and writes two. The
+    figure is therefore an upper bound, and the finding has to say so — otherwise
+    the remedy it recommends visibly under-delivers against its own number.
+
+    Pinned rather than corrected: the pairs genuinely carry no decision, so the
+    detection is right and only the arithmetic is loose. Simulating the dynamic
+    union in SQL would trade a wording problem for a correctness risk in the one
+    check that caught the 2026-08-08 incident.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    _insert_unioned_row(doctor_db, stid="plaid1", source_type="plaid")
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    # 3 nodes with no persisted edge → all 3 pairwise combinations survive.
+    assert result.affected_ids == ["ACC1 (up to 3 unreviewed pairs)"]
+    assert result.detail is not None
+    assert "upper bound" in result.detail
 
 
 @pytest.mark.unit
@@ -3412,7 +3444,7 @@ def test_same_source_type_from_two_origins_warns(
     result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "warn"
-    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
 
 
 @pytest.mark.unit
@@ -3447,7 +3479,7 @@ def test_a_rejection_against_a_different_partner_does_not_suppress(
     result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "warn"
-    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
 
 
 @pytest.mark.unit
@@ -3521,7 +3553,7 @@ def test_an_accepted_decision_on_only_one_side_does_not_suppress(
     result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "warn"
-    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
 
 
 @pytest.mark.unit
@@ -3558,7 +3590,7 @@ def test_decisions_in_disjoint_components_do_not_suppress(
     result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "warn"
-    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
 
 
 @pytest.mark.unit
@@ -3703,7 +3735,7 @@ def test_a_shared_file_on_two_seed_only_rows_does_not_suppress(
     result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "warn"
-    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
 
 
 @pytest.mark.unit
@@ -3769,7 +3801,7 @@ def test_a_rejected_pairs_own_endpoints_register_no_source_guard(
     result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "warn"
-    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
 
 
 @pytest.mark.unit
@@ -3832,7 +3864,7 @@ def test_two_components_from_four_files_still_warn(
     result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "warn"
-    assert result.affected_ids == ["ACC1 (2 unreviewed pairs)"]
+    assert result.affected_ids == ["ACC1 (up to 2 unreviewed pairs)"]
 
 
 @pytest.mark.unit
@@ -3866,7 +3898,7 @@ def test_a_transfer_decision_does_not_count_as_dedup_consideration(
     result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "warn"
-    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
 
 
 @pytest.mark.unit
@@ -3901,4 +3933,4 @@ def test_another_accounts_decision_on_the_same_native_id_does_not_suppress(
     result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "warn"
-    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
