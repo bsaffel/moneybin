@@ -18,7 +18,7 @@ from moneybin.mcp.surface import ADMITTED_OUTPUT_SCHEMA_NAMES, STANDARD_TOOL_COU
 from moneybin.mcp.tools.accounts import accounts, register_accounts_tools
 from moneybin.mcp.tools.reports import register_reports_tools
 from moneybin.mcp.tools.sql import register_sql_tools, sql_query, sql_schema
-from moneybin.services.schema_catalog import build_schema_doc
+from moneybin.services.schema_catalog import build_live_catalog, build_schema_doc
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -299,6 +299,45 @@ class TestToolRegistration:
         payload = (await sql_schema(table="raw.*")).to_dict()
         assert payload["status"] != "error"
         assert builds == 0
+
+    @pytest.mark.unit
+    async def test_sql_schema_describes_a_relation_curated_after_its_doc_was_read(
+        self, mcp_db: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A relation curated after the doc was read is described, not refused.
+
+        The exact-name path reads the curated doc through one connection and
+        the live catalog through another. A runtime `raw.gsheet_<alias>` view
+        materialized between the two is missing from the doc but present in the
+        live catalog with `curated: true`, and the miss path answered
+        `sql_table_not_curated` on name alone -- calling uncurated a relation
+        whose full curated entry an immediate retry returns.
+
+        A first read that omits the table stands in for that window; only the
+        doc is stubbed, so the `curated: true` that drives the branch is the
+        live value the real database reports.
+        """
+        table = "core.fct_transactions"
+        live = next(r for r in build_live_catalog(schema="core") if r["name"] == table)
+        assert live["curated"] is True, "fixture must reach the branch under test"
+
+        reads = 0
+
+        def doc_missing_the_table_on_first_read() -> dict[str, Any]:
+            nonlocal reads
+            reads += 1
+            doc = build_schema_doc()
+            if reads > 1:
+                return doc
+            return {**doc, "tables": [t for t in doc["tables"] if t["name"] != table]}
+
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.sql.build_schema_doc",
+            doc_missing_the_table_on_first_read,
+        )
+        payload = (await sql_schema(table=table)).to_dict()
+        assert payload["status"] != "error"
+        assert [t["name"] for t in payload["data"]["tables"]] == [table]
 
     @pytest.mark.unit
     async def test_sql_schema_exact_name_is_case_insensitive(

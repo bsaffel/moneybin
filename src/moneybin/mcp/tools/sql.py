@@ -92,8 +92,9 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
             document.
     """
     # Dispatched before the curated doc is built, not after: the listing reads
-    # nothing from it, and `build_live_catalog` builds its own copy to derive
-    # `curated`. Below this line, one wildcard call pays for two catalogs.
+    # nothing from it, and `build_live_catalog` derives `curated` from its own
+    # snapshot. Moved below the build, this branch would pay for a second
+    # catalog it never opens.
     if table is not None and table.endswith(".*"):
         return _live_schema_listing(table.removesuffix(".*"))
 
@@ -146,6 +147,17 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
         )
 
     matches = [t for t in tables if t["name"].lower() == table.lower()]
+    live = None if matches else _live_relation(table)
+    if live is not None and live["curated"]:
+        # `doc` predates this relation, which acquired its curated entry
+        # between that read and the live one. Re-read rather than call it
+        # uncurated: the second read is strictly later than the live read, so
+        # it holds whatever the live catalog just saw. A relation dropped in
+        # that window stays missing and falls through below.
+        doc = build_schema_doc()
+        tables = doc["tables"]
+        matches = [t for t in tables if t["name"].lower() == table.lower()]
+
     if not matches:
         available = [t["name"] for t in tables]
         known = ", ".join(available)
@@ -154,7 +166,7 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
         # interface tables. An agent told "unknown" fixes the name; an agent
         # told "not curated" reaches for DESCRIBE. Different recovery, so a
         # different code.
-        if _exists_but_uncurated(table):
+        if live is not None:
             return build_error_envelope(
                 error=UserError(
                     f"Not in the curated catalog: {table}",
@@ -193,8 +205,8 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
     )
 
 
-def _exists_but_uncurated(table: str) -> bool:
-    """Report whether ``table`` is a live queryable relation with no curated entry.
+def _live_relation(table: str) -> dict[str, Any] | None:
+    """Return ``table``'s row in the live catalog, or ``None`` if it has none.
 
     Raises ``sql_schema_not_allowed`` for a name under a schema `sql_query`
     refuses, because `build_live_catalog` is the one gate that decides which
@@ -208,12 +220,20 @@ def _exists_but_uncurated(table: str) -> bool:
     Both sides are lowered rather than the input alone: a runtime seed view is
     named from a user-chosen alias (`raw.gsheet_<alias>`), so the catalog can
     hold casing the caller did not write.
+
+    The row is returned rather than the bare "exists" this once answered,
+    because its ``curated`` flag is read from a later snapshot than the
+    caller's document — which is what lets the caller tell a genuinely
+    uncurated relation from one curated since it looked.
     """
     schema, dot, _name = table.partition(".")
     if not dot:
-        return False
+        return None
     wanted = table.lower()
-    return any(r["name"].lower() == wanted for r in build_live_catalog(schema=schema))
+    return next(
+        (r for r in build_live_catalog(schema=schema) if r["name"].lower() == wanted),
+        None,
+    )
 
 
 def _live_schema_listing(schema: str) -> ResponseEnvelope[Any]:
