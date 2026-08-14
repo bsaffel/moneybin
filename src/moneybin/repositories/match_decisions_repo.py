@@ -19,7 +19,6 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from moneybin.metrics.registry import TRANSFER_RETIREMENTS_TOTAL
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import MATCH_DECISIONS
@@ -315,12 +314,13 @@ class MatchDecisionsRepo(BaseRepo):
                     # Only this branch is disclosable. A rejected row being
                     # reversed removes nothing from the ledger, and a pending
                     # one was never the user's decision to undo.
+                    #
+                    # Returned rather than counted here: nothing in this loop is
+                    # durable until whoever owns the transaction commits, and a
+                    # metric incremented as the row is written outlives the
+                    # rollback that takes the reversal back. `AccountLinksService`
+                    # feeds the counter once its commit lands.
                     accepted_transfers_retired += 1
-                    # Same counter the reconciliation feeds, under the other
-                    # cause: this is the merge folding two *accounts* into one,
-                    # which the reconciliation never sees because it runs on
-                    # components, not accounts.
-                    TRANSFER_RETIREMENTS_TOTAL.labels(cause="account_merge").inc()
                 if status in ("accepted", "rejected"):
                     events.append(
                         self.reverse(

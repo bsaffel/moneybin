@@ -29,7 +29,10 @@ from moneybin.matching.persistence import (
     get_pending_matches,
 )
 from moneybin.matching.priority import seed_source_priority
-from moneybin.matching.reconciliation import retire_transfers_invalidated_by_dedup
+from moneybin.matching.reconciliation import (
+    record_dedup_retirements,
+    retire_transfers_invalidated_by_dedup,
+)
 from moneybin.tables import MATCH_DECISIONS
 
 if TYPE_CHECKING:
@@ -264,7 +267,10 @@ class MatchingService:
         # The reconciliation below joins it, so the acceptance and the
         # retirements it forces commit together or not at all — a crash between
         # them would otherwise leave exactly the corrupt bridge it prevents.
-        retired = 0
+        # Two numbers, deliberately: `reversals` is what the pass did and feeds
+        # the counter; `retired` is what the user is told and discounts this
+        # call's own row below.
+        retired = reversals = 0
         committed_status = status
         self._db.begin()
         try:
@@ -323,7 +329,7 @@ class MatchingService:
                     # survives in the queue — Tier 4 refuses to raise that shape
                     # and never revisits the ones it already raised — so
                     # accepting it claims a component another transfer holds.
-                    retired = retire_transfers_invalidated_by_dedup(
+                    retired = reversals = retire_transfers_invalidated_by_dedup(
                         self._db,
                         decisions=self._match_repo(),
                         actor=actor,
@@ -351,6 +357,8 @@ class MatchingService:
         except BaseException:
             self._db.rollback()
             raise
+        # Past the commit, so the reversals it counts are durable.
+        record_dedup_retirements(reversals)
         return MatchDecisionOutcome(
             match_status=committed_status, transfers_retired=retired
         )
@@ -532,6 +540,9 @@ class MatchingService:
         except BaseException:
             self._db.rollback()
             raise
+        # The raw count, before the discount below: that discount is a
+        # disclosure rule, and every one of these reversals committed.
+        record_dedup_retirements(retired)
         # Discount the rows this call itself flipped, for the reason `set_status`
         # discounts its one row: `transfers_retired` claims standing decisions
         # were undone, and a proposal accepted and reversed inside this same

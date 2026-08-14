@@ -389,6 +389,19 @@ def _dedup_statuses(db: Database) -> dict[str, str]:
     )
 
 
+def _retirement_count(cause: str) -> float:
+    """Current value of the retirement counter for one ``cause`` label.
+
+    Read through the private attribute because prometheus_client exposes no
+    public getter. Callers assert a delta, never an absolute: the registry is
+    process-wide and other tests in the same xdist worker share it.
+    """
+    from moneybin.metrics.registry import TRANSFER_RETIREMENTS_TOTAL
+
+    counter = TRANSFER_RETIREMENTS_TOTAL.labels(cause=cause)
+    return counter._value.get()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
 def _seed_two_doomed_transfers(db: Database, *, edge_status: str = "accepted") -> None:
     """One surviving transfer and two that lose the same component to it.
 
@@ -873,10 +886,7 @@ class TestRetirementOnDedupAccept:
         as transfers quietly going missing. Asserted as a delta rather than an
         absolute so it survives other tests sharing the process registry.
         """
-        from moneybin.metrics.registry import TRANSFER_RETIREMENTS_TOTAL
-
-        counter = TRANSFER_RETIREMENTS_TOTAL.labels(cause="dedup_component")
-        before = counter._value.get()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # prometheus has no public read
+        before = _retirement_count("dedup_component")
 
         _seed_two_transfers_one_pending_edge(db, edge_status="pending")
         outcome = MatchingService(db).set_status(
@@ -884,7 +894,83 @@ class TestRetirementOnDedupAccept:
         )
 
         assert outcome.transfers_retired == 1
-        assert counter._value.get() - before == 1  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        assert _retirement_count("dedup_component") - before == 1
+
+    def test_a_rolled_back_accept_leaves_the_counter_unchanged(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The counter measures reversals that committed, not ones attempted.
+
+        Under ``in_outer_txn`` a reversal is not durable until the caller
+        commits, so an increment taken as it is written outlives the rollback
+        that takes the reversal itself back — leaving a permanent claim that a
+        transfer the user accepted is gone while the row is still accepted.
+        Fault-injected because nothing in the fixture can fail in that window;
+        the failure is the condition under test.
+        """
+        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
+        before = _retirement_count("dedup_component")
+
+        def _fail() -> None:
+            raise RuntimeError("the commit failed after the reconciliation ran")
+
+        monkeypatch.setattr(db, "commit", _fail)
+
+        with pytest.raises(RuntimeError):
+            MatchingService(db).set_status(
+                "dd_1000000001", status="accepted", actor="cli"
+            )
+
+        assert _retirement_count("dedup_component") == before
+        # The positive half of the claim: the rollback really did take the
+        # reversal back. Without it an unchanged counter would also pass on an
+        # implementation that never increments at all.
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_drop00001": "accepted",
+        }
+
+    def test_the_bulk_accept_increments_the_counter(self, db: Database) -> None:
+        """``--confirm-all`` reverses through the same pass and owes the same count.
+
+        Its own test rather than trust in the shared helper: the emission
+        happens once the caller's transaction lands, so each caller owns one
+        seam, and a caller that forgets its own leaves the counter silently
+        flat while the reversals still commit.
+        """
+        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
+        before = _retirement_count("dedup_component")
+
+        outcome = MatchingService(db).accept_all_pending(actor="cli")
+
+        assert outcome.transfers_retired == 1
+        assert _retirement_count("dedup_component") - before == 1
+
+    def test_the_review_batch_counts_a_row_it_reversed_itself(
+        self, db: Database
+    ) -> None:
+        """The third caller's seam, on the fixture that separates the two numbers.
+
+        ``transfers_retired`` is a disclosure — *standing* decisions this call
+        undid — and discounts the row the batch itself flipped moments earlier.
+        The counter is not that: it measures reversals, and one committed here.
+        Reporting the discounted number would under-count exactly the runs
+        where the reconciliation is doing the most work.
+        """
+        from moneybin.mcp.write_contracts import MatchDecisionRequest
+        from moneybin.services.review_decisions_service import ReviewDecisionsService
+
+        _seed_a_stale_pending_transfer(db)
+        before = _retirement_count("dedup_component")
+
+        outcome = ReviewDecisionsService(db, actor="mcp").apply_ordinary([
+            MatchDecisionRequest(
+                kind="match", decision_id="tx_stale00001", decision="accept"
+            )
+        ])
+
+        assert outcome.transfers_retired == 0
+        assert _retirement_count("dedup_component") - before == 1
 
     def test_rejecting_the_queued_dedup_retires_nothing(self, db: Database) -> None:
         """Negative twin: the same fixture, decided the other way.

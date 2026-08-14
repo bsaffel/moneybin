@@ -15,7 +15,10 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.matching.persistence import get_match_decision, get_match_statuses
-from moneybin.matching.reconciliation import retire_transfers_invalidated_by_dedup
+from moneybin.matching.reconciliation import (
+    record_dedup_retirements,
+    retire_transfers_invalidated_by_dedup,
+)
 from moneybin.mcp.write_contracts import (
     AccountLinkDecisionRequest,
     CategorizationDecisionRequest,
@@ -544,6 +547,10 @@ class ReviewDecisionsService:
         except BaseException:
             self._db.rollback()
             raise
+        # Past the commit, and the raw count rather than the discounted one
+        # below: that discount is a disclosure rule, and every one of these
+        # reversals committed.
+        record_dedup_retirements(retired or 0)
         if touched_merchant_ids:
             category_service.record_committed_review_merchants(
                 created_merchant_ids=tuple(created_merchant_ids),

@@ -759,6 +759,23 @@ Guard-2 free-text resolution):
   still adds itself: it happens inside `set`'s transaction and reaches no
   matcher, so `refresh`'s count would omit it.
 
+  **`moneybin_transfer_retirements_total` is emitted after the commit, by
+  whoever owns it.** A reversal written inside a caller's transaction is not
+  durable until that caller commits, and a counter cannot be rolled back — an
+  increment taken as the row is written outlives the rollback that takes the
+  reversal away, leaving a permanent claim that a transfer the user accepted is
+  gone while the row still stands. So the reconciliation increments per reversal
+  only when it owns the transaction itself (the matcher's run, where each
+  reversal commits alone and the count must survive `ReconciliationError`);
+  under `in_outer_txn` it stays silent and each accept path calls
+  `record_dedup_retirements` once its own commit lands. `repoint_account`
+  likewise returns its count rather than emitting, and `rematch_after_merge()`
+  — the one seam both the direct and batched paths reach only after their
+  commit — feeds the `account_merge` cause. What the metric receives is the
+  **raw** reversal count, not the disclosed one: `transfers_retired` discounts a
+  row the same call flipped moments earlier because that was never a *standing*
+  decision to undo, while the metric measures reversals, and that one committed.
+
   A **partially failed pass reports as partial**, and the two halves fail
   independently. `RefreshResult.matching_error` means the proposals are
   incomplete — but not that nothing happened. The matcher wraps no transaction

@@ -22,6 +22,7 @@ import duckdb
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.metrics.registry import TRANSFER_RETIREMENTS_TOTAL
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
@@ -713,5 +714,15 @@ class AccountLinksService:
 
         collapsed = self._transfers_retired_by_collapse
         self._transfers_retired_by_collapse = 0
+        # Same counter the reconciliation feeds, under the other cause: this is
+        # the merge folding two *accounts* into one, which the reconciliation
+        # never sees because it runs on components, not accounts. Emitted here
+        # rather than where the repo reverses, because this is the one seam both
+        # paths reach only after their own commit — `set` calls it at the end of
+        # its post-commit tail, and the batched caller calls it itself once
+        # `apply_identity` commits. Nothing the repo writes is durable until one
+        # of those lands, and a counter cannot be rolled back with it.
+        if collapsed:
+            TRANSFER_RETIREMENTS_TOTAL.labels(cause="account_merge").inc(collapsed)
         result = refresh(self._db, steps=["match", "transform"])
         return replace(result, transfers_retired=collapsed + result.transfers_retired)

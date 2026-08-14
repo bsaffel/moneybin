@@ -1128,6 +1128,109 @@ def test_a_rolled_back_accept_leaves_no_collapse_count_behind(
     )
 
 
+def _collapse_retirement_count() -> float:
+    """Current value of the retirement counter for the account-merge cause.
+
+    Read through the private attribute because prometheus_client exposes no
+    public getter. Callers assert a delta, never an absolute: the registry is
+    process-wide and other tests in the same xdist worker share it.
+    """
+    from moneybin.metrics.registry import TRANSFER_RETIREMENTS_TOTAL
+
+    counter = TRANSFER_RETIREMENTS_TOTAL.labels(cause="account_merge")
+    return counter._value.get()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_collapsed_transfer_increments_its_own_counter(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """The merge's own cause on the shared retirement counter.
+
+    Separate from the dedup cause because the reconciliation never sees this
+    one — it runs on components, not accounts — so a regression here shows up
+    in no other series.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00009",
+        source_transaction_id_a="ofx17",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx16",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+    before = _collapse_retirement_count()
+
+    result = seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert result is not None
+    assert result.transfers_retired == 1
+    assert _collapse_retirement_count() - before == 1
+
+
+def test_a_rolled_back_collapse_leaves_the_counter_unchanged(
+    seeded: AccountLinksService,
+    db: Database,
+    rematch: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The metric twin of the rolled-back disclosure above.
+
+    The reversal is written early in ``set``'s transaction, ahead of writes
+    that can still raise. DuckDB takes it back; a counter incremented as it was
+    written does not come back with it, leaving a permanent claim that a
+    transfer the user accepted is gone while the row is still accepted.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00010",
+        source_transaction_id_a="ofx19",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx18",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+    before = _collapse_retirement_count()
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("a later write in the same transaction failed")
+
+    monkeypatch.setattr(AccountLinkDecisionsRepo, "update_status", _fail)
+
+    with pytest.raises(RuntimeError):
+        seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert _collapse_retirement_count() == before
+    # The positive half: the rollback really did take the reversal back, so the
+    # unchanged counter is agreement with the ledger rather than a metric that
+    # never fires at all.
+    row = db.execute(
+        "SELECT match_status FROM app.match_decisions WHERE match_id = 'match_id00010'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "accepted"
+
+
 def test_set_standalone_does_not_rerun_the_matcher(
     seeded: AccountLinksService, rematch: MagicMock
 ) -> None:

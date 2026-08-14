@@ -158,10 +158,33 @@ def retire_transfers_invalidated_by_dedup(
                 raise
             raise ReconciliationError(exc, transfers_retired=retired) from exc
         retired += 1
-        # Per reversal, not once per call: the counter has to survive the
-        # exception above, which returns through ReconciliationError rather than
-        # reaching the summary below.
-        TRANSFER_RETIREMENTS_TOTAL.labels(cause="dedup_component").inc()
+        if not in_outer_txn:
+            # Per reversal, and only when each one is its own committed
+            # transaction: the counter has to survive the exception above,
+            # which returns through ReconciliationError rather than reaching
+            # the summary below. Under `in_outer_txn` nothing here is durable
+            # until the caller commits, so the caller emits instead — see
+            # `record_dedup_retirements`.
+            TRANSFER_RETIREMENTS_TOTAL.labels(cause="dedup_component").inc()
     if retired:
         logger.info(f"Retired {retired} transfer decision(s) invalidated by dedup")
     return retired
+
+
+def record_dedup_retirements(count: int) -> None:
+    """Count reversals an ``in_outer_txn`` reconciliation committed.
+
+    Every caller that passes ``in_outer_txn=True`` owes this once its own
+    transaction lands, because the pass itself cannot know whether that
+    happened — an increment taken as each reversal is written outlives the
+    rollback that takes the reversal back, leaving a permanent claim that a
+    transfer the user accepted is gone while the row still stands.
+
+    Pass the **raw** return of the reconciliation, not the number the surface
+    discloses. The two differ by design: ``transfers_retired`` discounts a row
+    the same call flipped moments earlier, because that was never a *standing*
+    decision to undo, while this counter measures reversals — and one of those
+    did commit.
+    """
+    if count:
+        TRANSFER_RETIREMENTS_TOTAL.labels(cause="dedup_component").inc(count)
