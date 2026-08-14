@@ -30,7 +30,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `actions` name the `'<schema>.*'` path so the default call reaches it. `table`
   is matched the way DuckDB resolves an unquoted identifier — case-insensitively
   — so `'RAW.*'` and `'raw.*'` are one request, and any spelling `sql_query`
-  accepts, `sql_schema` accepts.
+  accepts, `sql_schema` accepts. Every `sql_schema` response now reports
+  `summary.returned_count` as the number of tables it actually returned; the
+  compact catalog and full document previously reported `1` regardless.
 
   This narrows disclosure rather than widening it. The listing is bounded by the
   same `ALLOWED_QUERY_SCHEMAS` that gates querying, so it can never name a

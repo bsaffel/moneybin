@@ -118,6 +118,10 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
             },
             sensitivity="low",
             classes_returned=["aggregate"],
+            # Every branch counts the `tables` it returns. `build_envelope`'s
+            # shape heuristic reads any dict as one item, so left implicit this
+            # reports a single row for a catalog of dozens.
+            returned_count=len(compact),
             actions=[
                 "Pass table='<schema.name>' (e.g. 'core.fct_transactions') to "
                 "fetch columns, comments, and example queries for one table.",
@@ -132,6 +136,7 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
             data=doc,
             sensitivity="low",
             classes_returned=["aggregate"],
+            returned_count=len(tables),
         )
 
     if table.endswith(".*"):
@@ -181,6 +186,7 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
         },
         sensitivity="low",
         classes_returned=["aggregate"],
+        returned_count=len(matches),
     )
 
 

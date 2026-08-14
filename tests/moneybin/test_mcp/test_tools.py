@@ -256,20 +256,23 @@ class TestToolRegistration:
         assert upper.to_dict()["data"] == lower.to_dict()["data"]
 
     @pytest.mark.unit
-    async def test_sql_schema_listing_counts_the_relations_it_returns(
-        self, mcp_db: object
+    @pytest.mark.parametrize("table", [None, "*", "raw.*", "core.fct_transactions"])
+    async def test_sql_schema_counts_the_tables_it_returns(
+        self, mcp_db: object, table: str | None
     ) -> None:
-        """`build_envelope` counts a dict as one item, which the listing is not.
+        """One counting rule for every branch, not one per payload shape.
 
-        The payload is a dict wrapping N relations, so the shape heuristic
-        reports `returned_count: 1` for every schema — telling an agent one
-        relation came back when the list underneath holds many.
+        Each branch answers with a dict wrapping a `tables` list, and
+        `build_envelope`'s shape heuristic reads any dict as a single item. So
+        the compact catalog reported 35 tables as `returned_count: 1`, and the
+        listing reported 21 relations the same way — an agent deciding whether
+        to paginate is told one row came back every time.
         """
-        listing = await sql_schema(table="raw.*")
-        payload = listing.to_dict()
-        assert len(payload["data"]["tables"]) > 1, "fixture must have >1 relation"
-        assert payload["summary"]["returned_count"] == len(payload["data"]["tables"])
-        assert payload["summary"]["total_count"] == len(payload["data"]["tables"])
+        payload = (await sql_schema(table=table)).to_dict()
+        assert payload["status"] != "error"
+        expected = len(payload["data"]["tables"])
+        assert payload["summary"]["returned_count"] == expected
+        assert payload["summary"]["total_count"] == expected
 
     @pytest.mark.unit
     async def test_sql_schema_exact_name_is_case_insensitive(
