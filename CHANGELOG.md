@@ -1161,6 +1161,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   warn about a pair no refresh can clear. Scoping both by `account_id` is what
   keeps a source-native id reused by an unrelated account from marking a row
   "already decided."
+- **Reconnecting a bank no longer splits one account's ledger in two.** Plaid
+  reissues every `account_id` when an institution is relinked, so an account that
+  came back under a new id read as one MoneyBin had never seen: it minted
+  a second canonical account beside the first, and the history divided between
+  them. Plaid also sends `persistent_account_id`, which survives a relink and
+  exists to answer exactly this question — but MoneyBin's wire model never
+  declared the field, and an undeclared field is discarded during validation
+  without an error or a log line, so every pull threw it away.
+  MoneyBin now stores it on `raw.plaid_accounts` and hands it to the
+  account resolver as the strong reference that reunites a returning account with
+  its own ledger. Plaid populates it for depository accounts at the three
+  institutions using tokenized account numbers — Chase, PNC, and US Bank — so a
+  credit card, or an account anywhere else, still resolves through the
+  weak-match review as before. Accounts synced before this change hold no value
+  for it — nothing retained a copy, so there is nothing to backfill — and pick
+  one up on their next sync (#395).
+- **Two accounts sharing one product name no longer match on it.**
+  MoneyBin named a Plaid account after `official_name`, which is the product's
+  marketing label rather than the account's: two different Chase cards both
+  read "Ultimate Rewards®" in name matching. The account's own `name` now leads
+  that fallback, with `official_name` behind it and the institution name behind
+  that. The review queue is unaffected — both sides of a merge proposal are
+  already labelled from `core.dim_accounts.display_name`, which is built from
+  institution, subtype, and last four (#395).
 - **Undoing a decision puts it back in the review queue, and the queue count now
   says so.** `system audit undo` restores a link decision to pending, but the
   counter that reports how many decisions await review was refreshed only by the

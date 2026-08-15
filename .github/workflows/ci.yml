@@ -220,11 +220,16 @@ jobs:
       # than double any other job — so it, not Scenarios, set overall PR time.
       # 4-way brings it under the ~5 min Scenarios floor.
       #
-      # NOTE: `make update-test-durations` records `unit or e2e or scenarios`
-      # only, so these tests have no entry in .test_durations yet and pytest-split
-      # falls back to a count-based split. That already wins here (integration is
-      # the long pole by wall-clock, not by per-test variance), and the marker has
-      # been added to the durations target so the next refresh balances by time.
+      # NOTE: expect one integration shard to run well long, and expect which
+      # one to move between refreshes. `make update-test-durations` records on
+      # a dev machine under `-n auto`; CI gets 2 xdist workers, and the
+      # local:CI cost ratio measured per test ranges 0.34x-1.41x, so
+      # pytest-split's balance here is approximate. Combined with
+      # --dist=loadscope pinning a module to one worker, a shard that lands
+      # dominated by one expensive module (test_demo_service.py,
+      # test_stg_plaid_investments.py) can't parallelize out of it. Recording
+      # durations on a runner instead of locally is the fix; until then don't
+      # read a lagging shard as a durations-file bug.
       - name: Test
         run: |
           uv run pytest tests/ -m integration -v \
@@ -239,7 +244,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2]
+        group: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
 
@@ -257,10 +262,13 @@ jobs:
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       # Shard the e2e suite with pytest-split, same pattern as test-unit.
-      # 2-way is enough: overall PR time is floored by the ~5 min Scenarios
-      # workflow, so halving e2e (~6 min -> ~3 min) already clears it. Count-
-      # based split is fine -- e2e tests are uniform and this job no longer
-      # gates the critical path. No coverage here, so no combine job.
+      # 4-way took the worst e2e shard from 437s to 251s (measured, #396) --
+      # this suite splits well because its tests spread over many classes, so
+      # no shard ends up pinned to one loadscope group. Widening further keeps
+      # helping in theory; it also adds runners, and CI + Scenarios + AI review
+      # already dispatch 20 concurrent jobs (observed starting without
+      # queueing, so the real ceiling is at least that -- it has not been
+      # measured). No coverage here, so no combine job.
       - name: Test
         run: |
           uv run pytest tests/ -m e2e -v \

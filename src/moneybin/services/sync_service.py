@@ -280,10 +280,19 @@ class SyncService:
         account->item attribution so it is byte-identical to what raw recorded
         (a divergent scope would corrupt source_native uniqueness).
 
-        ``persistent_token`` (Plaid ``persistent_account_id``) is the
-        cross-connection strong ref, but the server's ``SyncAccount`` contract
-        does not expose it today, so it is always None here — cross-connection
-        identity for Plaid stays unwired until that field lands (followup).
+        ``persistent_token`` carries Plaid's ``persistent_account_id``, which
+        survives a relink where ``account_id`` does not: reconnecting an item
+        reissues every native id, so ``source_native`` alone cannot tell a
+        returning card from a new one and the resolver mints a second canonical
+        account for a ledger the user already has. The persistent id is the
+        strong ref that confirms identity across that boundary.
+
+        ``name`` leads the display fallback because ``official_name`` is the
+        product's marketing label — sibling Chase cards report one
+        ``Ultimate Rewards®`` between them, so it cannot discriminate on the
+        name rung of the candidate pass. It is that rung's input only: both
+        sides of a merge proposal are labelled from
+        ``core.dim_accounts.display_name``, never from this string.
         """
         if not sync_data.accounts:
             return
@@ -296,7 +305,8 @@ class SyncService:
                     source_origin=item_by_account[acc.account_id],
                     source_account_key=acc.account_id,
                     account_name=(
-                        acc.official_name
+                        acc.name
+                        or acc.official_name
                         or (
                             f"{acc.institution_name} account"
                             if acc.institution_name
@@ -306,7 +316,7 @@ class SyncService:
                     account_number=None,  # Plaid never exposes a full number
                     last_four=acc.mask,
                     institution=acc.institution_name,
-                    persistent_token=None,  # not in SyncAccount contract (followup)
+                    persistent_token=acc.persistent_account_id,
                 )
             )
             ACCOUNT_LINK_OUTCOMES_TOTAL.labels(result=resolved_account.outcome).inc()

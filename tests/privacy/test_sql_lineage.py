@@ -1278,6 +1278,42 @@ def test_undeclared_raw_column_floors() -> None:
     assert _class_of_key(("raw", "ofx_transactions", "memo")) is DataClass.FLOORED
 
 
+def test_plaid_persistent_account_id_rides_the_content_net() -> None:
+    """A deliberate FLOORED, recorded so a later reader can argue with it.
+
+    ``persistent_account_id`` is Plaid's opaque cross-connection surrogate —
+    the same kind of provider-minted token as the ``account_id`` beside it,
+    which this table leaves readable on purpose so an agent can correlate a
+    Plaid import while debugging. The account-number material rides ``mask``,
+    which stays CRITICAL.
+
+    The tempting objection is that ``app.account_links.ref_value`` holds this
+    identical string and IS CRITICAL, so reading it here defeats that mask by
+    a join. It does — and that is the intended end state, not a leak:
+    ``ref_value`` is masked only because it is polymorphic and may also hold a
+    full account number, and ``taxonomy.py`` already names per-ref_kind
+    un-masking of opaque persistent_tokens as wanted work. A monomorphic column
+    that provably holds only the token gets there early.
+
+    Anchored on the loader's own schema first: an undeclared raw column floors
+    whether or not it exists, so asserting the class alone would pass just as
+    happily against a typo.
+    """
+    from moneybin.extractors.plaid.extractor import (
+        _ACCOUNTS_SCHEMA,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert "persistent_account_id" in _ACCOUNTS_SCHEMA
+    assert (
+        _class_of_key(("raw", "plaid_accounts", "persistent_account_id"))
+        is DataClass.FLOORED
+    )
+    assert "mask" in _ACCOUNTS_SCHEMA
+    assert _class_of_key(("raw", "plaid_accounts", "mask")) is (
+        DataClass.INSTITUTION_ACCOUNT_NUMBER
+    )
+
+
 def test_undeclared_core_column_does_not_floor() -> None:
     """core/app keep their fail-closed default — the floor is raw/prep only."""
     assert _class_of_key(("core", "fct_transactions", "no_such_column")) is None

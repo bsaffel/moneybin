@@ -95,9 +95,11 @@ class LoadResult:
 
 _ACCOUNTS_SCHEMA = pl.Schema({
     "account_id": pl.Utf8,
+    "persistent_account_id": pl.Utf8,
     "account_type": pl.Utf8,
     "account_subtype": pl.Utf8,
     "institution_name": pl.Utf8,
+    "name": pl.Utf8,
     "official_name": pl.Utf8,
     "mask": pl.Utf8,
     "source_file": pl.Utf8,

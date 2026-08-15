@@ -49,9 +49,11 @@ flowchart TD
    X"). Adopted above all detection.
 2. **Strong key → silent auto-adopt.** A stable, upstream-assigned key that's
    already bound to an account: the source's own account key on a same-source
-   re-import (including Plaid's `account_id`, scoped to that connection), or a
-   full account number scoped by its routing/bank id. These are near-certain, so
-   MoneyBin adopts silently.
+   re-import (including Plaid's `account_id`, scoped to that connection), Plaid's
+   `persistent_account_id` where the institution supplies one (this is the key
+   that survives a relink, when `account_id` does not), or a full account number
+   scoped by its routing/bank id. These are near-certain, so MoneyBin adopts
+   silently.
 3. **Weak match → always a confirm.** A shared **institution + last 4 digits**,
    or a **fuzzy name** match. Weak signals collide — two Wells Fargo accounts can
    both end in `4267` — so MoneyBin *proposes* and waits. **It never merges two
@@ -134,11 +136,16 @@ Reading the table precisely requires four caveats:
 - **A bare bank CSV carries no identity.** Date/Description/Amount alone can't
   tell MoneyBin which account it is, so binding is always explicit — which is why
   the pick-list (rung 5) exists.
-- **Plaid's strong key is connection-scoped, not cross-connection.** The sync
-  broker's account contract does not carry Plaid's `persistent_account_id`, so
-  re-authenticating the same bank through Plaid Link (a new connection) does not
-  auto-adopt the existing account — it resolves through the weak-match rungs
-  (institution + last 4) like any other cross-source twin.
+- **Plaid's strong key crosses connections where the institution supplies one.**
+  Re-authenticating the same bank through Plaid Link issues fresh `account_id`
+  tokens, so the connection-scoped key cannot recognize a returning account.
+  Plaid's `persistent_account_id` survives that boundary, and MoneyBin adopts on
+  it directly (rung 2). Plaid populates it for depository accounts at the three
+  institutions that use tokenized account numbers — Chase, PNC, and US Bank. An
+  account without it — every credit card, and every account at the other
+  institutions — resolves through the weak-match rungs (institution + last 4)
+  like any other cross-source twin. Accounts synced before MoneyBin captured the
+  field hold no value for it until their next sync.
 
 ## When MoneyBin asks you: the import gate
 
