@@ -10,11 +10,17 @@ from moneybin.utils import slugify
 
 _DOCUMENT_KEY_HEX_LENGTH = 16
 _ASCII_ALPHANUMERIC = frozenset(string.ascii_letters + string.digits)
+_ACCOUNT_ROUTING_PREFIX_RANGES = ((1, 12), (21, 32), (61, 72))
 
 
 def _is_valid_aba_routing_number(value: str) -> bool:
-    """Return whether a nine-digit routing number passes the ABA checksum."""
+    """Return whether a routing number has an account-safe prefix and checksum."""
     if len(value) != 9 or not value.isdigit():
+        return False
+    prefix = int(value[:2])
+    if not any(
+        lower <= prefix <= upper for lower, upper in _ACCOUNT_ROUTING_PREFIX_RANGES
+    ):
         return False
     digits = [int(character) for character in value]
     checksum = (

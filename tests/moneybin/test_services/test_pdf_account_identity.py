@@ -123,3 +123,27 @@ def test_checksum_invalid_routing_number_cannot_create_strong_scope() -> None:
     )
 
     assert identity.scoped_full_number is None
+
+
+def test_checksum_valid_zero_routing_placeholder_cannot_create_strong_scope() -> None:
+    identity = derive_pdf_account_identity(
+        issuer="unknown",
+        routing_number="000000000",
+        identifier="001234567890",
+        document_sha256="5" * 64,
+        identifier_is_complete=True,
+    )
+
+    assert identity.scoped_full_number is None
+
+
+def test_checksum_valid_reserved_routing_prefix_cannot_create_strong_scope() -> None:
+    identity = derive_pdf_account_identity(
+        issuer="unknown",
+        routing_number="990000000",
+        identifier="001234567890",
+        document_sha256="6" * 64,
+        identifier_is_complete=True,
+    )
+
+    assert identity.scoped_full_number is None
