@@ -1,7 +1,7 @@
 # Matching Consistency Boundaries
 
 > Last updated: 2026-08-15
-> Status: draft
+> Status: ready
 > Type: Architecture
 > Owns: executable ownership of match-decision consequences and dedup-candidate
 > planning semantics
