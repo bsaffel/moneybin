@@ -168,6 +168,16 @@ def test_account_anchor_ordering_captures_the_whole_token(
     assert meta.account_id == expected
 
 
+@pytest.mark.parametrize("separator", ["/", "."])
+def test_unsupported_account_number_separator_cannot_prove_completeness(
+    separator: str,
+) -> None:
+    meta = capture_metadata(f"Bank Statement\nAccount Number: 123456{separator}7890\n")
+
+    assert meta.account_id == f"123456{separator}7890"
+    assert meta.account_id_complete is False
+
+
 def test_capture_metadata_collects_account_identity_evidence() -> None:
     text = """\
 Account Name: Household Checking

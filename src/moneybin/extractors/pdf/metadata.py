@@ -43,7 +43,7 @@ _TIMEOUT_SEC = 0.1
 # special-case code path for one field.
 #: Public alias used by auto_derive to freeze metadata anchors into a Recipe.
 _COMPLETE_ACCOUNT_ID_PATTERN = (
-    r"Account\s+Number[:\s]+([\dXx*]{3,}(?:[ -][\dXx*]{3,})*)(?![-\w*])"
+    r"Account\s+Number[:\s]+([\dXx*]{3,}(?:[ -][\dXx*]{3,})*)[ \t]*$"
 )
 ACCOUNT_ID_MASK_CHARACTERS = frozenset("*Xx•●")
 
@@ -57,10 +57,11 @@ DEFAULT_ANCHORS: dict[str, list[str]] = {
         # layout, and the *leading* four — an authoritative-looking wrong last4
         # that then feeds the institution+last4 merge signal — for an unmasked
         # one. Each group needs 3+ chars so a trailing date ("XXXX1234 01/31/24")
-        # can't extend the match. The trailing guard makes this anchor
-        # all-or-nothing: without it a token like "123-ABC-456" matches only
-        # its leading "123", and because _first_match is first-match-wins that
-        # partial hit permanently retires the (\S+) anchor below.
+        # can't extend the match. Requiring only whitespace through line-end
+        # makes this anchor all-or-nothing: without it an unsupported token like
+        # "123456/7890" matches only its leading "123456", and because
+        # _first_match is first-match-wins that partial hit permanently retires
+        # the (\S+) anchor below.
         _COMPLETE_ACCOUNT_ID_PATTERN,
         r"Account\s+ending\s+in\s+(\d+)",
         # Institution-specific tokens that aren't digit/mask runs (e.g. "ACCT-9Z").

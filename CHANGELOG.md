@@ -38,8 +38,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reports `null` rather than that project's commit.
 - **PDF account matching now uses complete statement identity without a new
   secret or user setting.** Exact files get opaque content-derived keys; complete
-  account identifiers proven complete are retained only as issuer- or validated
-  routing-scoped `full_number` links in the encrypted database. Masked,
+  account identifiers proven complete are retained only as validated-routing-
+  scoped `full_number` links in the encrypted database. Masked,
   suffix-only, and unscoped statements stay review-only;
   labelled account metadata is captured and incoming-ledger overlap is shown as
   matched/comparable evidence.

@@ -4643,9 +4643,9 @@ class ImportService:
         # re-derived, so the ratified account and the bound one are one object.
         source_account = bound_source
         account_id = source_account.source_account_key
-        # Identity scope (issuer slug) and fingerprint, both used further down for
-        # the raw account row and the format-recipe save. Read off the derivation
-        # above rather than recomputed, so there is one source of truth.
+        # Stable document origin and fingerprint, both used further down for the
+        # raw account row and the format-recipe save. Read the origin from the
+        # gated identity rather than recomputing it, so there is one source of truth.
         identity_origin = source_account.source_origin
         fp = decision.fp
         if fp is None:  # pragma: no cover — _pdf_source_account already raised
