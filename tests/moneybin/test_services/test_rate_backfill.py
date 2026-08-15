@@ -286,6 +286,10 @@ def test_coverage_already_complete_yields_no_window_at_all(db: Database) -> None
     a fully-cached pair would report as an unsupported one on every refresh.
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    # Both bounds, deliberately: a rate stored only at `through` leaves the
+    # transaction's own date uncovered, and asserting on an empty plan there
+    # would pin the stranded-history bug rather than the drop rule.
+    _add_stored_rate(db, on=date(2026, 3, 10))
     _add_stored_rate(db, on=_TODAY)
 
     assert plan_rate_backfill(db, home_currency="USD", through=_TODAY) == ()
@@ -310,6 +314,30 @@ def test_a_gap_inside_the_cached_span_is_not_refetched(db: Database) -> None:
             from_currency="EUR",
             to_currency="USD",
             start=date(2026, 3, 14),
+            end=_TODAY,
+        ),
+    )
+
+
+def test_a_newly_implied_earlier_date_reopens_the_window(db: Database) -> None:
+    """Coverage has two bounds; only reading the newest one strands history.
+
+    `moneybin fx rate` caches a single day, so one lookup can leave the newest
+    stored date at today with nothing behind it — and importing a years-old
+    statement moves the earliest *needed* date backwards long after a backfill
+    has run. A newest-only model plans `newest + 1`, which is past `through`,
+    drops the window, and never fetches the missing years at all.
+    """
+    _add_transaction(db, on=date(2019, 4, 2), currency="EUR")
+    _add_stored_rate(db, on=_TODAY)
+
+    windows = plan_rate_backfill(db, home_currency="USD", through=_TODAY)
+
+    assert windows == (
+        RateWindow(
+            from_currency="EUR",
+            to_currency="USD",
+            start=date(2019, 4, 2),
             end=_TODAY,
         ),
     )

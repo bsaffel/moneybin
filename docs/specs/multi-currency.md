@@ -430,10 +430,15 @@ Numbered, testable. Tagged by phase.
     imply: for each currency reachable from `core.fct_transactions`,
     `core.fct_balances_daily`, `core.fct_investment_transactions` or
     `core.dim_holdings`, one provider call covering the earliest date that currency
-    appears through today. Coverage is tracked as a span bounded by the newest
-    stored `rate_date`, never as a set of dates — a reference series has legitimate
-    holes on every weekend and holiday, and a date-set model would re-request each
-    one forever.
+    appears through today. Coverage is tracked as a span bounded by the oldest
+    and newest stored `rate_date`, never as a set of dates — a reference series
+    has legitimate holes on every weekend and holiday, and a date-set model would
+    re-request each one forever. Both bounds are load-bearing: the newest stops a
+    refresh re-requesting what it holds, and the oldest is what reopens the span
+    when an earlier date becomes implied — a single day cached by `moneybin fx
+    rate`, or a years-old statement imported after the first backfill. Reading
+    only the newest bound would plan a window starting after today and drop it,
+    stranding that history permanently.
 
     Placement is a correctness constraint, not a preference. A report read opens
     the database read-only; fetching there would need the exclusive per-profile

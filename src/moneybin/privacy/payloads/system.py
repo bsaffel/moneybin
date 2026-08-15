@@ -513,8 +513,10 @@ class RefreshRunPayload:
     self_heal_actions: list[SelfHealActionRow]
     # Counts of rates gathered, and the pairs whose provider call failed. A
     # currency pair is CURRENCY (Tier.LOW): it names no account and discloses
-    # no amount. Both are None when the rates step did not run — distinct from
-    # 0, which means it ran and had nothing to fetch.
+    # no amount. `rates_written` is None when the rates step did not run —
+    # distinct from 0, which means it ran and had nothing to fetch. It is the
+    # only did-it-run signal: an empty `rate_pairs_failed` is the same list
+    # either way.
     rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
     rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list

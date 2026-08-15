@@ -68,10 +68,17 @@ def run_rate_backfill(
 ) -> RateBackfillResult:
     """Gather every rate this profile's own rows imply, one call per pair.
 
-    A pair that raises is recorded and the next pair still runs. By the time
-    this step executes, refresh has already done its expensive work; the rates
-    step is the only one whose input lives outside the machine, so letting a
-    transient network fault propagate would discard a successful run.
+    A pair whose *provider call* fails is recorded and the next pair still runs.
+    By the time this step executes, refresh has already done its expensive work;
+    the rates step is the only one whose input lives outside the machine, so
+    letting a transient network fault propagate would discard a successful run.
+
+    The store is deliberately outside that isolation. Its failures are not
+    per-pair — refresh holds the exclusive writer lock, so a write that raises
+    here means the database itself is unusable, and attributing that to the
+    currency being stored would report a lie. Such a failure aborts the step and
+    surfaces through ``_run_rates_step`` as "the step did not run", which is what
+    actually happened.
     """
     windows = plan_rate_backfill(db, home_currency=home_currency, through=through)
     service = CurrencyService(db, adapter=adapter)
@@ -107,11 +114,21 @@ def plan_rate_backfill(
 ) -> tuple[RateWindow, ...]:
     """The rate windows this profile's own rows imply, newest bound at ``through``."""
     home = canonical_currency(home_currency)
-    # `covered.newest + 1` is what keeps a refresh from re-requesting a span it
-    # already holds. It deliberately reads only the newest stored date, never the
-    # set of dates within the span: a reference series has legitimate holes on
-    # every weekend and holiday, so a date-set model would treat each one as
-    # missing coverage and re-request it on every refresh, forever.
+    # Coverage is the span `[covered.oldest, covered.newest]`, and both bounds
+    # are load-bearing. `newest + 1` is what keeps a refresh from re-requesting
+    # a span it already holds; `oldest` is what keeps a *newly implied* earlier
+    # date from being silently skipped — a single row cached by `moneybin fx
+    # rate`, or a statement imported years after the first backfill, leaves the
+    # newest bound at today while the earliest needed date moves backwards, and
+    # a newest-only model would plan a window starting tomorrow and drop it.
+    # Neither bound reads the set of dates *within* the span: a reference series
+    # has legitimate holes on every weekend and holiday, so a date-set model
+    # would treat each one as missing coverage and re-request it forever.
+    #
+    # An earlier need therefore re-requests the whole span in one call. The
+    # append-only cache ignores the rows it already holds, and the next refresh
+    # is back on the `newest + 1` path, so this costs one extra call per pair
+    # per backwards extension.
     rows = db.execute(
         f"""
         WITH dated AS (
@@ -133,20 +150,29 @@ def plan_rate_backfill(
               FROM {DIM_HOLDINGS.full_name}
         ),
         needed AS (
-            SELECT UPPER(currency_code) AS from_currency,
+            -- TRIM as well as UPPER: `canonical_currency` strips before it
+            -- uppercases, so a padded code would otherwise reach `covered`
+            -- under a spelling no stored rate carries and re-request its whole
+            -- span every refresh.
+            SELECT UPPER(TRIM(currency_code)) AS from_currency,
                    MIN(on_date) AS earliest
               FROM dated
-             WHERE currency_code IS NOT NULL AND UPPER(currency_code) <> ?
+             WHERE currency_code IS NOT NULL AND UPPER(TRIM(currency_code)) <> ?
              GROUP BY 1
         ),
         covered AS (
-            SELECT from_currency, MAX(rate_date) AS newest
+            SELECT from_currency,
+                   MIN(rate_date) AS oldest,
+                   MAX(rate_date) AS newest
               FROM {EXCHANGE_RATES.full_name}
              WHERE to_currency = ?
              GROUP BY 1
         )
         SELECT n.from_currency,
-               GREATEST(n.earliest, COALESCE(c.newest + 1, n.earliest))
+               CASE
+                   WHEN c.newest IS NULL OR n.earliest < c.oldest THEN n.earliest
+                   ELSE GREATEST(n.earliest, c.newest + 1)
+               END
           FROM needed AS n
           LEFT JOIN covered AS c USING (from_currency)
          ORDER BY n.from_currency

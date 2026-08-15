@@ -27,8 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fail outright whenever a sync held that lock. Refresh already holds it.
 
   The step is best-effort and never fails the command: a pair the provider
-  could not answer is named in `rate_backfill.pairs_failed` (`rate_pairs_failed`
-  under `--output json`), warned on stderr, and retried on the next refresh —
+  could not answer is warned on stderr by name, listed in `rate_pairs_failed`
+  under `--output json` and in the MCP envelope, and retried on the next refresh —
   the rest of the cascade keeps its results. A profile with no home currency
   set fetches nothing. Run it alone with `moneybin refresh --step rates` or
   `refresh_run(steps=["rates"])`. Only currency codes and dates leave the

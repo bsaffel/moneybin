@@ -73,8 +73,8 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         "order. Pass steps to select from gsheet, match, transform, "
         "categorize, identity, and rates. The rates step caches the rates this "
         "profile's own rows imply so later report reads convert offline; a "
-        "pair the provider could not answer appears in rate_backfill."
-        "pairs_failed and is retried next run. Rebuilds core.* and reports.* "
+        "pair the provider could not answer appears in rate_pairs_failed and "
+        "is retried next run. Rebuilds core.* and reports.* "
         "and may write app categorization or identity-review state, plus the "
         "raw exchange-rate cache. No revert path; fix inputs and rerun.",
     )
