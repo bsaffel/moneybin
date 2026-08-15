@@ -17,6 +17,26 @@ if TYPE_CHECKING:
     from moneybin.services.refresh import RefreshResult
 
 
+def retired_transfers_action(count: int, *, operation: str) -> str | None:
+    """Hint that ``operation``'s refresh reversed ``count`` accepted transfers.
+
+    Every surface that runs the full refresh reaches the reconciliation, so
+    every one of them can undo a decision the user made — an import, a sync
+    pull, and the inbox drain as much as `refresh_run`. They owe the caller the
+    same fact and the same route back, so the sentence lives here once rather
+    than being retyped per tool; ``operation`` names the surface, which is the
+    only part that differs. None on zero, so callers append nothing and the
+    hint keeps its meaning.
+    """
+    if not count:
+        return None
+    return (
+        f"This {operation} retired {count} previously accepted transfer(s) — "
+        "inspect with system_audit(), restore with system_audit_undo() if "
+        "that was wrong"
+    )
+
+
 def rematch_actions(rematch: RefreshResult | None) -> list[str]:
     """Hints describing what the merge's re-match did, most urgent first.
 

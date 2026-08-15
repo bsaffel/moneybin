@@ -27,9 +27,10 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
 )
-from moneybin.cli.utils import emit_json
+from moneybin.cli.utils import emit_json, warn_transfers_retired
 from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
+from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -822,6 +823,12 @@ def import_files_command(
                 logger.info("✅ Core tables rebuilt")
         if data.get("transforms_error"):
             logger.warning(f"⚠️  Transform apply failed: {data['transforms_error']}")
+        # The import's refresh runs the matcher, so folding a duplicate can
+        # reverse a transfer the user accepted. Same helper and sentence as the
+        # matcher commands: the event is identical, only the surface differs.
+        warn_transfers_retired(
+            int(data.get("transfers_retired") or 0), cause=RETIRED_SIDES_COLLAPSED
+        )
 
     # Batch import succeeds file-by-file but the post-import SQLMesh apply is
     # a separate failure surface. Exit non-zero so scripts and agents detect
@@ -924,6 +931,7 @@ def _batch_payload(
         "total_count": batch.total_count,
         "transforms_applied": batch.transforms_applied,
         "transforms_duration_seconds": batch.transforms_duration_seconds,
+        "transfers_retired": batch.transfers_retired,
         "files": files_list,
     }
     if batch.transforms_error:

@@ -8,6 +8,7 @@ mapping so the two surfaces cannot drift.
 from __future__ import annotations
 
 from moneybin.errors import RecoveryAction
+from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.payloads.system import RefreshRunPayload, SelfHealActionRow
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.refresh import RefreshResult
@@ -117,18 +118,15 @@ def refresh_envelope(
             actions.append(REFRESH_ACCOUNT_LINKS_REVIEW_HINT)
         if "merchants" not in result.identity_errors:
             actions.append(REFRESH_MERCHANT_LINKS_REVIEW_HINT)
-    if result.transfers_retired:
-        # Ahead of every hint above: those are routine next steps, this one says
-        # a decision the user already made was undone. Same sentence the two
-        # matcher tools emit — a user who finds the way back on one surface has
-        # to find it on the one they actually reach the reconciliation through,
-        # and refresh is that one because it runs the matcher on every import.
-        actions.insert(
-            0,
-            f"This refresh retired {result.transfers_retired} previously "
-            "accepted transfer(s) — inspect with system_audit(), restore with "
-            "system_audit_undo() if that was wrong",
-        )
+    # Ahead of every hint above: those are routine next steps, this one says a
+    # decision the user already made was undone. Shared with the embedded
+    # refresh callers (import, sync pull, inbox drain) — a user who finds the
+    # way back on one surface has to find it on the one they actually reach the
+    # reconciliation through, and any of them can be that surface.
+    if retired := retired_transfers_action(
+        result.transfers_retired, operation="refresh"
+    ):
+        actions.insert(0, retired)
     recovery = _step_crash_recovery_actions(result)
     # `or None` (omit the key when empty) is correct here: refresh always uses
     # build_envelope, whose ResponseEnvelope.error is None, so there is no

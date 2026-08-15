@@ -27,6 +27,7 @@ from moneybin.mcp.confirmation import (
 )
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.sync import (
     SyncAuthView,
@@ -151,6 +152,7 @@ def sync_pull(
             transforms_applied=result.transforms_applied,
             transforms_duration_seconds=result.transforms_duration_seconds,
             transforms_error=result.transforms_error,
+            transfers_retired=result.transfers_retired,
             securities_loaded=result.securities_loaded,
             investment_transactions_loaded=result.investment_transactions_loaded,
             holdings_loaded=result.holdings_loaded,
@@ -188,6 +190,11 @@ def _pull_actions(result: PullResult) -> list[str]:
             "WARNING: transforms failed — raw rows landed but core.* models are "
             "stale. Retry with refresh_run."
         )
+    # A pull runs the full refresh, so its match step can reverse a transfer the
+    # user accepted. Ahead of the routine review hints below: those are work the
+    # user chose, this is a decision of theirs that was undone.
+    if retired := retired_transfers_action(result.transfers_retired, operation="sync"):
+        actions.append(retired)
     resolution = result.security_resolution or {}
     awaiting = resolution.get("proposed", 0) + resolution.get("pending", 0)
     if awaiting:

@@ -922,6 +922,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before `transform`, leaving the corrupt bridge never built rather than rebuilt
   correctly one refresh later.
 
+  A `refresh` covering the reconciliation is not the same as the surfaces that
+  *call* `refresh` reporting it. Four embedded callers run the full cascade and
+  previously copied only the three transform fields off its result:
+  `moneybin import files`, `moneybin sync pull` (and `sync link`'s auto-pull),
+  the inbox drain, and the single-file MCP import path. Each could therefore
+  reverse an accepted transfer and report nothing but a successful import. All
+  four now carry `transfers_retired` back — the CLI through the same warning
+  naming `moneybin system audit undo`, the MCP twins (`import_files`,
+  `sync_pull`, `import_inbox_sync`) through the payload and an `actions[]` hint
+  pointing at `system_audit_undo()`. The unattended drain prints its warning
+  even under `--quiet`, which suppresses informational output and not a
+  reversal of the user's own decision.
+
   Because that pass walks every accepted transfer — including the row the accept
   just wrote — **an accept can be the decision it reverses**, and the surfaces
   now report the committed status instead of the requested one.

@@ -744,6 +744,35 @@ class TestPullAutoRefreshes:
         assert result.transforms_duration_seconds == 0.05
         assert result.transforms_error is None
 
+    def test_pull_reports_a_transfer_the_refresh_retired(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidExtractor,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A pull runs the matcher, so it can reverse a transfer the user accepted.
+
+        `pull` calls `_refresh` with no `steps`, which is the full cascade
+        including `match`, and the match step now reconciles — so an ordinary
+        sync can retire a standing transfer. Reporting only the transform
+        fields would let that land inside a routine "sync succeeded" with
+        nothing pointing at the reversal or the way back.
+        """
+        from moneybin.services import sync_service as mod
+        from moneybin.services.refresh import RefreshResult
+
+        def fake_refresh(_db: object) -> RefreshResult:
+            return RefreshResult(
+                applied=True, duration_seconds=0.05, transfers_retired=2
+            )
+
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
+        service = SyncService(client=mock_client, db=db, loader=loader)
+        result = service.pull()
+
+        assert result.transfers_retired == 2
+
     def test_pull_no_refresh_skips_pipeline(
         self,
         mock_client: MagicMock,

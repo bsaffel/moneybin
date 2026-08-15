@@ -9,8 +9,9 @@ from contextlib import contextmanager
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.utils import handle_cli_errors, warn_transfers_retired
 from moneybin.connectors.sync_models import LinkInitiateResponse
+from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 
 from .stubs import _not_implemented
 
@@ -210,6 +211,8 @@ def sync_link(
                 f"⚠️  transforms failed ({pr.transforms_error}); "
                 f"raw rows landed. Retry with `moneybin transform apply`."
             )
+        # connect's auto-pull reaches the same reconciliation `sync pull` does.
+        warn_transfers_retired(pr.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
         if pr.transforms_error or pr.security_resolution_error:
             raise typer.Exit(1)
 
@@ -441,6 +444,10 @@ def sync_pull(
                 f"⚠️  transforms failed ({result.transforms_error}); "
                 f"raw rows landed. Retry with `moneybin transform apply`."
             )
+        # A pull runs the full refresh, whose match step can reverse a transfer
+        # the user accepted. Same helper as the matcher commands so the event
+        # reads identically wherever the user meets it.
+        warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
 
     # Non-zero exit on refresh failure applies to BOTH output modes — agents
     # gating on process status need the signal whether they parse JSON or

@@ -50,6 +50,7 @@ from moneybin.mcp.confirmation import (
 )
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.imports import (
     ImportConfirmationPayload,
@@ -364,6 +365,7 @@ def import_files(
     if len(validated) == 1:
         transforms_error: str | None = None
         transforms_applied = False
+        transfers_retired = 0
         # Track import_id BEFORE refresh so a hard exception from _refresh
         # (anything other than the soft refresh_result.applied=False path)
         # still surfaces the import_id to the failure handler — without
@@ -403,6 +405,7 @@ def import_files(
 
                     refresh_result = _refresh(db)
                     transforms_applied = refresh_result.applied
+                    transfers_retired = refresh_result.transfers_retired
                     if not refresh_result.applied:
                         transforms_error = refresh_result.error or (
                             "SQLMesh transforms failed (no error detail)"
@@ -518,6 +521,7 @@ def import_files(
                 transforms_applied=transforms_applied,
                 transforms_duration_seconds=None,
                 transforms_error=transforms_error,
+                transfers_retired=transfers_retired,
             )
     else:
         with get_database(read_only=False) as db:
@@ -611,6 +615,11 @@ def import_files(
         actions.append("Run refresh_run when ready to refresh derived tables")
     if batch.transforms_error:
         actions.append("Refresh failed after import — call refresh_run to retry")
+    # Ahead of the routine status hint: an import that folded a duplicate can
+    # reverse a transfer the user accepted, and that is the one outcome here
+    # they did not ask for.
+    if retired := retired_transfers_action(batch.transfers_retired, operation="import"):
+        actions.append(retired)
     actions.append("Use system_status to confirm refreshed counts")
 
     envelope = build_envelope(
@@ -622,6 +631,7 @@ def import_files(
             transforms_duration_seconds=batch.transforms_duration_seconds,
             transforms_error=batch.transforms_error,
             files=files,
+            transfers_retired=batch.transfers_retired,
         ),
         # confirmation_required entries carry sample rows + proposed mapping
         # (DataClass.DESCRIPTION, MEDIUM). Per moneybin-mcp.md the envelope's

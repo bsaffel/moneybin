@@ -441,6 +441,10 @@ class BatchImportResult:
     transforms_applied: bool
     transforms_duration_seconds: float | None
     transforms_error: str | None = None
+    # An import's closing refresh runs the matcher, so folding a duplicate can
+    # reverse a transfer the user had accepted. Unlike the transform fields,
+    # this one reports something undone rather than something built.
+    transfers_retired: int = 0
 
     @property
     def imported_count(self) -> int:
@@ -5436,17 +5440,20 @@ class ImportService:
         applied = False
         duration_seconds: float | None = None
         error: str | None = None
+        transfers_retired = 0
         if refresh and any_succeeded and any_transformable:
             refresh_result = _refresh(self._db)
             applied = refresh_result.applied
             duration_seconds = refresh_result.duration_seconds
             error = refresh_result.error
+            transfers_retired = refresh_result.transfers_retired
 
         return BatchImportResult(
             per_file=per_file,
             transforms_applied=applied,
             transforms_duration_seconds=duration_seconds,
             transforms_error=error,
+            transfers_retired=transfers_retired,
         )
 
     def list_formats(

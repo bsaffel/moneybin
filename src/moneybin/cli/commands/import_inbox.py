@@ -226,6 +226,14 @@ def inbox_default(
             classes_returned=classes_returned,
         )
         return
+    # Ahead of the `quiet` return: -q drops informational output, and a
+    # reversal of the user's own decision is not that. The drain is the least
+    # supervised surface reaching the reconciliation, so this is the one it can
+    # least afford to swallow.
+    from moneybin.cli.utils import warn_transfers_retired
+    from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
+
+    warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
     if quiet:
         return
     _print_sync_text(result)

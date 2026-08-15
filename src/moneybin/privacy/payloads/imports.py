@@ -248,6 +248,8 @@ class ImportFilesPayload:
     transforms_duration_seconds: Annotated[float | None, DataClass.AGGREGATE]
     transforms_error: Annotated[str | None, DataClass.DESCRIPTION]
     files: list[ImportPerFileRow]
+    # Accepted transfers this import's refresh reversed (AGGREGATE, Tier.LOW).
+    transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +583,8 @@ class ImportInboxSyncPayload:
     transforms_applied: Annotated[bool, DataClass.TXN_TYPE]
     transforms_duration_seconds: Annotated[float | None, DataClass.AGGREGATE]
     transforms_error: Annotated[str | None, DataClass.DESCRIPTION]
+    # Accepted transfers the drain's refresh reversed (AGGREGATE, Tier.LOW).
+    transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
 
 
 # ---------------------------------------------------------------------------

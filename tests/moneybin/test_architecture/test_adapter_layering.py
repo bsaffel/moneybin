@@ -124,6 +124,26 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.matching.reconciliation",
         "RETIRED_SIDES_COLLAPSED",
     ),
+    # The three embedded refresh callers. Each runs the full cascade, so each
+    # reaches the same reconciliation the dedicated refresh surfaces do and
+    # owes the user the same sentence when it reverses a decision of theirs.
+    # An import, a pull, and an unattended drain are where that reversal is
+    # least expected, which is why they name it rather than staying quiet.
+    (
+        "cli/commands/import_cmd.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    (
+        "cli/commands/import_inbox.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    (
+        "cli/commands/sync.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
     (
         "cli/commands/accounts/links.py",
         "moneybin.matching.reconciliation",

@@ -265,6 +265,7 @@ class SyncService:
             result.transforms_applied = refresh_result.applied
             result.transforms_duration_seconds = refresh_result.duration_seconds
             result.transforms_error = refresh_result.error
+            result.transfers_retired = refresh_result.transfers_retired
             if not refresh_result.error:
                 result.opening_bootstrap_rows = self._count_bootstrap_rows()
         return result
