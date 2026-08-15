@@ -2607,6 +2607,14 @@ class DoctorService:
                 --    joining their components is refused. Omitting this warns
                 --    about a pair no refresh can ever clear, since the remedy
                 --    this check recommends is the very pass that re-drops it.
+                --    Origin compares NULL-equal because the Python intersects
+                --    SourceKey *tuples*, and (type, None, file) equals itself
+                --    where SQL '=' reads unknown. V003 leaves legacy OFX rows'
+                --    source_origin NULL, so plain '=' would diverge -- today
+                --    unobservably, because app.match_decisions demands a
+                --    non-NULL origin and so keeps every such row a component
+                --    of one. That is another table's constraint, not this
+                --    query's, which is why the mirror is written out here.
                 SELECT r.account_id, COUNT(*) AS pairs
                 FROM live_candidates AS r
                 WHERE r.comp_a <> r.comp_b
@@ -2616,7 +2624,7 @@ class DoctorService:
                     JOIN component_sources AS sb
                       ON sb.acct = sa.acct
                      AND sb.s_type = sa.s_type
-                     AND sb.s_origin = sa.s_origin
+                     AND sb.s_origin IS NOT DISTINCT FROM sa.s_origin
                      AND sb.s_file = sa.s_file
                     WHERE sa.acct = r.account_id
                       AND sa.comp = r.comp_a
