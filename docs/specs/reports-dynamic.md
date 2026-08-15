@@ -299,7 +299,7 @@ contradicts R2's rule that saving requires a name and a query and nothing else.
 
 #### These columns must be classified
 
-`app` is inside `_ALLOWED_QUERY_SCHEMAS`, so `sql_query` — and a dynamic report
+`app` is inside `ALLOWED_QUERY_SCHEMAS`, so `sql_query` — and a dynamic report
 — can `SELECT query_sql FROM app.user_reports`. `V045` therefore lands with
 `CLASSIFICATION` entries for **all twelve** columns or it fails
 `tests/privacy/test_classification_completeness.py` on the first run. A spec

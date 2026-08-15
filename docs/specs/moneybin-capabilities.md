@@ -79,7 +79,7 @@ is added.
 | Google Sheets | `gsheet`, `gsheet_connect`, `gsheet_pull`, `gsheet_disconnect` | `gsheet *` | Same connection and pulled source state |
 | Privacy | `privacy`, `privacy_consent_set` | `privacy status/log/grant/revoke/revoke-all` | Same effective grants and privacy log |
 | Refresh | `refresh_run` | `refresh`, match/identity commands, `transform apply` | Same selected step outcomes and proposal state |
-| SQL | `sql_query`, `sql_schema` | `sql query` | Same rows, classification, cap, and CRITICAL masking |
+| SQL | `sql_query`, `sql_schema` | `sql query` | Same rows, classification, cap, and CRITICAL masking. Schema discovery is MCP-only: `sql_schema`'s curated catalog, per-table detail, and `'<schema>.*'` relation listing have no CLI counterpart, and this is an unclosed gap rather than an exemption — an operator driving `moneybin sql query` composes against `DESCRIBE` and the docs |
 
 Five parity gaps discovered by executing this model were closed as part of
 the implementation:

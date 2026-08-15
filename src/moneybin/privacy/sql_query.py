@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 # floor finds no classified table in scope, and every value comes back at
 # AGGREGATE (LOW, passthrough) — including the declared CRITICAL ones. The two
 # lists move together.
-_ALLOWED_QUERY_SCHEMAS = frozenset({"core", "app", "reports", "raw", "prep"})
+ALLOWED_QUERY_SCHEMAS = frozenset({"core", "app", "reports", "raw", "prep"})
 
 # --- Read-only / file-access safety gate -----------------------------------
 # DuckDB table-valued functions that read local files or make network requests.
@@ -362,13 +362,13 @@ def _refuse_disallowed_schemas(tree: exp.Expr, snapshot: SchemaSnapshot) -> None
     """
     shown = _shown_schema(tree)
     if shown is not None:
-        disallowed = [] if shown in _ALLOWED_QUERY_SCHEMAS else [shown]
+        disallowed = [] if shown in ALLOWED_QUERY_SCHEMAS else [shown]
     else:
-        disallowed = tables_outside_schemas(tree, snapshot, _ALLOWED_QUERY_SCHEMAS)
+        disallowed = tables_outside_schemas(tree, snapshot, ALLOWED_QUERY_SCHEMAS)
     if disallowed:
         raise UserError(
             "Queries are limited to these schemas: "
-            f"{', '.join(sorted(_ALLOWED_QUERY_SCHEMAS))}.",
+            f"{', '.join(sorted(ALLOWED_QUERY_SCHEMAS))}.",
             code=error_codes.SQL_SCHEMA_NOT_ALLOWED,
             # State the RULE, not a sample of the complement. An earlier hint
             # enumerated refused schemas — a few of roughly ten — which reads as
