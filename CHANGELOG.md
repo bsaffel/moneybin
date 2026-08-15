@@ -914,6 +914,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   either alone still leaves the merge unfinished in a way the user would
   otherwise have to discover for themselves.
 
+  Telemetry does not decide whether that pass runs. Both accept paths refresh
+  the review-queue gauge in the post-commit tail, immediately ahead of the
+  rematch. A metrics failure there aborted the tail with the accept already
+  committed, and an accepted decision is refused on a retry — so the merged
+  account's duplicates would have waited for an unrelated refresh with nothing
+  reporting it. That refresh is now best-effort and logs what it lost; a stale
+  gauge is the cheaper loss.
+
   The match pass also retires transfers a dedup collapse invalidates.
   Deduplication is blocked on `a.account_id = b.account_id`, so two rows each
   claimed as a transfer leg by a *different* account can never be dedup

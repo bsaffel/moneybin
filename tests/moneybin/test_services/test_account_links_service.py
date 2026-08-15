@@ -724,6 +724,33 @@ def test_set_accept_reruns_the_matcher(
     rematch.assert_called_once_with(db, steps=["match", "transform"], actor="cli")
 
 
+def test_a_failing_pending_gauge_does_not_abort_the_post_merge_rematch(
+    seeded: AccountLinksService,
+    mocker: MockerFixture,
+    rematch: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Observability must not decide whether the rematch runs.
+
+    The repoint has already committed by the time the gauge refreshes, so an
+    exception there leaves the decision accepted while skipping the rematch.
+    ``set`` refuses a second attempt as non-pending, so the newly co-resident
+    duplicates stay unproposed until some unrelated refresh — the same silent
+    failure this trigger exists to prevent, reintroduced through a metrics
+    call. The gauge going stale is the cheaper loss, and it says so in the log.
+    """
+    mocker.patch(
+        "moneybin.services.account_resolver.ACCOUNT_LINK_REVIEW_PENDING.set",
+        side_effect=RuntimeError("metrics backend unavailable"),
+    )
+
+    with caplog.at_level("WARNING"):
+        seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    rematch.assert_called_once()
+    assert "account-link pending gauge" in caplog.text
+
+
 def test_set_accept_carries_a_rejected_pair_onto_the_survivor(
     seeded: AccountLinksService, db: Database, rematch: MagicMock
 ) -> None:
