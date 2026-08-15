@@ -329,6 +329,33 @@ UNKNOWN_CURRENCY_ROWS = Gauge(
     ["grain"],
 )
 
+# ── Exchange rates ───────────────────────────────────────────────────────────
+
+FX_RATE_ROWS_WRITTEN_TOTAL = Counter(
+    "moneybin_fx_rate_rows_written_total",
+    # Rows the append-only insert actually wrote — a re-fetched rate is dropped
+    # and must not count, so a flat counter means a stalled rate feed.
+    "Exchange rates written to raw.exchange_rates, by source_type",
+    ["source_type"],
+)
+
+FX_RATE_RESOLUTION_TOTAL = Counter(
+    "moneybin_fx_rate_resolution_total",
+    # Which layer answered. A rising 'fetched' share against flat 'cached' means
+    # the cache is not being reused; a rising 'unavailable' means conversion is
+    # silently degrading to per-currency segmentation for real users.
+    "Rate resolutions by outcome (override / cached / fetched / unavailable)",
+    ["outcome"],
+)
+
+FX_RATE_FETCH_DURATION_SECONDS = Histogram(
+    "moneybin_fx_rate_fetch_duration_seconds",
+    # A fetch reaches the network, so latency is the signal a provider is
+    # degrading before it starts failing outright.
+    "Duration of one exchange-rate fetch (seconds), by source_type",
+    ["source_type"],
+)
+
 # ── Categorization ────────────────────────────────────────────────────────────
 
 CATEGORIZATION_AUTO_RATE = Gauge(

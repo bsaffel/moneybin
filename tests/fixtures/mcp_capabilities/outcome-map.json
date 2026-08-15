@@ -425,6 +425,62 @@
     }
   },
   {
+    "capability_id": "fx.rate.resolve",
+    "mcp_tools": [],
+    "cli_commands": [
+      "fx rate"
+    ],
+    "service_methods": [
+      "moneybin.services.currency_service.CurrencyService.resolve_rate"
+    ],
+    "observable_outcomes": [
+      "the same rate for one pair and date, named with the business day it was published for and the layer that answered, or a refusal that distinguishes a currency the provider never prices from a date it happens to lack"
+    ],
+    "exemption": {
+      "surface": "mcp",
+      "category": "admission-pending",
+      "reason": "multi-currency.md assigns rate operations no MCP identity of their own: multi-currency is a crosscutting service-layer concern rather than a tool namespace (mcp-architecture.md), so the agent-facing rate outcome is folded into display conversion instead of taking a slot here."
+    }
+  },
+  {
+    "capability_id": "fx.rate.read",
+    "mcp_tools": [],
+    "cli_commands": [
+      "fx list"
+    ],
+    "service_methods": [
+      "moneybin.services.currency_service.CurrencyService.list_rates"
+    ],
+    "observable_outcomes": [
+      "the stored rate series for one pair returns the same winning rate and source per date"
+    ],
+    "exemption": {
+      "surface": "mcp",
+      "category": "admission-pending",
+      "reason": "Behind the same unadmitted capability as fx.rate.resolve; a rate series answers no agent question that display conversion will not answer with the rate it actually used."
+    }
+  },
+  {
+    "capability_id": "fx.rate.override",
+    "mcp_tools": [],
+    "cli_commands": [
+      "fx set",
+      "fx delete"
+    ],
+    "service_methods": [
+      "moneybin.services.currency_service.CurrencyService.set_override",
+      "moneybin.services.currency_service.CurrencyService.delete_override"
+    ],
+    "observable_outcomes": [
+      "one audited user rate correction reaches the same present or absent state for a pair and date, outranking every cached provider rate for that date"
+    ],
+    "exemption": {
+      "surface": "mcp",
+      "category": "admission-pending",
+      "reason": "Paired with fx.rate.resolve: the correction grain these write takes no MCP identity until the bounded-registry admission record for multi-currency operations is complete."
+    }
+  },
+  {
     "capability_id": "transactions.read",
     "mcp_tools": [
       "transactions"

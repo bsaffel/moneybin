@@ -40,6 +40,8 @@ _READ_ONLY_HELP_PATHS: list[list[str]] = [
     ["stats", "--help"],
     ["logs", "--help"],
     ["system", "doctor", "--help"],
+    ["fx", "rate", "--help"],
+    ["fx", "list", "--help"],
 ]
 
 

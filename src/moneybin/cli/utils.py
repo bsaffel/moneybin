@@ -8,6 +8,8 @@ import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
 import typer
@@ -203,6 +205,41 @@ def warn_match_decisions_committed(partial: MatchResult) -> None:
         "those decisions are durable; review them with "
         "'moneybin transactions matches pending'"
     )
+
+
+def parse_cli_date(value: str, flag: str) -> date:
+    """Parse an ISO date, exiting 2 on a usage error rather than raising.
+
+    ``flag`` names the argument in the message, so one helper can speak for a
+    positional (``DATE``) and an option (``--since``) alike.
+    """
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()  # noqa: DTZ007  # a calendar date, not an instant
+    except ValueError:
+        typer.echo(
+            f"error: {flag} must be an ISO date (YYYY-MM-DD), got {value!r}", err=True
+        )
+        raise typer.Exit(2) from None
+
+
+def parse_cli_decimal(value: str, flag: str) -> Decimal:
+    """Parse a number as an exact, finite Decimal — never through float.
+
+    The finite check is not belt-and-braces: ``Decimal`` parses ``"NaN"`` and
+    ``"Infinity"`` as ordinary literals, so without it they survive as numbers
+    and fail far downstream — NaN raises ``InvalidOperation`` on the first
+    comparison, infinity fails inside DuckDB — reporting an internal error for
+    what is a typo.
+    """
+    try:
+        parsed = Decimal(value)
+    except InvalidOperation:
+        typer.echo(f"error: {flag} must be a decimal number, got {value!r}", err=True)
+        raise typer.Exit(2) from None
+    if not parsed.is_finite():
+        typer.echo(f"error: {flag} must be a finite number, got {value!r}", err=True)
+        raise typer.Exit(2) from None
+    return parsed
 
 
 def emit_json(key: str, payload: object) -> None:

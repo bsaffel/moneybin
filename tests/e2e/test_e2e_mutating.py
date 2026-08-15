@@ -9,6 +9,7 @@ other tests. Tests that need a fresh MONEYBIN_HOME use tmp_path
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -1584,6 +1585,63 @@ class TestSecurityLinksMutating:
         )
         again.assert_success()
         assert "No mark existed" in again.stdout
+
+    def test_fx_override_round_trips_through_the_resolver(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """A recorded rate answers `fx rate` for its date, then stops answering.
+
+        The whole point of the override layer is that it outranks the provider,
+        and the only way to see that is to ask the resolver afterwards. Asking
+        for a date this profile has no cached rate for would otherwise reach
+        the network; the correction is what keeps this test offline, which is
+        the same reason a user records one.
+        """
+        env = make_workflow_env_fast(
+            tmp_path, "fx-override", _mutating_profile_template
+        )
+
+        recorded = run_cli(
+            "fx",
+            "set",
+            "USD",
+            "EUR",
+            "2026-03-13",
+            "0.87138000",
+            "--note",
+            "bank",
+            env=env,
+        )
+        recorded.assert_success()
+
+        resolved = run_cli(
+            "fx", "rate", "USD", "EUR", "2026-03-13", "--output", "json", env=env
+        )
+        resolved.assert_success()
+        data = json.loads(resolved.stdout)["data"]
+        assert Decimal(str(data["rate"])) == Decimal("0.87138000")
+        assert data["source"] == "override"
+
+        removed = run_cli("fx", "delete", "USD", "EUR", "2026-03-13", env=env)
+        removed.assert_success()
+
+        again = run_cli("fx", "delete", "USD", "EUR", "2026-03-13", env=env)
+        again.assert_success()
+        assert "No override existed" in again.stdout
+
+    def test_fx_set_refuses_a_zero_rate(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """A zero rate converts every balance in that currency to nothing.
+
+        It also outranks the provider, so nothing downstream would contradict
+        it — the refusal has to happen here or not at all.
+        """
+        env = make_workflow_env_fast(tmp_path, "fx-zero", _mutating_profile_template)
+        result = run_cli("fx", "set", "USD", "EUR", "2026-03-13", "0", env=env)
+
+        assert result.exit_code != 0
+        assert "Traceback (most recent call last)" not in result.stderr
 
     def test_investments_prices_set_refuses_a_zero_price(
         self, _mutating_profile_template: Path, tmp_path: Path

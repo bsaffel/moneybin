@@ -394,6 +394,21 @@ The per-account cost-basis default is a field on `accounts set --default-cost-ba
 
 **Related guides:** [`investments-data-model.md`](../specs/investments-data-model.md), [`sync-plaid-investments.md`](../specs/sync-plaid-investments.md).
 
+### `fx`
+
+Exchange rates for one currency pair on one date, and the corrections that outrank them. All commands support `--output json`.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `fx rate <from> <to> [date]` | Resolve one pair on one date and name the source. Precedence: your correction, then a cached rate, then a live fetch. Date defaults to today. | — |
+| `fx list <from> <to>` | Stored rate series for one pair, newest first, with the source that won each date. Reads only what is on disk; never fetches. | `--since` |
+| `fx set <from> <to> <date> <rate>` | Record your own rate for one pair and date, outranking every provider rate for that date. RATE is units of TO per one FROM. | `--note` |
+| `fx delete <from> <to> <date>` | Remove a correction, returning that date to provider pricing. | — |
+
+A weekend or holiday resolves to the last business day the provider published, and `fx rate` names that day rather than reporting the rate as the requested day's own. `fx set` writes `app.exchange_rate_overrides` with a paired audit-log row; `fx delete` is the only way to withdraw one, since `set` can only change the number.
+
+**Related guides:** [`multi-currency.md`](../specs/multi-currency.md).
+
 ## Reports
 
 Cross-domain analytical views. All commands support `--output json` and return the standard envelope.

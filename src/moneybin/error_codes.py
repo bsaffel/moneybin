@@ -206,6 +206,15 @@ GSHEET_RECONNECT_ARGUMENT_CONFLICT = "gsheet_reconnect_argument_conflict"
 
 
 # ---------------------------------------------------------------------------
+# External data feeds — the shape shared by every provider
+# ---------------------------------------------------------------------------
+# Reported only by a feed that has no code of its own. Each concrete feed
+# overrides this with its own code, so a caller can still tell a rate failure
+# from a price failure.
+
+FEED_ERROR = "feed_error"
+
+# ---------------------------------------------------------------------------
 # Price feeds — market data providers (Tiingo, CoinGecko)
 # ---------------------------------------------------------------------------
 # Distinct from sync_* (mediated account providers): a price feed carries no
@@ -213,6 +222,17 @@ GSHEET_RECONNECT_ARGUMENT_CONFLICT = "gsheet_reconnect_argument_conflict"
 # gsheet_, a taxonomy-completeness prefix rather than a recovery code.
 
 PRICE_FEED_ERROR = "price_feed_error"
+
+
+# ---------------------------------------------------------------------------
+# Exchange-rate feeds — currency reference rates (Frankfurter / ECB)
+# ---------------------------------------------------------------------------
+# Its own code rather than price_feed_: the two fail independently, and a user
+# whose net worth will not convert needs to know it is the rate feed that is
+# down, not the market-data one. Like price_feed_, no credential and no PII —
+# only a currency pair and a date leave the machine.
+
+RATE_FEED_ERROR = "rate_feed_error"
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +277,22 @@ ACCOUNT_REFERENCE_REQUIRED = "account_reference_required"
 
 ENTITY_REFERENCE_AMBIGUOUS = "entity_reference_ambiguous"
 ENTITY_REFERENCE_NOT_FOUND = "entity_reference_not_found"
+
+
+# ---------------------------------------------------------------------------
+# FX — currency conversion (the `moneybin fx` surface)
+# ---------------------------------------------------------------------------
+# Distinct from rate_feed_: those report that the provider failed, these report
+# that no rate could be resolved from any layer — override, cache, or provider.
+# The two codes below are deliberately not one. `fetch` answers None for both an
+# unsupported currency and a supported pair missing one date, and the remedies
+# differ: the first needs a manual override, the second needs a different date.
+
+FX_CURRENCY_INVALID = "fx_currency_invalid"
+FX_CURRENCY_UNSUPPORTED = "fx_currency_unsupported"
+FX_OVERRIDE_PAIR_INVALID = "fx_override_pair_invalid"
+FX_OVERRIDE_RATE_INVALID = "fx_override_rate_invalid"
+FX_RATE_UNAVAILABLE = "fx_rate_unavailable"
 
 
 # ---------------------------------------------------------------------------

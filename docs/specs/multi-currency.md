@@ -537,10 +537,14 @@ flowchart LR
   generic YAML `profile set` (whose `section.field` keys don't write `app.*`).
 - Reports accept `--display-currency <ISO>` (M1K.2; default home).
 - `moneybin fx rate <FROM> <TO> [DATE]` (M1K.2) — inspect/seed a cached rate.
-- `moneybin fx override <FROM> <TO> <DATE> <RATE>` (M1K.2) — auditable user override.
-  The `fx` group is a **new top-level CLI namespace**; like the MCP names above, its exact
-  shape settles with the surface specs — `moneybin-cli.md` and the capabilities map must
-  register it when M1K.2 is planned, not be invented standalone from this spec.
+- `moneybin fx list <FROM> <TO>` (M1K.2) — the stored series for one pair, read-only.
+- `moneybin fx set <FROM> <TO> <DATE> <RATE>` (M1K.2) — auditable user override;
+  `moneybin fx delete <FROM> <TO> <DATE>` returns that date to provider pricing.
+  The `fx` group is a **new top-level CLI namespace**. Its shape settled with the
+  surface specs as required, not standalone from here: the tree is registered in
+  [`moneybin-cli.md`](moneybin-cli.md) and the four paths in the capabilities map.
+  The verb is `set`, not `override` — the repo spells this operation `set` in
+  `investments prices set` and carries no `--delete` flag anywhere.
 - `system doctor` gains the mixed-currency integrity checks (M1K.1).
 
 ## MCP Interface
