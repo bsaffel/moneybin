@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 from moneybin.database import get_database
+from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.payloads.imports import (
     ImportInboxPendingEntry,
     ImportInboxPendingPayload,
@@ -99,8 +100,6 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
     # drain's closing refresh can reverse a transfer the user accepted, and an
     # unattended surface is where an unannounced reversal goes unnoticed
     # longest. Inserted at the front for that reason.
-    from moneybin.mcp.rematch_report import retired_transfers_action  # noqa: PLC0415
-
     if retired := retired_transfers_action(
         sync_result.transfers_retired, operation="inbox sync"
     ):

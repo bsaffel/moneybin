@@ -1101,6 +1101,56 @@ def test_the_collapse_count_reaches_the_batched_path_s_separate_rematch(
     assert seeded.rematch_after_merge().transfers_retired == 1
 
 
+def test_the_collapse_count_accumulates_across_two_merges_in_one_batch(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """The batch's counter sums its merges; it does not track the last one.
+
+    ``_transfers_retired_by_collapse`` exists because the batch splits
+    retirement from disclosure across calls, and a batch is free to merge
+    several accounts before its single ``rematch_after_merge``. Every other
+    test here accepts one decision per batch, so an accumulator written with
+    ``=`` instead of ``+=`` passes all of them while silently reporting one of
+    two reversed transfers — under-reporting undone user decisions, which is
+    the one direction nothing else on the surface signals.
+
+    Two independent merges: prov1 → cand_a and prov2 → cand_a, each carrying
+    its own accepted transfer that the collapse invalidates. Hand-derived
+    expectation: one reversal each, so two.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    repo = MatchDecisionsRepo(db)
+    for match_id, tx_a, tx_b, provisional in (
+        ("match_id00012", "ofx21", "ofx20", _PROV1),
+        ("match_id00013", "ofx23", "ofx22", _PROV2),
+    ):
+        repo.insert(
+            match_id=match_id,
+            source_transaction_id_a=tx_a,
+            source_type_a="ofx",
+            source_origin_a="bank",
+            source_transaction_id_b=tx_b,
+            source_type_b="ofx",
+            source_origin_b="bank",
+            account_id=_CAND_A,
+            confidence_score=0.95,
+            match_signals={},
+            match_status="accepted",
+            match_type="transfer",
+            account_id_b=provisional,
+            decided_by="user",
+            actor="test",
+        )
+
+    db.begin()
+    assert seeded.set(_DEC1, target_account_id=_CAND_A, in_outer_txn=True) is None
+    assert seeded.set(_DEC3, target_account_id=_CAND_A, in_outer_txn=True) is None
+    db.commit()
+
+    assert seeded.rematch_after_merge().transfers_retired == 2
+
+
 def test_a_rolled_back_accept_leaves_no_collapse_count_behind(
     seeded: AccountLinksService,
     db: Database,
@@ -1203,6 +1253,55 @@ def test_a_collapsed_transfer_increments_its_own_counter(
     assert result is not None
     assert result.transfers_retired == 1
     assert _collapse_retirement_count() - before == 1
+
+
+def test_a_failing_retirement_counter_does_not_abort_the_post_merge_rematch(
+    seeded: AccountLinksService,
+    db: Database,
+    rematch: MagicMock,
+    mocker: MockerFixture,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The counter stands after the reversal it counts is already durable.
+
+    Same shape as the pending-gauge guard a few callers over: by the time this
+    counter is emitted the merge and its reversal have committed, so an
+    exception here skips the rematch while the accept stays accepted — and
+    ``set`` refuses the retry as non-pending. The disclosure must survive too;
+    a caller told the operation failed, holding a committed reversal it was
+    never told about, is the silent outcome this whole trigger exists to close.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00011",
+        source_transaction_id_a="ofx17",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx16",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+    mocker.patch(
+        "moneybin.matching.reconciliation.TRANSFER_RETIREMENTS_TOTAL.labels",
+        side_effect=RuntimeError("metrics backend unavailable"),
+    )
+
+    with caplog.at_level("WARNING"):
+        result = seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert result is not None
+    assert result.transfers_retired == 1
+    rematch.assert_called_once()
+    assert "transfer retirement" in caplog.text
 
 
 def test_a_rolled_back_collapse_leaves_the_counter_unchanged(

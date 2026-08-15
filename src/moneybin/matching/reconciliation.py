@@ -165,10 +165,34 @@ def retire_transfers_invalidated_by_dedup(
             # the summary below. Under `in_outer_txn` nothing here is durable
             # until the caller commits, so the caller emits instead — see
             # `record_dedup_retirements`.
-            TRANSFER_RETIREMENTS_TOTAL.labels(cause="dedup_component").inc()
+            _count_retirements(1, cause="dedup_component")
     if retired:
         logger.info(f"Retired {retired} transfer decision(s) invalidated by dedup")
     return retired
+
+
+def _count_retirements(count: int, *, cause: str) -> None:
+    """Emit the retirement counter without letting it abort its caller.
+
+    Best-effort by construction. Every emission of this counter stands *after*
+    the reversal it counts is durable — per reversal when the pass owns its own
+    transaction, and after the caller's commit otherwise. That ordering is
+    deliberate (a counter cannot be rolled back with the row), and it is exactly
+    what makes a raise here expensive: the surface reports failure for work that
+    committed, and the retry finds terminal decisions rather than replaying the
+    request. Worse on the account-merge path, where the caller's next statement
+    is the rematch that keeps the merge's duplicates from going unproposed.
+
+    A missing count is the cheaper loss, so the count is what gives way.
+    """
+    if not count:
+        return
+    try:
+        TRANSFER_RETIREMENTS_TOTAL.labels(cause=cause).inc(count)
+    except Exception as exc:  # noqa: BLE001  # telemetry must not abort a committed reversal
+        logger.warning(
+            f"Could not count {count} transfer retirement(s) ({cause}): {exc}"
+        )
 
 
 def record_dedup_retirements(count: int) -> None:
@@ -186,5 +210,15 @@ def record_dedup_retirements(count: int) -> None:
     decision to undo, while this counter measures reversals — and one of those
     did commit.
     """
-    if count:
-        TRANSFER_RETIREMENTS_TOTAL.labels(cause="dedup_component").inc(count)
+    _count_retirements(count, cause="dedup_component")
+
+
+def record_account_merge_retirements(count: int) -> None:
+    """Count reversals an accepted account merge committed.
+
+    The merge's own cause: two *accounts* turning out to be one, which the
+    reconciliation never sees because it runs on components. Its caller emits
+    at the one seam both accept paths reach only after their own commit, for
+    the same durability reason as ``record_dedup_retirements``.
+    """
+    _count_retirements(count, cause="account_merge")

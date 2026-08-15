@@ -353,6 +353,13 @@ def sync_pull(
                 refresh=refresh,
             )
 
+    # Ahead of both output branches, like `moneybin refresh` and `gsheet pull`:
+    # a pull runs the full refresh, whose match step can reverse a transfer the
+    # user accepted. The count rides in the JSON body either way, but only this
+    # line names the way back, and an agent driving --output json is the caller
+    # least able to notice a reversal on its own.
+    warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
+
     if output == OutputFormat.JSON:
         typer.echo(result.model_dump_json(indent=2))
         # Fall through to the shared exit-code check so JSON-mode agents
@@ -444,10 +451,6 @@ def sync_pull(
                 f"⚠️  transforms failed ({result.transforms_error}); "
                 f"raw rows landed. Retry with `moneybin transform apply`."
             )
-        # A pull runs the full refresh, whose match step can reverse a transfer
-        # the user accepted. Same helper as the matcher commands so the event
-        # reads identically wherever the user meets it.
-        warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
 
     # Non-zero exit on refresh failure applies to BOTH output modes — agents
     # gating on process status need the signal whether they parse JSON or

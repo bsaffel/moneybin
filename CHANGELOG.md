@@ -522,6 +522,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **A merge whose rebuild failed, or an accept the reconciliation refused, now
+  exits non-zero.** `accounts links set`, `transactions matches set`, and
+  `transactions review --confirm/--confirm-all` printed a warning and exited
+  `0`, while `refresh` exits `1` on the identical failure. A script or agent
+  gating on exit status could not tell that a merge is still invisible in
+  `core.dim_accounts`, or that the status it asked for is not the one that
+  committed, without scraping stderr. All three now exit `1`; a `--confirm X
+  --reject Y` invocation still performs both before reporting (#388).
 - **The account-link queue now shows how much of the ledger already matches,
   instead of a confidence score that never moved.** Every proposal in
   `accounts links pending` carried `0.5` or `0.4` — a constant picked by which
@@ -920,7 +928,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   committed, and an accepted decision is refused on a retry — so the merged
   account's duplicates would have waited for an unrelated refresh with nothing
   reporting it. That refresh is now best-effort and logs what it lost; a stale
-  gauge is the cheaper loss.
+  gauge is the cheaper loss. The retirement counter is best-effort for the same
+  reason and by the same mechanism: every one of its three emissions stands
+  after the reversal it counts is already durable, so a raise there reports
+  failure for committed work a retry will not replay.
 
   The match pass also retires transfers a dedup collapse invalidates.
   Deduplication is blocked on `a.account_id = b.account_id`, so two rows each
@@ -1020,6 +1031,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reversed an accepted transfer while finding nothing printed "No new matches
   found". The two counts are independent: the reconciliation fires whatever the
   tiers return.
+
+  That disclosure no longer depends on the output mode. `moneybin sync pull`
+  and `moneybin import inbox` placed the warning inside their text branch, so
+  `--output json` — the mode an unattended caller actually uses — dropped the
+  sentence naming `system audit undo` while still carrying the raw count. Both
+  now warn ahead of either branch, as `moneybin refresh` and `gsheet pull`
+  already did. `refresh_run`'s registered description had the same shape of
+  gap: the prose an agent reads at tool-selection time still said "No revert
+  path" while the tool could reverse a transfer, and `import_files`,
+  `import_inbox_sync`, and `sync_pull` never mentioned the reversal at all.
 
   The retirement notices no longer claim the triggering action caused the
   invalidation. The pass walks every accepted transfer, so a count can include

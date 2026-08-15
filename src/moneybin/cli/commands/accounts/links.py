@@ -184,6 +184,13 @@ def links_set(
     )
     logger.info(f"✅ Decision {decision_id[:12]}... → {action}")
     _report_rematch(rematch)
+    if rematch is not None and rematch.error is not None:
+        # `refresh_command` exits 1 on this identical RefreshResult.error, and
+        # cli.md reads 1 as "operation ran and failed". The merge did commit,
+        # but core.dim_accounts is kind FULL: until an apply lands it still
+        # lists both accounts, so a script or agent gating on status would
+        # record a collapse that is nowhere in the user's ledger.
+        raise typer.Exit(1)
 
 
 def _report_rematch(rematch: RefreshResult | None) -> None:

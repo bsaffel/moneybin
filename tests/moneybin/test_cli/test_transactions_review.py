@@ -149,10 +149,59 @@ def test_confirm_all_reports_only_the_rows_that_stayed_accepted(
 
     result = runner.invoke(app, ["review", "--type", "matches", "--confirm-all"])
 
-    assert result.exit_code == 0
+    # Part of what the user asked for did not commit, so the exit code carries
+    # it: --confirm-all is the surface most likely to be run unattended.
+    assert result.exit_code == 1
     assert "Accepted 2 pending match(es)" in result.output
     assert "Accepted 3" not in result.output
     assert "1 of them did not stand" in result.output
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_targeted_confirm_exits_non_zero_when_the_accept_was_reversed(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """The single-id path owes the same exit code as the bulk path above.
+
+    `review --confirm <id>` and `matches set --status accepted` reach the same
+    refusal through the same reconciliation, so a caller cannot be left to
+    discover on one surface what the other reports in its status.
+    """
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status="reversed", transfers_retired=1
+    )
+
+    result = runner.invoke(
+        app, ["review", "--type", "matches", "--confirm", "tx_stale00001"]
+    )
+
+    assert result.exit_code == 1
+    assert "was not accepted" in result.output
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_targeted_confirm_exits_zero_when_the_accept_stood(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """Negative twin: an accept that committed keeps the success status."""
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status="accepted", transfers_retired=0
+    )
+
+    result = runner.invoke(
+        app, ["review", "--type", "matches", "--confirm", "tx_good000001"]
+    )
+
+    assert result.exit_code == 0
+    assert "Accepted match" in result.output
 
 
 @patch("moneybin.services.matching_service.MatchingService")
