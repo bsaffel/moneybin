@@ -6,6 +6,7 @@ from typing import Any
 
 from moneybin.connectors.sync_models import (
     DeviceAuthorizationChallenge,
+    SyncAccount,
     SyncDataResponse,
     SyncHolding,
     SyncInvestmentTransaction,
@@ -34,6 +35,77 @@ def test_device_authorization_challenge_defaults_interval_to_five_seconds() -> N
     })
 
     assert challenge.interval == 5.0
+
+
+def test_account_keeps_persistent_account_id_and_name() -> None:
+    """The broker sends both; an undeclared field is destroyed, not carried.
+
+    Pydantic's default ``extra='ignore'`` drops an unmodelled key at
+    ``model_validate`` with no error and no log line, so a field the broker
+    adds reaches nothing downstream until the client declares it. That is the
+    exact mechanism by which ``persistent_account_id`` — Plaid's
+    cross-connection account identity — reached nothing downstream between the
+    first Plaid sync release (#134) and the change that declared it. Asserting
+    the wire keys survive is the only signal this layer offers.
+    """
+    account = SyncAccount.model_validate({
+        "account_id": "acc_1",
+        "persistent_account_id": "ppa_survives_reconnect",
+        "account_type": "credit",
+        "account_subtype": "credit card",
+        "name": "Freedom Unlimited",
+        "official_name": "Ultimate Rewards®",
+        "mask": "1234",
+    })
+
+    assert account.persistent_account_id == "ppa_survives_reconnect"
+    assert account.name == "Freedom Unlimited"
+
+
+def test_account_without_the_new_fields_still_validates() -> None:
+    """A broker predating the field must not start failing validation."""
+    account = SyncAccount.model_validate({"account_id": "acc_1"})
+
+    assert account.persistent_account_id is None
+    assert account.name is None
+
+
+def test_account_blank_identity_fields_normalise_to_none() -> None:
+    """A blank must not reach the resolver truthy.
+
+    ``persistent_account_id`` becomes a ``persistent_token`` strong ref, which
+    is scoped globally and auto-adopts without review. A whitespace-only value
+    is truthy in Python, so two unrelated accounts carrying one would merge
+    into a single ledger silently. Nothing on the wire promises an empty field
+    arrives as null rather than ``""`` — ``prep.stg_plaid__accounts`` wraps
+    every free-text Plaid column in ``NULLIF(TRIM(...), '')`` for that reason.
+    """
+    account = SyncAccount.model_validate({
+        "account_id": "acc_1",
+        "persistent_account_id": "   ",
+        "name": "",
+    })
+
+    assert account.persistent_account_id is None
+    assert account.name is None
+
+
+def test_account_blank_display_fields_normalise_to_none() -> None:
+    """A blank must not win the display fallback either.
+
+    ``_resolve_accounts`` picks ``name or official_name or "<institution>
+    account"``, so a whitespace-only string short-circuits the chain and the
+    account surfaces under a name that renders empty. ``institution_name``
+    reaches the resolver's own ``institution`` field by the same route.
+    """
+    account = SyncAccount.model_validate({
+        "account_id": "acc_1",
+        "official_name": "   ",
+        "institution_name": "",
+    })
+
+    assert account.official_name is None
+    assert account.institution_name is None
 
 
 def test_payload_without_investment_arrays_validates() -> None:

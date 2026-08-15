@@ -3,15 +3,19 @@
 # Amounts use Plaid convention (positive = expense).
 accounts:
   - account_id: acc_chase_check
+    persistent_account_id: ppa_chase_check_0001
     account_type: depository
     account_subtype: checking
     institution_name: Chase
+    name: Chase Checking
     official_name: Total Checking
     mask: "1234"
   - account_id: acc_chase_save
+    persistent_account_id: ppa_chase_save_0002
     account_type: depository
     account_subtype: savings
     institution_name: Chase
+    name: Chase Savings
     official_name: Total Savings
     mask: "5678"
 
