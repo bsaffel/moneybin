@@ -440,6 +440,17 @@ Numbered, testable. Tagged by phase.
     only the newest bound would plan a window starting after today and drop it,
     stranding that history permanently.
 
+    Both directions across the provider boundary are bounded, because both carry
+    untrusted values. Outbound, `currency_code` is source data — a CSV whose
+    columns shifted by one puts an account label in it — so a code that fails the
+    ISO-4217 shape gate is skipped rather than sent, satisfying Requirement 11 by
+    construction instead of by convention; the skip is counted, never logged by
+    value. Inbound, a response date outside the requested window (allowing
+    Requirement 13's bounded backward resolution at the start bound) is discarded
+    rather than cached, because `raw.exchange_rates` is append-only and this
+    requirement reads its `MIN`/`MAX` as coverage: one stray date moves a bound
+    permanently, and the pair is then either never extended or never reopened.
+
     Placement is a correctness constraint, not a preference. A report read opens
     the database read-only; fetching there would need the exclusive per-profile
     writer lock behind a command that looks read-only, and would fail whenever a

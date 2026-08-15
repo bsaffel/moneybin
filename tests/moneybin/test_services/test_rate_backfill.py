@@ -14,7 +14,7 @@ missing coverage and re-fetched forever.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -22,6 +22,7 @@ import pytest
 from moneybin.connectors.rates.errors import RateFeedUnreachableError
 from moneybin.connectors.rates.protocol import RateObservation
 from moneybin.database import Database
+from moneybin.services.currency_service import MAX_BACKWARD_RESOLUTION_DAYS
 from moneybin.services.rate_backfill import (
     RateWindow,
     plan_rate_backfill,
@@ -343,6 +344,34 @@ def test_a_newly_implied_earlier_date_reopens_the_window(db: Database) -> None:
     )
 
 
+def test_a_malformed_currency_code_yields_no_window(db: Database) -> None:
+    """`currency_code` is untrusted source data, so it cannot address a provider.
+
+    A CSV whose columns shifted by one puts whatever that cell held into
+    `currency_code`, and the planner reads those values straight out of
+    `core.*`. Left unchecked the value becomes the `base` parameter of an
+    outbound request to the rate provider — a value the user never typed,
+    leaving the machine — and nothing the provider can answer will ever cover
+    the pair, so the same request repeats on every refresh forever.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="Chase Checking 1098")
+
+    assert plan_rate_backfill(db, home_currency="USD", through=_TODAY) == ()
+
+
+def test_a_malformed_home_currency_plans_nothing(db: Database) -> None:
+    """The home currency is the other half of every pair the planner emits.
+
+    `ProfileSettingsRepo.set_home_currency` validates on the way in, so this is
+    reachable only by writing `app.profile_settings` through the documented
+    operator bypass. It is still cheaper to refuse the pair than to spend one
+    outbound request per foreign currency on a quote nothing can answer.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+
+    assert plan_rate_backfill(db, home_currency="dollars", through=_TODAY) == ()
+
+
 # ------------------------------ running the plan ------------------------------
 
 
@@ -381,6 +410,25 @@ class _SilentAdapter(_SpanAdapter):
     ) -> tuple[RateObservation, ...]:
         self.ranges.append((from_currency, to_currency, start, end))
         return ()
+
+
+class _DatedAdapter(_SpanAdapter):
+    """Answers every window with rates on exactly the dates it was built with."""
+
+    def __init__(self, *days: date) -> None:
+        super().__init__()
+        self._days = days
+
+    def fetch_range(
+        self, from_currency: str, to_currency: str, start: date, end: date
+    ) -> tuple[RateObservation, ...]:
+        self.ranges.append((from_currency, to_currency, start, end))
+        return tuple(
+            RateObservation(
+                from_currency, to_currency, day, Decimal("1.10"), self.source_type
+            )
+            for day in self._days
+        )
 
 
 class _FlakyAdapter(_SpanAdapter):
@@ -444,3 +492,68 @@ def test_nothing_to_backfill_never_touches_the_provider(db: Database) -> None:
 
     assert adapter.ranges == []
     assert result.rates_written == 0
+
+
+def test_a_malformed_code_does_not_cost_the_currencies_beside_it(
+    db: Database,
+) -> None:
+    """One unusable cell is not a reason to skip the profile's real currencies."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="Chase Checking 1098")
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _SpanAdapter()
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert adapter.ranges == [("EUR", "USD", date(2026, 3, 10), _TODAY)]
+    assert result.rates_written == 1
+
+
+def test_a_rate_dated_after_the_window_is_not_stored(db: Database) -> None:
+    """A date past `end` corrupts the coverage bound that plans the next window.
+
+    `raw.exchange_rates` is append-only and the planner reads its span, so one
+    future-dated row pushes `newest` past `through` permanently: every later
+    refresh plans a window starting after the end date, drops it, and the pair
+    is never extended again.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _DatedAdapter(_TODAY + timedelta(days=1))
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.rates_written == 0
+
+
+def test_a_rate_dated_far_before_the_window_is_not_stored(db: Database) -> None:
+    """The other coverage bound, corrupted the other way.
+
+    A row dated well before the window drags `oldest` back with it, so the
+    `earliest < oldest` branch that reopens a window for newly implied history
+    stops firing and that history is stranded.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _DatedAdapter(
+        date(2026, 3, 10) - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS + 1)
+    )
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.rates_written == 0
+
+
+def test_a_rate_resolved_back_to_the_last_publication_day_is_kept(
+    db: Database,
+) -> None:
+    """The bound must not reject what the provider legitimately does.
+
+    A window opening on a Sunday is answered with Friday's rate — the same
+    bounded backward resolution `CurrencyService._fetch` already accepts for a
+    single date. This is the negative control on the two bounds above: it
+    passes before them and must keep passing after.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _DatedAdapter(date(2026, 3, 10) - timedelta(days=2))
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.rates_written == 1

@@ -344,7 +344,9 @@ FX_RATE_BACKFILL_PAIRS_TOTAL = Counter(
     # 'failed' rising against flat 'planned' means every refresh is now leaving
     # conversion gaps that a report will surface as a hard error later, far
     # from the outage that caused them.
-    "Exchange-rate backfill pairs by outcome (planned / failed)",
+    # 'unusable' is counted at plan time, before a pair exists to call: the
+    # currency came out of `core.*` in a shape no provider can address.
+    "Exchange-rate backfill pairs by outcome (planned / failed / unusable)",
     ["outcome"],
 )
 

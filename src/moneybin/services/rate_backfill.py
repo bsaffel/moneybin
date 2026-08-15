@@ -10,14 +10,20 @@ fail whenever a sync held it.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from moneybin.connectors.feed_errors import FeedError
-from moneybin.connectors.rates.protocol import RateAdapter
+from moneybin.connectors.rates.protocol import RateAdapter, RateObservation
 from moneybin.database import Database
 from moneybin.metrics.registry import FX_RATE_BACKFILL_PAIRS_TOTAL
-from moneybin.services.currency_service import CurrencyService, canonical_currency
+from moneybin.services._validators import validate_currency_code
+from moneybin.services.currency_service import (
+    MAX_BACKWARD_RESOLUTION_DAYS,
+    CurrencyService,
+    canonical_currency,
+)
 from moneybin.tables import (
     DIM_HOLDINGS,
     EXCHANGE_RATES,
@@ -100,7 +106,13 @@ def run_rate_backfill(
             failed.append(pair)
             FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="failed").inc()
             continue
-        written += service.store_observations(observations)
+        answered = _within_window(observations, window)
+        if len(answered) != len(observations):
+            logger.warning(
+                f"Discarded {len(observations) - len(answered)} out-of-window "
+                f"rate(s) for {pair}"
+            )
+        written += service.store_observations(answered)
 
     logger.info(
         f"Rate backfill: {len(windows)} pair(s) planned, {written} rate(s) written, "
@@ -113,7 +125,13 @@ def plan_rate_backfill(
     db: Database, *, home_currency: str, through: date
 ) -> tuple[RateWindow, ...]:
     """The rate windows this profile's own rows imply, newest bound at ``through``."""
-    home = canonical_currency(home_currency)
+    home = _usable_currency(home_currency)
+    if home is None:
+        # The value never rides the log line, here or below: `currency_code` is
+        # untrusted source data, so whatever a mis-mapped cell held is what a
+        # malformed code contains.
+        logger.warning("Rate backfill skipped: the home currency is not a valid code")
+        return ()
     # Coverage is the span `[covered.oldest, covered.newest]`, and both bounds
     # are load-bearing. `newest + 1` is what keeps a refresh from re-requesting
     # a span it already holds; `oldest` is what keeps a *newly implied* earlier
@@ -179,18 +197,80 @@ def plan_rate_backfill(
         """,  # noqa: S608  # TableRef + parameterized values
         [through, home, home],
     ).fetchall()
-    return tuple(
-        RateWindow(
-            from_currency=canonical_currency(str(row[0])),
-            to_currency=home,
-            start=row[1],
-            end=through,
-        )
-        for row in rows
+    windows: list[RateWindow] = []
+    unusable = 0
+    for row in rows:
+        from_currency = _usable_currency(str(row[0]))
+        if from_currency is None:
+            # `currency_code` is whatever the source file put there, and this is
+            # the last point before it becomes the `base` parameter of an
+            # outbound request. Skipping the pair rather than raising keeps one
+            # bad cell from costing the currencies beside it; nothing the
+            # provider could answer would ever cover the pair anyway, so the
+            # request would repeat on every refresh.
+            unusable += 1
+            continue
         # A pair cached through `through` needs nothing. Dropping it here rather
         # than letting it out as a backwards range matters because the provider
         # answers a reversed range 404 — the same status it uses for a currency
         # it does not publish — so a fully-covered pair would be reported as an
         # unsupported one, every refresh, forever.
-        if row[1] <= through
+        if row[1] > through:
+            continue
+        windows.append(
+            RateWindow(
+                from_currency=from_currency,
+                to_currency=home,
+                start=row[1],
+                end=through,
+            )
+        )
+    if unusable:
+        logger.warning(f"Rate backfill skipped {unusable} unusable currency code(s)")
+        FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="unusable").inc(unusable)
+    return tuple(windows)
+
+
+def _usable_currency(value: str) -> str | None:
+    """The canonical form of ``value``, or ``None`` if it cannot name a currency.
+
+    Shares ``CurrencyService``'s canonicalization and shape gate rather than
+    re-deriving one: a code the service would refuse must not reach a provider
+    by a different route, and a code it would accept under one spelling must not
+    be planned under another.
+    """
+    candidate = canonical_currency(value)
+    try:
+        validate_currency_code(candidate)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _within_window(
+    observations: Sequence[RateObservation], window: RateWindow
+) -> tuple[RateObservation, ...]:
+    """The observations that answer ``window``, dropping the ones that do not.
+
+    Bounded here rather than in an adapter for the reason
+    ``CurrencyService._fetch`` gives for its own bound: the window belongs to
+    the Protocol, not to one provider's response shape, so one guard covers
+    every adapter instead of each having to remember its own.
+
+    What it protects is specific. ``raw.exchange_rates`` is append-only and the
+    planner reads its ``MIN``/``MAX`` as the coverage span, so one stray date
+    moves a bound permanently: a future-dated row pushes ``newest`` past
+    ``through`` and the pair is never extended again, while a far-past row drags
+    ``oldest`` back and the branch that reopens a window for newly implied
+    history stops firing.
+
+    The lower bound allows the same publication-day slack a single fetch does —
+    a window opening on a closed market is legitimately answered with the last
+    trading day before it.
+    """
+    earliest = window.start - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
+    return tuple(
+        observation
+        for observation in observations
+        if earliest <= observation.rate_date <= window.end
     )
