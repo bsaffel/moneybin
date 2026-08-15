@@ -31,7 +31,7 @@ from pydantic import BeforeValidator, Field, JsonValue
 from moneybin import error_codes
 from moneybin.config import get_settings
 from moneybin.database import get_database
-from moneybin.errors import RecoveryAction, UserError
+from moneybin.errors import RecoveryAction, UserError, exception_origin
 from moneybin.mcp._registration import register
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
@@ -898,7 +898,15 @@ def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
             # paths, and column or row values verbatim — the wrong side of an
             # MCP boundary (`.claude/rules/security.md`). The counts are counts,
             # so they cross.
-            logger.error(f"Matching failed during matches_run: {exc}", exc_info=True)
+            # Frames, not the message: a traceback's last line is
+            # `<Type>: <str(exc)>`, so `exc_info` puts the same binder text and
+            # row values the envelope withholds into the log — which AGENTS.md
+            # covers with no local carve-out. Every other failure log in the
+            # matcher path reads this way.
+            logger.error(
+                f"Matching failed during matches_run at "
+                f"{exception_origin(exc.__cause__ or exc)}"
+            )
             raise UserError(
                 f"Matching failed after {' and '.join(committed)}; "
                 "see the local logs for the cause",

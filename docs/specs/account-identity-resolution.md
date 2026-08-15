@@ -559,6 +559,15 @@ Guard-2 free-text resolution):
   never `set()`, but because proposing new links is not this trigger's job and
   would re-examine the accounts the merge just collapsed.
 
+  **The pass carries the accepting surface's actor.** `refresh` takes an `actor`
+  and hands it to `MatchingService.run()`; `rematch_after_merge()` passes
+  `AccountLinksService`'s own, so decisions written because a user accepted a
+  merge audit as `cli`/`mcp`. `app-integrity-invariant.md` binds matcher-created
+  decisions to the surface that caused them and reserves `system` for the
+  automated callers it names — `moneybin refresh`, `refresh_run`, the scenario
+  runner — which keep `refresh`'s default. Without this the re-match is the one
+  matcher path where a user's decision records as the pipeline's own.
+
   `transform` is included even though `prep.int_transactions__{unioned,matched,
   merged}` and `core.fct_transactions` are all `kind VIEW` and collapse on the
   next read. `core.dim_accounts` is `kind FULL`, and the staging models it is

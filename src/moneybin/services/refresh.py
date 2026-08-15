@@ -140,7 +140,9 @@ def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
     return frozenset(CANONICAL_STEPS) if steps is None else frozenset(steps)
 
 
-def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
+def refresh(
+    db: Database, *, steps: list[str] | None = None, actor: str = "system"
+) -> RefreshResult:
     """Run the post-load pipeline through the identity backfill stage.
 
     When ``steps`` is None (default), the full cascade runs — same behavior
@@ -161,6 +163,13 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         db: Database handle to run against.
         steps: Subset of ``("gsheet", "match", "transform", "categorize",
             "identity")`` to run. Defaults to every stage when None.
+        actor: Audit actor for decisions the match step writes.
+            ``app-integrity-invariant.md`` binds those to the surface that
+            caused them, and a refresh has two kinds of caller: the automated
+            ones it names (``moneybin refresh``, ``refresh_run``, the scenario
+            runner), which stay ``"system"``, and a surface re-matching because
+            a user just decided something — the post-merge re-match — whose
+            decisions are that user's work and say so.
 
     Raises:
         UserError(code=error_codes.REFRESH_UNKNOWN_STEP): if any element of ``steps``
@@ -233,7 +242,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     matching_skipped = False
     if "match" in requested:
         try:
-            match_result = MatchingService(db).run()
+            match_result = MatchingService(db).run(actor=actor)
             auto_merged = match_result.auto_merged
             pending_review = match_result.pending_review
             pending_transfers = match_result.pending_transfers
@@ -251,12 +260,11 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             # below on purpose — a *late* CatalogException reaches here wrapped,
             # and calling it a skipped step would claim nothing was examined
             # after the tiers had already written decisions.
-            matching_error = str(exc)
+            matching_error = _step_error(exc, step="Matching")
             auto_merged = exc.partial.auto_merged
             pending_review = exc.partial.pending_review
             pending_transfers = exc.partial.pending_transfers
             transfers_retired = exc.partial.transfers_retired
-            logger.error(f"Matching failed during refresh: {exc}", exc_info=True)
         except (duckdb.CatalogException, duckdb.BinderException):
             # Views not built yet (first load precedes SQLMesh apply) — an
             # expected precondition, not a crash. Stay quiet; no error surfaced
@@ -268,8 +276,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             matching_skipped = True
             logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
         except Exception as exc:  # noqa: BLE001 — surface a real crash; never abort the pipeline
-            matching_error = str(exc)
-            logger.error(f"Matching failed during refresh: {exc}", exc_info=True)
+            matching_error = _step_error(exc, step="Matching")
 
     if "transform" not in requested:
         # Caller asked for a partial cascade that omits transform. Return
@@ -327,6 +334,36 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         matching_skipped=matching_skipped,
         transfers_retired=transfers_retired,
     )
+
+
+def _step_error(exc: Exception, *, step: str) -> str:
+    """What a crashed best-effort step is allowed to say, and log.
+
+    ``matching_error`` and ``categorization_error`` are ``DataClass.DESCRIPTION``
+    fields on ``RefreshRunPayload``: they reach the model provider through
+    ``refresh_run`` and land in CLI JSON. An exception's message is whatever
+    raised it — DuckDB binder text, file paths, row values — and for
+    ``MatchRunError`` it *is* the cause verbatim, because the carrier passes
+    ``str(cause)`` to ``Exception``. So the returned string comes from
+    ``classify_user_error``, the same boundary the direct matcher surfaces use,
+    and a type it does not recognize says nothing beyond where to look.
+
+    The log gets the frame chain rather than the message for the reason
+    ``exception_origin`` documents: a traceback's last line is the message, and
+    AGENTS.md's no-financial-data rule has no local-log carve-out.
+    """
+    from moneybin.errors import (  # noqa: PLC0415 — errors<->services cycle
+        classify_user_error,
+        exception_origin,
+    )
+
+    logger.error(
+        f"{step} failed during refresh at {exception_origin(exc.__cause__ or exc)}"
+    )
+    classified = classify_user_error(exc)
+    if classified is not None:
+        return classified.message
+    return f"{step} failed — the cause is in the local log"
 
 
 def _run_gsheet_step(db: Database) -> list[Any]:
@@ -406,8 +443,7 @@ def _run_categorize_step(db: Database) -> str | None:
         logger.debug("Categorization skipped (tables may not exist yet)", exc_info=True)
         return None
     except Exception as exc:  # noqa: BLE001 — surface a real crash; never abort the pipeline
-        logger.error(f"Categorization failed during refresh: {exc}", exc_info=True)
-        return str(exc)
+        return _step_error(exc, step="Categorization")
     finally:
         # "attempted", not "finished": this fires on every exit path,
         # including the missing-table skip, where the step didn't complete.

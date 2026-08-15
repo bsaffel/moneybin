@@ -721,7 +721,7 @@ def test_set_accept_reruns_the_matcher(
     """
     seeded.set(_DEC1, target_account_id=_CAND_A)
 
-    rematch.assert_called_once_with(db, steps=["match", "transform"])
+    rematch.assert_called_once_with(db, steps=["match", "transform"], actor="cli")
 
 
 def test_set_accept_carries_a_rejected_pair_onto_the_survivor(
@@ -1599,3 +1599,24 @@ def test_set_accept_rejects_proposals_where_provisional_is_candidate(
     assert _decision_status(db, "qp_dec000001") == "rejected"
     # The unrelated prov2→cand_a proposal (neither side is prov1) stays pending.
     assert _decision_status(db, _DEC3) == "pending"
+
+
+def test_the_rematch_attributes_its_decisions_to_the_accepting_surface(
+    db: Database, rematch: MagicMock
+) -> None:
+    """A user accepting a link is not the automated caller ``refresh`` defaults to.
+
+    ``app-integrity-invariant.md`` binds matcher-created decisions to the surface
+    that caused them, and this pass exists only because someone accepted a merge.
+    Left to ``refresh``'s default the decisions it writes would audit as
+    ``system``, which reads as the pipeline having decided on its own.
+
+    Asserted through a service built with ``"mcp"`` rather than the module's
+    ``"cli"`` default so a value arriving from anywhere else — the service
+    default, ``refresh``'s own — fails the assertion.
+    """
+    create_core_tables(db)
+
+    AccountLinksService(db, actor="mcp").rematch_after_merge()
+
+    assert rematch.call_args.kwargs["actor"] == "mcp"

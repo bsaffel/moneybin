@@ -1005,6 +1005,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hardened against in this same change. Both now exit through the `❌` + code-1
   path with a message MoneyBin wrote; the frame chain, not the message, goes to
   the log.
+
+  `refresh` was the third surface holding the same cause, and it held it in a
+  returned field rather than a traceback: `matching_error` and
+  `categorization_error` were assigned `str(exc)`, and both are declared
+  `DESCRIPTION` on `RefreshRunPayload` — so `refresh_run` handed the raw text to
+  the model provider and `moneybin refresh --output json` wrote it to stdout.
+  All three crash branches now return the classifier's wording, the same
+  boundary the matcher commands use, and a type it does not recognize returns a
+  generic line naming the step. The counts beside the error are unchanged: they
+  were always the disclosable half.
+
+  `transactions_matches_run` withheld the cause from its envelope and then wrote
+  it to the log, message and full traceback, one line above. Nine other failure
+  logs on the matcher path record the frame chain instead — a traceback's last
+  line is `<Type>: <str(exc)>`, so `exc_info` re-admits exactly what the
+  envelope refused. It now matches them.
+
+  The re-match a merge triggers now audits as the surface that triggered it.
+  `refresh` ran the match step with no actor, so decisions written because a
+  user accepted a link recorded `system` — the value
+  `app-integrity-invariant.md` reserves for automated callers. `moneybin
+  refresh`, `refresh_run`, and the scenario runner still record `system`; the
+  post-merge pass records `cli` or `mcp`, so audit history stops attributing a
+  user's merge to the pipeline.
 - **An accepted merge no longer strands the match decisions made under the old
   account, which could silently reverse a rejection.** Accepting a link
   re-points `app.account_links`, but a row in `app.match_decisions` stores the

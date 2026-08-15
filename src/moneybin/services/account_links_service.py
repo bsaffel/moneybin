@@ -698,6 +698,12 @@ class AccountLinksService:
         invoke this themselves after their own commit — ``set`` returns early
         under ``in_outer_txn`` and never reaches it.
 
+        The pass carries ``self._actor`` rather than letting ``refresh`` default:
+        the decisions it writes exist because a user accepted a link on that
+        surface, and ``app-integrity-invariant.md`` binds matcher-created
+        decisions to the surface that caused them. ``system`` is for the
+        automated callers that spec names, which this is not.
+
         ``transfers_retired`` sums the two ways this merge can invalidate an
         accepted transfer: its two legs turning out to be one transaction and
         its two accounts turning out to be one account. The first is the
@@ -724,5 +730,5 @@ class AccountLinksService:
         # of those lands, and a counter cannot be rolled back with it.
         if collapsed:
             TRANSFER_RETIREMENTS_TOTAL.labels(cause="account_merge").inc(collapsed)
-        result = refresh(self._db, steps=["match", "transform"])
+        result = refresh(self._db, steps=["match", "transform"], actor=self._actor)
         return replace(result, transfers_retired=collapsed + result.transfers_retired)
