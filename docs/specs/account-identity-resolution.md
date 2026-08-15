@@ -222,8 +222,10 @@ the existing repo-enforced-invariant pattern):**
   validated routing number, matching the scope emitted by OFX. Issuer-only,
   masked, suffix-only, bridge-authored, and otherwise unproven captures never
   produce that ref. A digit-free mask such as `XXXX`, `****`, or grouped
-  equivalents is not account-identity evidence at all: the importer treats it
-  as absent identity and stops for explicit account binding before loading the
+  equivalents is not account-identity evidence at all. The PDF identity
+  derivation primitive owns that classification and returns no usable identity
+  evidence; import orchestration consumes its verdict without re-parsing the
+  captured token, then stops for explicit account binding before loading the
   statement. The former
   issuer-plus-last-four PDF derivation is consulted only as
   `legacy_pdf_identity` review evidence and does not suppress current candidates.
