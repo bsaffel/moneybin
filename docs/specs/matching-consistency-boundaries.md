@@ -2,6 +2,7 @@
 
 > Last updated: 2026-08-15
 > Status: ready
+> Address: M1B.4 (Ingestion Core — matching consistency boundaries)
 > Type: Architecture
 > Owns: executable ownership of match-decision consequences and dedup-candidate
 > planning semantics
@@ -309,12 +310,16 @@ output.
 - Existing CLI/MCP requests and responses remain compatible.
 - Existing metrics retain their names and labels.
 - Existing matching order and persisted decision shapes remain unchanged.
+- The `doctor` invariant keeps its name, status levels, privacy posture, and
+  recovery commands. Its fresh N-way-cluster pair count becomes the exact
+  number of decisions the matcher would propose (`N-1`) instead of the current
+  pre-assignment upper bound.
 - The architecture can be reverted one delivery slice at a time because each
   slice preserves behavior and schema.
 
-Behavioral parity is measured against the post-PR-#388 baseline. An observed
-behavior change during extraction is a bug unless separately designed and
-approved.
+Matching mutation parity is measured against the post-PR-#388 baseline. Apart
+from the named diagnostic-count correction above, an observed behavior change
+during extraction is a bug unless separately designed and approved.
 
 ## Observability
 
