@@ -220,11 +220,12 @@ jobs:
       # than double any other job — so it, not Scenarios, set overall PR time.
       # 4-way brings it under the ~5 min Scenarios floor.
       #
-      # NOTE: `make update-test-durations` records `unit or e2e or scenarios`
-      # only, so these tests have no entry in .test_durations yet and pytest-split
-      # falls back to a count-based split. That already wins here (integration is
-      # the long pole by wall-clock, not by per-test variance), and the marker has
-      # been added to the durations target so the next refresh balances by time.
+      # NOTE: shard 4 runs ~35% long no matter what .test_durations says.
+      # pytest-split balances the *sum* of test durations, but --dist=loadscope
+      # pins a whole module to one of the runner's 2 workers, and
+      # test_stg_plaid_investments.py on its own exceeds this shard's per-worker
+      # share. Refreshing durations can't move it; splitting that module or
+      # cutting its ~8s function-scoped SQLMesh setup are the levers left.
       - name: Test
         run: |
           uv run pytest tests/ -m integration -v \
