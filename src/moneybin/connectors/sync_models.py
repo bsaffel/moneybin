@@ -22,10 +22,23 @@ from pydantic import (
 
 
 def _blank_to_none(value: object) -> object:
-    """A currency code that is empty or whitespace-only means absent, not ''."""
+    """An empty or whitespace-only string means absent, not ''."""
     if isinstance(value, str) and not value.strip():
         return None
     return value
+
+
+BlankToNone = Annotated[str | None, BeforeValidator(_blank_to_none)]
+"""An optional wire string whose blanks normalise to None.
+
+Nothing upstream promises a field the institution left empty arrives as JSON
+null rather than ``""`` or ``"  "`` — ``prep.stg_plaid__accounts`` wraps every
+free-text Plaid column in ``NULLIF(TRIM(...), '')`` for that reason, and
+``SourceAccount`` canonicalises ``mask`` for it. A blank must not reach the
+resolver truthy: ``persistent_token`` is a globally-scoped strong ref that
+auto-adopts with no review, so one whitespace token shared by two institutions'
+accounts merges their ledgers silently.
+"""
 
 
 CurrencyCode = Annotated[str | None, BeforeValidator(_blank_to_none)]
@@ -113,12 +126,22 @@ class SyncAckResponse(BaseModel):
 
 
 class SyncAccount(BaseModel):
-    """One account entry in GET /sync/data response."""
+    """One account entry in GET /sync/data response.
+
+    Every field the broker sends must be declared here. Pydantic's default
+    ``extra='ignore'`` destroys an undeclared key at validation with no error
+    and no log line, so a field this model forgets is indistinguishable from
+    one the broker never sent. That is how ``persistent_account_id`` — the key
+    that survives a Plaid relink — reached nothing downstream between the first
+    Plaid sync release (#134) and the change that declared it here.
+    """
 
     account_id: str
+    persistent_account_id: BlankToNone = None
     account_type: str | None = None
     account_subtype: str | None = None
     institution_name: str | None = None
+    name: BlankToNone = None
     official_name: str | None = None
     mask: str | None = Field(default=None, max_length=8)
 

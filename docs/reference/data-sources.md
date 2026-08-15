@@ -206,7 +206,7 @@ Live banking sync brokered through `moneybin-sync`. Implementation: `src/moneybi
 
 **What's pulled per sync:**
 
-- **Accounts** (`raw.plaid_accounts`): `account_id`, `account_type`, `account_subtype`, `institution_name`, `official_name`, `mask` (last-4).
+- **Accounts** (`raw.plaid_accounts`): `account_id`, `persistent_account_id`, `account_type`, `account_subtype`, `institution_name`, `name`, `official_name`, `mask` (last-4). `persistent_account_id` is the id that survives a relink where `account_id` does not; Plaid populates it only for depository accounts at institutions using tokenized account numbers (Chase, PNC, US Bank), so it is NULL elsewhere — and on every row synced before MoneyBin captured it.
 - **Transactions** (`raw.plaid_transactions`): `transaction_id`, `account_id`, `transaction_date`, `amount`, `description`, `merchant_name`, `category`, `pending`, `iso_currency_code`. Transactions carry the ISO field only — `unofficial_currency_code` is captured for balances, securities, investment transactions, and holdings, but not here.
 - **Balances** (`raw.plaid_balances`): `account_id`, `balance_date`, `current_balance`, `available_balance`, `iso_currency_code` / `unofficial_currency_code`.
 - **Removed transactions:** Plaid's incremental sync emits a separate `removed_transactions` list; corresponding rows are deleted from `raw.plaid_transactions` and surfaced as `transactions_removed` in the `PullResult`.

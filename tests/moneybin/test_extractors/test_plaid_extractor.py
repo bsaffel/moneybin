@@ -44,6 +44,32 @@ def test_loader_writes_accounts(db: Database, sync_data: SyncDataResponse) -> No
     )
 
 
+def test_loader_writes_persistent_account_id_and_name(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """Both columns must reach raw, or the wire model's copy dies at the loader.
+
+    ``_ACCOUNTS_SCHEMA`` selects which keys of ``SyncAccount.model_dump()``
+    become columns, so declaring the fields on the model is only half the path
+    — an unlisted key is dropped again here, just as silently. ``raw`` is where
+    a later backfill would have to read them from, and nothing upstream retains
+    a copy once the pull is acked.
+    """
+    loader = PlaidExtractor(db)
+    loader.load(sync_data, job_id=sync_data.metadata.job_id)
+
+    rows = db.execute(
+        """
+        SELECT account_id, persistent_account_id, name, official_name
+        FROM raw.plaid_accounts ORDER BY account_id
+        """
+    ).fetchall()
+    assert rows == [
+        ("acc_chase_check", "ppa_chase_check_0001", "Chase Checking", "Total Checking"),
+        ("acc_chase_save", "ppa_chase_save_0002", "Chase Savings", "Total Savings"),
+    ]
+
+
 def test_loader_writes_transactions_preserving_plaid_sign(
     db: Database, sync_data: SyncDataResponse
 ) -> None:
