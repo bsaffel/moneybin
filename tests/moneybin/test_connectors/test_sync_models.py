@@ -43,10 +43,10 @@ def test_account_keeps_persistent_account_id_and_name() -> None:
     Pydantic's default ``extra='ignore'`` drops an unmodelled key at
     ``model_validate`` with no error and no log line, so a field the broker
     adds reaches nothing downstream until the client declares it. That is the
-    exact mechanism that discarded ``persistent_account_id`` — Plaid's
-    cross-connection account identity — for seven weeks while the broker was
-    sending it. Asserting the wire keys survive is the only signal this layer
-    offers.
+    exact mechanism by which ``persistent_account_id`` — Plaid's
+    cross-connection account identity — reached nothing downstream between the
+    first Plaid sync release (#134) and the change that declared it. Asserting
+    the wire keys survive is the only signal this layer offers.
     """
     account = SyncAccount.model_validate({
         "account_id": "acc_1",
@@ -88,6 +88,24 @@ def test_account_blank_identity_fields_normalise_to_none() -> None:
 
     assert account.persistent_account_id is None
     assert account.name is None
+
+
+def test_account_blank_display_fields_normalise_to_none() -> None:
+    """A blank must not win the display fallback either.
+
+    ``_resolve_accounts`` picks ``name or official_name or "<institution>
+    account"``, so a whitespace-only string short-circuits the chain and the
+    account surfaces under a name that renders empty. ``institution_name``
+    reaches the resolver's own ``institution`` field by the same route.
+    """
+    account = SyncAccount.model_validate({
+        "account_id": "acc_1",
+        "official_name": "   ",
+        "institution_name": "",
+    })
+
+    assert account.official_name is None
+    assert account.institution_name is None
 
 
 def test_payload_without_investment_arrays_validates() -> None:

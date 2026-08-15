@@ -41,7 +41,7 @@ accounts merges their ledgers silently.
 """
 
 
-CurrencyCode = Annotated[str | None, BeforeValidator(_blank_to_none)]
+CurrencyCode = BlankToNone
 """An optional ISO/unofficial currency code, with blanks normalised to None.
 
 Plaid returns ``""`` for a currency it does not carry, and the two consumers of
@@ -140,9 +140,9 @@ class SyncAccount(BaseModel):
     persistent_account_id: BlankToNone = None
     account_type: str | None = None
     account_subtype: str | None = None
-    institution_name: str | None = None
+    institution_name: BlankToNone = None
     name: BlankToNone = None
-    official_name: str | None = None
+    official_name: BlankToNone = None
     mask: str | None = Field(default=None, max_length=8)
 
 
