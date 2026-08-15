@@ -132,6 +132,12 @@ SECURITY_PRICES = TableRef("raw", "security_prices")
 SECURITY_PRICE_OVERRIDES = TableRef("app", "security_price_overrides")
 FCT_SECURITY_PRICES = TableRef("core", "fct_security_prices", audience="interface")
 
+# -- Multi-currency (M1K) --
+# Internal audience: the cache is read through CurrencyService, never queried
+# directly, so it carries no schema-catalog examples.
+EXCHANGE_RATES = TableRef("raw", "exchange_rates")
+EXCHANGE_RATE_OVERRIDES = TableRef("app", "exchange_rate_overrides")
+
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
 SEED_CATEGORY_SOURCE_MAP = TableRef("seeds", "category_source_map")

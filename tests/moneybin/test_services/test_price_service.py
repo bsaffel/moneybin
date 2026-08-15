@@ -1578,6 +1578,33 @@ def test_deleting_with_a_malformed_currency_is_refused(db: Database) -> None:
     assert caught.value.code == error_codes.INVESTMENT_PRICE_MARK_CURRENCY_INVALID
 
 
+def test_a_rejected_mark_currency_does_not_reach_the_logged_message(
+    db: Database,
+) -> None:
+    """The twin of the same split in ``CurrencyService._require_currency``.
+
+    ``quote_currency`` is free text a user types, and text-mode
+    ``handle_cli_errors`` sends ``message`` to ``logger.error`` against a file
+    handler with no level filter. Two services validating the same kind of
+    value must not disagree about where the rejected one is allowed to go.
+    """
+    _seed_security(db, security_id="s1", name="Private Co")
+
+    with pytest.raises(UserError) as caught:
+        _service(db, _FakeTiingo()).set_mark(
+            "s1",
+            date(2026, 6, 30),
+            Decimal("42.50"),
+            quote_currency="PASTED-9876543210",
+            note=None,
+        )
+
+    assert caught.value.code == error_codes.INVESTMENT_PRICE_MARK_CURRENCY_INVALID
+    assert "PASTED-9876543210" not in caught.value.message
+    assert caught.value.hint is not None
+    assert "PASTED-9876543210" in caught.value.hint
+
+
 def test_deleting_a_mark_returns_the_date_to_provider_valuation(db: Database) -> None:
     """Without delete a mark is unreachable: it outranks every provider row."""
     _seed_security(db, security_id="s1", name="Private Co")

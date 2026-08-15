@@ -25,8 +25,9 @@ from typing import Protocol
 
 import httpx
 
-from moneybin.connectors.prices._http import DEFAULT_TIMEOUT, fetch_json
+from moneybin.connectors._http import DEFAULT_TIMEOUT, fetch_json
 from moneybin.connectors.prices.errors import (
+    PRICE_FEED_ERRORS,
     PriceFeedAuthError,
     PriceFeedNotFoundError,
 )
@@ -109,6 +110,7 @@ class TiingoPriceAdapter:
                     params=params,
                     headers=headers,
                     sleep=self._sleep,
+                    errors=PRICE_FEED_ERRORS,
                 )
             except PriceFeedNotFoundError as exc:
                 # The only condition that describes this security rather than the
@@ -156,6 +158,7 @@ class TiingoPriceAdapter:
                 params={},
                 headers={"Authorization": f"Token {self._token()}"},
                 sleep=self._sleep,
+                errors=PRICE_FEED_ERRORS,
             )
         except PriceFeedNotFoundError:
             return None

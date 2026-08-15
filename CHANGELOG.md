@@ -11,6 +11,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Exchange rates, and your own corrections to them (M1K.2).** `moneybin fx
+  rate USD EUR 2026-03-13` answers with the rate, the day it was published for,
+  and which layer supplied it. Precedence is your own correction, then the
+  cached provider rate, then the business day a weekend resolves back to, then
+  one live fetch from Frankfurter — cached to `raw.exchange_rates`, so the same
+  question costs at most one network call. A pair with no published rate is
+  refused rather than answered with a nearby one, and the refusal separates a
+  currency the provider prices on no date from a date that happens to lack one:
+  the first needs your own number and always will, the second needs a different
+  date. An answer carried back to an earlier business day names that day.
+
+  `moneybin fx set USD EUR 2026-03-13 0.87138` records your own rate — your
+  bank's, when that is the rate your statement used. It outranks every cached
+  provider rate for that date, leaves other dates untouched, writes
+  `app.exchange_rate_overrides` with a paired audit row, and takes effect
+  immediately. `moneybin fx delete` returns one date to provider pricing, and
+  `moneybin fx list` reads the stored series off disk without fetching. A
+  non-positive rate is refused: a zero would convert every balance in that
+  currency to nothing, and because an override outranks the provider, nothing
+  downstream would contradict it. Rates are stored to eight decimal places as
+  `DECIMAL`, never through a float, and only currency codes and dates leave the
+  machine — no amount, account, or description is part of a rate request.
+
+  No amount is converted yet: reports still sub-total per currency, and
+  `--display-currency` arrives with the conversion layer.
 - **`sql_schema` can name what it does not curate.** Two sets governed the SQL
   surface and nothing said they were different: `sql_query` reads five schemas
   (`core`, `app`, `reports`, `raw`, `prep`), while the curated catalog describes
@@ -1289,6 +1314,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   update.
 
 ### Security
+- **A rejected currency code no longer reaches the durable CLI log (#393).**
+  `moneybin fx` and `moneybin investments prices set` / `delete` take the
+  currency as free text, and both services interpolated whatever was typed into
+  `UserError.message`. Text-mode `handle_cli_errors` sends `message` to
+  `logger.error`, and the file handler has no level filter, so a mis-pasted
+  argument — an account fragment, a note, anything on the clipboard — persisted
+  verbatim to `cli_YYYY-MM-DD.log`. The rejected value now rides the `hint`,
+  which reaches stderr and the JSON envelope but never the logger, matching the
+  split the FX date path already used. The message states the rule rather than
+  the value, and the hint still names what was rejected, so a caller who passed
+  two codes can tell which one failed.
 - **`import_revert` no longer deletes raw rows on the first call (#391).**
   `import_revert(operation="revert_import")` explicitly *rejected* a
   `confirmation_token` and went straight to the delete, so one call permanently

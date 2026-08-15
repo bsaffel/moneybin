@@ -40,15 +40,15 @@ coverage catalog.
 
 ## Coverage
 
-As implemented in July 2026, the map contains:
+Counted from the map on 2026-08-14, it contains:
 
 - 49 non-exempt capability rows covering all 49 standard MCP tools. `reports`
   serves two capabilities — the catalog read and report execution — under one
   tool identity.
-- 185 implemented Typer paths, including hidden compatibility aliases, with
+- 194 implemented Typer paths, including hidden compatibility aliases, with
   exact equality against the live command tree after explicit unimplemented
   stubs are removed.
-- 10 policy-exempt rows.
+- 17 policy-exempt rows.
 - 9 reserved Typer paths that are still explicit `_not_implemented` stubs.
 
 The stub list is executable, not documentary: every excluded path is invoked
@@ -70,6 +70,7 @@ is added.
 | Investments | `investments`, `investments_record`, `investments_securities_set`, `investments_lots_select` | `investments *` | Same ledger, holdings, lots, securities, and gains |
 | Investment prices | `investments(view="holdings")` carries the resolved valuation; no observation-grain tool is named yet | `investments prices pull/set/delete/list` | Same `PriceService` refresh, audited user marks, and resolved series. An observation-grain MCP capability stays unnamed until it passes tool admission; the valuation it produces is already surfaced on holdings |
 | Tiingo price credential | exempt — `secret-material` | `investments prices token` | Same profile-scoped `SecretStore` entry; an API token must never enter an LLM context |
+| Exchange rates | none — `admission-pending` | `fx rate`, `fx list`, `fx set`, `fx delete` | Same `CurrencyService` resolution — the rate for a pair and date, the business day it was published for, and the layer that answered — plus the audited user correction and the stored series. Multi-currency is a crosscutting service concern rather than a tool namespace ([`mcp-architecture.md`](mcp-architecture.md)), so the agent-facing outcome arrives with display conversion, which reports the rate it used rather than being asked for one |
 | Transactions | `transactions`, `transactions_create`, `transactions_annotate` | `transactions list/create`, notes, tags, and splits | Same transaction rows, stable-ID note lifecycle, and complete tag/split target state |
 | Categorization | `transactions_categorize_*`, `reviews*`, `identity_links_decide` | `transactions categorize *`, match and identity review commands | Same engine results, rules, queue state, and decisions |
 | Taxonomy | `taxonomy`, `taxonomy_set` | `categories *`, `merchants *` | Same category and merchant target state through `CategorizationService` |

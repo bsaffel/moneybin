@@ -21,8 +21,6 @@ violation, not a capability gap.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 
 import typer
@@ -33,7 +31,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.utils import handle_cli_errors, parse_cli_date, parse_cli_decimal
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
     InvestmentFailedSourceEntry,
@@ -106,34 +104,6 @@ def _echo_refresh_hint(what: str, *, stale: bool) -> None:
     )
 
 
-def _parse_date(value: str, flag: str) -> date:
-    """Parse an ISO date, exiting 2 on a usage error rather than raising."""
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").date()  # noqa: DTZ007  # a calendar date, not an instant
-    except ValueError:
-        typer.echo(
-            f"error: {flag} must be an ISO date (YYYY-MM-DD), got {value!r}", err=True
-        )
-        raise typer.Exit(2) from None
-
-
-def _parse_amount(value: str) -> Decimal:
-    """Parse a price as an exact, finite Decimal — never through float."""
-    try:
-        parsed = Decimal(value)
-    except InvalidOperation:
-        typer.echo(f"error: PRICE must be a decimal number, got {value!r}", err=True)
-        raise typer.Exit(2) from None
-    if not parsed.is_finite():
-        # Decimal parses "NaN" and "Infinity" as ordinary literals, so without
-        # this they survive as numbers and fail far downstream — NaN raises
-        # InvalidOperation on the close <= 0 comparison, infinity fails inside
-        # DuckDB — reporting an internal error for what is a typo.
-        typer.echo(f"error: PRICE must be a finite number, got {value!r}", err=True)
-        raise typer.Exit(2) from None
-    return parsed
-
-
 @app.command("pull")
 def investments_prices_pull(
     securities: list[str] = typer.Option(  # noqa: B008  # typer declares defaults in the signature
@@ -176,7 +146,7 @@ def investments_prices_pull(
         from moneybin.services import refresh as refresh_module  # noqa: PLC0415
         from moneybin.services.price_service import build_price_service  # noqa: PLC0415
 
-        start = _parse_date(since, "--since") if since else None
+        start = parse_cli_date(since, "--since") if since else None
         with get_database(read_only=False) as db:
             service = build_price_service(db, actor="investments_prices_pull")
             security_ids = [service.resolve_security(ref) for ref in securities] or None
@@ -281,8 +251,8 @@ def investments_prices_set(
     The mark lands in app; holdings value from core. Pass --refresh to rebuild
     the models in the same command, or run 'moneybin refresh run' afterwards.
     """
-    parsed_date = _parse_date(price_date, "DATE")
-    parsed_price = _parse_amount(price)
+    parsed_date = parse_cli_date(price_date, "DATE")
+    parsed_price = parse_cli_decimal(price, "PRICE")
     with handle_cli_errors(
         cli_actor="investments_prices_set",
         payload_type=InvestmentPriceMarkPayload,
@@ -361,7 +331,7 @@ def investments_prices_delete(
     The removal lands in app; holdings value from core. Pass --refresh to rebuild
     the models in the same command, or run 'moneybin refresh run' afterwards.
     """
-    parsed_date = _parse_date(price_date, "DATE")
+    parsed_date = parse_cli_date(price_date, "DATE")
     with handle_cli_errors(
         cli_actor="investments_prices_delete",
         payload_type=InvestmentPriceMarkPayload,
@@ -435,7 +405,7 @@ def investments_prices_list(
     Reads the resolved winner per date, not every observation that competed for
     it, so 'source' names which feed or mark actually supplied each close.
     """
-    start = _parse_date(since, "--since") if since else None
+    start = parse_cli_date(since, "--since") if since else None
     with handle_cli_errors(
         cli_actor="investments_prices_list",
         payload_type=InvestmentPricesPayload,

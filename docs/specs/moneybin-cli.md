@@ -530,6 +530,37 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- set <category> <amount>
 |   +-- delete <category>
 |
++-- fx                             -- Exchange rates: inspect cached reference rates and
+|                                     record corrections (multi-currency.md, M1K.2). What
+|                                     `investments prices` is for securities: a feed supplies
+|                                     most values, you correct a few, one precedence rule
+|                                     decides which one a date reports. Converts no amounts --
+|                                     the display currency that spends these rates lands with
+|                                     the reports surface.
+|   +-- rate <from> <to> [date]    -- Rate for one pair on one date, and where it came from
+|   |     [--output text|json]        Precedence: your own correction, the cached provider
+|   |     [--quiet]                   rate, the business day a weekend resolves back to, then
+|   |                                 one live fetch cached to raw.exchange_rates. A pair the
+|   |                                 provider never prices fails rather than reporting a
+|   |                                 nearby one. An answer carried from an earlier day names
+|   |                                 that day -- silent carry-forward is the failure this
+|   |                                 command exists to prevent.
+|   +-- list <from> <to>           -- Stored rate series for one pair, newest first
+|   |     [--since DATE]              Reads disk and never fetches, so an empty result means
+|   |     [--output text|json]        nothing is cached or corrected for this pair yet. One
+|   |                                 row per date: the rate that applied, not every candidate
+|   |                                 that competed for it.
+|   +-- set <from> <to> <date> <rate>  -- Record your own rate, outranking the provider
+|   |     [--note TEXT]               Writes app.exchange_rate_overrides with an audit row and
+|   |     [--output text|json]        takes effect immediately -- no --refresh, unlike
+|   |                                 `investments prices set`, because CurrencyService reads
+|   |                                 the override table directly rather than through a
+|   |                                 SQLMesh model. A non-positive rate is refused.
+|   +-- delete <from> <to> <date>  -- Remove a correction, returning that date to the provider
+|         [--output text|json]        An override outranks every cached provider rate for its
+|                                     date and `set` only changes the number, so without this
+|                                     a correction is unreachable once written.
+|
 +-- export                         -- Canonical bundle and registered-report delivery
 |   +-- bundle
 |   |     [--format csv|parquet|xlsx] [--to local:<name>|sheets:<name>]
@@ -664,7 +695,9 @@ Extensibility:  extension, packages (planned, extension-contracts.md); plus dyna
 
 ### Top-level command count
 
-In-tree groups (21): `profile`, `demo`, `import`, `sync`, `accounts`, `reports`, `transactions`, `categories`, `merchants`, `privacy`, `budget`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `sql`, `export`, `mcp`, `db`, `logs`.
+In-tree groups (26): `profile`, `demo`, `import`, `sync`, `gsheet`, `accounts`, `reports`, `review`, `transactions`, `assets`, `investments`, `categories`, `merchants`, `privacy`, `budget`, `fx`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `sql`, `export`, `mcp`, `db`, `logs`.
+
+Counted against the registered Typer tree on 2026-08-14. `assets` is counted because it is registered in-tree today; the note below records the positioning that moves it to the entry-points path at M2M.
 
 Planned operator groups (2, pending [`extension-contracts.md`](extension-contracts.md)): `extension`, `packages`.
 

@@ -38,6 +38,7 @@ from moneybin.tables import (
     DIM_ACCOUNTS,
     DIM_HOLDINGS,
     DIM_SECURITIES,
+    EXCHANGE_RATE_OVERRIDES,
     FCT_BALANCES,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
@@ -88,6 +89,14 @@ _SECURITY_PRICE_OVERRIDES_PK_EXPR = (
     f" || '|' || {exp.to_identifier('quote_currency', quoted=True).sql('duckdb')}"
 )
 
+# app.exchange_rate_overrides keys on (from_currency, to_currency, rate_date);
+# mirrors ExchangeRateOverridesRepo._target_id.
+_EXCHANGE_RATE_OVERRIDES_PK_EXPR = (
+    f"{exp.to_identifier('from_currency', quoted=True).sql('duckdb')} || '|' || "
+    f"{exp.to_identifier('to_currency', quoted=True).sql('duckdb')} || '|' || "
+    f"CAST({exp.to_identifier('rate_date', quoted=True).sql('duckdb')} AS VARCHAR)"
+)
+
 # Raw-interpolated SQL expressions allowed in `_run_app_audit_coverage`. Both
 # `updated_expr` and `pk_expr` are spliced into SQL unsanitized (a multi-column
 # expression can't be sqlglot-quoted as a single identifier), so each must be a
@@ -98,6 +107,7 @@ _ALLOWED_UPDATED_EXPRS = frozenset({"GREATEST(decided_at, reversed_at)"})
 _ALLOWED_PK_EXPRS = frozenset({
     _BALANCE_ASSERTIONS_PK_EXPR,
     _SECURITY_PRICE_OVERRIDES_PK_EXPR,
+    _EXCHANGE_RATE_OVERRIDES_PK_EXPR,
 })
 
 _FINGERPRINT_KEYS = frozenset({"issuer", "headers", "page_bucket"})
@@ -356,7 +366,8 @@ class DoctorService:
         ``tabular_formats``, ``match_decisions``, ``imports``, the
         account-identity tables ``account_links``, ``account_link_decisions``,
         ``transaction_id_aliases``, and the investments tables ``securities``,
-        ``lot_selections``, ``security_price_overrides``); later repository PRs
+        ``lot_selections``, ``security_price_overrides``, and the multi-currency
+        table ``exchange_rate_overrides``); later repository PRs
         append one coverage call per
         newly-wrapped table plus that table's FK/orphan specifics.
 
@@ -373,8 +384,9 @@ class DoctorService:
         bypass insert, status update, *or* reversal is caught) — the
         ``account_links`` / ``account_link_decisions`` link tables use the same
         expression, while the append-only ``transaction_id_aliases`` uses
-        ``created_at``. ``balance_assertions``
-        has a composite PK, so it passes ``pk_expr`` to project the same composite
+        ``created_at``. ``balance_assertions``,
+        ``security_price_overrides``, and ``exchange_rate_overrides`` have
+        composite PKs, so each passes ``pk_expr`` to project the same composite
         ``target_id`` its repo emits. Those watermarks catch bypass mutations that
         advance the watermark; other bypass UPDATEs that don't are the lint rule's
         job — the heuristic limitation the helper documents.
@@ -410,6 +422,12 @@ class DoctorService:
                 SECURITY_PRICE_OVERRIDES,
                 "security_id",
                 pk_expr=_SECURITY_PRICE_OVERRIDES_PK_EXPR,
+                full=full,
+            ),
+            self._run_app_audit_coverage(
+                EXCHANGE_RATE_OVERRIDES,
+                "from_currency",
+                pk_expr=_EXCHANGE_RATE_OVERRIDES_PK_EXPR,
                 full=full,
             ),
             self._run_app_audit_coverage(BUDGETS, "budget_id", full=full),

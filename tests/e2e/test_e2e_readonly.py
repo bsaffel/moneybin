@@ -584,6 +584,58 @@ class TestDBReadOnlyCommands:
         )
         assert result.exit_code == 2
 
+    # ── fx (read-only) ─────────────────────────────────────────────────────
+
+    def test_fx_list_is_empty_on_a_fresh_profile(
+        self, e2e_profile: dict[str, str]
+    ) -> None:
+        """An uncached pair is an empty series, not a failure.
+
+        `list` reads what is on disk and never fetches, so a fresh profile is
+        the ordinary case rather than an error — the command that seeds a rate
+        is `fx rate`.
+        """
+        result = run_cli(
+            "fx", "list", "USD", "EUR", "--output", "json", env=e2e_profile
+        )
+        result.assert_success()
+        assert json.loads(result.stdout)["data"]["rows"] == []
+
+    def test_fx_list_rejects_a_malformed_since(
+        self, e2e_profile: dict[str, str]
+    ) -> None:
+        """A bad --since is a usage error (exit 2), distinct from a runtime failure."""
+        result = run_cli(
+            "fx", "list", "USD", "EUR", "--since", "last-tuesday", env=e2e_profile
+        )
+        assert result.exit_code == 2
+
+    def test_fx_rate_rejects_a_malformed_date(
+        self, e2e_profile: dict[str, str]
+    ) -> None:
+        """Exit 2 before anything is opened or fetched.
+
+        Read-only tier despite `fx rate` being able to write the rate cache:
+        this invocation never reaches the database, which is the behavior under
+        test.
+        """
+        result = run_cli("fx", "rate", "USD", "EUR", "15-03-2026", env=e2e_profile)
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_fx_rate_rejects_a_currency_that_is_not_a_code(
+        self, e2e_profile: dict[str, str]
+    ) -> None:
+        """A malformed code fails loudly instead of matching nothing forever.
+
+        Reported as a runtime error rather than a usage one because the service
+        owns currency validation — the CLI does not keep a second copy of the
+        ISO-4217 rule to check against first.
+        """
+        result = run_cli("fx", "rate", "US", "EUR", "2026-03-13", env=e2e_profile)
+        assert result.exit_code == 1
+        assert "Traceback (most recent call last)" not in result.stderr
+
     # ── investments securities links (read-only) ───────────────────────────
 
     def test_investments_securities_links_pending(
