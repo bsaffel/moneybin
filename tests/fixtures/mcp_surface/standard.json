@@ -1,5 +1,5 @@
 {
-  "sha256": "80da3b3a4b9157c995464d6e8ab94dc5f0ce51a9fee396dc53777d53a517a7c3",
+  "sha256": "092b47f51516e5dfe17215c81e0261747cb7b6567ed9d9c5ee9b44bc78d5ca36",
   "tool_count": 49,
   "tools": [
     {
@@ -1148,7 +1148,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically accept or reject account, merchant, and security identity link decisions. Accepting a security decision either merges two instruments' tax lots, manual events, and price marks, or only binds a price-feed symbol to a security, which deletes nothing and moves no row; the confirmation prompt names which one and counts every category it moves. Any accepted merge or bind confirms the exact normalized full batch and complete live before-state; reject-only batches do not prompt.",
+        "description": "Atomically accept or reject account, merchant, and security identity link decisions. Accepting a security decision either merges two instruments' tax lots, manual events, and price marks, or only binds a price-feed symbol to a security, which deletes nothing and moves no row; the confirmation prompt names which one and counts every category it moves. Accepting an account decision re-runs matching over the merged account, which can reverse a transfer the user already accepted: `rematch_transfers_retired` counts those, and system_audit_undo() restores them. Any accepted merge or bind confirms the exact normalized full batch and complete live before-state; reject-only batches do not prompt.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1453,12 +1453,12 @@
         },
         "name": "identity_links_decide"
       },
-      "description_bytes": 487,
+      "description_bytes": 696,
       "input_schema_bytes": 2438,
       "name": "identity_links_decide",
       "other_bytes": 63,
       "output_schema_bytes": 0,
-      "total_bytes": 3124
+      "total_bytes": 3333
     },
     {
       "annotation_bytes": 91,
@@ -5022,5 +5022,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 56022
+  "total_bytes": 56231
 }

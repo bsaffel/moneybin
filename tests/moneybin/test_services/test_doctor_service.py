@@ -3934,3 +3934,28 @@ def test_another_accounts_decision_on_the_same_native_id_does_not_suppress(
 
     assert result.status == "warn"
     assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_unproposed_check_skips_without_echoing_the_raw_cause() -> None:
+    """A crashed matcher-input query must not put DuckDB's text on the wire.
+
+    ``detail`` is returned verbatim by ``doctor`` and ``system_status`` over
+    both the CLI and MCP surfaces, and this query joins on transaction amounts,
+    dates, and descriptions — so a conversion failure can carry a user's row
+    into its message. Every other crash branch this feature added routes the
+    cause to the local log and returns a fixed string; this one must too.
+    """
+    import duckdb
+
+    db = MagicMock()
+    db.execute.side_effect = duckdb.ConversionException(
+        'Could not convert string "SAFEWAY #1234 -81.27" to DECIMAL'
+    )
+
+    result = DoctorService(db)._run_unproposed_cross_source_duplicates()  # pyright: ignore[reportPrivateUsage]
+
+    assert result.status == "skipped"
+    assert result.detail is not None
+    assert "SAFEWAY" not in result.detail
+    assert "81.27" not in result.detail

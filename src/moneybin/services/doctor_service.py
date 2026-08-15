@@ -12,7 +12,7 @@ from sqlglot import exp
 from moneybin.audits import recipes as recipe_registry
 from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
-from moneybin.errors import RecoveryAction
+from moneybin.errors import RecoveryAction, exception_origin
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
@@ -2636,10 +2636,22 @@ class DoctorService:
                 [settings.matching.date_window_days],
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — prep views absent before first transform
+            # `detail` is returned verbatim by doctor and system_status over
+            # both surfaces, and this query joins on amounts, dates, and
+            # descriptions — so a conversion failure can carry a user's row in
+            # its message. Same split as `refresh._step_error`: the frame chain
+            # to the local log, a fixed string on the wire. The frame chain
+            # rather than the message for the reason `exception_origin`
+            # documents — a traceback's last line *is* the message, and
+            # AGENTS.md's no-financial-data rule has no local-log carve-out.
+            logger.error(
+                f"{name} skipped — matcher input unavailable at "
+                f"{exception_origin(e.__cause__ or e)}"
+            )
             return InvariantResult(
                 name=name,
                 status="skipped",
-                detail=f"matcher input unavailable: {e}",
+                detail="matcher input unavailable — the cause is in the local log",
                 affected_ids=[],
             )
         if rows:

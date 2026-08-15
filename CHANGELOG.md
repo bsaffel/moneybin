@@ -923,17 +923,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   correctly one refresh later.
 
   A `refresh` covering the reconciliation is not the same as the surfaces that
-  *call* `refresh` reporting it. Four embedded callers run the full cascade and
-  previously copied only the three transform fields off its result:
-  `moneybin import files`, `moneybin sync pull` (and `sync link`'s auto-pull),
-  the inbox drain, and the single-file MCP import path. Each could therefore
-  reverse an accepted transfer and report nothing but a successful import. All
-  four now carry `transfers_retired` back — the CLI through the same warning
-  naming `moneybin system audit undo`, the MCP twins (`import_files`,
-  `sync_pull`, `import_inbox_sync`) through the payload and an `actions[]` hint
-  pointing at `system_audit_undo()`. The unattended drain prints its warning
-  even under `--quiet`, which suppresses informational output and not a
-  reversal of the user's own decision.
+  *call* `refresh` reporting it. Six embedded callers reach it and previously
+  copied only the three transform fields off its result: `moneybin import
+  files` on both its batch and its single-file path, `moneybin sync pull` (and
+  `sync link`'s auto-pull), the inbox drain, the single-file MCP import path,
+  and `moneybin gsheet pull` — the last by naming `match` explicitly rather
+  than running the full cascade. Each could therefore reverse an accepted
+  transfer and report nothing but a successful import. All six now carry
+  `transfers_retired` back — the CLI through the same warning naming `moneybin
+  system audit undo`, the MCP twins (`import_files`, `sync_pull`,
+  `import_inbox_sync`) through the payload and an `actions[]` hint pointing at
+  `system_audit_undo()`. Every CLI surface prints that warning even under
+  `--quiet`, which suppresses informational output and not a reversal of the
+  user's own decision.
+
+  Two smaller gaps in the same disclosure closed with them. The
+  `unproposed_cross_source_duplicates` invariant's crash branch put DuckDB's
+  raw exception text in a `detail` that `doctor` and `system_status` return
+  over both surfaces — and that query joins on amounts, dates, and
+  descriptions, so a conversion failure could echo a row back; it now logs the
+  frame chain locally and returns a fixed string, matching every other crash
+  branch here. And `identity_links_decide`'s tool description, the only prose
+  an agent reads when choosing it, never mentioned that accepting an account
+  decision re-runs matching; its sibling `reviews_decide` already did.
 
   Because that pass walks every accepted transfer — including the row the accept
   just wrote — **an accept can be the decision it reverses**, and the surfaces

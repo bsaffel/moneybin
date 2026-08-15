@@ -231,6 +231,13 @@ class ImportResult:
     date_range: str = ""
     details: dict[str, int] = field(default_factory=dict)
     core_tables_rebuilt: bool = False
+    transfers_retired: int = 0
+    """Standing transfers this import's own refresh reversed.
+
+    Twin of ``BatchImportResult.transfers_retired``: the closing refresh runs
+    the matcher, so folding a duplicate can undo a transfer the user accepted.
+    Unlike ``core_tables_rebuilt`` this reports something undone, so it has to
+    reach the surface rather than being inferred from a success."""
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     sign_override_replayed: bool = False
@@ -5221,6 +5228,12 @@ class ImportService:
             # CLI exit codes reflect the broken state. Batch imports use the
             # soft-fail variant via import_files() instead.
             refresh_result = _refresh(self._db)
+            # Ahead of the fail-loud raise: the reconciliation runs in the match
+            # step and commits there, so a transform apply that dies afterwards
+            # leaves the reversal on disk. The raise still discards this result
+            # — RuntimeError carries no partial payload the way MatchRunError
+            # does — so that path stays silent; see followups.
+            result.transfers_retired = refresh_result.transfers_retired
             if not refresh_result.applied:
                 raise RuntimeError(f"SQLMesh transforms failed: {refresh_result.error}")
             result.core_tables_rebuilt = True

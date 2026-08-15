@@ -15,7 +15,7 @@ import sys
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.utils import handle_cli_errors, warn_transfers_retired
 from moneybin.connectors.gsheet.service_factory import (
     build_connection_service as _build_connection_service,
 )
@@ -26,6 +26,7 @@ from moneybin.connectors.gsheet.service_factory import (
     build_pull_service_with_db as _build_pull_service,
 )
 from moneybin.extractors.tabular.formats import SignConventionType
+from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +269,7 @@ def gsheet_pull(
     from moneybin.services.refresh import refresh as run_refresh  # noqa: PLC0415
 
     refresh_error: str | None = None
+    transfers_retired = 0
     with handle_cli_errors():
         with _build_pull_service() as (service, db):
             if not quiet and output == OutputFormat.TEXT:
@@ -289,6 +291,10 @@ def gsheet_pull(
                 )
                 if not refresh_result.applied and refresh_result.error is not None:
                     refresh_error = refresh_result.error
+                # The `match` step above reconciles, so a pull can reverse a
+                # transfer the user accepted — reported even when the apply
+                # failed, because the retirement commits before it.
+                transfers_retired = refresh_result.transfers_retired
 
     # Hard-failure statuses (auth_expired, unreachable, rate_limited, failed)
     # exit non-zero so CI/agents detect them without parsing output. drift_detected
@@ -297,6 +303,11 @@ def gsheet_pull(
     # in the text output below.
     failure_statuses = {"auth_expired", "unreachable", "rate_limited", "failed"}
     pull_failed = any(r.status in failure_statuses for r in results)
+
+    # Ahead of both output branches, like `moneybin refresh`: a reversal of the
+    # user's own decision is not informational output, so it survives --quiet
+    # and is said aloud next to the JSON that also carries the count.
+    warn_transfers_retired(transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
 
     if output == OutputFormat.JSON:
         typer.echo(
@@ -321,6 +332,7 @@ def gsheet_pull(
                         for r in results
                     ],
                     "refresh_error": refresh_error,
+                    "transfers_retired": transfers_retired,
                 },
                 indent=2,
             )

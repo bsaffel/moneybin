@@ -124,11 +124,12 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.matching.reconciliation",
         "RETIRED_SIDES_COLLAPSED",
     ),
-    # The three embedded refresh callers. Each runs the full cascade, so each
-    # reaches the same reconciliation the dedicated refresh surfaces do and
-    # owes the user the same sentence when it reverses a decision of theirs.
-    # An import, a pull, and an unattended drain are where that reversal is
-    # least expected, which is why they name it rather than staying quiet.
+    # The four embedded refresh callers. Each reaches the same reconciliation
+    # the dedicated refresh surfaces do — three by running the full cascade,
+    # `gsheet pull` by naming `match` explicitly — and each owes the user the
+    # same sentence when it reverses a decision of theirs. An import, a pull,
+    # a sheet sync, and an unattended drain are where that reversal is least
+    # expected, which is why they name it rather than staying quiet.
     (
         "cli/commands/import_cmd.py",
         "moneybin.matching.reconciliation",
@@ -141,6 +142,11 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
     ),
     (
         "cli/commands/sync.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    (
+        "cli/commands/gsheet.py",
         "moneybin.matching.reconciliation",
         "RETIRED_SIDES_COLLAPSED",
     ),

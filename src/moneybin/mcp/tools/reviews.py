@@ -1309,9 +1309,12 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         "instruments' tax lots, manual events, and price marks, or only binds a "
         "price-feed symbol to a security, which deletes nothing and moves no "
         "row; the confirmation prompt names which one and counts every category "
-        "it moves. Any accepted merge or bind confirms the exact normalized "
-        "full batch and complete live before-state; reject-only batches do not "
-        "prompt.",
+        "it moves. Accepting an account decision re-runs matching over the "
+        "merged account, which can reverse a transfer the user already "
+        "accepted: `rematch_transfers_retired` counts those, and "
+        "system_audit_undo() restores them. Any accepted merge or bind confirms "
+        "the exact normalized full batch and complete live before-state; "
+        "reject-only batches do not prompt.",
         privacy_actor="identity_links_decide",
     )
 

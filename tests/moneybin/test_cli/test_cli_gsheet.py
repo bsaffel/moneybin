@@ -401,6 +401,80 @@ def test_gsheet_pull_json_output(
     assert payload["pulls"][0]["rows_inserted"] == 7
 
 
+@pytest.mark.unit
+@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.database.get_database")
+@patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
+@patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_pull_reports_a_transfer_its_refresh_retired(
+    mock_oauth: MagicMock,
+    mock_service_cls: MagicMock,
+    mock_sheets_cls: MagicMock,  # noqa: ARG001  # patched for namespace presence
+    mock_get_db: MagicMock,
+    mock_refresh: MagicMock,
+) -> None:
+    """A pull's refresh runs `match`, so it can reverse an accepted transfer.
+
+    `gsheet pull` was the one embedded-refresh caller still reading only
+    `error` off the RefreshResult, so a routine "✅ pulled N rows" could sit on
+    top of a reversed user decision with nothing naming it or the way back.
+    """
+    from moneybin.services.refresh import RefreshResult
+
+    service = MagicMock()
+    service.pull_connection.return_value = PullResult(
+        connection_id="conn_abc123",
+        status="complete",
+        load_result=_make_load_result(),
+    )
+    mock_service_cls.return_value = service
+    mock_oauth.return_value = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_refresh.return_value = RefreshResult(
+        applied=True, duration_seconds=0.05, transfers_retired=2
+    )
+
+    result = runner.invoke(app, ["gsheet", "pull", "conn_abc123"])
+    assert result.exit_code == 0, result.output
+    assert "Retired 2 previously accepted transfer(s)" in result.output
+    assert "moneybin system audit undo" in result.output
+
+
+@pytest.mark.unit
+@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.database.get_database")
+@patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
+@patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_pull_json_carries_transfers_retired(
+    mock_oauth: MagicMock,
+    mock_service_cls: MagicMock,
+    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_get_db: MagicMock,
+    mock_refresh: MagicMock,
+) -> None:
+    """The agent parsing JSON is owed the same count the human is told."""
+    from moneybin.services.refresh import RefreshResult
+
+    service = MagicMock()
+    service.pull_connection.return_value = PullResult(
+        connection_id="conn_abc123",
+        status="complete",
+        load_result=_make_load_result(),
+    )
+    mock_service_cls.return_value = service
+    mock_oauth.return_value = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_refresh.return_value = RefreshResult(
+        applied=True, duration_seconds=0.05, transfers_retired=2
+    )
+
+    result = runner.invoke(app, ["gsheet", "pull", "conn_abc123", "--output", "json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["transfers_retired"] == 2
+
+
 # -------------------------------------------------------------------- list ---
 
 

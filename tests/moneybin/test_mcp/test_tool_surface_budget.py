@@ -147,9 +147,12 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # tools never owed: accepting a match can reverse a transfer the user
     # accepted, and an agent that cannot read that from the description
     # reports the reversal as a clean accept. Registry-wide the consolidation
-    # still stands at -38.9%.
+    # still stands at -38.0%.
     "reviews_decide": (2_727, 2_566),
-    "identity_links_decide": (3_124, 5_762),
+    # Grew by the same disclosure, for the same reason: accepting an account
+    # decision re-runs matching, which can reverse a transfer the user
+    # accepted. Still less than half the cohort it replaced.
+    "identity_links_decide": (3_333, 5_762),
     "taxonomy_set": (3_480, 3_223),
     "privacy_consent_set": (1_217, 2_188),
 }

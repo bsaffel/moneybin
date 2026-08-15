@@ -89,6 +89,42 @@ class TestImportRefreshIntegration:
         with pytest.raises(RuntimeError, match="SQLMesh transforms failed"):
             ImportService(db).import_file(qfx, refresh=True)
 
+    @patch("moneybin.services.import_service._refresh")
+    @patch("moneybin.services.import_service.ImportService._import_ofx")
+    @patch("moneybin.services.import_service._detect_file_type", return_value="ofx")
+    def test_single_file_import_records_transfers_its_refresh_retired(
+        self,
+        mock_detect: MagicMock,
+        mock_import_ofx: MagicMock,
+        mock_refresh: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """A single-file import reports transfers its own refresh reversed.
+
+        ``import_file`` calls ``_refresh`` with no ``steps``, so it runs the
+        full cascade including ``match`` — and the match step reconciles, which
+        can reverse a transfer the user had accepted. This is the default
+        ``moneybin import files <one-file>`` invocation, so dropping the count
+        here hides the reversal on the most common path there is.
+        """
+        from moneybin.services.import_service import ImportResult, ImportService
+        from moneybin.services.refresh import RefreshResult
+
+        qfx = tmp_path / "test.qfx"
+        qfx.touch()
+        mock_import_ofx.return_value = ImportResult(
+            file_path=str(qfx), file_type="ofx", transactions=3, accounts=1
+        )
+        mock_refresh.return_value = RefreshResult(
+            applied=True, duration_seconds=0.05, transfers_retired=2
+        )
+
+        db = MagicMock()
+        db.path = tmp_path / "test.duckdb"
+        result = ImportService(db).import_file(qfx, refresh=True)
+
+        assert result.transfers_retired == 2
+
 
 class TestRefreshCategorizationProposalSummary:
     """Tests that pending auto-rule proposals appear in the refresh log output."""
