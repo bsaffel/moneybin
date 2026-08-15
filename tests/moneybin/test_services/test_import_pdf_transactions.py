@@ -17,7 +17,7 @@ import hashlib
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -736,6 +736,44 @@ def test_pdf_reimport_count_matches_conflict_key(db: Database, tmp_path: Path) -
     assert row_count[0] == 4  # 2 from first import + 2 from second
 
 
+@pytest.mark.integration
+def test_pdf_reimport_retries_refresh_after_prior_refresh_failure(
+    db: Database, tmp_path: Path
+) -> None:
+    """An idempotent raw reload must still retry a failed transform."""
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    failed_refresh = SimpleNamespace(applied=False, error="test refresh failure")
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        patch("moneybin.services.import_service._refresh", return_value=failed_refresh),
+        pytest.raises(RuntimeError, match="test refresh failure"),
+    ):
+        svc.import_file(fake_pdf, refresh=True)
+
+    successful_refresh = SimpleNamespace(applied=True, error=None)
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        patch(
+            "moneybin.services.import_service._refresh",
+            return_value=successful_refresh,
+        ) as refresh_mock,
+    ):
+        repeated = svc.import_file(fake_pdf, refresh=True)
+
+    refresh_mock.assert_called_once_with(db)
+    assert repeated.transactions == 0
+    assert repeated.details["transactions_extracted"] == 2
+    assert repeated.core_tables_rebuilt is True
+
+
 # ---------------------------------------------------------------------------
 # Test 7: Duplicate format name (hash collision / race) is non-fatal
 # ---------------------------------------------------------------------------
@@ -1019,6 +1057,39 @@ def test_consecutive_statements_of_one_card_share_one_account(
     assert len(accounts) == 1, (
         f"one card resolved to {len(accounts)} accounts across two statements"
     )
+
+
+@pytest.mark.integration
+def test_pdf_batch_surfaces_prior_partial_account_before_refresh(
+    db: Database, tmp_path: Path
+) -> None:
+    """Later statements see accounts minted earlier in the unrefreshed batch."""
+    doc = _make_doc(text_lines=_standard_text_lines(), tables=[_standard_table()])
+    january = tmp_path / "january.pdf"
+    january.write_bytes(b"%PDF-1.4 january rendering")
+    february = tmp_path / "february.pdf"
+    february.write_bytes(b"%PDF-1.4 february rendering")
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        result = ImportService(db).import_files([january, february], refresh=False)
+
+    assert [row.status for row in result.per_file] == [
+        "imported",
+        "confirmation_required",
+    ]
+    [created] = result.per_file[0].accounts_created
+    payload = result.per_file[1].confirmation_payload
+    assert payload is not None
+    [proposal] = cast(list[dict[str, Any]], payload["account_proposals"])
+    [candidate] = proposal["candidates"]
+    assert (candidate["account_id"], candidate["signal"]) == (
+        created.account_id,
+        "institution_last4",
+    )
+    assert candidate["display_name"]
 
 
 @pytest.mark.integration

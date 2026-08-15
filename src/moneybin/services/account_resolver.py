@@ -38,6 +38,7 @@ from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
     ACCOUNT_LINKS,
     DIM_ACCOUNTS,
+    TABULAR_ACCOUNTS,
     TABULAR_TRANSACTIONS,
 )
 from moneybin.utils import slugify
@@ -64,7 +65,7 @@ def refresh_account_link_pending_gauge(db: Database) -> None:
 
 
 def fetch_display_name(db: Database, account_id: str) -> str:
-    """Return ``display_name`` from ``core.dim_accounts``; empty string when absent.
+    """Return a core display name, falling back to an unrefreshed raw account.
 
     Shared by the resolver's candidate decode and the account-link review queue.
     Guards ``duckdb.CatalogException`` so callers work before the core layer is
@@ -77,8 +78,23 @@ def fetch_display_name(db: Database, account_id: str) -> str:
             [account_id],
         ).fetchone()
     except duckdb.CatalogException:
+        row = None
+    if row and row[0] is not None:
+        return str(row[0])
+    try:
+        raw_row = db.execute(
+            f"SELECT raw.account_name FROM {TABULAR_ACCOUNTS.full_name} AS raw "  # noqa: S608  # TableRef constants + parameterized account id
+            f"JOIN {ACCOUNT_LINKS.full_name} AS link "
+            "ON link.status = 'accepted' AND link.ref_kind = 'source_native' "
+            "AND link.source_type = raw.source_type "
+            "AND link.source_origin = raw.source_origin "
+            "AND link.ref_value = raw.account_id "
+            "WHERE link.account_id = ? ORDER BY raw.extracted_at DESC LIMIT 1",
+            [account_id],
+        ).fetchone()
+    except duckdb.CatalogException:
         return ""
-    return str(row[0]) if row and row[0] is not None else ""
+    return str(raw_row[0]) if raw_row and raw_row[0] is not None else ""
 
 
 def _institution_key(institution: str | None) -> str | None:
@@ -217,12 +233,14 @@ class AccountResolver:
         db: Database,
         *,
         actor: str = "system",
+        include_unmaterialized_candidates: bool = False,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
     ) -> None:
         """Bind the resolver to a database + audit actor for its link writes."""
         self._db = db
         self._actor = actor
+        self._include_unmaterialized_candidates = include_unmaterialized_candidates
         self._emit_metrics = emit_metrics
         self._observations = observations
         self._links = AccountLinksRepo(db)
@@ -785,10 +803,10 @@ class AccountResolver:
         fallback: bool = False,
         reissue: bool = False,
     ) -> list[_Candidate]:
-        """Weak-signal candidates from core.dim_accounts (institution+last4, then name).
+        """Weak-signal candidates from materialized and current-batch accounts.
 
-        Each is a review proposal, never an auto-merge. Returns no candidates if
-        core.dim_accounts is not yet materialized (first import before any transform).
+        Each is a review proposal, never an auto-merge. Batch callers also include
+        PDF accounts loaded earlier in the batch but not materialized in core yet.
 
         The name rung skips any account whose last four positively contradicts
         the source's (``_last_fours_disagree``). A name match across a stated
@@ -817,8 +835,13 @@ class AccountResolver:
         all-accounts proposal for every provisional account.
         """
         legacy_candidates = self._legacy_source_candidates(src, exclude_account_id)
+        pending_candidates = (
+            self._pending_pdf_candidates(src, exclude_account_id)
+            if self._include_unmaterialized_candidates
+            else []
+        )
         try:
-            out: list[_Candidate] = []
+            out: list[_Candidate] = list(pending_candidates)
             if (
                 src.last_four
                 and src.institution
@@ -900,8 +923,57 @@ class AccountResolver:
                 return _dedupe_candidates(legacy_candidates, out)
             return _dedupe_candidates(out, legacy_candidates)
         except duckdb.CatalogException:
-            logger.debug("core.dim_accounts unavailable; no candidates")
-            return legacy_candidates
+            logger.debug("core.dim_accounts unavailable; using raw candidates only")
+            return _dedupe_candidates(pending_candidates, legacy_candidates)
+
+    def _pending_pdf_candidates(
+        self, src: SourceAccount, exclude_account_id: str
+    ) -> list[_Candidate]:
+        """Match PDF accounts loaded earlier in a batch but not refreshed yet."""
+        if src.source_type != "pdf" or not src.last_four or not src.institution:
+            return []
+        target_institution = _institution_key(src.institution)
+        if target_institution is None:
+            return []
+        try:
+            materialized_ids = {
+                str(row[0])
+                for row in self._db.execute(
+                    f"SELECT account_id FROM {DIM_ACCOUNTS.full_name}"  # noqa: S608  # TableRef only
+                ).fetchall()
+            }
+        except duckdb.CatalogException:
+            materialized_ids = set()
+        try:
+            rows = self._db.execute(
+                f"SELECT DISTINCT link.account_id, raw.account_number_masked, "  # noqa: S608  # TableRef constants + parameterized account id
+                f"raw.institution_name FROM {TABULAR_ACCOUNTS.full_name} AS raw "
+                f"JOIN {ACCOUNT_LINKS.full_name} AS link "
+                "ON link.status = 'accepted' AND link.ref_kind = 'source_native' "
+                "AND link.source_type = raw.source_type "
+                "AND link.source_origin = raw.source_origin "
+                "AND link.ref_value = raw.account_id "
+                "WHERE raw.source_type = 'pdf' AND link.account_id != ?",
+                [exclude_account_id],
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+        candidates = [
+            _Candidate(
+                account_id=str(account_id),
+                signal="institution_last4",
+                value=f"{target_institution}:{src.last_four}",
+                confidence=0.5,
+            )
+            for account_id, masked_number, institution in rows
+            if str(account_id) not in materialized_ids
+            and masked_number is not None
+            and "".join(char for char in str(masked_number) if char.isdigit())[-4:]
+            == src.last_four
+            and institution is not None
+            and _institution_key(str(institution)) == target_institution
+        ]
+        return _dedupe_candidates(candidates)
 
     def _legacy_source_candidates(
         self, src: SourceAccount, exclude_account_id: str

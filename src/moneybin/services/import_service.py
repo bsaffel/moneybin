@@ -4284,6 +4284,7 @@ class ImportService:
         sign: str | None = None,
         confirm: bool = False,
         account_bindings: dict[str, str] | None = None,
+        include_unmaterialized_account_candidates: bool = False,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
@@ -4325,6 +4326,8 @@ class ImportService:
                 confirmation; a confirmed new account uses the document alias
                 only as its display-name fallback. Mirrors the tabular path's
                 ``account_id`` semantics.
+            include_unmaterialized_account_candidates: Include PDF accounts loaded
+                earlier in the current batch before the final core refresh.
             account_bindings: Answers to a prior account-confirmation gate,
                 keyed by the statement's source-native account key: an existing
                 account_id to adopt, or "new".
@@ -4476,7 +4479,13 @@ class ImportService:
                 source_file=str(canonical),
             )
             gated = self._gate_account_proposals(
-                AccountResolver(self._db, actor="system"),
+                AccountResolver(
+                    self._db,
+                    actor="system",
+                    include_unmaterialized_candidates=(
+                        include_unmaterialized_account_candidates
+                    ),
+                ),
                 [identity.source],
                 account_bindings,
                 channel="pdf",
@@ -4867,6 +4876,8 @@ class ImportService:
                 "row_number": idx,
             })
 
+        transactions_extracted = len(rows_list)
+
         try:
             # The account-identity upgrade changed the account token inside PDF
             # transaction hashes. If the exact legacy hash already exists, keep
@@ -5208,7 +5219,7 @@ class ImportService:
             self._db,
             import_id,
             status="complete",
-            rows_total=len(rows_list),
+            rows_total=transactions_extracted,
             rows_imported=rows_inserted,
         )
         record_counter(
@@ -5222,11 +5233,11 @@ class ImportService:
         result.accounts = 1
         result.details = {
             "transactions": rows_inserted,
-            "transactions_extracted": len(rows_list),
+            "transactions_extracted": transactions_extracted,
         }
         logger.info(
             f"PDF import complete (transactions): alias={resolved_alias} "
-            f"extracted={len(rows_list)} inserted={rows_inserted} "
+            f"extracted={transactions_extracted} inserted={rows_inserted} "
             f"import_id={import_id[:8]}..."
         )
         return result
@@ -5419,6 +5430,7 @@ class ImportService:
         actor_kind: ActorKind = "human",
         account_bindings: dict[str, str] | None = None,
         account_metadata: dict[str, dict[str, str]] | None = None,
+        include_unmaterialized_account_candidates: bool = False,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
@@ -5489,6 +5501,9 @@ class ImportService:
                 sign=sign,
                 confirm=confirm,
                 account_bindings=account_bindings,
+                include_unmaterialized_account_candidates=(
+                    include_unmaterialized_account_candidates
+                ),
                 in_outer_txn=in_outer_txn,
                 emit_metrics=emit_metrics,
                 observations=observations,
@@ -5532,6 +5547,7 @@ class ImportService:
                     interactive=interactive,
                     confirm=confirm,
                     actor_kind=actor_kind,
+                    include_unmaterialized_account_candidates=True,
                 )
                 # PDFs land in raw.pdf_seeds (transactions=0); report the seed
                 # count so batch output reflects actual rows persisted.
