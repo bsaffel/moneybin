@@ -1072,7 +1072,7 @@ def test_regenerated_pdf_reuses_transactions_when_document_bytes_change(
 def test_reimport_retires_pre_document_identity_pdf_transaction_hashes(
     db: Database, tmp_path: Path
 ) -> None:
-    """A post-upgrade reimport must not double-count legacy PDF rows."""
+    """A moved post-upgrade reimport must not double-count legacy PDF rows."""
     from moneybin.repositories.account_links_repo import AccountLinksRepo
 
     doc = _standard_doc()
@@ -1106,7 +1106,14 @@ def test_reimport_retires_pre_document_identity_pdf_transaction_hashes(
             "source_file, source_type, source_origin, import_id, row_number) "
             "VALUES (?, 'unknown_1234', ?, ?, ?, ?, 'pdf', 'unknown', "
             "'legacy_import', ?)",
-            [transaction_id, day, amount, description, str(pdf), row_number],
+            [
+                transaction_id,
+                day,
+                amount,
+                description,
+                str(tmp_path / "old-statement-name.pdf"),
+                row_number,
+            ],
         )
 
     with (

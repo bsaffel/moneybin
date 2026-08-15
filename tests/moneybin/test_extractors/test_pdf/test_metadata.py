@@ -134,6 +134,15 @@ def test_grouped_plain_account_number_last_four_is_the_final_group() -> None:
     assert meta.account_id_complete is True
 
 
+def test_prefixed_account_label_cannot_mark_an_identifier_complete() -> None:
+    meta = capture_metadata(
+        "Beneficiary Account Number: 123456789\nRouting Number: 021000021\n"
+    )
+
+    assert meta.account_id == "123456789"
+    assert meta.account_id_complete is False
+
+
 @pytest.mark.parametrize(
     ("account_line", "expected"),
     [

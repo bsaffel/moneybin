@@ -43,7 +43,7 @@ _TIMEOUT_SEC = 0.1
 # special-case code path for one field.
 #: Public alias used by auto_derive to freeze metadata anchors into a Recipe.
 _COMPLETE_ACCOUNT_ID_PATTERN = (
-    r"Account\s+Number[:\s]+([\dXx*]{3,}(?:[ -][\dXx*]{3,})*)[ \t]*$"
+    r"^Account\s+Number[:\s]+([\dXx*]{3,}(?:[ -][\dXx*]{3,})*)[ \t]*$"
 )
 ACCOUNT_ID_MASK_CHARACTERS = frozenset("*Xx•●")
 

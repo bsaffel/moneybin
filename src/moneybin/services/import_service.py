@@ -4878,22 +4878,27 @@ class ImportService:
                 transaction_ids = sorted(historical_ids)
                 historical_placeholders = ",".join(["?"] * len(transaction_ids))
                 historical_rows = self._db.execute(
-                    f"SELECT transaction_id FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # placeholders are code-owned; values parameterized
+                    f"SELECT transaction_id, source_file FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # placeholders are code-owned; values parameterized
                     "WHERE source_type = 'pdf' AND source_origin = ? AND account_id = ? "
-                    "AND source_file = ? "
                     f"AND transaction_id IN ({historical_placeholders})",
                     [
                         historical_origin,
                         historical_key,
-                        str(canonical),
                         *transaction_ids,
                     ],
                 ).fetchall()
                 existing_historical_ids = {str(row[0]) for row in historical_rows}
+                current_file_ids = {
+                    str(row[0])
+                    for row in historical_rows
+                    if str(row[1]) == str(canonical)
+                }
                 superseded_row_indexes.update(
                     index
                     for index, row_ids in enumerate(row_id_sets)
-                    if row_ids & existing_historical_ids
+                    if row_ids & current_file_ids
+                    or (row_ids - {str(rows_list[index]["transaction_id"])})
+                    & existing_historical_ids
                 )
             rows_list = [
                 row
