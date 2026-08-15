@@ -1,7 +1,8 @@
 """refresh_* tools — the always-visible umbrella over the refresh domain.
 
 Tool:
-    - refresh_run — match + SQLMesh apply + categorization + identity backfill
+    - refresh_run — gsheet pull + match + SQLMesh apply + categorization +
+      identity backfill + exchange-rate gather
 
 Wraps :func:`moneybin.services.refresh.refresh`. Operators needing
 SQLMesh-step granularity can pass ``steps=["transform"]`` (the granular
@@ -27,7 +28,7 @@ from moneybin.services.refresh import RefreshStep, expand_steps, refresh
 def refresh_run(
     steps: list[RefreshStep] | None = None,
 ) -> ResponseEnvelope[RefreshRunPayload]:
-    """Run refresh: matching → SQLMesh apply → categorization → identity backfill.
+    """Run refresh: match → SQLMesh apply → categorize → identity → rate gather.
 
     The single user-facing entry point for refreshing derived state from raw
     inputs. Idempotent; safe to retry after a failure. Matching and

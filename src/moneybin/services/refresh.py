@@ -135,7 +135,7 @@ def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
 
 
 def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
-    """Run the post-load pipeline through the identity backfill stage.
+    """Run the post-load pipeline through the exchange-rate gather.
 
     When ``steps`` is None (default), the full cascade runs — same behavior
     as the pre-``steps`` signature, preserved for all existing callers.

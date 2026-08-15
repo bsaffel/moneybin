@@ -1,9 +1,9 @@
 """Refresh command for MoneyBin CLI.
 
 CLI peer of the ``refresh_run`` MCP tool. Runs the post-load refresh
-pipeline (matching → SQLMesh apply → categorization → identity backfill) via
-``moneybin.services.refresh.refresh()``. Idempotent — safe to retry
-after a failure.
+pipeline (gsheet pull → matching → SQLMesh apply → categorization → identity
+backfill → exchange-rate gather) via ``moneybin.services.refresh.refresh()``.
+Idempotent — safe to retry after a failure.
 """
 
 import logging

@@ -25,7 +25,14 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.services import matching_service
 from moneybin.services.merchant_resolver import HarvestResult
-from moneybin.services.refresh import RefreshResult, refresh
+from moneybin.services.rate_backfill import RateBackfillResult
+from moneybin.services.refresh import (
+    RefreshResult,
+    # The step's own branches are the subject of the last section in this file;
+    # every one of them is a swallow that `refresh()` cannot show from outside.
+    _run_rates_step,  # pyright: ignore[reportPrivateUsage]
+    refresh,
+)
 from moneybin.services.transform_service import ApplyResult
 
 
@@ -404,6 +411,149 @@ def test_identity_failure_does_not_prevent_other_domain(
         in refresh_records[0].getMessage()
     )
     assert all(record.exc_info is None for record in refresh_records)
+
+
+# --------------------------- the rates step's own branches ---------------------------
+#
+# Reached directly rather than through `refresh()`. `patch_all_refresh_stages`
+# replaces `_run_rates_step` wholesale, so every cascade test above proves only
+# that the step is *called* — the swallows below are exactly where a misread
+# home currency or an unbuilt catalog turns into silence, which is the one place
+# a cascade test cannot see.
+
+
+def _patch_rates_step(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    home_currency: str | Exception | None,
+    backfill: RateBackfillResult | Exception,
+    reached: list[str],
+) -> None:
+    """Stand in for the two collaborators `_run_rates_step` composes."""
+    from moneybin.connectors.rates import frankfurter
+    from moneybin.repositories import profile_settings_repo
+    from moneybin.services import rate_backfill
+
+    def _get_home_currency(_self: Any) -> str | None:
+        if isinstance(home_currency, Exception):
+            raise home_currency
+        return home_currency
+
+    def _run(_db: Database, *, home_currency: str, **_kw: Any) -> RateBackfillResult:
+        reached.append(home_currency)
+        if isinstance(backfill, Exception):
+            raise backfill
+        return backfill
+
+    monkeypatch.setattr(
+        profile_settings_repo.ProfileSettingsRepo,
+        "get_home_currency",
+        _get_home_currency,
+    )
+    monkeypatch.setattr(rate_backfill, "run_rate_backfill", _run)
+    # Keeps the step hermetic: the real constructor opens an httpx client that
+    # nothing here would close.
+    monkeypatch.setattr(frankfurter, "FrankfurterRateAdapter", MagicMock())
+
+
+@pytest.mark.unit
+def test_rates_step_returns_what_the_backfill_gathered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The success path hands the profile's home currency to the backfill."""
+    gathered = RateBackfillResult(rates_written=7, pairs_failed=("EUR/USD",))
+    reached: list[str] = []
+    _patch_rates_step(
+        monkeypatch, home_currency="USD", backfill=gathered, reached=reached
+    )
+
+    assert _run_rates_step(MagicMock()) is gathered
+    assert reached == ["USD"]
+
+
+@pytest.mark.unit
+def test_rates_step_without_a_home_currency_never_calls_the_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing is ever converted without a home currency, so nothing is implied."""
+    reached: list[str] = []
+    _patch_rates_step(
+        monkeypatch,
+        home_currency=None,
+        backfill=RateBackfillResult(rates_written=1, pairs_failed=()),
+        reached=reached,
+    )
+
+    assert _run_rates_step(MagicMock()) is None
+    assert reached == [], "an unset home currency must not reach the network"
+
+
+@pytest.mark.unit
+def test_rates_step_survives_an_unreadable_home_currency(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A settings read that raises costs the step, not the whole refresh."""
+    reached: list[str] = []
+    _patch_rates_step(
+        monkeypatch,
+        home_currency=RuntimeError("settings boom"),
+        backfill=RateBackfillResult(rates_written=1, pairs_failed=()),
+        reached=reached,
+    )
+    caplog.set_level(logging.ERROR, logger="moneybin.services.refresh")
+
+    assert _run_rates_step(MagicMock()) is None
+    assert reached == [], "the backfill is unreachable once the read failed"
+    assert "settings boom" not in caplog.text, "only the exception type is logged"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "exc",
+    [duckdb.CatalogException("nope"), duckdb.BinderException("no col")],
+)
+def test_rates_step_missing_core_views_is_not_an_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, exc: Exception
+) -> None:
+    """`core.*` not built yet is a first-load precondition, not a failure.
+
+    Distinguished from the generic swallow below by the log level: this one is
+    expected on a fresh profile and must not put an error in the operator's log
+    every time refresh runs before the first transform.
+    """
+    reached: list[str] = []
+    _patch_rates_step(monkeypatch, home_currency="USD", backfill=exc, reached=reached)
+    caplog.set_level(logging.ERROR, logger="moneybin.services.refresh")
+
+    assert _run_rates_step(MagicMock()) is None
+    assert reached == ["USD"], "the backfill is what raised"
+    assert caplog.records == []
+
+
+@pytest.mark.unit
+def test_rates_step_swallows_a_backfill_crash_without_naming_it(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The rates step is best-effort, and its exception text is not log-safe.
+
+    A crash here can carry a provider URL with a currency pair in it, so the log
+    line carries the exception type and nothing else.
+    """
+    reached: list[str] = []
+    _patch_rates_step(
+        monkeypatch,
+        home_currency="USD",
+        backfill=RuntimeError("rates boom"),
+        reached=reached,
+    )
+    caplog.set_level(logging.ERROR, logger="moneybin.services.refresh")
+
+    assert _run_rates_step(MagicMock()) is None
+    assert reached == ["USD"]
+    assert "rates boom" not in caplog.text
+    assert "RuntimeError" in caplog.text
 
 
 @pytest.mark.unit
