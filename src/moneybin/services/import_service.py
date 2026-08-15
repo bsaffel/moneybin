@@ -4702,7 +4702,7 @@ class ImportService:
         sign_conv: str = decision.recipe.sign_convention
 
         # Per-content-key dedup counter: when two rows in the same statement
-        # share (date, amt, desc, account_id) the first uses the bare content
+        # share (date, amt, desc, canonical account) the first uses the bare content
         # hash; each subsequent collision appends an occurrence index. Position
         # within the statement (`row_number`) is intentionally NOT in the hash
         # so a recipe change that shifts row order (or rejects one extra
@@ -4714,9 +4714,9 @@ class ImportService:
         # different monthly statements for the same account) on separate
         # transaction_ids. Without this, prep.stg_tabular__transactions
         # dedups by (transaction_id, account_id) and one of the two
-        # disappears from core/reports. Includes only fields the PDF
-        # already captured for routing, so a re-import of the *same*
-        # statement bytes still produces the same content_key.
+        # disappears from core/reports. The resolved canonical account stays
+        # stable when the same statement is regenerated with different PDF
+        # metadata; the document digest remains only a source-native link key.
         period_marker = ""
         if (
             decision.metadata.period_start is not None
@@ -4756,7 +4756,7 @@ class ImportService:
             raw_credit = row.get("credit", _zero)
             content_key = (
                 f"{period_marker}|{date_iso}|{raw_amount}|{raw_debit}|"
-                f"{raw_credit}|{desc}|{account_id}"
+                f"{raw_credit}|{desc}|{resolved_account.account_id}"
             )
             dup_idx = content_dup_counter.get(content_key, 0)
             content_dup_counter[content_key] = dup_idx + 1

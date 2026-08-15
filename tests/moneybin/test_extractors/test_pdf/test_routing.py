@@ -155,6 +155,10 @@ def _recipe(sign_convention: str = "negative_is_expense") -> Recipe:
 
 def _legacy_default_metadata_anchors() -> list[dict[str, str]]:
     """Metadata anchors frozen by auto-derive before richer fields shipped."""
+    historical_account_id = [
+        r"Account\s+Number[:\s]+([\dXx*]{3,}(?:[ -][\dXx*]{3,})*)(?![-\w*])",
+        *DEFAULT_ANCHORS["account_id"][1:],
+    ]
     casts = {
         "account_id": "str",
         "period_start": "date",
@@ -165,7 +169,9 @@ def _legacy_default_metadata_anchors() -> list[dict[str, str]]:
     return [
         {"name": name, "pattern": pattern, "cast": casts[name]}
         for name in casts
-        for pattern in DEFAULT_ANCHORS[name]
+        for pattern in (
+            historical_account_id if name == "account_id" else DEFAULT_ANCHORS[name]
+        )
     ]
 
 
@@ -468,6 +474,28 @@ def test_old_derived_recipe_gains_new_default_metadata_fields(db: Database) -> N
     assert decision.metadata.product_name == "Premier Checking"
     assert decision.metadata.routing_number == "021000021"
     assert decision.metadata.currency_code == "USD"
+
+
+def test_old_detected_recipe_replaces_unsafe_account_anchor(db: Database) -> None:
+    """A legacy default recipe cannot retain prefix-only strong capture."""
+    _save_chase_format(
+        db,
+        recipe={
+            **_valid_recipe_dict(),
+            "metadata_anchors": _legacy_default_metadata_anchors(),
+        },
+    )
+    text_lines = [
+        line.replace("Account Number: 1234", "Account Number: 123456/7890")
+        for line in _standard_text_lines()
+    ] + ["Routing Number: 021000021"]
+    doc = _make_doc(text_lines=text_lines, tables=[_standard_table()])
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.metadata.account_id == "123456/7890"
+    assert decision.metadata.account_id_complete is False
+    assert decision.metadata.routing_number == "021000021"
 
 
 def test_old_bridge_recipe_does_not_gain_unrequested_metadata_fields(

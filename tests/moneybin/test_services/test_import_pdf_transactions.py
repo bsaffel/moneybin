@@ -1002,6 +1002,49 @@ def test_consecutive_statements_of_one_card_share_one_account(
 
 
 @pytest.mark.integration
+def test_regenerated_pdf_keeps_transaction_ids_when_document_bytes_change(
+    db: Database, tmp_path: Path
+) -> None:
+    """Document-native idempotency must not leak into transaction identity."""
+    doc = _make_doc(
+        text_lines=[
+            line.replace("Account Number: 1234", "Account Number: 001234567890")
+            for line in _standard_text_lines()
+        ]
+        + ["Routing Number: 021000021"],
+        tables=[_standard_table()],
+    )
+    svc = ImportService(db)
+    pdf = tmp_path / "statement.pdf"
+
+    pdf.write_bytes(b"%PDF-1.4 first rendering")
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        first = svc.import_file(pdf, refresh=False)
+
+    pdf.write_bytes(b"%PDF-1.4 regenerated rendering")
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        second = svc.import_file(pdf, refresh=False)
+
+    def transaction_ids(import_id: str | None) -> list[str]:
+        assert import_id is not None
+        return [
+            str(row[0])
+            for row in db.execute(
+                "SELECT transaction_id FROM raw.tabular_transactions "
+                "WHERE import_id = ? ORDER BY row_number",
+                [import_id],
+            ).fetchall()
+        ]
+
+    assert transaction_ids(first.import_id)
+    assert transaction_ids(second.import_id) == transaction_ids(first.import_id)
+
+
+@pytest.mark.integration
 def test_distinct_full_pdf_account_numbers_with_same_last_four_do_not_collide(
     db: Database, tmp_path: Path
 ) -> None:

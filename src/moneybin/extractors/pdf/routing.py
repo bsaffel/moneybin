@@ -111,6 +111,10 @@ _ADDED_DEFAULT_METADATA_FIELDS = (
     "routing_number",
     "currency_code",
 )
+_HISTORICAL_DEFAULT_ACCOUNT_ID_ANCHORS = [
+    r"Account\s+Number[:\s]+([\dXx*]{3,}(?:[ -][\dXx*]{3,})*)(?![-\w*])",
+    *DEFAULT_ANCHORS["account_id"][1:],
+]
 
 
 def _replay_metadata_anchors(
@@ -124,10 +128,17 @@ def _replay_metadata_anchors(
         or any(
             grouped.get(field) != DEFAULT_ANCHORS[field]
             for field in _LEGACY_DEFAULT_METADATA_FIELDS
+            if field != "account_id"
+        )
+        or grouped.get("account_id")
+        not in (
+            DEFAULT_ANCHORS["account_id"],
+            _HISTORICAL_DEFAULT_ACCOUNT_ID_ANCHORS,
         )
     ):
         return grouped
     augmented = {name: list(patterns) for name, patterns in grouped.items()}
+    augmented["account_id"] = list(DEFAULT_ANCHORS["account_id"])
     for field in _ADDED_DEFAULT_METADATA_FIELDS:
         augmented.setdefault(field, list(DEFAULT_ANCHORS[field]))
     return augmented
