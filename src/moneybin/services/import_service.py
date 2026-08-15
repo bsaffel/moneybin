@@ -4754,6 +4754,7 @@ class ImportService:
             if not (
                 source_ref == (identity_origin, account_id)
                 or source_ref in current_file_refs
+                or str(historical_account_id) != resolved_account.account_id
                 or (legacy_key is not None and source_ref[1] == legacy_key)
                 or (
                     source_account.last_four is not None

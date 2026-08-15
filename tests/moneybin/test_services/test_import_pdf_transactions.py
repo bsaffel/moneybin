@@ -1146,7 +1146,14 @@ def test_reimport_after_account_merge_keeps_existing_pdf_transaction_ids(
 ) -> None:
     from moneybin.repositories.account_links_repo import AccountLinksRepo
 
-    doc = _standard_doc()
+    doc = _make_doc(
+        text_lines=[
+            line.replace("Account Number: 1234", "Account Number: 001234567890")
+            for line in _standard_text_lines()
+        ]
+        + ["Routing Number: 021000021"],
+        tables=[_standard_table()],
+    )
     svc, pdf = _service_with_fake_pdf(db, doc, tmp_path)
     with patch(
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
@@ -1166,10 +1173,12 @@ def test_reimport_after_account_merge_keeps_existing_pdf_transaction_ids(
             actor="system",
         )
 
+    moved_pdf = tmp_path / "moved-regenerated-statement.pdf"
+    moved_pdf.write_bytes(b"%PDF-1.4 regenerated rendering")
     with patch(
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
     ):
-        repeated = svc.import_file(pdf, refresh=False)
+        repeated = svc.import_file(moved_pdf, refresh=False)
 
     assert repeated.transactions == 0
     assert db.execute(
