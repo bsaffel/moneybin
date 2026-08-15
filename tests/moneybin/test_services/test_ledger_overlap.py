@@ -125,6 +125,58 @@ def test_incoming_statement_matches_existing_account_within_posting_window(
     )
 
 
+def test_incoming_unstated_currency_matches_existing_stated_currency(
+    core_db: Database,
+) -> None:
+    _insert_txn(
+        core_db,
+        account_id=_SURVIVOR,
+        txn_date=date(2026, 5, 4),
+        amount="-12.00",
+        currency="USD",
+    )
+
+    overlap = probe_incoming_ledger_overlap(
+        core_db,
+        transactions=(
+            IncomingTransaction(
+                transaction_date=date(2026, 5, 4),
+                amount=Decimal("-12.00"),
+                currency_code=None,
+            ),
+        ),
+        against_account_id=_SURVIVOR,
+    )
+
+    assert (overlap.comparable, overlap.matched) == (1, 1)
+
+
+def test_incoming_stated_currency_does_not_match_different_stated_currency(
+    core_db: Database,
+) -> None:
+    _insert_txn(
+        core_db,
+        account_id=_SURVIVOR,
+        txn_date=date(2026, 5, 4),
+        amount="-12.00",
+        currency="EUR",
+    )
+
+    overlap = probe_incoming_ledger_overlap(
+        core_db,
+        transactions=(
+            IncomingTransaction(
+                transaction_date=date(2026, 5, 4),
+                amount=Decimal("-12.00"),
+                currency_code="USD",
+            ),
+        ),
+        against_account_id=_SURVIVOR,
+    )
+
+    assert (overlap.comparable, overlap.matched) == (1, 0)
+
+
 def test_a_control_over_the_same_period_matches_nothing(core_db: Database) -> None:
     """Different amounts over the same period read as no overlap, not as absent evidence."""
     for day, amount in ((3, "-12.00"), (7, "-40.50"), (11, "-8.25")):

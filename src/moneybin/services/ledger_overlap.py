@@ -99,7 +99,11 @@ def probe_incoming_ledger_overlap(
     against_account_id: str,
     window_days: int = DEFAULT_POSTING_LAG_DAYS,
 ) -> LedgerOverlap:
-    """Compare incoming rows with one existing account without binding them first."""
+    """Compare incoming rows with one existing account without binding them first.
+
+    An unstated currency is unknown, not a disagreement. Only two stated,
+    different currencies veto an otherwise matching incoming transaction.
+    """
     if not transactions:
         return _record_probe(LedgerOverlap(*_EMPTY_WINDOW_ROW))
 
@@ -145,9 +149,12 @@ def probe_incoming_ledger_overlap(
                     FROM comparable AS c
                     JOIN against AS a
                       ON a.amount = c.amount
-                     AND NULLIF(UPPER(TRIM(a.currency_code)), '')
-                         IS NOT DISTINCT FROM
-                         NULLIF(UPPER(TRIM(c.currency_code)), '')
+                     AND (
+                         NULLIF(UPPER(TRIM(a.currency_code)), '') IS NULL
+                         OR NULLIF(UPPER(TRIM(c.currency_code)), '') IS NULL
+                         OR NULLIF(UPPER(TRIM(a.currency_code)), '') =
+                            NULLIF(UPPER(TRIM(c.currency_code)), '')
+                     )
                      AND ABS(DATE_DIFF('day', a.transaction_date, c.transaction_date))
                          <= CAST(? AS INTEGER)
                     GROUP BY c.incoming_id

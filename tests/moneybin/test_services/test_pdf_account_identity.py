@@ -72,6 +72,30 @@ def test_last_four_identifier_never_produces_scoped_full_number() -> None:
     assert identity.legacy_source_account_key == "chase-bank_0075"
 
 
+def test_complete_but_short_identifier_never_produces_scoped_full_number() -> None:
+    identity = derive_pdf_account_identity(
+        issuer="Chase Bank",
+        routing_number="021000021",
+        identifier="0075",
+        document_sha256="9" * 64,
+        identifier_is_complete=True,
+    )
+
+    assert identity.scoped_full_number is None
+
+
+def test_legacy_key_preserves_empty_issuer_slug() -> None:
+    identity = derive_pdf_account_identity(
+        issuer="!!!",
+        identifier="****1234",
+        document_sha256="0" * 64,
+        identifier_is_complete=False,
+    )
+
+    assert identity.legacy_source_account_key == "_1234"
+    assert identity.legacy_source_origin == ""
+
+
 def test_missing_identifier_has_no_account_match_keys() -> None:
     identity = derive_pdf_account_identity(
         issuer="Chase Bank",

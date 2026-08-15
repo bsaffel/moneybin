@@ -10,6 +10,7 @@ from moneybin.utils import slugify
 
 _DOCUMENT_KEY_HEX_LENGTH = 16
 _DOCUMENT_SOURCE_ORIGIN = "document"
+# ABA prefix 80 instruments are not personal deposit accounts, so stay review-only.
 _ACCOUNT_ROUTING_PREFIX_RANGES = ((1, 12), (21, 32), (61, 72))
 
 
@@ -54,7 +55,7 @@ def derive_pdf_account_identity(
     routing_number: str | None = None,
 ) -> PdfAccountKey:
     """Separate document identity from complete and partial account evidence."""
-    issuer_slug = slugify(issuer) or "unknown"
+    issuer_slug = slugify(issuer)
     source_account_key = f"pdf_doc_{document_sha256.lower()[:_DOCUMENT_KEY_HEX_LENGTH]}"
     stripped = identifier.strip() if identifier is not None else ""
     if not stripped:
