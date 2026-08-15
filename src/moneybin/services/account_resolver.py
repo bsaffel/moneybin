@@ -34,7 +34,12 @@ from moneybin.services.account_resolution_types import (
     SourceAccount,
     normalize_account_identifier,
 )
-from moneybin.tables import ACCOUNT_LINK_DECISIONS, ACCOUNT_LINKS, DIM_ACCOUNTS
+from moneybin.tables import (
+    ACCOUNT_LINK_DECISIONS,
+    ACCOUNT_LINKS,
+    DIM_ACCOUNTS,
+    TABULAR_TRANSACTIONS,
+)
 from moneybin.utils import slugify
 
 logger = logging.getLogger(__name__)
@@ -927,6 +932,22 @@ class AccountResolver:
                 _institution_key(src.institution) if src.institution else None
             )
             try:
+                provenance_refs = (
+                    {
+                        (str(row[0]), str(row[1]))
+                        for row in self._db.execute(
+                            f"SELECT DISTINCT source_origin, account_id "  # noqa: S608  # TableRef + parameterized source path
+                            f"FROM {TABULAR_TRANSACTIONS.full_name} "
+                            "WHERE source_type = 'pdf' AND source_file = ?",
+                            [src.source_file],
+                        ).fetchall()
+                    }
+                    if src.source_file
+                    else set()
+                )
+            except duckdb.CatalogException:
+                provenance_refs = set()
+            try:
                 account_institutions = {
                     str(row[0]): _institution_key(str(row[1]))
                     for row in self._db.execute(
@@ -940,8 +961,13 @@ class AccountResolver:
                 row
                 for row in rows
                 if row not in exact
-                and target_institution is not None
-                and account_institutions.get(str(row[0])) == target_institution
+                and (
+                    (str(row[1]), str(row[2])) in provenance_refs
+                    or (
+                        target_institution is not None
+                        and account_institutions.get(str(row[0])) == target_institution
+                    )
+                )
                 and (
                     str(row[2]).rpartition("_")[2] == src.last_four
                     if src.last_four

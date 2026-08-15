@@ -1486,6 +1486,7 @@ def _pdf_source_account(
     resolved_alias: str,
     account_id_override: str | None,
     document_sha256: str,
+    source_file: str | None = None,
 ) -> PdfAccountIdentity:
     """Derive the account identity a PDF statement presents, without resolving.
 
@@ -1554,6 +1555,7 @@ def _pdf_source_account(
                 derived.legacy_source_origin
                 or (slugify(issuer) if not anchored else None)
             ),
+            source_file=source_file,
             # None for a digits-free token ("xxxx"), which correctly denies the
             # institution+last4 signal and routes to name review rather than
             # inventing a strong match.
@@ -3814,6 +3816,7 @@ class ImportService:
             resolved_alias=resolved_alias,
             account_id_override=account_id,
             document_sha256=file_sha256,
+            source_file=str(canonical),
         )
         gated = self._gate_account_proposals(
             AccountResolver(self._db, actor="system"),
@@ -4470,6 +4473,7 @@ class ImportService:
                 resolved_alias=resolved_alias,
                 account_id_override=account_id,
                 document_sha256=file_sha256,
+                source_file=str(canonical),
             )
             gated = self._gate_account_proposals(
                 AccountResolver(self._db, actor="system"),

@@ -1475,7 +1475,7 @@ def test_legacy_pdf_candidate_survives_issuer_detector_change(db: Database) -> N
     _seed_dim_account(
         db,
         account_id="acct_legacy_pdf",
-        institution_name="chase",
+        institution_name="unknown",
     )
     AccountLinksRepo(db).insert(
         link_id="link_historical_issuer",
@@ -1487,6 +1487,13 @@ def test_legacy_pdf_candidate_survives_issuer_detector_change(db: Database) -> N
         decided_by="auto",
         actor="system",
     )
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "
+        "(transaction_id, account_id, transaction_date, amount, source_file, "
+        "source_type, source_origin, import_id, row_number) VALUES "
+        "('pdf_legacy', 'unknown_1234', '2024-01-01', 1, "
+        "'/statements/chase.pdf', 'pdf', 'unknown', 'legacy_import', 1)"
+    )
     src = SourceAccount(
         source_type="pdf",
         source_origin="document",
@@ -1496,6 +1503,7 @@ def test_legacy_pdf_candidate_survives_issuer_detector_change(db: Database) -> N
         institution="Chase",
         legacy_source_account_key="chase_1234",
         legacy_source_origin="chase",
+        source_file="/statements/chase.pdf",
     )
 
     proposal = AccountResolver(db, actor="system").propose(src)
