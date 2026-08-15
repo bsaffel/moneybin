@@ -317,6 +317,26 @@ def test_pdf_extraction_failure_metric_can_be_buffered(
 
 
 @pytest.mark.integration
+def test_pdf_read_failure_bumps_failed_metric(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    from moneybin.metrics.registry import PDF_IMPORT_TOTAL
+
+    svc, fake_pdf = _service_with_fake_pdf(db, _standard_doc(), tmp_path)
+    metric = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic")
+    before = metric._value.get()  # type: ignore[reportPrivateUsage]
+
+    with (
+        patch.object(Path, "read_bytes", side_effect=OSError("PDF disappeared")),
+        pytest.raises(OSError, match="disappeared"),
+    ):
+        svc.import_file(fake_pdf, refresh=False)
+
+    assert metric._value.get() == before + 1  # type: ignore[reportPrivateUsage]
+
+
+@pytest.mark.integration
 def test_pdf_sign_proposal_metric_is_buffered_once(
     db: Database,
     tmp_path: Path,
@@ -1002,7 +1022,7 @@ def test_consecutive_statements_of_one_card_share_one_account(
 
 
 @pytest.mark.integration
-def test_regenerated_pdf_keeps_transaction_ids_when_document_bytes_change(
+def test_regenerated_pdf_reuses_transactions_when_document_bytes_change(
     db: Database, tmp_path: Path
 ) -> None:
     """Document-native idempotency must not leak into transaction identity."""
@@ -1041,7 +1061,11 @@ def test_regenerated_pdf_keeps_transaction_ids_when_document_bytes_change(
         ]
 
     assert transaction_ids(first.import_id)
-    assert transaction_ids(second.import_id) == transaction_ids(first.import_id)
+    assert transaction_ids(second.import_id) == []
+    assert second.transactions == 0
+    assert db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_type = 'pdf'"
+    ).fetchone() == (2,)
 
 
 @pytest.mark.integration
@@ -1104,6 +1128,43 @@ def test_reimport_retires_pre_document_identity_pdf_transaction_hashes(
         )
 
     assert result.transactions == 0
+    assert db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_type = 'pdf'"
+    ).fetchone() == (2,)
+
+
+@pytest.mark.integration
+def test_reimport_after_account_merge_keeps_existing_pdf_transaction_ids(
+    db: Database, tmp_path: Path
+) -> None:
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    doc = _standard_doc()
+    svc, pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        first = svc.import_file(pdf, refresh=False)
+    [original_account] = first.accounts_created
+    links = db.execute(
+        "SELECT link_id FROM app.account_links "
+        "WHERE status = 'accepted' AND account_id = ?",
+        [original_account.account_id],
+    ).fetchall()
+    for (link_id,) in links:
+        AccountLinksRepo(db).repoint(
+            link_id=str(link_id),
+            new_account_id="acct_merged_target",
+            decided_by="user",
+            actor="system",
+        )
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        repeated = svc.import_file(pdf, refresh=False)
+
+    assert repeated.transactions == 0
     assert db.execute(
         "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_type = 'pdf'"
     ).fetchone() == (2,)

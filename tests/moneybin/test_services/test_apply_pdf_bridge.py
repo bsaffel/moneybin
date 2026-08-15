@@ -627,6 +627,22 @@ def test_apply_extraction_failure_bumps_failed_metric(
     assert after == before + 1
 
 
+def test_apply_read_failure_bumps_failed_metric(db: Database, tmp_path: Path) -> None:
+    from moneybin.metrics.registry import PDF_IMPORT_TOTAL
+
+    path = _pdf_path(tmp_path)
+    before = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge")._value.get()  # type: ignore[reportPrivateUsage]
+
+    with (
+        patch.object(Path, "read_bytes", side_effect=OSError("PDF disappeared")),
+        pytest.raises(OSError, match="disappeared"),
+    ):
+        _apply_bridge(db, path, _bridge_response())
+
+    after = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1
+
+
 # ---------------------------------------------------------------------------
 # Account identity — the bridge path's own gate
 # ---------------------------------------------------------------------------

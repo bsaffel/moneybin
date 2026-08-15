@@ -3728,11 +3728,11 @@ class ImportService:
         #    the expectation; these re-executed rows are what we reconcile and
         #    load — so the persisted recipe is proven to reproduce them.
         canonical = file_path.resolve()
-        immutable_source_bytes = (
-            source_bytes if source_bytes is not None else canonical.read_bytes()
-        )
-        file_sha256 = source_sha256(canonical, immutable_source_bytes)
         try:
+            immutable_source_bytes = (
+                source_bytes if source_bytes is not None else canonical.read_bytes()
+            )
+            file_sha256 = source_sha256(canonical, immutable_source_bytes)
             doc = PDFExtractor().extract(canonical, source_bytes=immutable_source_bytes)
             decision = route_forced_recipe(doc, response.recipe)
         except Exception:
@@ -4351,10 +4351,6 @@ class ImportService:
         from moneybin.tables import PDF_SEEDS
 
         canonical = file_path.resolve()
-        immutable_source_bytes = (
-            source_bytes if source_bytes is not None else canonical.read_bytes()
-        )
-        file_sha256 = source_sha256(canonical, immutable_source_bytes)
         result = ImportResult(file_path=str(canonical), file_type="pdf")
         resolved_alias = _pdf_alias(canonical)
 
@@ -4363,6 +4359,10 @@ class ImportService:
         # a dangling import row — begin_import below marks the commitment to a
         # write (transactions or seed).
         try:
+            immutable_source_bytes = (
+                source_bytes if source_bytes is not None else canonical.read_bytes()
+            )
+            file_sha256 = source_sha256(canonical, immutable_source_bytes)
             doc = PDFExtractor().extract(canonical, source_bytes=immutable_source_bytes)
             decision = route_pdf_import(doc, self._db)
         except Exception:
@@ -4717,19 +4717,33 @@ class ImportService:
         if minted := _created_account(source_account, resolved_account):
             result.accounts_created = (minted,)
 
-        # Accepted links preserve the historical source tuple. Reconstructing it
-        # from today's issuer detector would miss rows imported under an older
-        # classification and fail to retire their transaction hashes.
-        legacy_pdf_refs = [
-            (str(row[0]), str(row[1]))
-            for row in self._db.execute(
-                f"SELECT source_origin, ref_value FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized account id
-                "WHERE status = 'accepted' AND ref_kind = 'source_native' "
-                "AND source_type = 'pdf' AND account_id = ?",
-                [resolved_account.account_id],
-            ).fetchall()
-            if (str(row[0]), str(row[1])) != (identity_origin, account_id)
-        ]
+        # Accepted links preserve every historical PDF source tuple now owned by
+        # this account. Their reversed predecessors preserve prior canonical ids.
+        # Both can appear in old transaction hashes; today's issuer detector and
+        # current merge target are therefore insufficient migration evidence.
+        pdf_hash_namespaces: dict[tuple[str, str], set[str]] = {}
+        for (
+            historical_origin,
+            historical_ref,
+            historical_account_id,
+        ) in self._db.execute(
+            f"SELECT current.source_origin, current.ref_value, "  # noqa: S608  # TableRef + parameterized account id
+            "historical.account_id "
+            f"FROM {ACCOUNT_LINKS.full_name} AS current "
+            f"JOIN {ACCOUNT_LINKS.full_name} AS historical "
+            "ON historical.ref_kind = current.ref_kind "
+            "AND historical.source_type = current.source_type "
+            "AND historical.source_origin = current.source_origin "
+            "AND historical.ref_value = current.ref_value "
+            "WHERE current.status = 'accepted' "
+            "AND current.ref_kind = 'source_native' "
+            "AND current.source_type = 'pdf' AND current.account_id = ?",
+            [resolved_account.account_id],
+        ).fetchall():
+            source_ref = (str(historical_origin), str(historical_ref))
+            pdf_hash_namespaces.setdefault(source_ref, {source_ref[1]}).add(
+                str(historical_account_id)
+            )
 
         sign_conv: str = decision.recipe.sign_convention
 
@@ -4760,8 +4774,8 @@ class ImportService:
             )
         content_dup_counter: dict[str, int] = {}
         rows_list: list[dict[str, Any]] = []
-        legacy_transaction_ids: dict[tuple[str, str], list[str]] = {
-            ref: [] for ref in legacy_pdf_refs
+        historical_transaction_ids: dict[tuple[str, str], list[set[str]]] = {
+            ref: [] for ref in pdf_hash_namespaces
         }
         _zero = Decimal("0")
         for idx, row in enumerate(decision.rows, start=1):
@@ -4798,20 +4812,23 @@ class ImportService:
             raw_hash = content_key if dup_idx == 0 else f"{content_key}|{dup_idx}"
             digest = hashlib.sha256(raw_hash.encode()).hexdigest()[:16]
             transaction_id = f"pdf_{digest}"
-            for legacy_ref in legacy_pdf_refs:
-                legacy_content_key = (
-                    f"{period_marker}|{date_iso}|{raw_amount}|{raw_debit}|"
-                    f"{raw_credit}|{desc}|{legacy_ref[1]}"
-                )
-                legacy_raw_hash = (
-                    legacy_content_key
-                    if dup_idx == 0
-                    else f"{legacy_content_key}|{dup_idx}"
-                )
-                legacy_digest = hashlib.sha256(legacy_raw_hash.encode()).hexdigest()[
-                    :16
-                ]
-                legacy_transaction_ids[legacy_ref].append(f"pdf_{legacy_digest}")
+            for source_ref, hash_namespaces in pdf_hash_namespaces.items():
+                row_ids: set[str] = set()
+                for hash_namespace in hash_namespaces:
+                    historical_content_key = (
+                        f"{period_marker}|{date_iso}|{raw_amount}|{raw_debit}|"
+                        f"{raw_credit}|{desc}|{hash_namespace}"
+                    )
+                    historical_raw_hash = (
+                        historical_content_key
+                        if dup_idx == 0
+                        else f"{historical_content_key}|{dup_idx}"
+                    )
+                    historical_digest = hashlib.sha256(
+                        historical_raw_hash.encode()
+                    ).hexdigest()[:16]
+                    row_ids.add(f"pdf_{historical_digest}")
+                historical_transaction_ids[source_ref].append(row_ids)
 
             rows_list.append({
                 "transaction_id": transaction_id,
@@ -4836,21 +4853,31 @@ class ImportService:
             # under a second id and double-counting the statement after refresh.
             superseded_row_indexes: set[int] = set()
             for (
-                legacy_origin,
-                legacy_key,
-            ), transaction_ids in legacy_transaction_ids.items():
-                legacy_placeholders = ",".join(["?"] * len(transaction_ids))
-                legacy_rows = self._db.execute(
+                historical_origin,
+                historical_key,
+            ), row_id_sets in historical_transaction_ids.items():
+                historical_ids: set[str] = set()
+                for row_ids in row_id_sets:
+                    historical_ids.update(row_ids)
+                transaction_ids = sorted(historical_ids)
+                historical_placeholders = ",".join(["?"] * len(transaction_ids))
+                historical_rows = self._db.execute(
                     f"SELECT transaction_id FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # placeholders are code-owned; values parameterized
                     "WHERE source_type = 'pdf' AND source_origin = ? AND account_id = ? "
-                    f"AND transaction_id IN ({legacy_placeholders})",
-                    [legacy_origin, legacy_key, *transaction_ids],
+                    "AND source_file = ? "
+                    f"AND transaction_id IN ({historical_placeholders})",
+                    [
+                        historical_origin,
+                        historical_key,
+                        str(canonical),
+                        *transaction_ids,
+                    ],
                 ).fetchall()
-                existing_legacy_ids = {str(row[0]) for row in legacy_rows}
+                existing_historical_ids = {str(row[0]) for row in historical_rows}
                 superseded_row_indexes.update(
                     index
-                    for index, transaction_id in enumerate(transaction_ids)
-                    if transaction_id in existing_legacy_ids
+                    for index, row_ids in enumerate(row_id_sets)
+                    if row_ids & existing_historical_ids
                 )
             rows_list = [
                 row
