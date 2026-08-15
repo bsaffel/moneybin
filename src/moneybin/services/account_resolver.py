@@ -893,6 +893,7 @@ class AccountResolver:
                 out = self._reissue_candidates(src, exclude_account_id)
             if not out and fallback:
                 out = self._fallback_candidates(src, exclude_account_id)
+                return _dedupe_candidates(legacy_candidates, out)
             return _dedupe_candidates(out, legacy_candidates)
         except duckdb.CatalogException:
             logger.debug("core.dim_accounts unavailable; no candidates")

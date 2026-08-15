@@ -2356,6 +2356,43 @@ def test_pdf_with_no_account_anchor_gates_before_minting(
 
 
 @pytest.mark.integration
+def test_anchorless_pdf_surfaces_pre_document_identity_binding(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    _seed_chase_twin(db)
+    AccountLinksRepo(db).insert(
+        link_id="legacy_anchorless_pdf",
+        account_id="acct_existing01",
+        ref_kind="source_native",
+        ref_value="statement",
+        source_type="pdf",
+        source_origin="chase",
+        decided_by="user",
+        actor="system",
+    )
+    doc = _anchorless_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(fake_pdf, refresh=False, confirm=True, actor_kind="human")
+
+    [proposal] = exc.value.outcome.account_proposals
+    assert [
+        (candidate["account_id"], candidate["signal"])
+        for candidate in proposal["candidates"]
+    ] == [("acct_existing01", "legacy_pdf_identity")]
+
+
+@pytest.mark.integration
 def test_pinning_an_anchorless_pdf_teaches_exact_document_identity(
     db: Database,
     tmp_path: Path,

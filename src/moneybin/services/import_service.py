@@ -1509,6 +1509,7 @@ def _pdf_source_account(
     ``identity_unknown`` sends it through the gate's fallback pick-list.
     """
     from moneybin.services.pdf_account_identity import derive_pdf_account_identity
+    from moneybin.utils import slugify
 
     if decision.fp is None:
         # Defensive: route_pdf_import attaches fp on every outcome that reaches
@@ -1547,8 +1548,16 @@ def _pdf_source_account(
             ),
             account_number=derived.scoped_full_number,
             institution=issuer or None,
-            legacy_source_account_key=derived.legacy_source_account_key,
-            legacy_source_origin=derived.legacy_source_origin,
+            # Before document keys, an anchorless PDF used its filename alias.
+            # Preserve that accepted binding as review-only migration evidence.
+            legacy_source_account_key=(
+                derived.legacy_source_account_key
+                or (resolved_alias if not anchored else None)
+            ),
+            legacy_source_origin=(
+                derived.legacy_source_origin
+                or (slugify(issuer) if not anchored else None)
+            ),
             # None for a digits-free token ("xxxx"), which correctly denies the
             # institution+last4 signal and routes to name review rather than
             # inventing a strong match.
