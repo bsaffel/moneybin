@@ -314,6 +314,63 @@ def test_a_provider_date_after_the_requested_day_is_not_a_rate(
     assert row is not None and row[0] == 0, "a forward-dated rate is not cached"
 
 
+def test_a_provider_date_far_before_the_requested_day_is_not_a_rate(
+    db: Database,
+) -> None:
+    """A backward hop follows a publication calendar; it is not an open reach.
+
+    The forward guard above refuses a day that has not been published yet. The
+    backward direction needs its own floor, because the legitimate hop is a
+    closed market — a weekend, or the longest holiday cluster a reference-rate
+    provider observes — and nothing past that resolves to anything. Without a
+    floor a misdirected or stale-cached response dated years earlier is
+    accepted, quantized, stored, and reported as the answer for ``on``.
+
+    The fixture is decades stale so that only this bound can catch it: the rate
+    itself is storable and the date is ahead of nothing, so the rounding check
+    and the forward check both pass it through untouched.
+    """
+    adapter = _StubAdapter(
+        RateObservation("USD", "EUR", date(1999, 1, 4), Decimal("0.92"), "frankfurter")
+    )
+    service = CurrencyService(db, adapter=adapter, actor="test")
+
+    with pytest.raises(RateUnavailableError) as caught:
+        service.resolve_rate("USD", "EUR", _MON)
+
+    assert caught.value.code == error_codes.FX_RATE_UNAVAILABLE
+    row = db.execute("SELECT COUNT(*) FROM raw.exchange_rates").fetchone()
+    assert row is not None and row[0] == 0, "a stale-dated rate is not cached"
+
+
+def test_a_rejected_currency_code_does_not_reach_the_logged_message(
+    db: Database,
+) -> None:
+    """The rejected value rides the ``hint``, never the ``message``.
+
+    Text-mode ``handle_cli_errors`` sends ``message`` to ``logger.error`` on the
+    strength of its being a fixed MoneyBin string, and the file handler is
+    unfiltered — so anything interpolated there persists to
+    ``cli_YYYY-MM-DD.log``. ``from_currency`` is free text the user types, so a
+    mis-paste puts arbitrary content on that path. ``_fetch`` already keeps the
+    requested date out of ``message`` for this exact reason; validation was the
+    one branch that did not.
+
+    The ``hint`` still names what was rejected — it goes straight to stderr and
+    rides the JSON envelope — so a caller who passed two codes can tell which
+    one failed.
+    """
+    service = CurrencyService(db, adapter=None, actor="test")
+
+    with pytest.raises(UserError) as caught:
+        service.resolve_rate("PASTED-9876543210", "EUR", _MON)
+
+    assert caught.value.code == error_codes.FX_CURRENCY_INVALID
+    assert "PASTED-9876543210" not in caught.value.message
+    assert caught.value.hint is not None
+    assert "PASTED-9876543210" in caught.value.hint
+
+
 def test_a_fetched_rate_is_reported_at_the_precision_it_is_stored_at(
     db: Database,
 ) -> None:

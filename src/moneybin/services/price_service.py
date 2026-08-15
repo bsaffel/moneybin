@@ -763,11 +763,17 @@ class PriceService:
         try:
             validate_currency_code(candidate)
         except ValueError as exc:
+            # Same split as `CurrencyService._require_currency`, for the same
+            # reason: text-mode `handle_cli_errors` sends `message` to
+            # `logger.error` on the strength of its being a fixed MoneyBin
+            # string, and a currency argument is free text the user typed.
             raise UserError(
-                f"{value!r} is not an ISO-4217 currency code. A mark only values "
-                "a holding quoted in exactly the same currency, so a code like "
-                "this one would store successfully and match no position.",
+                "A mark's currency must be a three-letter ISO-4217 code. A "
+                "mark only values a holding quoted in exactly the same "
+                "currency, so another code would store successfully and match "
+                "no position.",
                 code=error_codes.INVESTMENT_PRICE_MARK_CURRENCY_INVALID,
+                hint=f"{value!r} is not one. Use a code like 'USD' or 'EUR'.",
             ) from exc
         return candidate
 

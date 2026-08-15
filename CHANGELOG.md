@@ -1314,6 +1314,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   update.
 
 ### Security
+- **A rejected currency code no longer reaches the durable CLI log (#393).**
+  `moneybin fx` and `moneybin investments prices set` / `delete` take the
+  currency as free text, and both services interpolated whatever was typed into
+  `UserError.message`. Text-mode `handle_cli_errors` sends `message` to
+  `logger.error`, and the file handler has no level filter, so a mis-pasted
+  argument — an account fragment, a note, anything on the clipboard — persisted
+  verbatim to `cli_YYYY-MM-DD.log`. The rejected value now rides the `hint`,
+  which reaches stderr and the JSON envelope but never the logger, matching the
+  split the FX date path already used. The message states the rule rather than
+  the value, and the hint still names what was rejected, so a caller who passed
+  two codes can tell which one failed.
 - **`import_revert` no longer deletes raw rows on the first call (#391).**
   `import_revert(operation="revert_import")` explicitly *rejected* a
   `confirmation_token` and went straight to the delete, so one call permanently

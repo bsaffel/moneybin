@@ -61,6 +61,13 @@ OVERRIDE_SOURCE = "override"
 #: field as provenance.
 IDENTITY_SOURCE = "identity"
 
+#: How far back a provider may resolve a requested date and still be answering
+#: about it. A weekend costs two days, ECB's worst case is the four-day Easter
+#: closure, and the longest stretch any reference-rate market observes — the
+#: Lunar New Year cluster — stays under two weeks. Past that the answer is a
+#: stale or misdirected response rather than a publication-day hop.
+MAX_BACKWARD_RESOLUTION_DAYS = 14
+
 _RAW_RATE_SCHEMA = {
     "from_currency": pl.Utf8,
     "to_currency": pl.Utf8,
@@ -328,9 +335,16 @@ class CurrencyService:
         try:
             validate_currency_code(candidate)
         except ValueError as exc:
+            # The rejected value rides the `hint`, never the `message`, for the
+            # reason `_fetch`'s docstring gives: text-mode `handle_cli_errors`
+            # sends `message` to `logger.error` on the strength of its being a
+            # fixed MoneyBin string, and the file handler is unfiltered. A
+            # currency argument is free text, so a mis-paste would otherwise
+            # persist verbatim to `cli_YYYY-MM-DD.log`.
             raise UserError(
-                f"{value!r} is not an ISO-4217 currency code.",
+                "A currency must be given as a three-letter ISO-4217 code.",
                 code=error_codes.FX_CURRENCY_INVALID,
+                hint=f"{value!r} is not one. Use a code like 'USD' or 'EUR'.",
             ) from exc
         return candidate
 
@@ -503,6 +517,22 @@ class CurrencyService:
                 hint="The provider priced a day after the one asked about. "
                 f"Record the {on.isoformat()} rate yourself with "
                 "'moneybin fx set'.",
+            )
+        if (on - observation.rate_date).days > MAX_BACKWARD_RESOLUTION_DAYS:
+            # The check above bounds the other direction. Backwards is the
+            # legitimate one — a closed market resolves to its last publication
+            # — but only across a closure, never across years. Left open, a
+            # stale or misdirected answer prices `on` from another era, and
+            # `_store` files it under its own old date, where it then answers
+            # that date from cache on every later call.
+            FX_RATE_RESOLUTION_TOTAL.labels(outcome="unavailable").inc()
+            raise RateUnavailableError(
+                f"No stored {base}/{quote} rate for the requested date, and the "
+                "rate provider answered for a much earlier day.",
+                code=error_codes.FX_RATE_UNAVAILABLE,
+                hint="The provider answered for a day too far before the one "
+                f"asked about to be its publication day. Record the "
+                f"{on.isoformat()} rate yourself with 'moneybin fx set'.",
             )
         return observation
 
