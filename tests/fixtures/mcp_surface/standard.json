@@ -1,5 +1,5 @@
 {
-  "sha256": "6ad878fff4149f792b14454d18c6d307b04b98c0cef94152023385978686d99f",
+  "sha256": "80da3b3a4b9157c995464d6e8ab94dc5f0ce51a9fee396dc53777d53a517a7c3",
   "tool_count": 49,
   "tools": [
     {
@@ -3081,7 +3081,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Return the curated database schema. Default call returns a compact catalog (table names + purposes + column counts). Pass table='<schema.name>' for one table's columns/examples, or table='*' for the full ~50KB document. Mirrors the moneybin://schema resource for hosts that don't expose MCP resources.",
+        "description": "Return the curated database schema. Default call returns a compact catalog (table names + purposes + column counts). Pass table='<schema.name>' for one table's columns/examples, table='<schema>.*' (e.g. 'raw.*') to list one schema's live relations with table-vs-view kind and whether each is curated, or table='*' for the full ~50KB document. Only the curated tables carry purposes and examples; an uncurated relation is still readable via sql_query DESCRIBE. Mirrors the moneybin://schema resource for hosts that don't expose MCP resources.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3095,7 +3095,7 @@
                 }
               ],
               "default": null,
-              "description": "``None`` (default) returns the compact catalog; a full table\nname like ``'core.fct_transactions'`` returns details for that\ntable; ``'*'`` returns the full schema document."
+              "description": "``None`` (default) returns the compact catalog; a full table\nname like ``'core.fct_transactions'`` returns details for that\ntable; ``'<schema>.*'`` like ``'raw.*'`` lists that schema's live\nrelations as names and kinds; ``'*'`` returns the full schema\ndocument."
             }
           },
           "type": "object"
@@ -3107,12 +3107,12 @@
         },
         "name": "sql_schema"
       },
-      "description_bytes": 301,
-      "input_schema_bytes": 321,
+      "description_bytes": 541,
+      "input_schema_bytes": 412,
       "name": "sql_schema",
       "other_bytes": 52,
       "output_schema_bytes": 0,
-      "total_bytes": 810
+      "total_bytes": 1141
     },
     {
       "annotation_bytes": 89,
@@ -5022,5 +5022,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 55691
+  "total_bytes": 56022
 }

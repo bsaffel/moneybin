@@ -1067,10 +1067,12 @@
       "sql query"
     ],
     "service_methods": [
-      "moneybin.services.schema_catalog.build_schema_doc"
+      "moneybin.services.schema_catalog.build_schema_doc",
+      "moneybin.services.schema_catalog.build_live_catalog"
     ],
     "observable_outcomes": [
-      "the curated table/column catalog is queryable and agrees with live schema metadata"
+      "the curated table/column catalog is queryable and agrees with live schema metadata",
+      "every live relation in one agent-readable schema is listable with its table-vs-view kind and curated flag, including relations with no curated entry"
     ],
     "exemption": null
   },

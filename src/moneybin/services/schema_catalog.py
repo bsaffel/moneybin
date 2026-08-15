@@ -8,13 +8,18 @@ declared in `moneybin.tables`.
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 import duckdb
 
+from moneybin import error_codes
 from moneybin.database import Database, get_database
+from moneybin.errors import UserError
+from moneybin.privacy.sql_query import ALLOWED_QUERY_SCHEMAS
 from moneybin.tables import IMPORT_LOG, INTERFACE_TABLES
 
 logger = logging.getLogger(__name__)
@@ -697,6 +702,26 @@ _BEYOND_NOTE = (
 _BEYOND_QUERY = "SHOW ALL TABLES"
 
 
+@contextmanager
+def _read_snapshot() -> Generator[Database]:
+    """Yield a connection whose every read sees one state of the database.
+
+    Both builders below read the catalog more than once, and one connection is
+    not one snapshot: DuckDB autocommits each statement, so a relation another
+    connection commits between two reads lands in the later one and not the
+    earlier. That describes a database state that never existed — a seed view
+    listed as uncurated while its curated entry is already there.
+    """
+    with get_database(read_only=True) as db:
+        db.begin()
+        try:
+            yield db
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+
+
 def build_schema_doc() -> dict[str, Any]:
     """Return the schema document for the LLM-facing catalog.
 
@@ -704,48 +729,59 @@ def build_schema_doc() -> dict[str, Any]:
     table that exists in the live database; missing tables are silently
     skipped (the test/dev DB may not have every interface table).
     """
+    with _read_snapshot() as db:
+        return _schema_doc(db)
+
+
+def _schema_doc(db: Database) -> dict[str, Any]:
+    """Build the document from a connection the caller already holds.
+
+    Split out for `build_live_catalog`, which needs the curated names and the
+    relation rows to come from one snapshot. Across two connections, a seed
+    view created between them is listed as uncurated even though
+    `sql_schema(table=...)` already answers it with a curated entry.
+    """
     interface_names = [t.full_name for t in INTERFACE_TABLES]
     placeholders = ",".join(["?"] * len(interface_names))
     # Union tables and views — `duckdb_tables()` excludes views, but
     # interface objects like `core.dim_categories` are SQLMesh-managed views.
-    with get_database(read_only=True) as db:
-        rows = db.execute(
-            f"""
-            WITH interface_objects AS (
-                SELECT schema_name, table_name, comment
-                FROM duckdb_tables()
-                UNION ALL
-                SELECT schema_name, view_name AS table_name, comment
-                FROM duckdb_views()
-                WHERE NOT internal
-            )
-            SELECT
-                t.schema_name || '.' || t.table_name AS full_name,
-                COALESCE(t.comment, '') AS table_comment,
-                c.column_name,
-                c.data_type,
-                c.is_nullable,
-                COALESCE(c.comment, '') AS column_comment
-            FROM interface_objects t
-            JOIN duckdb_columns() c
-              ON t.schema_name = c.schema_name AND t.table_name = c.table_name
-            WHERE t.schema_name || '.' || t.table_name IN ({placeholders})
-            ORDER BY t.schema_name, t.table_name, c.column_index
-            """,  # noqa: S608  # INTERFACE_TABLES is a compile-time allowlist, not user input
-            interface_names,
-        ).fetchall()
-        # Build seed-view entries while db is open — reuses this one
-        # connection rather than opening a second.
-        seed_view_entries = _gsheet_seed_views(db)
-        pdf_view_entries = _pdf_seed_views(db)
+    rows = db.execute(
+        f"""
+        WITH interface_objects AS (
+            SELECT schema_name, table_name, comment, 'table' AS kind
+            FROM duckdb_tables()
+            UNION ALL
+            SELECT schema_name, view_name AS table_name, comment, 'view' AS kind
+            FROM duckdb_views()
+            WHERE NOT internal
+        )
+        SELECT
+            t.schema_name || '.' || t.table_name AS full_name,
+            COALESCE(t.comment, '') AS table_comment,
+            t.kind,
+            c.column_name,
+            c.data_type,
+            c.is_nullable,
+            COALESCE(c.comment, '') AS column_comment
+        FROM interface_objects t
+        JOIN duckdb_columns() c
+          ON t.schema_name = c.schema_name AND t.table_name = c.table_name
+        WHERE t.schema_name || '.' || t.table_name IN ({placeholders})
+        ORDER BY t.schema_name, t.table_name, c.column_index
+        """,  # noqa: S608  # INTERFACE_TABLES is a compile-time allowlist, not user input
+        interface_names,
+    ).fetchall()
+    seed_view_entries = _gsheet_seed_views(db)
+    pdf_view_entries = _pdf_seed_views(db)
 
     tables_by_name: dict[str, dict[str, Any]] = {}
-    for full_name, table_comment, col_name, dtype, nullable, col_comment in rows:
+    for full_name, table_comment, kind, col_name, dtype, nullable, col_comment in rows:
         entry = tables_by_name.setdefault(
             full_name,
             {
                 "name": full_name,
                 "purpose": table_comment,
+                "kind": kind,
                 "columns": [],
                 "examples": [
                     {"question": ex.question, "sql": ex.sql}
@@ -775,6 +811,75 @@ def build_schema_doc() -> dict[str, Any]:
             "catalog_query": _BEYOND_QUERY,
         },
     }
+
+
+def build_live_catalog(schema: str | None = None) -> list[dict[str, Any]]:
+    """Return every queryable relation as ``{name, schema, kind, curated}``.
+
+    The curated document (`build_schema_doc`) covers the `TableRef`s tagged
+    ``audience="interface"`` plus the runtime `raw.gsheet_<alias>` /
+    `raw.pdf_<alias>` seed views, so most relations `sql_query` reads happily —
+    every other `raw` and `prep` model, and the internal `app` tables — have no
+    entry anywhere. This listing closes that gap without widening the curated
+    surface: it carries names and kinds, never columns or data.
+
+    ``curated`` is read off that document rather than off ``INTERFACE_TABLES``,
+    because the seed views are curated at runtime and can never be `TableRef`s
+    — their alias is chosen at connection time. Deriving it from the static set
+    would flag a relation uncurated here while `sql_schema(table=...)` answers
+    it with a full entry, and send the agent to a bare `DESCRIBE` instead.
+
+    Bounded by ``ALLOWED_QUERY_SCHEMAS`` so listing can never exceed querying.
+    That makes it a strictly narrower disclosure than the `SHOW ALL TABLES`
+    the catalog footer recommends, which reaches `meta` and `seeds` because it
+    names no table for the query gate to resolve.
+    """
+    schemas = sorted(ALLOWED_QUERY_SCHEMAS)
+    if schema is not None:
+        # DuckDB folds unquoted identifiers, so `sql_query` reads `RAW.x` and
+        # `tables_outside_schemas` normalizes to match. Comparing the caller's
+        # raw casing against a lowercase allowlist is what once refused
+        # `DESCRIBE CORE.dim_accounts` while allowing the equivalent SELECT.
+        schema = schema.lower()
+        if schema not in ALLOWED_QUERY_SCHEMAS:
+            raise UserError(
+                f"Queries are limited to these schemas: {', '.join(schemas)}.",
+                code=error_codes.SQL_SCHEMA_NOT_ALLOWED,
+                hint=(
+                    "Those carry per-column privacy classifications or a "
+                    "content-net floor, which is what makes masking sound; "
+                    "every other schema is internal and has neither."
+                ),
+                details={"disallowed": [schema]},
+            )
+        schemas = [schema]
+
+    placeholders = ",".join(["?"] * len(schemas))
+    with _read_snapshot() as db:
+        curated = {t["name"] for t in _schema_doc(db)["tables"]}
+        rows = db.execute(
+            f"""
+            SELECT schema_name, table_name, 'table' AS kind
+            FROM duckdb_tables()
+            WHERE schema_name IN ({placeholders})
+            UNION ALL
+            SELECT schema_name, view_name AS table_name, 'view' AS kind
+            FROM duckdb_views()
+            WHERE NOT internal AND schema_name IN ({placeholders})
+            ORDER BY schema_name, table_name
+            """,  # noqa: S608  # placeholders only; schema values are parameterized
+            schemas + schemas,
+        ).fetchall()
+
+    return [
+        {
+            "name": f"{schema_name}.{table_name}",
+            "schema": schema_name,
+            "kind": kind,
+            "curated": f"{schema_name}.{table_name}" in curated,
+        }
+        for schema_name, table_name, kind in rows
+    ]
 
 
 def _gsheet_seed_views(db: Database) -> list[dict[str, Any]]:
@@ -832,6 +937,7 @@ def _gsheet_seed_views(db: Database) -> list[dict[str, Any]]:
         ).fetchall()
         entries.append({
             "name": f"raw.{view_name}",
+            "kind": "view",
             "purpose": (
                 f"Live mirror of Google Sheets seed connection (alias={alias})."
             ),
@@ -902,6 +1008,7 @@ def _pdf_seed_views(db: Database) -> list[dict[str, Any]]:
         ).fetchall()
         entries.append({
             "name": f"raw.{view_name}",
+            "kind": "view",
             "purpose": f"PDF seed data imported from file (alias={alias}).",
             "columns": [
                 {

@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+import duckdb
 import pytest
 
-from moneybin.database import Database
-from moneybin.privacy.sql_query import execute_sql_query
+import moneybin.services.schema_catalog as schema_catalog_module
+from moneybin.database import (  # noqa: PLC2701  # the single definition of "point a new cursor at the attached DB"
+    Database,
+    _pin_cursor_to_moneybin,  # pyright: ignore[reportPrivateUsage]
+)
+from moneybin.privacy.sql_query import ALLOWED_QUERY_SCHEMAS, execute_sql_query
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.reports._framework.registry import spec_of
 from moneybin.reports.definitions import ALL_REPORTS
@@ -13,9 +20,10 @@ from moneybin.services.schema_catalog import (
     CONVENTIONS,
     EXAMPLES,
     Example,
+    build_live_catalog,
     build_schema_doc,
 )
-from moneybin.tables import INTERFACE_TABLES
+from moneybin.tables import IMPORT_LOG, INTERFACE_TABLES
 
 pytestmark = pytest.mark.unit
 
@@ -228,6 +236,225 @@ def test_build_schema_doc_includes_interface_views(
     doc = build_schema_doc()
     names = {t["name"] for t in doc["tables"]}
     assert "core.dim_categories" in names
+
+
+def test_live_catalog_lists_a_queryable_table_the_curated_doc_omits(
+    schema_catalog_db: Database,
+) -> None:
+    """A queryable-but-uncurated relation must be discoverable.
+
+    `app.match_decisions` is created by `init_schemas` and readable through
+    `sql_query`, but its `TableRef` carries no `audience="interface"`, so it is
+    absent from `INTERFACE_TABLES` and therefore from `build_schema_doc`. That
+    gap is the defect: an agent is told `app` is queryable, asks the schema
+    surface about an `app` table, and is told it is unknown.
+    """
+    curated = {t["name"] for t in build_schema_doc()["tables"]}
+    assert "app.match_decisions" not in curated
+
+    live = {r["name"]: r for r in build_live_catalog()}
+    assert "app.match_decisions" in live
+    assert live["app.match_decisions"]["curated"] is False
+    assert live["core.fct_transactions"]["curated"] is True
+
+
+def test_live_catalog_never_contradicts_the_curated_doc(
+    schema_catalog_db: Database,
+) -> None:
+    """The `curated` flag must agree with what `build_schema_doc` actually curates.
+
+    `build_schema_doc` curates two families that can never be `TableRef`s: the
+    `raw.gsheet_<alias>` / `raw.pdf_<alias>` seed views, whose alias is chosen at
+    connection time. Deriving the flag from `INTERFACE_TABLES` alone reports
+    `curated: false` for a relation `sql_schema(table='raw.gsheet_<alias>')`
+    answers with a full entry — and the listing's own hint then routes the agent
+    to a bare `DESCRIBE` instead of the richer entry that already exists.
+
+    The seed view is the fixture that makes the predicate non-vacuous; the
+    assertion is the rule, so a third runtime-curated family cannot reintroduce
+    the same contradiction.
+    """
+    schema_catalog_db.execute(
+        "CREATE OR REPLACE VIEW raw.gsheet_probe AS SELECT 1 AS id"
+    )
+    schema_catalog_db.execute(
+        """
+        INSERT INTO app.gsheet_connections (
+            connection_id, spreadsheet_id, sheet_gid, sheet_name, workbook_name,
+            adapter, column_mapping, header_signature, status, alias
+        ) VALUES ('conn-probe', 'sheet-1', 0, 'Sheet1', 'Workbook', 'seed',
+                  '{}', '[]', 'healthy', 'probe')
+        """
+    )
+
+    curated_doc = {t["name"] for t in build_schema_doc()["tables"]}
+    assert "raw.gsheet_probe" in curated_doc, "fixture must reach the predicate"
+
+    live = {r["name"]: r for r in build_live_catalog()}
+    assert live["raw.gsheet_probe"]["curated"] is True
+
+    contradictions = {
+        name for name, row in live.items() if name in curated_doc and not row["curated"]
+    }
+    assert not contradictions
+
+
+def test_live_catalog_reads_both_of_its_sets_from_one_snapshot(
+    schema_catalog_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `curated` names and the relation rows must come from one connection.
+
+    They came from two: `build_schema_doc` closed its connection before the
+    listing query opened another. A `raw.gsheet_<alias>` view created in that
+    window is missing from the curated names but present in the rows, so the
+    listing reports `curated: false` for a relation `sql_schema(table=...)`
+    answers with a full entry — the contradiction the test above rules out,
+    reached through snapshot skew rather than a stale name set.
+
+    Counting connection requests is what makes the guarantee testable: the
+    fixture hands every caller one shared `Database`, so comparing the two
+    connections would compare an object with itself and pass either way.
+    """
+    opened = 0
+    connect = schema_catalog_module.get_database
+
+    def counting_get_database(*args: object, **kwargs: object) -> Any:
+        nonlocal opened
+        opened += 1
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(schema_catalog_module, "get_database", counting_get_database)
+    assert build_live_catalog(schema="raw"), "fixture must reach the predicate"
+    assert opened == 1
+
+
+def test_live_catalog_holds_one_transaction_across_both_of_its_sets(
+    schema_catalog_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One connection is not one snapshot: DuckDB autocommits every statement.
+
+    Pinning both sets to a single connection (the test above) is necessary and
+    not sufficient. Each statement on that connection opens and closes its own
+    transaction, so a relation another connection commits in between still lands
+    in the rows while the curated names predate it — the same `curated: false`
+    on a curated relation, one layer below the two-connection race.
+
+    A second cursor on the same DuckDB instance is the concurrent writer the
+    fixture's one shared `Database` otherwise cannot supply.
+    """
+    writer = schema_catalog_db.conn.cursor()
+    _pin_cursor_to_moneybin(writer)
+    # The seam the race opens at.
+    schema_doc = schema_catalog_module._schema_doc  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    def doc_then_commit_a_view(db: Database) -> dict[str, Any]:
+        doc = schema_doc(db)
+        writer.execute("CREATE VIEW raw.committed_mid_read AS SELECT 1 AS n")
+        return doc
+
+    monkeypatch.setattr(schema_catalog_module, "_schema_doc", doc_then_commit_a_view)
+    names = {r["name"] for r in build_live_catalog(schema="raw")}
+    assert "raw.committed_mid_read" not in names
+
+
+def test_schema_doc_holds_one_transaction_across_its_reads(
+    schema_catalog_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The curated document reads the database three times, and needs the rule too.
+
+    Its interface relations come from one query and its runtime seed views from
+    two more. A gsheet connection committed after the first read gives it a seed
+    view the interface query never saw — a document describing a state the
+    database was never in. Same defect as the listing above, so the module gets
+    one rule rather than a transaction at whichever call site was reviewed.
+    """
+    writer = schema_catalog_db.conn.cursor()
+    _pin_cursor_to_moneybin(writer)
+    # The read the race lands in front of.
+    gsheet_seed_views = schema_catalog_module._gsheet_seed_views  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    def commit_a_seed_view_then_read(db: Database) -> list[dict[str, Any]]:
+        writer.execute("CREATE OR REPLACE VIEW raw.gsheet_probe AS SELECT 1 AS id")
+        writer.execute(
+            """
+            INSERT INTO app.gsheet_connections (
+                connection_id, spreadsheet_id, sheet_gid, sheet_name, workbook_name,
+                adapter, column_mapping, header_signature, status, alias
+            ) VALUES ('conn-probe', 'sheet-1', 0, 'Sheet1', 'Workbook', 'seed',
+                      '{}', '[]', 'healthy', 'probe')
+            """
+        )
+        return gsheet_seed_views(db)
+
+    monkeypatch.setattr(
+        schema_catalog_module, "_gsheet_seed_views", commit_a_seed_view_then_read
+    )
+    names = {t["name"] for t in build_schema_doc()["tables"]}
+    assert "raw.gsheet_probe" not in names
+
+
+def test_catalog_survives_a_database_missing_its_optional_tables(
+    schema_catalog_db: Database,
+) -> None:
+    """A missing optional table degrades the catalog; it must not abort the read.
+
+    Both seed-view helpers swallow `CatalogException` so a database that never
+    ran `init_schemas` still gets a document. That recovery now happens inside
+    an explicit transaction, and an engine that poisons a transaction on a
+    failed statement would turn a silently-skipped table into the failure of
+    the whole document. DuckDB does not — a binder error never reaches the
+    transaction — but nothing else in the suite would notice if that changed,
+    and the recovery is invisible in the passing case.
+
+    Dropping the two optional tables and proving one of them really raises is
+    what keeps this from passing on a database that still has them.
+    """
+    schema_catalog_db.execute("DROP TABLE app.gsheet_connections")
+    schema_catalog_db.execute(f"DROP TABLE {IMPORT_LOG.full_name}")
+    with pytest.raises(duckdb.CatalogException):
+        schema_catalog_db.execute("SELECT 1 FROM app.gsheet_connections")
+
+    assert build_schema_doc()["tables"]
+    assert build_live_catalog(schema="raw")
+
+
+def test_live_catalog_distinguishes_a_view_from_a_table(
+    schema_catalog_db: Database,
+) -> None:
+    """Every entry carries the relation kind the catalog UNION currently drops.
+
+    `build_schema_doc` unions `duckdb_tables()` with `duckdb_views()` and keeps
+    no column saying which side a row came from, so nothing on the surface
+    answers "is this relation ALTER-able?".
+    """
+    live = {r["name"]: r for r in build_live_catalog()}
+    assert live["core.dim_categories"]["kind"] == "view"
+    assert live["core.fct_transactions"]["kind"] == "table"
+
+
+def test_live_catalog_is_bounded_by_the_queryable_schemas(
+    schema_catalog_db: Database,
+) -> None:
+    """Listing what exists must not exceed what `sql_query` will read.
+
+    `SHOW ALL TABLES` — the path the catalog footer currently recommends —
+    discloses the shape of `meta` and `seeds`, which `sql_query` refuses
+    outright. This listing is bounded by the same set the gate enforces, so it
+    is a strictly narrower disclosure than the query it replaces.
+    """
+    schemas = {r["schema"] for r in build_live_catalog()}
+    assert schemas <= ALLOWED_QUERY_SCHEMAS
+    assert "meta" not in schemas
+    assert "seeds" not in schemas
+
+
+def test_live_catalog_can_be_scoped_to_one_schema(
+    schema_catalog_db: Database,
+) -> None:
+    """A schema filter is what keeps the enumeration inside a context window."""
+    only_core = build_live_catalog(schema="core")
+    assert only_core
+    assert {r["schema"] for r in only_core} == {"core"}
 
 
 def test_beyond_the_interface_query_passes_the_sql_query_gate(
