@@ -40,6 +40,7 @@ class PdfAccountKey:
 
     source_account_key: str
     source_origin: str
+    has_usable_identifier: bool
     last_four: str | None
     scoped_full_number: str | None
     legacy_source_account_key: str | None
@@ -62,6 +63,22 @@ def derive_pdf_account_identity(
         return PdfAccountKey(
             source_account_key=source_account_key,
             source_origin=_DOCUMENT_SOURCE_ORIGIN,
+            has_usable_identifier=False,
+            last_four=None,
+            scoped_full_number=None,
+            legacy_source_account_key=None,
+            legacy_source_origin=None,
+        )
+
+    has_usable_identifier = any(
+        character.isalnum() and character not in ACCOUNT_ID_MASK_CHARACTERS
+        for character in stripped
+    )
+    if not has_usable_identifier:
+        return PdfAccountKey(
+            source_account_key=source_account_key,
+            source_origin=_DOCUMENT_SOURCE_ORIGIN,
+            has_usable_identifier=False,
             last_four=None,
             scoped_full_number=None,
             legacy_source_account_key=None,
@@ -93,6 +110,7 @@ def derive_pdf_account_identity(
     return PdfAccountKey(
         source_account_key=source_account_key,
         source_origin=_DOCUMENT_SOURCE_ORIGIN,
+        has_usable_identifier=True,
         last_four=last_four,
         scoped_full_number=scoped_full_number,
         legacy_source_account_key=legacy_source_account_key,

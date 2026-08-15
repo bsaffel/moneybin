@@ -54,6 +54,7 @@ def test_masked_identifier_never_produces_scoped_full_number() -> None:
     )
 
     assert identity.source_account_key == f"pdf_doc_{'b' * 16}"
+    assert identity.has_usable_identifier is True
     assert identity.last_four == "7890"
     assert identity.scoped_full_number is None
     assert identity.legacy_source_account_key == "chase-bank_7890"
@@ -105,9 +106,25 @@ def test_missing_identifier_has_no_account_match_keys() -> None:
     )
 
     assert identity.source_account_key == f"pdf_doc_{'d' * 16}"
+    assert identity.has_usable_identifier is False
     assert identity.last_four is None
     assert identity.scoped_full_number is None
     assert identity.legacy_source_account_key is None
+
+
+def test_mask_only_identifier_has_no_account_match_keys() -> None:
+    identity = derive_pdf_account_identity(
+        issuer="Chase Bank",
+        identifier="XXXX XXXX XXXX XXXX",
+        document_sha256="8" * 64,
+        identifier_is_complete=False,
+    )
+
+    assert identity.has_usable_identifier is False
+    assert identity.last_four is None
+    assert identity.scoped_full_number is None
+    assert identity.legacy_source_account_key is None
+    assert identity.legacy_source_origin is None
 
 
 def test_unproven_long_suffix_never_produces_scoped_full_number() -> None:
