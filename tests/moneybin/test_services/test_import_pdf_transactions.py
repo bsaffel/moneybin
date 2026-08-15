@@ -1045,6 +1045,71 @@ def test_regenerated_pdf_keeps_transaction_ids_when_document_bytes_change(
 
 
 @pytest.mark.integration
+def test_reimport_retires_pre_document_identity_pdf_transaction_hashes(
+    db: Database, tmp_path: Path
+) -> None:
+    """A post-upgrade reimport must not double-count legacy PDF rows."""
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    doc = _standard_doc()
+    svc, pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "
+        "(account_id, display_name, institution_slug, last_four) "
+        "VALUES ('acct_legacy_pdf', 'Chase account', 'chase', '1234')"
+    )
+    AccountLinksRepo(db).insert(
+        link_id="legacy_pdf_link",
+        account_id="acct_legacy_pdf",
+        ref_kind="source_native",
+        ref_value="chase_1234",
+        source_type="pdf",
+        source_origin="chase",
+        decided_by="auto",
+        actor="system",
+    )
+    period = "2024-01-01-2024-01-31"
+    for row_number, (day, description, amount) in enumerate(
+        (("2024-01-15", "Coffee Shop", "-50.00"), ("2024-01-20", "Paycheck", "150.00")),
+        start=1,
+    ):
+        content_key = f"{period}|{day}|{amount}|0|0|{description}|chase_1234"
+        transaction_id = f"pdf_{hashlib.sha256(content_key.encode()).hexdigest()[:16]}"
+        db.execute(
+            "INSERT INTO raw.tabular_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, "
+            "source_file, source_type, source_origin, import_id, row_number) "
+            "VALUES (?, 'chase_1234', ?, ?, ?, ?, 'pdf', 'chase', "
+            "'legacy_import', ?)",
+            [transaction_id, day, amount, description, str(pdf), row_number],
+        )
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(pdf, refresh=False)
+    [proposal] = exc.value.outcome.account_proposals
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        result = svc.import_file(
+            pdf,
+            refresh=False,
+            account_bindings={proposal["source_account_key"]: "acct_legacy_pdf"},
+        )
+
+    assert result.transactions == 0
+    assert db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_type = 'pdf'"
+    ).fetchone() == (2,)
+
+
+@pytest.mark.integration
 def test_distinct_full_pdf_account_numbers_with_same_last_four_do_not_collide(
     db: Database, tmp_path: Path
 ) -> None:

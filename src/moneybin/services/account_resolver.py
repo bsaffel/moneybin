@@ -32,6 +32,7 @@ from moneybin.services.account_resolution_types import (
     AccountProposal,
     ResolvedAccount,
     SourceAccount,
+    normalize_account_identifier,
 )
 from moneybin.tables import ACCOUNT_LINK_DECISIONS, ACCOUNT_LINKS, DIM_ACCOUNTS
 from moneybin.utils import slugify
@@ -699,6 +700,23 @@ class AccountResolver:
             ).fetchone()
             if row is not None:
                 return str(row[0]), "full_number"
+            scope, separator, identifier = scoped.partition(":")
+            if separator and len(scope) == 9 and scope.isdigit():
+                rows = self._db.execute(
+                    f"SELECT account_id, ref_value FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized value
+                    "WHERE status = 'accepted' AND ref_kind = 'full_number' "
+                    "AND STARTS_WITH(ref_value, ?)",
+                    [f"{scope}:"],
+                ).fetchall()
+                normalized = normalize_account_identifier(identifier)
+                legacy_accounts = {
+                    str(account_id)
+                    for account_id, ref_value in rows
+                    if normalize_account_identifier(str(ref_value).partition(":")[2])
+                    == normalized
+                }
+                if len(legacy_accounts) == 1:
+                    return legacy_accounts.pop(), "full_number"
         return None
 
     @staticmethod

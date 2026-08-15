@@ -107,6 +107,7 @@ def probe_incoming_ledger_overlap(
     if not transactions:
         return _record_probe(LedgerOverlap(*_EMPTY_WINDOW_ROW))
 
+    # Callers pass one statement's extracted rows, not an unbounded ledger.
     values_sql = ", ".join(["(?, ?, ?, ?)"] * len(transactions))
     parameters: list[object] = []
     for index, transaction in enumerate(transactions):

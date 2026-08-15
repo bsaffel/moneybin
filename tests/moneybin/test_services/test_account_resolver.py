@@ -288,6 +288,38 @@ def test_scoped_full_number_auto_adopts_ofx_then_csv(db: Database) -> None:
     assert csv.outcome == "adopted_strong"
 
 
+def test_normalized_full_number_adopts_and_backfills_legacy_raw_ref(
+    db: Database,
+) -> None:
+    AccountLinksRepo(db).insert(
+        link_id="legacy_full_number",
+        account_id="acct_existing",
+        ref_kind="full_number",
+        ref_value="021000021:ab-12 34",
+        source_type="ofx",
+        source_origin="bank",
+        decided_by="auto",
+        actor="system",
+    )
+
+    resolved = AccountResolver(db, actor="system").resolve(
+        _src(
+            source_type="pdf",
+            source_origin="document",
+            source_account_key="pdf_doc_0123456789abcdef",
+            account_number="021000021:AB1234",
+        )
+    )
+
+    assert resolved.account_id == "acct_existing"
+    assert resolved.outcome == "adopted_strong"
+    assert db.execute(
+        "SELECT account_id FROM app.account_links "
+        "WHERE status = 'accepted' AND ref_kind = 'full_number' "
+        "AND ref_value = '021000021:AB1234'"
+    ).fetchone() == ("acct_existing",)
+
+
 # ---------------------------------------------------------------------------
 # Step 2 — candidate pass (A4)
 # ---------------------------------------------------------------------------

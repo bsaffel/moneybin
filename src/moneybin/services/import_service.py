@@ -4658,6 +4658,14 @@ class ImportService:
             raise ValueError(
                 "PDF routing returned outcome='transactions' but fp is None"
             )
+        from moneybin.utils import slugify
+
+        legacy_transaction_account_key = (
+            source_account.legacy_source_account_key or resolved_alias
+        )
+        legacy_transaction_origin = source_account.legacy_source_origin or slugify(
+            fp.get("issuer", "unknown")
+        )
 
         # That key is a source-NATIVE key (DP-1), exactly like the tabular
         # path's — never a canonical account id. Registering it with
@@ -4734,6 +4742,7 @@ class ImportService:
             )
         content_dup_counter: dict[str, int] = {}
         rows_list: list[dict[str, Any]] = []
+        legacy_transaction_ids: list[str] = []
         _zero = Decimal("0")
         for idx, row in enumerate(decision.rows, start=1):
             amt = _normalize_pdf_amount(row, sign_conv)
@@ -4769,6 +4778,17 @@ class ImportService:
             raw_hash = content_key if dup_idx == 0 else f"{content_key}|{dup_idx}"
             digest = hashlib.sha256(raw_hash.encode()).hexdigest()[:16]
             transaction_id = f"pdf_{digest}"
+            legacy_content_key = (
+                f"{period_marker}|{date_iso}|{raw_amount}|{raw_debit}|"
+                f"{raw_credit}|{desc}|{legacy_transaction_account_key}"
+            )
+            legacy_raw_hash = (
+                legacy_content_key
+                if dup_idx == 0
+                else f"{legacy_content_key}|{dup_idx}"
+            )
+            legacy_digest = hashlib.sha256(legacy_raw_hash.encode()).hexdigest()[:16]
+            legacy_transaction_ids.append(f"pdf_{legacy_digest}")
 
             rows_list.append({
                 "transaction_id": transaction_id,
@@ -4787,7 +4807,29 @@ class ImportService:
             })
 
         try:
-            df = pl.DataFrame(rows_list)
+            # The account-identity upgrade changed the account token inside PDF
+            # transaction hashes. If the exact legacy hash already exists, keep
+            # that raw row authoritative instead of inserting its replacement
+            # under a second id and double-counting the statement after refresh.
+            legacy_placeholders = ",".join(["?"] * len(legacy_transaction_ids))
+            legacy_rows = self._db.execute(
+                f"SELECT transaction_id FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # placeholders are code-owned; values parameterized
+                "WHERE source_type = 'pdf' AND source_origin = ? AND account_id = ? "
+                f"AND transaction_id IN ({legacy_placeholders})",
+                [
+                    legacy_transaction_origin,
+                    legacy_transaction_account_key,
+                    *legacy_transaction_ids,
+                ],
+            ).fetchall()
+            existing_legacy_ids = {str(row[0]) for row in legacy_rows}
+            rows_list = [
+                row
+                for row, legacy_id in zip(
+                    rows_list, legacy_transaction_ids, strict=True
+                )
+                if legacy_id not in existing_legacy_ids
+            ]
             # on_conflict="ignore": tabular_transactions PRIMARY KEY is
             # (transaction_id, account_id, source_file). Pre-count by the SAME
             # key the table conflicts on — counting transaction_id alone would
@@ -4813,10 +4855,15 @@ class ImportService:
                 rows_already_present = count_before_row[0] if count_before_row else 0
             else:
                 rows_already_present = 0
-            self._db.ingest_dataframe(
-                TABULAR_TRANSACTIONS.full_name, df, on_conflict="ignore"
-            )
-            rows_inserted = len(rows_list) - rows_already_present
+            if rows_list:
+                self._db.ingest_dataframe(
+                    TABULAR_TRANSACTIONS.full_name,
+                    pl.DataFrame(rows_list),
+                    on_conflict="ignore",
+                )
+                rows_inserted = len(rows_list) - rows_already_present
+            else:
+                rows_inserted = 0
 
             # Account row to raw.tabular_accounts — without this, the SQLMesh
             # stg_tabular__accounts model never produces a core.dim_accounts
