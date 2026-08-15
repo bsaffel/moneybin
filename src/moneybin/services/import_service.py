@@ -995,11 +995,7 @@ def _incoming_pdf_transactions(
         transaction_date = row.get("date")
         if not isinstance(transaction_date, date):
             continue
-        currency = (
-            row.get("currency_code")
-            or row.get("currency")
-            or decision.metadata.currency_code
-        )
+        currency = decision.metadata.currency_code
         transactions.append(
             IncomingTransaction(
                 transaction_date=transaction_date,
@@ -4721,6 +4717,15 @@ class ImportService:
         # this account. Their reversed predecessors preserve prior canonical ids.
         # Both can appear in old transaction hashes; today's issuer detector and
         # current merge target are therefore insufficient migration evidence.
+        current_file_refs = {
+            (str(row[0]), str(row[1]))
+            for row in self._db.execute(
+                f"SELECT DISTINCT source_origin, account_id "  # noqa: S608  # TableRef + parameterized source path
+                f"FROM {TABULAR_TRANSACTIONS.full_name} "
+                "WHERE source_type = 'pdf' AND source_file = ?",
+                [str(canonical)],
+            ).fetchall()
+        }
         pdf_hash_namespaces: dict[tuple[str, str], set[str]] = {}
         for (
             historical_origin,
@@ -4741,6 +4746,17 @@ class ImportService:
             [resolved_account.account_id],
         ).fetchall():
             source_ref = (str(historical_origin), str(historical_ref))
+            legacy_key = source_account.legacy_source_account_key
+            if not (
+                source_ref == (identity_origin, account_id)
+                or source_ref in current_file_refs
+                or (legacy_key is not None and source_ref[1] == legacy_key)
+                or (
+                    source_account.last_four is not None
+                    and source_ref[1].rpartition("_")[2] == source_account.last_four
+                )
+            ):
+                continue
             pdf_hash_namespaces.setdefault(source_ref, {source_ref[1]}).add(
                 str(historical_account_id)
             )

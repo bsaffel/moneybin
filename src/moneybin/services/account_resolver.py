@@ -923,10 +923,25 @@ class AccountResolver:
             if str(row[1]) == expected_origin and str(row[2]) == legacy_key
         ]
         if src.source_type == "pdf":
+            target_institution = (
+                _institution_key(src.institution) if src.institution else None
+            )
+            try:
+                account_institutions = {
+                    str(row[0]): _institution_key(str(row[1]))
+                    for row in self._db.execute(
+                        f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef only
+                        "WHERE institution_slug IS NOT NULL"
+                    ).fetchall()
+                }
+            except duckdb.CatalogException:
+                account_institutions = {}
             historical = [
                 row
                 for row in rows
                 if row not in exact
+                and target_institution is not None
+                and account_institutions.get(str(row[0])) == target_institution
                 and (
                     str(row[2]).rpartition("_")[2] == src.last_four
                     if src.last_four
