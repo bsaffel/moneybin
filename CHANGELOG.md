@@ -962,6 +962,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--quiet`, which suppresses informational output and not a reversal of the
   user's own decision.
 
+  The single-file import's failure path reports it too. That path is fail-loud:
+  the refresh reconciles inside its `match` step and commits there, so a
+  transform apply that dies afterwards leaves the reversal on disk while the
+  raise discards the result that would have named it. The exception now carries
+  the count, so `moneybin import files <one-file>` names the reversal and still
+  exits non-zero for the transform.
+
   Two smaller gaps in the same disclosure closed with them. The
   `unproposed_cross_source_duplicates` invariant's crash branch put DuckDB's
   raw exception text in a `detail` that `doctor` and `system_status` return

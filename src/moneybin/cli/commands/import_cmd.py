@@ -592,6 +592,19 @@ def import_files_command(
             header_row_consumed_recovery,
             unreadable_date_recovery,
         )
+        from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+            ImportRefreshError,
+        )
+
+        # Ahead of every dispatch below, because none of them reach the
+        # success-path warning further down: the refresh reconciled inside its
+        # match step and committed there, so these reversals outlived the
+        # transform failure that raised. A decision the *user* made being undone
+        # is disclosed whether or not what followed it succeeded.
+        if isinstance(_exc, ImportRefreshError):
+            warn_transfers_retired(
+                _exc.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+            )
 
         if isinstance(_exc, ImportConfirmationRequiredError):
             # Surface the confirmation_required envelope.  Non-TTY / --output

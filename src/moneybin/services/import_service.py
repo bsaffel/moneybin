@@ -72,6 +72,25 @@ from moneybin.utils.file import source_sha256
 logger = logging.getLogger(__name__)
 
 
+class ImportRefreshError(RuntimeError):
+    """A closing refresh that failed after it had already reversed transfers.
+
+    Sibling of ``MatchRunError``, and carries state for the same reason: the
+    refresh reconciles inside its *match* step and commits there, so a transform
+    apply that dies afterwards leaves those reversals on disk. Without a carrier
+    the count dies with the exception and the command exits reporting a failed
+    transform while saying nothing about a decision the user made being undone.
+
+    Subclasses ``RuntimeError`` because that is what this raise site has always
+    been and callers catch it as such; the narrower type only adds the payload.
+    """
+
+    def __init__(self, message: str, *, transfers_retired: int) -> None:
+        """Carry ``transfers_retired`` — the reversals already committed."""
+        super().__init__(message)
+        self.transfers_retired = transfers_retired
+
+
 @dataclass(frozen=True, slots=True)
 class CreatedAccount:
     """One canonical account an import minted.
@@ -5230,12 +5249,19 @@ class ImportService:
             refresh_result = _refresh(self._db)
             # Ahead of the fail-loud raise: the reconciliation runs in the match
             # step and commits there, so a transform apply that dies afterwards
-            # leaves the reversal on disk. The raise still discards this result
-            # — RuntimeError carries no partial payload the way MatchRunError
-            # does — so that path stays silent; see followups.
+            # leaves the reversal on disk.
             result.transfers_retired = refresh_result.transfers_retired
             if not refresh_result.applied:
-                raise RuntimeError(f"SQLMesh transforms failed: {refresh_result.error}")
+                # The raise discards `result`, and this exception escapes past
+                # the success path's warning rather than landing in
+                # `_single_file_failure`. So the count travels on the exception
+                # — the reversal is the user's own decision being undone, and it
+                # is disclosed whether or not the transform that followed it
+                # succeeded.
+                raise ImportRefreshError(
+                    f"SQLMesh transforms failed: {refresh_result.error}",
+                    transfers_retired=refresh_result.transfers_retired,
+                )
             result.core_tables_rebuilt = True
 
         logger.info(f"Import complete: {result.summary()}")

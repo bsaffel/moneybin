@@ -10,7 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app
-from moneybin.services.import_service import ImportResult
+from moneybin.services.import_service import ImportRefreshError, ImportResult
 
 runner = CliRunner()
 
@@ -241,6 +241,45 @@ def test_import_files_retirement_warning_survives_quiet(
     assert "Retired 3 previously accepted transfer(s)" in caplog.text
     # -q still suppresses the per-file status line it is meant to suppress.
     assert "✅" not in caplog.text
+
+
+def test_import_files_reports_a_retirement_its_failed_refresh_committed(
+    csv_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed transform must not swallow a reversal the match step committed.
+
+    The refresh reconciles inside its *match* step and commits there, so a
+    transform apply that dies afterwards leaves the reversal on disk. Neither
+    of the two paths that report it can see this one: the raise discards
+    ``ImportResult``, and the exception escapes past the success-path warning
+    entirely rather than landing in ``_single_file_failure`` (which catches
+    only ``ValueError``/``PermissionError``). So the count rides on the
+    exception, the way ``MatchRunError`` carries a partial run.
+    """
+
+    def fake_run_import(**kwargs: Any) -> ImportResult:
+        _ = kwargs
+        raise ImportRefreshError(
+            "SQLMesh transforms failed: apply reported no plan",
+            transfers_retired=2,
+        )
+
+    with (
+        patch("moneybin.cli.utils.handle_cli_errors", _fake_db_ctx),
+        patch("moneybin.database.get_database", _fake_db_ctx),
+        patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=fake_run_import,
+        ),
+    ):
+        with caplog.at_level("WARNING"):
+            result = runner.invoke(app, ["files", str(csv_path)])
+
+    # The failure still fails: this discloses the reversal, it does not absolve
+    # the transform.
+    assert result.exit_code != 0
+    assert "Retired 2 previously accepted transfer(s)" in caplog.text
+    assert "moneybin system audit undo" in caplog.text
 
 
 def test_import_file_surfaces_ratified_sign_replay_note(csv_path: Path) -> None:
