@@ -57,6 +57,7 @@ from moneybin.services.account_resolution_types import (
     AccountProposalDict,
     ResolvedAccount,
     SourceAccount,
+    normalize_account_identifier,
 )
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.audit_service import AuditService
@@ -1593,6 +1594,7 @@ def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAcco
             continue
         seen.add(acctid)
         routing = none_if_blank(account.routing_number)
+        normalized_acctid = normalize_account_identifier(acctid)
         institution = account.institution
         fid = none_if_blank(institution.fid if institution else None)
         accounts.append(
@@ -1603,7 +1605,11 @@ def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAcco
                 account_name=f"{source_origin} {ofx_account_type(account) or ''}".strip(),
                 # full_number is a strong ref ONLY when institution/routing-scoped
                 # (contains ':'); a bare number is demoted to a candidate signal.
-                account_number=f"{routing}:{acctid}" if routing else None,
+                account_number=(
+                    f"{routing}:{normalized_acctid}"
+                    if routing and normalized_acctid
+                    else None
+                ),
                 last_four=acctid[-4:],
                 # The FID slug, not source_origin. source_origin comes from <ORG>,
                 # which is a routing code for some issuers ("B1" = Chase), and it

@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import string
 from dataclasses import dataclass
 
 from moneybin.extractors.pdf.metadata import ACCOUNT_ID_MASK_CHARACTERS
+from moneybin.services.account_resolution_types import normalize_account_identifier
 from moneybin.utils import slugify
 
 _DOCUMENT_KEY_HEX_LENGTH = 16
 _DOCUMENT_SOURCE_ORIGIN = "document"
-_ASCII_ALPHANUMERIC = frozenset(string.ascii_letters + string.digits)
 _ACCOUNT_ROUTING_PREFIX_RANGES = ((1, 12), (21, 32), (61, 72))
 
 
@@ -74,9 +73,7 @@ def derive_pdf_account_identity(
     legacy_slug = slugify(legacy_value)
     legacy_source_account_key = f"{issuer_slug}_{legacy_slug}" if legacy_slug else None
 
-    normalized = "".join(
-        character.upper() for character in stripped if character in _ASCII_ALPHANUMERIC
-    )
+    normalized = normalize_account_identifier(stripped)
     is_partial = (
         any(character in ACCOUNT_ID_MASK_CHARACTERS for character in stripped)
         or len(normalized) <= 4

@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+import string
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
 from moneybin.services.ledger_overlap import LedgerOverlap
+
+_ACCOUNT_IDENTIFIER_CHARACTERS = frozenset(string.ascii_letters + string.digits)
+
+
+def normalize_account_identifier(value: str) -> str:
+    """Canonical cross-source form for a complete account identifier."""
+    return "".join(
+        character.upper()
+        for character in value
+        if character in _ACCOUNT_IDENTIFIER_CHARACTERS
+    )
 
 
 class AccountCandidateDict(TypedDict):
