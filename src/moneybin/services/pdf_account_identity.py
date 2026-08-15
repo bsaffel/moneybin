@@ -9,6 +9,7 @@ from moneybin.extractors.pdf.metadata import ACCOUNT_ID_MASK_CHARACTERS
 from moneybin.utils import slugify
 
 _DOCUMENT_KEY_HEX_LENGTH = 16
+_DOCUMENT_SOURCE_ORIGIN = "document"
 _ASCII_ALPHANUMERIC = frozenset(string.ascii_letters + string.digits)
 _ACCOUNT_ROUTING_PREFIX_RANGES = ((1, 12), (21, 32), (61, 72))
 
@@ -38,9 +39,11 @@ class PdfAccountKey:
     """Account keys derived from one PDF without exposing its full identifier."""
 
     source_account_key: str
+    source_origin: str
     last_four: str | None
     scoped_full_number: str | None
     legacy_source_account_key: str | None
+    legacy_source_origin: str | None
 
 
 def derive_pdf_account_identity(
@@ -58,9 +61,11 @@ def derive_pdf_account_identity(
     if not stripped:
         return PdfAccountKey(
             source_account_key=source_account_key,
+            source_origin=_DOCUMENT_SOURCE_ORIGIN,
             last_four=None,
             scoped_full_number=None,
             legacy_source_account_key=None,
+            legacy_source_origin=None,
         )
 
     digits = "".join(character for character in stripped if character.isdigit())
@@ -76,11 +81,11 @@ def derive_pdf_account_identity(
         any(character in ACCOUNT_ID_MASK_CHARACTERS for character in stripped)
         or len(normalized) <= 4
     )
-    strong_scope: str | None = None
-    if issuer_slug != "unknown":
-        strong_scope = issuer_slug
-    elif routing_number and _is_valid_aba_routing_number(routing_number):
-        strong_scope = routing_number
+    strong_scope = (
+        routing_number
+        if routing_number and _is_valid_aba_routing_number(routing_number)
+        else None
+    )
     scoped_full_number = (
         f"{strong_scope}:{normalized}"
         if identifier_is_complete and not is_partial and strong_scope
@@ -89,7 +94,9 @@ def derive_pdf_account_identity(
 
     return PdfAccountKey(
         source_account_key=source_account_key,
+        source_origin=_DOCUMENT_SOURCE_ORIGIN,
         last_four=last_four,
         scoped_full_number=scoped_full_number,
         legacy_source_account_key=legacy_source_account_key,
+        legacy_source_origin=issuer_slug,
     )

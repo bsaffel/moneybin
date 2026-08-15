@@ -1417,12 +1417,13 @@ def test_partial_pdf_legacy_link_is_only_a_candidate(db: Database) -> None:
     )
     src = SourceAccount(
         source_type="pdf",
-        source_origin="chase",
+        source_origin="document",
         source_account_key="pdf_doc_0123456789abcdef",
         account_name="statement",
         last_four="1234",
         institution="Chase",
         legacy_source_account_key="chase_1234",
+        legacy_source_origin="chase",
     )
 
     proposal = AccountResolver(db, actor="system").propose(src)
@@ -1459,12 +1460,13 @@ def test_current_pdf_signal_replaces_legacy_signal_for_same_account(
     )
     src = SourceAccount(
         source_type="pdf",
-        source_origin="chase",
+        source_origin="document",
         source_account_key="pdf_doc_fedcba9876543210",
         account_name="statement",
         last_four="1234",
         institution="Chase",
         legacy_source_account_key="chase_1234",
+        legacy_source_origin="chase",
     )
 
     proposal = AccountResolver(db, actor="system").propose(src)

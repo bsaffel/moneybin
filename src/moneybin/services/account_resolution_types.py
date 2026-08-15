@@ -163,6 +163,8 @@ class SourceAccount:
     persistent_token: str | None = None
     legacy_source_account_key: str | None = None
     """A superseded source key that may nominate a review candidate, never adopt."""
+    legacy_source_origin: str | None = None
+    """The origin that scoped ``legacy_source_account_key`` before replacement."""
 
     explicit_account_id: str | None = None
     force_standalone: bool = False

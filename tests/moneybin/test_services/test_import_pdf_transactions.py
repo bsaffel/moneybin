@@ -1005,7 +1005,7 @@ def test_consecutive_statements_of_one_card_share_one_account(
 def test_distinct_full_pdf_account_numbers_with_same_last_four_do_not_collide(
     db: Database, tmp_path: Path
 ) -> None:
-    """Complete identifiers distinguish accounts that share issuer and last four."""
+    """Validated routing and complete identifiers distinguish similar accounts."""
     svc = ImportService(db)
     account_numbers = ("001234567890", "991234567890")
 
@@ -1015,7 +1015,8 @@ def test_distinct_full_pdf_account_numbers_with_same_last_four_do_not_collide(
                 "Account Number: 1234", f"Account Number: {account_numbers[0]}"
             )
             for line in _standard_text_lines()
-        ],
+        ]
+        + ["Routing Number: 021000021"],
         tables=[_standard_table()],
     )
     first_pdf = tmp_path / "first.pdf"
@@ -1044,7 +1045,8 @@ def test_distinct_full_pdf_account_numbers_with_same_last_four_do_not_collide(
                 "Account Number: 1234", f"Account Number: {account_numbers[1]}"
             )
             for line in _standard_text_lines()
-        ],
+        ]
+        + ["Routing Number: 021000021"],
         tables=[_standard_table()],
     )
     second_pdf = tmp_path / "second.pdf"
@@ -1079,7 +1081,7 @@ def test_distinct_full_pdf_account_numbers_with_same_last_four_do_not_collide(
         "WHERE ref_kind = 'full_number' AND status = 'accepted'"
     ).fetchall()
     assert {row[0] for row in full_number_links} == {
-        f"chase:{number}" for number in account_numbers
+        f"021000021:{number}" for number in account_numbers
     }
     assert len({row[1] for row in full_number_links}) == 2
 

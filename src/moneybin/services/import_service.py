@@ -1497,24 +1497,23 @@ def _pdf_source_account(
     ratifies is exactly the one bound.
 
     Every PDF gets a document-content ``source_native`` key. A complete captured
-    identifier separately becomes a routing- or issuer-scoped ``full_number``
-    strong ref inside the encrypted database; a masked or last-four-only value
-    remains weak evidence. This prevents two same-issuer/same-last-four accounts
-    from sharing a native key while preserving exact-file re-import idempotency.
+    identifier separately becomes a validated-routing-scoped ``full_number``
+    strong ref inside the encrypted database; a masked, last-four-only, or
+    issuer-only value remains weak evidence. This prevents two
+    same-issuer/same-last-four accounts from sharing a native key while
+    preserving exact-file re-import idempotency.
 
     A statement with no readable account number has no account identity of its
     own. Its document key still makes the file idempotent, while
     ``identity_unknown`` sends it through the gate's fallback pick-list.
     """
     from moneybin.services.pdf_account_identity import derive_pdf_account_identity
-    from moneybin.utils import slugify
 
     if decision.fp is None:
         # Defensive: route_pdf_import attaches fp on every outcome that reaches
         # the transactions path; this guards a hand-built RouteDecision.
         raise ValueError("PDF routing returned outcome='transactions' but fp is None")
     issuer = decision.fp.get("issuer", "unknown")
-    issuer_slug = slugify(issuer)
     derived = derive_pdf_account_identity(
         issuer=issuer,
         identifier=decision.metadata.account_id,
@@ -1538,7 +1537,7 @@ def _pdf_source_account(
     return PdfAccountIdentity(
         source=SourceAccount(
             source_type="pdf",
-            source_origin=issuer_slug,
+            source_origin=derived.source_origin,
             source_account_key=native_key,
             account_name=(
                 decision.metadata.account_label
@@ -1548,6 +1547,7 @@ def _pdf_source_account(
             account_number=derived.scoped_full_number,
             institution=issuer or None,
             legacy_source_account_key=derived.legacy_source_account_key,
+            legacy_source_origin=derived.legacy_source_origin,
             # None for a digits-free token ("xxxx"), which correctly denies the
             # institution+last4 signal and routes to name review rather than
             # inventing a strong match.
@@ -4444,7 +4444,7 @@ class ImportService:
         # after routing settles, before begin_import. Only the transactions path
         # resolves an account identity — a seeded document writes no link, so
         # there is nothing to ratify. Exact bytes use a document digest; a
-        # proven-complete issuer/routing-scoped identifier can carry identity
+        # proven-complete routing-scoped identifier can carry identity
         # across statements. A new partial-only statement remains reviewable
         # rather than silently adopting.
         # Carries the gated identity across `begin_import` to the dispatch

@@ -103,12 +103,12 @@ makes a candidate recognizable but is never a key on its own; **institution** an
 | **Plaid** | `account_id` (same connection only) | `mask` | `institution_name` | official account name |
 | **Tabular — aggregator export** (Tiller, Monarch, …, with account info) | *none* — labels are mutable | parsed from the account-label / `Account #` column | a per-row `Institution` column, or parsed from the label | the account label |
 | **Tabular — bare bank export** (Date / Description / Amount only) | *none* | *none* | filename heuristic, or unknown | filename stem (a placeholder) |
-| **PDF statement** | identifier proven complete, scoped by issuer or validated routing number; exact document bytes for re-import only | captured suffix or mask | statement issuer / routing number | labelled account/product name when present |
+| **PDF statement** | identifier proven complete and scoped by a validated routing number; exact document bytes for re-import only | captured suffix or mask | statement issuer / routing number | labelled account/product name when present |
 
 Reading the table precisely requires four caveats:
 
 - **Full numbers stay encrypted and scoped.** A complete identifier from OFX or
-  PDF may be retained only as an issuer/routing-scoped `full_number` account
+  PDF may be retained only as a validated-routing-scoped `full_number` account
   link inside the encrypted database. It never enters the canonical account
   dimension, raw source key, logs, or responses. Partial values remain last-four
   evidence and never auto-adopt.

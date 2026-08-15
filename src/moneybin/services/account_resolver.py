@@ -891,7 +891,11 @@ class AccountResolver:
             f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
             "WHERE status = 'accepted' AND ref_kind = 'source_native' "
             "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
-            [src.source_type, src.source_origin, legacy_key],
+            [
+                src.source_type,
+                src.legacy_source_origin or src.source_origin,
+                legacy_key,
+            ],
         ).fetchone()
         if row is None or str(row[0]) == exclude_account_id:
             return None

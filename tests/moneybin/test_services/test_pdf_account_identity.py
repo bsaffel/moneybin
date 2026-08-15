@@ -1,9 +1,34 @@
 """Tests for PDF account identity derivation."""
 
+from moneybin.extractors.pdf.metadata import StatementMetadata
+from moneybin.extractors.pdf.routing import RouteDecision
+from moneybin.services.import_service import (
+    _pdf_source_account,  # pyright: ignore[reportPrivateUsage]
+)
 from moneybin.services.pdf_account_identity import derive_pdf_account_identity
 
 
-def test_complete_identifier_uses_opaque_document_key_and_scoped_full_number() -> None:
+def _decision(*, issuer: str) -> RouteDecision:
+    return RouteDecision(
+        outcome="transactions",
+        recipe=None,
+        rows=[],
+        metadata=StatementMetadata(
+            account_id="001234567890",
+            period_start=None,
+            period_end=None,
+            opening_balance=None,
+            closing_balance=None,
+            routing_number="021000021",
+            account_id_complete=True,
+        ),
+        confidence=1.0,
+        reason="passed",
+        fp={"issuer": issuer, "headers": [], "page_bucket": "1"},
+    )
+
+
+def test_complete_identifier_without_routing_is_not_a_strong_ref() -> None:
     identity = derive_pdf_account_identity(
         issuer="Chase Bank",
         identifier="0012 3456-7890",
@@ -12,9 +37,11 @@ def test_complete_identifier_uses_opaque_document_key_and_scoped_full_number() -
     )
 
     assert identity.source_account_key == f"pdf_doc_{'a' * 16}"
+    assert identity.source_origin == "document"
     assert identity.last_four == "7890"
-    assert identity.scoped_full_number == "chase-bank:001234567890"
+    assert identity.scoped_full_number is None
     assert identity.legacy_source_account_key == "chase-bank_7890"
+    assert identity.legacy_source_origin == "chase-bank"
     assert "001234567890" not in identity.source_account_key
 
 
@@ -94,14 +121,15 @@ def test_routing_number_scopes_complete_identifier_when_issuer_is_unknown() -> N
     assert identity.scoped_full_number == "021000021:001234567890"
 
 
-def test_known_issuer_scope_is_stable_when_routing_capture_varies() -> None:
-    without_routing = derive_pdf_account_identity(
-        issuer="Chase Bank",
+def test_valid_routing_scope_is_independent_of_heuristic_issuer() -> None:
+    unknown_issuer = derive_pdf_account_identity(
+        issuer="unknown",
+        routing_number="021000021",
         identifier="001234567890",
         document_sha256="3" * 64,
         identifier_is_complete=True,
     )
-    with_routing = derive_pdf_account_identity(
+    known_issuer = derive_pdf_account_identity(
         issuer="Chase Bank",
         routing_number="021000021",
         identifier="001234567890",
@@ -109,8 +137,53 @@ def test_known_issuer_scope_is_stable_when_routing_capture_varies() -> None:
         identifier_is_complete=True,
     )
 
-    assert without_routing.scoped_full_number == "chase-bank:001234567890"
-    assert with_routing.scoped_full_number == without_routing.scoped_full_number
+    assert unknown_issuer.scoped_full_number == "021000021:001234567890"
+    assert known_issuer.scoped_full_number == unknown_issuer.scoped_full_number
+
+
+def test_document_origin_is_independent_of_heuristic_issuer() -> None:
+    unknown_issuer = derive_pdf_account_identity(
+        issuer="unknown",
+        identifier="001234567890",
+        document_sha256="7" * 64,
+        identifier_is_complete=True,
+    )
+    known_issuer = derive_pdf_account_identity(
+        issuer="Chase Bank",
+        identifier="001234567890",
+        document_sha256="7" * 64,
+        identifier_is_complete=True,
+    )
+
+    assert unknown_issuer.source_origin == "document"
+    assert known_issuer.source_origin == unknown_issuer.source_origin
+    assert known_issuer.source_account_key == unknown_issuer.source_account_key
+
+
+def test_pdf_source_native_tuple_survives_issuer_detector_changes() -> None:
+    unknown_issuer = _pdf_source_account(
+        _decision(issuer="unknown"),
+        resolved_alias="statement",
+        account_id_override=None,
+        document_sha256="8" * 64,
+    ).source
+    known_issuer = _pdf_source_account(
+        _decision(issuer="Chase Bank"),
+        resolved_alias="statement",
+        account_id_override=None,
+        document_sha256="8" * 64,
+    ).source
+
+    assert (
+        unknown_issuer.source_type,
+        unknown_issuer.source_origin,
+        unknown_issuer.source_account_key,
+    ) == (
+        known_issuer.source_type,
+        known_issuer.source_origin,
+        known_issuer.source_account_key,
+    )
+    assert known_issuer.account_number == "021000021:001234567890"
 
 
 def test_checksum_invalid_routing_number_cannot_create_strong_scope() -> None:
