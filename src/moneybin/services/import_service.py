@@ -4645,7 +4645,11 @@ class ImportService:
 
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL
-        from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
+        from moneybin.tables import (
+            ACCOUNT_LINKS,
+            TABULAR_ACCOUNTS,
+            TABULAR_TRANSACTIONS,
+        )
 
         if decision.recipe is None:
             # Should never happen: route_pdf_import only emits outcome="transactions"
@@ -4667,15 +4671,6 @@ class ImportService:
             raise ValueError(
                 "PDF routing returned outcome='transactions' but fp is None"
             )
-        from moneybin.utils import slugify
-
-        legacy_transaction_account_key = (
-            source_account.legacy_source_account_key or resolved_alias
-        )
-        legacy_transaction_origin = source_account.legacy_source_origin or slugify(
-            fp.get("issuer", "unknown")
-        )
-
         # That key is a source-NATIVE key (DP-1), exactly like the tabular
         # path's — never a canonical account id. Registering it with
         # AccountResolver is what writes the native->canonical mapping staging
@@ -4722,6 +4717,20 @@ class ImportService:
         if minted := _created_account(source_account, resolved_account):
             result.accounts_created = (minted,)
 
+        # Accepted links preserve the historical source tuple. Reconstructing it
+        # from today's issuer detector would miss rows imported under an older
+        # classification and fail to retire their transaction hashes.
+        legacy_pdf_refs = [
+            (str(row[0]), str(row[1]))
+            for row in self._db.execute(
+                f"SELECT source_origin, ref_value FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized account id
+                "WHERE status = 'accepted' AND ref_kind = 'source_native' "
+                "AND source_type = 'pdf' AND account_id = ?",
+                [resolved_account.account_id],
+            ).fetchall()
+            if (str(row[0]), str(row[1])) != (identity_origin, account_id)
+        ]
+
         sign_conv: str = decision.recipe.sign_convention
 
         # Per-content-key dedup counter: when two rows in the same statement
@@ -4751,7 +4760,9 @@ class ImportService:
             )
         content_dup_counter: dict[str, int] = {}
         rows_list: list[dict[str, Any]] = []
-        legacy_transaction_ids: list[str] = []
+        legacy_transaction_ids: dict[tuple[str, str], list[str]] = {
+            ref: [] for ref in legacy_pdf_refs
+        }
         _zero = Decimal("0")
         for idx, row in enumerate(decision.rows, start=1):
             amt = _normalize_pdf_amount(row, sign_conv)
@@ -4787,17 +4798,20 @@ class ImportService:
             raw_hash = content_key if dup_idx == 0 else f"{content_key}|{dup_idx}"
             digest = hashlib.sha256(raw_hash.encode()).hexdigest()[:16]
             transaction_id = f"pdf_{digest}"
-            legacy_content_key = (
-                f"{period_marker}|{date_iso}|{raw_amount}|{raw_debit}|"
-                f"{raw_credit}|{desc}|{legacy_transaction_account_key}"
-            )
-            legacy_raw_hash = (
-                legacy_content_key
-                if dup_idx == 0
-                else f"{legacy_content_key}|{dup_idx}"
-            )
-            legacy_digest = hashlib.sha256(legacy_raw_hash.encode()).hexdigest()[:16]
-            legacy_transaction_ids.append(f"pdf_{legacy_digest}")
+            for legacy_ref in legacy_pdf_refs:
+                legacy_content_key = (
+                    f"{period_marker}|{date_iso}|{raw_amount}|{raw_debit}|"
+                    f"{raw_credit}|{desc}|{legacy_ref[1]}"
+                )
+                legacy_raw_hash = (
+                    legacy_content_key
+                    if dup_idx == 0
+                    else f"{legacy_content_key}|{dup_idx}"
+                )
+                legacy_digest = hashlib.sha256(legacy_raw_hash.encode()).hexdigest()[
+                    :16
+                ]
+                legacy_transaction_ids[legacy_ref].append(f"pdf_{legacy_digest}")
 
             rows_list.append({
                 "transaction_id": transaction_id,
@@ -4820,24 +4834,28 @@ class ImportService:
             # transaction hashes. If the exact legacy hash already exists, keep
             # that raw row authoritative instead of inserting its replacement
             # under a second id and double-counting the statement after refresh.
-            legacy_placeholders = ",".join(["?"] * len(legacy_transaction_ids))
-            legacy_rows = self._db.execute(
-                f"SELECT transaction_id FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # placeholders are code-owned; values parameterized
-                "WHERE source_type = 'pdf' AND source_origin = ? AND account_id = ? "
-                f"AND transaction_id IN ({legacy_placeholders})",
-                [
-                    legacy_transaction_origin,
-                    legacy_transaction_account_key,
-                    *legacy_transaction_ids,
-                ],
-            ).fetchall()
-            existing_legacy_ids = {str(row[0]) for row in legacy_rows}
+            superseded_row_indexes: set[int] = set()
+            for (
+                legacy_origin,
+                legacy_key,
+            ), transaction_ids in legacy_transaction_ids.items():
+                legacy_placeholders = ",".join(["?"] * len(transaction_ids))
+                legacy_rows = self._db.execute(
+                    f"SELECT transaction_id FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # placeholders are code-owned; values parameterized
+                    "WHERE source_type = 'pdf' AND source_origin = ? AND account_id = ? "
+                    f"AND transaction_id IN ({legacy_placeholders})",
+                    [legacy_origin, legacy_key, *transaction_ids],
+                ).fetchall()
+                existing_legacy_ids = {str(row[0]) for row in legacy_rows}
+                superseded_row_indexes.update(
+                    index
+                    for index, transaction_id in enumerate(transaction_ids)
+                    if transaction_id in existing_legacy_ids
+                )
             rows_list = [
                 row
-                for row, legacy_id in zip(
-                    rows_list, legacy_transaction_ids, strict=True
-                )
-                if legacy_id not in existing_legacy_ids
+                for index, row in enumerate(rows_list)
+                if index not in superseded_row_indexes
             ]
             # on_conflict="ignore": tabular_transactions PRIMARY KEY is
             # (transaction_id, account_id, source_file). Pre-count by the SAME

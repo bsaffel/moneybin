@@ -1470,6 +1470,35 @@ def test_partial_pdf_legacy_link_is_only_a_candidate(db: Database) -> None:
     ]
 
 
+def test_legacy_pdf_candidate_survives_issuer_detector_change(db: Database) -> None:
+    AccountLinksRepo(db).insert(
+        link_id="link_historical_issuer",
+        account_id="acct_legacy_pdf",
+        ref_kind="source_native",
+        ref_value="unknown_1234",
+        source_type="pdf",
+        source_origin="unknown",
+        decided_by="auto",
+        actor="system",
+    )
+    src = SourceAccount(
+        source_type="pdf",
+        source_origin="document",
+        source_account_key="pdf_doc_0123456789abcdef",
+        account_name="statement",
+        last_four="1234",
+        institution="Chase",
+        legacy_source_account_key="chase_1234",
+        legacy_source_origin="chase",
+    )
+
+    proposal = AccountResolver(db, actor="system").propose(src)
+
+    assert [
+        (candidate.account_id, candidate.signal) for candidate in proposal.candidates
+    ] == [("acct_legacy_pdf", "legacy_pdf_identity")]
+
+
 def test_current_pdf_signal_replaces_legacy_signal_for_same_account(
     db: Database,
 ) -> None:

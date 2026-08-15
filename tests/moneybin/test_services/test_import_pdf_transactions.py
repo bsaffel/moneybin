@@ -1063,9 +1063,9 @@ def test_reimport_retires_pre_document_identity_pdf_transaction_hashes(
         link_id="legacy_pdf_link",
         account_id="acct_legacy_pdf",
         ref_kind="source_native",
-        ref_value="chase_1234",
+        ref_value="unknown_1234",
         source_type="pdf",
-        source_origin="chase",
+        source_origin="unknown",
         decided_by="auto",
         actor="system",
     )
@@ -1074,13 +1074,13 @@ def test_reimport_retires_pre_document_identity_pdf_transaction_hashes(
         (("2024-01-15", "Coffee Shop", "-50.00"), ("2024-01-20", "Paycheck", "150.00")),
         start=1,
     ):
-        content_key = f"{period}|{day}|{amount}|0|0|{description}|chase_1234"
+        content_key = f"{period}|{day}|{amount}|0|0|{description}|unknown_1234"
         transaction_id = f"pdf_{hashlib.sha256(content_key.encode()).hexdigest()[:16]}"
         db.execute(
             "INSERT INTO raw.tabular_transactions "
             "(transaction_id, account_id, transaction_date, amount, description, "
             "source_file, source_type, source_origin, import_id, row_number) "
-            "VALUES (?, 'chase_1234', ?, ?, ?, ?, 'pdf', 'chase', "
+            "VALUES (?, 'unknown_1234', ?, ?, ?, ?, 'pdf', 'unknown', "
             "'legacy_import', ?)",
             [transaction_id, day, amount, description, str(pdf), row_number],
         )
@@ -2369,7 +2369,7 @@ def test_anchorless_pdf_surfaces_pre_document_identity_binding(
         ref_kind="source_native",
         ref_value="statement",
         source_type="pdf",
-        source_origin="chase",
+        source_origin="unknown",
         decided_by="user",
         actor="system",
     )

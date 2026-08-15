@@ -811,8 +811,7 @@ class AccountResolver:
         empty set. Off by default so ``accounts_links_run`` isn't flooded with an
         all-accounts proposal for every provisional account.
         """
-        legacy = self._legacy_source_candidate(src, exclude_account_id)
-        legacy_candidates = [legacy] if legacy is not None else []
+        legacy_candidates = self._legacy_source_candidates(src, exclude_account_id)
         try:
             out: list[_Candidate] = []
             if (
@@ -899,31 +898,54 @@ class AccountResolver:
             logger.debug("core.dim_accounts unavailable; no candidates")
             return legacy_candidates
 
-    def _legacy_source_candidate(
+    def _legacy_source_candidates(
         self, src: SourceAccount, exclude_account_id: str
-    ) -> _Candidate | None:
-        """Return a superseded PDF native link as review-only evidence."""
+    ) -> list[_Candidate]:
+        """Return superseded PDF native links as review-only evidence.
+
+        Search historical PDF refs by their stable final token because issuer
+        classification can change between the old import and today's detector.
+        """
         legacy_key = src.legacy_source_account_key
         if not legacy_key or legacy_key == src.source_account_key:
-            return None
-        row = self._db.execute(
-            f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            return []
+        rows = self._db.execute(
+            f"SELECT account_id, source_origin, ref_value "  # noqa: S608  # TableRef + parameterized values
+            f"FROM {ACCOUNT_LINKS.full_name} "
             "WHERE status = 'accepted' AND ref_kind = 'source_native' "
-            "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
-            [
-                src.source_type,
-                src.legacy_source_origin or src.source_origin,
-                legacy_key,
-            ],
-        ).fetchone()
-        if row is None or str(row[0]) == exclude_account_id:
-            return None
-        return _Candidate(
-            account_id=str(row[0]),
-            signal="legacy_pdf_identity",
-            value="legacy_pdf_identity",
-            confidence=0.5,
-        )
+            "AND source_type = ? ORDER BY account_id, source_origin, ref_value",
+            [src.source_type],
+        ).fetchall()
+        expected_origin = src.legacy_source_origin or src.source_origin
+        exact = [
+            row
+            for row in rows
+            if str(row[1]) == expected_origin and str(row[2]) == legacy_key
+        ]
+        if src.source_type == "pdf":
+            historical = [
+                row
+                for row in rows
+                if row not in exact
+                and (
+                    str(row[2]).rpartition("_")[2] == src.last_four
+                    if src.last_four
+                    else str(row[2]) == legacy_key
+                )
+            ]
+        else:
+            historical = []
+        candidates = [
+            _Candidate(
+                account_id=str(row[0]),
+                signal="legacy_pdf_identity",
+                value="legacy_pdf_identity",
+                confidence=0.5,
+            )
+            for row in [*exact, *historical]
+            if str(row[0]) != exclude_account_id
+        ]
+        return _dedupe_candidates(candidates)
 
     def _reissue_candidates(
         self, src: SourceAccount, exclude_account_id: str
