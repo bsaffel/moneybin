@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -123,7 +124,9 @@ def stub_extract(monkeypatch: pytest.MonkeyPatch) -> list[PdfDocument]:
     docs: list[PdfDocument] = [_standard_doc()]
 
     class _StubExtractor:
-        def extract(self, _path: Path) -> PdfDocument:
+        def extract(
+            self, _path: Path, *, source_bytes: bytes | None = None
+        ) -> PdfDocument:
             return docs[0]
 
     monkeypatch.setattr(
@@ -187,6 +190,25 @@ def test_apply_reconciling_response_loads_transactions(
         "WHERE source_type = 'pdf'"
     ).fetchone()
     assert loaded is not None and loaded[0] == 2
+
+
+def test_bridge_apply_reads_path_once_for_hash_and_extraction(
+    db: Database, tmp_path: Path
+) -> None:
+    """Bridge apply hashes and parses the same immutable byte snapshot."""
+    path = _pdf_path(tmp_path)
+    source_bytes = path.read_bytes()
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=_standard_doc(),
+    ) as extract:
+        _apply_bridge(db, path, _bridge_response())
+
+    extract.assert_called_once_with(
+        path.resolve(),
+        source_bytes=source_bytes,
+    )
 
 
 def test_apply_persists_new_format(
@@ -588,7 +610,9 @@ def test_apply_extraction_failure_bumps_failed_metric(
     from moneybin.metrics.registry import PDF_IMPORT_TOTAL
 
     class _BoomExtractor:
-        def extract(self, _path: Path) -> PdfDocument:
+        def extract(
+            self, _path: Path, *, source_bytes: bytes | None = None
+        ) -> PdfDocument:
             raise ValueError("could not extract text from PDF")
 
     monkeypatch.setattr(

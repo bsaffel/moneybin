@@ -3713,12 +3713,12 @@ class ImportService:
         #    the expectation; these re-executed rows are what we reconcile and
         #    load — so the persisted recipe is proven to reproduce them.
         canonical = file_path.resolve()
-        file_sha256 = source_sha256(canonical, source_bytes)
+        immutable_source_bytes = (
+            source_bytes if source_bytes is not None else canonical.read_bytes()
+        )
+        file_sha256 = source_sha256(canonical, immutable_source_bytes)
         try:
-            if source_bytes is None:
-                doc = PDFExtractor().extract(canonical)
-            else:
-                doc = PDFExtractor().extract(canonical, source_bytes=source_bytes)
+            doc = PDFExtractor().extract(canonical, source_bytes=immutable_source_bytes)
             decision = route_forced_recipe(doc, response.recipe)
         except Exception:
             # Mirror _import_pdf: a failed extraction/route is a failed PDF
@@ -4336,7 +4336,10 @@ class ImportService:
         from moneybin.tables import PDF_SEEDS
 
         canonical = file_path.resolve()
-        file_sha256 = source_sha256(canonical, source_bytes)
+        immutable_source_bytes = (
+            source_bytes if source_bytes is not None else canonical.read_bytes()
+        )
+        file_sha256 = source_sha256(canonical, immutable_source_bytes)
         result = ImportResult(file_path=str(canonical), file_type="pdf")
         resolved_alias = _pdf_alias(canonical)
 
@@ -4345,10 +4348,7 @@ class ImportService:
         # a dangling import row — begin_import below marks the commitment to a
         # write (transactions or seed).
         try:
-            if source_bytes is None:
-                doc = PDFExtractor().extract(canonical)
-            else:
-                doc = PDFExtractor().extract(canonical, source_bytes=source_bytes)
+            doc = PDFExtractor().extract(canonical, source_bytes=immutable_source_bytes)
             decision = route_pdf_import(doc, self._db)
         except Exception:
             record_counter(

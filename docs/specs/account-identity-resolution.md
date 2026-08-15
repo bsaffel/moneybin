@@ -218,8 +218,10 @@ the existing repo-enforced-invariant pattern):**
 - **PDF document identity is not account identity.** A PDF `source_native` value
   is `pdf_doc_<document digest>`, which makes exact-file re-import idempotent.
   Cross-document adoption requires a proven-complete `full_number` scoped by a
-  known issuer or validated routing number. Masked, suffix-only, bridge-authored,
-  and otherwise unproven captures never produce that ref. The former
+  known issuer, falling back to a validated routing number only when the issuer
+  is unknown. That priority keeps the scope stable when routing capture varies
+  across statements. Masked, suffix-only, bridge-authored, and otherwise
+  unproven captures never produce that ref. The former
   issuer-plus-last-four PDF derivation is consulted only as
   `legacy_pdf_identity` review evidence and does not suppress current candidates.
 

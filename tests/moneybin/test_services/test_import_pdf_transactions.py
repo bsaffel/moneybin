@@ -472,6 +472,28 @@ def test_pdf_import_extracts_supplied_immutable_bytes(
     )
 
 
+@pytest.mark.integration
+def test_pdf_import_reads_path_once_for_hash_and_extraction(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """A path import hashes and parses the same immutable byte snapshot."""
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    source_bytes = fake_pdf.read_bytes()
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ) as extract:
+        svc.import_file(fake_pdf, refresh=False)
+
+    extract.assert_called_once_with(
+        fake_pdf.resolve(),
+        source_bytes=source_bytes,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test 2: Replay — saved format found, rows land in tabular_transactions, no new format
 # ---------------------------------------------------------------------------
