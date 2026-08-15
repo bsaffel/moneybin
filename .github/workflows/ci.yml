@@ -240,7 +240,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2]
+        group: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
 
@@ -258,10 +258,13 @@ jobs:
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       # Shard the e2e suite with pytest-split, same pattern as test-unit.
-      # 2-way is enough: overall PR time is floored by the ~5 min Scenarios
-      # workflow, so halving e2e (~6 min -> ~3 min) already clears it. Count-
-      # based split is fine -- e2e tests are uniform and this job no longer
-      # gates the critical path. No coverage here, so no combine job.
+      # 4-way, and it splits cleanly at that width: e2e's biggest loadscope
+      # group (a class in test_e2e_mutating.py) costs well under a shard's
+      # per-worker share, so no shard is pinned to one module the way
+      # integration shard 4 is. Widening past 4 keeps helping but spends
+      # concurrency the workflow doesn't have to spare — CI plus Scenarios
+      # already runs 19 jobs against a 20-job standard-runner ceiling.
+      # No coverage here, so no combine job.
       - name: Test
         run: |
           uv run pytest tests/ -m e2e -v \
