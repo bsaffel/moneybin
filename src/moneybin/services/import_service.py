@@ -935,12 +935,10 @@ def _to_account_number_mask(raw: str | None) -> str | None:
     consumers treat as already masked. Apply the reduction at the import
     boundary so the raw schema's privacy contract is preserved.
 
-    Normalisation is load-bearing for account identity, not cosmetic. The
-    output feeds the source-native account key, so every rendering of ONE card
-    must reduce to one value: "****1234", "xxxx1234" and "XXXX XXXX XXXX 1234"
-    are the same account and must not key three different ways. Returning the
-    captured token verbatim for mask-prefixed values did exactly that, so
-    consecutive statements of one card never matched each other.
+    Normalisation is load-bearing for privacy and partial-evidence consistency,
+    not PDF source-native identity. The output populates the masked raw-account
+    field and candidate display; PDF identity is derived separately from the
+    document digest and usable statement evidence.
 
     Returns the original string when fewer than 4 digits are present (e.g. an
     institution-specific token, or a fully-masked "xxxx") so we never silently
