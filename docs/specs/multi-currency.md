@@ -393,8 +393,8 @@ Numbered, testable. Tagged by phase.
     source, fetched_at)`, unique on `(from_currency, to_currency, rate_date, source)`) or a
     user override in `app.*` (Req 14). A "show me the rate" path exposes the exact rate
     behind any converted number (consistent with the lineage promise).
-11. **Free reference-rate source.** Rates fetch lazily on first need from **Frankfurter**
-    (ECB-backed, no auth, historical to 1999), cached in `raw.exchange_rates`.
+11. **Free reference-rate source.** Rates come from **Frankfurter** (ECB-backed, no
+    auth, historical to 1999), cached in `raw.exchange_rates`.
     `ExchangeRate.host`/`open.er-api.com` are documented fallbacks. **Only currency
     codes and dates leave the machine — never amounts or PII** (same structural-signal
     posture as categorization redaction).
@@ -419,6 +419,52 @@ Numbered, testable. Tagged by phase.
 16. **Investment bridge (display).** Investment holdings (which carry their own
     `currency_code` per `investments-data-model.md`) convert to home currency for a
     unified net-worth number through this same layer.
+17. **Each row prices at its own date.** A converted figure uses the rate for the
+    date that row carries — a transaction's `transaction_date`, a daily balance's
+    `balance_date` — never a single as-of rate applied across a range. A report
+    spanning three years therefore needs a rate per date it touches, which is what
+    makes Requirement 18 necessary. Resolution of a non-trading date is Requirement
+    13's; this requirement fixes only *which* date is asked for.
+18. **Rates are gathered during refresh, not during a report read.** A `rates` step
+    runs last in the refresh cascade and caches the span the profile's own rows
+    imply: for each currency reachable from `core.fct_transactions`,
+    `core.fct_balances_daily`, `core.fct_investment_transactions` or
+    `core.dim_holdings`, one provider call covering the earliest date that currency
+    appears through today. Coverage is tracked as a span bounded by the newest
+    stored `rate_date`, never as a set of dates — a reference series has legitimate
+    holes on every weekend and holiday, and a date-set model would re-request each
+    one forever.
+
+    Placement is a correctness constraint, not a preference. A report read opens
+    the database read-only; fetching there would need the exclusive per-profile
+    writer lock behind a command that looks read-only, and would fail whenever a
+    sync held it. Refresh already holds that lock. The step runs after `transform`
+    because the pairs and dates are derived from `core.*`, and last because nothing
+    downstream consumes it, so a provider outage costs the run nothing that had
+    already succeeded. A pair whose call fails is reported and retried next run;
+    a profile with no home currency set fetches nothing.
+
+    This does not weaken Requirement 12: a rate that is still missing at read time
+    is an explicit surfaced error, never a substitution.
+
+    **Open for the conversion layer — the weekday-holiday hole.** A complete
+    backfill still leaves no row on a weekday the market was closed; verified
+    live 2026-08-15, the EUR/USD series skips Thursday 2026-01-01 entirely. A
+    transaction dated that day therefore misses the cache, and
+    `_last_publication_day` deliberately does not hop a weekday, so
+    `CurrencyService.resolve_rate` falls through to a live fetch **and a cache
+    write** — on a report read that opened the database read-only. The
+    conversion layer must not reach that path.
+
+    The backfill is what makes this fixable. `_last_publication_day`'s docstring
+    rejects a general "nearest earlier stored day" fallback because a missing
+    weekday is ambiguous — closed market, or nobody fetched it yet. Coverage
+    recorded as a span removes the ambiguity: **inside** `[earliest stored,
+    newest stored]` for a pair, a missing date is provably a non-publication
+    day and may resolve back to the last stored one; **outside** that span it is
+    genuinely unfetched and stays an error. Resolving backward within proven
+    coverage is not a guess, and it is what lets Requirement 17 price a
+    holiday-dated row offline.
 
 ### M1K.3 — Realized FX gain/loss
 

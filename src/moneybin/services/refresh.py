@@ -2,7 +2,7 @@
 
 "Refresh" means: update everything in the data warehouse based on the
 latest new data that loaders wrote to ``raw.*``. It is the operational
-verb that wraps four source-agnostic steps:
+verb that wraps five source-agnostic steps:
 
 1. **Cross-source matching** — :class:`TransactionMatcher` resolves
    identity across `source_type='ofx' | 'csv' | 'plaid' | ...` so the
@@ -17,8 +17,16 @@ verb that wraps four source-agnostic steps:
    overwritten.
 4. **Identity backfill** — :class:`AccountLinksService` and
    :class:`MerchantLinksService` generate reviewable identity proposals.
+5. **Exchange-rate backfill** — :func:`~moneybin.services.rate_backfill.
+   run_rate_backfill` caches the reference rates this profile's own rows
+   imply, so a later report converts without reaching the network. It runs
+   here rather than lazily on the read path because refresh already holds the
+   exclusive writer lock a cache write needs; a report that fetched would take
+   that lock behind a read-only-looking command and fail whenever a sync held
+   it. It runs last because nothing downstream reads its output, so a provider
+   outage costs the run nothing that had already succeeded.
 
-Matching, categorization, and identity backfill are best-effort: a stage
+Matching, categorization, identity backfill, and the rate gather are best-effort: a stage
 failure never aborts the pipeline, so a partial run still leaves raw rows
 durable and core tables rebuilt. Matcher/categorizer crashes surface their
 error strings; identity failures surface only their fixed domain labels in
@@ -46,13 +54,20 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from datetime import date
+from typing import TYPE_CHECKING, Any, Literal
 
 import duckdb
 
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.services.transform_service import TransformService
+
+if TYPE_CHECKING:
+    # Type-only: importing this at runtime would pull polars into the CLI
+    # cold-start path through currency_service, which every `moneybin --help`
+    # and every shell completion would then pay for.
+    from moneybin.services.rate_backfill import RateBackfillResult
 
 logger = logging.getLogger(__name__)
 
@@ -91,18 +106,21 @@ class RefreshResult:
     matching_error: str | None = None
     categorization_error: str | None = None
     identity_errors: tuple[str, ...] = field(default_factory=tuple)
+    # None means the step did not run — not that it ran and found nothing.
+    rate_backfill: RateBackfillResult | None = None
     # tuple, not list: frozen=True blocks reassignment but not in-place
     # mutation of a list field — a tuple keeps the result carrier truly immutable.
     self_heal_actions: tuple[SelfHealRecord, ...] = field(default_factory=tuple)
 
 
-RefreshStep = Literal["gsheet", "match", "transform", "categorize", "identity"]
+RefreshStep = Literal["gsheet", "match", "transform", "categorize", "identity", "rates"]
 CANONICAL_STEPS: tuple[RefreshStep, ...] = (
     "gsheet",
     "match",
     "transform",
     "categorize",
     "identity",
+    "rates",
 )
 
 
@@ -124,8 +142,9 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
 
     When ``steps`` is provided, only the named steps execute, in canonical
     order (``gsheet`` → ``match`` → ``transform`` → ``categorize`` →
-    ``identity``) regardless of the input list's order. Dependencies enforce
-    the order: categorize reads SQLMesh-built views, so running it after
+    ``identity`` → ``rates``) regardless of the input list's order.
+    Dependencies enforce the order: categorize reads SQLMesh-built views and
+    rates derives its currency pairs from ``core.*``, so running both after
     transform is mandatory; the parameter cannot reorder this.
 
     Skipping ``transform`` returns ``RefreshResult(applied=False,
@@ -136,7 +155,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     Args:
         db: Database handle to run against.
         steps: Subset of ``("gsheet", "match", "transform", "categorize",
-            "identity")`` to run. Defaults to every stage when None.
+            "identity", "rates")`` to run. Defaults to every stage when None.
 
     Raises:
         UserError(code=error_codes.REFRESH_UNKNOWN_STEP): if any element of ``steps``
@@ -232,6 +251,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             matching_error=matching_error,
             categorization_error=categorization_error,
             identity_errors=identity_errors,
+            rate_backfill=_run_rates_step(db) if "rates" in requested else None,
         )
 
     apply_result = TransformService(db).apply()
@@ -257,6 +277,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         matching_error=matching_error,
         categorization_error=categorization_error,
         identity_errors=identity_errors,
+        rate_backfill=_run_rates_step(db) if "rates" in requested else None,
     )
 
 
@@ -366,6 +387,54 @@ def _run_categorize_step(db: Database) -> str | None:
     except Exception:  # noqa: BLE001 — informational post-step read; never fail refresh
         logger.debug("Auto-rule proposal stats unavailable", exc_info=True)
     return None
+
+
+def _run_rates_step(db: Database) -> RateBackfillResult | None:
+    """Gather the exchange rates this profile's own rows imply.
+
+    Runs here rather than on the report read path. Display conversion prices
+    every row at its own date, so a report spanning years needs a rate per day;
+    fetching those lazily would put a network call and the exclusive writer lock
+    behind a command that looks read-only, and it would fail outright whenever a
+    sync already held that lock. Refresh holds the lock and is already slow.
+
+    Returns None when there is nothing to gather — no home currency set means
+    nothing is ever converted, so no rate is implied.
+    """
+    from moneybin.connectors.rates.frankfurter import (  # noqa: PLC0415
+        FrankfurterRateAdapter,
+    )
+    from moneybin.repositories.profile_settings_repo import (  # noqa: PLC0415
+        ProfileSettingsRepo,
+    )
+    from moneybin.services.rate_backfill import run_rate_backfill  # noqa: PLC0415
+
+    try:
+        home_currency = ProfileSettingsRepo(db).get_home_currency()
+    except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
+        logger.error(
+            f"Rate backfill could not read the home currency: {type(exc).__name__}"
+        )
+        return None
+    if home_currency is None:
+        logger.debug("Rate backfill skipped: no home currency is set")
+        return None
+
+    try:
+        return run_rate_backfill(
+            db,
+            home_currency=home_currency,
+            through=date.today(),
+            adapter=FrankfurterRateAdapter(),
+        )
+    except (duckdb.CatalogException, duckdb.BinderException):
+        # core.* not built yet — the same first-load precondition the matching
+        # stage tolerates, not a failure worth reporting.
+        logger.debug("Rate backfill skipped (core views may not exist yet)")
+        return None
+    except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
+        logger.error(f"Rate backfill failed: {type(exc).__name__}")
+        return None
 
 
 def _run_identity_step(db: Database) -> tuple[str, ...]:

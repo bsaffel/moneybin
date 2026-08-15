@@ -38,7 +38,7 @@ Tier derivation summary:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -511,6 +511,14 @@ class RefreshRunPayload:
     categorization_error: Annotated[str | None, DataClass.DESCRIPTION]
     identity_errors: Annotated[list[str], DataClass.TXN_TYPE]
     self_heal_actions: list[SelfHealActionRow]
+    # Counts of rates gathered, and the pairs whose provider call failed. A
+    # currency pair is CURRENCY (Tier.LOW): it names no account and discloses
+    # no amount. Both are None when the rates step did not run — distinct from
+    # 0, which means it ran and had nothing to fetch.
+    rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
+    rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
 
 
 # ---------------------------------------------------------------------------

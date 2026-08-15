@@ -37,6 +37,7 @@ class RefreshStepChoice(StrEnum):
     TRANSFORM = "transform"
     CATEGORIZE = "categorize"
     IDENTITY = "identity"
+    RATES = "rates"
 
 
 def refresh_command(
@@ -47,20 +48,25 @@ def refresh_command(
         "--step",
         help=(
             "Limit the cascade to one or more steps "
-            "(repeatable; choose from match, transform, categorize, identity). "
-            "Default: full cascade. Steps always run in canonical order "
-            "(match → transform → categorize → identity) regardless of flag order."
+            "(repeatable; choose from match, transform, categorize, identity, "
+            "rates). Default: full cascade. Steps always run in canonical order "
+            "(match → transform → categorize → identity → rates) regardless of "
+            "flag order."
         ),
     ),
 ) -> None:
-    """Run refresh: matching, SQLMesh apply, categorization, identity backfill.
+    """Run refresh: matching, apply, categorization, identity, exchange rates.
 
     Single user-facing entry point for refreshing derived state from raw
     inputs. Idempotent. Matching and categorization are best-effort: a real
     crash in either is surfaced (a ⚠️ warning here, `matching_error` /
     `categorization_error` + `recovery_actions` under `--output json`) but
     does not fail the command. Identity failures expose only their domain in
-    `identity_errors`; only a SQLMesh apply error exits non-zero.
+    `identity_errors`. The rates step gathers the exchange rates this
+    profile's own transactions, balances and holdings imply, so reports can
+    convert without reaching the network; a pair the provider could not answer
+    is reported and retried next run. Only a SQLMesh apply error exits
+    non-zero.
     """
     from moneybin.cli.output import render_or_json  # noqa: PLC0415
     from moneybin.database import get_database  # noqa: PLC0415
@@ -93,6 +99,11 @@ def refresh_command(
         logger.warning(f"⚠️  Categorization step failed: {result.categorization_error}")
     for domain in result.identity_errors:
         logger.warning(f"⚠️  {domain.title()} identity backfill failed")
+    if result.rate_backfill is not None and result.rate_backfill.pairs_failed:
+        # Named, not counted: which pair is missing decides whether the gap
+        # matters, and a currency pair discloses no amount.
+        pairs = ", ".join(result.rate_backfill.pairs_failed)
+        logger.warning(f"⚠️  Exchange rates unavailable for {pairs}")
     has_step_error = (
         result.matching_error is not None
         or result.categorization_error is not None

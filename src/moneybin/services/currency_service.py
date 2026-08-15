@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -392,14 +393,25 @@ class CurrencyService:
         return None if row is None else row[0]
 
     def _store(self, observation: RateObservation) -> int:
-        """Append one observation to the cache, returning rows actually written.
+        """Append one observation to the cache, returning rows actually written."""
+        return self.store_observations((observation,))
+
+    def store_observations(self, observations: Sequence[RateObservation]) -> int:
+        """Append observations to the cache, returning rows actually written.
 
         ``on_conflict="ignore"`` keeps the row already stored for a key: the
         table is append-only because a rate a provider published for a date is a
         historical fact. The count is rows the insert WROTE, never rows offered —
-        a weekend request re-offers Friday's row every time, so counting the
-        frame would make this climb steadily through a completely stalled feed.
+        a weekend request re-offers Friday's row every time, and a backfill
+        re-offers a whole cached span, so counting the frame would make this
+        climb steadily through a completely stalled feed.
+
+        Public because the backfill arrives with a span rather than a single
+        rate, and a second write path into an append-only table would be a
+        second place for the quantization and the counter to drift.
         """
+        if not observations:
+            return 0
         frame = pl.DataFrame(
             [
                 {
@@ -409,13 +421,17 @@ class CurrencyService:
                     "rate": _as_stored(observation.rate),
                     "source_type": observation.source_type,
                 }
+                for observation in observations
             ],
             schema=_RAW_RATE_SCHEMA,
         )
         written = self._db.ingest_dataframe(
             EXCHANGE_RATES.full_name, frame, on_conflict="ignore"
         )
-        FX_RATE_ROWS_WRITTEN_TOTAL.labels(source_type=observation.source_type).inc(
+        # Attributed to the source the rows came from. A mixed batch is not a
+        # shape any caller produces — one call fetches one pair from one
+        # provider — so the first observation's source names the whole frame.
+        FX_RATE_ROWS_WRITTEN_TOTAL.labels(source_type=observations[0].source_type).inc(
             written
         )
         return written

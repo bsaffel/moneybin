@@ -117,6 +117,10 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
         calls.append("identity")
         return ()
 
+    def _rates(_db: Database) -> Any:
+        calls.append("rates")
+        return None
+
     monkeypatch.setattr(
         "moneybin.services.refresh._run_gsheet_step",
         _gsheet,
@@ -137,6 +141,11 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
     monkeypatch.setattr(
         "moneybin.services.refresh._run_identity_step",
         _identity,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "moneybin.services.refresh._run_rates_step",
+        _rates,
         raising=False,
     )
 
@@ -275,7 +284,14 @@ def test_identity_runs_after_categorize(monkeypatch: pytest.MonkeyPatch) -> None
 
     refresh(MagicMock())
 
-    assert calls == ["gsheet", "match", "transform", "categorize", "identity"]
+    assert calls == [
+        "gsheet",
+        "match",
+        "transform",
+        "categorize",
+        "identity",
+        "rates",
+    ]
 
 
 @pytest.mark.unit
@@ -288,6 +304,43 @@ def test_identity_can_run_surgically(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert calls == ["identity"]
     assert result.applied is False
+
+
+@pytest.mark.unit
+def test_rates_run_last_because_nothing_downstream_reads_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pairs and dates to fetch come from core.*, so transform must run first.
+
+    Nothing in the cascade consumes the rates, so the step goes last: a provider
+    outage then costs the run nothing that had already succeeded.
+    """
+    calls: list[str] = []
+    patch_all_refresh_stages(monkeypatch, calls)
+
+    refresh(MagicMock())
+
+    assert calls.index("rates") > calls.index("transform")
+    assert calls[-1] == "rates"
+
+
+@pytest.mark.unit
+def test_rates_can_run_surgically(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An operator can top up rate coverage without rebuilding anything."""
+    calls: list[str] = []
+    patch_all_refresh_stages(monkeypatch, calls)
+
+    refresh(MagicMock(), steps=["rates"])
+
+    assert calls == ["rates"]
+
+
+@pytest.mark.unit
+def test_rates_is_a_known_step() -> None:
+    """A step the service rejects would be unreachable from either surface."""
+    from moneybin.services.refresh import CANONICAL_STEPS
+
+    assert "rates" in CANONICAL_STEPS
 
 
 @pytest.mark.unit

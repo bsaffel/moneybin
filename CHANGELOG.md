@@ -11,6 +11,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Refresh gathers the exchange rates your own data implies (M1K.2).** A new
+  `rates` step runs last in the refresh cascade — after gsheet, match,
+  transform, categorize and identity — and caches the reference rates needed to
+  convert what you actually hold. It reads the currencies and earliest dates
+  off your own transactions, daily balances, investment trades and open
+  positions, then asks the provider for one date range per currency pair. A
+  first run covering 1999 to today is a single request per pair; later runs ask
+  only for the span since the newest rate already stored.
+
+  This is why a report can convert offline. Display conversion prices every row
+  at its own date, so a three-year report needs a rate for every date it
+  touches; fetching those during the report read would put a network call and
+  the exclusive writer lock behind a command that looks read-only, and would
+  fail outright whenever a sync held that lock. Refresh already holds it.
+
+  The step is best-effort and never fails the command: a pair the provider
+  could not answer is named in `rate_backfill.pairs_failed` (`rate_pairs_failed`
+  under `--output json`), warned on stderr, and retried on the next refresh —
+  the rest of the cascade keeps its results. A profile with no home currency
+  set fetches nothing. Run it alone with `moneybin refresh --step rates` or
+  `refresh_run(steps=["rates"])`. Only currency codes and dates leave the
+  machine.
 - **Exchange rates, and your own corrections to them (M1K.2).** `moneybin fx
   rate USD EUR 2026-03-13` answers with the rate, the day it was published for,
   and which layer supplied it. Precedence is your own correction, then the

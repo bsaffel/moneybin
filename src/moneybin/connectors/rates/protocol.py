@@ -59,6 +59,25 @@ class RateAdapter(Protocol):
         """
         ...
 
+    def fetch_range(
+        self, from_currency: str, to_currency: str, start: date, end: date
+    ) -> tuple[RateObservation, ...]:
+        """Every rate the provider publishes for the pair between two dates.
+
+        Separate from ``fetch`` rather than a loop over it because display
+        conversion prices each row at its own date: a report spanning three
+        years needs a rate per day, and asking day by day is thousands of calls
+        where a provider will price the whole span in one.
+
+        Each observation is dated by the provider, so the result is not one row
+        per day in the range — a reference series has no rows on weekends or
+        holidays, and a closed day resolves back to the previous business day.
+        Returns empty for an absence the caller can route around, and raises for
+        anything that is the provider's fault or the network's, matching
+        ``fetch``.
+        """
+        ...
+
     def supported_currencies(self) -> frozenset[str]:
         """The codes this provider publishes at all, on any date.
 

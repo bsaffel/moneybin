@@ -40,11 +40,12 @@ def refresh_run(
 
     Args:
         steps: Subset of ``["gsheet", "match", "transform", "categorize",
-            "identity"]``
-            to run. Defaults to None (full cascade). Steps execute in
-            canonical order (gsheet → match → transform → categorize → identity)
+            "identity", "rates"]``
+            to run. Defaults to None (full cascade). Steps execute in canonical
+            order (gsheet → match → transform → categorize → identity → rates)
             regardless of input order; dependencies enforce it (categorize
-            reads SQLMesh-built views). Pass ``["transform"]`` to run only
+            reads SQLMesh-built views, and rates derives the currency pairs it
+            fetches from core.*). Pass ``["transform"]`` to run only
             SQLMesh apply.
 
     For SQLMesh-step granularity beyond apply (plan, validate, audit,
@@ -68,8 +69,12 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         "refresh_run",
         "Run the post-load refresh pipeline. By default it performs Google "
         "Sheets pull, matching, SQLMesh apply, deterministic categorization, "
-        "and identity proposal backfill in canonical order. Pass steps to "
-        "select from gsheet, match, transform, categorize, and identity. "
-        "Rebuilds core.* and reports.* and may write app categorization or "
-        "identity-review state. No revert path; fix inputs and rerun.",
+        "identity proposal backfill, and an exchange-rate gather in canonical "
+        "order. Pass steps to select from gsheet, match, transform, "
+        "categorize, identity, and rates. The rates step caches the rates this "
+        "profile's own rows imply so later report reads convert offline; a "
+        "pair the provider could not answer appears in rate_backfill."
+        "pairs_failed and is retried next run. Rebuilds core.* and reports.* "
+        "and may write app categorization or identity-review state, plus the "
+        "raw exchange-rate cache. No revert path; fix inputs and rerun.",
     )

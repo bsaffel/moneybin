@@ -337,6 +337,17 @@ FX_RATE_RESOLUTION_TOTAL = Counter(
     ["outcome"],
 )
 
+FX_RATE_BACKFILL_PAIRS_TOTAL = Counter(
+    "moneybin_fx_rate_backfill_pairs_total",
+    # Per pair, not per rate: a backfill asks the provider once per currency
+    # pair and gets a whole span back, so pairs — not rows — is the call count.
+    # 'failed' rising against flat 'planned' means every refresh is now leaving
+    # conversion gaps that a report will surface as a hard error later, far
+    # from the outage that caused them.
+    "Exchange-rate backfill pairs by outcome (planned / failed)",
+    ["outcome"],
+)
+
 FX_RATE_FETCH_DURATION_SECONDS = Histogram(
     "moneybin_fx_rate_fetch_duration_seconds",
     # A fetch reaches the network, so latency is the signal a provider is

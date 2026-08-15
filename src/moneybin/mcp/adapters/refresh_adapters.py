@@ -140,6 +140,16 @@ def refresh_envelope(
                 )
                 for r in result.self_heal_actions
             ],
+            rates_written=(
+                None
+                if result.rate_backfill is None
+                else result.rate_backfill.rates_written
+            ),
+            rate_pairs_failed=(
+                []
+                if result.rate_backfill is None
+                else list(result.rate_backfill.pairs_failed)
+            ),
         ),
         sensitivity="low",
         actions=actions,

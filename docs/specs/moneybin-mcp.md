@@ -172,7 +172,12 @@ and confirmation contracts.
   expiry transitions are audit events; unused previews expire after the
   configured TTL. Its `readOnlyHint=false` annotation reflects that retained
   state even though it does not commit ledger rows.
-- `refresh_run` owns the bounded derived-state workflow.
+- `refresh_run` owns the bounded derived-state workflow. Its `steps` vocabulary
+  is `gsheet`, `match`, `transform`, `categorize`, `identity`, `rates`, executed
+  in that canonical order. `rates` caches the reference rates the profile's own
+  transactions, balances and holdings imply; it runs last because nothing
+  downstream consumes it, and it reports `rates_written` plus any
+  `rate_pairs_failed` rather than failing the call.
 - `sql_query` is the read-only escape hatch and `sql_schema` explains the
   interface schema. They do not replace domain validation for writes.
 
