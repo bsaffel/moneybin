@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -75,6 +77,76 @@ def mock_investments_client(investments_sync_data: SyncDataResponse) -> MagicMoc
     )
     client.get_data.return_value = investments_sync_data
     return client
+
+
+def _payload(accounts: list[dict[str, Any]], *, item_id: str) -> SyncDataResponse:
+    """A minimal one-institution /sync/data response carrying only accounts."""
+    return SyncDataResponse.model_validate({
+        "accounts": accounts,
+        "transactions": [],
+        "balances": [],
+        "removed_transactions": [],
+        "metadata": {
+            "job_id": f"job-{item_id}",
+            "synced_at": "2026-08-15T12:00:00Z",
+            "institutions": [
+                {
+                    "provider_item_id": item_id,
+                    "institution_name": "Chase",
+                    "status": "completed",
+                    "transaction_count": 0,
+                }
+            ],
+        },
+    })
+
+
+def _relinked_payload() -> SyncDataResponse:
+    """The same card after a relink: new account_id, new item, same persistent id."""
+    return _payload(
+        [
+            {
+                "account_id": "acc_chase_check_reissued",
+                "persistent_account_id": "ppa_chase_check_0001",
+                "account_type": "depository",
+                "account_subtype": "checking",
+                "institution_name": "Chase",
+                "name": "Chase Checking",
+                "official_name": "Total Checking",
+                "mask": "1234",
+            }
+        ],
+        item_id="item_chase_xyz",
+    )
+
+
+def _payload_with_shared_official_name() -> SyncDataResponse:
+    """Two Chase cards whose official_name is the same product label."""
+    return _payload(
+        [
+            {
+                "account_id": "acc_card_a",
+                "persistent_account_id": "ppa_card_a",
+                "account_type": "credit",
+                "account_subtype": "credit card",
+                "institution_name": "Chase",
+                "name": "Freedom Unlimited",
+                "official_name": "Ultimate Rewards®",
+                "mask": "1111",
+            },
+            {
+                "account_id": "acc_card_b",
+                "persistent_account_id": "ppa_card_b",
+                "account_type": "credit",
+                "account_subtype": "credit card",
+                "institution_name": "Chase",
+                "name": "Sapphire Preferred",
+                "official_name": "Ultimate Rewards®",
+                "mask": "2222",
+            },
+        ],
+        item_id="item_chase_cards",
+    )
 
 
 def test_pull_happy_path(
@@ -1226,6 +1298,115 @@ class TestPullResolvesAccounts:
         assert all(r[2] == "item_chase_abc" for r in rows)
         # Each resolves to a freshly minted canonical uuid4[:12].
         assert all(len(r[1]) == 12 for r in rows)
+
+    def test_pull_records_persistent_account_id_as_a_strong_ref(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidExtractor,
+    ) -> None:
+        """Plaid's persistent_account_id must land as a persistent_token ref.
+
+        ``AccountResolver`` already treats ``persistent_token`` as a strong
+        confirmer that auto-adopts (step 1 of ``resolve``); the field was simply
+        never handed to it, so every Plaid account minted with the ref column
+        empty and cross-connection identity could never fire.
+        """
+        service = SyncService(client=mock_client, db=db, loader=loader)
+        service.pull(refresh=False)
+
+        rows = db.execute(
+            """
+            SELECT ref_value, account_id
+            FROM app.account_links
+            WHERE status = 'accepted' AND ref_kind = 'persistent_token'
+              AND source_type = 'plaid'
+            ORDER BY ref_value
+            """,
+        ).fetchall()
+        assert [r[0] for r in rows] == ["ppa_chase_check_0001", "ppa_chase_save_0002"]
+
+    def test_relinked_account_adopts_the_same_canonical_id(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidExtractor,
+    ) -> None:
+        """A relink reissues account_id and item_id; persistent_account_id survives.
+
+        This is the whole reason the field exists, and the failure it prevents
+        is the 2026-08-08 incident: Chase relinked, Plaid minted a fresh
+        ``account_id`` under a fresh ``provider_item_id``, and with no strong
+        ref to confirm identity the resolver minted a *second* canonical
+        account for a card the user already had — splitting one ledger in two.
+
+        Both source_native keys must end up pointing at one canonical id.
+        """
+        service = SyncService(client=mock_client, db=db, loader=loader)
+        service.pull(refresh=False)
+        before = db.execute(
+            "SELECT account_id FROM app.account_links "
+            "WHERE status = 'accepted' AND ref_kind = 'source_native' "
+            "AND ref_value = 'acc_chase_check'",
+        ).fetchone()
+        assert before is not None
+
+        mock_client.get_data.return_value = _relinked_payload()
+        service.pull(refresh=False)
+
+        after = db.execute(
+            "SELECT account_id FROM app.account_links "
+            "WHERE status = 'accepted' AND ref_kind = 'source_native' "
+            "AND ref_value = 'acc_chase_check_reissued'",
+        ).fetchone()
+        assert after is not None, "relinked account never resolved"
+        assert after[0] == before[0], (
+            "relinked account minted a second canonical id instead of adopting "
+            "the one its persistent_account_id already confirms"
+        )
+        # A strong ref adopts silently (step 1 of resolve, ahead of the
+        # candidate pass), so the relink must leave the review queue empty —
+        # a pending row here means it resolved through a weak rung instead.
+        pending = db.execute(
+            "SELECT COUNT(*) FROM app.account_link_decisions WHERE status = 'pending'"
+        ).fetchone()
+        assert pending is not None and pending[0] == 0
+
+    def test_pull_prefers_the_account_name_over_the_official_name(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidExtractor,
+    ) -> None:
+        """``name`` distinguishes siblings that share one ``official_name``.
+
+        Plaid's ``official_name`` is the product's marketing label, so two
+        different Chase cards both report "Ultimate Rewards®" while ``name``
+        keeps them apart. The resolver feeds this string to ``match_account``
+        on the name rung of the candidate pass, so a label shared by two
+        accounts cannot discriminate between them there.
+
+        Asserts on the ``SourceAccount`` the service constructs — the resolver
+        itself is the collaborator boundary here, and its own adoption
+        behaviour is covered above.
+        """
+        captured: list[object] = []
+
+        class _Capturing:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def resolve(self, src: object) -> object:
+                captured.append(src)
+                return SimpleNamespace(account_id="acct_1", outcome="minted_new")
+
+        mock_client.get_data.return_value = _payload_with_shared_official_name()
+        with patch("moneybin.services.sync_service.AccountResolver", _Capturing):
+            service = SyncService(client=mock_client, db=db, loader=loader)
+            service.pull(refresh=False)
+
+        names = [getattr(src, "account_name", None) for src in captured]
+        assert names == ["Freedom Unlimited", "Sapphire Preferred"]
 
     def test_pull_resolver_failure_does_not_fail_the_pull(
         self,
