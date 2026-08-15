@@ -333,8 +333,8 @@ signal reliability:
    (`persistent_token`, scoped `full_number`)** — safe because step 1 just proved
    no existing account holds them, and it lets a later source bearing the same
    token / scoped number auto-adopt via step 1 instead of minting a duplicate.
-  Then look for a legacy PDF-link candidate, existing accounts sharing `institution + last4` (when institution
-   is known), then fuzzy `account_name`, then the **reissue signal** — same
+   Then look for existing accounts sharing `institution + last4` (when
+   institution is known), then fuzzy `account_name`, then the **reissue signal** — same
    institution where both sides carry a last-four and the two *differ*
    (`institution_reissue`, confidence 0.3) — querying `core.dim_accounts`. The
    reissue signal exists because a replacement card changes its last four by
@@ -344,7 +344,9 @@ signal reliability:
    general "any account at this institution" list. The same disagreement is a
    **veto** one rung up: the fuzzy-name pass skips any pair where both sides
    state a last four and the two differ, because a name match across a stated
-   contradiction is evidence of two *different* accounts. Silence is not
+   contradiction is evidence of two *different* accounts. Append any legacy
+   PDF-link candidate after these current signals so it remains migration
+   evidence without outranking them. Silence is not
    disagreement — an account with no known last four still reaches the name
    rung, since vetoing there would drop a proposal nothing else surfaces. Where
    the pair also shares an institution, the veto **retypes** rather than
