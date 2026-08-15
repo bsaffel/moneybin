@@ -976,18 +976,9 @@ def test_to_account_number_mask_covers_every_branch(
 
 
 @pytest.mark.integration
-def test_a_fully_masked_pdf_account_registers_through_the_resolver(
+def test_fully_masked_pdf_requires_explicit_binding_before_loading(
     db: Database, tmp_path: Path
 ) -> None:
-    """A digits-free account token must still reach the identity system.
-
-    `slugify` strips `*` but not `x`, so a fully-masked token used to be
-    string-built straight into the account_id as `chase_xxxx` — carrying no
-    last_four and never passing through AccountResolver at all. That account
-    can never be proposed against the same card's OFX twin, so both halves
-    load and the card double-counts. The fix is that PDF identity goes through
-    the same resolver the tabular path uses; this pins that it does.
-    """
     doc = _make_doc(
         text_lines=[
             line.replace("Account Number: 1234", "Account Number: xxxx")
@@ -997,31 +988,21 @@ def test_a_fully_masked_pdf_account_registers_through_the_resolver(
     )
     svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
 
-    with patch(
-        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
-        return_value=doc,
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
     ):
-        result = import_answering_gate(svc, fake_pdf, refresh=False)
+        svc.import_file(fake_pdf, refresh=False, confirm=True, actor_kind="human")
 
-    assert result.transactions == 2
-    native_row = db.execute(
-        "SELECT DISTINCT account_id FROM raw.tabular_transactions "
-        "WHERE source_type = 'pdf'"
-    ).fetchone()
-    assert native_row is not None
-    native_key = str(native_row[0])
-
-    # raw.account_id is the source-NATIVE key (DP-1). What was missing is the
-    # resolver's native->canonical mapping: without it nothing can translate
-    # the key, so dim_accounts grows a placeholder row straight off the raw
-    # value and the card's other half can never be proposed against it.
-    link_row = db.execute(
-        "SELECT account_id FROM app.account_links "
-        "WHERE status = 'accepted' AND ref_kind = 'source_native' "
-        "AND source_type = 'pdf' AND ref_value = ?",
-        [native_key],
-    ).fetchone()
-    assert link_row is not None, f"no source_native link for native key {native_key!r}"
+    [proposal] = exc.value.outcome.account_proposals
+    assert proposal["candidates"] == []
+    assert proposal["is_new"] is True
+    assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 0
+    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
 
 
 @pytest.mark.integration
@@ -1090,6 +1071,37 @@ def test_pdf_batch_surfaces_prior_partial_account_before_refresh(
         "institution_last4",
     )
     assert candidate["display_name"]
+
+
+@pytest.mark.integration
+def test_pdf_batch_rejects_mask_only_identity_before_loading(
+    db: Database, tmp_path: Path
+) -> None:
+    doc = _make_doc(
+        text_lines=[
+            line.replace("Account Number: 1234", "Account Number: XXXX")
+            for line in _standard_text_lines()
+        ],
+        tables=[_standard_table()],
+    )
+    january = tmp_path / "january.pdf"
+    january.write_bytes(b"%PDF-1.4 january rendering")
+    february = tmp_path / "february.pdf"
+    february.write_bytes(b"%PDF-1.4 february rendering")
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        result = ImportService(db).import_files([january, february], refresh=False)
+
+    assert [row.status for row in result.per_file] == [
+        "confirmation_required",
+        "confirmation_required",
+    ]
+    assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 0
+    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
 
 
 @pytest.mark.integration

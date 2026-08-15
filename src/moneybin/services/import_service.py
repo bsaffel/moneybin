@@ -1521,9 +1521,7 @@ def _pdf_source_account(
         routing_number=decision.metadata.routing_number,
     )
     # Whether the document named an account, independent of its idempotency key.
-    anchored = bool(
-        decision.metadata.account_id and decision.metadata.account_id.strip()
-    )
+    anchored = derived.has_usable_identifier
     derived_key = derived.source_account_key
     if account_id_override:
         # Explicit override — agents/users can pin a statement whose text omits
