@@ -288,6 +288,17 @@ DEDUP_MATCH_CONFIDENCE = Histogram(
     "Distribution of match confidence scores",
 )
 
+# The only counter here that measures an *undo* of something the user decided,
+# which is why it exists separately from DEDUP_MATCHES_TOTAL: a regression that
+# starts retiring more often is invisible in the match counts and shows up only
+# as transfers quietly going missing. `cause` separates the two mechanisms that
+# can do it, matching the two explanations the CLI is allowed to print.
+TRANSFER_RETIREMENTS_TOTAL = Counter(
+    "moneybin_transfer_retirements_total",
+    "Accepted transfers reversed because a dedup collapse invalidated them",
+    ["cause"],
+)
+
 # ── Transfer detection ───────────────────────────────────────────────────────
 
 TRANSFER_PAIRS_SCORED = Counter(

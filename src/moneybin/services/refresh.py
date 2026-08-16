@@ -108,6 +108,30 @@ class RefreshResult:
     identity_errors: tuple[str, ...] = field(default_factory=tuple)
     # None means the step did not run — not that it ran and found nothing.
     rate_backfill: RateBackfillResult | None = None
+    # What the match step found, for callers that must report it rather than
+    # leave it in the log. A pass can auto-merge without asking (see
+    # engine._classify_pair), so a caller who *triggered* the pass — the
+    # post-merge re-match — owes the user that number. Zero when the step
+    # did not run: "found nothing" and "was skipped" are distinguished by
+    # whether the caller asked for the step, not by a null count.
+    matches_auto_merged: int = 0
+    matches_pending_review: int = 0
+    matches_pending_transfers: int = 0
+    # The match step was asked for but could not run — its views were missing
+    # or stale. Distinct from both a clean pass and a crash: the counts above
+    # are zero because nothing was examined, not because nothing was found. A
+    # caller reporting "no duplicates" off those zeros would be inventing a
+    # result. Expected on a first load, where the views postdate SQLMesh apply.
+    matching_skipped: bool = False
+    # Accepted transfers reversed because the match step's dedup pass collapsed
+    # their legs — the matcher reconciles them mid-run (see
+    # matching.reconciliation.retire_transfers_invalidated_by_dedup), so every
+    # trigger that reaches the match step reports them, not only the post-merge
+    # re-match. That caller adds one more of its own: transfers whose two
+    # *accounts* the merge collapsed, which happen inside `set`'s transaction
+    # and never reach the matcher. Reported rather than left in the log: the
+    # user accepted those transfers.
+    transfers_retired: int = 0
     # tuple, not list: frozen=True blocks reassignment but not in-place
     # mutation of a list field — a tuple keeps the result carrier truly immutable.
     self_heal_actions: tuple[SelfHealRecord, ...] = field(default_factory=tuple)
@@ -134,7 +158,9 @@ def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
     return frozenset(CANONICAL_STEPS) if steps is None else frozenset(steps)
 
 
-def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
+def refresh(
+    db: Database, *, steps: list[str] | None = None, actor: str = "system"
+) -> RefreshResult:
     """Run the post-load pipeline through the exchange-rate gather.
 
     When ``steps`` is None (default), the full cascade runs — same behavior
@@ -156,6 +182,13 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         db: Database handle to run against.
         steps: Subset of ``("gsheet", "match", "transform", "categorize",
             "identity", "rates")`` to run. Defaults to every stage when None.
+        actor: Audit actor for decisions the match step writes.
+            ``app-integrity-invariant.md`` binds those to the surface that
+            caused them, and a refresh has two kinds of caller: the automated
+            ones it names (``moneybin refresh``, ``refresh_run``, the scenario
+            runner), which stay ``"system"``, and a surface re-matching because
+            a user just decided something — the post-merge re-match — whose
+            decisions are that user's work and say so.
 
     Raises:
         UserError(code=error_codes.REFRESH_UNKNOWN_STEP): if any element of ``steps``
@@ -167,6 +200,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     in their response envelope.
     """
     from moneybin.errors import UserError  # noqa: PLC0415
+    from moneybin.matching.engine import MatchRunError  # noqa: PLC0415
     from moneybin.services.matching_service import (  # noqa: PLC0415
         PENDING_MATCHES_HINT,
         MatchingService,
@@ -220,21 +254,48 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     matching_error: str | None = None
     categorization_error: str | None = None
     identity_errors: tuple[str, ...] = ()
+    auto_merged = 0
+    pending_review = 0
+    pending_transfers = 0
+    transfers_retired = 0
+    matching_skipped = False
     if "match" in requested:
         try:
-            match_result = MatchingService(db).run()
+            match_result = MatchingService(db).run(actor=actor)
+            auto_merged = match_result.auto_merged
+            pending_review = match_result.pending_review
+            pending_transfers = match_result.pending_transfers
+            transfers_retired = match_result.transfers_retired
             if match_result.has_matches:
                 logger.info(f"Matching: {match_result.summary()}")
                 if match_result.has_pending:
                     logger.info(PENDING_MATCHES_HINT)
+        except MatchRunError as exc:
+            # The run died after committing part of its work — tier decisions,
+            # reversals, or both. Take every count off the exception: this
+            # branch is the only place they still exist, and between them they
+            # name merges now visible in the ledger and a transfer decision of
+            # the user's that has been undone. Caught before the catalog branch
+            # below on purpose — a *late* CatalogException reaches here wrapped,
+            # and calling it a skipped step would claim nothing was examined
+            # after the tiers had already written decisions.
+            matching_error = _step_error(exc, step="Matching")
+            auto_merged = exc.partial.auto_merged
+            pending_review = exc.partial.pending_review
+            pending_transfers = exc.partial.pending_transfers
+            transfers_retired = exc.partial.transfers_retired
         except (duckdb.CatalogException, duckdb.BinderException):
             # Views not built yet (first load precedes SQLMesh apply) — an
             # expected precondition, not a crash. Stay quiet; no error surfaced
             # so a fresh DB's first refresh doesn't report a false failure.
+            # It is still recorded, because "skipped" and "ran and found
+            # nothing" are the same zero counts to a caller: a mature DB with a
+            # stale view would otherwise be told no duplicates exist when
+            # nothing was examined.
+            matching_skipped = True
             logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
         except Exception as exc:  # noqa: BLE001 — surface a real crash; never abort the pipeline
-            matching_error = str(exc)
-            logger.error(f"Matching failed during refresh: {exc}", exc_info=True)
+            matching_error = _step_error(exc, step="Matching")
 
     if "transform" not in requested:
         # Caller asked for a partial cascade that omits transform. Return
@@ -252,6 +313,11 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             categorization_error=categorization_error,
             identity_errors=identity_errors,
             rate_backfill=_run_rates_step(db) if "rates" in requested else None,
+            matches_auto_merged=auto_merged,
+            matches_pending_review=pending_review,
+            matches_pending_transfers=pending_transfers,
+            matching_skipped=matching_skipped,
+            transfers_retired=transfers_retired,
         )
 
     apply_result = TransformService(db).apply()
@@ -264,6 +330,11 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             duration_seconds=apply_result.duration_seconds,
             error=apply_result.error,
             matching_error=matching_error,
+            matches_auto_merged=auto_merged,
+            matches_pending_review=pending_review,
+            matches_pending_transfers=pending_transfers,
+            matching_skipped=matching_skipped,
+            transfers_retired=transfers_retired,
         )
 
     if "categorize" in requested:
@@ -278,7 +349,42 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         categorization_error=categorization_error,
         identity_errors=identity_errors,
         rate_backfill=_run_rates_step(db) if "rates" in requested else None,
+        matches_auto_merged=auto_merged,
+        matches_pending_review=pending_review,
+        matches_pending_transfers=pending_transfers,
+        matching_skipped=matching_skipped,
+        transfers_retired=transfers_retired,
     )
+
+
+def _step_error(exc: Exception, *, step: str) -> str:
+    """What a crashed best-effort step is allowed to say, and log.
+
+    ``matching_error`` and ``categorization_error`` are ``DataClass.DESCRIPTION``
+    fields on ``RefreshRunPayload``: they reach the model provider through
+    ``refresh_run`` and land in CLI JSON. An exception's message is whatever
+    raised it — DuckDB binder text, file paths, row values — and for
+    ``MatchRunError`` it *is* the cause verbatim, because the carrier passes
+    ``str(cause)`` to ``Exception``. So the returned string comes from
+    ``classify_user_error``, the same boundary the direct matcher surfaces use,
+    and a type it does not recognize says nothing beyond where to look.
+
+    The log gets the frame chain rather than the message for the reason
+    ``exception_origin`` documents: a traceback's last line is the message, and
+    AGENTS.md's no-financial-data rule has no local-log carve-out.
+    """
+    from moneybin.errors import (  # noqa: PLC0415 — errors<->services cycle
+        classify_user_error,
+        exception_origin,
+    )
+
+    logger.error(
+        f"{step} failed during refresh at {exception_origin(exc.__cause__ or exc)}"
+    )
+    classified = classify_user_error(exc)
+    if classified is not None:
+        return classified.message
+    return f"{step} failed — the cause is in the local log"
 
 
 def _run_gsheet_step(db: Database) -> list[Any]:
@@ -358,8 +464,7 @@ def _run_categorize_step(db: Database) -> str | None:
         logger.debug("Categorization skipped (tables may not exist yet)", exc_info=True)
         return None
     except Exception as exc:  # noqa: BLE001 — surface a real crash; never abort the pipeline
-        logger.error(f"Categorization failed during refresh: {exc}", exc_info=True)
-        return str(exc)
+        return _step_error(exc, step="Categorization")
     finally:
         # "attempted", not "finished": this fires on every exit path,
         # including the missing-table skip, where the step didn't complete.

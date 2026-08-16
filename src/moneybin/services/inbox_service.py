@@ -132,6 +132,10 @@ class InboxSyncResult:
     transforms_applied: bool = False
     transforms_duration_seconds: float | None = None
     transforms_error: str | None = None
+    # The drain's closing refresh runs the matcher, which can reverse a
+    # transfer the user accepted. Nobody watches a watched folder, so this is
+    # the surface where an undisclosed reversal would sit longest.
+    transfers_retired: int = 0
 
 
 @dataclass
@@ -486,6 +490,7 @@ class InboxService:
                     result.transforms_applied = refresh_result.applied
                     result.transforms_duration_seconds = refresh_result.duration_seconds
                     result.transforms_error = refresh_result.error
+                    result.transfers_retired = refresh_result.transfers_retired
                 INBOX_SYNC_DURATION_SECONDS.observe(time.monotonic() - t0)
                 return result
         except InboxBusyError:

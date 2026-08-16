@@ -109,9 +109,19 @@ class TestGetActiveDedupEdges:
         _create_test_match(db, status="accepted", stid_a="a1", stid_b="b1")
         _create_test_match(db, status="pending", stid_a="a2", stid_b="b2")
         _create_test_match(db, status="rejected", stid_a="a3", stid_b="b3")
-        edges = get_active_dedup_edges(db)
+        edges = get_active_dedup_edges(db, statuses=("accepted", "pending"))
         # accepted + pending only; rejected excluded.
         assert len(edges) == 2
+
+    def test_accepted_only_excludes_pending(self, db: Database) -> None:
+        # The prospective graph above and the collapsed-in-core graph here are
+        # different sets, and a caller acting on rows that really merged must
+        # get the narrower one. Same fixture, one argument apart.
+        _create_test_match(db, status="accepted", stid_a="a1", stid_b="b1")
+        _create_test_match(db, status="pending", stid_a="a2", stid_b="b2")
+        _create_test_match(db, status="rejected", stid_a="a3", stid_b="b3")
+        edges = get_active_dedup_edges(db, statuses=("accepted",))
+        assert [e["source_transaction_id_a"] for e in edges] == ["a1"]
 
     def test_ordered_deterministically(self, db: Database) -> None:
         # Insert side-A ids out of order; the query must return them sorted so
@@ -119,7 +129,7 @@ class TestGetActiveDedupEdges:
         # (VACUUM, storage reorg) without relying on insertion order.
         for stid_a in ("t3", "t1", "t2"):
             _create_test_match(db, status="accepted", stid_a=stid_a, stid_b="z")
-        edges = get_active_dedup_edges(db)
+        edges = get_active_dedup_edges(db, statuses=("accepted", "pending"))
         assert [e["source_transaction_id_a"] for e in edges] == ["t1", "t2", "t3"]
 
 

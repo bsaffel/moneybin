@@ -378,6 +378,164 @@ async def test_matches_run_threads_mcp_actor(
 
 
 @pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_discloses_transfers_it_retired(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """The MCP twin of the CLI run gap: the agent gets the count and a way back.
+
+    ``transactions_matches_set`` already reports this; the run tool reaches the
+    same reconciliation through ``MatchingService.run`` and owed the same
+    disclosure. Without it an agent reads ``auto_merged=0`` as "nothing
+    happened" while accepted transfers were reversed underneath it.
+    """
+    from moneybin.matching.engine import MatchResult
+
+    mock_run.return_value = MatchResult(transfers_retired=2)
+
+    parsed = transactions_matches_run().to_dict()
+
+    assert parsed["data"]["transfers_retired"] == 2
+    assert any("system_audit_undo" in a for a in parsed["actions"]), (
+        f"no action points at the recovery route: {parsed['actions']}"
+    )
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_omits_the_retirement_action_when_none_retired(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """Negative twin: the urgent action appears only when it is true."""
+    from moneybin.matching.engine import MatchResult
+
+    mock_run.return_value = MatchResult(auto_merged=2, transfers_retired=0)
+
+    parsed = transactions_matches_run().to_dict()
+
+    assert parsed["data"]["transfers_retired"] == 0
+    assert not any("system_audit_undo" in a for a in parsed["actions"])
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_discloses_a_retirement_that_outlived_a_crash(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """A crashed run still owes the agent the reversals it already committed.
+
+    ``MatchRunError`` carries the count precisely because the reconciliation
+    commits before the tiers that can fail. ``refresh()`` was its only reader,
+    so this tool raised a bare error and the one record of an undone user
+    decision died with it — the outcome an agent is least able to notice.
+    """
+    from moneybin.errors import UserError
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    mock_run.side_effect = MatchRunError(
+        RuntimeError("transfer tier failed"),
+        partial=MatchResult(transfers_retired=2),
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        transactions_matches_run()
+
+    assert "2" in str(excinfo.value), "the failure hid how many transfers it reversed"
+    tools = {a.tool for a in excinfo.value.recovery_actions or []}
+    assert "system_audit" in tools, f"no recovery action reaches the audit: {tools}"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_discloses_merges_that_outlived_a_crash(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """A crash before any retirement still leaves committed merges behind.
+
+    Keying the disclosure on ``transfers_retired`` alone re-raises this run bare:
+    a tier persisted four merges — which suppress the duplicate side of four
+    transactions — and died before the reconciliation could reverse anything. An
+    agent that sees only a crash has no way to learn the ledger moved.
+    """
+    from moneybin.errors import UserError
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    mock_run.side_effect = MatchRunError(
+        RuntimeError("tier 3 failed"),
+        partial=MatchResult(auto_merged=4, transfers_retired=0),
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        transactions_matches_run()
+
+    assert "4" in str(excinfo.value), "the failure hid the merges it had committed"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_keeps_the_raw_cause_out_of_the_mcp_error(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """The committed-count summary may cross to the model; the cause may not.
+
+    Everything downstream of the tiers is DuckDB and repository work, so the
+    wrapped cause carries binder text, file paths, and column or row values
+    verbatim. `.claude/rules/security.md` puts those on the wrong side of an MCP
+    boundary: log the detail, return a generic message. The counts stay because
+    they are counts.
+    """
+    from moneybin.errors import UserError
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    mock_run.side_effect = MatchRunError(
+        RuntimeError(
+            'Binder Error: no column "acct_9876543210" in /Users/someone/db.duckdb'
+        ),
+        partial=MatchResult(auto_merged=4),
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        transactions_matches_run()
+
+    message = str(excinfo.value)
+    assert "4" in message, "the generic message dropped the committed count"
+    assert "acct_9876543210" not in message
+    assert "/Users/someone/db.duckdb" not in message
+    assert "Binder Error" not in message
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_lets_a_crash_that_committed_nothing_through_bare(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """Negative twin: no committed work, no disclosure to make.
+
+    Translating every wrapped failure into a partial-progress ``UserError`` would
+    tell an agent to go looking for decisions that were never written. The
+    ordinary crash presentation is the correct one there.
+    """
+    from moneybin.errors import UserError
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    mock_run.side_effect = MatchRunError(
+        RuntimeError("tier 3 failed"), partial=MatchResult()
+    )
+
+    with pytest.raises(MatchRunError):
+        transactions_matches_run()
+    with pytest.raises(BaseException) as excinfo:  # noqa: B017, PT011  # identity check
+        transactions_matches_run()
+    assert not isinstance(excinfo.value, UserError)
+
+
+@pytest.mark.unit
 async def test_standard_registrar_has_no_review_aliases() -> None:
     srv = FastMCP("test")
     register_transactions_tools(srv)
@@ -499,3 +657,155 @@ async def test_matches_pending_dedup_group_count_zero_for_transfer_scope(
     # ...transfer scope sees none (no dedup rows in scope).
     transfer = (transactions_matches_pending(match_type="transfer")).to_dict()
     assert transfer["data"]["n_dedup_groups"] == 0
+
+
+def _set_outcome(*, match_status: str, transfers_retired: int) -> object:
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    return MatchDecisionOutcome(
+        match_status=match_status, transfers_retired=transfers_retired
+    )
+
+
+def test_matches_set_reports_the_status_that_committed() -> None:
+    """An agent's accept can be refused by the reconciliation it triggers.
+
+    ``set_status`` writes the decision, then reverses whichever accepted transfer
+    loses the earliest-decided-first tiebreak — possibly this very row. Echoing
+    the requested status back contradicts ``MatchSetPayload``'s own docstring and
+    leaves the agent no way to detect that its write did not stand.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="reversed", transfers_retired=1
+        )
+        envelope = transactions_matches_set("tx_stale00001", "accepted")
+
+    payload = envelope.to_dict()["data"]
+    assert payload["match_status"] == "reversed"
+    assert payload["transfers_retired"] == 1
+
+
+def test_matches_set_points_a_retiring_accept_at_the_operation_undo() -> None:
+    """``matches undo`` reverses this row only, never the transfer it retired.
+
+    An agent driving off ``actions[]`` gets one route back; if that route cannot
+    restore the *other* transfer this call reversed, the user's transfer stays
+    missing.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="accepted", transfers_retired=2
+        )
+        envelope = transactions_matches_set("dd_100000001", "accepted")
+
+    actions = envelope.to_dict()["actions"]
+    assert any("system_audit_undo" in action for action in actions)
+
+
+def test_matches_set_points_a_retiring_accept_at_the_rematch_it_owes() -> None:
+    """The reversal freed two legs, and this call runs no Tier 4 over them.
+
+    ``set_status`` reconciles inside its own transaction and returns; only a
+    matcher pass can propose the transfer those freed legs may now form. Without
+    this hint an agent has no way to know the run is unfinished, and the
+    replacement waits for an unrelated refresh.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="accepted", transfers_retired=2
+        )
+        envelope = transactions_matches_set("dd_100000001", "accepted")
+
+    actions = envelope.to_dict()["actions"]
+    # refresh_run, not the granular matcher callback: only registered standard
+    # tools may be named in emitted text, and an agent cannot call what the
+    # surface does not expose.
+    assert any("refresh_run" in action for action in actions), (
+        f"no action points at the follow-up matcher pass: {actions}"
+    )
+
+
+def test_matches_set_asks_for_no_rematch_when_it_retired_nothing() -> None:
+    """Negative twin: an ordinary accept freed no legs, so it owes no pass.
+
+    Without it, a hint appended unconditionally would send an agent through a
+    full matcher run after every routine decision.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="accepted", transfers_retired=0
+        )
+        envelope = transactions_matches_set("dd_100000001", "accepted")
+
+    actions = envelope.to_dict()["actions"]
+    assert not any("refresh_run" in action for action in actions)
+
+
+def test_matches_set_stays_quiet_about_undo_when_nothing_was_retired() -> None:
+    """Negative twin: an ordinary accept must not advertise a recovery it needs.
+
+    Without it, an unconditional hint would satisfy the test above while telling
+    every caller that a decision of the user's had been undone.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="accepted", transfers_retired=0
+        )
+        envelope = transactions_matches_set("dd_100000001", "accepted")
+
+    actions = envelope.to_dict()["actions"]
+    assert not any("system_audit_undo" in action for action in actions)
+
+
+def test_matches_set_withholds_undo_when_the_accept_came_back_reversed() -> None:
+    """``undo`` is the one command guaranteed to fail on a reversed row.
+
+    ``MatchDecisionsRepo.reverse`` raises unless the status is accepted or
+    rejected, so advertising it here sends the agent at a ValueError in exactly
+    the outcome the reconciliation just produced. The row is not the agent's to
+    undo — it never stood.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="reversed", transfers_retired=0
+        )
+        envelope = transactions_matches_set("tx_stale00001", "accepted")
+
+    actions = envelope.to_dict()["actions"]
+    assert not any("matches undo" in action for action in actions), (
+        "a reversed decision was offered an undo that reverse() refuses"
+    )
+    assert any("reversed" in action for action in actions), (
+        "the reversed outcome was left with no applicable next step"
+    )
+
+
+def test_matches_set_still_offers_undo_when_the_decision_stood() -> None:
+    """Negative twin: withholding undo everywhere would also pass the test above.
+
+    An accept that committed as accepted is precisely what ``undo`` exists for,
+    and it is the only MCP-reachable route back.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="accepted", transfers_retired=0
+        )
+        envelope = transactions_matches_set("dd_100000001", "accepted")
+
+    actions = envelope.to_dict()["actions"]
+    assert any("matches undo" in action for action in actions)

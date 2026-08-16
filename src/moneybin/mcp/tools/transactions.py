@@ -19,6 +19,7 @@ surface-budget tests.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
@@ -30,7 +31,7 @@ from pydantic import BeforeValidator, Field, JsonValue
 from moneybin import error_codes
 from moneybin.config import get_settings
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError, exception_origin
 from moneybin.mcp._registration import register
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
@@ -75,6 +76,8 @@ from moneybin.services.transaction_service import (
     TransactionGetResult,
     TransactionService,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _decimal_from_json_number(value: object) -> Decimal:
@@ -708,20 +711,62 @@ def transactions_matches_set(
     accepted match via `moneybin transactions matches undo` (no MCP undo tool
     yet). Find ids with transactions_matches_pending.
 
+    `transfers_retired` counts transfers the user had already accepted that this
+    acceptance reversed: once one dedup component holds both of their legs they
+    name the same physical transaction, which would double-count it in
+    core.bridge_transfers. The pass walks every accepted transfer, so a count can
+    include one an earlier decision had already invalidated and this call merely
+    found — it reports what was reversed, not what this accept broke. Always 0 on
+    a rejection. A non-zero count undoes a decision the user made — report it and
+    point at `system_audit_undo` rather than treating the accept as clean.
+
+    Read `match_status` rather than assuming `status` held: that same pass walks
+    every accepted transfer including this row, so an accept that loses the
+    earliest-decided-first tiebreak comes back `reversed`. The request was
+    refused; the standing transfer keeps the component.
+
     Args:
         match_id: The match decision id (from transactions_matches_pending).
         status: 'accepted' folds the pair via dedup; 'rejected' keeps both and
             prevents re-proposal.
     """
     with get_database(read_only=False) as db:
-        MatchingService(db).set_status(match_id, status=status, actor="mcp")
+        outcome = MatchingService(db).set_status(match_id, status=status, actor="mcp")
+    actions = ["Use reviews(kind='matches') to review remaining pending matches"]
+    if outcome.match_status == "reversed":
+        # Keyed on the committed status, not the requested one: `undo` calls
+        # MatchDecisionsRepo.reverse(), which refuses anything but an
+        # accepted/rejected row. Offering it here would point the agent at the
+        # one command certain to raise in precisely this outcome.
+        actions.append(
+            f"This decision committed as 'reversed', not '{status}' — there is "
+            "nothing to undo; see what stands with system_audit() and re-read "
+            "the queue with reviews(kind='matches')"
+        )
+    else:
+        actions.append(
+            "Run `moneybin transactions matches undo <match_id>` (CLI) to "
+            "reverse an accepted match — there is no MCP undo tool yet"
+        )
+    if outcome.transfers_retired:
+        # Most urgent first, and ahead of the undo above because that one
+        # reverses this row only: it cannot restore the *other* transfer this
+        # call retired, which is the one the user is about to find missing.
+        actions.insert(
+            0,
+            f"This accept retired {outcome.transfers_retired} previously "
+            "accepted transfer(s) — inspect with system_audit(), "
+            "restore with system_audit_undo() if that was wrong, then "
+            "refresh_run(steps=['match']) to re-propose over the legs the "
+            "reversal freed",
+        )
     return build_envelope(
-        data=MatchSetPayload(match_id=match_id, match_status=status),
-        actions=[
-            "Use reviews(kind='matches') to review remaining pending matches",
-            "Run `moneybin transactions matches undo <match_id>` (CLI) to reverse "
-            "an accepted match — there is no MCP undo tool yet",
-        ],
+        data=MatchSetPayload(
+            match_id=match_id,
+            match_status=outcome.match_status,
+            transfers_retired=outcome.transfers_retired,
+        ),
+        actions=actions,
     )
 
 
@@ -818,16 +863,93 @@ def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
     rows to app.match_decisions; review them with transactions_matches_pending and
     finalize each with transactions_matches_set. Does not auto-accept. Reverse an
     accepted match via `moneybin transactions matches undo` (no MCP undo tool yet).
+
+    `transfers_retired` counts transfers the user had already accepted that this
+    run reversed, because one dedup component now holds both of their legs and
+    they name the same physical transaction. It is independent of the three
+    match counts — a run that finds nothing can still retire transfers — so do
+    not read `auto_merged=0` as "nothing changed". A non-zero count undoes a
+    decision the user made: report it and point at `system_audit_undo`.
     """
+    from moneybin.matching.engine import MatchRunError  # noqa: PLC0415 — cycle
+
     with get_database(read_only=False) as db:
-        result = MatchingService(db).run(actor="mcp")
+        try:
+            result = MatchingService(db).run(actor="mcp")
+        except MatchRunError as exc:
+            if not exc.partial.has_durable_writes:
+                raise
+            # The tiers persist as they go and the reconciliation commits before
+            # the tiers that can fail, so this exception is the only thing that
+            # still knows what landed — merges that suppress a duplicate side,
+            # and reversals that undo a decision the user made. Letting it
+            # through as a bare crash loses both, and an agent cannot see either
+            # any other way.
+            committed: list[str] = []
+            if exc.partial.has_matches:
+                committed.append(f"committing {exc.partial.summary().lower()}")
+            if exc.partial.transfers_retired:
+                committed.append(
+                    f"reversing {exc.partial.transfers_retired} previously "
+                    "accepted transfer(s)"
+                )
+            # The cause stays local. Everything downstream of the tiers is
+            # DuckDB and repository work, so it carries binder text, file
+            # paths, and column or row values verbatim — the wrong side of an
+            # MCP boundary (`.claude/rules/security.md`). The counts are counts,
+            # so they cross.
+            # Frames, not the message: a traceback's last line is
+            # `<Type>: <str(exc)>`, so `exc_info` puts the same binder text and
+            # row values the envelope withholds into the log — which AGENTS.md
+            # covers with no local carve-out. Every other failure log in the
+            # matcher path reads this way.
+            logger.error(
+                f"Matching failed during matches_run at "
+                f"{exception_origin(exc.__cause__ or exc)}"
+            )
+            raise UserError(
+                f"Matching failed after {' and '.join(committed)}; "
+                "see the local logs for the cause",
+                code=error_codes.REFRESH_MATCH_FAILED,
+                recovery_actions=[
+                    RecoveryAction(
+                        tool="system_audit",
+                        arguments={},
+                        rationale=(
+                            "The run committed decisions before it failed; list "
+                            "the operation to see what landed"
+                            + (
+                                " and restore it with system_audit_undo."
+                                if exc.partial.transfers_retired
+                                # Undo refuses an outcome nothing reversed, so
+                                # naming it here would send the agent at a route
+                                # that cannot apply.
+                                else "."
+                            )
+                        ),
+                        confidence="suggested",
+                        idempotent=True,
+                    )
+                ],
+            ) from exc
+    actions = ["Use reviews(kind='matches') to review proposed matches"]
+    if result.transfers_retired:
+        # Ahead of the review hint: that one is routine housekeeping, this one
+        # says a decision the user already made was undone.
+        actions.insert(
+            0,
+            f"This run retired {result.transfers_retired} previously accepted "
+            "transfer(s) — inspect with system_audit(), restore with "
+            "system_audit_undo() if that was wrong",
+        )
     return build_envelope(
         data=MatchRunPayload(
             auto_merged=result.auto_merged,
             pending_review=result.pending_review,
             pending_transfers=result.pending_transfers,
+            transfers_retired=result.transfers_retired,
         ),
-        actions=["Use reviews(kind='matches') to review proposed matches"],
+        actions=actions,
     )
 
 

@@ -12,7 +12,11 @@ from enum import StrEnum
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.utils import (
+    handle_cli_errors,
+    warn_transfers_retired,
+)
+from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +103,12 @@ def refresh_command(
         logger.warning(f"⚠️  Categorization step failed: {result.categorization_error}")
     for domain in result.identity_errors:
         logger.warning(f"⚠️  {domain.title()} identity backfill failed")
+    # Sits with the crash warnings, not with the ✅ status line, for the same
+    # reason: this is a decision the *user* made being undone, so it survives
+    # --quiet and is emitted under --output json too (where the count is also in
+    # the payload). Every refresh reaches the reconciliation through the match
+    # step, so an ordinary `moneybin refresh` after an import can hit it.
+    warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
     if result.rate_backfill is not None and result.rate_backfill.pairs_failed:
         # Named, not counted: which pair is missing decides whether the gap
         # matters, and a currency pair discloses no amount.

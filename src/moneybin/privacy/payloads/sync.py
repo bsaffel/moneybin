@@ -70,6 +70,8 @@ class SyncPullPayload:
     transforms_applied: Annotated[bool, DataClass.TXN_TYPE]
     transforms_duration_seconds: Annotated[float | None, DataClass.AGGREGATE]
     transforms_error: Annotated[str | None, DataClass.DESCRIPTION]
+    # Accepted transfers this pull's refresh reversed (AGGREGATE, Tier.LOW).
+    transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
     securities_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     investment_transactions_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     holdings_loaded: Annotated[int, DataClass.AGGREGATE] = 0

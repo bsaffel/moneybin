@@ -102,7 +102,16 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
         calls.append("gsheet")
         return []
 
-    def _match(_self: matching_service.MatchingService) -> Any:
+    def _match(
+        _self: matching_service.MatchingService,
+        *,
+        auto_accept_transfers: bool = False,
+        actor: str = "system",
+    ) -> Any:
+        # Mirrors `MatchingService.run`'s keyword-only signature rather than
+        # absorbing `**kwargs`: a double that swallows arguments turns a caller
+        # passing the wrong one into a swallowed TypeError on the catch-all
+        # branch, which reads as a matcher crash rather than a broken call.
         calls.append("match")
         return MagicMock(has_matches=False, has_pending=False)
 
@@ -189,13 +198,51 @@ def test_refresh_result_has_error_surfacing_fields() -> None:
 
 
 @pytest.mark.unit
+def test_refresh_reports_what_the_matcher_found(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """The matcher's counts reach the caller instead of only the log.
+
+    A match pass can auto-merge silently (``engine._classify_pair`` writes
+    ``accepted`` for an agreeing pair over the confidence threshold), so a
+    caller that triggers one — the post-merge re-match especially — has to be
+    able to tell the user what it did.
+    """
+    patched_services["matcher_run"].return_value = MagicMock(
+        auto_merged=2, pending_review=5, pending_transfers=1
+    )
+
+    result = refresh(MagicMock())
+
+    assert result.matches_auto_merged == 2
+    assert result.matches_pending_review == 5
+    assert result.matches_pending_transfers == 1
+
+
+@pytest.mark.unit
+def test_refresh_match_counts_are_zero_when_the_step_is_skipped(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """Skipping the match step reports zero found, not a stale or absent count."""
+    result = refresh(MagicMock(), steps=["transform"])
+
+    assert result.matches_auto_merged == 0
+    assert result.matches_pending_review == 0
+    assert result.matches_pending_transfers == 0
+    patched_services["matcher_run"].assert_not_called()
+
+
+@pytest.mark.unit
 def test_refresh_matcher_crash_populates_matching_error(
     patched_services: dict[str, MagicMock],
 ) -> None:
     """A real matcher crash sets matching_error; pipeline continues to transform."""
     patched_services["matcher_run"].side_effect = RuntimeError("matcher boom")
     result = refresh(MagicMock())
-    assert result.matching_error == "matcher boom"
+    # Set but not quoting the exception: the field crosses the MCP boundary, so
+    # the crash is reported, not repeated.
+    assert result.matching_error is not None
+    assert "matcher boom" not in result.matching_error
     assert result.applied is True  # transform still ran despite the matcher crash
 
 
@@ -211,7 +258,8 @@ def test_refresh_matcher_crash_preserved_when_apply_also_fails(
     result = refresh(MagicMock())
     assert result.applied is False
     assert result.error == "apply boom"  # apply failure surfaced
-    assert result.matching_error == "matcher boom"  # matcher crash still preserved
+    assert result.matching_error is not None  # matcher crash still preserved
+    assert "matcher boom" not in result.matching_error
 
 
 @pytest.mark.unit
@@ -235,7 +283,8 @@ def test_refresh_categorizer_crash_populates_categorization_error(
     """A real categorizer crash sets categorization_error; pipeline continues."""
     patched_services["categorize_pending"].side_effect = RuntimeError("cat boom")
     result = refresh(MagicMock())
-    assert result.categorization_error == "cat boom"
+    assert result.categorization_error is not None
+    assert "cat boom" not in result.categorization_error
     assert result.applied is True
 
 
@@ -690,3 +739,180 @@ def test_refresh_gsheet_step_skippable(
     assert patched_services["transform_apply"].call_count == 1
     assert patched_services["categorize_pending"].call_count == 1
     assert result.applied is True
+
+
+@pytest.mark.unit
+def test_refresh_reports_retirements_a_crashed_match_step_already_committed() -> None:
+    """A crash after the reconciliation must not swallow what it reversed.
+
+    ``retire_transfers_invalidated_by_dedup`` commits each reversal individually
+    and runs before Tier 4, so a Tier 4 failure leaves accepted transfers
+    genuinely reversed while ``run()`` never returns its ``MatchResult``.
+    Reporting zero there describes a decision of the user's as untouched.
+    """
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    with patch.object(
+        matching_service.MatchingService,
+        "run",
+        side_effect=MatchRunError(
+            RuntimeError("tier 4 boom"), partial=MatchResult(transfers_retired=3)
+        ),
+    ):
+        result = refresh(MagicMock(), steps=["match"])
+
+    assert result.matching_error is not None
+    assert "tier 4 boom" not in result.matching_error
+    assert result.transfers_retired == 3
+    assert result.matching_skipped is False
+
+
+@pytest.mark.unit
+def test_refresh_reports_decisions_a_crashed_match_step_already_committed() -> None:
+    """The tiers commit too, and their counts die with the same exception.
+
+    A dedup tier persists one decision per pair with no transaction around the
+    loop, so a pair that raises leaves every earlier merge in the ledger — where
+    it suppresses the duplicate side of a transaction. Reporting zero auto-merges
+    there tells the caller the ledger is unchanged when it is not.
+    """
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    with patch.object(
+        matching_service.MatchingService,
+        "run",
+        side_effect=MatchRunError(
+            RuntimeError("tier 3 boom"),
+            partial=MatchResult(auto_merged=4, pending_review=2),
+        ),
+    ):
+        result = refresh(MagicMock(), steps=["match"])
+
+    assert result.matches_auto_merged == 4
+    assert result.matches_pending_review == 2
+    assert result.matching_error is not None
+    assert "tier 3 boom" not in result.matching_error
+    assert result.matching_skipped is False
+
+
+@pytest.mark.unit
+def test_refresh_does_not_call_a_late_view_failure_a_skipped_match_step() -> None:
+    """A catalog error *after* the tiers ran is a crash, not a missing view.
+
+    ``matching_skipped`` claims nothing was examined and suppresses the error
+    entirely. Once the dedup tiers have written decisions and the reconciliation
+    has reversed a transfer, that claim is false — and it is the one that hides
+    the reversal. Only a failure that reaches ``run()`` unwrapped is the
+    first-load precondition.
+    """
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    with patch.object(
+        matching_service.MatchingService,
+        "run",
+        side_effect=MatchRunError(
+            duckdb.CatalogException("no view"),
+            partial=MatchResult(transfers_retired=1),
+        ),
+    ):
+        result = refresh(MagicMock(), steps=["match"])
+
+    assert result.matching_skipped is False
+    assert result.matching_error is not None
+    assert result.transfers_retired == 1
+
+
+@pytest.mark.unit
+def test_refresh_keeps_a_crashed_matchers_cause_out_of_its_error_field() -> None:
+    """The returned error must not repeat what the exception said.
+
+    ``MatchRunError.__init__`` passes ``str(cause)`` to ``Exception``, so the
+    carrier's own message *is* the raw failure — DuckDB binder text, file paths,
+    row values. ``matching_error`` is a ``DataClass.DESCRIPTION`` field that
+    reaches ``refresh_run`` and CLI JSON, so returning it there puts the cause on
+    the wrong side of the boundary the direct matcher surfaces already hold.
+    """
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    cause = RuntimeError("Binder Error: no column named acct_1098 in /Users/x/db")
+    with patch.object(
+        matching_service.MatchingService,
+        "run",
+        side_effect=MatchRunError(cause, partial=MatchResult(transfers_retired=3)),
+    ):
+        result = refresh(MagicMock(), steps=["match"])
+
+    assert result.matching_error is not None
+    assert "acct_1098" not in result.matching_error
+    assert "/Users/x/db" not in result.matching_error
+    assert "partway through" in result.matching_error
+    # The counts are the disclosable half and must survive the sanitizing.
+    assert result.transfers_retired == 3
+
+
+@pytest.mark.unit
+def test_refresh_keeps_an_unclassified_crashs_cause_out_of_its_error_field() -> None:
+    """The catch-all branch feeds the same field, so it needs the same boundary.
+
+    Sanitizing only the ``MatchRunError`` branch would leave ``matching_error``
+    with two behaviours depending on which exception fired — and the catch-all is
+    the branch that catches the types nobody anticipated.
+    """
+    with patch.object(
+        matching_service.MatchingService,
+        "run",
+        side_effect=RuntimeError("row 4412 amount -2412.55 failed /Users/x/db"),
+    ):
+        result = refresh(MagicMock(), steps=["match"])
+
+    assert result.matching_error is not None
+    assert "2412.55" not in result.matching_error
+    assert "/Users/x/db" not in result.matching_error
+
+
+@pytest.mark.unit
+def test_refresh_keeps_a_crashed_categorizers_cause_out_of_its_error_field() -> None:
+    """``categorization_error`` is the same declared class on the same payload.
+
+    Holding the line for the matcher alone would leave the sibling field on
+    ``RefreshRunPayload`` free to say whatever its exception said.
+    """
+    from moneybin.services import categorization
+
+    with patch.object(
+        categorization.CategorizationService,
+        "categorize_pending",
+        side_effect=RuntimeError("row 4412 amount -2412.55 failed /Users/x/db"),
+    ):
+        result = refresh(MagicMock(), steps=["categorize"])
+
+    assert result.categorization_error is not None
+    assert "2412.55" not in result.categorization_error
+    assert "/Users/x/db" not in result.categorization_error
+
+
+@pytest.mark.unit
+def test_refresh_threads_a_callers_actor_into_the_match_step() -> None:
+    """A surface-triggered re-match owes its decisions the surface's name.
+
+    ``app-integrity-invariant.md`` binds matcher-created decisions to the actor
+    of the surface that caused them; the post-merge re-match is caused by a user
+    accepting a link, so its decisions are not ``system``'s work.
+    """
+    with patch.object(matching_service.MatchingService, "run") as run:
+        refresh(MagicMock(), steps=["match"], actor="mcp")
+
+    assert run.call_args.kwargs["actor"] == "mcp"
+
+
+@pytest.mark.unit
+def test_refresh_attributes_an_unasked_for_actor_to_system() -> None:
+    """The same spec keeps ordinary automated refreshes on ``system``.
+
+    ``moneybin refresh`` and ``refresh_run`` are the automated callers the spec
+    names, so threading the parameter must not silently re-attribute them.
+    """
+    with patch.object(matching_service.MatchingService, "run") as run:
+        refresh(MagicMock(), steps=["match"])
+
+    assert run.call_args.kwargs["actor"] == "system"

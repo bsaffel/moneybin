@@ -28,6 +28,7 @@ from moneybin.mcp.confirmation import (
 )
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.mcp.rematch_report import rematch_actions
 from moneybin.mcp.write_contracts import (
     AutoRuleDecisionRequest,
     IdentityDecisionRequest,
@@ -988,6 +989,9 @@ def reviews_decide_coarse(
     """Accept or reject one atomic ordinary or auto-rule decision batch."""
     operation_id = current_operation_id()
     auto_rule_impact: AutoAcceptPayload | None = None
+    # Stays None on the auto-rule branch, which folds no match edge and so
+    # runs no reconciliation — distinct from a pass that reversed nothing.
+    transfers_retired: int | None = None
     with get_database(read_only=False) as db:
         auto_rule_decisions = [
             decision
@@ -1045,9 +1049,10 @@ def reviews_decide_coarse(
                 list[OrdinaryReviewDecisionRequest],
                 decisions,
             )
-            results = ReviewDecisionsService(db, actor="mcp").apply_ordinary(
+            applied = ReviewDecisionsService(db, actor="mcp").apply_ordinary(
                 ordinary_decisions
             )
+            transfers_retired = applied.transfers_retired
             outcomes = [
                 ReviewDecisionOutcome(
                     kind=item.request.kind,
@@ -1057,19 +1062,33 @@ def reviews_decide_coarse(
                     changed=item.changed,
                     operation_id=operation_id,
                 )
-                for item in results
+                for item in applied.items
             ]
+    actions = [
+        "Use reviews(status='pending') to continue review",
+        "Use system_audit_undo(operation_id=...) to reverse this batch",
+    ]
+    if transfers_retired:
+        # First, and ahead of the batch undo: that one reverses the decisions
+        # in this call, which does not restore the *other* transfer the fold
+        # retired — the one the user is about to find missing.
+        actions.insert(
+            0,
+            f"This batch retired {transfers_retired} previously accepted "
+            "transfer(s) — inspect with system_audit(), restore with "
+            "system_audit_undo() if that was wrong, then "
+            "refresh_run(steps=['match']) to re-propose over the legs the "
+            "reversal freed",
+        )
     return build_envelope(
         data=ReviewsDecidePayload(
             results=outcomes,
             applied_count=sum(item.changed for item in outcomes),
             operation_id=operation_id,
             auto_rule_impact=auto_rule_impact,
+            transfers_retired=transfers_retired,
         ),
-        actions=[
-            "Use reviews(status='pending') to continue review",
-            "Use system_audit_undo(operation_id=...) to reverse this batch",
-        ],
+        actions=actions,
     )
 
 
@@ -1176,7 +1195,24 @@ async def identity_links_decide_coarse(
     decisions: list[IdentityDecisionRequest],
     confirmation_token: str | None = None,
 ) -> ResponseEnvelope[IdentityLinksDecidePayload]:
-    """Atomically accept or reject account, merchant, and security identity links."""
+    """Atomically accept or reject account, merchant, and security identity links.
+
+    An accepted account link also re-runs matching, because the merge is what
+    makes the two sources' rows comparable at all. That pass auto-merges
+    duplicates it is confident about and queues the rest; `rematch_auto_merged`,
+    `rematch_pending_review`, and `rematch_pending_transfers` report it, and are
+    null when the batch held no accept (no pass ran).
+    `rematch_transfers_retired` counts transfers the user had already accepted
+    that the merge reversed — their two sides turned out to be one transaction,
+    or their two accounts one account — check it before reporting the batch as
+    clean.
+
+    Mutation surface: writes app.account_link_decisions + app.account_links,
+    app.merchant_links, app.security_links, and on an account accept also
+    app.match_decisions (the re-key onto the surviving account, the re-match
+    pass, and reversing any transfer it invalidates) plus a rebuild of core.*
+    via SQLMesh. Reverse with system_audit_undo(operation_id).
+    """
     preview = await asyncio.to_thread(_preview_identity_decisions, decisions)
     plan = preview.plan
     binding = _identity_binding(decisions, plan)
@@ -1209,6 +1245,14 @@ async def identity_links_decide_coarse(
         expected_binding=binding,
     )
     operation_id = current_operation_id()
+    # An accepted merge re-runs matching, and that pass can auto-merge rows
+    # without asking. Same disclosure as accounts_links_set, from one source.
+    rematch = live.rematch
+    actions = [
+        *rematch_actions(rematch),
+        "Use reviews(status='pending') to continue identity review",
+        "Use system_audit_undo(operation_id=...) to reverse this batch",
+    ]
     return build_envelope(
         data=IdentityLinksDecidePayload(
             results=[
@@ -1224,11 +1268,20 @@ async def identity_links_decide_coarse(
             ],
             applied_count=live.changed_count,
             operation_id=operation_id,
+            rematch_auto_merged=None
+            if rematch is None
+            else rematch.matches_auto_merged,
+            rematch_pending_review=(
+                None if rematch is None else rematch.matches_pending_review
+            ),
+            rematch_pending_transfers=(
+                None if rematch is None else rematch.matches_pending_transfers
+            ),
+            rematch_transfers_retired=(
+                None if rematch is None else rematch.transfers_retired
+            ),
         ),
-        actions=[
-            "Use reviews(status='pending') to continue identity review",
-            "Use system_audit_undo(operation_id=...) to reverse this batch",
-        ],
+        actions=actions,
     )
 
 
@@ -1241,7 +1294,10 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         "Accept or reject an atomic batch of transaction, match, or auto-rule "
         "review decisions. Auto-rule decisions use kind='auto_rule' and may set "
         "allow_broad after inspecting estimated_match_count; keep auto-rule and "
-        "ordinary decisions in separate calls.",
+        "ordinary decisions in separate calls. Accepting a match can reverse a "
+        "transfer the user already accepted, once one component holds both its "
+        "legs: `transfers_retired` counts those, and each result's `status` is "
+        "what committed — an accept that loses that tiebreak reads 'reversed'.",
         privacy_actor="reviews_decide",
     )
     register(
@@ -1253,9 +1309,12 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         "instruments' tax lots, manual events, and price marks, or only binds a "
         "price-feed symbol to a security, which deletes nothing and moves no "
         "row; the confirmation prompt names which one and counts every category "
-        "it moves. Any accepted merge or bind confirms the exact normalized "
-        "full batch and complete live before-state; reject-only batches do not "
-        "prompt.",
+        "it moves. Accepting an account decision re-runs matching over the "
+        "merged account, which can reverse a transfer the user already "
+        "accepted: `rematch_transfers_retired` counts those, and "
+        "system_audit_undo() restores them. Any accepted merge or bind confirms "
+        "the exact normalized full batch and complete live before-state; "
+        "reject-only batches do not prompt.",
         privacy_actor="identity_links_decide",
     )
 

@@ -22,7 +22,13 @@ async def test_refresh_run_is_registered() -> None:
     description = next(tool.description for tool in tools if tool.name == "refresh_run")
     assert description is not None
     assert "canonical order" in description
-    assert "No revert path" in description
+    # The registered string is the only prose FastMCP serves at tool-selection
+    # time, so the docstring's disclosure never reaches the agent. A blanket
+    # "No revert path" is now false: the match step can reverse a transfer the
+    # user accepted, and system_audit_undo is the way back.
+    assert "transfers_retired" in description
+    assert "system_audit_undo" in description
+    assert "No revert path" not in description
 
 
 @pytest.mark.unit

@@ -50,6 +50,7 @@ from moneybin.mcp.confirmation import (
 )
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.mcp.rematch_report import rematch_actions
 from moneybin.mcp.write_contracts import FiniteDecimal
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.accounts import (
@@ -114,6 +115,7 @@ from moneybin.services.identity_confirmation import (
     identity_confirm_message,
 )
 from moneybin.services.mutation_context import current_operation_id
+from moneybin.services.refresh import RefreshResult
 
 # ─── Read tools (entity) ──────────────────────────────────────────────────
 
@@ -576,12 +578,28 @@ def _account_link_binding(
     fail the digest instead of passing it.
 
     **Known accepted gap**, shared with the CLI's ``_ApprovedMerge``: the
-    ledger facts the prompt renders are not bound here, so two things can
+    ledger facts the prompt renders are not bound here, so three things can
     change between the grant and the commit without anything refusing the
     write. A survivor emptied by another accept loses its check-the-direction
     warning; and the overlap ratio can worsen on its own, because the probe's
     window is bounded by the *survivor's* dates and one row arriving outside it
     admits absorbed rows that match nothing.
+
+    The third is worse in kind than those two, and is called out separately
+    because they are display drift and it is not. ``resolved_ids`` names the
+    account-link decisions and links; it does not name **match** decisions. But
+    ``set`` repoints those onto the survivor, and a repoint can reverse a
+    transfer the user had accepted (``repoint_account`` →
+    ``accepted_transfers_retired``). So a match decision that is added, or
+    changes, while this grant is open alters what the commit actually writes
+    while the digest still verifies — an accepted transfer can be retired
+    outside the approved blast radius. Bounded, not silent: the reversal is
+    disclosed with its ``system audit undo`` route the way every other
+    retirement on this path is, and it needs the decision to move inside the
+    preview→confirm window. Closing it means carrying the affected
+    match-decision ids and state through ``accept_impact`` and both live-state
+    recomputations (here and the batch's ``_prepare_account``); deferred
+    deliberately rather than overlooked.
 
     A digest is symmetric and would also refuse the harmless directions — a
     survivor that gained its first transactions, an import that strengthened
@@ -644,7 +662,7 @@ def _apply_account_accept(
     decision_id: str,
     target_account_id: str,
     grant: ConfirmationGrant,
-) -> None:
+) -> RefreshResult | None:
     # decided_by="user" is truthful only on this path: a human just ratified the
     # merge through the elicitation gate above.
     def verify(impact: AccountLinkAcceptImpact) -> None:
@@ -657,7 +675,7 @@ def _apply_account_accept(
         )
 
     with get_database(read_only=False) as db:
-        AccountLinksService(db, actor="mcp").set(
+        return AccountLinksService(db, actor="mcp").set(
             decision_id,
             target_account_id=target_account_id,
             decided_by="user",
@@ -707,7 +725,19 @@ async def accounts_links_set(
     become one account. If they are not the same real-world account, the merged
     history and net worth are wrong.
 
-    Mutation surface: writes app.account_link_decisions + app.account_links.
+    Accepting also re-runs matching, because the merge is what makes the two
+    sources' rows comparable at all — the matcher only pairs rows within one
+    account. That pass auto-merges duplicates it is confident about and queues
+    the rest for review; `rematch_auto_merged`, `rematch_pending_review` and
+    `rematch_pending_transfers` report all three, and are null on a reject (no
+    pass ran). `rematch_transfers_retired` counts transfers you had already
+    accepted that the merge reversed — their two sides turned out to be one
+    transaction, or their two accounts one account — check it before reporting
+    the merge as clean.
+
+    Mutation surface: writes app.account_link_decisions + app.account_links, and
+    on an accept also app.match_decisions (the re-match pass, including
+    reversing any transfer it invalidates) plus a rebuild of core.* via SQLMesh.
     Reverse with system_audit_undo(operation_id) — find the operation_id via
     system_audit. Find pending decisions with accounts_links_pending.
 
@@ -738,6 +768,7 @@ async def accounts_links_set(
         # elicitation), so a blocking DuckDB write here would stall the server.
         await asyncio.to_thread(_apply_account_reject, decision_id)
         status = "rejected"
+        rematch = None
     else:
         if not target_account_id:
             raise UserError(
@@ -774,20 +805,37 @@ async def accounts_links_set(
             message=message,
             confirmation_token=confirmation_token,
         )
-        await asyncio.to_thread(
+        rematch = await asyncio.to_thread(
             _apply_account_accept,
             decision_id,
             target_account_id,
             grant,
         )
         status = "accepted"
+    actions = [
+        *rematch_actions(rematch),
+        "Use reviews(kind='account_links') for remaining pending decisions",
+        "Reverse this decision with system_audit_undo(operation_id) — find "
+        "the operation_id with system_audit",
+    ]
     return build_envelope(
-        data=AccountLinksSetPayload(decision_id=decision_id, status=status),
-        actions=[
-            "Use reviews(kind='account_links') for remaining pending decisions",
-            "Reverse this decision with system_audit_undo(operation_id) — find "
-            "the operation_id with system_audit",
-        ],
+        data=AccountLinksSetPayload(
+            decision_id=decision_id,
+            status=status,
+            rematch_auto_merged=None
+            if rematch is None
+            else rematch.matches_auto_merged,
+            rematch_pending_review=(
+                None if rematch is None else rematch.matches_pending_review
+            ),
+            rematch_pending_transfers=(
+                None if rematch is None else rematch.matches_pending_transfers
+            ),
+            rematch_transfers_retired=(
+                None if rematch is None else rematch.transfers_retired
+            ),
+        ),
+        actions=actions,
     )
 
 

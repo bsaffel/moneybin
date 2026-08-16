@@ -29,11 +29,14 @@ from moneybin.mcp.tools.reviews import (
 from moneybin.mcp.write_contracts import (
     AccountLinkDecisionRequest,
     CategorizationDecisionRequest,
+    IdentityDecisionRequest,
     MatchDecisionRequest,
     MerchantLinkDecisionRequest,
     OrdinaryReviewDecisionRequest,
     SecurityLinkDecisionRequest,
 )
+from moneybin.privacy.payloads.reviews import IdentityLinksDecidePayload
+from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.repositories.categorization_decisions_repo import (
     categorization_decision_id,
 )
@@ -54,6 +57,7 @@ from moneybin.services.auto_rule_service import (
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.identity_confirmation import IDENTITY_BLAST_RADIUS_CATEGORIES
 from moneybin.services.merchant_links_service import MerchantLinksService
+from moneybin.services.refresh import RefreshResult
 from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
@@ -1004,6 +1008,47 @@ async def test_ordinary_decisions_route_by_kind_and_share_operation() -> None:
         item.operation_id == response.data.operation_id
         for item in response.data.results
     )
+
+
+async def test_a_batch_match_accept_reports_that_it_reconciled() -> None:
+    """The count is 0 here, and the point is that it is not ``None``.
+
+    Accepting a match runs the transfer reconciliation, so this batch's
+    ``transfers_retired`` is a measurement — nothing collided in this fixture.
+    Collapsing that to ``None`` would make "no reconciliation ran" and "one
+    ran and reversed nothing" the same answer, which is the distinction the
+    identity payload's re-match counts already draw.
+    """
+    _transaction_id, _categorization_id, match_id, _category = (
+        _seed_ordinary_decisions()
+    )
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            MatchDecisionRequest(kind="match", decision_id=match_id, decision="accept")
+        ]
+    )
+
+    assert response.error is None
+    assert response.data.results[0].status == "accepted"
+    assert response.data.transfers_retired == 0
+    assert not any("retired" in action for action in response.actions)
+
+
+async def test_a_batch_without_a_match_accept_runs_no_reconciliation() -> None:
+    """Negative twin: a rejection folds nothing, so no pass runs at all."""
+    _transaction_id, _categorization_id, match_id, _category = (
+        _seed_ordinary_decisions()
+    )
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            MatchDecisionRequest(kind="match", decision_id=match_id, decision="reject")
+        ]
+    )
+
+    assert response.error is None
+    assert response.data.transfers_retired is None
 
 
 async def test_auto_rule_decisions_route_through_existing_decision_tool() -> None:
@@ -2353,6 +2398,263 @@ def test_identity_batch_rolls_back_before_outcome_metrics_on_late_failure() -> N
     security_service.record_committed_outer_outcomes.assert_not_called()
 
 
+def test_identity_batch_reruns_the_matcher_after_an_accepted_merge() -> None:
+    """A batched merge is still a merge — it must re-match once the batch commits.
+
+    ``set`` returns early under ``in_outer_txn`` and never reaches its own
+    post-commit tail, so the batch path owns this trigger. Without it, driving
+    the same accept through ``identity_links_decide`` instead of
+    ``accounts_links_set`` silently keeps the duplicate.
+    """
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="accept",
+            target_id="account-candidate",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    db = MagicMock()
+    service = ReviewDecisionsService(db, actor="mcp")
+
+    with (
+        patch(
+            "moneybin.services.review_decisions_service.AccountLinksService"
+        ) as account_class,
+        patch.object(service, "plan_identity", return_value=plan),
+    ):
+        account_service = account_class.return_value
+        service.apply_identity(decisions, verify=lambda _: None)
+
+    db.commit.assert_called_once_with()
+    account_service.rematch_after_merge.assert_called_once_with()
+
+
+def test_identity_batch_of_rejects_does_not_rerun_the_matcher() -> None:
+    """A reject repoints nothing, so no account gains new dedup candidates."""
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="reject",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    db = MagicMock()
+    service = ReviewDecisionsService(db, actor="mcp")
+
+    with (
+        patch(
+            "moneybin.services.review_decisions_service.AccountLinksService"
+        ) as account_class,
+        patch.object(service, "plan_identity", return_value=plan),
+    ):
+        account_service = account_class.return_value
+        service.apply_identity(decisions, verify=lambda _: None)
+
+    account_service.rematch_after_merge.assert_not_called()
+
+
+def test_identity_batch_of_an_unchanged_accept_does_not_rerun_the_matcher() -> None:
+    """An accept that changed nothing repointed nothing, so there is nothing to re-match.
+
+    ``account_merged`` requires ``changed`` as well as ``decision == "accept"``,
+    because a decision resubmitted at its current status takes
+    ``_prepare_account``'s ``current == status`` branch and writes no repoint.
+    The reject case cannot prove this: it would pass with the ``changed``
+    conjunct deleted. This fixture keeps the accept and removes only the change,
+    so dropping that conjunct turns it red.
+    """
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="accept",
+            target_id="account-candidate",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="merchant-decision",
+            decision="reject",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    # Only the account accept is unchanged; the merchant reject keeps
+    # changed_count above zero so apply_identity does not short-circuit.
+    plan = replace(
+        plan,
+        items=(replace(plan.items[0], changed=False), plan.items[1]),
+    )
+    db = MagicMock()
+    service = ReviewDecisionsService(db, actor="mcp")
+
+    with (
+        patch(
+            "moneybin.services.review_decisions_service.AccountLinksService"
+        ) as account_class,
+        patch("moneybin.services.review_decisions_service.MerchantLinksService"),
+        patch.object(service, "plan_identity", return_value=plan),
+    ):
+        account_service = account_class.return_value
+        service.apply_identity(decisions, verify=lambda _: None)
+
+    account_service.rematch_after_merge.assert_not_called()
+
+
+def test_identity_batch_carries_the_rematch_outcome_out() -> None:
+    """Firing the pass is not enough — the batch must report what it did.
+
+    ``identity_links_decide`` is the seam an agent drives, and the pass it
+    triggers can auto-merge rows without asking. If the ``RefreshResult`` stops
+    inside ``apply_identity``, a batched accept returns an apparently clean
+    merge while silently collapsing duplicates — the exact failure the direct
+    ``accounts_links_set`` path reports and this one would not.
+    """
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="accept",
+            target_id="account-candidate",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    db = MagicMock()
+    service = ReviewDecisionsService(db, actor="mcp")
+
+    with (
+        patch(
+            "moneybin.services.review_decisions_service.AccountLinksService"
+        ) as account_class,
+        patch.object(service, "plan_identity", return_value=plan),
+    ):
+        account_class.return_value.rematch_after_merge.return_value = RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matches_auto_merged=2,
+            matches_pending_review=5,
+        )
+        result = service.apply_identity(decisions, verify=lambda _: None)
+
+    assert result.rematch is not None
+    assert result.rematch.matches_auto_merged == 2
+    assert result.rematch.matches_pending_review == 5
+
+
+def test_identity_batch_of_rejects_carries_no_rematch_outcome() -> None:
+    """No pass ran, so the batch reports absence rather than a zero."""
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="reject",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    db = MagicMock()
+    service = ReviewDecisionsService(db, actor="mcp")
+
+    with (
+        patch("moneybin.services.review_decisions_service.AccountLinksService"),
+        patch.object(service, "plan_identity", return_value=plan),
+    ):
+        result = service.apply_identity(decisions, verify=lambda _: None)
+
+    assert result.rematch is None
+
+
+async def _decide_with_rematch(
+    monkeypatch: pytest.MonkeyPatch, rematch: RefreshResult | None
+) -> ResponseEnvelope[IdentityLinksDecidePayload]:
+    """Drive identity_links_decide with a stubbed apply carrying ``rematch``.
+
+    Reaches the tool wrapper itself rather than ``apply_identity`` below it,
+    because the field population and actions[] ordering are the wiring under
+    test — the service-level tests above cannot see either.
+    """
+    from types import SimpleNamespace
+
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="accept",
+            target_id="account-candidate",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    applied = replace(plan, rematch=rematch)
+
+    def _verify(_binding: object) -> None:
+        return None
+
+    def _preview(_decisions: object) -> object:
+        return SimpleNamespace(plan=plan, merges=(), kinds=("account_link",))
+
+    async def _granted(**_kw: object) -> object:
+        return SimpleNamespace(verify=_verify)
+
+    def _apply(_decisions: object, **_kw: object) -> IdentityDecisionPlan:
+        return applied
+
+    monkeypatch.setattr(reviews_module, "_preview_identity_decisions", _preview)
+    monkeypatch.setattr(reviews_module, "grant_confirmation_or_raise", _granted)
+    monkeypatch.setattr(reviews_module, "_apply_identity_decisions", _apply)
+    return await reviews_module.identity_links_decide_coarse(decisions=decisions)
+
+
+async def test_identity_links_decide_reports_the_rematch_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The batch tool's payload carries the same three counts as the direct one."""
+    envelope = await _decide_with_rematch(
+        monkeypatch,
+        RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matches_auto_merged=2,
+            matches_pending_review=5,
+            matches_pending_transfers=3,
+        ),
+    )
+
+    assert envelope.data.rematch_auto_merged == 2
+    assert envelope.data.rematch_pending_review == 5
+    assert envelope.data.rematch_pending_transfers == 3
+    assert any("5 new duplicate" in action for action in envelope.actions)
+    assert any("3 possible transfer" in action for action in envelope.actions)
+
+
+async def test_identity_links_decide_flags_a_failed_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A half-failed pass reaches the batch tool's actions, not just the direct one."""
+    envelope = await _decide_with_rematch(
+        monkeypatch,
+        RefreshResult(
+            applied=False,
+            duration_seconds=1.0,
+            error="sqlmesh apply failed",
+            matching_error="matcher blew up",
+        ),
+    )
+
+    assert any("rebuild" in action.lower() for action in envelope.actions)
+    assert any("stopped partway" in action for action in envelope.actions)
+
+
+async def test_identity_links_decide_reports_no_rematch_when_none_ran(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No pass ran, so all three counts are absent rather than zero-as-fact."""
+    envelope = await _decide_with_rematch(monkeypatch, None)
+
+    assert envelope.data.rematch_auto_merged is None
+    assert envelope.data.rematch_pending_review is None
+    assert envelope.data.rematch_pending_transfers is None
+
+
 def test_identity_batch_emits_each_domain_metric_only_after_commit() -> None:
     decisions = [
         AccountLinkDecisionRequest(
@@ -2389,7 +2691,10 @@ def test_identity_batch_emits_each_domain_metric_only_after_commit() -> None:
     ):
         result = service.apply_identity(decisions, verify=lambda _: None)
 
-    assert result is plan
+    # Equality, not identity: apply_identity now returns a copy carrying the
+    # post-merge rematch outcome. On this all-rejects batch that outcome is
+    # None, so the copy equals the plan field for field.
+    assert result == plan
     db.commit.assert_called_once_with()
     db.rollback.assert_not_called()
     account_class.return_value.record_committed_outer_decisions.assert_called_once_with()

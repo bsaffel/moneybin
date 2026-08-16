@@ -163,6 +163,32 @@ def test_classify_value_error_returns_user_error() -> None:
     assert "bad input" in result.message
 
 
+def test_classify_match_run_error_withholds_the_cause() -> None:
+    """The matcher's partial-run carrier is classified, and its message dropped.
+
+    ``MatchRunError.__init__`` passes ``str(cause)`` to ``Exception``, so the
+    carrier's own message is whatever DuckDB or a repository raised — binder
+    text, a file path, a row value. Every surface renders a classified
+    message verbatim (``❌ {message}`` on the CLI, the MCP error envelope), so
+    the branch has to answer with MoneyBin's own words rather than pass
+    ``str(exc)`` through the way most branches here legitimately do.
+    """
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    exc = MatchRunError(
+        RuntimeError("Binder Error: no column 'amt' in /Users/x/moneybin.duckdb"),
+        partial=MatchResult(auto_merged=4),
+    )
+
+    result = classify_user_error(exc)
+
+    assert result is not None, "an unclassified carrier propagates as a traceback"
+    assert result.code == error_codes.REFRESH_MATCH_FAILED
+    assert "Binder Error" not in result.message
+    assert "/Users/x" not in result.message
+    assert result.hint is not None and "Binder Error" not in result.hint
+
+
 def test_user_error_to_dict_omits_none_hint() -> None:
     """UserError.to_dict drops the hint field when not set."""
     err = UserError("m", code="c")

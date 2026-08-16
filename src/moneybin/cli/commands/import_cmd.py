@@ -27,12 +27,13 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
 )
-from moneybin.cli.utils import emit_json
+from moneybin.cli.utils import emit_json, warn_transfers_retired
 from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
+from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from moneybin.database import Database
     from moneybin.extractors.tabular.formats import TabularFormat
@@ -591,6 +592,19 @@ def import_files_command(
             header_row_consumed_recovery,
             unreadable_date_recovery,
         )
+        from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+            ImportRefreshError,
+        )
+
+        # Ahead of every dispatch below, because none of them reach the
+        # success-path warning further down: the refresh reconciled inside its
+        # match step and committed there, so these reversals outlived the
+        # transform failure that raised. A decision the *user* made being undone
+        # is disclosed whether or not what followed it succeeded.
+        if isinstance(_exc, ImportRefreshError):
+            warn_transfers_retired(
+                _exc.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+            )
 
         if isinstance(_exc, ImportConfirmationRequiredError):
             # Surface the confirmation_required envelope.  Non-TTY / --output
@@ -823,6 +837,16 @@ def import_files_command(
         if data.get("transforms_error"):
             logger.warning(f"⚠️  Transform apply failed: {data['transforms_error']}")
 
+    # The import's refresh runs the matcher, so folding a duplicate can reverse
+    # a transfer the user accepted. Same helper and sentence as the matcher
+    # commands: the event is identical, only the surface differs. Outside both
+    # branches above for the reason `refresh.py` states — this is a decision the
+    # *user* made being undone, not a status line, so it survives --quiet and is
+    # emitted alongside JSON (where the count is in the payload too).
+    warn_transfers_retired(
+        int(data.get("transfers_retired") or 0), cause=RETIRED_SIDES_COLLAPSED
+    )
+
     # Batch import succeeds file-by-file but the post-import SQLMesh apply is
     # a separate failure surface. Exit non-zero so scripts and agents detect
     # that core tables were not refreshed even when every file imported.
@@ -924,6 +948,7 @@ def _batch_payload(
         "total_count": batch.total_count,
         "transforms_applied": batch.transforms_applied,
         "transforms_duration_seconds": batch.transforms_duration_seconds,
+        "transfers_retired": batch.transfers_retired,
         "files": files_list,
     }
     if batch.transforms_error:
@@ -998,6 +1023,10 @@ def _single_file_success(
         ],
         transforms_applied=refresh and result.core_tables_rebuilt,
         transforms_duration_seconds=None,
+        # The single-file refresh reaches the same reconciliation the batch one
+        # does, so the count has to ride onto the batch this synthesizes —
+        # everything downstream reads it from here, not from ImportResult.
+        transfers_retired=result.transfers_retired,
     )
 
 
@@ -1072,6 +1101,28 @@ def _confirmation_envelope_data(
     )
 
 
+def format_account_candidate(candidate: Mapping[str, object]) -> str:
+    """Format one account candidate with any available ledger evidence."""
+    account_id = str(candidate.get("account_id", ""))
+    display_name = str(candidate.get("display_name", ""))
+    signal = str(candidate.get("signal", ""))
+    rendered = f"{account_id}  ({display_name}, {signal})"
+
+    matched = candidate.get("overlap_matched")
+    comparable = candidate.get("overlap_comparable")
+    if type(matched) is not int or type(comparable) is not int:
+        return rendered
+    if comparable == 0:
+        return f"{rendered} · ledger overlap: no comparable transactions"
+
+    overlap = f"ledger overlap: {matched}/{comparable} matched"
+    window_start = candidate.get("overlap_window_start")
+    window_end = candidate.get("overlap_window_end")
+    if isinstance(window_start, str) and isinstance(window_end, str):
+        overlap += f" ({window_start} to {window_end})"
+    return f"{rendered} · {overlap}"
+
+
 def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None:
     """Print the source keys + candidate accounts for an account_confirmation.
 
@@ -1112,8 +1163,7 @@ def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None
         )
         for c in p["candidates"]:
             typer.echo(
-                f"       candidate: {c['account_id']}  "
-                f"({c['display_name']}, {c['signal']})",
+                f"       candidate: {format_account_candidate(c)}",
                 err=err,
             )
 
@@ -1170,10 +1220,11 @@ def _import_files_account_args(
     # gate's own proposals, but the sign gate fires BEFORE the account gate on
     # PDF, so there are no proposals here to re-key from — and passing the
     # caller's key through would put a raw source_account_key (an OFX <ACCTID>,
-    # or issuer+last4 on PDF) into `actions[]`, which sits outside the redaction
-    # walk. Dropping it is the honest half: a ref answers the same account and
-    # discloses nothing, a raw key cannot be printed, and `_sign_recovery_note`
-    # tells the caller what to re-supply rather than letting the pin vanish.
+    # or an opaque PDF document digest) into `actions[]`, which sits outside the
+    # redaction walk. Dropping it is the honest half: a ref answers the same
+    # account and discloses nothing, a raw key cannot be printed, and
+    # `_sign_recovery_note` tells the caller what to re-supply rather than
+    # letting the pin vanish.
     from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
         is_proposal_ref,
     )

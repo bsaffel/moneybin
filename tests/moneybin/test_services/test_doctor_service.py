@@ -775,8 +775,10 @@ def test_run_all_returns_expected_invariants(
     # currency) + profile_settings audit coverage (M1K.1 Req 4) + user_reports
     # audit coverage (M2P.2) + duplicate_account_overlap (one account imported
     # under two identities — invisible to the matcher, which blocks candidate
-    # pairs on account_id).
-    assert len(report.invariants) == 57
+    # pairs on account_id) + unproposed_cross_source_duplicates (the same two
+    # sources *after* the link is accepted, which is where the overlap check
+    # stops applying and dedup_reconciliation never applied).
+    assert len(report.invariants) == 58
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -784,6 +786,7 @@ def test_run_all_returns_expected_invariants(
     assert "sqlmesh_model_presence" in names
     assert "dedup_reconciliation" in names
     assert "duplicate_account_overlap" in names
+    assert "unproposed_cross_source_duplicates" in names
     assert "categorization_coverage" in names
     assert "currency_integrity" in names
     assert "app_audit_coverage_user_categories" in names
@@ -3231,3 +3234,729 @@ def test_partial_overlap_below_the_ratio_passes(
     result = _overlap_result(doctor_db, monkeypatch)
 
     assert result.status == "pass"
+
+
+def _insert_unioned_row(
+    db: Database,
+    *,
+    stid: str,
+    source_type: str,
+    source_origin: str = "bank",
+    account_id: str = "ACC1",
+    amount: str = "-50.00",
+    transaction_date: str = "2026-01-01",
+    source_file: str | None = None,
+) -> None:
+    """Insert one matcher-input row into prep.int_transactions__unioned.
+
+    Defaults put every row in one account on one date at one amount, so a test
+    only has to vary the field whose narrowing clause it is exercising.
+    ``source_file`` defaults to NULL, which imposes no cardinality constraint —
+    matching ``assign_components``' treatment of a row with an unknown file.
+    """
+    db.execute(
+        """
+        INSERT INTO prep.int_transactions__unioned (
+            source_transaction_id, account_id, source_account_key,
+            transaction_date, amount, description, currency_code,
+            source_type, source_origin, source_file, is_pending
+        ) VALUES (?, ?, ?, ?, ?, 'Coffee', 'USD', ?, ?, ?, false)
+        """,  # noqa: S608 — test input, not user data
+        [
+            stid,
+            account_id,
+            account_id,
+            transaction_date,
+            amount,
+            source_type,
+            source_origin,
+            source_file,
+        ],
+    )
+
+
+def _unproposed_result(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> InvariantResult:
+    """Run the full doctor report (SQLMesh mocked) and return the unproposed check."""
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    report = DoctorService(db).run_all()
+    return next(
+        r for r in report.invariants if r.name == "unproposed_cross_source_duplicates"
+    )
+
+
+@pytest.mark.unit
+def test_cross_source_pair_with_no_decision_either_side_warns(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 2026-08-08 shape: two sources co-resident, matcher never looked.
+
+    Every narrowing clause is satisfied deliberately, and each by exactly one
+    fixture property: one account (ACC1 both sides), differing source_type
+    (ofx/csv), equal amount, zero date distance, and no app.match_decisions row
+    naming either id. Exactly one pair qualifies, so a warn here cannot come
+    from anywhere but the predicate under test.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_a_fresh_three_way_cluster_reports_pairs_as_an_upper_bound(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three mutually-duplicate rows, no prior decision: 3 pairs, 2 proposals.
+
+    The closure CTEs read *persisted* decisions, while ``assign_components``
+    additionally unions candidates as it walks them inside one run. With nothing
+    persisted there are no edges to read, so all three pairwise combinations
+    survive, while a rematch links them into one component and writes two. The
+    figure is therefore an upper bound, and the finding has to say so — otherwise
+    the remedy it recommends visibly under-delivers against its own number.
+
+    Pinned rather than corrected: the pairs genuinely carry no decision, so the
+    detection is right and only the arithmetic is loose. Simulating the dynamic
+    union in SQL would trade a wording problem for a correctness risk in the one
+    check that caught the 2026-08-08 incident.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    _insert_unioned_row(doctor_db, stid="plaid1", source_type="plaid")
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    # 3 nodes with no persisted edge → all 3 pairwise combinations survive.
+    assert result.affected_ids == ["ACC1 (up to 3 unreviewed pairs)"]
+    assert result.detail is not None
+    assert "upper bound" in result.detail
+
+
+@pytest.mark.unit
+def test_unproposed_duplicates_detail_publishes_runnable_commands(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The finding's two-step remedy has to be two commands the CLI registers.
+
+    A `doctor` finding is read by someone who already knows something is wrong;
+    a name that exits 2 sends them looking for a second fault that isn't there.
+    Resolves what the invariant emitted rather than the literal, so the wording
+    stays free to change.
+    """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.detail is not None
+    assert_published_commands_resolve(result.detail)
+
+
+@pytest.mark.unit
+def test_cross_source_pair_the_matcher_already_ruled_on_passes(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A decision on either side means the matcher saw the pair — nothing to flag.
+
+    The decision is `rejected`, the least favourable status for this check: the
+    user looked and said no. If the invariant keyed on accepted-only it would
+    re-flag a pair its owner has already dismissed, nagging forever.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv1', 'csv', 'bank', 'ACC1',
+                  0.9, '{}', 'dedup', '3', NULL, 'rejected', NULL, 'user',
+                  CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_same_source_pair_with_no_decision_passes(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Within-source pairs are legitimately dropped, so their silence is not evidence.
+
+    Tier 2b writes no row when it declines a pair (`engine._classify_pair`
+    returns None), so "no decision" is the normal resting state for two rows of
+    one source and must not warn. Identical to the warning fixture in every
+    field but source_type — if this failed, the check would be flagging
+    ordinary within-source duplicates rather than the cross-source blind spot.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="ofx2", source_type="ofx")
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_same_source_type_from_two_origins_warns(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two CSV integrations are a cross-source pair to the matcher, so also here.
+
+    ``scoring.py::_get_candidates`` blocks Tier 3 on
+    ``source_type != source_type OR source_origin != source_origin`` — the
+    second half is what admits two separate CSV bank integrations, or two Plaid
+    connections, as candidates. Isolated by exactly one field: identical to the
+    same-source fixture above in every respect but ``source_origin``, so a warn
+    here can only come from the origin half of the predicate.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(
+        doctor_db, stid="csv1", source_type="csv", source_origin="bank_a"
+    )
+    _insert_unioned_row(
+        doctor_db, stid="csv2", source_type="csv", source_origin="bank_b"
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_a_rejection_against_a_different_partner_does_not_suppress(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejection excludes one pair, not a transaction from all future pairs.
+
+    The matcher's rejected-pair check is an exact tuple, and rejected edges seed
+    no union-find component — so a row rejected against one partner is still a
+    live candidate against every other. Suppressing at node grain would hide a
+    genuinely unproposed pair behind an unrelated rejection, which is the blind
+    spot this check exists to close.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    # ofx1 was rejected against some *other* CSV row, not against csv1.
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv_other', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'rejected', NULL,
+                  'user', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_a_rejection_suppresses_on_the_matchers_key_not_on_origin(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rule: this check's suppression key must be the matcher's key.
+
+    ``scoring.py`` builds ``rejected_set`` from ``(source_type,
+    source_transaction_id)`` on both sides plus ``account_id`` — origin is
+    selected onto the decision row but never enters the tuple it tests. So the
+    matcher skips a rejected pair whatever origin the rows now carry. A check
+    that additionally demands origin equality warns about a pair the matcher
+    will never propose, and the refresh it recommends cannot clear it.
+
+    Here the rejection was recorded against the same two nodes under a different
+    origin, which is reachable whenever a source-native id is reused across
+    origins within one account.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx", source_origin="a")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv", source_origin="b")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv1', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'rejected', NULL,
+                  'user', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass", (
+        "warned about a pair the matcher's rejected-pair test already excludes"
+    )
+
+
+@pytest.mark.unit
+def test_an_accepted_decision_on_only_one_side_does_not_suppress(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A node in an existing component is not globally claimed.
+
+    When A–B is already matched and a merge makes a third copy C co-resident,
+    ``assign_components`` attaches C with a new edge wherever source cardinality
+    allows. Suppressing the A–C candidate because A already appears in some
+    component would hide the newly co-resident row this check exists to find —
+    the same class of silence as the original incident.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv_other', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_decisions_in_disjoint_components_do_not_suppress(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both endpoints decided is not redundancy — same component is.
+
+    ``assign_components`` skips an edge only on ``find(a) == find(b)``
+    (``assignment.py``). Two rows each carrying an unrelated accepted decision
+    sit in *disjoint* components, so the matcher would still evaluate the edge
+    between them. Suppressing it would hide a live unproposed pair — the exact
+    silence this invariant exists to break, relocated into the invariant itself.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv_other', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP),
+                 ('m2', 'csv1', 'csv', 'bank', 'ofx_other', 'ofx', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_two_rows_already_in_one_component_suppress(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The redundant edge the matcher genuinely drops, and the only one.
+
+    ``ofx1`` and ``csv1`` are connected transitively through ``mid`` with no
+    decision naming the pair itself. ``find(ofx1) == find(csv1)``, so
+    ``assign_components`` skips the edge as redundant — and the invariant must
+    stay quiet, or every collapsed duplicate group nags forever. Differs from
+    the disjoint fixture above by exactly one property: whether the two
+    decisions share an endpoint.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'mid', 'plaid', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP),
+                 ('m2', 'csv1', 'csv', 'bank', 'mid', 'plaid', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+_TWO_PAIRED_COMPONENTS = """
+    INSERT INTO app.match_decisions (
+        match_id, source_transaction_id_a, source_type_a, source_origin_a,
+        source_transaction_id_b, source_type_b, source_origin_b,
+        account_id, confidence_score, match_signals, match_type, match_tier,
+        account_id_b, match_status, match_reason, decided_by, decided_at
+    ) VALUES ('m1', 'csv1', 'csv', 'bank', 'ofx1', 'ofx', 'bank',
+              'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+              'auto', CURRENT_TIMESTAMP),
+             ('m2', 'csv2', 'csv', 'bank', 'ofx2', 'ofx', 'bank',
+              'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+              'auto', CURRENT_TIMESTAMP)
+"""  # noqa: S608 — test input, not user data
+
+
+@pytest.mark.unit
+def test_two_components_sharing_a_physical_source_suppress(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cardinality guard's pairs, which no refresh could ever clear.
+
+    ``assign_components`` rejects an edge whose two components already hold a
+    row from one ``(source_type, source_origin, source_file)`` — two rows of a
+    single import file are distinct transactions by construction, so they must
+    never land in one component. Here one CSV and one OFX file each contribute
+    both of their rows, and the matcher has already paired them 1:1, so the two
+    *cross* edges are precisely what the guard drops. Warning about them would
+    nag forever: the remedy this check recommends is a refresh, and a refresh
+    re-drops them.
+
+    Differs from ``test_decisions_in_disjoint_components_do_not_suppress`` by
+    exactly one property — whether the two components share a physical source.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    for stid, source_type, source_file in (
+        ("ofx1", "ofx", "jan.ofx"),
+        ("ofx2", "ofx", "jan.ofx"),
+        ("csv1", "csv", "march.csv"),
+        ("csv2", "csv", "march.csv"),
+    ):
+        _insert_unioned_row(
+            doctor_db, stid=stid, source_type=source_type, source_file=source_file
+        )
+    doctor_db.execute(_TWO_PAIRED_COMPONENTS)
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_a_shared_file_on_two_seed_only_rows_does_not_suppress(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard reads the sources the matcher would register, not every row.
+
+    ``assign_components`` seeds ``comp_sources`` from the endpoints of the
+    current run's candidate pairs only — a node in a component that no
+    candidate names contributes nothing and never blocks (``assignment.py``).
+    Here ``ofx1``–``csv_seed`` and ``plaid1``–``csv_seed2`` are existing
+    components, and the one live candidate is ``ofx1``–``plaid1``: the two
+    ``csv`` rows sit at a different amount, so they pair with nothing. They
+    share ``march.csv``, and a guard reading whole components would intersect
+    on it and stay silent about a pair the next match pass would propose and
+    persist — a false negative in the check whose entire job is to break that
+    silence.
+
+    Differs from ``test_two_components_sharing_a_physical_source_suppress`` by
+    exactly one property: whether the rows supplying the shared file are
+    themselves candidates.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(
+        doctor_db, stid="ofx1", source_type="ofx", source_file="jan.ofx"
+    )
+    _insert_unioned_row(
+        doctor_db, stid="plaid1", source_type="plaid", source_file="feb.json"
+    )
+    for stid in ("csv_seed", "csv_seed2"):
+        _insert_unioned_row(
+            doctor_db,
+            stid=stid,
+            source_type="csv",
+            source_file="march.csv",
+            amount="-11.00",
+        )
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv_seed', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP),
+                 ('m2', 'plaid1', 'plaid', 'bank', 'csv_seed2', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_a_rejected_pairs_own_endpoints_register_no_source_guard(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected pair is dropped before the matcher registers anything.
+
+    ``scoring.py``'s candidate functions ``continue`` past a rejected pair
+    before appending it to ``results``, and ``assign_components`` seeds
+    ``comp_sources`` from that list — so both endpoints of a rejected pair are
+    seed-only to the matcher, a second reason a node can be seed-only beyond
+    the one ``test_a_shared_file_on_two_seed_only_rows_does_not_suppress``
+    covers.
+
+    Here ``ofx_e``–``csv_y`` is rejected, ``ofx_e``–``plaid_b`` is an accepted
+    component, and the one live candidate is ``plaid_b``–``ofx_c``. ``ofx_c``
+    shares ``shared.ofx`` with ``ofx_e``, so registering the rejected row's
+    endpoints puts that file under ``comp(ofx_e, plaid_b)``, where it
+    intersects ``comp(ofx_c)`` and suppresses a pair the next match pass would
+    propose and persist.
+
+    The two amounts keep each blocking-eligible group to exactly one pair, so
+    the count below is the live candidate alone. The accepted decision joining
+    ``ofx_e`` and ``plaid_b`` needs no blocking eligibility — a component is
+    built from decisions, not from candidates.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(
+        doctor_db, stid="ofx_e", source_type="ofx", source_file="shared.ofx"
+    )
+    _insert_unioned_row(doctor_db, stid="csv_y", source_type="csv", source_file="y.csv")
+    _insert_unioned_row(
+        doctor_db,
+        stid="plaid_b",
+        source_type="plaid",
+        source_file="b.json",
+        amount="-11.00",
+    )
+    _insert_unioned_row(
+        doctor_db,
+        stid="ofx_c",
+        source_type="ofx",
+        source_file="shared.ofx",
+        amount="-11.00",
+    )
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'csv_y', 'csv', 'bank', 'ofx_e', 'ofx', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'rejected', NULL,
+                  'user', CURRENT_TIMESTAMP),
+                 ('m2', 'ofx_e', 'ofx', 'bank', 'plaid_b', 'plaid', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_one_matcher_node_split_across_origins_is_not_a_pair(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two origins, one matcher node — `_node_a(pair) == _node_b(pair)`.
+
+    `NodeKey` is `(source_type, source_transaction_id, account_id)`
+    (`assignment.py:86-100`) and carries no `source_origin`, so these two rows
+    are a single node to the matcher: `find(a) == find(b)` holds before any
+    edge is considered and `assign_components` drops the candidate without ever
+    writing a decision. A node key that added `source_origin` would see two
+    distinct undecided nodes and warn about a pair no refresh can clear.
+
+    Staging keeps this out of production — `stg_tabular__transactions` and
+    `stg_ofx__transactions` both dedup on `(transaction_id, account_id)` with no
+    origin — so the fixture inserts into `prep.int_transactions__unioned`
+    directly. The check must still agree with the matcher on it: this pins the
+    two node keys together rather than relying on that staging behaviour.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(
+        doctor_db, stid="shared1", source_type="csv", source_origin="bank_a"
+    )
+    _insert_unioned_row(
+        doctor_db, stid="shared1", source_type="csv", source_origin="bank_b"
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_two_components_from_four_files_still_warn(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same shape with no shared file — the guard must not swallow this.
+
+    Identical to the fixture above in every respect except the file names: each
+    row now comes from its own import file, so ``sources_a & sources_b`` is
+    empty and ``assign_components`` would genuinely evaluate both cross edges.
+    Without this partner, a suppression that keyed on "both endpoints are in
+    *some* component" would pass the test above and silently reinstate the
+    blind spot this invariant exists to close.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    for stid, source_type, source_file in (
+        ("ofx1", "ofx", "jan.ofx"),
+        ("ofx2", "ofx", "feb.ofx"),
+        ("csv1", "csv", "march.csv"),
+        ("csv2", "csv", "april.csv"),
+    ):
+        _insert_unioned_row(
+            doctor_db, stid=stid, source_type=source_type, source_file=source_file
+        )
+    doctor_db.execute(_TWO_PAIRED_COMPONENTS)
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (up to 2 unreviewed pairs)"]
+
+
+@pytest.mark.unit
+def test_a_transfer_decision_does_not_count_as_dedup_consideration(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tier 4 runs after Tier 3 and never consults it, so a transfer proves nothing.
+
+    A transfer decision says the row was paired *across* accounts, not that the
+    dedup blocking join this invariant mirrors ever looked at it. Counting one
+    as "already decided" would suppress a genuine warning — and on a transfer
+    row ``account_id`` names only side A, so even the account correlation would
+    not save it.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'elsewhere', 'ofx', 'bank',
+                  'ACC1', 0.9, '{}', 'transfer', NULL, 'ACC9', 'accepted',
+                  NULL, 'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_another_accounts_decision_on_the_same_native_id_does_not_suppress(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source-native id is only unique within its account, so scope the lookup.
+
+    ``app.match_decisions.account_id`` is the "shared account (blocking
+    requirement for dedup)", and the matcher's own rejected-pair identity
+    (``scoring.py``) carries ``account_id`` for the same reason. An unrelated
+    account holding a decision for an identically-spelled FITID must not mark
+    this account's row as spoken for — that would silently suppress the warning
+    on exactly the pair this check exists to surface.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="shared_id", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'shared_id', 'ofx', 'bank', 'other', 'csv', 'bank',
+                  'ACC2', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (up to 1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_unproposed_check_skips_without_echoing_the_raw_cause() -> None:
+    """A crashed matcher-input query must not put DuckDB's text on the wire.
+
+    ``detail`` is returned verbatim by ``doctor`` and ``system_status`` over
+    both the CLI and MCP surfaces, and this query joins on transaction amounts,
+    dates, and descriptions — so a conversion failure can carry a user's row
+    into its message. Every other crash branch this feature added routes the
+    cause to the local log and returns a fixed string; this one must too.
+    """
+    import duckdb
+
+    db = MagicMock()
+    db.execute.side_effect = duckdb.ConversionException(
+        'Could not convert string "SAFEWAY #1234 -81.27" to DECIMAL'
+    )
+
+    result = DoctorService(db)._run_unproposed_cross_source_duplicates()  # pyright: ignore[reportPrivateUsage]
+
+    assert result.status == "skipped"
+    assert result.detail is not None
+    assert "SAFEWAY" not in result.detail
+    assert "81.27" not in result.detail

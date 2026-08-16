@@ -23,6 +23,7 @@ from moneybin.utils.user_config import ensure_default_profile
 
 if TYPE_CHECKING:
     from moneybin.database import Database
+    from moneybin.matching.engine import MatchResult
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,63 @@ def handle_cli_errors(
                     # entirely.
                     typer.echo(user_error.hint, err=True)
             raise typer.Exit(1) from e
+
+
+def warn_transfers_retired(
+    count: int, *, cause: str, rematch_follow_up: bool = False
+) -> None:
+    """Warn that ``count`` standing transfers the user had accepted were reversed.
+
+    One helper rather than a line per surface because the thing being reported
+    is the same everywhere and its recovery route must not drift: every path
+    that folds a duplicate can reach the reconciliation, and a user who reads
+    the way back on one surface should find it on the next. ``cause`` names what
+    collapsed, which is the only part that differs. The reversal itself is
+    always this call's doing, so the sentence may claim that much; what it may
+    not claim is that this call caused the invalidation. Silent on zero, so the
+    warning keeps its meaning.
+
+    ``rematch_follow_up`` is for the accept paths only — see the branch below.
+    """
+    if not count:
+        return
+    follow_up = (
+        # Only the accept paths. They reconcile inside their own transaction and
+        # return, so a transfer the freed legs now allow stays unproposed until
+        # some later pass; `TransactionMatcher.run` re-runs Tier 4 itself and
+        # would be sending the user back through a pass that just finished.
+        "; then run 'moneybin transactions matches run' — the reversal freed "
+        "transaction legs a new transfer may now pair"
+        if rematch_follow_up
+        else ""
+    )
+    logger.warning(
+        f"⚠️  Retired {count} previously accepted transfer(s) — {cause}; "
+        "inspect with 'moneybin system audit list' and restore with "
+        f"'moneybin system audit undo <operation-id>' if that was wrong{follow_up}"
+    )
+
+
+def warn_match_decisions_committed(partial: MatchResult) -> None:
+    """Warn that a failed run had already written these decisions.
+
+    Sibling of `warn_transfers_retired`, and one helper for the same reason: a
+    tier persists one decision per pair with no transaction around the loop, so
+    every command that can reach the tiers can end up here, and the route back to
+    the decisions must not drift between them. Retirements are reported
+    separately because only they undo something the user decided; these are
+    merges and proposals the run made and kept.
+
+    Silent when the run found nothing, so the warning keeps its meaning — a
+    failure that committed no decision has none to point at.
+    """
+    if not partial.has_matches:
+        return
+    logger.warning(
+        f"⚠️  Committed {partial.summary().lower()} before matching failed — "
+        "those decisions are durable; review them with "
+        "'moneybin transactions matches pending'"
+    )
 
 
 def parse_cli_date(value: str, flag: str) -> date:

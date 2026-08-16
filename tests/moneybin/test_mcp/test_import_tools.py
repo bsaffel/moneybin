@@ -1860,9 +1860,9 @@ async def test_import_confirm_token_reconstruction_does_not_double_count_sign_pr
 
     # The binding rides both calls: the sign grant is bound to the canonical
     # arguments, and the "confirmed" counter commits with the import, so a call
-    # the account gate stops would discard it. chase_1234 is the source key the
-    # card fixture's issuer and masked number derive.
-    bindings = {"chase_1234": "new"}
+    # the account gate stops would discard it. The positional ref is stable even
+    # though the PDF's opaque document key depends on its exact bytes.
+    bindings = {"@0": "new"}
     required = await import_confirm_coarse(
         preview_id=preview_id, account_bindings=bindings
     )
@@ -2590,16 +2590,15 @@ async def test_import_confirm_coarse_answers_the_pdf_account_gate(
     # (CRITICAL) — so the key is not what an agent binds on. proposal_ref is:
     # it rides the same proposal and stays readable, which is what makes this
     # gate answerable from the response alone.
-    assert [p["source_account_key"] for p in gated.data.account_proposals] == [
-        "****1234"
-    ]
+    [masked_key] = [p["source_account_key"] for p in gated.data.account_proposals]
+    assert masked_key.startswith("****")
     assert [p["proposal_ref"] for p in gated.data.account_proposals] == ["@0"]
 
     # 2. Re-approve with the answer in hand. The sign grant is bound to the
     #    canonical arguments, so adding a binding to the old token is a
     #    mismatch by design — the caller re-runs the gate with the binding
     #    supplied, and that token covers it.
-    bindings = {"chase_1234": "new"}
+    bindings = {"@0": "new"}
     resign = await import_confirm_coarse(
         preview_id=preview_id, account_bindings=bindings
     )
@@ -4175,6 +4174,7 @@ class TestImportFilesConfirmationRequired:
             transforms_applied=True,
             transforms_duration_seconds=0.1,
             transforms_error=None,
+            transfers_retired=0,
         )
         service = MagicMock()
         service.sync.return_value = sync_result

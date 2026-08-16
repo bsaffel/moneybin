@@ -39,6 +39,16 @@ def refresh_run(
     ``error``. (A first-load missing-view precondition is not a crash and
     leaves matching/categorization fields unset.)
 
+    The match step acts without asking, so the response says what it decided:
+    ``matches_auto_merged`` (duplicates folded above the confidence threshold),
+    ``matches_pending_review`` / ``matches_pending_transfers`` (queued for the
+    user), and ``transfers_retired`` (transfers the user had accepted that a
+    dedup collapse invalidated, reversed — report these and point at
+    ``system_audit_undo``, since they undo a decision of the user's). Read all
+    four against ``matching_skipped``: when it is true the step could not run and
+    the counts are zero because nothing was examined, so "no duplicates found"
+    is not a claim they support.
+
     Args:
         steps: Subset of ``["gsheet", "match", "transform", "categorize",
             "identity", "rates"]``
@@ -68,18 +78,24 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         mcp,
         refresh_run,
         "refresh_run",
+        # 880 of the 900-char cap, first sentence 35 of 120. Both halves are
+        # load-bearing and the verbatim union of the two branches was 1049, so
+        # the rate detail is compressed to parenthetical remedies while the
+        # transfer-reversal warning keeps its full wording — it is the one that
+        # undoes a decision the user made. The opening two sentences stay split
+        # rather than joined by a colon: `FIRST_SENTENCE_CHARACTER_LIMIT` is 120
+        # and the whole enumeration does not fit in one.
         "Run the post-load refresh pipeline. By default it performs Google "
         "Sheets pull, matching, SQLMesh apply, deterministic categorization, "
         "identity proposal backfill, and an exchange-rate gather in canonical "
-        "order. Pass steps to select from gsheet, match, transform, "
-        "categorize, identity, and rates. The rates step caches the rates this "
-        "profile's own rows imply so later report reads convert offline. A "
-        "pair whose provider call failed appears in rate_pairs_failed and is "
-        "retried next run; one the provider does not publish at all appears in "
-        "rate_pairs_unsupported and is never retried — only `moneybin fx set` "
-        "fills it; one answered with partly unusable rates appears in "
-        "rate_pairs_discarded and may have gaps. "
-        "Rebuilds core.* and reports.* "
-        "and may write app categorization or identity-review state, plus the "
-        "raw exchange-rate cache. No revert path; fix inputs and rerun.",
+        "order. Pass steps to select from gsheet, match, transform, categorize, "
+        "identity, and rates. The match step acts without asking, and folding a "
+        "duplicate can reverse a transfer the user already accepted: "
+        "`transfers_retired` counts those, and system_audit_undo() restores "
+        "them. The rates step caches the rates this profile's own rows imply so "
+        "reports convert offline; an unfilled pair lands in rate_pairs_failed "
+        "(retried), rate_pairs_unsupported (needs `moneybin fx set`), or "
+        "rate_pairs_discarded (partly unusable, so gaps). Rebuilds core.* and "
+        "reports.* and may write app categorization or identity-review state, "
+        "plus the raw exchange-rate cache. No revert; fix inputs and rerun.",
     )

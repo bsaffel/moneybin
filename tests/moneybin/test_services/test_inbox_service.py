@@ -308,6 +308,46 @@ class TestSyncHappyPath:
         assert result.transforms_applied is True
         assert result.transforms_duration_seconds == 0.01
 
+    def test_sync_reports_a_transfer_the_refresh_retired(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The drain runs the matcher unattended, so it can undo a user's decision.
+
+        `sync` ends with one full refresh, whose match step reconciles and can
+        reverse a standing transfer. This is the least supervised surface that
+        reaches the reconciliation — nobody is watching a watched folder — so
+        dropping the count here is the version of this bug that hides longest.
+        """
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import ImportResult
+        from moneybin.services.refresh import RefreshResult
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> ImportResult:
+                return ImportResult(file_path=path, file_type="tabular", transactions=1)
+
+        def fake_refresh(db: object) -> RefreshResult:
+            return RefreshResult(
+                applied=True, duration_seconds=0.01, transfers_retired=3
+            )
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+        monkeypatch.setattr(
+            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+        )
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "statement.csv").write_text("a\n1\n")
+
+        result = svc.sync(year_month="2026-05")
+
+        assert result.transfers_retired == 3
+
     def test_processed_entry_carries_the_ratified_sign_replay_note(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

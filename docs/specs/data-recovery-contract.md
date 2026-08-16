@@ -254,6 +254,21 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     - `refresh_run(steps=["match"])` for a matching-only retry, or `refresh_run(steps=["categorize"])` for a categorization-only retry, `confidence=suggested`.
     - `system_status(sections=["doctor"], detail="full")` for diagnosis, `confidence=suggested`.
 
+    **The `*_error` fields report a crash; they never repeat it.** Both are
+    `DataClass.DESCRIPTION` on `RefreshRunPayload`, so their text reaches the
+    model provider through `refresh_run` and lands in CLI JSON, while an
+    exception's message is whatever raised it — DuckDB binder fragments, file
+    paths, row values. `MatchRunError` is the sharpest case: it passes
+    `str(cause)` to `Exception`, so its own message *is* the cause. Every
+    best-effort step therefore returns `classify_user_error`'s wording — the
+    same boundary the direct matcher surfaces use — and a type that classifier
+    does not recognize returns a generic line naming the step. The log gets
+    `exception_origin`'s frame chain rather than the message, because a
+    traceback's last line is the message and AGENTS.md's no-financial-data rule
+    has no local-log carve-out. The counts travelling beside the error
+    (`matches_auto_merged`, `transfers_retired`) are the disclosable half and
+    are unaffected.
+
 10. **Matches MCP workflow.** Four workflow operations over the pair-decision
     model (`app.match_decisions`, one row per proposed pair keyed by `match_id`)
     use three existing standard tools: `refresh_run`, `reviews`, and

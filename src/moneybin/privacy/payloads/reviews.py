@@ -430,6 +430,13 @@ class ReviewsDecidePayload(BaseModel):
     applied_count: Annotated[int, DataClass.AGGREGATE]
     operation_id: Annotated[str, DataClass.RECORD_ID]
     auto_rule_impact: AutoAcceptPayload | None = None
+    # Standing transfers the batch's accepts reversed, because dedup made both
+    # of their sides the same physical transaction. In `data`, not only in
+    # `actions[]`, for the reason the identity payload carries its own: a
+    # caller reading the outcomes alone would never learn a decision of theirs
+    # was undone. None when the batch accepted no match — no reconciliation
+    # ran, which is not the same as one that ran and reversed nothing.
+    transfers_retired: Annotated[int | None, DataClass.AGGREGATE] = None
 
 
 class IdentityDecisionOutcome(BaseModel):
@@ -453,3 +460,15 @@ class IdentityLinksDecidePayload(BaseModel):
     results: list[IdentityDecisionOutcome]
     applied_count: Annotated[int, DataClass.AGGREGATE]
     operation_id: Annotated[str, DataClass.RECORD_ID]
+    # What the merge's re-match found, mirroring AccountLinksSetPayload so the
+    # batched and direct accept paths disclose the same thing. None when the
+    # batch held no accept, which runs no match pass at all — distinct from a
+    # pass that ran and found nothing (0).
+    rematch_auto_merged: Annotated[int | None, DataClass.AGGREGATE] = None
+    rematch_pending_review: Annotated[int | None, DataClass.AGGREGATE] = None
+    rematch_pending_transfers: Annotated[int | None, DataClass.AGGREGATE] = None
+    # Transfers the user had already accepted that the pass reversed, because
+    # dedup made both sides the same physical transaction. In `data`, not only
+    # in `actions[]`: a caller reading the counts alone would otherwise never
+    # learn a decision of theirs was undone.
+    rematch_transfers_retired: Annotated[int | None, DataClass.AGGREGATE] = None

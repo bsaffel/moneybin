@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 from moneybin.database import get_database
+from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.payloads.imports import (
     ImportInboxPendingEntry,
     ImportInboxPendingPayload,
@@ -95,6 +96,14 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
 
     if minted_action := accounts_created_action(_minted_count(sync_result.processed)):
         actions.insert(0, minted_action)
+    # Same reasoning as the minted-accounts hint above, one step stronger: the
+    # drain's closing refresh can reverse a transfer the user accepted, and an
+    # unattended surface is where an unannounced reversal goes unnoticed
+    # longest. Inserted at the front for that reason.
+    if retired := retired_transfers_action(
+        sync_result.transfers_retired, operation="inbox sync"
+    ):
+        actions.insert(0, retired)
     account_pending = [
         p for p in sync_result.pending if p.get("reason") == "account_confirmation"
     ]
@@ -181,6 +190,7 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
             transforms_applied=sync_result.transforms_applied,
             transforms_duration_seconds=sync_result.transforms_duration_seconds,
             transforms_error=sync_result.transforms_error,
+            transfers_retired=sync_result.transfers_retired,
         ),
         actions=actions,
     )

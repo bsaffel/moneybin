@@ -14,6 +14,7 @@ import json
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 
 import pytest
@@ -1582,3 +1583,188 @@ class TestPendingAccountProposal:
             _load_pending_account_proposal("dec_does_not_exist")
 
         assert excinfo.value.code == "mutation_nothing_to_do"
+
+
+async def test_links_set_accept_reports_what_the_rematch_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The accept envelope names the counts of the match pass it triggered.
+
+    Accepting a merge re-runs matching, and that pass can auto-merge rows
+    without asking (``engine._classify_pair``). An envelope that omits the
+    number leaves the agent unable to tell the user what just happened.
+    """
+    from moneybin.mcp.tools import accounts as accounts_module
+    from moneybin.services.refresh import RefreshResult
+
+    def _accepted(*_args: object, **_kw: object) -> RefreshResult:
+        return RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matches_auto_merged=2,
+            matches_pending_review=5,
+        )
+
+    def _verify(_binding: object) -> None:
+        return None
+
+    async def _granted(**_kw: object) -> object:
+        return SimpleNamespace(verify=_verify)
+
+    monkeypatch.setattr(accounts_module, "_apply_account_accept", _accepted)
+    monkeypatch.setattr(accounts_module, "grant_confirmation_or_raise", _granted)
+
+    envelope = await accounts_module.accounts_links_set(
+        decision_id="dec001",
+        action="accept",
+        target_account_id="CAND001",
+        confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential; skips the elicitation branch
+    )
+
+    assert envelope.data.rematch_auto_merged == 2
+    assert envelope.data.rematch_pending_review == 5
+
+
+async def test_links_set_accept_reports_a_retired_transfer_in_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reversal reaches ``data``, not only the ``actions[]`` prose.
+
+    Per ``mcp.md`` an agent reads ``data`` for structured facts and
+    ``actions[]`` for hints. A caller that checks the three count fields, finds
+    them clean, and never parses the prose would report the merge as clean over
+    a transfer of the user's that the pass just reversed — so the count has to
+    be a field, and the action string has to name the way back.
+    """
+    from moneybin.mcp.tools import accounts as accounts_module
+    from moneybin.services.refresh import RefreshResult
+
+    def _accepted(*_args: object, **_kw: object) -> RefreshResult:
+        return RefreshResult(applied=True, duration_seconds=0.0, transfers_retired=3)
+
+    def _verify(_binding: object) -> None:
+        return None
+
+    async def _granted(**_kw: object) -> object:
+        return SimpleNamespace(verify=_verify)
+
+    monkeypatch.setattr(accounts_module, "_apply_account_accept", _accepted)
+    monkeypatch.setattr(accounts_module, "grant_confirmation_or_raise", _granted)
+
+    envelope = await accounts_module.accounts_links_set(
+        decision_id="dec001",
+        action="accept",
+        target_account_id="CAND001",
+        confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential; skips the elicitation branch
+    )
+
+    assert envelope.data.rematch_transfers_retired == 3
+    assert any("undo" in a.lower() for a in envelope.actions), (
+        "an undone decision must carry its restore path"
+    )
+
+
+async def test_links_set_reject_reports_no_rematch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reject runs no match pass, so its counts are absent, not zero-as-fact."""
+    from moneybin.mcp.tools import accounts as accounts_module
+
+    def _rejected(*_args: object, **_kw: object) -> None:
+        return None
+
+    monkeypatch.setattr(accounts_module, "_apply_account_reject", _rejected)
+
+    envelope = await accounts_module.accounts_links_set(
+        decision_id="dec001",
+        action="reject",
+    )
+
+    assert envelope.data.rematch_auto_merged is None
+    assert envelope.data.rematch_pending_review is None
+
+
+async def test_links_set_accept_flags_a_failed_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A merge whose rebuild failed has not reached ``core``, and must say so.
+
+    ``core.dim_accounts`` is ``kind FULL`` — the reason ``transform`` follows
+    ``match`` on this path at all. Returning the match counts with no caveat
+    tells the agent the merge landed while the user can still see two accounts.
+    """
+    from moneybin.mcp.tools import accounts as accounts_module
+    from moneybin.services.refresh import RefreshResult
+
+    def _accepted(*_args: object, **_kw: object) -> RefreshResult:
+        return RefreshResult(
+            applied=False,
+            duration_seconds=1.0,
+            error="sqlmesh apply failed",
+            matches_auto_merged=2,
+            matches_pending_review=5,
+        )
+
+    def _verify(_binding: object) -> None:
+        return None
+
+    async def _granted(**_kw: object) -> object:
+        return SimpleNamespace(verify=_verify)
+
+    monkeypatch.setattr(accounts_module, "_apply_account_accept", _accepted)
+    monkeypatch.setattr(accounts_module, "grant_confirmation_or_raise", _granted)
+
+    envelope = await accounts_module.accounts_links_set(
+        decision_id="dec001",
+        action="accept",
+        target_account_id="CAND001",
+        confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential; skips the elicitation branch
+    )
+
+    assert any("rebuild" in action.lower() for action in envelope.actions), (
+        f"no action names the failed rebuild: {envelope.actions}"
+    )
+
+
+async def test_links_set_accept_flags_a_match_pass_that_never_ran(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A skipped pass reports zeros that mean "not examined", not "nothing found".
+
+    ``refresh`` skips ``match`` outright when its views are missing or stale,
+    and every count on the result stays at its default. Nothing in ``data``
+    separates that from a pass that ran and found no duplicates, so the caveat
+    is the only thing standing between the agent and reporting a merge clean
+    over rows the matcher never looked at. The CLI's own ``matching_skipped``
+    branch is a separate implementation with a separate test; this one covers
+    the MCP surface.
+    """
+    from moneybin.mcp.tools import accounts as accounts_module
+    from moneybin.services.refresh import RefreshResult
+
+    def _accepted(*_args: object, **_kw: object) -> RefreshResult:
+        return RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            matching_skipped=True,
+        )
+
+    def _verify(_binding: object) -> None:
+        return None
+
+    async def _granted(**_kw: object) -> object:
+        return SimpleNamespace(verify=_verify)
+
+    monkeypatch.setattr(accounts_module, "_apply_account_accept", _accepted)
+    monkeypatch.setattr(accounts_module, "grant_confirmation_or_raise", _granted)
+
+    envelope = await accounts_module.accounts_links_set(
+        decision_id="dec001",
+        action="accept",
+        target_account_id="CAND001",
+        confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential; skips the elicitation branch
+    )
+
+    assert any("could not run" in action for action in envelope.actions), (
+        f"no action says the pass never examined the rows: {envelope.actions}"
+    )

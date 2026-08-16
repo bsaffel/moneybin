@@ -1,5 +1,5 @@
 {
-  "sha256": "839a8e5c0f476fe803a8cbc890a2b60d2f01c051e530c50c30bf66690f021405",
+  "sha256": "c738c188acfd7d6d6d388f2ba5a0b8272b3d79046e3f4cc1ebddddd3db15eea7",
   "tool_count": 49,
   "tools": [
     {
@@ -1148,7 +1148,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically accept or reject account, merchant, and security identity link decisions. Accepting a security decision either merges two instruments' tax lots, manual events, and price marks, or only binds a price-feed symbol to a security, which deletes nothing and moves no row; the confirmation prompt names which one and counts every category it moves. Any accepted merge or bind confirms the exact normalized full batch and complete live before-state; reject-only batches do not prompt.",
+        "description": "Atomically accept or reject account, merchant, and security identity link decisions. Accepting a security decision either merges two instruments' tax lots, manual events, and price marks, or only binds a price-feed symbol to a security, which deletes nothing and moves no row; the confirmation prompt names which one and counts every category it moves. Accepting an account decision re-runs matching over the merged account, which can reverse a transfer the user already accepted: `rematch_transfers_retired` counts those, and system_audit_undo() restores them. Any accepted merge or bind confirms the exact normalized full batch and complete live before-state; reject-only batches do not prompt.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1453,12 +1453,12 @@
         },
         "name": "identity_links_decide"
       },
-      "description_bytes": 487,
+      "description_bytes": 696,
       "input_schema_bytes": 2438,
       "name": "identity_links_decide",
       "other_bytes": 63,
       "output_schema_bytes": 0,
-      "total_bytes": 3124
+      "total_bytes": 3333
     },
     {
       "annotation_bytes": 91,
@@ -1585,7 +1585,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account).",
+        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1630,12 +1630,12 @@
         },
         "name": "import_files"
       },
-      "description_bytes": 292,
+      "description_bytes": 477,
       "input_schema_bytes": 341,
       "name": "import_files",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 827
+      "total_bytes": 1012
     },
     {
       "annotation_bytes": 91,
@@ -1646,7 +1646,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Synchronize the import inbox.",
+        "description": "Synchronize the import inbox. Draining it imports every staged file and runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1664,12 +1664,12 @@
         },
         "name": "import_inbox_sync"
       },
-      "description_bytes": 29,
+      "description_bytes": 237,
       "input_schema_bytes": 105,
       "name": "import_inbox_sync",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 331
+      "total_bytes": 539
     },
     {
       "annotation_bytes": 90,
@@ -2611,7 +2611,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, identity proposal backfill, and an exchange-rate gather in canonical order. Pass steps to select from gsheet, match, transform, categorize, identity, and rates. The rates step caches the rates this profile's own rows imply so later report reads convert offline. A pair whose provider call failed appears in rate_pairs_failed and is retried next run; one the provider does not publish at all appears in rate_pairs_unsupported and is never retried \u2014 only `moneybin fx set` fills it; one whose answer was partly unusable appears in rate_pairs_discarded, so its coverage may be short on some dates. Rebuilds core.* and reports.* and may write app categorization or identity-review state, plus the raw exchange-rate cache. No revert path; fix inputs and rerun.",
+        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, identity proposal backfill, and an exchange-rate gather in canonical order. Pass steps to select from gsheet, match, transform, categorize, identity, and rates. The match step acts without asking, and folding a duplicate can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them. The rates step caches the rates this profile's own rows imply so reports convert offline; an unfilled pair lands in rate_pairs_failed (retried), rate_pairs_unsupported (needs `moneybin fx set`), or rate_pairs_discarded (partly unusable, so gaps). Rebuilds core.* and reports.* and may write app categorization or identity-review state, plus the raw exchange-rate cache. No revert; fix inputs and rerun.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2648,12 +2648,12 @@
         },
         "name": "refresh_run"
       },
-      "description_bytes": 891,
+      "description_bytes": 880,
       "input_schema_bytes": 706,
       "name": "refresh_run",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 1790
+      "total_bytes": 1776
     },
     {
       "annotation_bytes": 89,
@@ -2798,7 +2798,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Accept or reject an atomic batch of transaction, match, or auto-rule review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; keep auto-rule and ordinary decisions in separate calls.",
+        "description": "Accept or reject an atomic batch of transaction, match, or auto-rule review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; keep auto-rule and ordinary decisions in separate calls. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed \u2014 an accept that loses that tiebreak reads 'reversed'.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3029,12 +3029,12 @@
         },
         "name": "reviews_decide"
       },
-      "description_bytes": 248,
+      "description_bytes": 492,
       "input_schema_bytes": 2039,
       "name": "reviews_decide",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 2480
+      "total_bytes": 2727
     },
     {
       "annotation_bytes": 89,
@@ -3233,7 +3233,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Pull connected financial data.",
+        "description": "Pull connected financial data. The pull runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3258,12 +3258,12 @@
         },
         "name": "sync_pull"
       },
-      "description_bytes": 30,
+      "description_bytes": 205,
       "input_schema_bytes": 136,
       "name": "sync_pull",
       "other_bytes": 51,
       "output_schema_bytes": 0,
-      "total_bytes": 354
+      "total_bytes": 529
     },
     {
       "annotation_bytes": 89,
@@ -5023,5 +5023,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 56374
+  "total_bytes": 57384
 }
