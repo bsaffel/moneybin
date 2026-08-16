@@ -548,6 +548,12 @@ class RefreshRunPayload:
     rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
+    # The step ran and crashed. DESCRIPTION for the same reason the two errors
+    # above are, and required for a reason `rates_written` cannot cover: that
+    # field is null both when the step declined to run and when it died, and
+    # all three pair lists are empty on a crash because it never got far enough
+    # to name a pair. Without this the failure has no representation at all.
+    rate_backfill_error: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
 # ---------------------------------------------------------------------------

@@ -231,6 +231,28 @@ def _invoke_refresh(runner: CliRunner, result: RefreshResult, *args: str) -> Res
         return runner.invoke(app, ["refresh", *args])
 
 
+def test_refresh_warns_when_the_rates_step_itself_crashed(runner: CliRunner) -> None:
+    """A crashed rates step is a ⚠️, not silence, and withholds the ✅.
+
+    Distinct from every pair-level warning below: the step never got far enough
+    to name a pair, so all three pair lists are empty and the run would
+    otherwise print a clean success banner over a step that failed outright.
+    """
+    out = _invoke_refresh(
+        runner,
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            rate_backfill=None,
+            rate_backfill_error="Rate backfill failed — the cause is in the local log",
+        ),
+    )
+
+    assert out.exit_code == 0, "the rates step is best-effort, like its siblings"
+    assert "Exchange rate backfill failed" in out.output
+    assert "✅ Refresh complete" not in out.output
+
+
 def test_refresh_unfilled_rate_pair_warns_and_withholds_the_success_banner(
     runner: CliRunner,
 ) -> None:

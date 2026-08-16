@@ -92,12 +92,13 @@ class RefreshResult:
     """Outcome of a :func:`refresh` call.
 
     ``error`` describes the SQLMesh apply step — the only step that can
-    hard-fail. ``matching_error`` / ``categorization_error`` surface real
-    crashes in the best-effort matcher / categorizer steps. ``identity_errors``
-    holds only failed identity domain labels. A missing-view precondition on
-    first load (before SQLMesh apply built the views) is NOT a crash and leaves
-    matcher/categorizer errors ``None``. ``self_heal_actions`` lists self-heal
-    recipes that ran (empty until the M2D self-heal safelist lands).
+    hard-fail. ``matching_error`` / ``categorization_error`` /
+    ``rate_backfill_error`` surface real crashes in the best-effort matcher /
+    categorizer / rates steps. ``identity_errors`` holds only failed identity
+    domain labels. A missing-view precondition on first load (before SQLMesh
+    apply built the views) is NOT a crash and leaves those errors ``None``.
+    ``self_heal_actions`` lists self-heal recipes that ran (empty until the M2D
+    self-heal safelist lands).
     """
 
     applied: bool
@@ -108,6 +109,11 @@ class RefreshResult:
     identity_errors: tuple[str, ...] = field(default_factory=tuple)
     # None means the step did not run — not that it ran and found nothing.
     rate_backfill: RateBackfillResult | None = None
+    # The rates step ran and crashed. Its own carrier above cannot say so: a
+    # crash and a step that correctly declined to run are both a null backfill,
+    # so without this the caller sees `rates_written=null` with empty pair
+    # lists either way and has no reason to act on the failure.
+    rate_backfill_error: str | None = None
     # What the match step found, for callers that must report it rather than
     # leave it in the log. A pass can auto-merge without asking (see
     # engine._classify_pair), so a caller who *triggered* the pass — the
@@ -306,13 +312,17 @@ def refresh(
             categorization_error = _run_categorize_step(db)
         if "identity" in requested:
             identity_errors = _run_identity_step(db)
+        rate_backfill, rate_backfill_error = (
+            _run_rates_step(db) if "rates" in requested else (None, None)
+        )
         return RefreshResult(
             applied=False,
             duration_seconds=None,
             matching_error=matching_error,
             categorization_error=categorization_error,
             identity_errors=identity_errors,
-            rate_backfill=_run_rates_step(db) if "rates" in requested else None,
+            rate_backfill=rate_backfill,
+            rate_backfill_error=rate_backfill_error,
             matches_auto_merged=auto_merged,
             matches_pending_review=pending_review,
             matches_pending_transfers=pending_transfers,
@@ -341,6 +351,9 @@ def refresh(
         categorization_error = _run_categorize_step(db)
     if "identity" in requested:
         identity_errors = _run_identity_step(db)
+    rate_backfill, rate_backfill_error = (
+        _run_rates_step(db) if "rates" in requested else (None, None)
+    )
 
     return RefreshResult(
         applied=True,
@@ -348,7 +361,8 @@ def refresh(
         matching_error=matching_error,
         categorization_error=categorization_error,
         identity_errors=identity_errors,
-        rate_backfill=_run_rates_step(db) if "rates" in requested else None,
+        rate_backfill=rate_backfill,
+        rate_backfill_error=rate_backfill_error,
         matches_auto_merged=auto_merged,
         matches_pending_review=pending_review,
         matches_pending_transfers=pending_transfers,
@@ -360,8 +374,9 @@ def refresh(
 def _step_error(exc: Exception, *, step: str) -> str:
     """What a crashed best-effort step is allowed to say, and log.
 
-    ``matching_error`` and ``categorization_error`` are ``DataClass.DESCRIPTION``
-    fields on ``RefreshRunPayload``: they reach the model provider through
+    ``matching_error``, ``categorization_error`` and ``rate_backfill_error`` are
+    ``DataClass.DESCRIPTION`` fields on ``RefreshRunPayload``: they reach the
+    model provider through
     ``refresh_run`` and land in CLI JSON. An exception's message is whatever
     raised it — DuckDB binder text, file paths, row values — and for
     ``MatchRunError`` it *is* the cause verbatim, because the carrier passes
@@ -494,7 +509,7 @@ def _run_categorize_step(db: Database) -> str | None:
     return None
 
 
-def _run_rates_step(db: Database) -> RateBackfillResult | None:
+def _run_rates_step(db: Database) -> tuple[RateBackfillResult | None, str | None]:
     """Gather the exchange rates this profile's own rows imply.
 
     Runs here rather than on the report read path. Display conversion prices
@@ -503,8 +518,12 @@ def _run_rates_step(db: Database) -> RateBackfillResult | None:
     behind a command that looks read-only, and it would fail outright whenever a
     sync already held that lock. Refresh holds the lock and is already slow.
 
-    Returns None when there is nothing to gather — no home currency set means
-    nothing is ever converted, so no rate is implied.
+    Returns ``(backfill, error)``. Both are None when there was nothing to
+    gather — no home currency set means nothing is ever converted, so no rate is
+    implied, and ``core.*`` not existing yet is a first-load precondition. The
+    error is what separates those declines from a step that ran and crashed:
+    the backfill is null on all three, so a caller reading only that would tell
+    the user nothing happened when in fact something broke.
     """
     from moneybin.connectors.rates.frankfurter import (  # noqa: PLC0415
         FrankfurterRateAdapter,
@@ -517,13 +536,10 @@ def _run_rates_step(db: Database) -> RateBackfillResult | None:
     try:
         home_currency = ProfileSettingsRepo(db).get_home_currency()
     except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
-        logger.error(
-            f"Rate backfill could not read the home currency: {type(exc).__name__}"
-        )
-        return None
+        return None, _step_error(exc, step="Rate backfill")
     if home_currency is None:
         logger.debug("Rate backfill skipped: no home currency is set")
-        return None
+        return None, None
 
     try:
         return run_rate_backfill(
@@ -531,15 +547,17 @@ def _run_rates_step(db: Database) -> RateBackfillResult | None:
             home_currency=home_currency,
             through=date.today(),
             adapter=FrankfurterRateAdapter(),
-        )
+        ), None
     except (duckdb.CatalogException, duckdb.BinderException):
         # core.* not built yet — the same first-load precondition the matching
         # stage tolerates, not a failure worth reporting.
         logger.debug("Rate backfill skipped (core views may not exist yet)")
-        return None
+        return None, None
     except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
-        logger.error(f"Rate backfill failed: {type(exc).__name__}")
-        return None
+        # Through _step_error like every sibling step, not the bare type name:
+        # this string lands in CLI JSON and the MCP envelope, and a rates crash
+        # can carry a provider URL with a currency pair in it.
+        return None, _step_error(exc, step="Rate backfill")
 
 
 def _run_identity_step(db: Database) -> tuple[str, ...]:

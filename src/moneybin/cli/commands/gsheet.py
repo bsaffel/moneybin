@@ -286,8 +286,14 @@ def gsheet_pull(
                 # the error so the CLI can surface a non-zero exit + a
                 # warning line; agents parsing --output json see it on the
                 # envelope too.
+                # An explicit list is never widened by a later canonical step,
+                # so every stage a pulled row needs is named here. `rates` is
+                # named because a sheet can carry foreign-currency rows: without
+                # it the pull rebuilds core.* against an empty rate cache and
+                # reports cannot convert offline until some unrelated refresh
+                # happens to fill it.
                 refresh_result = run_refresh(
-                    db, steps=["match", "transform", "categorize"]
+                    db, steps=["match", "transform", "categorize", "rates"]
                 )
                 if not refresh_result.applied and refresh_result.error is not None:
                     refresh_error = refresh_result.error

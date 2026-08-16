@@ -28,8 +28,9 @@ from moneybin.services.merchant_resolver import HarvestResult
 from moneybin.services.rate_backfill import RateBackfillResult
 from moneybin.services.refresh import (
     RefreshResult,
-    # The step's own branches are the subject of the last section in this file;
-    # every one of them is a swallow that `refresh()` cannot show from outside.
+    # The step's own branches are the subject of the last section in this file.
+    # Only two of them are swallows; a step that ran and crashed reports an
+    # error `refresh()` carries out to the caller.
     _run_rates_step,  # pyright: ignore[reportPrivateUsage]
     refresh,
 )
@@ -133,9 +134,12 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
         calls.append("identity")
         return ()
 
-    def _rates(_db: Database) -> Any:
+    def _rates(_db: Database) -> tuple[RateBackfillResult | None, str | None]:
+        # Spelled out rather than `-> Any`: this double stands in for the real
+        # step in every cascade-ordering test, so a signature it is free to
+        # drift from is one that stops catching a contract change.
         calls.append("rates")
-        return None
+        return None, None
 
     monkeypatch.setattr(
         "moneybin.services.refresh._run_gsheet_step",
@@ -516,7 +520,9 @@ def test_rates_step_returns_what_the_backfill_gathered(
         monkeypatch, home_currency="USD", backfill=gathered, reached=reached
     )
 
-    assert _run_rates_step(MagicMock()) is gathered
+    backfill, error = _run_rates_step(MagicMock())
+    assert backfill is gathered
+    assert error is None, "a step that ran cleanly reports no error"
     assert reached == ["USD"]
 
 
@@ -533,7 +539,9 @@ def test_rates_step_without_a_home_currency_never_calls_the_provider(
         reached=reached,
     )
 
-    assert _run_rates_step(MagicMock()) is None
+    assert _run_rates_step(MagicMock()) == (None, None), (
+        "declining to run is not a failure — no error accompanies it"
+    )
     assert reached == [], "an unset home currency must not reach the network"
 
 
@@ -552,9 +560,12 @@ def test_rates_step_survives_an_unreadable_home_currency(
     )
     caplog.set_level(logging.ERROR, logger="moneybin.services.refresh")
 
-    assert _run_rates_step(MagicMock()) is None
+    backfill, error = _run_rates_step(MagicMock())
+    assert backfill is None
+    assert error is not None, "a settings read that raised is a failure, not a decline"
+    assert "settings boom" not in error, "the raw message never reaches the caller"
     assert reached == [], "the backfill is unreachable once the read failed"
-    assert "settings boom" not in caplog.text, "only the exception type is logged"
+    assert "settings boom" not in caplog.text, "the raw message is never logged"
 
 
 @pytest.mark.unit
@@ -575,20 +586,26 @@ def test_rates_step_missing_core_views_is_not_an_error(
     _patch_rates_step(monkeypatch, home_currency="USD", backfill=exc, reached=reached)
     caplog.set_level(logging.ERROR, logger="moneybin.services.refresh")
 
-    assert _run_rates_step(MagicMock()) is None
+    assert _run_rates_step(MagicMock()) == (None, None), (
+        "a first-load precondition is not a failure the caller must report"
+    )
     assert reached == ["USD"], "the backfill is what raised"
     assert caplog.records == []
 
 
 @pytest.mark.unit
-def test_rates_step_swallows_a_backfill_crash_without_naming_it(
+def test_rates_step_reports_a_backfill_crash_without_naming_it(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The rates step is best-effort, and its exception text is not log-safe.
+    """A crash is reported to the caller, but never in the exception's own words.
 
-    A crash here can carry a provider URL with a currency pair in it, so the log
-    line carries the exception type and nothing else.
+    Two separate obligations. The caller must be able to tell a step that ran
+    and failed from one that declined to run — the `None` backfill is the same
+    on both paths, so the error is what carries the difference. And the text it
+    carries goes through `_step_error` like every sibling step, because a rates
+    crash can hold a provider URL with a currency pair in it and the field
+    lands in CLI JSON and the MCP envelope.
     """
     reached: list[str] = []
     _patch_rates_step(
@@ -599,10 +616,46 @@ def test_rates_step_swallows_a_backfill_crash_without_naming_it(
     )
     caplog.set_level(logging.ERROR, logger="moneybin.services.refresh")
 
-    assert _run_rates_step(MagicMock()) is None
+    backfill, error = _run_rates_step(MagicMock())
+    assert backfill is None
+    assert error is not None, "a step that ran and crashed must say so"
     assert reached == ["USD"]
-    assert "rates boom" not in caplog.text
-    assert "RuntimeError" in caplog.text
+    assert "rates boom" not in error, "the raw message never reaches the caller"
+    assert "rates boom" not in caplog.text, "nor the log"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("steps", [["transform", "rates"], ["rates"]])
+@pytest.mark.usefixtures("patched_services")
+def test_refresh_carries_a_crashed_rates_step_out_to_the_caller(
+    steps: list[str],
+) -> None:
+    """Both return paths report the crash, not just the one that applied.
+
+    `refresh()` has two exits that build a rates result — the normal one and
+    the early return for a cascade omitting `transform`. A crash reported on
+    only one of them would be invisible on exactly the partial cascades an
+    embedded caller runs.
+    """
+    with patch(
+        "moneybin.services.refresh._run_rates_step",
+        return_value=(None, "Rate backfill failed — the cause is in the local log"),
+    ):
+        result = refresh(MagicMock(), steps=steps)
+
+    assert result.rate_backfill is None
+    assert result.rate_backfill_error == (
+        "Rate backfill failed — the cause is in the local log"
+    ), "a null backfill alone cannot distinguish a crash from a declined step"
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("patched_services")
+def test_refresh_leaves_the_rates_error_unset_when_the_step_was_not_asked_for() -> None:
+    """An unrequested step reports neither a result nor a failure."""
+    result = refresh(MagicMock(), steps=["transform"])
+    assert result.rate_backfill is None
+    assert result.rate_backfill_error is None
 
 
 @pytest.mark.unit

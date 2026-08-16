@@ -290,7 +290,14 @@ def test_gsheet_pull_single_connection_runs_refresh(
     mock_get_db: MagicMock,
     mock_refresh: MagicMock,
 ) -> None:
-    """Pull <connection_id> runs the refresh chain by default."""
+    """Pull <connection_id> runs the refresh chain by default.
+
+    The list is explicit, and an explicit list is never widened by a newly
+    added canonical step — so every stage a pulled row needs has to be named
+    here. `rates` is named for the same reason `transform` is: a Sheet can
+    carry foreign-currency rows, and leaving the rate cache empty would defeat
+    the offline-conversion guarantee until some later unrelated refresh.
+    """
     service = MagicMock()
     service.pull_connection.return_value = PullResult(
         connection_id="conn_abc123",
@@ -307,7 +314,7 @@ def test_gsheet_pull_single_connection_runs_refresh(
     service.pull_connection.assert_called_once_with("conn_abc123")
     mock_refresh.assert_called_once()
     assert mock_refresh.call_args.kwargs == {
-        "steps": ["match", "transform", "categorize"]
+        "steps": ["match", "transform", "categorize", "rates"]
     }
 
 

@@ -83,8 +83,8 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-syn
 
 ### Pull semantics
 
-10. **Pre-refresh hook.** The default is `gsheet → match → transform → categorize → identity` — gsheet pulls first, then the rest of the pipeline operates on the updated raw data.
-11. **Explicit pull** via `moneybin gsheet pull [<id>]` (CLI) and `gsheet_pull(connection_id=None)` (MCP). With no ID → pulls all healthy connections. With ID → pulls one. CLI pull refreshes downstream by default through `match → transform → categorize`; `--no-refresh` disables that follow-up. MCP `gsheet_pull` is pull-only; call `refresh_run(steps=["match", "transform", "categorize", "identity"])` separately when derived state must catch up. The `gsheet` stage inside unscoped `refresh_run()` uses the pull-only service directly and therefore does not recurse.
+10. **Pre-refresh hook.** The default is `gsheet → match → transform → categorize → identity → rates` — gsheet pulls first, then the rest of the pipeline operates on the updated raw data.
+11. **Explicit pull** via `moneybin gsheet pull [<id>]` (CLI) and `gsheet_pull(connection_id=None)` (MCP). With no ID → pulls all healthy connections. With ID → pulls one. CLI pull refreshes downstream by default through `match → transform → categorize → rates`; `--no-refresh` disables that follow-up. A pulled sheet can carry foreign-currency rows, so `rates` is named explicitly — an explicit step list is never widened by a later canonical addition. MCP `gsheet_pull` is pull-only; call `refresh_run(steps=["match", "transform", "categorize", "identity", "rates"])` separately when derived state must catch up. The `gsheet` stage inside unscoped `refresh_run()` uses the pull-only service directly and therefore does not recurse.
 12. **Per-connection isolation.** A failure on connection A does not block connection B or downstream refresh steps. Each pull writes its own `raw.import_log` row.
 13. **Live mirror with soft-delete.** Each pull computes the diff vs. the connection's currently-active rows. Rows in current pull but absent from active → INSERT OR REPLACE (or undelete via `deleted_from_source_at = NULL`). Rows previously active but absent from current pull → `UPDATE deleted_from_source_at = CURRENT_TIMESTAMP`.
 14. **`fct_transactions` reflects the current sheet.** `stg_tabular__transactions` filters `WHERE deleted_from_source_at IS NULL`. Reports, balances, and matching operate on live data automatically.
@@ -340,7 +340,7 @@ flowchart LR
     I --> Z
 ```
 
-The default step list is `["gsheet", "match", "transform", "categorize", "identity"]`. Skipping is a `steps=[...]` choice.
+The default step list is `["gsheet", "match", "transform", "categorize", "identity", "rates"]`. Skipping is a `steps=[...]` choice.
 
 ---
 

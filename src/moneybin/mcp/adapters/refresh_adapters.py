@@ -71,20 +71,25 @@ def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
             )
         )
     rates = result.rate_backfill
-    if rates is not None and rates.pairs_failed:
-        # `pairs_failed` only, matching the CLI's `retryable_error`. The other
-        # two lists name pairs a retry cannot fill: the provider publishes no
-        # series at all for an unsupported one, and it *answered* for a
-        # discarded one, so re-sending returns the identical unusable value.
-        # Handing the agent an executable retry for either is a loop with no
-        # terminating condition; their remedies rode their own warnings.
+    if result.rate_backfill_error is not None or (
+        rates is not None and rates.pairs_failed
+    ):
+        # `pairs_failed` and a step crash, matching the CLI's `retryable_error`.
+        # The other two lists name pairs a retry cannot fill: the provider
+        # publishes no series at all for an unsupported one, and it *answered*
+        # for a discarded one, so re-sending returns the identical unusable
+        # value. Handing the agent an executable retry for either is a loop with
+        # no terminating condition; their remedies rode their own warnings.
+        # One branch, not two: both conditions select the same retry, and a run
+        # that crashed after some pairs failed must not queue it twice.
         actions.append(
             RecoveryAction(
                 tool="refresh_run",
                 arguments={"steps": ["rates"]},
                 rationale=(
-                    "The rate provider did not answer for at least one "
-                    "currency pair; re-run just the rates step to retry."
+                    "The rates step crashed, or the provider did not answer "
+                    "for at least one currency pair; re-run just the rates "
+                    "step to retry."
                 ),
                 confidence="suggested",
                 idempotent=True,
@@ -195,6 +200,9 @@ def refresh_envelope(
                 if result.rate_backfill is None
                 else list(result.rate_backfill.pairs_discarded)
             ),
+            # Not gated on `rate_backfill is None`: a crash is exactly the case
+            # where there is no backfill to read the answer off.
+            rate_backfill_error=result.rate_backfill_error,
         ),
         sensitivity="low",
         actions=actions,

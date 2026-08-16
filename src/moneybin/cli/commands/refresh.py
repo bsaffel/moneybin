@@ -62,15 +62,15 @@ def refresh_command(
     """Run refresh: matching, apply, categorization, identity, exchange rates.
 
     Single user-facing entry point for refreshing derived state from raw
-    inputs. Idempotent. Matching and categorization are best-effort: a real
-    crash in either is surfaced (a ⚠️ warning here, `matching_error` /
-    `categorization_error` + `recovery_actions` under `--output json`) but
-    does not fail the command. Identity failures expose only their domain in
-    `identity_errors`. The rates step gathers the exchange rates this
-    profile's own transactions, balances and holdings imply, so reports can
-    convert without reaching the network; a pair the provider could not answer
-    is reported and retried next run. Only a SQLMesh apply error exits
-    non-zero.
+    inputs. Idempotent. Matching, categorization and rates are best-effort: a
+    real crash in any of them is surfaced (a ⚠️ warning here, `matching_error` /
+    `categorization_error` / `rate_backfill_error` + `recovery_actions` under
+    `--output json`) but does not fail the command. Identity failures expose
+    only their domain in `identity_errors`. The rates step gathers the exchange
+    rates this profile's own transactions, balances and holdings imply, so
+    reports can convert without reaching the network; a pair the provider could
+    not answer is reported and retried next run. Only a SQLMesh apply error
+    exits non-zero.
     """
     from moneybin.cli.output import render_or_json  # noqa: PLC0415
     from moneybin.database import get_database  # noqa: PLC0415
@@ -103,6 +103,13 @@ def refresh_command(
         logger.warning(f"⚠️  Categorization step failed: {result.categorization_error}")
     for domain in result.identity_errors:
         logger.warning(f"⚠️  {domain.title()} identity backfill failed")
+    if result.rate_backfill_error is not None:
+        # Ahead of the three pair warnings below, and never instead of them: a
+        # crash names no pair, so those lines stay silent and this is the only
+        # signal the step failed at all.
+        logger.warning(
+            f"⚠️  Exchange rate backfill failed: {result.rate_backfill_error}"
+        )
     # Sits with the crash warnings, not with the ✅ status line, for the same
     # reason: this is a decision the *user* made being undone, so it survives
     # --quiet and is emitted under --output json too (where the count is also in
@@ -139,6 +146,7 @@ def refresh_command(
     retryable_error = (
         result.matching_error is not None
         or result.categorization_error is not None
+        or result.rate_backfill_error is not None
         or bool(result.identity_errors)
         or (rates is not None and bool(rates.pairs_failed))
     )

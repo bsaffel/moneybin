@@ -115,6 +115,80 @@ async def test_a_failed_rate_pair_offers_the_rates_retry() -> None:
 
 
 @pytest.mark.unit
+async def test_a_crashed_rates_step_reaches_the_envelope_with_a_retry() -> None:
+    """A crash is a distinct signal from an empty result, and earns the retry.
+
+    ``rate_backfill=None`` is what the payload defines as "the step did not
+    run", so a crash reported only that way is indistinguishable from a profile
+    with no home currency — the agent sees ``rates_written=null``, three empty
+    pair lists, and no reason to act. ``rate_backfill_error`` is the field that
+    separates them, and it earns a retry for the same reason
+    ``matching_error`` and ``categorization_error`` do.
+    """
+    env = refresh_envelope(
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            rate_backfill=None,
+            rate_backfill_error="Rate backfill failed — the cause is in the local log",
+        ),
+        requested=expand_steps(None),
+    )
+
+    assert env.data.rate_backfill_error is not None
+    assert env.data.rates_written is None
+    actions = env.recovery_actions or []
+    await assert_recovery_actions_executable(actions)
+    tools = [(ra.tool, ra.arguments) for ra in actions]
+    assert ("refresh_run", {"steps": ["rates"]}) in tools
+    assert ("system_status", {"sections": ["doctor"], "detail": "full"}) in tools
+
+
+@pytest.mark.unit
+def test_a_crashed_rates_step_offers_the_retry_exactly_once() -> None:
+    """A crash that also left failed pairs must not queue two identical retries.
+
+    Both conditions select the same ``refresh_run(steps=["rates"])``; emitting
+    it twice would make the agent run the step a second time for no reason.
+    """
+    env = refresh_envelope(
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            rate_backfill=RateBackfillResult(
+                rates_written=0, pairs_failed=("EUR/USD",)
+            ),
+            rate_backfill_error="Rate backfill failed — the cause is in the local log",
+        ),
+        requested=expand_steps(None),
+    )
+
+    actions = env.recovery_actions or []
+    rate_retries = [
+        ra
+        for ra in actions
+        if (ra.tool, ra.arguments) == ("refresh_run", {"steps": ["rates"]})
+    ]
+    assert len(rate_retries) == 1
+
+
+@pytest.mark.unit
+def test_a_clean_rates_step_reports_no_error() -> None:
+    """Negative twin: the new field stays absent on the paths that did not fail."""
+    env = refresh_envelope(
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            rate_backfill=RateBackfillResult(rates_written=3, pairs_failed=()),
+        ),
+        requested=expand_steps(None),
+    )
+
+    assert env.data.rate_backfill_error is None
+    assert env.recovery_actions is None
+
+
+@pytest.mark.unit
 def test_an_unsupported_pair_is_offered_no_retry() -> None:
     """Negative twin: retrying never fills a pair the provider does not publish.
 
