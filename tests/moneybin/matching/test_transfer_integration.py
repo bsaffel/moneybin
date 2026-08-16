@@ -1,6 +1,7 @@
 """Integration tests for the transfer detection pipeline."""
 
 import json
+from typing import Literal
 
 import pytest
 
@@ -840,6 +841,48 @@ def _seed_two_transfers_one_pending_edge(db: Database, *, edge_status: str) -> N
     )
 
 
+def _apply_public_match_decision(
+    db: Database,
+    *,
+    adapter: Literal["single", "bulk", "review"],
+    match_id: str,
+) -> tuple[str, int, int]:
+    """Normalize the three public match-accept outcomes to one effect tuple."""
+    if adapter == "single":
+        outcome = MatchingService(db).set_status(
+            match_id,
+            status="accepted",
+            actor="cli",
+        )
+        return (
+            outcome.match_status,
+            int(outcome.match_status == "reversed"),
+            outcome.transfers_retired,
+        )
+    if adapter == "bulk":
+        outcome = MatchingService(db).accept_all_pending(actor="cli")
+        effective_status = "accepted" if outcome.accepted else "reversed"
+        return (
+            effective_status,
+            outcome.reversed_by_reconciliation,
+            outcome.transfers_retired,
+        )
+
+    from moneybin.mcp.write_contracts import MatchDecisionRequest
+    from moneybin.services.review_decisions_service import ReviewDecisionsService
+
+    outcome = ReviewDecisionsService(db, actor="mcp").apply_ordinary([
+        MatchDecisionRequest(kind="match", decision_id=match_id, decision="accept")
+    ])
+    assert outcome.transfers_retired is not None
+    effective_status = outcome.items[0].status
+    return (
+        effective_status,
+        int(effective_status == "reversed"),
+        outcome.transfers_retired,
+    )
+
+
 class TestRetirementOnDedupAccept:
     """The reconciliation on the review-queue accept, where no matcher runs.
 
@@ -851,31 +894,46 @@ class TestRetirementOnDedupAccept:
     table empty — the accept path is the subject, not the tiers.
     """
 
-    def test_accepting_a_queued_dedup_retires_the_transfer_it_invalidates(
-        self, db: Database
+    @pytest.mark.parametrize("adapter", ["single", "bulk", "review"])
+    def test_every_accept_path_reports_a_standing_transfer_retirement(
+        self,
+        db: Database,
+        adapter: Literal["single", "bulk", "review"],
     ) -> None:
-        """The queue accept, driven the way ``review --confirm`` drives it.
-
-        The edge starts ``pending`` — an unreviewed proposal collapses nothing,
-        so both transfers are still valid when this test begins. Accepting it is
-        what makes ``tx_drop00001``'s debit leg the same physical transaction as
-        ``tx_keep00001``'s.
-        """
+        """All public adapters expose the same finalized standing effects."""
         _seed_two_transfers_one_pending_edge(db, edge_status="pending")
 
-        outcome = MatchingService(db).set_status(
-            "dd_1000000001", status="accepted", actor="cli"
+        normalized = _apply_public_match_decision(
+            db,
+            adapter=adapter,
+            match_id="dd_1000000001",
         )
 
-        assert outcome.transfers_retired == 1
-        # The reconciliation retired a *different* row, so this accept committed
-        # exactly what was asked for. Twin of the stale-accept case below: without
-        # it, an implementation that reported "reversed" whenever anything was
-        # retired would pass that test.
-        assert outcome.match_status == "accepted"
+        assert normalized == ("accepted", 0, 1)
         assert _transfer_statuses(db) == {
             "tx_keep00001": "accepted",
             "tx_drop00001": "reversed",
+        }
+
+    @pytest.mark.parametrize("adapter", ["single", "bulk", "review"])
+    def test_every_accept_path_reports_an_immediate_reversal(
+        self,
+        db: Database,
+        adapter: Literal["single", "bulk", "review"],
+    ) -> None:
+        """All public adapters distinguish a self-reversal from retirement."""
+        _seed_a_stale_pending_transfer(db)
+
+        normalized = _apply_public_match_decision(
+            db,
+            adapter=adapter,
+            match_id="tx_stale00001",
+        )
+
+        assert normalized == ("reversed", 1, 0)
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_stale00001": "reversed",
         }
 
     def test_a_retirement_increments_its_own_counter(self, db: Database) -> None:
@@ -993,87 +1051,6 @@ class TestRetirementOnDedupAccept:
             "tx_drop00001": "accepted",
         }
 
-    def test_accepting_every_queued_match_at_once_retires_what_it_invalidates(
-        self, db: Database
-    ) -> None:
-        """``review --confirm-all`` folds every pending edge in one transaction.
-
-        It routes through ``MatchDecisionsRepo.accept_pending`` rather than
-        ``set_status``, so it is a second entry point to the same corruption and
-        owes the same reconciliation.
-        """
-        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
-
-        outcome = MatchingService(db).accept_all_pending(actor="cli")
-
-        assert outcome.accepted == 1
-        assert outcome.transfers_retired == 1
-        # The row this call flipped is not the row the reconciliation reversed,
-        # so the accepted count stands. Twin of the self-reversing case below:
-        # without it, reporting `accepted - transfers_retired` would pass there
-        # and quietly report 0 here.
-        assert outcome.reversed_by_reconciliation == 0
-        assert _transfer_statuses(db) == {
-            "tx_keep00001": "accepted",
-            "tx_drop00001": "reversed",
-        }
-
-    def test_bulk_accept_does_not_count_a_row_its_own_reconciliation_reversed(
-        self, db: Database
-    ) -> None:
-        """The bulk twin of the self-reversing accept.
-
-        ``accept_pending`` flips the stale transfer, then the reconciliation in
-        the same transaction reverses it because an earlier transfer already
-        claims the component. Reporting the pre-reconciliation count calls that
-        row accepted while it committed as ``reversed``, and the aggregate
-        retirement warning underneath does not contradict it.
-        """
-        _seed_a_stale_pending_transfer(db)
-
-        outcome = MatchingService(db).accept_all_pending(actor="cli")
-
-        assert outcome.accepted == 0
-        assert outcome.reversed_by_reconciliation == 1
-        # Zero, not one: the only row reversed is the proposal this very call
-        # flipped, which `reversed_by_reconciliation` already reports. Counting
-        # it again as a retirement claims a standing decision of the user's was
-        # undone, and sends them to an undo that only returns it to `pending`.
-        assert outcome.transfers_retired == 0
-        assert _transfer_statuses(db) == {
-            "tx_keep00001": "accepted",
-            "tx_stale00001": "reversed",
-        }
-
-    def test_the_review_batch_retires_the_transfer_its_accept_invalidates(
-        self, db: Database
-    ) -> None:
-        """A third entry point to the same corruption, and the same fixture.
-
-        ``reviews_decide`` routes match rows through
-        ``ReviewDecisionsService.apply_ordinary``, which writes them with
-        ``MatchDecisionsRepo.update_status`` directly — past both guards above.
-        An agent folding a queued duplicate that way left two accepted
-        transfers resolving to one gold transaction.
-        """
-        from moneybin.mcp.write_contracts import MatchDecisionRequest
-        from moneybin.services.review_decisions_service import ReviewDecisionsService
-
-        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
-
-        outcome = ReviewDecisionsService(db, actor="mcp").apply_ordinary([
-            MatchDecisionRequest(
-                kind="match", decision_id="dd_1000000001", decision="accept"
-            )
-        ])
-
-        assert outcome.transfers_retired == 1
-        assert [item.status for item in outcome.items] == ["accepted"]
-        assert _transfer_statuses(db) == {
-            "tx_keep00001": "accepted",
-            "tx_drop00001": "reversed",
-        }
-
     def test_the_review_batch_retires_nothing_when_it_rejects(
         self, db: Database
     ) -> None:
@@ -1099,66 +1076,6 @@ class TestRetirementOnDedupAccept:
         assert _transfer_statuses(db) == {
             "tx_keep00001": "accepted",
             "tx_drop00001": "accepted",
-        }
-
-    def test_the_review_batch_reports_a_row_its_own_reconciliation_reversed(
-        self, db: Database
-    ) -> None:
-        """The batch twin of the self-reversing accept.
-
-        The plan's ``status`` is the *requested* one, so returning it unread
-        tells the agent its accept stands while the row committed as
-        ``reversed`` — the defect ``set_status`` and ``accept_all_pending``
-        were each corrected for. The retirement stays uncounted for the same
-        reason it does there: undo returns this row to ``pending``, so no
-        standing decision of the user's was undone.
-        """
-        from moneybin.mcp.write_contracts import MatchDecisionRequest
-        from moneybin.services.review_decisions_service import ReviewDecisionsService
-
-        _seed_a_stale_pending_transfer(db)
-
-        outcome = ReviewDecisionsService(db, actor="mcp").apply_ordinary([
-            MatchDecisionRequest(
-                kind="match", decision_id="tx_stale00001", decision="accept"
-            )
-        ])
-
-        assert [item.status for item in outcome.items] == ["reversed"]
-        assert outcome.transfers_retired == 0
-        assert _transfer_statuses(db) == {
-            "tx_keep00001": "accepted",
-            "tx_stale00001": "reversed",
-        }
-
-    def test_accepting_a_stale_queued_transfer_refuses_the_claimed_component(
-        self, db: Database
-    ) -> None:
-        """A transfer proposed before the dedup edge that invalidated it.
-
-        Tier 4 refuses to *propose* a transfer over an already-merged component,
-        but a proposal raised earlier survives in the queue and Tier 4 never
-        revisits it. This is why the reconciliation is not scoped to dedup
-        accepts. The newest claimant loses, so the effect is that the stale
-        accept is refused rather than the standing decision undone.
-        """
-        _seed_a_stale_pending_transfer(db)
-
-        outcome = MatchingService(db).set_status(
-            "tx_stale00001", status="accepted", actor="cli"
-        )
-
-        # Zero for the same reason as the bulk twin above: the one reversal is
-        # this call's own row, and `match_status` below is what reports it. A
-        # retirement count is a claim about *standing* decisions.
-        assert outcome.transfers_retired == 0
-        # The row this call asked to accept is the one the reconciliation
-        # reversed. Echoing the requested status here reports the opposite of
-        # what committed, and both surfaces print it as a success.
-        assert outcome.match_status == "reversed"
-        assert _transfer_statuses(db) == {
-            "tx_keep00001": "accepted",
-            "tx_stale00001": "reversed",
         }
 
 
