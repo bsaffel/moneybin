@@ -63,7 +63,11 @@ from moneybin.extractors.pdf.column_names import (
 from moneybin.extractors.pdf.confidence import is_high_confidence, score
 from moneybin.extractors.pdf.fingerprint import compute_fingerprint, match_format
 from moneybin.extractors.pdf.ir import PdfDocument
-from moneybin.extractors.pdf.metadata import StatementMetadata, capture_metadata
+from moneybin.extractors.pdf.metadata import (
+    DEFAULT_ANCHORS,
+    StatementMetadata,
+    capture_metadata,
+)
 from moneybin.extractors.pdf.recipe import (
     FieldExtraction,
     Recipe,
@@ -92,6 +96,53 @@ _EMPTY_METADATA = StatementMetadata(
     opening_balance=None,
     closing_balance=None,
 )
+
+_LEGACY_DEFAULT_METADATA_FIELDS = (
+    "account_id",
+    "period_start",
+    "period_end",
+    "opening_balance",
+    "closing_balance",
+)
+_ADDED_DEFAULT_METADATA_FIELDS = (
+    "account_label",
+    "account_type",
+    "product_name",
+    "routing_number",
+    "currency_code",
+)
+_HISTORICAL_DEFAULT_ACCOUNT_ID_ANCHORS = [
+    r"Account\s+Number[:\s]+([\dXx*]{3,}(?:[ -][\dXx*]{3,})*)(?![-\w*])",
+    *DEFAULT_ANCHORS["account_id"][1:],
+]
+
+
+def _replay_metadata_anchors(
+    recipe: Recipe, recipe_origin: str | None
+) -> dict[str, list[str]] | None:
+    """Add new defaults only to recipes frozen from the prior default set."""
+    grouped = group_anchors(recipe.metadata_anchors)
+    if (
+        recipe_origin != "detected"
+        or not grouped
+        or any(
+            grouped.get(field) != DEFAULT_ANCHORS[field]
+            for field in _LEGACY_DEFAULT_METADATA_FIELDS
+            if field != "account_id"
+        )
+        or grouped.get("account_id")
+        not in (
+            DEFAULT_ANCHORS["account_id"],
+            _HISTORICAL_DEFAULT_ACCOUNT_ID_ANCHORS,
+        )
+    ):
+        return grouped
+    augmented = {name: list(patterns) for name, patterns in grouped.items()}
+    augmented["account_id"] = list(DEFAULT_ANCHORS["account_id"])
+    for field in _ADDED_DEFAULT_METADATA_FIELDS:
+        augmented.setdefault(field, list(DEFAULT_ANCHORS[field]))
+    return augmented
+
 
 # ---------------------------------------------------------------------------
 # Types
@@ -430,6 +481,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         document_text,
         fp,
         recipe_source="replay" if is_replay else "auto_derive",
+        recipe_origin=saved_format.source if saved_format is not None else None,
         matched_format_name=matched_name,
         card_markers=credit_card_markers(doc),
     )
@@ -632,6 +684,7 @@ def _attempt_self_heal(
         document_text,
         fp,
         recipe_source="auto_derive",
+        recipe_origin=None,
         matched_format_name=saved_format.name,
         card_markers=card_markers,
     )
@@ -712,6 +765,7 @@ def route_forced_recipe(doc: PdfDocument, recipe: Recipe) -> RouteDecision:
         document_text,
         fp,
         recipe_source="bridge",
+        recipe_origin="bridge",
         matched_format_name=None,
         card_markers=credit_card_markers(doc),
     )
@@ -723,6 +777,7 @@ def _run_recipe_pipeline(
     fp: dict[str, Any],
     *,
     recipe_source: RecipeSource,
+    recipe_origin: str | None,
     matched_format_name: str | None,
     card_markers: tuple[str, ...] = (),
 ) -> RouteDecision:
@@ -752,6 +807,8 @@ def _run_recipe_pipeline(
         document_text: The document's text lines joined by newlines.
         fp: Layout fingerprint, threaded onto every returned decision.
         recipe_source: Where the recipe came from — see behaviors above.
+        recipe_origin: Saved format provenance; only ``detected`` recipes gain
+            defaults introduced after they were persisted.
         matched_format_name: Saved format name on replay; None otherwise
             (signals first-contact save to the service).
         card_markers: Card disclosures matched on the document, threaded onto
@@ -889,8 +946,10 @@ def _run_recipe_pipeline(
     # None so capture falls back to DEFAULT_ANCHORS.
     anchors_dict: dict[str, list[str]] | None = None
     if use_recipe_anchors:
-        anchors_dict = group_anchors(recipe.metadata_anchors)
+        anchors_dict = _replay_metadata_anchors(recipe, recipe_origin)
     metadata = capture_metadata(document_text, anchors=anchors_dict)
+    if recipe_source == "bridge" or recipe_origin == "bridge":
+        metadata = replace(metadata, account_id_complete=False)
 
     if not metadata.is_complete_for_reconciliation():
         return RouteDecision(

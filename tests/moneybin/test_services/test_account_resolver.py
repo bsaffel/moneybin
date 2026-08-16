@@ -13,6 +13,7 @@ from moneybin.services.account_resolution_types import AccountProposal, SourceAc
 from moneybin.services.account_resolver import (
     _FALLBACK_CANDIDATE_CAP,  # pyright: ignore[reportPrivateUsage]
     AccountResolver,
+    fetch_display_name,
 )
 from tests.moneybin.db_helpers import create_core_tables
 
@@ -288,6 +289,71 @@ def test_scoped_full_number_auto_adopts_ofx_then_csv(db: Database) -> None:
     assert csv.outcome == "adopted_strong"
 
 
+def test_normalized_full_number_adopts_and_backfills_legacy_raw_ref(
+    db: Database,
+) -> None:
+    AccountLinksRepo(db).insert(
+        link_id="legacy_full_number",
+        account_id="acct_existing",
+        ref_kind="full_number",
+        ref_value="021000021:ab-12 34",
+        source_type="ofx",
+        source_origin="bank",
+        decided_by="auto",
+        actor="system",
+    )
+
+    resolved = AccountResolver(db, actor="system").resolve(
+        _src(
+            source_type="pdf",
+            source_origin="document",
+            source_account_key="pdf_doc_0123456789abcdef",
+            account_number="021000021:AB1234",
+        )
+    )
+
+    assert resolved.account_id == "acct_existing"
+    assert resolved.outcome == "adopted_strong"
+    assert db.execute(
+        "SELECT account_id FROM app.account_links "
+        "WHERE status = 'accepted' AND ref_kind = 'full_number' "
+        "AND ref_value = '021000021:AB1234'"
+    ).fetchone() == ("acct_existing",)
+
+
+def test_normalized_full_number_refuses_ambiguous_legacy_accounts(
+    db: Database,
+) -> None:
+    """Normalization cannot choose when two legacy refs collapse to one value."""
+    links = AccountLinksRepo(db)
+    for link_id, account_id, ref_value in (
+        ("legacy_full_a", "acct_a", "021000021:ab-12 34"),
+        ("legacy_full_b", "acct_b", "021000021:AB 1234"),
+    ):
+        links.insert(
+            link_id=link_id,
+            account_id=account_id,
+            ref_kind="full_number",
+            ref_value=ref_value,
+            source_type="ofx",
+            source_origin="bank",
+            decided_by="auto",
+            actor="system",
+        )
+
+    resolved = AccountResolver(db, actor="system").resolve(
+        _src(
+            source_type="pdf",
+            source_origin="document",
+            source_account_key="pdf_doc_0123456789abcdef",
+            account_number="021000021:AB1234",
+        )
+    )
+
+    assert resolved.account_id not in {"acct_a", "acct_b"}
+    assert resolved.outcome != "adopted_strong"
+
+
 # ---------------------------------------------------------------------------
 # Step 2 — candidate pass (A4)
 # ---------------------------------------------------------------------------
@@ -320,6 +386,156 @@ def _seed_dim_account(
             display_name or f"acct {account_id}",
         ],
     )
+
+
+def _seed_raw_pdf_account(
+    db: Database,
+    *,
+    canonical_account_id: str = "acct_pending_pdf",
+    source_account_key: str = "pdf_doc_prior000000",
+    identifier: str = "ACCT-9Z",
+    institution: str = "Chase",
+) -> None:
+    """Seed one accepted PDF account that has not reached core yet."""
+    AccountLinksRepo(db).insert(
+        link_id=f"link_{canonical_account_id}",
+        account_id=canonical_account_id,
+        ref_kind="source_native",
+        ref_value=source_account_key,
+        source_type="pdf",
+        source_origin="document",
+        decided_by="auto",
+        actor="system",
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "
+        "(account_id, account_name, account_number_masked, institution_name, "
+        "source_file, source_type, source_origin, import_id) "
+        "VALUES (?, 'Prior PDF account', ?, ?, '/prior.pdf', 'pdf', "
+        "'document', 'prior_import')",
+        [source_account_key, identifier, institution],
+    )
+
+
+def _seed_legacy_pdf_identifier_evidence(
+    db: Database,
+    *,
+    legacy_key: str,
+    origin: str,
+    masked_identifier: str,
+    institution: str,
+) -> None:
+    """Seed raw metadata proving a pre-document PDF key came from an identifier."""
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "
+        "(account_id, account_name, account_number_masked, institution_name, "
+        "source_file, source_type, source_origin, import_id) "
+        "VALUES (?, 'Legacy PDF account', ?, ?, '/legacy.pdf', 'pdf', ?, "
+        "'legacy_import')",
+        [legacy_key, masked_identifier, institution, origin],
+    )
+
+
+def _alphanumeric_pdf_source(**overrides: Any) -> SourceAccount:
+    values: dict[str, Any] = {
+        "source_type": "pdf",
+        "source_origin": "document",
+        "source_account_key": "pdf_doc_current0000",
+        "account_name": "Current PDF account",
+        "last_four": None,
+        "institution": "Chase",
+        "legacy_source_account_key": "chase_acct-9z",
+        "legacy_source_origin": "chase",
+    }
+    values.update(overrides)
+    return SourceAccount(**values)
+
+
+def test_pending_pdf_matches_same_alphanumeric_identifier_for_review(
+    db: Database,
+) -> None:
+    create_core_tables(db)
+    _seed_raw_pdf_account(db)
+
+    candidates = AccountResolver(db, actor="system")._pending_pdf_candidates(  # pyright: ignore[reportPrivateUsage]
+        _alphanumeric_pdf_source(), "acct_current_pdf"
+    )
+
+    assert [(candidate.account_id, candidate.signal) for candidate in candidates] == [
+        ("acct_pending_pdf", "legacy_pdf_identity")
+    ]
+
+
+def test_alphanumeric_pdf_proposal_is_review_only_and_does_not_surface_identifier(
+    db: Database,
+) -> None:
+    create_core_tables(db)
+    _seed_raw_pdf_account(db)
+    src = _alphanumeric_pdf_source()
+
+    proposal = AccountResolver(
+        db, actor="system", include_unmaterialized_candidates=True
+    ).propose(src)
+    payload = proposal.to_dict(proposal_ref="@0")
+
+    assert proposal.adopted_via is None
+    assert proposal.requires_confirm is True
+    assert payload["source_account_key"].startswith("pdf_doc_")
+    assert payload["candidates"] == [
+        {
+            "account_id": "acct_pending_pdf",
+            "display_name": "Prior PDF account",
+            "confidence": 0.5,
+            "signal": "legacy_pdf_identity",
+        }
+    ]
+    assert "ACCT-9Z" not in repr(payload)
+
+
+def test_pending_pdf_rejects_different_alphanumeric_identifier(db: Database) -> None:
+    create_core_tables(db)
+    _seed_raw_pdf_account(db, identifier="ACCT-8Y")
+
+    candidates = AccountResolver(db, actor="system")._pending_pdf_candidates(  # pyright: ignore[reportPrivateUsage]
+        _alphanumeric_pdf_source(), "acct_current_pdf"
+    )
+
+    assert candidates == []
+
+
+def test_pending_pdf_rejects_alphanumeric_identifier_at_other_institution(
+    db: Database,
+) -> None:
+    create_core_tables(db)
+    _seed_raw_pdf_account(db, institution="Citi")
+
+    candidates = AccountResolver(db, actor="system")._pending_pdf_candidates(  # pyright: ignore[reportPrivateUsage]
+        _alphanumeric_pdf_source(), "acct_current_pdf"
+    )
+
+    assert candidates == []
+
+
+def test_pending_pdf_excludes_account_already_materialized_in_core(
+    db: Database,
+) -> None:
+    create_core_tables(db)
+    _seed_raw_pdf_account(db)
+    _seed_dim_account(db, account_id="acct_pending_pdf")
+
+    candidates = AccountResolver(db, actor="system")._pending_pdf_candidates(  # pyright: ignore[reportPrivateUsage]
+        _alphanumeric_pdf_source(), "acct_current_pdf"
+    )
+
+    assert candidates == []
+
+
+def test_fetch_display_name_joins_unmaterialized_raw_pdf_account(
+    db: Database,
+) -> None:
+    _seed_raw_pdf_account(db)
+
+    assert fetch_display_name(db, "acct_pending_pdf") == "Prior PDF account"
 
 
 def test_no_candidate_mints_standalone(db: Database) -> None:
@@ -1394,6 +1610,212 @@ def test_propose_strong_ref_adopts_without_writing(db: Database) -> None:
         "SELECT count(*) FROM app.account_link_decisions"
     ).fetchone()
     assert n_decisions is not None and n_decisions[0] == 0
+
+
+def test_partial_pdf_legacy_link_is_only_a_candidate(db: Database) -> None:
+    """An issuer-plus-last-four legacy link is evidence, not a strong ref."""
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "(account_id, display_name, institution_slug, last_four) VALUES "
+        "('acct_legacy_pdf', 'Legacy Chase account', 'chase', '9999'), "
+        "('acct_current_pdf', 'Current Chase account', 'chase', '1234')"
+    )
+    AccountLinksRepo(db).insert(
+        link_id="link_legacy_pdf",
+        account_id="acct_legacy_pdf",
+        ref_kind="source_native",
+        ref_value="chase_1234",
+        source_type="pdf",
+        source_origin="chase",
+        decided_by="auto",
+        actor="system",
+    )
+    _seed_legacy_pdf_identifier_evidence(
+        db,
+        legacy_key="chase_1234",
+        origin="chase",
+        masked_identifier="****1234",
+        institution="Chase",
+    )
+    src = SourceAccount(
+        source_type="pdf",
+        source_origin="document",
+        source_account_key="pdf_doc_0123456789abcdef",
+        account_name="statement",
+        last_four="1234",
+        institution="Chase",
+        legacy_source_account_key="chase_1234",
+        legacy_source_origin="chase",
+    )
+
+    proposal = AccountResolver(db, actor="system").propose(src)
+
+    assert proposal.adopted_via is None
+    assert proposal.requires_confirm is True
+    assert [
+        (candidate.account_id, candidate.signal) for candidate in proposal.candidates
+    ] == [
+        ("acct_current_pdf", "institution_last4"),
+        ("acct_legacy_pdf", "legacy_pdf_identity"),
+    ]
+
+
+def test_legacy_pdf_candidate_survives_issuer_detector_change(db: Database) -> None:
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_legacy_pdf",
+        institution_name="unknown",
+    )
+    AccountLinksRepo(db).insert(
+        link_id="link_historical_issuer",
+        account_id="acct_legacy_pdf",
+        ref_kind="source_native",
+        ref_value="unknown_1234",
+        source_type="pdf",
+        source_origin="unknown",
+        decided_by="auto",
+        actor="system",
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "
+        "(transaction_id, account_id, transaction_date, amount, source_file, "
+        "source_type, source_origin, import_id, row_number) VALUES "
+        "('pdf_legacy', 'unknown_1234', '2024-01-01', 1, "
+        "'/statements/chase.pdf', 'pdf', 'unknown', 'legacy_import', 1)"
+    )
+    src = SourceAccount(
+        source_type="pdf",
+        source_origin="document",
+        source_account_key="pdf_doc_0123456789abcdef",
+        account_name="statement",
+        last_four="1234",
+        institution="Chase",
+        legacy_source_account_key="chase_1234",
+        legacy_source_origin="chase",
+        source_file="/statements/chase.pdf",
+    )
+
+    proposal = AccountResolver(db, actor="system").propose(src)
+
+    assert [
+        (candidate.account_id, candidate.signal) for candidate in proposal.candidates
+    ] == [("acct_legacy_pdf", "legacy_pdf_identity")]
+
+
+def test_legacy_pdf_candidate_excludes_another_institution_with_same_last_four(
+    db: Database,
+) -> None:
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_other_bank",
+        institution_name="wells_fargo",
+    )
+    AccountLinksRepo(db).insert(
+        link_id="link_other_bank",
+        account_id="acct_other_bank",
+        ref_kind="source_native",
+        ref_value="wells_fargo_1234",
+        source_type="pdf",
+        source_origin="wells_fargo",
+        decided_by="auto",
+        actor="system",
+    )
+    src = SourceAccount(
+        source_type="pdf",
+        source_origin="document",
+        source_account_key="pdf_doc_0123456789abcdef",
+        account_name="statement",
+        last_four="1234",
+        institution="Chase",
+        legacy_source_account_key="chase_1234",
+        legacy_source_origin="chase",
+    )
+
+    proposal = AccountResolver(db, actor="system").propose(src)
+
+    assert all(
+        candidate.signal != "legacy_pdf_identity" for candidate in proposal.candidates
+    )
+
+
+def test_legacy_pdf_candidate_rejects_filename_year_as_account_suffix(
+    db: Database,
+) -> None:
+    """A filename token is not evidence that two PDFs name the same account."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_filename_year",
+        institution_name="chase",
+    )
+    AccountLinksRepo(db).insert(
+        link_id="link_filename_year",
+        account_id="acct_filename_year",
+        ref_kind="source_native",
+        ref_value="chase_2024",
+        source_type="pdf",
+        source_origin="chase",
+        decided_by="auto",
+        actor="system",
+    )
+    src = SourceAccount(
+        source_type="pdf",
+        source_origin="document",
+        source_account_key="pdf_doc_0123456789abcdef",
+        account_name="statement",
+        last_four="2024",
+        institution="Chase",
+        legacy_source_account_key="chase_2024",
+        legacy_source_origin="chase",
+        source_file="/different/path/current.pdf",
+    )
+
+    proposal = AccountResolver(db, actor="system").propose(src)
+
+    assert all(
+        candidate.signal != "legacy_pdf_identity" for candidate in proposal.candidates
+    )
+
+
+def test_current_pdf_signal_replaces_legacy_signal_for_same_account(
+    db: Database,
+) -> None:
+    """Legacy evidence never hides a current signal for the same account."""
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "(account_id, display_name, institution_slug, last_four) "
+        "VALUES ('acct_pdf', 'Current Chase account', 'chase', '1234')"
+    )
+    AccountLinksRepo(db).insert(
+        link_id="link_legacy_pdf_same",
+        account_id="acct_pdf",
+        ref_kind="source_native",
+        ref_value="chase_1234",
+        source_type="pdf",
+        source_origin="chase",
+        decided_by="auto",
+        actor="system",
+    )
+    src = SourceAccount(
+        source_type="pdf",
+        source_origin="document",
+        source_account_key="pdf_doc_fedcba9876543210",
+        account_name="statement",
+        last_four="1234",
+        institution="Chase",
+        legacy_source_account_key="chase_1234",
+        legacy_source_origin="chase",
+    )
+
+    proposal = AccountResolver(db, actor="system").propose(src)
+
+    assert [
+        (candidate.account_id, candidate.signal) for candidate in proposal.candidates
+    ] == [("acct_pdf", "institution_last4")]
 
 
 # ---------------------------------------------------------------------------

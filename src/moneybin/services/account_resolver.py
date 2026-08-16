@@ -32,8 +32,16 @@ from moneybin.services.account_resolution_types import (
     AccountProposal,
     ResolvedAccount,
     SourceAccount,
+    normalize_account_identifier,
 )
-from moneybin.tables import ACCOUNT_LINK_DECISIONS, ACCOUNT_LINKS, DIM_ACCOUNTS
+from moneybin.services.pdf_account_identity import legacy_pdf_identifier_key
+from moneybin.tables import (
+    ACCOUNT_LINK_DECISIONS,
+    ACCOUNT_LINKS,
+    DIM_ACCOUNTS,
+    TABULAR_ACCOUNTS,
+    TABULAR_TRANSACTIONS,
+)
 from moneybin.utils import slugify
 
 logger = logging.getLogger(__name__)
@@ -58,7 +66,7 @@ def refresh_account_link_pending_gauge(db: Database) -> None:
 
 
 def fetch_display_name(db: Database, account_id: str) -> str:
-    """Return ``display_name`` from ``core.dim_accounts``; empty string when absent.
+    """Return a core display name, falling back to an unrefreshed raw account.
 
     Shared by the resolver's candidate decode and the account-link review queue.
     Guards ``duckdb.CatalogException`` so callers work before the core layer is
@@ -71,8 +79,23 @@ def fetch_display_name(db: Database, account_id: str) -> str:
             [account_id],
         ).fetchone()
     except duckdb.CatalogException:
+        row = None
+    if row and row[0] is not None:
+        return str(row[0])
+    try:
+        raw_row = db.execute(
+            f"SELECT raw.account_name FROM {TABULAR_ACCOUNTS.full_name} AS raw "  # noqa: S608  # TableRef constants + parameterized account id
+            f"JOIN {ACCOUNT_LINKS.full_name} AS link "
+            "ON link.status = 'accepted' AND link.ref_kind = 'source_native' "
+            "AND link.source_type = raw.source_type "
+            "AND link.source_origin = raw.source_origin "
+            "AND link.ref_value = raw.account_id "
+            "WHERE link.account_id = ? ORDER BY raw.extracted_at DESC LIMIT 1",
+            [account_id],
+        ).fetchone()
+    except duckdb.CatalogException:
         return ""
-    return str(row[0]) if row and row[0] is not None else ""
+    return str(raw_row[0]) if raw_row and raw_row[0] is not None else ""
 
 
 def _institution_key(institution: str | None) -> str | None:
@@ -126,11 +149,24 @@ class _Candidate:
     """
 
     account_id: str
-    # "institution_last4" | "name" | "institution_reissue" | "institution" |
-    # "fallback" — the last two are the gate's last-resort pick-list.
+    # "legacy_pdf_identity" | "institution_last4" | "name" |
+    # "institution_reissue" | "institution" | "fallback" — the last two are
+    # the gate's last-resort pick-list.
     signal: str
     value: str
     confidence: float
+
+
+def _dedupe_candidates(*groups: list[_Candidate]) -> list[_Candidate]:
+    """Combine candidate rungs without showing the same account twice."""
+    seen: set[str] = set()
+    combined: list[_Candidate] = []
+    for candidate in (item for group in groups for item in group):
+        if candidate.account_id in seen:
+            continue
+        seen.add(candidate.account_id)
+        combined.append(candidate)
+    return combined
 
 
 def _retyped_reissue_candidates(
@@ -198,12 +234,14 @@ class AccountResolver:
         db: Database,
         *,
         actor: str = "system",
+        include_unmaterialized_candidates: bool = False,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
     ) -> None:
         """Bind the resolver to a database + audit actor for its link writes."""
         self._db = db
         self._actor = actor
+        self._include_unmaterialized_candidates = include_unmaterialized_candidates
         self._emit_metrics = emit_metrics
         self._observations = observations
         self._links = AccountLinksRepo(db)
@@ -686,6 +724,23 @@ class AccountResolver:
             ).fetchone()
             if row is not None:
                 return str(row[0]), "full_number"
+            scope, separator, identifier = scoped.partition(":")
+            if separator and len(scope) == 9 and scope.isdigit():
+                rows = self._db.execute(
+                    f"SELECT account_id, ref_value FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized value
+                    "WHERE status = 'accepted' AND ref_kind = 'full_number' "
+                    "AND STARTS_WITH(ref_value, ?)",
+                    [f"{scope}:"],
+                ).fetchall()
+                normalized = normalize_account_identifier(identifier)
+                legacy_accounts = {
+                    str(account_id)
+                    for account_id, ref_value in rows
+                    if normalize_account_identifier(str(ref_value).partition(":")[2])
+                    == normalized
+                }
+                if len(legacy_accounts) == 1:
+                    return legacy_accounts.pop(), "full_number"
         return None
 
     @staticmethod
@@ -749,10 +804,10 @@ class AccountResolver:
         fallback: bool = False,
         reissue: bool = False,
     ) -> list[_Candidate]:
-        """Weak-signal candidates from core.dim_accounts (institution+last4, then name).
+        """Weak-signal candidates from materialized and current-batch accounts.
 
-        Each is a review proposal, never an auto-merge. Returns no candidates if
-        core.dim_accounts is not yet materialized (first import before any transform).
+        Each is a review proposal, never an auto-merge. Batch callers also include
+        PDF accounts loaded earlier in the batch but not materialized in core yet.
 
         The name rung skips any account whose last four positively contradicts
         the source's (``_last_fours_disagree``). A name match across a stated
@@ -780,8 +835,14 @@ class AccountResolver:
         empty set. Off by default so ``accounts_links_run`` isn't flooded with an
         all-accounts proposal for every provisional account.
         """
+        legacy_candidates = self._legacy_source_candidates(src, exclude_account_id)
+        pending_candidates = (
+            self._pending_pdf_candidates(src, exclude_account_id)
+            if self._include_unmaterialized_candidates
+            else []
+        )
         try:
-            out: list[_Candidate] = []
+            out: list[_Candidate] = list(pending_candidates)
             if (
                 src.last_four
                 and src.institution
@@ -813,7 +874,7 @@ class AccountResolver:
                     if r[1] and _institution_key(str(r[1])) == target_inst
                 )
             if out:
-                return out
+                return _dedupe_candidates(out, legacy_candidates)
             name_rows = self._db.execute(
                 f"SELECT account_id, display_name, last_four, institution_slug "  # noqa: S608  # TableRef + parameterized values
                 f"FROM {DIM_ACCOUNTS.full_name} WHERE account_id != ? "
@@ -860,10 +921,174 @@ class AccountResolver:
                 out = self._reissue_candidates(src, exclude_account_id)
             if not out and fallback:
                 out = self._fallback_candidates(src, exclude_account_id)
-            return out
+                return _dedupe_candidates(legacy_candidates, out)
+            return _dedupe_candidates(out, legacy_candidates)
         except duckdb.CatalogException:
-            logger.debug("core.dim_accounts unavailable; no candidates")
+            logger.debug("core.dim_accounts unavailable; using raw candidates only")
+            return _dedupe_candidates(pending_candidates, legacy_candidates)
+
+    def _pending_pdf_candidates(
+        self, src: SourceAccount, exclude_account_id: str
+    ) -> list[_Candidate]:
+        """Match PDF accounts loaded earlier in a batch but not refreshed yet."""
+        if src.source_type != "pdf" or not src.institution:
             return []
+        target_institution = _institution_key(src.institution)
+        legacy_key = src.legacy_source_account_key
+        if target_institution is None or (not src.last_four and not legacy_key):
+            return []
+        try:
+            materialized_ids = {
+                str(row[0])
+                for row in self._db.execute(
+                    f"SELECT account_id FROM {DIM_ACCOUNTS.full_name}"  # noqa: S608  # TableRef only
+                ).fetchall()
+            }
+        except duckdb.CatalogException:
+            materialized_ids = set()
+        try:
+            rows = self._db.execute(
+                f"SELECT DISTINCT link.account_id, raw.account_number_masked, "  # noqa: S608  # TableRef constants + parameterized account id
+                f"raw.institution_name FROM {TABULAR_ACCOUNTS.full_name} AS raw "
+                f"JOIN {ACCOUNT_LINKS.full_name} AS link "
+                "ON link.status = 'accepted' AND link.ref_kind = 'source_native' "
+                "AND link.source_type = raw.source_type "
+                "AND link.source_origin = raw.source_origin "
+                "AND link.ref_value = raw.account_id "
+                "WHERE raw.source_type = 'pdf' AND link.account_id != ?",
+                [exclude_account_id],
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+        candidates: list[_Candidate] = []
+        for account_id, masked_number, institution in rows:
+            if (
+                str(account_id) in materialized_ids
+                or masked_number is None
+                or institution is None
+                or _institution_key(str(institution)) != target_institution
+            ):
+                continue
+            digits = "".join(
+                character for character in str(masked_number) if character.isdigit()
+            )
+            if src.last_four:
+                if digits[-4:] != src.last_four:
+                    continue
+                signal = "institution_last4"
+                value = f"{target_institution}:{src.last_four}"
+            else:
+                candidate_legacy_key = legacy_pdf_identifier_key(
+                    issuer=str(institution), identifier=str(masked_number)
+                )
+                if candidate_legacy_key != legacy_key:
+                    continue
+                # Keep the literal out of the decision payload. The exact
+                # issuer-scoped pre-document key is evidence only, never a
+                # source_native or full_number ref.
+                signal = "legacy_pdf_identity"
+                value = "legacy_pdf_identity"
+            candidates.append(
+                _Candidate(
+                    account_id=str(account_id),
+                    signal=signal,
+                    value=value,
+                    confidence=0.5,
+                )
+            )
+        return _dedupe_candidates(candidates)
+
+    def _legacy_source_candidates(
+        self, src: SourceAccount, exclude_account_id: str
+    ) -> list[_Candidate]:
+        """Return superseded PDF native links as review-only evidence.
+
+        A historical tuple must be proven by raw account metadata or the same
+        source path. Filename aliases and suffixes are not account identity.
+        """
+        legacy_key = src.legacy_source_account_key
+        if not legacy_key or legacy_key == src.source_account_key:
+            return []
+        rows = self._db.execute(
+            f"SELECT account_id, source_origin, ref_value "  # noqa: S608  # TableRef + parameterized values
+            f"FROM {ACCOUNT_LINKS.full_name} "
+            "WHERE status = 'accepted' AND ref_kind = 'source_native' "
+            "AND source_type = ? ORDER BY account_id, source_origin, ref_value",
+            [src.source_type],
+        ).fetchall()
+        try:
+            identifier_refs = {
+                (str(row[0]), str(row[1]))
+                for row in self._db.execute(
+                    f"SELECT DISTINCT source_origin, account_id, "  # noqa: S608  # TableRef only
+                    f"account_number_masked FROM {TABULAR_ACCOUNTS.full_name} "
+                    "WHERE source_type = 'pdf' AND account_number_masked IS NOT NULL"
+                ).fetchall()
+                if legacy_pdf_identifier_key(issuer=str(row[0]), identifier=str(row[2]))
+                == str(row[1])
+            }
+        except duckdb.CatalogException:
+            identifier_refs = set()
+        try:
+            alias_refs = {
+                (str(row[0]), str(row[1]))
+                for row in self._db.execute(
+                    f"SELECT DISTINCT source_origin, account_id "  # noqa: S608  # TableRef only
+                    f"FROM {TABULAR_ACCOUNTS.full_name} "
+                    "WHERE source_type = 'pdf' AND account_number_masked IS NULL"
+                ).fetchall()
+            }
+        except duckdb.CatalogException:
+            alias_refs = set()
+        expected_origin = src.legacy_source_origin or src.source_origin
+        exact = [
+            row
+            for row in rows
+            if str(row[1]) == expected_origin
+            and str(row[2]) == legacy_key
+            and (
+                (str(row[1]), str(row[2])) in identifier_refs
+                or (
+                    src.legacy_source_account_key_is_filename_alias
+                    and (str(row[1]), str(row[2])) in alias_refs
+                )
+            )
+        ]
+        if src.source_type == "pdf":
+            try:
+                provenance_refs = (
+                    {
+                        (str(row[0]), str(row[1]))
+                        for row in self._db.execute(
+                            f"SELECT DISTINCT source_origin, account_id "  # noqa: S608  # TableRef + parameterized source path
+                            f"FROM {TABULAR_TRANSACTIONS.full_name} "
+                            "WHERE source_type = 'pdf' AND source_file = ?",
+                            [src.source_file],
+                        ).fetchall()
+                    }
+                    if src.source_file
+                    else set()
+                )
+            except duckdb.CatalogException:
+                provenance_refs = set()
+            historical = [
+                row
+                for row in rows
+                if row not in exact and (str(row[1]), str(row[2])) in provenance_refs
+            ]
+        else:
+            historical = []
+        candidates = [
+            _Candidate(
+                account_id=str(row[0]),
+                signal="legacy_pdf_identity",
+                value="legacy_pdf_identity",
+                confidence=0.5,
+            )
+            for row in [*exact, *historical]
+            if str(row[0]) != exclude_account_id
+        ]
+        return _dedupe_candidates(candidates)
 
     def _reissue_candidates(
         self, src: SourceAccount, exclude_account_id: str

@@ -2,14 +2,40 @@
 
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from moneybin.database import Database
 from moneybin.loaders import import_log
-from moneybin.services.import_service import ImportService
+from moneybin.services.import_service import (
+    ImportService,
+    _ofx_source_accounts,  # pyright: ignore[reportPrivateUsage]
+)
+from moneybin.services.pdf_account_identity import derive_pdf_account_identity
 from tests.import_helpers import import_answering_gate
+
+
+def test_ofx_and_pdf_share_normalized_full_number_scope() -> None:
+    account = SimpleNamespace(
+        account_id="ab-12 34",
+        routing_number="021000021",
+        account_type="CHECKING",
+        type=None,
+        institution=SimpleNamespace(fid=""),
+    )
+    [ofx] = _ofx_source_accounts(SimpleNamespace(accounts=[account]), "bank")
+    pdf = derive_pdf_account_identity(
+        issuer="Bank",
+        identifier="ab-12 34",
+        document_sha256="a" * 64,
+        identifier_is_complete=True,
+        routing_number="021000021",
+    )
+
+    assert ofx.source_account_key == "ab-12 34"
+    assert ofx.account_number == pdf.scoped_full_number == "021000021:AB1234"
 
 
 class TestImportOFXBatchLifecycle:

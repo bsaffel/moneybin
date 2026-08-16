@@ -87,6 +87,10 @@ class ImportConfirmationAccountCandidate(TypedDict, total=False):
     display_name: Annotated[str, DataClass.USER_NOTE]
     confidence: Annotated[float, DataClass.AGGREGATE]
     signal: Annotated[str, DataClass.TXN_TYPE]
+    overlap_matched: Annotated[int, DataClass.AGGREGATE]
+    overlap_comparable: Annotated[int, DataClass.AGGREGATE]
+    overlap_window_start: Annotated[str | None, DataClass.TXN_DATE]
+    overlap_window_end: Annotated[str | None, DataClass.TXN_DATE]
 
 
 class ImportCreatedAccount(TypedDict, total=False):
@@ -96,12 +100,11 @@ class ImportCreatedAccount(TypedDict, total=False):
     minted account is the account a candidate would have been, and USER_NOTE is
     what ``core.dim_accounts.display_name`` carries everywhere else.
 
-    There is no ``source_account_key`` field, because that is the file's native
-    key (an OFX ``<ACCTID>`` is an account number) and the opaque ``account_id``
-    already names the row. That is a statement about the schema, not about the
-    values: on the PDF channel ``display_name`` is the document alias, which for
-    a statement with no account anchor is also the derived source key. The alias
-    is ``slugify(file_path.stem)`` — a path the caller supplied and, in
+    There is no ``source_account_key`` field, because an OFX ``<ACCTID>`` can be
+    an account number and the opaque ``account_id`` already names the row. PDF
+    native keys are document digests; ``display_name`` prefers a labelled
+    account or product name and otherwise falls back to the document alias. The
+    alias is ``slugify(file_path.stem)`` — a path the caller supplied and, in
     ``import_files`` responses, already readable in the same row's ``path``.
     """
 

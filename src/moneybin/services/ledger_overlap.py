@@ -19,8 +19,10 @@ detects and currently has no merge path for.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 
 import duckdb
 
@@ -79,6 +81,110 @@ class LedgerOverlap:
     def measurable(self) -> bool:
         """Whether the two ledgers share a period this probe could compare at all."""
         return self.comparable > 0
+
+
+@dataclass(frozen=True)
+class IncomingTransaction:
+    """One normalized incoming row available before an account is resolved."""
+
+    transaction_date: date
+    amount: Decimal
+    currency_code: str | None
+
+
+def probe_incoming_ledger_overlap(
+    db: Database,
+    *,
+    transactions: Sequence[IncomingTransaction],
+    against_account_id: str,
+    window_days: int = DEFAULT_POSTING_LAG_DAYS,
+) -> LedgerOverlap:
+    """Compare incoming rows with one existing account without binding them first.
+
+    An unstated currency is unknown, not a disagreement. Only two stated,
+    different currencies veto an otherwise matching incoming transaction.
+    """
+    if not transactions:
+        return _record_probe(LedgerOverlap(*_EMPTY_WINDOW_ROW))
+
+    # Callers pass one statement's extracted rows, not an unbounded ledger.
+    values_sql = ", ".join(["(?, ?, ?, ?)"] * len(transactions))
+    parameters: list[object] = []
+    for index, transaction in enumerate(transactions):
+        parameters.extend([
+            index,
+            transaction.transaction_date,
+            transaction.amount,
+            transaction.currency_code,
+        ])
+    parameters.extend([against_account_id, window_days, window_days, window_days])
+    try:
+        row = db.execute(
+            f"""
+            WITH incoming_values(
+                incoming_id, transaction_date, amount, currency_code
+            ) AS (
+                VALUES {values_sql}
+            ),
+            against AS (
+                SELECT transaction_date, amount, currency_code
+                FROM {FCT_TRANSACTIONS.full_name}
+                WHERE account_id = ?
+            ),
+            span AS (
+                SELECT MIN(transaction_date) AS lo, MAX(transaction_date) AS hi
+                FROM against
+            ),
+            comparable AS (
+                SELECT incoming.*
+                FROM incoming_values AS incoming, span
+                WHERE span.lo IS NOT NULL
+                  AND incoming.transaction_date
+                      BETWEEN span.lo - CAST(? AS INTEGER)
+                          AND span.hi + CAST(? AS INTEGER)
+            )
+            SELECT
+                (SELECT COUNT(*) FROM comparable),
+                (SELECT COUNT(*) FROM (
+                    SELECT c.incoming_id
+                    FROM comparable AS c
+                    JOIN against AS a
+                      ON a.amount = c.amount
+                     AND (
+                         NULLIF(UPPER(TRIM(a.currency_code)), '') IS NULL
+                         OR NULLIF(UPPER(TRIM(c.currency_code)), '') IS NULL
+                         OR NULLIF(UPPER(TRIM(a.currency_code)), '') =
+                            NULLIF(UPPER(TRIM(c.currency_code)), '')
+                     )
+                     AND ABS(DATE_DIFF('day', a.transaction_date, c.transaction_date))
+                         <= CAST(? AS INTEGER)
+                    GROUP BY c.incoming_id
+                )),
+                (SELECT MIN(transaction_date) FROM comparable),
+                (SELECT MAX(transaction_date) FROM comparable)
+            """,  # noqa: S608  # TableRef and VALUES shape are code-owned; values parameterized
+            parameters,
+        ).fetchone()
+    except duckdb.CatalogException:
+        logger.debug("core.fct_transactions unavailable; ledger overlap unmeasurable")
+        row = None
+    comparable, matched, start, end = row or _EMPTY_WINDOW_ROW
+    return _record_probe(
+        LedgerOverlap(
+            comparable=int(comparable),
+            matched=int(matched),
+            window_start=start,
+            window_end=end,
+        )
+    )
+
+
+def _record_probe(overlap: LedgerOverlap) -> LedgerOverlap:
+    """Record one overlap probe and return its result."""
+    ACCOUNT_LINK_OVERLAP_PROBES_TOTAL.labels(
+        result="measurable" if overlap.measurable else "unmeasurable"
+    ).inc()
+    return overlap
 
 
 def probe_ledger_overlap(
@@ -187,7 +293,4 @@ def probe_ledger_overlap(
     # Counted here rather than at the two call sites so a third one cannot forget:
     # the failure this instruments is every probe going unmeasurable at once, and
     # a counter that misses one caller cannot distinguish that from a quiet week.
-    ACCOUNT_LINK_OVERLAP_PROBES_TOTAL.labels(
-        result="measurable" if overlap.measurable else "unmeasurable"
-    ).inc()
-    return overlap
+    return _record_probe(overlap)

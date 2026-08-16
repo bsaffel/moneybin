@@ -76,7 +76,9 @@ def stub_pipeline(monkeypatch: pytest.MonkeyPatch) -> list[RouteDecision]:
     decisions: list[RouteDecision] = []
 
     class _StubExtractor:
-        def extract(self, _path: Path) -> PdfDocument:
+        def extract(
+            self, _path: Path, *, source_bytes: bytes | None = None
+        ) -> PdfDocument:
             return _doc()
 
     monkeypatch.setattr(

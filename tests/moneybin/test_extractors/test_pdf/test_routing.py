@@ -33,7 +33,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.extractors.pdf.auto_derive import derive_recipe, recipe_polarity_fits
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
-from moneybin.extractors.pdf.metadata import StatementMetadata
+from moneybin.extractors.pdf.metadata import DEFAULT_ANCHORS, StatementMetadata
 from moneybin.extractors.pdf.recipe import Recipe
 from moneybin.extractors.pdf.routing import route_forced_recipe, route_pdf_import
 from moneybin.metrics.registry import (
@@ -151,6 +151,28 @@ def _recipe(sign_convention: str = "negative_is_expense") -> Recipe:
         **_valid_recipe_dict(),
         "sign_convention": sign_convention,
     })
+
+
+def _legacy_default_metadata_anchors() -> list[dict[str, str]]:
+    """Metadata anchors frozen by auto-derive before richer fields shipped."""
+    historical_account_id = [
+        r"Account\s+Number[:\s]+([\dXx*]{3,}(?:[ -][\dXx*]{3,})*)(?![-\w*])",
+        *DEFAULT_ANCHORS["account_id"][1:],
+    ]
+    casts = {
+        "account_id": "str",
+        "period_start": "date",
+        "period_end": "date",
+        "opening_balance": "decimal",
+        "closing_balance": "decimal",
+    }
+    return [
+        {"name": name, "pattern": pattern, "cast": casts[name]}
+        for name in casts
+        for pattern in (
+            historical_account_id if name == "account_id" else DEFAULT_ANCHORS[name]
+        )
+    ]
 
 
 def _save_chase_format(
@@ -423,6 +445,129 @@ def test_replay_success_does_not_set_replay_guard(db: Database) -> None:
     assert decision.matched_format_name == "chase_checking_pdf"
 
 
+def test_old_derived_recipe_gains_new_default_metadata_fields(db: Database) -> None:
+    """Pre-change auto recipes keep their frozen anchors and gain new fields."""
+    _save_chase_format(
+        db,
+        recipe={
+            **_valid_recipe_dict(),
+            "metadata_anchors": _legacy_default_metadata_anchors(),
+        },
+    )
+    doc = _make_doc(
+        text_lines=[
+            *_standard_text_lines(),
+            "Account Name: Household Checking",
+            "Account Type: checking",
+            "Product: Premier Checking",
+            "Routing Number: 021000021",
+            "Currency: usd",
+        ],
+        tables=[_standard_table()],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "transactions"
+    assert decision.metadata.account_label == "Household Checking"
+    assert decision.metadata.account_type == "checking"
+    assert decision.metadata.product_name == "Premier Checking"
+    assert decision.metadata.routing_number == "021000021"
+    assert decision.metadata.currency_code == "USD"
+
+
+def test_old_detected_recipe_replaces_unsafe_account_anchor(db: Database) -> None:
+    """A legacy default recipe cannot retain prefix-only strong capture."""
+    _save_chase_format(
+        db,
+        recipe={
+            **_valid_recipe_dict(),
+            "metadata_anchors": _legacy_default_metadata_anchors(),
+        },
+    )
+    text_lines = [
+        line.replace("Account Number: 1234", "Account Number: 123456/7890")
+        for line in _standard_text_lines()
+    ] + ["Routing Number: 021000021"]
+    doc = _make_doc(text_lines=text_lines, tables=[_standard_table()])
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.metadata.account_id == "123456/7890"
+    assert decision.metadata.account_id_complete is False
+    assert decision.metadata.routing_number == "021000021"
+
+
+@pytest.mark.parametrize("source", ["bridge", "manual"])
+def test_explicit_recipe_does_not_gain_unrequested_metadata_fields(
+    db: Database, source: str
+) -> None:
+    """Bridge and manual recipe omissions remain authoritative on replay."""
+    _save_chase_format(
+        db,
+        recipe={
+            **_valid_recipe_dict(),
+            "metadata_anchors": _legacy_default_metadata_anchors(),
+        },
+        source=source,
+    )
+    doc = _make_doc(
+        text_lines=[*_standard_text_lines(), "Currency: usd"],
+        tables=[_standard_table()],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "transactions"
+    assert decision.metadata.currency_code is None
+
+
+def test_saved_bridge_recipe_keeps_complete_account_id_review_only(
+    db: Database,
+) -> None:
+    """A saved bridge recipe cannot promote an unmasked identifier to strong evidence."""
+    _save_chase_format(
+        db,
+        recipe={
+            **_valid_recipe_dict(),
+            "metadata_anchors": _legacy_default_metadata_anchors(),
+        },
+        source="bridge",
+    )
+    text_lines = [
+        line.replace("Account Number: 1234", "Account Number: 123456789")
+        for line in _standard_text_lines()
+    ]
+    doc = _make_doc(text_lines=text_lines, tables=[_standard_table()])
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "transactions"
+    assert decision.metadata.account_id == "123456789"
+    assert decision.metadata.account_id_complete is False
+
+
+def test_saved_detected_recipe_can_prove_complete_account_id(db: Database) -> None:
+    """A deterministic saved recipe can still promote an unmasked identifier."""
+    _save_chase_format(
+        db,
+        recipe={
+            **_valid_recipe_dict(),
+            "metadata_anchors": _legacy_default_metadata_anchors(),
+        },
+    )
+    text_lines = [
+        line.replace("Account Number: 1234", "Account Number: 123456789")
+        for line in _standard_text_lines()
+    ]
+    doc = _make_doc(text_lines=text_lines, tables=[_standard_table()])
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "transactions"
+    assert decision.metadata.account_id_complete is True
+
+
 # ---------------------------------------------------------------------------
 # Additional: metadata_incomplete on seed path preserves metadata fields
 # ---------------------------------------------------------------------------
@@ -504,6 +649,22 @@ def test_forced_recipe_reconciles_routes_to_transactions(db: Database) -> None:
     assert decision.replay_guard_failed is False
     assert len(decision.rows) > 0
     assert decision.fp is not None
+
+
+def test_forced_recipe_keeps_complete_account_id_review_only(db: Database) -> None:
+    """A first-contact bridge recipe cannot promote an unmasked identifier."""
+    recipe = Recipe.model_validate(_valid_recipe_dict())
+    text_lines = [
+        line.replace("Account Number: 1234", "Account Number: 123456789")
+        for line in _standard_text_lines()
+    ]
+    doc = _make_doc(text_lines=text_lines, tables=[_standard_table()])
+
+    decision = route_forced_recipe(doc, recipe)
+
+    assert decision.outcome == "transactions"
+    assert decision.metadata.account_id == "123456789"
+    assert decision.metadata.account_id_complete is False
 
 
 def test_forced_recipe_does_not_emit_replay_metrics(db: Database) -> None:

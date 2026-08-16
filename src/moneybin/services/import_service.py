@@ -11,8 +11,10 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
+from datetime import date
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
@@ -55,6 +57,7 @@ from moneybin.services.account_resolution_types import (
     AccountProposalDict,
     ResolvedAccount,
     SourceAccount,
+    normalize_account_identifier,
 )
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.audit_service import AuditService
@@ -65,6 +68,10 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     ProposedMapping,
     SignConventionProposal,
+)
+from moneybin.services.ledger_overlap import (
+    IncomingTransaction,
+    probe_incoming_ledger_overlap,
 )
 from moneybin.services.refresh import refresh as _refresh
 from moneybin.utils.file import source_sha256
@@ -80,9 +87,9 @@ class CreatedAccount:
     longer stops the import, so the import has to say what it created. Both
     fields are safe to show — ``account_id`` is an opaque uuid4[:12], and
     ``display_name`` is the source's own label for the account (the tabular
-    account column, ``<institution> <type>`` for OFX, the document alias for
-    PDF), never its ``source_account_key``, which is an account number on
-    several channels.
+    account column, ``<institution> <type>`` for OFX, or a PDF's labelled
+    account/product name with document-alias fallback), never its
+    ``source_account_key``, which is an account number on several channels.
     """
 
     account_id: str
@@ -928,12 +935,10 @@ def _to_account_number_mask(raw: str | None) -> str | None:
     consumers treat as already masked. Apply the reduction at the import
     boundary so the raw schema's privacy contract is preserved.
 
-    Normalisation is load-bearing for account identity, not cosmetic. The
-    output feeds the source-native account key, so every rendering of ONE card
-    must reduce to one value: "****1234", "xxxx1234" and "XXXX XXXX XXXX 1234"
-    are the same account and must not key three different ways. Returning the
-    captured token verbatim for mask-prefixed values did exactly that, so
-    consecutive statements of one card never matched each other.
+    Normalisation is load-bearing for privacy and partial-evidence consistency,
+    not PDF source-native identity. The output populates the masked raw-account
+    field and candidate display; PDF identity is derived separately from the
+    document digest and usable statement evidence.
 
     Returns the original string when fewer than 4 digits are present (e.g. an
     institution-specific token, or a fully-masked "xxxx") so we never silently
@@ -964,6 +969,39 @@ def _last4_from_account_number(value: object) -> str | None:
         return None
     digits = "".join(c for c in str(value) if c.isdigit())
     return digits[-4:] if len(digits) >= 4 else None
+
+
+def _normalize_pdf_amount(row: dict[str, Any], sign_convention: str) -> Decimal:
+    """Return one PDF row's canonical amount before or during loading."""
+    zero = Decimal("0")
+    if sign_convention == "split_debit_credit":
+        return Decimal(str(row.get("credit", zero))) - Decimal(
+            str(row.get("debit", zero))
+        )
+    amount = Decimal(str(row.get("amount", zero)))
+    return -amount if sign_convention == "negative_is_income" else amount
+
+
+def _incoming_pdf_transactions(
+    decision: "RouteDecision",
+) -> tuple[IncomingTransaction, ...]:
+    """Normalize routed PDF rows for pre-load candidate evidence."""
+    if decision.recipe is None:
+        return ()
+    transactions: list[IncomingTransaction] = []
+    for row in decision.rows:
+        transaction_date = row.get("date")
+        if not isinstance(transaction_date, date):
+            continue
+        currency = decision.metadata.currency_code
+        transactions.append(
+            IncomingTransaction(
+                transaction_date=transaction_date,
+                amount=_normalize_pdf_amount(row, decision.recipe.sign_convention),
+                currency_code=str(currency) if currency is not None else None,
+            )
+        )
+    return tuple(transactions)
 
 
 # Unambiguous tabular extensions: extension wins, no OFX sniffing attempted.
@@ -1085,10 +1123,10 @@ def proposal_ref(index: int) -> str:
     """Positional referent for the ``index``-th source account in a file.
 
     Every channel derives ``source_account_key`` from file content — an OFX
-    ``<ACCTID>``, a PDF's issuer+last4, a tabular account-name column — and that
-    key is an ACCOUNT_IDENTIFIER, so any masking surface hands it back as
-    ``****1234``. A caller reading the gate through one of those surfaces can
-    see the proposal but cannot reproduce the key needed to answer it.
+    ``<ACCTID>``, a PDF document digest, or a tabular account-name column — and
+    that key is an ACCOUNT_IDENTIFIER, so a masking surface may hide it. A
+    caller reading the gate through one of those surfaces can see the proposal
+    but cannot reliably reproduce the key needed to answer it.
 
     This names the account by position instead, which discloses nothing and is
     reproducible from the same bytes on the answering call. It is a referent for
@@ -1445,6 +1483,8 @@ def _pdf_source_account(
     *,
     resolved_alias: str,
     account_id_override: str | None,
+    document_sha256: str,
+    source_file: str | None = None,
 ) -> PdfAccountIdentity:
     """Derive the account identity a PDF statement presents, without resolving.
 
@@ -1452,78 +1492,78 @@ def _pdf_source_account(
     resolve pass in ``_import_pdf_transactions``, so the identity the user
     ratifies is exactly the one bound.
 
-    The source-native key is issuer-slug-prefixed so the same masked suffix
-    ("...1234") from two different banks doesn't collide on one
-    core.dim_accounts row. Its scope (``source_origin``) is the issuer slug and
-    must be IDENTICAL across every statement of one card: the strong-ref lookup
-    and the staging JOINs both key on (source_type, source_origin, ref_value), so
-    a per-file value would make each statement miss its own prior link and mint a
-    fresh account every month — and, now, re-ask the confirm every month.
-    Deliberately NOT matched_format_name: that is None on first contact and set
-    from the second statement on, so it differs across exactly the two imports
-    this needs to unify. ``resolved_alias`` stays the per-file scope for
-    raw.import_log and the raw.pdf_<alias> view, which are genuinely per-document
-    and which revert depends on.
+    Every PDF gets a document-content ``source_native`` key. A complete captured
+    identifier separately becomes a validated-routing-scoped ``full_number``
+    strong ref inside the encrypted database; a masked, last-four-only, or
+    issuer-only value remains weak evidence. This prevents two
+    same-issuer/same-last-four accounts from sharing a native key while
+    preserving exact-file re-import idempotency.
 
-    A statement with no readable account number has no identity of its own: the
-    key falls back to the filename stem, so the returned
-    ``identity_unknown`` sends it through the gate's ``fallback_keys`` path — the
-    same one the bare single-account tabular import takes, and for the same
-    reason. Minting on a filename is the guess "magic stays visible" forbids
-    doing silently.
+    A statement with no readable account number has no account identity of its
+    own. Its document key still makes the file idempotent, while
+    ``identity_unknown`` sends it through the gate's fallback pick-list.
     """
+    from moneybin.services.pdf_account_identity import derive_pdf_account_identity
     from moneybin.utils import slugify
 
     if decision.fp is None:
         # Defensive: route_pdf_import attaches fp on every outcome that reaches
         # the transactions path; this guards a hand-built RouteDecision.
         raise ValueError("PDF routing returned outcome='transactions' but fp is None")
-    issuer_slug = slugify(decision.fp.get("issuer", "unknown"))
-    # Mask the captured account identifier BEFORE slugifying it into the
-    # source-native key. The captured value may be a full unmasked institution
-    # account number ("Account Number: 123456789"), and storing that verbatim
-    # leaks it through every downstream surface that treats account_id as an
-    # opaque identifier.
-    masked_acct = _to_account_number_mask(decision.metadata.account_id)
-    # Whether the DOCUMENT named an account, captured before the override branch
-    # below clears masked_acct. Without an anchor the key below is the filename
-    # stem, which is a guess about what the file was called — not an identity the
-    # statement stated.
-    anchored = bool(masked_acct)
-    derived_key = (
-        f"{issuer_slug}_{slugify(masked_acct)}" if masked_acct else resolved_alias
+    issuer = decision.fp.get("issuer", "unknown")
+    derived = derive_pdf_account_identity(
+        issuer=issuer,
+        identifier=decision.metadata.account_id,
+        document_sha256=document_sha256,
+        identifier_is_complete=decision.metadata.account_id_complete,
+        routing_number=decision.metadata.routing_number,
     )
+    # Whether the document named an account, independent of its idempotency key.
+    anchored = derived.has_usable_identifier
+    derived_key = derived.source_account_key
     if account_id_override:
         # Explicit override — agents/users can pin a statement whose text omits
-        # an account anchor to an existing dim_accounts row instead of accepting
-        # the filename-derived alias and creating a fresh entry. The derived key
+        # an account anchor to an existing dim_accounts row. The document key
         # rides along as unpinned_account_key so the pin also teaches the
-        # resolver what this document yields on its own; without that, the next
-        # unpinned statement of the same card mints a second account.
+        # resolver what this exact file yields on its own.
         native_key = account_id_override
-        masked_acct = None
     else:
         native_key = derived_key
     return PdfAccountIdentity(
         source=SourceAccount(
             source_type="pdf",
-            source_origin=issuer_slug,
+            source_origin=derived.source_origin,
             source_account_key=native_key,
-            account_name=resolved_alias,
-            institution=decision.fp.get("issuer") or None,
+            account_name=(
+                decision.metadata.account_label
+                or decision.metadata.product_name
+                or resolved_alias
+            ),
+            account_number=derived.scoped_full_number,
+            institution=issuer or None,
+            # Before document keys, an anchorless PDF used its filename alias.
+            # Preserve that accepted binding as review-only migration evidence.
+            legacy_source_account_key=(
+                derived.legacy_source_account_key
+                or (resolved_alias if not anchored else None)
+            ),
+            legacy_source_origin=(
+                derived.legacy_source_origin
+                or (slugify(issuer) if not anchored else None)
+            ),
+            legacy_source_account_key_is_filename_alias=(
+                derived.legacy_source_account_key is None and not anchored
+            ),
+            source_file=source_file,
             # None for a digits-free token ("xxxx"), which correctly denies the
             # institution+last4 signal and routes to name review rather than
             # inventing a strong match.
-            last_four=_last4_from_account_number(masked_acct),
+            last_four=derived.last_four,
             explicit_account_id=account_id_override,
-            # Only teach a key the DOCUMENT yields. Unanchored, the derived key
-            # is the file stem, and accepting it as a source_native ref would let
-            # any later same-named statement from this issuer adopt the pinned
-            # account with no confirm — a silent cross-account merge on the
-            # strength of a filename.
-            unpinned_account_key=(
-                derived_key if account_id_override and anchored else None
-            ),
+            # The unpinned PDF key is always an opaque document digest. Teach it
+            # after an explicit pin so exact bytes re-adopt silently; the
+            # resolver's conflict guard refuses any attempted re-point.
+            unpinned_account_key=(derived_key if account_id_override else None),
         ),
         identity_unknown=not anchored,
     )
@@ -1560,6 +1600,7 @@ def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAcco
             continue
         seen.add(acctid)
         routing = none_if_blank(account.routing_number)
+        normalized_acctid = normalize_account_identifier(acctid)
         institution = account.institution
         fid = none_if_blank(institution.fid if institution else None)
         accounts.append(
@@ -1570,7 +1611,11 @@ def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAcco
                 account_name=f"{source_origin} {ofx_account_type(account) or ''}".strip(),
                 # full_number is a strong ref ONLY when institution/routing-scoped
                 # (contains ':'); a bare number is demoted to a candidate signal.
-                account_number=f"{routing}:{acctid}" if routing else None,
+                account_number=(
+                    f"{routing}:{normalized_acctid}"
+                    if routing and normalized_acctid
+                    else None
+                ),
                 last_four=acctid[-4:],
                 # The FID slug, not source_origin. source_origin comes from <ORG>,
                 # which is a routing code for some issuers ("B1" = Chase), and it
@@ -2032,6 +2077,7 @@ class ImportService:
         channel: Channel,
         resolved_mapping: dict[str, str] | None = None,
         fallback_keys: Collection[str] = (),
+        incoming_transactions: Sequence[IncomingTransaction] = (),
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
     ) -> list[SourceAccount]:
@@ -2104,6 +2150,21 @@ class ImportService:
             proposal = resolver.propose(
                 src, fallback=src.source_account_key in wanted_fallback
             )
+            if incoming_transactions and proposal.candidates:
+                proposal = dataclasses.replace(
+                    proposal,
+                    candidates=tuple(
+                        dataclasses.replace(
+                            candidate,
+                            overlap=probe_incoming_ledger_overlap(
+                                self._db,
+                                transactions=incoming_transactions,
+                                against_account_id=candidate.account_id,
+                            ),
+                        )
+                        for candidate in proposal.candidates
+                    ),
+                )
             if proposal.requires_confirm:
                 proposals.append(proposal.to_dict(proposal_ref=proposal_ref(index)))
         if not proposals:
@@ -3665,10 +3726,11 @@ class ImportService:
         #    load — so the persisted recipe is proven to reproduce them.
         canonical = file_path.resolve()
         try:
-            if source_bytes is None:
-                doc = PDFExtractor().extract(canonical)
-            else:
-                doc = PDFExtractor().extract(canonical, source_bytes=source_bytes)
+            immutable_source_bytes = (
+                source_bytes if source_bytes is not None else canonical.read_bytes()
+            )
+            file_sha256 = source_sha256(canonical, immutable_source_bytes)
+            doc = PDFExtractor().extract(canonical, source_bytes=immutable_source_bytes)
             decision = route_forced_recipe(doc, response.recipe)
         except Exception:
             # Mirror _import_pdf: a failed extraction/route is a failed PDF
@@ -3752,6 +3814,8 @@ class ImportService:
             decision,
             resolved_alias=resolved_alias,
             account_id_override=account_id,
+            document_sha256=file_sha256,
+            source_file=str(canonical),
         )
         gated = self._gate_account_proposals(
             AccountResolver(self._db, actor="system"),
@@ -3759,6 +3823,7 @@ class ImportService:
             account_bindings,
             channel="pdf",
             fallback_keys=identity.fallback_keys,
+            incoming_transactions=_incoming_pdf_transactions(decision),
             emit_metrics=emit_metrics,
             observations=observations,
         )
@@ -3770,7 +3835,7 @@ class ImportService:
             source_type="pdf",
             source_origin=resolved_alias,
             account_names=[resolved_alias],
-            file_sha256=source_sha256(canonical, source_bytes),
+            file_sha256=file_sha256,
         )
         result.import_id = import_id
 
@@ -4218,6 +4283,7 @@ class ImportService:
         sign: str | None = None,
         confirm: bool = False,
         account_bindings: dict[str, str] | None = None,
+        include_unmaterialized_account_candidates: bool = False,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
@@ -4254,10 +4320,13 @@ class ImportService:
             account_id: Optional override for the account_id the rows are
                 attached to. Required when reconciliation passes via balances
                 alone (no account anchor captured) but the user still wants
-                the rows attached to an existing ``dim_accounts`` row —
-                without this, the import falls back to the filename-derived
-                alias and creates a new ``dim_accounts`` row. Mirrors the
-                tabular path's ``account_id`` semantics.
+                the rows attached to an existing ``dim_accounts`` row. Without
+                this or an account-binding answer, the import stops for account
+                confirmation; a confirmed new account uses the document alias
+                only as its display-name fallback. Mirrors the tabular path's
+                ``account_id`` semantics.
+            include_unmaterialized_account_candidates: Include PDF accounts loaded
+                earlier in the current batch before the final core refresh.
             account_bindings: Answers to a prior account-confirmation gate,
                 keyed by the statement's source-native account key: an existing
                 account_id to adopt, or "new".
@@ -4291,10 +4360,11 @@ class ImportService:
         # a dangling import row — begin_import below marks the commitment to a
         # write (transactions or seed).
         try:
-            if source_bytes is None:
-                doc = PDFExtractor().extract(canonical)
-            else:
-                doc = PDFExtractor().extract(canonical, source_bytes=source_bytes)
+            immutable_source_bytes = (
+                source_bytes if source_bytes is not None else canonical.read_bytes()
+            )
+            file_sha256 = source_sha256(canonical, immutable_source_bytes)
+            doc = PDFExtractor().extract(canonical, source_bytes=immutable_source_bytes)
             decision = route_pdf_import(doc, self._db)
         except Exception:
             record_counter(
@@ -4389,8 +4459,10 @@ class ImportService:
         # Account-identity gate, in the position the sign gate above established:
         # after routing settles, before begin_import. Only the transactions path
         # resolves an account identity — a seeded document writes no link, so
-        # there is nothing to ratify. The identity scope is the issuer slug, so
-        # this asks once per card, not once per statement.
+        # there is nothing to ratify. Exact bytes use a document digest; a
+        # proven-complete routing-scoped identifier can carry identity
+        # across statements. A new partial-only statement remains reviewable
+        # rather than silently adopting.
         # Carries the gated identity across `begin_import` to the dispatch
         # below. Declared here because the gate and the load sit in two separate
         # `outcome == "transactions"` blocks with the import-log write between
@@ -4402,13 +4474,22 @@ class ImportService:
                 decision,
                 resolved_alias=resolved_alias,
                 account_id_override=account_id,
+                document_sha256=file_sha256,
+                source_file=str(canonical),
             )
             gated = self._gate_account_proposals(
-                AccountResolver(self._db, actor="system"),
+                AccountResolver(
+                    self._db,
+                    actor="system",
+                    include_unmaterialized_candidates=(
+                        include_unmaterialized_account_candidates
+                    ),
+                ),
                 [identity.source],
                 account_bindings,
                 channel="pdf",
                 fallback_keys=identity.fallback_keys,
+                incoming_transactions=_incoming_pdf_transactions(decision),
                 emit_metrics=emit_metrics,
                 observations=observations,
             )
@@ -4421,7 +4502,7 @@ class ImportService:
             source_type="pdf",
             source_origin=resolved_alias,
             account_names=[resolved_alias],
-            file_sha256=source_sha256(canonical, source_bytes),
+            file_sha256=file_sha256,
         )
         result.import_id = import_id
 
@@ -4568,13 +4649,15 @@ class ImportService:
         recipe — see ``_persist_replayed_sign_override`` — and ``save_format``
         gates that write too, not just the first-contact save.
         """
-        from decimal import Decimal
-
         import polars as pl
 
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL
-        from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
+        from moneybin.tables import (
+            ACCOUNT_LINKS,
+            TABULAR_ACCOUNTS,
+            TABULAR_TRANSACTIONS,
+        )
 
         if decision.recipe is None:
             # Should never happen: route_pdf_import only emits outcome="transactions"
@@ -4587,16 +4670,15 @@ class ImportService:
         # re-derived, so the ratified account and the bound one are one object.
         source_account = bound_source
         account_id = source_account.source_account_key
-        # Identity scope (issuer slug) and fingerprint, both used further down for
-        # the raw account row and the format-recipe save. Read off the derivation
-        # above rather than recomputed, so there is one source of truth.
+        # Stable document origin and fingerprint, both used further down for the
+        # raw account row and the format-recipe save. Read the origin from the
+        # gated identity rather than recomputing it, so there is one source of truth.
         identity_origin = source_account.source_origin
         fp = decision.fp
         if fp is None:  # pragma: no cover — _pdf_source_account already raised
             raise ValueError(
                 "PDF routing returned outcome='transactions' but fp is None"
             )
-
         # That key is a source-NATIVE key (DP-1), exactly like the tabular
         # path's — never a canonical account id. Registering it with
         # AccountResolver is what writes the native->canonical mapping staging
@@ -4643,32 +4725,85 @@ class ImportService:
         if minted := _created_account(source_account, resolved_account):
             result.accounts_created = (minted,)
 
+        # Accepted links preserve every historical PDF source tuple now owned by
+        # this account. Their reversed predecessors preserve prior canonical ids.
+        # Both can appear in old transaction hashes; today's issuer detector and
+        # current merge target are therefore insufficient migration evidence.
+        current_file_refs = {
+            (str(row[0]), str(row[1]))
+            for row in self._db.execute(
+                f"SELECT DISTINCT source_origin, account_id "  # noqa: S608  # TableRef + parameterized source path
+                f"FROM {TABULAR_TRANSACTIONS.full_name} "
+                "WHERE source_type = 'pdf' AND source_file = ?",
+                [str(canonical)],
+            ).fetchall()
+        }
+        from moneybin.services.pdf_account_identity import legacy_pdf_identifier_key
+
+        legacy_identifier_refs = {
+            (str(row[0]), str(row[1]))
+            for row in self._db.execute(
+                f"SELECT DISTINCT source_origin, account_id, account_number_masked "  # noqa: S608  # TableRef only
+                f"FROM {TABULAR_ACCOUNTS.full_name} "
+                "WHERE source_type = 'pdf' AND account_number_masked IS NOT NULL"
+            ).fetchall()
+            if legacy_pdf_identifier_key(issuer=str(row[0]), identifier=str(row[2]))
+            == str(row[1])
+        }
+        legacy_alias_refs = {
+            (str(row[0]), str(row[1]))
+            for row in self._db.execute(
+                f"SELECT DISTINCT source_origin, account_id "  # noqa: S608  # TableRef only
+                f"FROM {TABULAR_ACCOUNTS.full_name} "
+                "WHERE source_type = 'pdf' AND account_number_masked IS NULL"
+            ).fetchall()
+        }
+        pdf_hash_namespaces: dict[tuple[str, str], set[str]] = {}
+        for (
+            historical_origin,
+            historical_ref,
+            historical_account_id,
+        ) in self._db.execute(
+            f"SELECT current.source_origin, current.ref_value, "  # noqa: S608  # TableRef + parameterized account id
+            "historical.account_id "
+            f"FROM {ACCOUNT_LINKS.full_name} AS current "
+            f"JOIN {ACCOUNT_LINKS.full_name} AS historical "
+            "ON historical.ref_kind = current.ref_kind "
+            "AND historical.source_type = current.source_type "
+            "AND historical.source_origin = current.source_origin "
+            "AND historical.ref_value = current.ref_value "
+            "WHERE current.status = 'accepted' "
+            "AND current.ref_kind = 'source_native' "
+            "AND current.source_type = 'pdf' AND current.account_id = ?",
+            [resolved_account.account_id],
+        ).fetchall():
+            source_ref = (str(historical_origin), str(historical_ref))
+            legacy_key = source_account.legacy_source_account_key
+            if not (
+                source_ref == (identity_origin, account_id)
+                or source_ref in current_file_refs
+                or str(historical_account_id) != resolved_account.account_id
+                or (
+                    legacy_key is not None
+                    and source_ref[1] == legacy_key
+                    and (
+                        source_ref in legacy_identifier_refs
+                        or (
+                            source_account.legacy_source_account_key_is_filename_alias
+                            and source_ref in legacy_alias_refs
+                        )
+                    )
+                )
+            ):
+                continue
+            pdf_hash_namespaces.setdefault(source_ref, {source_ref[1]}).add(
+                str(historical_account_id)
+            )
+
         sign_conv: str = decision.recipe.sign_convention
 
-        def _normalize_amount(row: dict[str, Any]) -> Decimal:
-            """Return canonical-signed Decimal (negative=expense, positive=income).
-
-            Rows in decision.rows are pre-canonicalized by routing.py — keys
-            are "amount" / "debit" / "credit" regardless of the original
-            PDF column header text.
-            """
-            # Use dict.get(key, default) instead of `or Decimal("0")`:
-            # Decimal("0") is falsy in Python, so the `or` idiom collapses
-            # an explicit zero amount onto the same path as a missing key.
-            # Numerically equivalent today but conflates two distinct cases
-            # and silently masks upstream type mistakes.
-            _zero = Decimal("0")
-            if sign_conv == "split_debit_credit":
-                return Decimal(str(row.get("credit", _zero))) - Decimal(
-                    str(row.get("debit", _zero))
-                )
-            amount_d = Decimal(str(row.get("amount", _zero)))
-            if sign_conv == "negative_is_income":
-                return -amount_d
-            return amount_d  # negative_is_expense already matches canonical convention
-
         # Per-content-key dedup counter: when two rows in the same statement
-        # share (date, amt, desc, account_id) the first uses the bare content
+        # share (date, amt, desc, canonical account) the first uses the bare content
         # hash; each subsequent collision appends an occurrence index. Position
         # within the statement (`row_number`) is intentionally NOT in the hash
         # so a recipe change that shifts row order (or rejects one extra
@@ -4680,9 +4815,9 @@ class ImportService:
         # different monthly statements for the same account) on separate
         # transaction_ids. Without this, prep.stg_tabular__transactions
         # dedups by (transaction_id, account_id) and one of the two
-        # disappears from core/reports. Includes only fields the PDF
-        # already captured for routing, so a re-import of the *same*
-        # statement bytes still produces the same content_key.
+        # disappears from core/reports. The resolved canonical account stays
+        # stable when the same statement is regenerated with different PDF
+        # metadata; the document digest remains only a source-native link key.
         period_marker = ""
         if (
             decision.metadata.period_start is not None
@@ -4694,9 +4829,12 @@ class ImportService:
             )
         content_dup_counter: dict[str, int] = {}
         rows_list: list[dict[str, Any]] = []
+        historical_transaction_ids: dict[tuple[str, str], list[set[str]]] = {
+            ref: [] for ref in pdf_hash_namespaces
+        }
         _zero = Decimal("0")
         for idx, row in enumerate(decision.rows, start=1):
-            amt = _normalize_amount(row)
+            amt = _normalize_pdf_amount(row, sign_conv)
             # rows are canonical-keyed by routing._canonicalize_rows. Credit-card
             # layouts with both columns produce "date" and "post_date"; we keep
             # them on distinct DB columns so neither overwrites the other.
@@ -4722,13 +4860,30 @@ class ImportService:
             raw_credit = row.get("credit", _zero)
             content_key = (
                 f"{period_marker}|{date_iso}|{raw_amount}|{raw_debit}|"
-                f"{raw_credit}|{desc}|{account_id}"
+                f"{raw_credit}|{desc}|{resolved_account.account_id}"
             )
             dup_idx = content_dup_counter.get(content_key, 0)
             content_dup_counter[content_key] = dup_idx + 1
             raw_hash = content_key if dup_idx == 0 else f"{content_key}|{dup_idx}"
             digest = hashlib.sha256(raw_hash.encode()).hexdigest()[:16]
             transaction_id = f"pdf_{digest}"
+            for source_ref, hash_namespaces in pdf_hash_namespaces.items():
+                row_ids: set[str] = set()
+                for hash_namespace in hash_namespaces:
+                    historical_content_key = (
+                        f"{period_marker}|{date_iso}|{raw_amount}|{raw_debit}|"
+                        f"{raw_credit}|{desc}|{hash_namespace}"
+                    )
+                    historical_raw_hash = (
+                        historical_content_key
+                        if dup_idx == 0
+                        else f"{historical_content_key}|{dup_idx}"
+                    )
+                    historical_digest = hashlib.sha256(
+                        historical_raw_hash.encode()
+                    ).hexdigest()[:16]
+                    row_ids.add(f"pdf_{historical_digest}")
+                historical_transaction_ids[source_ref].append(row_ids)
 
             rows_list.append({
                 "transaction_id": transaction_id,
@@ -4746,8 +4901,51 @@ class ImportService:
                 "row_number": idx,
             })
 
+        transactions_extracted = len(rows_list)
+
         try:
-            df = pl.DataFrame(rows_list)
+            # The account-identity upgrade changed the account token inside PDF
+            # transaction hashes. If the exact legacy hash already exists, keep
+            # that raw row authoritative instead of inserting its replacement
+            # under a second id and double-counting the statement after refresh.
+            superseded_row_indexes: set[int] = set()
+            for (
+                historical_origin,
+                historical_key,
+            ), row_id_sets in historical_transaction_ids.items():
+                historical_ids: set[str] = set()
+                for row_ids in row_id_sets:
+                    historical_ids.update(row_ids)
+                transaction_ids = sorted(historical_ids)
+                historical_placeholders = ",".join(["?"] * len(transaction_ids))
+                historical_rows = self._db.execute(
+                    f"SELECT transaction_id, source_file FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # placeholders are code-owned; values parameterized
+                    "WHERE source_type = 'pdf' AND source_origin = ? AND account_id = ? "
+                    f"AND transaction_id IN ({historical_placeholders})",
+                    [
+                        historical_origin,
+                        historical_key,
+                        *transaction_ids,
+                    ],
+                ).fetchall()
+                existing_historical_ids = {str(row[0]) for row in historical_rows}
+                current_file_ids = {
+                    str(row[0])
+                    for row in historical_rows
+                    if str(row[1]) == str(canonical)
+                }
+                superseded_row_indexes.update(
+                    index
+                    for index, row_ids in enumerate(row_id_sets)
+                    if row_ids & current_file_ids
+                    or (row_ids - {str(rows_list[index]["transaction_id"])})
+                    & existing_historical_ids
+                )
+            rows_list = [
+                row
+                for index, row in enumerate(rows_list)
+                if index not in superseded_row_indexes
+            ]
             # on_conflict="ignore": tabular_transactions PRIMARY KEY is
             # (transaction_id, account_id, source_file). Pre-count by the SAME
             # key the table conflicts on — counting transaction_id alone would
@@ -4773,10 +4971,15 @@ class ImportService:
                 rows_already_present = count_before_row[0] if count_before_row else 0
             else:
                 rows_already_present = 0
-            self._db.ingest_dataframe(
-                TABULAR_TRANSACTIONS.full_name, df, on_conflict="ignore"
-            )
-            rows_inserted = len(rows_list) - rows_already_present
+            if rows_list:
+                self._db.ingest_dataframe(
+                    TABULAR_TRANSACTIONS.full_name,
+                    pl.DataFrame(rows_list),
+                    on_conflict="ignore",
+                )
+                rows_inserted = len(rows_list) - rows_already_present
+            else:
+                rows_inserted = 0
 
             # Account row to raw.tabular_accounts — without this, the SQLMesh
             # stg_tabular__accounts model never produces a core.dim_accounts
@@ -4816,16 +5019,16 @@ class ImportService:
             account_type = (
                 "credit"
                 if decision.recipe.sign_convention == "negative_is_income"
-                else None
+                else decision.metadata.account_type
             )
             account_df = pl.DataFrame({
                 "account_id": [account_id],
-                "account_name": [resolved_alias],
+                "account_name": [source_account.account_name],
                 "account_number": [None],
                 "account_number_masked": [_to_account_number_mask(raw_account_id)],
                 "account_type": [account_type],
                 "institution_name": [str(institution) if institution else None],
-                "currency": [None],
+                "currency": [decision.metadata.currency_code],
                 "source_file": [str(canonical)],
                 "source_type": ["pdf"],
                 # Matches the transactions rows and the account_links row —
@@ -5041,7 +5244,7 @@ class ImportService:
             self._db,
             import_id,
             status="complete",
-            rows_total=len(rows_list),
+            rows_total=transactions_extracted,
             rows_imported=rows_inserted,
         )
         record_counter(
@@ -5055,11 +5258,11 @@ class ImportService:
         result.accounts = 1
         result.details = {
             "transactions": rows_inserted,
-            "transactions_extracted": len(rows_list),
+            "transactions_extracted": transactions_extracted,
         }
         logger.info(
             f"PDF import complete (transactions): alias={resolved_alias} "
-            f"extracted={len(rows_list)} inserted={rows_inserted} "
+            f"extracted={transactions_extracted} inserted={rows_inserted} "
             f"import_id={import_id[:8]}..."
         )
         return result
@@ -5252,6 +5455,7 @@ class ImportService:
         actor_kind: ActorKind = "human",
         account_bindings: dict[str, str] | None = None,
         account_metadata: dict[str, dict[str, str]] | None = None,
+        include_unmaterialized_account_candidates: bool = False,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
@@ -5322,6 +5526,9 @@ class ImportService:
                 sign=sign,
                 confirm=confirm,
                 account_bindings=account_bindings,
+                include_unmaterialized_account_candidates=(
+                    include_unmaterialized_account_candidates
+                ),
                 in_outer_txn=in_outer_txn,
                 emit_metrics=emit_metrics,
                 observations=observations,
@@ -5365,6 +5572,7 @@ class ImportService:
                     interactive=interactive,
                     confirm=confirm,
                     actor_kind=actor_kind,
+                    include_unmaterialized_account_candidates=True,
                 )
                 # PDFs land in raw.pdf_seeds (transactions=0); report the seed
                 # count so batch output reflects actual rows persisted.

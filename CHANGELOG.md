@@ -522,6 +522,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **Breaking:** **PDF account matching now uses statement identity without a
+  new secret or user setting.** Exact files get opaque content-derived keys;
+  validated complete account identifiers are retained only as routing-scoped
+  `full_number` links in the encrypted database. Masked, suffix-only, and
+  unscoped statements stay review-only; labelled account metadata is captured
+  and incoming-ledger overlap is shown as matched/comparable evidence. The old
+  issuer-plus-last-four PDF links are migration candidates rather than silent
+  matches, preventing distinct same-bank accounts with the same suffix from
+  merging invisibly. Same-path legacy statements retain migration evidence;
+  a statement that was both renamed and reclassified under another issuer
+  requires manual binding until exact-file hash provenance is wired through.
 - **The account-link queue now shows how much of the ledger already matches,
   instead of a confidence score that never moved.** Every proposal in
   `accounts links pending` carried `0.5` or `0.4` — a constant picked by which
