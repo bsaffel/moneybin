@@ -13,6 +13,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.output import UNKNOWN_CURRENCY
 from moneybin.services.demo_service import DemoResult
 
 runner = CliRunner()
@@ -129,6 +130,75 @@ def test_demo_json_carries_null_scalar_and_per_currency(mocker: Any) -> None:
             "total_liabilities": "0.00",
             "account_count": 1,
         },
+    ]
+
+
+@pytest.mark.unit
+def test_demo_renders_the_unknown_currency_segment(mocker: Any) -> None:
+    """`reports.net_worth` pools unknown-currency accounts into a NULL segment.
+
+    Both its code and its totals are nullable, so rendering them raw prints a
+    bare "None" — or raises, formatting a null Decimal — at the headline.
+    """
+    from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
+
+    unknown = NetWorthCurrencySegment(
+        currency_code=None,
+        net_worth=None,
+        total_assets=None,
+        total_liabilities=None,
+        account_count=1,
+    )
+    _patch_service(
+        mocker,
+        _fake_result(
+            net_worth=None,
+            total_assets=None,
+            total_liabilities=None,
+            per_currency=[_segment("EUR", "10.00"), unknown],
+        ),
+    )
+    result = runner.invoke(app, ["demo", "--yes"])
+    assert result.exit_code == 0, result.output
+    # The shared token, not a spelling of demo's own — `UNKNOWN_CURRENCY`
+    # exists because the currency slot had grown one per command.
+    assert UNKNOWN_CURRENCY in result.output
+    assert "None" not in result.output
+    assert "unknown" not in result.output
+
+
+@pytest.mark.unit
+def test_demo_json_null_segment_stays_null(mocker: Any) -> None:
+    from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
+
+    _patch_service(
+        mocker,
+        _fake_result(
+            net_worth=None,
+            total_assets=None,
+            total_liabilities=None,
+            per_currency=[
+                NetWorthCurrencySegment(
+                    currency_code=None,
+                    net_worth=None,
+                    total_assets=None,
+                    total_liabilities=None,
+                    account_count=1,
+                )
+            ],
+        ),
+    )
+    result = runner.invoke(app, ["demo", "--yes", "--output", "json"])
+    assert result.exit_code == 0, result.output
+    envelope = json.loads(result.stdout)
+    assert envelope["data"]["per_currency"] == [
+        {
+            "currency_code": None,
+            "net_worth": None,
+            "total_assets": None,
+            "total_liabilities": None,
+            "account_count": 1,
+        }
     ]
 
 

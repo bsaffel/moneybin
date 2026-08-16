@@ -33,3 +33,14 @@ merchants:
     weight: 9
     amount: { mean: 198.00, stddev: 55.00 }
     description_prefix: "COSTCO WHOLESALE CDA"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "TORONTO ON"
+  - "MONTREAL QC"
+  - "VANCOUVER BC"
+  - "CALGARY AB"
+  - "OTTAWA ON"
+  - "HALIFAX NS"
+  - "WINNIPEG MB"
+  - "VICTORIA BC"

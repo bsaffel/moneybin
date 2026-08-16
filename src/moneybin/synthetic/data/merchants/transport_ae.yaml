@@ -34,3 +34,12 @@ merchants:
     weight: 5
     amount: { mean: 148.00, stddev: 38.00 }
     description_prefix: "EPPCO STATION"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "DUBAI AE"
+  - "ABU DHABI AE"
+  - "SHARJAH AE"
+  - "AJMAN AE"
+  - "AL AIN AE"
+  - "FUJAIRAH AE"

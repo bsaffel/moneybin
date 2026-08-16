@@ -301,9 +301,16 @@ class TestYAMLDataLoading:
         with pytest.raises(FileNotFoundError, match="Unknown merchant catalog"):
             load_merchant_catalog("nonexistent")
 
+    # Personas that deliberately hold more than one currency. Everything else
+    # is asserted USD-only below, so a new persona is covered the day it lands
+    # rather than the day someone remembers to add it here.
+    MULTI_CURRENCY_PERSONAS = {"international"}
+
     def test_single_currency_personas_stay_usd(self) -> None:
-        """The three original personas must not drift off USD."""
-        for persona_name in ("basic", "family", "freelancer"):
+        """Every persona but the declared multi-currency ones must stay USD."""
+        single = [p for p in self.PERSONAS if p not in self.MULTI_CURRENCY_PERSONAS]
+        assert single, "the exemption set swallowed every persona"
+        for persona_name in single:
             persona = load_persona(persona_name)
             currencies = {acct.currency_code for acct in persona.accounts}
             assert currencies == {"USD"}, (
@@ -335,6 +342,63 @@ class TestYAMLDataLoading:
             acct.source_type for acct in persona.accounts if acct.currency_code != "USD"
         }
         assert foreign_source_types == {"ofx", "csv"}
+
+    def test_every_spending_account_is_funded(self) -> None:
+        """An account that only spends drifts to a large negative balance.
+
+        The generator does no conversion, so a multi-currency persona cannot
+        fund a foreign account by transfer — each one needs income in its own
+        currency or the demo's headline shows a checking account thousands
+        below zero.
+        """
+        for persona_name in self.PERSONAS:
+            persona = load_persona(persona_name)
+            funded = {inc.account for inc in persona.income}
+            funded |= {xfer.to_account for xfer in persona.transfers}
+            spending = {
+                account
+                for category in persona.spending.categories
+                for account in category.accounts
+            }
+            spending |= {rec.account for rec in persona.recurring}
+            assert spending <= funded, (
+                f"Persona {persona_name!r} spends from unfunded accounts: "
+                f"{sorted(spending - funded)}"
+            )
+
+    def test_international_merchant_patterns_do_not_shadow_each_other(self) -> None:
+        """`contains` matching means a shorter pattern swallows a longer one.
+
+        The matcher takes the first merchant whose pattern is contained in the
+        description, ordered by canonical name, so "COSTA COFFEE" would claim
+        every "COSTA COFFEE AE ..." transaction and misattribute the merchant.
+        """
+        persona = load_persona("international")
+        patterns = {
+            merchant.description_prefix or merchant.name
+            for category in persona.spending.categories
+            for merchant in load_merchant_catalog(category.merchant_catalog).merchants
+        }
+        shadowed = [
+            (short, long)
+            for short in patterns
+            for long in patterns
+            if short != long and short in long
+        ]
+        assert shadowed == []
+
+    def test_non_us_catalogs_declare_their_own_cities(self) -> None:
+        """Otherwise a Dubai grocery run reads "CARREFOUR HYPER #4450 AUSTIN TX"."""
+        persona = load_persona("international")
+        foreign = {
+            category.merchant_catalog
+            for category in persona.spending.categories
+            if category.merchant_catalog.rsplit("_", 1)[-1] in {"eu", "uk", "ca", "ae"}
+        }
+        assert foreign
+        for catalog_name in sorted(foreign):
+            catalog = load_merchant_catalog(catalog_name)
+            assert catalog.cities, f"{catalog_name} has no cities of its own"
 
     def test_persona_merchant_catalogs_exist(self) -> None:
         """Every merchant_catalog referenced in personas has a matching file."""

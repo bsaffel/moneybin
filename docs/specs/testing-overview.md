@@ -104,7 +104,7 @@ Key assertions from the catalog are also expressed as SQLMesh audits so they fir
 
 ## Persona Catalog
 
-Six personas representing distinct financial lives. The umbrella defines *what* each persona represents and *which code paths it exercises*. The generator child spec owns *how* to produce life-like data for each.
+Five personas representing distinct financial lives. The umbrella defines *what* each persona represents and *which code paths it exercises*. The generator child spec owns *how* to produce life-like data for each.
 
 Each persona uses a named profile to keep its data isolated. The existing profile system (`MoneyBinSettings.profile`) already supports this — each profile gets its own database, data directory, logs, and env file. The persona-to-profile name mapping (`basic` → `alice`, etc.) is a recommended convention, not enforced; any persona can be generated into any profile name.
 
@@ -115,13 +115,16 @@ Each persona uses a named profile to keep its data isolated. The existing profil
 | `basic` | `alice` | Single income, 1 checking + 1 credit card, simple spending, ~300 txns/yr | Core pipeline, basic categorization, OFX import |
 | `family` | `bob` | Dual income, joint + individual accounts, child-related expenses, shared bills, ~1,500 txns/yr | Multi-account, transfer detection, split categorization |
 | `freelancer` | `charlie` | Irregular income (invoices + 1099), business + personal accounts, quarterly tax payments, ~800 txns/yr | Irregular income patterns, business categorization, tax-relevant transactions |
+| `international` | `eve` | Five banks in five countries, one account and one local income per currency (EUR, GBP, CAD, AED, USD), ~690 txns/yr | Per-account currency through both the OFX and tabular writers, per-currency net worth segmentation, the unpriced-pair path (AED sits outside the FX provider's published set) |
 
 ### Future Personas (gated on data model)
 
 | Persona | Profile | Gates on | Key additions |
 |---|---|---|---|
 | `investor` | `david` | Investment schema | Brokerage + 401k + IRA, dividends, trades, capital gains |
-| `international` | `eve` | Multi-currency schema | Multi-bank across countries, EUR + GBP + USD, forex fees, cross-currency transfers |
+
+`international` ships without cross-currency transfers or forex fees: both need
+a conversion the generator does not yet perform, and they arrive with M1K.3.
 
 ### Anonymized Generation Mode
 
@@ -144,7 +147,7 @@ Child specs under this umbrella. Each is independently useful, designed knowing 
 
 | Child spec | Purpose | V1 scope | Key design concerns |
 |---|---|---|---|
-| `testing-synthetic-data.md` (implemented) | Produce life-like financial histories | Three fictional personas (`basic`, `family`, `freelancer`); deterministic seeding; ground-truth labels; YAML-driven personas and merchant catalogs; Level 2 realism | Declarative YAML architecture, merchant catalogs with real brand names, spending distributions, temporal realism, income patterns. Anonymized mode is a separate child spec (`testing-anonymized-data.md`). |
+| `testing-synthetic-data.md` (implemented) | Produce life-like financial histories | Four fictional personas (`basic`, `family`, `freelancer`, `international`); deterministic seeding; ground-truth labels; YAML-driven personas and merchant catalogs; Level 2 realism | Declarative YAML architecture, merchant catalogs with real brand names, spending distributions, temporal realism, income patterns. Anonymized mode is a separate child spec (`testing-anonymized-data.md`). |
 | `testing-scenario-runner.md` (implemented) | Whole-pipeline correctness with structured assertions, expectations, and evaluations | YAML scenario format, orchestrator with fresh encrypted DB per run, validation/evaluation primitive libraries, pytest harness (`make test-scenarios`), six shipped scenarios | Database isolation via `MONEYBIN_HOME` override; in-process service-layer execution; fixture expectations as first-class signal |
 | `testing-scenario-comprehensive.md` (implemented) | Five-tier assertion taxonomy; bug-report recipe; architectural authority for all future scenario work | Tier matrix; independent-expectations rule; relocation of scenarios to `tests/scenarios/`; shared validation library at `src/moneybin/validation/` | Pytest-native, contributor recipe, stable validation contract |
 | `testing-normalize-description-fixtures.md` (implemented) | YAML golden cases for `normalize_description()` | Parametrized exact-equality tests; contributor surface for adding cases | Pure-function regression coverage; duplicate-id detection |

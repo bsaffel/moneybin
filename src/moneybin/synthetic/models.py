@@ -44,6 +44,10 @@ class MerchantCatalog(BaseModel):
 
     category: str = Field(min_length=1)
     merchants: list[MerchantEntry] = Field(min_length=1)
+    # Statement descriptions carry a city, so a catalog of non-US merchants has
+    # to name its own — otherwise a Dubai grocery run reads "AUSTIN TX". Unset
+    # keeps the generator's US default, which is what every US catalog wants.
+    cities: list[str] | None = Field(default=None, min_length=1)
 
 
 class AccountConfig(BaseModel):

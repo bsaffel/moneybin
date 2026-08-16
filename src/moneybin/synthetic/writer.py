@@ -8,7 +8,7 @@ and ground_truth table on demand.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -154,15 +154,22 @@ class SyntheticWriter:
         now: datetime,
     ) -> int:
         rows: list[dict[str, Any]] = []
+        # The day BEFORE the run's first transaction. `core.fct_balances_daily`
+        # treats an observed balance as final for its day, so an anchor stamped
+        # on the first transaction date swallows that day's activity and the
+        # account's closing balance comes out short by the day-one net. The
+        # tabular writer starts its running balance at `opening_balance + first
+        # transaction`; dating the anchor a day earlier is what makes one
+        # persona field mean one thing on both paths.
+        opening_dt = datetime.combine(result.start_date, time()) - timedelta(days=1)
         for acct in accounts:
-            start_dt = datetime.combine(result.start_date, time())
             rows.append({
                 "account_id": acct.account_id,
                 "source_origin": acct.institution,
-                "statement_start_date": start_dt,
-                "statement_end_date": start_dt,
+                "statement_start_date": opening_dt,
+                "statement_end_date": opening_dt,
                 "ledger_balance": Decimal(str(round(acct.opening_balance, 2))),
-                "ledger_balance_date": start_dt,
+                "ledger_balance_date": opening_dt,
                 "available_balance": None,
                 "currency_code": acct.currency_code,
                 "source_file": _source_file(result, slugify(acct.name)),

@@ -33,3 +33,14 @@ merchants:
     weight: 4
     amount: { mean: 34.00, stddev: 12.00 }
     description_prefix: "ADDISON LEE"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "LONDON GB"
+  - "MANCHESTER GB"
+  - "BRISTOL GB"
+  - "LEEDS GB"
+  - "GLASGOW GB"
+  - "BIRMINGHAM GB"
+  - "EDINBURGH GB"
+  - "CARDIFF GB"

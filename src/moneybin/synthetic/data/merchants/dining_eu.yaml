@@ -33,3 +33,14 @@ merchants:
     weight: 5
     amount: { mean: 35.00, stddev: 12.00 }
     description_prefix: "GOIKO GRILL"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "AMSTERDAM NL"
+  - "BERLIN DE"
+  - "PARIS FR"
+  - "MADRID ES"
+  - "MILANO IT"
+  - "ROTTERDAM NL"
+  - "MUENCHEN DE"
+  - "LYON FR"

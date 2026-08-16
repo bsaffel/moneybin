@@ -24,7 +24,7 @@ merchants:
   - name: "Waitrose"
     weight: 7
     amount: { mean: 58.00, stddev: 19.00 }
-    description_prefix: "WAITROSE"
+    description_prefix: "WAITROSE AND PARTNERS"
   - name: "Co-op Food"
     weight: 8
     amount: { mean: 18.00, stddev: 7.00 }
@@ -33,3 +33,14 @@ merchants:
     weight: 6
     amount: { mean: 26.00, stddev: 9.00 }
     description_prefix: "MARKS AND SPENCER"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "LONDON GB"
+  - "MANCHESTER GB"
+  - "BRISTOL GB"
+  - "LEEDS GB"
+  - "GLASGOW GB"
+  - "BIRMINGHAM GB"
+  - "EDINBURGH GB"
+  - "CARDIFF GB"

@@ -33,3 +33,14 @@ merchants:
     weight: 4
     amount: { mean: 24.00, stddev: 9.00 }
     description_prefix: "BLABLACAR"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "AMSTERDAM NL"
+  - "BERLIN DE"
+  - "PARIS FR"
+  - "MADRID ES"
+  - "MILANO IT"
+  - "ROTTERDAM NL"
+  - "MUENCHEN DE"
+  - "LYON FR"

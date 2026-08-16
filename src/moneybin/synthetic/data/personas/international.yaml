@@ -6,7 +6,7 @@
 # so a persona weighted to one would leave the other's threading unproven.
 persona: international
 profile: eve
-description: "Multi-bank across countries, five currencies, ~600 txns/yr"
+description: "Multi-bank across countries, five currencies, ~690 txns/yr"
 years_default: 2
 
 accounts:
@@ -40,15 +40,46 @@ accounts:
     institution: "Chase Bank"
     opening_balance: 3800.00
 
+# Every account that spends is funded in its own currency. The generator does
+# no conversion and this persona has no transfers, so an unfunded account can
+# only drift toward a large negative balance — a checking account thousands
+# below zero is not a position any demo should show.
 income:
   - type: salary
     account: "Eurozone Checking"
     amount: 4600.00
     schedule: monthly
-    pay_day: friday
     annual_raise_pct: 2.5
     description_template: "SALARIS {employer}"
     employer: "Meridian Analytics BV"
+  - type: freelance
+    account: "UK Current Account"
+    amount: 560.00
+    schedule: monthly
+    annual_raise_pct: 2.0
+    description_template: "FASTER PAYMENT {employer}"
+    employer: "Thames Ridge Consulting Ltd"
+  - type: freelance
+    account: "Canada Checking"
+    amount: 800.00
+    schedule: monthly
+    annual_raise_pct: 2.0
+    description_template: "EFT DEPOSIT {employer}"
+    employer: "Maple Line Advisory Inc"
+  - type: freelance
+    account: "UAE Checking"
+    amount: 2400.00
+    schedule: monthly
+    annual_raise_pct: 2.0
+    description_template: "SALARY TRANSFER {employer}"
+    employer: "Gulf Data Partners FZ LLC"
+  - type: freelance
+    account: "US Checking"
+    amount: 320.00
+    schedule: monthly
+    annual_raise_pct: 2.0
+    description_template: "ACH CREDIT {employer}"
+    employer: "Redwood Editorial LLC"
 
 recurring:
   - category: housing

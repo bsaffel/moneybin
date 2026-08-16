@@ -83,8 +83,8 @@ SQLMesh transforms completed in 4.00s
 ✅ Demo profile 'demo' ready (2 accounts, 995 transactions, 859 categorized).
 
 $ uv run moneybin reports networth
-Net worth as of 2025-12-27: 212913.05
-  Assets:      212913.05
+Net worth as of 2025-12-27: 211413.05
+  Assets:      211413.05
   Liabilities: 0.00
 
 $ uv run moneybin sql query "
@@ -103,8 +103,10 @@ Transportation | 113 | -3609.95
 The demo is deterministic synthetic data pushed through the real pipeline —
 import, transform, dedup, categorization, integrity checks. Its window is the
 three most recent complete years, so the dates and totals in your run roll
-forward from those shown. `--seed` varies it; `--persona family` and
-`--persona freelancer` change its shape. It builds
+forward from those shown. `--seed` varies it; `--persona family`,
+`--persona freelancer`, and `--persona international` change its shape — the
+last holds five currencies, so it reports a net worth per currency rather than
+one total. It builds
 its own profile and never touches a real one, though it does make `demo` the
 active profile and prints the command to switch back. Spending totals are
 negative: the accounting sign convention holds across every surface.

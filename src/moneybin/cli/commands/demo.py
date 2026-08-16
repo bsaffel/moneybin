@@ -4,7 +4,13 @@ import logging
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.output import (
+    UNKNOWN_CURRENCY,
+    OutputFormat,
+    currency_label,
+    output_option,
+    quiet_option,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +114,11 @@ def demo_command(
                         "per_currency": [
                             {
                                 "currency_code": segment.currency_code,
-                                "net_worth": str(segment.net_worth),
-                                "total_assets": str(segment.total_assets),
-                                "total_liabilities": str(segment.total_liabilities),
+                                "net_worth": _opt_str(segment.net_worth),
+                                "total_assets": _opt_str(segment.total_assets),
+                                "total_liabilities": _opt_str(
+                                    segment.total_liabilities
+                                ),
                                 "account_count": segment.account_count,
                             }
                             for segment in result.per_currency
@@ -140,7 +148,16 @@ def demo_command(
             else:
                 typer.echo("Net worth by currency:")
                 for segment in result.per_currency:
-                    typer.echo(f"  {segment.currency_code}  {segment.net_worth:>14}")
+                    # Both fields are nullable: reports.net_worth pools every
+                    # account whose currency is unknown into one NULL-coded
+                    # segment. Formatting that directly renders a bare "None"
+                    # (or raises, for a null total) at the demo's headline.
+                    # One token for both slots, the same one every other
+                    # currency-bearing command prints.
+                    amount = _opt_str(segment.net_worth) or UNKNOWN_CURRENCY
+                    typer.echo(
+                        f"  {currency_label(segment.currency_code)}  {amount:>14}"
+                    )
             if not quiet:
                 if result.doctor_failing == 0:
                     typer.echo("✅ system doctor clean", err=True)

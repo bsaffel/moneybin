@@ -114,6 +114,52 @@ class TestSyntheticWriter:
         assert row is not None
         assert float(row[0]) == pytest.approx(1000.00)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
 
+    def test_ofx_opening_balance_is_dated_before_the_first_transaction(
+        self, db: Database
+    ) -> None:
+        """`opening_balance` must mean the same thing in both writers.
+
+        `core.fct_balances_daily` treats an observed balance as final for its
+        day, so an anchor stamped on the first transaction date swallows that
+        day's activity — the account's closing balance comes out short by the
+        day-one net. The tabular writer starts its running balance at
+        `opening_balance + first transaction`, i.e. before any activity, so
+        stamping the anchor a day earlier is what makes one persona field mean
+        one thing on both paths.
+        """
+        from moneybin.synthetic.writer import SyntheticWriter
+
+        acct = GeneratedAccount(
+            name="Test Checking",
+            account_id="SYN00420007",
+            account_type="checking",
+            source_type="ofx",
+            institution="Test Bank",
+            opening_balance=Decimal("1000.00"),
+        )
+        # Dated on the run's first day: the case an anchor stamped at
+        # start_date cannot distinguish from "already included".
+        first_day = GeneratedTransaction(
+            date=date(2024, 1, 1),
+            amount=Decimal("-42.50"),
+            description="TEST STORE",
+            account_name="Test Checking",
+            category="grocery",
+            transaction_type="DEBIT",
+            transaction_id="SYN0000000001",
+        )
+        result = _make_result(accounts=[acct], transactions=[first_day])
+        SyntheticWriter(db).write(result)
+
+        row = db.execute(
+            "SELECT ledger_balance, ledger_balance_date, statement_end_date "
+            "FROM raw.ofx_balances"
+        ).fetchone()
+        assert row is not None
+        assert Decimal(str(row[0])) == Decimal("1000.00")
+        assert row[1].date() < first_day.date
+        assert row[2].date() < first_day.date
+
     def test_write_csv_account(self, db: Database) -> None:
         from moneybin.synthetic.writer import SyntheticWriter
 

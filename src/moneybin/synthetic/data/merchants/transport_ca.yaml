@@ -33,3 +33,14 @@ merchants:
     weight: 5
     amount: { mean: 2.75, stddev: 0.45 }
     description_prefix: "BC TRANSIT"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "TORONTO ON"
+  - "MONTREAL QC"
+  - "VANCOUVER BC"
+  - "CALGARY AB"
+  - "OTTAWA ON"
+  - "HALIFAX NS"
+  - "WINNIPEG MB"
+  - "VICTORIA BC"

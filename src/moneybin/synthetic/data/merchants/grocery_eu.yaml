@@ -33,3 +33,14 @@ merchants:
     weight: 6
     amount: { mean: 40.00, stddev: 13.00 }
     description_prefix: "JUMBO SUPERMARKT"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "AMSTERDAM NL"
+  - "BERLIN DE"
+  - "PARIS FR"
+  - "MADRID ES"
+  - "MILANO IT"
+  - "ROTTERDAM NL"
+  - "MUENCHEN DE"
+  - "LYON FR"
