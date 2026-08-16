@@ -190,8 +190,12 @@ def _count_retirements(count: int, *, cause: str) -> None:
     try:
         TRANSFER_RETIREMENTS_TOTAL.labels(cause=cause).inc(count)
     except Exception as exc:  # noqa: BLE001  # telemetry must not abort a committed reversal
+        # Type, not message: a metrics-client or DuckDB failure can name the
+        # profile database, and SanitizedLogFormatter masks known PII patterns,
+        # not arbitrary paths. The type is what a reader acts on anyway.
         logger.warning(
-            f"Could not count {count} transfer retirement(s) ({cause}): {exc}"
+            f"Could not count {count} transfer retirement(s) ({cause}): "
+            f"{type(exc).__name__}"
         )
 
 

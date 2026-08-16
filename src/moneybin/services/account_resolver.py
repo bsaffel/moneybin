@@ -67,7 +67,12 @@ def refresh_account_link_pending_gauge(db: Database) -> None:
         ).fetchone()
         ACCOUNT_LINK_REVIEW_PENDING.set(int(row[0]) if row else 0)
     except Exception as exc:  # noqa: BLE001  # telemetry must not abort its caller's tail
-        logger.warning(f"Could not refresh the account-link pending gauge: {exc}")
+        # Type, not message: this query names the profile database, so a DuckDB
+        # connection or encryption error can carry that path into the durable
+        # log, and SanitizedLogFormatter masks known PII patterns, not paths.
+        logger.warning(
+            f"Could not refresh the account-link pending gauge: {type(exc).__name__}"
+        )
 
 
 def fetch_display_name(db: Database, account_id: str) -> str:

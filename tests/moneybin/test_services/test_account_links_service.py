@@ -739,9 +739,12 @@ def test_a_failing_pending_gauge_does_not_abort_the_post_merge_rematch(
     failure this trigger exists to prevent, reintroduced through a metrics
     call. The gauge going stale is the cheaper loss, and it says so in the log.
     """
+    # Path-shaped, like the retirement-counter guard: this gauge's own query
+    # names the profile database, so a DuckDB error here is the likeliest way
+    # a path reaches the durable log.
     mocker.patch(
         "moneybin.services.account_resolver.ACCOUNT_LINK_REVIEW_PENDING.set",
-        side_effect=RuntimeError("metrics backend unavailable"),
+        side_effect=RuntimeError("/var/lib/some-profile/moneybin.duckdb unavailable"),
     )
 
     with caplog.at_level("WARNING"):
@@ -749,6 +752,8 @@ def test_a_failing_pending_gauge_does_not_abort_the_post_merge_rematch(
 
     rematch.assert_called_once()
     assert "account-link pending gauge" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "moneybin.duckdb" not in caplog.text
 
 
 def test_set_accept_carries_a_rejected_pair_onto_the_survivor(
@@ -1290,9 +1295,12 @@ def test_a_failing_retirement_counter_does_not_abort_the_post_merge_rematch(
         decided_by="user",
         actor="test",
     )
+    # A path-shaped message, because that is the leak the log must not carry:
+    # a DuckDB or metrics-client failure can name the profile database, and
+    # SanitizedLogFormatter masks known PII patterns, not arbitrary paths.
     mocker.patch(
         "moneybin.matching.reconciliation.TRANSFER_RETIREMENTS_TOTAL.labels",
-        side_effect=RuntimeError("metrics backend unavailable"),
+        side_effect=RuntimeError("/var/lib/some-profile/moneybin.duckdb unavailable"),
     )
 
     with caplog.at_level("WARNING"):
@@ -1302,6 +1310,8 @@ def test_a_failing_retirement_counter_does_not_abort_the_post_merge_rematch(
     assert result.transfers_retired == 1
     rematch.assert_called_once()
     assert "transfer retirement" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "moneybin.duckdb" not in caplog.text
 
 
 def test_a_rolled_back_collapse_leaves_the_counter_unchanged(
