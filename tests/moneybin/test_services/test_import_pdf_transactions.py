@@ -32,6 +32,7 @@ from moneybin.services.import_confirmation import (
     SignConventionProposal,
 )
 from moneybin.services.import_service import ImportService
+from moneybin.services.refresh import RefreshResult
 from tests.import_helpers import import_answering_gate
 from tests.moneybin.db_helpers import create_core_tables
 from tests.moneybin.pdf_statement_fixtures import (
@@ -743,7 +744,15 @@ def test_pdf_reimport_retries_refresh_after_prior_refresh_failure(
     """An idempotent raw reload must still retry a failed transform."""
     doc = _standard_doc()
     svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
-    failed_refresh = SimpleNamespace(applied=False, error="test refresh failure")
+    # The real dataclass, not a SimpleNamespace: the import path reads fields
+    # beyond applied/error (transfers_retired, so a reversal committed by the
+    # match step is disclosed even when the transform then fails), and a
+    # hand-rolled stand-in silently lacks whichever field it was not updated
+    # for. Constructing the real thing means a field added later arrives with
+    # its default instead of an AttributeError from inside production code.
+    failed_refresh = RefreshResult(
+        applied=False, duration_seconds=0.0, error="test refresh failure"
+    )
 
     with (
         patch(
@@ -755,7 +764,7 @@ def test_pdf_reimport_retries_refresh_after_prior_refresh_failure(
     ):
         svc.import_file(fake_pdf, refresh=True)
 
-    successful_refresh = SimpleNamespace(applied=True, error=None)
+    successful_refresh = RefreshResult(applied=True, duration_seconds=0.0)
     with (
         patch(
             "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
