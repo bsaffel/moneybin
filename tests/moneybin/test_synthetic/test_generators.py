@@ -399,6 +399,28 @@ class TestSpendingGenerator:
         if prefixed:
             assert any("#" in t.description for t in prefixed)
 
+    def test_catalog_cities_replace_the_us_default(
+        self,
+        rng: SeededRandom,
+        spending_config: SpendingConfig,
+        test_catalog: MerchantCatalog,
+    ) -> None:
+        """A non-US catalog places its merchants in its own cities."""
+        from moneybin.synthetic.generators.spending import SpendingGenerator
+
+        # Only the prefixed merchant, so every generated description carries a
+        # city — the weighted pick must not decide whether this test asserts.
+        local = test_catalog.model_copy(
+            update={
+                "cities": ["DUBAI AE"],
+                "merchants": [m for m in test_catalog.merchants if m.name == "Store B"],
+            }
+        )
+        gen = SpendingGenerator(spending_config, {"grocery": local}, rng)
+        txns = gen.generate_month(2024, 3)
+        assert txns, "fixture produced no transactions to inspect"
+        assert all(t.description.endswith("DUBAI AE") for t in txns)
+
     def test_seasonal_modifier_increases_december(
         self,
         rng: SeededRandom,

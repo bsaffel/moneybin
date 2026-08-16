@@ -1,0 +1,45 @@
+# Amounts are AED, denominated in the account's own currency. The dirham is
+# pegged to the dollar at 3.6725, so these run ~3.7x their USD equivalents.
+category: grocery
+merchants:
+  - name: "Carrefour UAE"
+    weight: 16
+    amount: { mean: 245.00, stddev: 82.00 }
+    description_prefix: "CARREFOUR HYPER"
+  - name: "Lulu Hypermarket"
+    weight: 14
+    amount: { mean: 218.00, stddev: 74.00 }
+    description_prefix: "LULU HYPERMARKET"
+  - name: "Spinneys"
+    weight: 11
+    amount: { mean: 286.00, stddev: 95.00 }
+    description_prefix: "SPINNEYS DUBAI"
+  - name: "Union Coop"
+    weight: 10
+    amount: { mean: 192.00, stddev: 66.00 }
+    description_prefix: "UNION COOP"
+  - name: "Choithrams"
+    weight: 9
+    amount: { mean: 164.00, stddev: 56.00 }
+    description_prefix: "CHOITHRAMS"
+  - name: "Waitrose UAE"
+    weight: 7
+    amount: { mean: 312.00, stddev: 104.00 }
+    description_prefix: "WAITROSE UAE"
+  - name: "Al Maya"
+    weight: 6
+    amount: { mean: 138.00, stddev: 48.00 }
+    description_prefix: "AL MAYA SUPERMARKET"
+  - name: "Géant"
+    weight: 5
+    amount: { mean: 205.00, stddev: 70.00 }
+    description_prefix: "GEANT UAE"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "DUBAI AE"
+  - "ABU DHABI AE"
+  - "SHARJAH AE"
+  - "AJMAN AE"
+  - "AL AIN AE"
+  - "FUJAIRAH AE"

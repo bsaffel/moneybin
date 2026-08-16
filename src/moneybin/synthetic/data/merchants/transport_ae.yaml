@@ -1,0 +1,45 @@
+# Amounts are AED, denominated in the account's own currency. The dirham is
+# pegged to the dollar at 3.6725, so these run ~3.7x their USD equivalents.
+category: transport
+merchants:
+  - name: "RTA Dubai Metro"
+    weight: 17
+    amount: { mean: 55.00, stddev: 18.00 }
+    description_prefix: "RTA NOL RECHARGE"
+  - name: "Careem"
+    weight: 14
+    amount: { mean: 42.00, stddev: 16.00 }
+    description_prefix: "CAREEM NETWORKS"
+  - name: "Uber UAE"
+    weight: 11
+    amount: { mean: 48.00, stddev: 18.00 }
+    description_prefix: "UBER UAE"
+  - name: "ENOC"
+    weight: 12
+    amount: { mean: 165.00, stddev: 42.00 }
+    description_prefix: "ENOC STATION"
+  - name: "ADNOC Distribution"
+    weight: 10
+    amount: { mean: 158.00, stddev: 40.00 }
+    description_prefix: "ADNOC DIST"
+  - name: "Dubai Taxi"
+    weight: 8
+    amount: { mean: 36.00, stddev: 13.00 }
+    description_prefix: "DUBAI TAXI CORP"
+  - name: "Salik"
+    weight: 7
+    amount: { mean: 20.00, stddev: 6.00 }
+    description_prefix: "SALIK TOLL"
+  - name: "EPPCO"
+    weight: 5
+    amount: { mean: 148.00, stddev: 38.00 }
+    description_prefix: "EPPCO STATION"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "DUBAI AE"
+  - "ABU DHABI AE"
+  - "SHARJAH AE"
+  - "AJMAN AE"
+  - "AL AIN AE"
+  - "FUJAIRAH AE"

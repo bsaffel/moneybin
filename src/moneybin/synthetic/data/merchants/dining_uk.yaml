@@ -1,0 +1,46 @@
+# Amounts are GBP, denominated in the account's own currency.
+category: dining
+merchants:
+  - name: "Pret A Manger"
+    weight: 15
+    amount: { mean: 9.50, stddev: 3.00 }
+    description_prefix: "PRET A MANGER"
+  - name: "Greggs"
+    weight: 13
+    amount: { mean: 5.20, stddev: 2.00 }
+    description_prefix: "GREGGS PLC"
+  - name: "Costa Coffee"
+    weight: 12
+    amount: { mean: 6.40, stddev: 2.20 }
+    description_prefix: "COSTA COFFEE UK"
+  - name: "Nando's"
+    weight: 10
+    amount: { mean: 24.00, stddev: 8.00 }
+    description_prefix: "NANDOS"
+  - name: "Wagamama"
+    weight: 8
+    amount: { mean: 31.00, stddev: 10.00 }
+    description_prefix: "WAGAMAMA"
+  - name: "Pizza Express"
+    weight: 7
+    amount: { mean: 28.00, stddev: 9.00 }
+    description_prefix: "PIZZAEXPRESS"
+  - name: "Dishoom"
+    weight: 5
+    amount: { mean: 46.00, stddev: 14.00 }
+    description_prefix: "DISHOOM"
+  - name: "Leon"
+    weight: 6
+    amount: { mean: 11.50, stddev: 4.00 }
+    description_prefix: "LEON RESTAURANTS"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "LONDON GB"
+  - "MANCHESTER GB"
+  - "BRISTOL GB"
+  - "LEEDS GB"
+  - "GLASGOW GB"
+  - "BIRMINGHAM GB"
+  - "EDINBURGH GB"
+  - "CARDIFF GB"

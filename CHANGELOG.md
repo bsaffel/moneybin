@@ -11,6 +11,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **A multi-currency demo persona.** `moneybin demo --persona international`
+  (and `moneybin synthetic generate --persona international`) builds five
+  accounts at five banks in EUR, GBP, CAD, AED, and USD, each funded and spent
+  in its own currency, with local merchants and local cities on the statement
+  lines. AED sits outside the FX provider's published set on purpose, so the
+  unpriced-pair path is reachable from a shipped fixture. Because the profile
+  holds more than one currency, `demo` prints net worth per currency instead of
+  a single total, and its JSON emits `net_worth: null` beside a `per_currency`
+  breakdown — a null a consumer can read, never the string `"None"`.
+
+  A persona's `currency_code` is shape-checked when the YAML loads, by the same
+  validator every other currency entry point uses: a typo like `usd` would
+  otherwise reach `raw` and `core` verbatim and surface as a second segment
+  beside `USD`. A well-formed code the FX provider does not publish, like AED,
+  still loads — the check is shape, not membership. A transfer between two
+  accounts in different currencies is now refused outright: the generator moves
+  one magnitude to both sides without converting, so it would have paid a 100
+  USD outflow as a +100 EUR inflow. Fund each currency from its own income
+  until the conversion layer lands.
 - **Exchange rates, and your own corrections to them (M1K.2).** `moneybin fx
   rate USD EUR 2026-03-13` answers with the rate, the day it was published for,
   and which layer supplied it. Precedence is your own correction, then the
@@ -910,6 +929,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **A synthetic account's opening balance now means the same thing on both
+  import paths, so its reported balance is no longer short by its first day.**
+  The generator's OFX writer stamped the opening balance on the first
+  transaction date, and `core.fct_balances_daily` treats an observed balance as
+  final for its day — so day one's transactions were never added to the series,
+  and every OFX account in every persona reported a balance short by its day-one
+  net for the whole run. The tabular writer had always treated the same YAML
+  field as the balance before any activity. The anchor now sits on the day before
+  the first transaction, which is what `opening_balance` says. Demo net worth for
+  `basic` moves from 212913.05 to 211413.05 at the same date; transaction
+  counts, categories, and every real-import path are untouched.
 - **Accepting an account-link merge now re-runs the matcher, so the duplicates it
   makes visible actually get found.** The transaction matcher blocks candidate
   pairs on `account_id`, so while a reissued card's two sources sit under

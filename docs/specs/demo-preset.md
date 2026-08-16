@@ -27,9 +27,10 @@ MoneyBin already has: the persona-based
 The pieces already exist; `demo` orchestrates them.
 
 - **Synthetic generation** (`cli/commands/synthetic.py`, `synthetic/`): the
-  `synthetic generate --persona {basic,family,freelancer}` command builds
-  deterministic data (accounts, transactions, ground-truth labels) for a
-  mapped profile (`basic→alice`, `family→bob`, `freelancer→charlie`), inserts
+  `synthetic generate --persona {basic,family,freelancer,international}` command
+  builds deterministic data (accounts, transactions, ground-truth labels) for a
+  mapped profile (`basic→alice`, `family→bob`, `freelancer→charlie`,
+  `international→eve`), inserts
   into `raw.*`, and runs SQLMesh transforms. `synthetic reset` wipes
   synthetic-tagged rows (gated on the `synthetic.ground_truth` table) and
   regenerates. Both target a profile via `set_current_profile` and assume the
@@ -65,7 +66,7 @@ siblings — re-running handles the reset case, so no `demo reset` sibling; see
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--persona {basic,family,freelancer}` | `basic` | Data shape to load. |
+| `--persona {basic,family,freelancer,international}` | `basic` | Data shape to load. |
 | `--seed` | `DEMO_DEFAULT_SEED` (a fixed constant) | Deterministic data; override for variety. |
 | `--years` | persona default | Years of history. |
 | `--yes` / `-y` | off | Auto-accept the rebuild confirmation (agent/script parity). |
@@ -134,9 +135,10 @@ it in turn. Being over-conservative on the not-ours path costs nothing — it on
 ever declines to destroy something — while the happy path (our own demo profile,
 re-run) never touches that check, so it cannot false-positive.
 
-The persona still chooses the *data shape* (`basic`/`family`/`freelancer`); it
-lands in the `demo` profile rather than the `alice`/`bob`/`charlie` profiles the
-test suite uses, so the evaluator sandbox never collides with test fixtures.
+The persona still chooses the *data shape*
+(`basic`/`family`/`freelancer`/`international`); it lands in the `demo` profile
+rather than the `alice`/`bob`/`charlie`/`eve` profiles the test suite uses, so
+the evaluator sandbox never collides with test fixtures.
 
 **Registration:** `main.py` at the **setup** workflow stage. `demo` is added to
 the wizard/dir-check exemption tuple (alongside `profile` and `synthetic`)
@@ -169,6 +171,16 @@ flowchart TD
 account/transaction counts, the `doctor` outcome (`doctor_failing` count +
 `doctor_failing_names`), and the net-worth summary — everything the CLI renders
 in both `text` and `json` modes.
+
+The net-worth summary follows `NetWorthSnapshotPayload`: `net_worth`,
+`total_assets`, and `total_liabilities` carry a figure only while every account
+shares one currency, and go null otherwise, with each currency's own totals in
+`per_currency`. A demo run is judged successful on `per_currency` being
+non-empty, never on the scalar — a multi-currency persona nulls the scalar by
+design, and reading that as a failed refresh is what broke
+`demo --persona international`. In `text` the CLI prints one line per currency
+in place of the headline; in `json` it emits a real `null` beside the
+`per_currency` array, never the string `"None"`.
 
 **One extraction of existing code:** the reset-deletion allowlist
 `_RESET_DELETIONS` and its delete loop lived inside `cli/commands/synthetic.py`.

@@ -8,7 +8,7 @@ and ground_truth table on demand.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -35,16 +35,16 @@ _GROUND_TRUTH_DDL_PATH = (
 )
 _ground_truth_ddl: str | None = None
 
-# Every persona banks in the US, so the generated data genuinely is USD — this
-# states that fact rather than leaving it to be inferred. It is written at the
-# account grain (OFX balance CURDEF, tabular account column) and deliberately
-# not onto individual transactions: a real OFX file omits per-transaction
-# <CURRENCY> when it matches the statement default, so omitting it here keeps
-# the fixture faithful and exercises the account-inheritance path in
-# core.fct_transactions. Before M1K.1 removed dim_accounts' blind 'USD' default,
-# the generator could omit currency entirely and the default covered for it;
-# `moneybin demo` then failed its own doctor check on 331 unknown-currency rows.
-_SYNTHETIC_CURRENCY = "USD"
+# Currency is written at the account grain (OFX balance CURDEF, tabular account
+# column) and deliberately not onto individual transactions: a real OFX file
+# omits per-transaction <CURRENCY> when it matches the statement default, so
+# omitting it here keeps the fixture faithful and exercises the
+# account-inheritance path in core.fct_transactions. Before M1K.1 removed
+# dim_accounts' blind 'USD' default, the generator could omit currency entirely
+# and the default covered for it; `moneybin demo` then failed its own doctor
+# check on 331 unknown-currency rows. Each account carries its own code, so a
+# mis-threaded value here is a wrong currency rather than a missing one — the
+# same doctor check is still what catches it.
 
 
 def _source_file(result: GenerationResult, suffix: str | int) -> str:
@@ -154,17 +154,24 @@ class SyntheticWriter:
         now: datetime,
     ) -> int:
         rows: list[dict[str, Any]] = []
+        # The day BEFORE the run's first transaction. `core.fct_balances_daily`
+        # treats an observed balance as final for its day, so an anchor stamped
+        # on the first transaction date swallows that day's activity and the
+        # account's closing balance comes out short by the day-one net. The
+        # tabular writer starts its running balance at `opening_balance + first
+        # transaction`; dating the anchor a day earlier is what makes one
+        # persona field mean one thing on both paths.
+        opening_dt = datetime.combine(result.start_date, time()) - timedelta(days=1)
         for acct in accounts:
-            start_dt = datetime.combine(result.start_date, time())
             rows.append({
                 "account_id": acct.account_id,
                 "source_origin": acct.institution,
-                "statement_start_date": start_dt,
-                "statement_end_date": start_dt,
+                "statement_start_date": opening_dt,
+                "statement_end_date": opening_dt,
                 "ledger_balance": Decimal(str(round(acct.opening_balance, 2))),
-                "ledger_balance_date": start_dt,
+                "ledger_balance_date": opening_dt,
                 "available_balance": None,
-                "currency_code": _SYNTHETIC_CURRENCY,
+                "currency_code": acct.currency_code,
                 "source_file": _source_file(result, slugify(acct.name)),
                 "extracted_at": now,
             })
@@ -212,7 +219,7 @@ class SyntheticWriter:
                 "account_name": acct.name,
                 "account_type": acct.account_type,
                 "institution_name": acct.institution,
-                "currency": _SYNTHETIC_CURRENCY,
+                "currency": acct.currency_code,
                 "source_file": _source_file(result, slugify(acct.name)),
                 "source_type": "csv",
                 "source_origin": f"synthetic_{result.persona}",

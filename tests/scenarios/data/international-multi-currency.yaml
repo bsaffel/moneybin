@@ -1,0 +1,58 @@
+scenario: international-multi-currency
+description: >
+  Five accounts in five currencies, written by the synthetic generator's own
+  OFX and tabular writers, must reach reports.net_worth as five segments — each
+  holding only its own account's money. The existing
+  multi-currency-report-segmentation scenario proves segmentation through the
+  Plaid loader with three currencies on one account; this one proves the other
+  half, where the currency rides on the account and arrives through two
+  different raw tables. Per-currency ground truth is derived in the pytest
+  entry from the deterministic GeneratorEngine, before any report is read.
+
+setup:
+  persona: international
+  seed: 42
+  years: 2
+  fixtures: []
+
+# Only what net worth needs. `match` and `categorize` shape merchant and
+# category columns that no assertion here reads, and basic/family already
+# cover them; running them would add minutes for no signal.
+pipeline:
+  - generate
+  - transform
+
+assertions:
+  - name: fk_account_id
+    fn: assert_valid_foreign_keys
+    args:
+      child: core.fct_transactions
+      column: account_id
+      parent: core.dim_accounts
+      parent_column: account_id
+  - name: sign_convention
+    fn: assert_sign_convention
+  - name: no_duplicate_gold_records
+    fn: assert_no_duplicates
+    args:
+      table: core.fct_transactions
+      columns: [transaction_id]
+  # An amount with no currency is an amount whose unit nothing downstream can
+  # recover; it would also pool into the NULL segment with any other unknown.
+  - name: every_transaction_names_its_currency
+    fn: assert_no_nulls
+    args:
+      table: core.fct_transactions
+      columns: [currency_code]
+  # Exact, not a band: the persona declares five accounts with five distinct
+  # currency codes, so any other number means one was dropped or invented.
+  - name: five_currencies_reach_dim_accounts
+    fn: assert_unique_value_count
+    args:
+      table: core.dim_accounts
+      col: currency_code
+      expected: 5
+      tolerance_pct: 0
+
+gates:
+  required_assertions: all

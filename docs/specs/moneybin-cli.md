@@ -100,7 +100,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- set <key> <value>          -- Set config value
 |
 +-- demo                           -- Set up the demo profile with synthetic data + a first answer (leaf)
-|     [--persona basic|family|freelancer]  Data shape (default: basic)
+|     [--persona basic|family|freelancer|international]  Data shape (default: basic)
 |     [--seed N] [--years N]
 |     [--yes]                      Auto-accept the rebuild if the demo profile exists
 |     [--output json] [--quiet]
