@@ -339,12 +339,20 @@ does not emit mutation counters.
 
 Run the same scenario table through single, bulk, and mixed-review entry points:
 
-- rejection and idempotent no-op;
+- rejection;
+- the standalone single and bulk idempotent no-ops;
 - accepted dedup with no invalidated transfer;
 - accepted decision retiring a standing transfer;
 - a newly accepted transfer immediately losing reconciliation;
 - one batch containing both the invalidating edge and losing transfer; and
 - multiple standing transfers with deterministic winner selection.
+
+Bulk exposes acceptance only, so the rejection case runs through single and
+mixed review; every acceptance case runs through all three entry points.
+
+Mixed ordinary review deliberately differs on idempotency: its established
+preflight contract returns a structured constraint error for an already-decided
+match. It does not convert the repeated decision into a no-op.
 
 For every path, assert committed row statuses, audit coverage, returned counts,
 and metrics. The expected semantic outcome is shared test data, not copied

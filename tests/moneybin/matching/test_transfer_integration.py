@@ -1,6 +1,8 @@
 """Integration tests for the transfer detection pipeline."""
 
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal
 
 import pytest
@@ -12,6 +14,7 @@ from moneybin.matching.persistence import (
     get_active_matches,
     get_pending_matches,
 )
+from moneybin.matching.reconciliation import retire_transfers_invalidated_by_dedup
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.matching_service import MatchingService
 
@@ -443,7 +446,9 @@ def _seed_two_doomed_transfers(db: Database, *, edge_status: str = "accepted") -
         )
 
 
-def _seed_a_stale_pending_transfer(db: Database) -> None:
+def _seed_a_stale_pending_transfer(
+    db: Database, *, edge_status: str = "accepted"
+) -> None:
     """An accepted transfer, a merged component, and a queued transfer over it.
 
     ``tx_stale00001`` was proposed before ``dd_1000000001`` merged the leg
@@ -467,6 +472,7 @@ def _seed_a_stale_pending_transfer(db: Database) -> None:
         stid_a="ofx_p",
         stid_b="csv_c",
         account_id="checking",
+        status=edge_status,
     )
     db.execute(
         """
@@ -841,46 +847,250 @@ def _seed_two_transfers_one_pending_edge(db: Database, *, edge_status: str) -> N
     )
 
 
-def _apply_public_match_decision(
+type _PublicMatchAdapter = Literal["single", "bulk", "review"]
+type _RequestedMatchStatus = Literal["accepted", "rejected"]
+
+
+@dataclass(frozen=True, slots=True)
+class _NormalizedMatchCounts:
+    """Comparable public counts from the three decision entry points."""
+
+    accepted: int
+    rejected: int
+    immediate_reversals: int
+    standing_retirements: int
+
+
+@dataclass(frozen=True, slots=True)
+class _DecisionOutcomeScenario:
+    """One shared durable-outcome expectation for every applicable adapter."""
+
+    name: str
+    seed: Callable[[Database], None]
+    requests: tuple[tuple[str, _RequestedMatchStatus], ...]
+    adapters: tuple[_PublicMatchAdapter, ...]
+    expected_counts: _NormalizedMatchCounts
+    expected_statuses: tuple[tuple[str, str], ...]
+    expected_audits: tuple[tuple[str, str], ...]
+    expected_metric_delta: int
+    expected_review_transfers_retired: int | None
+    expected_single_audits: tuple[tuple[str, str], ...] | None = None
+
+
+def _seed_pending_dedup(db: Database) -> None:
+    _setup_tables(db)
+    _insert_dedup(
+        db,
+        match_id="dd_1000000001",
+        stid_a="ofx_p",
+        stid_b="csv_c",
+        account_id="checking",
+        status="pending",
+    )
+
+
+def _seed_standing_retirement(db: Database) -> None:
+    _seed_two_transfers_one_pending_edge(db, edge_status="pending")
+
+
+def _seed_pending_edge_and_losing_transfer(db: Database) -> None:
+    _seed_a_stale_pending_transfer(db, edge_status="pending")
+
+
+def _seed_multiple_standing_retirements(db: Database) -> None:
+    _seed_two_doomed_transfers(db, edge_status="pending")
+
+
+def _apply_public_match_decisions(
     db: Database,
     *,
-    adapter: Literal["single", "bulk", "review"],
-    match_id: str,
-) -> tuple[str, int, int]:
-    """Normalize the three public match-accept outcomes to one effect tuple."""
+    adapter: _PublicMatchAdapter,
+    requests: tuple[tuple[str, _RequestedMatchStatus], ...],
+) -> tuple[_NormalizedMatchCounts, int | None]:
+    """Return normalized counts plus the raw mixed-review disclosure."""
     if adapter == "single":
-        outcome = MatchingService(db).set_status(
-            match_id,
-            status="accepted",
-            actor="cli",
-        )
+        outcomes = [
+            MatchingService(db).set_status(match_id, status=status, actor="matrix")
+            for match_id, status in requests
+        ]
         return (
-            outcome.match_status,
-            int(outcome.match_status == "reversed"),
-            outcome.transfers_retired,
+            _NormalizedMatchCounts(
+                accepted=sum(
+                    outcome.match_status == "accepted" for outcome in outcomes
+                ),
+                rejected=sum(
+                    outcome.match_status == "rejected" for outcome in outcomes
+                ),
+                immediate_reversals=sum(
+                    outcome.match_status == "reversed" for outcome in outcomes
+                ),
+                standing_retirements=sum(
+                    outcome.transfers_retired for outcome in outcomes
+                ),
+            ),
+            None,
         )
     if adapter == "bulk":
-        outcome = MatchingService(db).accept_all_pending(actor="cli")
-        effective_status = "accepted" if outcome.accepted else "reversed"
+        if any(status != "accepted" for _, status in requests):
+            raise AssertionError("bulk match decisions only support acceptance")
+        outcome = MatchingService(db).accept_all_pending(actor="matrix")
         return (
-            effective_status,
-            outcome.reversed_by_reconciliation,
-            outcome.transfers_retired,
+            _NormalizedMatchCounts(
+                accepted=outcome.accepted,
+                rejected=0,
+                immediate_reversals=outcome.reversed_by_reconciliation,
+                standing_retirements=outcome.transfers_retired,
+            ),
+            None,
         )
 
     from moneybin.mcp.write_contracts import MatchDecisionRequest
     from moneybin.services.review_decisions_service import ReviewDecisionsService
 
-    outcome = ReviewDecisionsService(db, actor="mcp").apply_ordinary([
-        MatchDecisionRequest(kind="match", decision_id=match_id, decision="accept")
+    outcome = ReviewDecisionsService(db, actor="matrix").apply_ordinary([
+        MatchDecisionRequest(
+            kind="match",
+            decision_id=match_id,
+            decision="accept" if status == "accepted" else "reject",
+        )
+        for match_id, status in requests
     ])
-    assert outcome.transfers_retired is not None
-    effective_status = outcome.items[0].status
     return (
-        effective_status,
-        int(effective_status == "reversed"),
+        _NormalizedMatchCounts(
+            accepted=sum(
+                item.changed and item.status == "accepted" for item in outcome.items
+            ),
+            rejected=sum(
+                item.changed and item.status == "rejected" for item in outcome.items
+            ),
+            immediate_reversals=sum(
+                item.changed and item.status == "reversed" for item in outcome.items
+            ),
+            standing_retirements=outcome.transfers_retired or 0,
+        ),
         outcome.transfers_retired,
     )
+
+
+_DECISION_OUTCOME_SCENARIOS = (
+    _DecisionOutcomeScenario(
+        name="rejection",
+        seed=_seed_pending_dedup,
+        requests=(("dd_1000000001", "rejected"),),
+        adapters=("single", "review"),
+        expected_counts=_NormalizedMatchCounts(0, 1, 0, 0),
+        expected_statuses=(("dd_1000000001", "rejected"),),
+        expected_audits=(("match_decision.update_status", "dd_1000000001"),),
+        expected_metric_delta=0,
+        expected_review_transfers_retired=None,
+    ),
+    _DecisionOutcomeScenario(
+        name="accepted_without_invalidation",
+        seed=_seed_pending_dedup,
+        requests=(("dd_1000000001", "accepted"),),
+        adapters=("single", "bulk", "review"),
+        expected_counts=_NormalizedMatchCounts(1, 0, 0, 0),
+        expected_statuses=(("dd_1000000001", "accepted"),),
+        expected_audits=(("match_decision.update_status", "dd_1000000001"),),
+        expected_metric_delta=0,
+        expected_review_transfers_retired=0,
+    ),
+    _DecisionOutcomeScenario(
+        name="standing_retirement",
+        seed=_seed_standing_retirement,
+        requests=(("dd_1000000001", "accepted"),),
+        adapters=("single", "bulk", "review"),
+        expected_counts=_NormalizedMatchCounts(1, 0, 0, 1),
+        expected_statuses=(
+            ("dd_1000000001", "accepted"),
+            ("tx_drop00001", "reversed"),
+            ("tx_keep00001", "accepted"),
+        ),
+        expected_audits=(
+            ("match_decision.update_status", "dd_1000000001"),
+            ("match_decision.reverse", "tx_drop00001"),
+        ),
+        expected_metric_delta=1,
+        expected_review_transfers_retired=1,
+    ),
+    _DecisionOutcomeScenario(
+        name="immediate_self_reversal",
+        seed=_seed_a_stale_pending_transfer,
+        requests=(("tx_stale00001", "accepted"),),
+        adapters=("single", "bulk", "review"),
+        expected_counts=_NormalizedMatchCounts(0, 0, 1, 0),
+        expected_statuses=(
+            ("dd_1000000001", "accepted"),
+            ("tx_keep00001", "accepted"),
+            ("tx_stale00001", "reversed"),
+        ),
+        expected_audits=(
+            ("match_decision.update_status", "tx_stale00001"),
+            ("match_decision.reverse", "tx_stale00001"),
+        ),
+        expected_metric_delta=1,
+        expected_review_transfers_retired=0,
+    ),
+    _DecisionOutcomeScenario(
+        name="invalidating_edge_and_losing_transfer",
+        seed=_seed_pending_edge_and_losing_transfer,
+        requests=(
+            ("dd_1000000001", "accepted"),
+            ("tx_stale00001", "accepted"),
+        ),
+        adapters=("single", "bulk", "review"),
+        expected_counts=_NormalizedMatchCounts(1, 0, 1, 0),
+        expected_statuses=(
+            ("dd_1000000001", "accepted"),
+            ("tx_keep00001", "accepted"),
+            ("tx_stale00001", "reversed"),
+        ),
+        expected_audits=(
+            ("match_decision.update_status", "dd_1000000001"),
+            ("match_decision.update_status", "tx_stale00001"),
+            ("match_decision.reverse", "tx_stale00001"),
+        ),
+        expected_metric_delta=1,
+        expected_review_transfers_retired=0,
+    ),
+    _DecisionOutcomeScenario(
+        name="multiple_standing_retirements",
+        seed=_seed_multiple_standing_retirements,
+        requests=(
+            ("dd_1000000001", "accepted"),
+            ("dd_1000000002", "accepted"),
+        ),
+        adapters=("single", "bulk", "review"),
+        expected_counts=_NormalizedMatchCounts(2, 0, 0, 2),
+        expected_statuses=(
+            ("dd_1000000001", "accepted"),
+            ("dd_1000000002", "accepted"),
+            ("tx_drop00001", "reversed"),
+            ("tx_drop00002", "reversed"),
+            ("tx_keep00001", "accepted"),
+        ),
+        expected_audits=(
+            ("match_decision.update_status", "dd_1000000001"),
+            ("match_decision.update_status", "dd_1000000002"),
+            ("match_decision.reverse", "tx_drop00001"),
+            ("match_decision.reverse", "tx_drop00002"),
+        ),
+        expected_metric_delta=2,
+        expected_review_transfers_retired=2,
+        expected_single_audits=(
+            ("match_decision.update_status", "dd_1000000001"),
+            ("match_decision.reverse", "tx_drop00001"),
+            ("match_decision.update_status", "dd_1000000002"),
+            ("match_decision.reverse", "tx_drop00002"),
+        ),
+    ),
+)
+
+_DECISION_OUTCOME_CASES = tuple(
+    pytest.param(scenario, adapter, id=f"{scenario.name}-{adapter}")
+    for scenario in _DECISION_OUTCOME_SCENARIOS
+    for adapter in scenario.adapters
+)
 
 
 class TestRetirementOnDedupAccept:
@@ -894,65 +1104,162 @@ class TestRetirementOnDedupAccept:
     table empty — the accept path is the subject, not the tiers.
     """
 
-    @pytest.mark.parametrize("adapter", ["single", "bulk", "review"])
-    def test_every_accept_path_reports_a_standing_transfer_retirement(
+    @pytest.mark.parametrize(("scenario", "adapter"), _DECISION_OUTCOME_CASES)
+    def test_public_entry_points_share_the_decision_outcome_matrix(
         self,
         db: Database,
-        adapter: Literal["single", "bulk", "review"],
+        scenario: _DecisionOutcomeScenario,
+        adapter: _PublicMatchAdapter,
     ) -> None:
-        """All public adapters expose the same finalized standing effects."""
-        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
+        """Every applicable public adapter commits the shared durable outcome."""
+        scenario.seed(db)
+        metric_before = _retirement_count("dedup_component")
 
-        normalized = _apply_public_match_decision(
+        normalized, review_transfers_retired = _apply_public_match_decisions(
             db,
             adapter=adapter,
-            match_id="dd_1000000001",
+            requests=scenario.requests,
         )
 
-        assert normalized == ("accepted", 0, 1)
-        assert _transfer_statuses(db) == {
-            "tx_keep00001": "accepted",
-            "tx_drop00001": "reversed",
-        }
+        assert normalized == scenario.expected_counts
+        if adapter == "review":
+            if scenario.expected_review_transfers_retired is None:
+                assert review_transfers_retired is None
+            else:
+                assert (
+                    review_transfers_retired
+                    == scenario.expected_review_transfers_retired
+                )
+        assert (
+            tuple(
+                db.execute(
+                    "SELECT match_id, match_status FROM app.match_decisions "
+                    "ORDER BY match_id"
+                ).fetchall()
+            )
+            == scenario.expected_statuses
+        )
+        audits = tuple(
+            db.execute(
+                "SELECT action, target_id FROM app.audit_log "
+                "WHERE actor = 'matrix' ORDER BY rowid"
+            ).fetchall()
+        )
+        expected_audits = (
+            scenario.expected_single_audits
+            if adapter == "single" and scenario.expected_single_audits is not None
+            else scenario.expected_audits
+        )
+        assert audits == expected_audits
+        assert (
+            _retirement_count("dedup_component") - metric_before
+            == scenario.expected_metric_delta
+        )
 
-    @pytest.mark.parametrize("adapter", ["single", "bulk", "review"])
-    def test_every_accept_path_reports_an_immediate_reversal(
+    @pytest.mark.parametrize("adapter", ["single", "bulk"])
+    def test_standalone_entry_points_remain_idempotent(
         self,
         db: Database,
+        adapter: Literal["single", "bulk"],
+    ) -> None:
+        """Reapplying a standalone acceptance creates no durable effect."""
+        _seed_pending_dedup(db)
+        _apply_public_match_decisions(
+            db,
+            adapter=adapter,
+            requests=(("dd_1000000001", "accepted"),),
+        )
+        audits_before = db.execute(
+            "SELECT action, target_id FROM app.audit_log "
+            "WHERE actor = 'matrix' ORDER BY rowid"
+        ).fetchall()
+        metric_before = _retirement_count("dedup_component")
+
+        if adapter == "single":
+            outcome = MatchingService(db).set_status(
+                "dd_1000000001", status="accepted", actor="matrix"
+            )
+            assert (outcome.match_status, outcome.transfers_retired) == (
+                "accepted",
+                0,
+            )
+        else:
+            outcome = MatchingService(db).accept_all_pending(actor="matrix")
+            assert (
+                outcome.accepted,
+                outcome.reversed_by_reconciliation,
+                outcome.transfers_retired,
+            ) == (0, 0, 0)
+
+        assert _dedup_statuses(db) == {"dd_1000000001": "accepted"}
+        assert (
+            db.execute(
+                "SELECT action, target_id FROM app.audit_log "
+                "WHERE actor = 'matrix' ORDER BY rowid"
+            ).fetchall()
+            == audits_before
+        )
+        assert _retirement_count("dedup_component") == metric_before
+
+    @pytest.mark.parametrize("adapter", ["single", "bulk", "review"])
+    def test_inconsistent_reconciliation_effects_roll_back_before_commit(
+        self,
+        db: Database,
+        monkeypatch: pytest.MonkeyPatch,
         adapter: Literal["single", "bulk", "review"],
     ) -> None:
-        """All public adapters distinguish a self-reversal from retirement."""
+        """An impossible reversal count cannot escape the active transaction."""
         _seed_a_stale_pending_transfer(db)
-
-        normalized = _apply_public_match_decision(
-            db,
-            adapter=adapter,
-            match_id="tx_stale00001",
-        )
-
-        assert normalized == ("reversed", 1, 0)
-        assert _transfer_statuses(db) == {
-            "tx_keep00001": "accepted",
-            "tx_stale00001": "reversed",
+        statuses_before = {
+            **_dedup_statuses(db),
+            **_transfer_statuses(db),
         }
+        audits_before = db.execute(
+            "SELECT action, target_id FROM app.audit_log ORDER BY rowid"
+        ).fetchall()
+        metric_before = _retirement_count("dedup_component")
 
-    def test_a_retirement_increments_its_own_counter(self, db: Database) -> None:
-        """The one counter that measures an undo of something the user decided.
+        def _misreport_reversals(
+            transaction_db: Database,
+            *,
+            decisions: MatchDecisionsRepo,
+            actor: str = "system",
+            in_outer_txn: bool = False,
+        ) -> int:
+            retire_transfers_invalidated_by_dedup(
+                transaction_db,
+                decisions=decisions,
+                actor=actor,
+                in_outer_txn=in_outer_txn,
+            )
+            return 0
 
-        A regression that starts retiring more often is invisible in the match
-        counts — those go up when the matcher *finds* things — and shows up only
-        as transfers quietly going missing. Asserted as a delta rather than an
-        absolute so it survives other tests sharing the process registry.
-        """
-        before = _retirement_count("dedup_component")
-
-        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
-        outcome = MatchingService(db).set_status(
-            "dd_1000000001", status="accepted", actor="cli"
+        monkeypatch.setattr(
+            "moneybin.matching.application.retire_transfers_invalidated_by_dedup",
+            _misreport_reversals,
         )
 
-        assert outcome.transfers_retired == 1
-        assert _retirement_count("dedup_component") - before == 1
+        with pytest.raises(
+            AssertionError,
+            match="reconciliation reversals cannot be fewer than immediate reversals",
+        ):
+            _apply_public_match_decisions(
+                db,
+                adapter=adapter,
+                requests=(("tx_stale00001", "accepted"),),
+            )
+
+        assert {
+            **_dedup_statuses(db),
+            **_transfer_statuses(db),
+        } == statuses_before
+        assert (
+            db.execute(
+                "SELECT action, target_id FROM app.audit_log ORDER BY rowid"
+            ).fetchall()
+            == audits_before
+        )
+        assert _retirement_count("dedup_component") == metric_before
 
     def test_a_rolled_back_accept_leaves_the_counter_unchanged(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
@@ -983,96 +1290,6 @@ class TestRetirementOnDedupAccept:
         # The positive half of the claim: the rollback really did take the
         # reversal back. Without it an unchanged counter would also pass on an
         # implementation that never increments at all.
-        assert _transfer_statuses(db) == {
-            "tx_keep00001": "accepted",
-            "tx_drop00001": "accepted",
-        }
-
-    def test_the_bulk_accept_increments_the_counter(self, db: Database) -> None:
-        """``--confirm-all`` reverses through the same pass and owes the same count.
-
-        Its own test rather than trust in the shared helper: the emission
-        happens once the caller's transaction lands, so each caller owns one
-        seam, and a caller that forgets its own leaves the counter silently
-        flat while the reversals still commit.
-        """
-        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
-        before = _retirement_count("dedup_component")
-
-        outcome = MatchingService(db).accept_all_pending(actor="cli")
-
-        assert outcome.transfers_retired == 1
-        assert _retirement_count("dedup_component") - before == 1
-
-    def test_the_review_batch_counts_a_row_it_reversed_itself(
-        self, db: Database
-    ) -> None:
-        """The third caller's seam, on the fixture that separates the two numbers.
-
-        ``transfers_retired`` is a disclosure — *standing* decisions this call
-        undid — and discounts the row the batch itself flipped moments earlier.
-        The counter is not that: it measures reversals, and one committed here.
-        Reporting the discounted number would under-count exactly the runs
-        where the reconciliation is doing the most work.
-        """
-        from moneybin.mcp.write_contracts import MatchDecisionRequest
-        from moneybin.services.review_decisions_service import ReviewDecisionsService
-
-        _seed_a_stale_pending_transfer(db)
-        before = _retirement_count("dedup_component")
-
-        outcome = ReviewDecisionsService(db, actor="mcp").apply_ordinary([
-            MatchDecisionRequest(
-                kind="match", decision_id="tx_stale00001", decision="accept"
-            )
-        ])
-
-        assert outcome.transfers_retired == 0
-        assert _retirement_count("dedup_component") - before == 1
-
-    def test_rejecting_the_queued_dedup_retires_nothing(self, db: Database) -> None:
-        """Negative twin: the same fixture, decided the other way.
-
-        Without it the test above would pass on an implementation that
-        reconciles after *any* decision, which would reverse an accepted
-        transfer on the strength of a duplicate the user explicitly said was
-        not one.
-        """
-        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
-
-        outcome = MatchingService(db).set_status(
-            "dd_1000000001", status="rejected", actor="cli"
-        )
-
-        assert outcome.transfers_retired == 0
-        assert outcome.match_status == "rejected"
-        assert _transfer_statuses(db) == {
-            "tx_keep00001": "accepted",
-            "tx_drop00001": "accepted",
-        }
-
-    def test_the_review_batch_retires_nothing_when_it_rejects(
-        self, db: Database
-    ) -> None:
-        """Negative twin: the same fixture, decided the other way.
-
-        ``None`` rather than ``0``: no accept means no reconciliation ran at
-        all, which is a different fact from a pass that ran and reversed
-        nothing — the same distinction the identity payload draws for its
-        re-match counts.
-        """
-        from moneybin.mcp.write_contracts import MatchDecisionRequest
-        from moneybin.services.review_decisions_service import ReviewDecisionsService
-
-        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
-
-        outcome = ReviewDecisionsService(db, actor="mcp").apply_ordinary([
-            MatchDecisionRequest(
-                kind="match", decision_id="dd_1000000001", decision="reject"
-            )
-        ])
-
-        assert outcome.transfers_retired is None
         assert _transfer_statuses(db) == {
             "tx_keep00001": "accepted",
             "tx_drop00001": "accepted",

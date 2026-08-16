@@ -24,7 +24,7 @@ type SettableMatchStatus = Literal["accepted", "rejected"]
 
 @dataclass(frozen=True, slots=True)
 class MatchStatusChange:
-    """One requested status and the status that committed after reconciliation."""
+    """One requested status and its effective transaction-local status."""
 
     match_id: str
     requested_status: SettableMatchStatus
@@ -35,10 +35,17 @@ class MatchStatusChange:
 
 @dataclass(frozen=True, slots=True)
 class MatchApplicationEffects:
-    """Committed facts from applying one local group of match decisions."""
+    """Transaction-local facts from applying one group of match decisions."""
 
     changes: tuple[MatchStatusChange, ...]
     reconciliation_reversals: int | None
+
+    def __post_init__(self) -> None:
+        """Reject inconsistent effects while the owner's transaction is active."""
+        if (self.reconciliation_reversals or 0) < self.immediate_reversals:
+            raise AssertionError(
+                "reconciliation reversals cannot be fewer than immediate reversals"
+            )
 
     @property
     def reconciliation_ran(self) -> bool:
@@ -58,12 +65,7 @@ class MatchApplicationEffects:
     @property
     def standing_transfers_retired(self) -> int:
         """Previously standing transfers retired by reconciliation."""
-        retired = (self.reconciliation_reversals or 0) - self.immediate_reversals
-        if retired < 0:
-            raise AssertionError(
-                "reconciliation reversals cannot be fewer than immediate reversals"
-            )
-        return retired
+        return (self.reconciliation_reversals or 0) - self.immediate_reversals
 
     @property
     def accepted_count(self) -> int:
@@ -174,7 +176,7 @@ class MatchDecisionApplication:
             self._requested.append((match_id, "accepted", "pending", True))
 
     def finalize(self) -> MatchApplicationEffects:
-        """Run any required reconciliation and return immutable committed facts."""
+        """Run reconciliation and return immutable transaction-local facts."""
         self._ensure_open()
         needs_reconciliation = any(
             changed and status == "accepted"
