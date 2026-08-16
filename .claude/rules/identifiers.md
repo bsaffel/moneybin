@@ -36,10 +36,10 @@ value depends on the channel and on what the caller pinned:
 | Case | What `source_account_key` holds |
 |---|---|
 | OFX | `<ACCTID>` — the institution's |
-| PDF with a readable account anchor | `{issuer_slug}_{slugify(masked_acct)}` — MoneyBin-synthesized *from* institution-derived parts, not issued by the institution (`import_service.py:1433-1446`) |
-| PDF with no anchor | a filename-derived alias — MoneyBin-synthesized |
+| PDF, unpinned | `pdf_doc_<digest>` — MoneyBin-synthesized from the exact document bytes; account anchors are separate match evidence (`import_service.py:_pdf_source_account`) |
+| PDF pinned with `--account-id` | MoneyBin's canonical `account_id`; the unpinned document digest is retained as a separate accepted link after resolution |
 | Bare tabular (no account column) | `_bare_account_key(file_path, source_bytes)` — MoneyBin-synthesized from filename + content |
-| Any channel with `--account-id` pinned | MoneyBin's own `account_id`, copied straight in (`import_service.py` PDF `native_key = account_id_override`; tabular `source_account_key=account_id`) |
+| Other supported channel with `--account-id` pinned | MoneyBin's own `account_id`, copied straight in (for example tabular `source_account_key=account_id`) |
 
 **`account_id` is not unconditionally MoneyBin's either.** Nine staging models
 project it as `COALESCE(links.account_id, a.account_id)`, each annotated
@@ -156,11 +156,19 @@ silently corrupts the ledger:
   carries which, and rows identical in every hashed field are interchangeable by
   construction. Reordering can neither drop a transaction nor double one.
 
-Both content-hash transaction-id sites implement exactly this — keep them
-identical:
+Both content-hash transaction-id sites implement the occurrence rule exactly;
+keep that collision behavior identical. Their account namespaces deliberately
+differ:
 
-- `moneybin/extractors/tabular/transforms.py::_generate_transaction_ids` (CSV/Excel)
-- `moneybin/services/import_service.py` (`_import_pdf_transactions`, `pdf_` ids)
+- `moneybin/extractors/tabular/transforms.py::_generate_transaction_ids`
+  (CSV/Excel) hashes the source-native account key.
+- `moneybin/services/import_service.py::_import_pdf_transactions` (`pdf_` ids)
+  hashes the resolved canonical account id so regenerated statement bytes remain
+  transaction-idempotent. An accepted account merge can change that namespace;
+  exact-file reimport therefore checks the accepted link's historical account ids
+  and suppresses a newly derived row when the corresponding historical id already
+  exists. It also checks the superseded issuer/last-four namespace used before PDF
+  document keys. Keep that retirement beside the PDF derivation logic.
 
 **Not the same thing:** `moneybin/extractors/pdf/seed_store.py` keys seed rows by
 `(alias, document, page, row_index, content)`. That is deliberate and different —

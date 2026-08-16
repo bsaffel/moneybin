@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -123,7 +124,9 @@ def stub_extract(monkeypatch: pytest.MonkeyPatch) -> list[PdfDocument]:
     docs: list[PdfDocument] = [_standard_doc()]
 
     class _StubExtractor:
-        def extract(self, _path: Path) -> PdfDocument:
+        def extract(
+            self, _path: Path, *, source_bytes: bytes | None = None
+        ) -> PdfDocument:
             return docs[0]
 
     monkeypatch.setattr(
@@ -145,14 +148,13 @@ def _apply_bridge(
 
     Every document here is the same stub Chase statement, whose account identity
     is incidental to what these tests assert — so bind it once rather than
-    restate it at twenty call sites. ``chase_1234`` is the source key
-    ``_pdf_source_account`` derives from that fixture's issuer and masked
-    number.
+    restate it at twenty call sites. The positional ``@0`` referent is stable
+    across source-key derivation changes and names the fixture's only account.
     """
     return ImportService(db).apply_pdf_bridge_response(
         file_path,
         bridge_response,
-        account_bindings={"chase_1234": "new"},
+        account_bindings={"@0": "new"},
         **kwargs,
     )
 
@@ -188,6 +190,25 @@ def test_apply_reconciling_response_loads_transactions(
         "WHERE source_type = 'pdf'"
     ).fetchone()
     assert loaded is not None and loaded[0] == 2
+
+
+def test_bridge_apply_reads_path_once_for_hash_and_extraction(
+    db: Database, tmp_path: Path
+) -> None:
+    """Bridge apply hashes and parses the same immutable byte snapshot."""
+    path = _pdf_path(tmp_path)
+    source_bytes = path.read_bytes()
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=_standard_doc(),
+    ) as extract:
+        _apply_bridge(db, path, _bridge_response())
+
+    extract.assert_called_once_with(
+        path.resolve(),
+        source_bytes=source_bytes,
+    )
 
 
 def test_apply_persists_new_format(
@@ -589,7 +610,9 @@ def test_apply_extraction_failure_bumps_failed_metric(
     from moneybin.metrics.registry import PDF_IMPORT_TOTAL
 
     class _BoomExtractor:
-        def extract(self, _path: Path) -> PdfDocument:
+        def extract(
+            self, _path: Path, *, source_bytes: bytes | None = None
+        ) -> PdfDocument:
             raise ValueError("could not extract text from PDF")
 
     monkeypatch.setattr(
@@ -599,6 +622,22 @@ def test_apply_extraction_failure_bumps_failed_metric(
 
     with pytest.raises(ValueError, match="extract"):
         _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
+
+    after = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1
+
+
+def test_apply_read_failure_bumps_failed_metric(db: Database, tmp_path: Path) -> None:
+    from moneybin.metrics.registry import PDF_IMPORT_TOTAL
+
+    path = _pdf_path(tmp_path)
+    before = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge")._value.get()  # type: ignore[reportPrivateUsage]
+
+    with (
+        patch.object(Path, "read_bytes", side_effect=OSError("PDF disappeared")),
+        pytest.raises(OSError, match="disappeared"),
+    ):
+        _apply_bridge(db, path, _bridge_response())
 
     after = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge")._value.get()  # type: ignore[reportPrivateUsage]
     assert after == before + 1
@@ -654,10 +693,9 @@ def test_bridge_apply_gates_account_identity_before_begin_import(
     outcome = exc.value.outcome
     assert outcome.reason == "account_confirmation"
     assert outcome.channel == "pdf"
-    # The issuer-slug + masked-account native key is what the user binds.
-    assert [p["source_account_key"] for p in outcome.account_proposals] == [
-        "chase_1234"
-    ]
+    [source_key] = [p["source_account_key"] for p in outcome.account_proposals]
+    assert source_key.startswith("pdf_doc_")
+    assert "1234" not in source_key
     # The seeded twin is offered as the merge candidate, not silently adopted.
     assert [c["account_id"] for c in outcome.account_proposals[0]["candidates"]] == [
         "acct_existing01"
@@ -701,7 +739,7 @@ def test_bridge_apply_reports_the_account_it_minted(
     # The opaque canonical id, and it is the account the link actually points at.
     linked = db.conn.execute(
         "SELECT account_id FROM app.account_links "
-        "WHERE ref_kind = 'source_native' AND ref_value = 'chase_1234'"
+        "WHERE ref_kind = 'source_native' AND ref_value LIKE 'pdf_doc_%'"
     ).fetchone()
     assert linked is not None
     assert created.account_id == linked[0]

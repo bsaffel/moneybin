@@ -551,3 +551,44 @@ def test_inbox_drain_names_each_proposal_by_its_ref(
     # disambiguator that tells two proposals apart.
     assert "chase-1234" not in result.stderr, result.stderr
     assert "****1234" in result.stderr, result.stderr
+
+
+def test_inbox_drain_renders_candidate_ledger_overlap(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """The unattended inbox path shows the evidence needed to choose a candidate."""
+    patch_inbox.sync.return_value = InboxSyncResult(
+        pending=[
+            {
+                "filename": "statement.pdf",
+                "channel": "pdf",
+                "tier": "high",
+                "score": 1.0,
+                "reason": "account_confirmation",
+                "moved_to": "pending/2024-01/statement.pdf",
+                "account_proposals": [
+                    {
+                        "source_account_key": "pdf_doc_1234567890abcdef",
+                        "proposal_ref": "@0",
+                        "candidates": [
+                            {
+                                "account_id": "acct_existing01",
+                                "display_name": "Checking",
+                                "signal": "institution_last4",
+                                "overlap_matched": 2,
+                                "overlap_comparable": 2,
+                                "overlap_window_start": "2024-01-15",
+                                "overlap_window_end": "2024-01-20",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.stderr
+    assert "ledger overlap: 2/2 matched" in result.stderr
+    assert "2024-01-15 to 2024-01-20" in result.stderr

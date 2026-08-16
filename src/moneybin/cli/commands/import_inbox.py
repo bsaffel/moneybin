@@ -69,6 +69,7 @@ def _print_sync_text(result: InboxSyncResult) -> None:
     # because one wrong-account recovery hint is hard enough to keep correct.
     from moneybin.cli.commands.import_cmd import (  # noqa: PLC0415
         echo_accounts_created,
+        format_account_candidate,
     )
 
     for item in processed:
@@ -130,7 +131,7 @@ def _print_sync_text(result: InboxSyncResult) -> None:
                 cands: list[Any] = raw_cands if isinstance(raw_cands, list) else []
                 for c in cands:
                     typer.echo(
-                        f"       {c.get('account_id')}  {c.get('display_name', '')}",
+                        f"       candidate: {format_account_candidate(c)}",
                         err=True,
                     )
         elif tier != "low":

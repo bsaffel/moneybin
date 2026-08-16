@@ -84,11 +84,20 @@ TOTAL
 def test_chase_account_id() -> None:
     meta = capture_metadata(_CHASE_TEXT)
     assert meta.account_id == "****1234"
+    assert meta.account_id_complete is False
 
 
 def test_amex_account_id() -> None:
     meta = capture_metadata(_AMEX_TEXT)
     assert meta.account_id == "5678"
+    assert meta.account_id_complete is False
+
+
+def test_ending_in_more_than_four_digits_is_still_partial() -> None:
+    meta = capture_metadata("Account ending in 123456\n")
+
+    assert meta.account_id == "123456"
+    assert meta.account_id_complete is False
 
 
 def test_account_id_preserves_mask() -> None:
@@ -109,6 +118,7 @@ def test_grouped_masked_account_number_keeps_the_last_four() -> None:
     meta = capture_metadata(_CHASE_GROUPED_MASKED_TEXT)
     assert meta.account_id is not None
     assert meta.account_id.endswith("1234")
+    assert meta.account_id_complete is False
 
 
 def test_grouped_plain_account_number_last_four_is_the_final_group() -> None:
@@ -122,6 +132,16 @@ def test_grouped_plain_account_number_last_four_is_the_final_group() -> None:
     assert meta.account_id is not None
     digits = "".join(c for c in meta.account_id if c.isdigit())
     assert digits[-4:] == "3456"
+    assert meta.account_id_complete is True
+
+
+def test_prefixed_account_label_cannot_mark_an_identifier_complete() -> None:
+    meta = capture_metadata(
+        "Beneficiary Account Number: 123456789\nRouting Number: 021000021\n"
+    )
+
+    assert meta.account_id == "123456789"
+    assert meta.account_id_complete is False
 
 
 @pytest.mark.parametrize(
@@ -156,6 +176,34 @@ def test_account_anchor_ordering_captures_the_whole_token(
     """
     meta = capture_metadata(f"Bank Statement\n{account_line}\n")
     assert meta.account_id == expected
+
+
+@pytest.mark.parametrize("separator", ["/", "."])
+def test_unsupported_account_number_separator_cannot_prove_completeness(
+    separator: str,
+) -> None:
+    meta = capture_metadata(f"Bank Statement\nAccount Number: 123456{separator}7890\n")
+
+    assert meta.account_id == f"123456{separator}7890"
+    assert meta.account_id_complete is False
+
+
+def test_capture_metadata_collects_account_identity_evidence() -> None:
+    text = """\
+Account Name: Household Checking
+Account Type: Personal Checking
+Product Name: Total Checking
+Routing Number: 021000021
+Currency: usd
+"""
+
+    meta = capture_metadata(text)
+
+    assert meta.account_label == "Household Checking"
+    assert meta.account_type == "Personal Checking"
+    assert meta.product_name == "Total Checking"
+    assert meta.routing_number == "021000021"
+    assert meta.currency_code == "USD"
 
 
 # ---------------------------------------------------------------------------
