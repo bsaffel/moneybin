@@ -30,7 +30,7 @@ REFRESH_MERCHANT_LINKS_REVIEW_HINT = (
 
 
 def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
-    """Build recovery actions for best-effort step crashes (matcher/categorizer).
+    """Build recovery actions for best-effort step crashes (match/categorize/rates).
 
     Ordered most-likely-correct first: the targeted retry(s), then a single
     diagnostic ``system_status`` doctor call. A recovery action must stay
@@ -65,6 +65,26 @@ def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
                 rationale=(
                     "Categorization crashed mid-refresh; re-run just the "
                     "categorize step to retry."
+                ),
+                confidence="suggested",
+                idempotent=True,
+            )
+        )
+    rates = result.rate_backfill
+    if rates is not None and rates.pairs_failed:
+        # `pairs_failed` only, matching the CLI's `retryable_error`. The other
+        # two lists name pairs a retry cannot fill: the provider publishes no
+        # series at all for an unsupported one, and it *answered* for a
+        # discarded one, so re-sending returns the identical unusable value.
+        # Handing the agent an executable retry for either is a loop with no
+        # terminating condition; their remedies rode their own warnings.
+        actions.append(
+            RecoveryAction(
+                tool="refresh_run",
+                arguments={"steps": ["rates"]},
+                rationale=(
+                    "The rate provider did not answer for at least one "
+                    "currency pair; re-run just the rates step to retry."
                 ),
                 confidence="suggested",
                 idempotent=True,

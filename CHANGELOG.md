@@ -36,7 +36,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The step is best-effort and never fails the command; the rest of the cascade
   keeps its results either way. A pair the provider could not answer is warned
   on stderr by name, listed in `rate_pairs_failed` under `--output json` and in
-  the MCP envelope, and retried on the next refresh. A currency the provider
+  the MCP envelope, and retried on the next refresh. The MCP envelope also
+  carries an executable `refresh_run(steps=["rates"])` recovery action for it,
+  matching what the matching and categorization steps already offer; the other
+  two pair lists get none, because no number of retries fills them. A currency the provider
   does not publish at all is reported separately, as `rate_pairs_unsupported`,
   because retrying will never fill it — that warning names `moneybin fx set`,
   which will. Either side of the pair can be the unpublished one, so a home

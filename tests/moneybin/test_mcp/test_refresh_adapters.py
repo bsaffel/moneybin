@@ -87,6 +87,77 @@ def test_a_rates_step_that_found_nothing_is_not_a_skipped_step() -> None:
 
 
 @pytest.mark.unit
+async def test_a_failed_rate_pair_offers_the_rates_retry() -> None:
+    """A transient rate failure earns the same retry the sibling steps get.
+
+    ``matching_error`` and ``categorization_error`` each hand the agent a
+    ``refresh_run(steps=[...])`` it can execute, and the CLI already prints the
+    equivalent hint for a failed pair because ``retryable_error`` counts it. An
+    MCP-driven agent was the only caller left to infer the next step, which is
+    the CLI/MCP parity gap this closes.
+    """
+    env = refresh_envelope(
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            rate_backfill=RateBackfillResult(
+                rates_written=0, pairs_failed=("EUR/USD",)
+            ),
+        ),
+        requested=expand_steps(None),
+    )
+
+    actions = env.recovery_actions or []
+    await assert_recovery_actions_executable(actions)
+    tools = [(ra.tool, ra.arguments) for ra in actions]
+    assert ("refresh_run", {"steps": ["rates"]}) in tools
+    assert ("system_status", {"sections": ["doctor"], "detail": "full"}) in tools
+
+
+@pytest.mark.unit
+def test_an_unsupported_pair_is_offered_no_retry() -> None:
+    """Negative twin: retrying never fills a pair the provider does not publish.
+
+    The CLI keeps this out of ``retryable_error`` for exactly this reason, and
+    its remedy (``moneybin fx set``) already rode the warning. An executable
+    retry here would send the agent around a loop that cannot terminate.
+    """
+    env = refresh_envelope(
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            rate_backfill=RateBackfillResult(
+                rates_written=0, pairs_failed=(), pairs_unsupported=("JPY/USD",)
+            ),
+        ),
+        requested=expand_steps(None),
+    )
+
+    assert env.recovery_actions is None
+
+
+@pytest.mark.unit
+def test_a_discarded_pair_is_offered_no_retry() -> None:
+    """Negative twin: the provider answered, so the same request returns the same.
+
+    A discarded rate was unusable on arrival — dated outside the window, or too
+    small for the column — so re-sending produces the identical unusable value.
+    """
+    env = refresh_envelope(
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            rate_backfill=RateBackfillResult(
+                rates_written=3, pairs_failed=(), pairs_discarded=("GBP/USD",)
+            ),
+        ),
+        requested=expand_steps(None),
+    )
+
+    assert env.recovery_actions is None
+
+
+@pytest.mark.unit
 def test_envelope_includes_self_heal_actions_empty_by_default() -> None:
     env = refresh_envelope(
         RefreshResult(applied=True, duration_seconds=1.0), requested=expand_steps(None)

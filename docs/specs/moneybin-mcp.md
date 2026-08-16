@@ -180,7 +180,10 @@ and confirmation contracts.
   `rate_pairs_failed` (retried next run), `rate_pairs_unsupported` (never
   retried; needs `moneybin fx set`), and `rate_pairs_discarded` (the provider
   answered and part of the answer was unusable, so coverage may be short on some
-  dates) rather than failing the call.
+  dates) rather than failing the call. Only `rate_pairs_failed` earns a
+  `recovery_actions` entry (`refresh_run(steps=["rates"])`), matching the match
+  and categorize steps; the other two name conditions a retry cannot change, so
+  offering one would be a loop with no terminating condition.
 - `sql_query` is the read-only escape hatch and `sql_schema` explains the
   interface schema. They do not replace domain validation for writes.
 
