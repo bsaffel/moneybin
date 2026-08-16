@@ -445,6 +445,28 @@ def test_a_monthly_grain_prices_at_the_month_close(saved_db: Database) -> None:
     assert outcome.records[0]["amount"] == Decimal("108.00")
 
 
+def test_a_month_that_is_not_a_month_segments(saved_db: Database) -> None:
+    """``YYYY-MM`` is matched by shape, so month 13 reaches the date builder.
+
+    The row is well-formed to the regex and impossible to the calendar. It has
+    to segment like any other unpriceable row: raising out of ``_rate_date``
+    would fail the whole report over one bad cell.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 2, 28), Decimal("1.08"))
+    service = CurrencyService(saved_db)
+
+    outcome = convert_records(
+        [_row(txn_date="2026-13")],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+    )
+
+    assert outcome.degraded_reason is not None
+    assert outcome.records[0]["amount"] == Decimal("100.00")
+
+
 # --- convert_execution: what the envelope reports after a fallback ------------
 
 

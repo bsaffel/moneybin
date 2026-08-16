@@ -2308,6 +2308,39 @@ class TestHoldings:
             "EUR": Decimal("900.00"),
         }
 
+    def test_a_non_iso_position_degrades_the_total_not_the_whole_read(
+        self, db: Database
+    ) -> None:
+        """One unconvertible code costs the combined figure and nothing else.
+
+        ``dim_holdings`` stores a lot's ``currency_code`` verbatim and documents
+        that unofficial crypto codes arrive uncased, so a four-letter code is a
+        real row rather than a hypothetical. ``resolve_rate`` refuses it with a
+        plain ``UserError`` — a different exception from the missing-rate case,
+        and one that would otherwise escape ``holdings()`` and fail the entire
+        read for every other position too.
+        """
+        _seed_read_fixtures(db)
+        _set_home_currency(db, "USD")
+        _seed_rate(db, "EUR", "USD", date(2026, 7, 15), Decimal("1.10"))
+        _replace_holdings_view(
+            db,
+            [
+                _priced("sec_1", "USD", "1200.00"),
+                _priced("sec_2", "USDT", "500.00"),
+            ],
+        )
+
+        result = db_service(db).holdings()
+
+        assert result.total_market_value is None
+        assert result.total_market_value_currency is None
+        # The read itself survives: both positions still report their own value.
+        assert result.market_value_by_currency == {
+            "USD": Decimal("1200.00"),
+            "USDT": Decimal("500.00"),
+        }
+
     def test_a_profile_with_no_home_currency_gets_no_mixed_total(
         self, db: Database
     ) -> None:

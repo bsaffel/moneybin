@@ -29,7 +29,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   accounts in different currencies is now refused outright: the generator moves
   one magnitude to both sides without converting, so it would have paid a 100
   USD outflow as a +100 EUR inflow. Fund each currency from its own income
-  until the conversion layer lands.
+  until M1K.3 gives the generator a conversion of its own — read-time display
+  conversion, below, prices what a report shows and never rewrites a stored
+  amount, so it does not lift this restriction.
 - **Exchange rates, and your own corrections to them (M1K.2).** `moneybin fx
   rate USD EUR 2026-03-13` answers with the rate, the day it was published for,
   and which layer supplied it. Precedence is your own correction, then the

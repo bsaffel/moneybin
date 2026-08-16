@@ -165,9 +165,15 @@ and confirmation contracts.
   capabilities need no tool of their own. A report that aggregates with
   `currency_code` in its grouping key cannot be priced without putting two
   currencies behind one figure, and a pair with no stored rate cannot be priced
-  at all; both fall back to per-currency segmentation, set
-  `summary.display_currency` to `null`, and name the obstacle in
-  `summary.degraded_reason`. Each report states its own rule in
+  at all; both fall back to per-currency segmentation and name the obstacle in
+  `summary.degraded_reason`. `summary.display_currency` then reverts to what the
+  rows themselves say — `null` when they span currencies, and the one currency
+  they share when they agree, which is still the true answer for those rows.
+  Read `summary.degraded_reason`, not a non-null `display_currency`, to learn
+  whether the requested pricing happened. That reason is stated only when the
+  caller named `display_currency`: the home-currency default falls back
+  silently, or every unconverted report on a profile with a home currency would
+  carry a warning. Each report states its own rule in
   `semantics.fx_basis`, and the ones that price exactly name the column they
   price on in `semantics.fx_date`. A `display_currency` naming no currency is
   refused before the query runs, so an empty result cannot claim a currency

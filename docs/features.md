@@ -99,9 +99,11 @@ Three reports convert, because each of their rows is one event on one date:
 date, and `networth` at its balance date. The other five aggregate with the
 currency in their grouping key, so a row is already a per-currency subtotal;
 pricing it would put two currencies behind one figure. Those stay sub-totalled
-per currency and name the reason in `summary.degraded_reason`, as does any
-report whose rates are not on disk — `moneybin refresh` gathers them, since a
-read never fetches.
+per currency, as does any report whose rates are not on disk — `moneybin
+refresh` gathers them, since a read never fetches. Ask for a currency
+explicitly and the reason appears in `summary.degraded_reason`; the
+home-currency default falls back quietly, so a profile that has set one is not
+warned on every report it cannot price.
 
 Nothing converted is stored. The original amount and its currency stay
 untouched in every table, and a converted figure is recomputed on each read —

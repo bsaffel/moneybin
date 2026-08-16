@@ -598,7 +598,10 @@ class TestHoldingsAndGains:
         )
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
-        assert "market_value=- (mixed currencies, no rate)" in result.output
+        assert (
+            "market_value=- (mixed currencies, no home currency or no rate)"
+            in result.output
+        )
         assert "USD=1200.00" in result.output
         assert "EUR=900.00" in result.output
         # The wrong sum must appear nowhere in the output.

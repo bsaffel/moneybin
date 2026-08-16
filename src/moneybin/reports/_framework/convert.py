@@ -76,7 +76,6 @@ class ConversionOutcome:
     records: list[dict[str, Any]]
     display_currency: str | None
     degraded_reason: str | None = None
-    rates: tuple[ResolvedRate, ...] = ()
 
 
 def money_columns(classes: Mapping[str, DataClass]) -> tuple[str, ...]:
@@ -195,7 +194,7 @@ def convert_records(
         priced[currency_column] = target
         converted.append(priced)
 
-    return ConversionOutcome(converted, target, None, tuple(resolved.values()))
+    return ConversionOutcome(converted, target, None)
 
 
 def _is_currency_code(candidate: str) -> bool:
@@ -250,7 +249,14 @@ def _rate_date(value: Any) -> date | None:
     text = value.strip()
     if _MONTH_GRAIN.fullmatch(text):
         year, month = int(text[:4]), int(text[5:7])
-        close = date(year, month, calendar.monthrange(year, month)[1])
+        try:
+            close = date(year, month, calendar.monthrange(year, month)[1])
+        except ValueError:
+            # The regex matches the shape, not the calendar: '2026-13' and
+            # '0000-00' both reach here. Naming no usable date segments the
+            # report, which is what every other unpriceable row does — raising
+            # would take down the read instead.
+            return None
         return min(close, date.today())  # noqa: DTZ011  # a rate date is a calendar day, not an instant
     try:
         return date.fromisoformat(text[:10])

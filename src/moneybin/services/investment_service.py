@@ -1937,7 +1937,14 @@ class InvestmentService:
                 priced, _ = currency.convert(
                     row.market_value, row.currency_code, target, row.price_date
                 )
-            except RateUnavailableError:
+            except (RateUnavailableError, UserError):
+                # UserError too, not only the missing-rate case: a lot's
+                # currency_code is stored verbatim (dim_holdings documents
+                # uncased, unofficial crypto codes), so `resolve_rate` refuses a
+                # code that would match nothing with a plain UserError. One
+                # mis-mapped or non-ISO position must degrade this one figure,
+                # never fail the whole holdings read — the same rule
+                # `reports/_framework/convert.py` applies to a report's rows.
                 return None, None
             total += priced
         return total, target

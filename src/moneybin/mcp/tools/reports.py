@@ -40,7 +40,7 @@ def reports(
     if report_id is None:
         if parameters is not None or limit is not None or display_currency is not None:
             raise UserError(
-                "parameters and limit require report_id",
+                "parameters, limit, and display_currency require report_id",
                 code=error_codes.REPORT_ID_REQUIRED,
             )
         # The catalog spans all three tiers and the user tier lives in the

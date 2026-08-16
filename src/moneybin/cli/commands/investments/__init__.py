@@ -291,9 +291,15 @@ def investments_holdings(
                 total += f" (converted from {split})"
         elif by_ccy:
             # No single figure exists across currencies: print the split so no
-            # reader can mistake one number for the portfolio's value.
+            # reader can mistake one number for the portfolio's value. Both
+            # causes are named because the remedies differ and the result cannot
+            # tell them apart — an unset home currency wants `moneybin profile
+            # set`, a missing rate wants `moneybin refresh`.
             split = " ".join(f"{code}={amount}" for code, amount in by_ccy.items())
-            total = f"market_value=- (mixed currencies, no rate) {split}"
+            total = (
+                "market_value=- (mixed currencies, no home currency or no rate) "
+                f"{split}"
+            )
         else:
             total = "market_value=- (no position is priced)"
         typer.echo(f"portfolio {total} max_days_since_observed={stalest}")
