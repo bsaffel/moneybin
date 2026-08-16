@@ -92,7 +92,13 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
             "transaction-derived position reconstructed from daily balance minus "
             "reconciliation_delta"
         ),
-        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
+        fx_basis=(
+            "each row compares one account's balances on one date, so a requested "
+            "display currency prices it at that date's rate; a row that cannot be "
+            "priced leaves the whole report segmented per currency_code, never "
+            "blended"
+        ),
+        fx_date="assertion_date",
         time_basis=(
             "asserted and transaction-derived positions compared as of "
             "assertion_date; freshness measured from assertion_date through "

@@ -1,5 +1,5 @@
 {
-  "sha256": "eecf189975f5ddc4efdd5154e1bf760fc3e4b4a29534c514372a59bb4646c8ca",
+  "sha256": "f420974a8473c78b3df59b73ad5029493a4059fbd729571168a452edba7821b7",
   "tool_count": 49,
   "tools": [
     {
@@ -1989,7 +1989,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Return investment events, holdings, open or full tax-lot history, realized gains, or securities through one typed view. Amounts use the investment ledger sign convention; currency is summary.display_currency for every view except holdings, whose market_value stays in each row's currency_code. For holdings, valuation_status marks each row valued, carried_forward, unpriced, or withheld; unpriced and withheld report market_value/unrealized_gain null (never zero) and data.warnings counts them, and withheld means the share count is known wrong. Do not sum market_value across rows: read data.total_market_value (null when priced rows span currencies, with data.market_value_by_currency giving the split) and data.max_days_since_observed for the stalest close behind any published figure.",
+        "description": "Return investment events, holdings, open or full tax-lot history, realized gains, or securities through one typed view. Amounts use the investment ledger sign convention; currency is summary.display_currency except holdings rows, which keep their own currency_code. For holdings, valuation_status marks each row valued, carried_forward, unpriced, or withheld; unpriced and withheld report market_value/unrealized_gain null (never zero) and data.warnings counts them, and withheld means the share count is known wrong. Do not sum market_value across rows: read data.total_market_value, in data.total_market_value_currency \u2014 mixed currencies price into the home currency at each position's own close date, both null when no stored rate covers a pair; data.market_value_by_currency always gives the split in original units. data.max_days_since_observed is the stalest close behind any published figure.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2087,12 +2087,12 @@
         },
         "name": "investments"
       },
-      "description_bytes": 788,
+      "description_bytes": 901,
       "input_schema_bytes": 672,
       "name": "investments",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 1649
+      "total_bytes": 1765
     },
     {
       "annotation_bytes": 90,
@@ -2667,6 +2667,17 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "display_currency": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "limit": {
               "anyOf": [
                 {
@@ -2715,11 +2726,11 @@
         "name": "reports"
       },
       "description_bytes": 249,
-      "input_schema_bytes": 316,
+      "input_schema_bytes": 396,
       "name": "reports",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 759
+      "total_bytes": 839
     },
     {
       "annotation_bytes": 89,
@@ -5022,5 +5033,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 57000
+  "total_bytes": 57196
 }

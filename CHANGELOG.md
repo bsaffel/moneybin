@@ -34,8 +34,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `DECIMAL`, never through a float, and only currency codes and dates leave the
   machine — no amount, account, or description is part of a rate request.
 
-  No amount is converted yet: reports still sub-total per currency, and
-  `--display-currency` arrives with the conversion layer.
+- **Read a report in one currency (M1K.2).** `--display-currency EUR` on every
+  report command, and `display_currency` on the `reports` MCP tool, price a
+  report's amounts into one currency at read time. Omit it and the target is the
+  currency you set with `moneybin profile set home_currency EUR`; a report with
+  nothing to price is unaffected either way. `summary.display_currency` names
+  what the numbers are in.
+
+  Three of the eight registered reports convert exactly, because each of their
+  rows is one event on one date: `core:large_transactions` at its transaction
+  date, `core:balance_drift` at its assertion date, and `core:networth` at its
+  balance date. The other five — cash flow, spending trend, merchant activity,
+  recurring subscriptions, and the net-worth history series — aggregate with
+  `currency_code` in the grouping key, so a row is already a per-currency
+  subtotal and pricing it would leave several rows sharing one grain key under
+  one currency label. Those stay segmented per currency and say so in
+  `summary.degraded_reason`, which now also reaches the terminal on
+  `moneybin reports networth` and `networth-history`. A pair no stored rate
+  covers falls back the same way, naming `moneybin refresh` as the remedy;
+  requesting a currency code that names no currency is refused outright, before
+  the query runs, so an empty report cannot label itself in a currency that does
+  not exist.
+
+  `moneybin reports networth` prints one position per currency, and one combined
+  position once conversion has priced them into the same one. `moneybin
+  investments holdings` publishes a portfolio total across currencies for the
+  first time, pricing each position at its own close's rate and printing the
+  original per-currency amounts beside the converted figure;
+  `data.total_market_value_currency` names its unit. Investment positions still
+  do not contribute to net worth — that integration is unbuilt.
+
+  Conversion is presentation only. No converted amount is stored, and no
+  original-currency column in `raw.*` or `core.*` is touched: the original
+  amount stays the auditable one, and a converted figure is recomputed on every
+  read. Reads never fetch a rate — `moneybin refresh` gathers them, because a
+  read holds no writer lock.
 - **`sql_schema` can name what it does not curate.** Two sets governed the SQL
   surface and nothing said they were different: `sql_query` reads five schemas
   (`core`, `app`, `reports`, `raw`, `prep`), while the curated catalog describes

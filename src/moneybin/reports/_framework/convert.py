@@ -46,6 +46,12 @@ logger = logging.getLogger(__name__)
 
 _MONTH_GRAIN = re.compile(r"\d{4}-\d{2}")
 
+#: Why a report went unpriced when it states no reason of its own.
+_NO_DECLARED_BASIS = (
+    "this report does not declare which column names each row's currency and "
+    "which dates it, so its amounts cannot be priced"
+)
+
 #: The classes whose values are money and therefore convert. ``AGGREGATE`` is
 #: deliberately absent: it covers counts, ratios, z-scores, and confidences,
 #: and converting one would corrupt it. A money column declared ``AGGREGATE``
@@ -107,12 +113,15 @@ def convert_records(
     currency_column = semantics.currency
     date_column = semantics.fx_date
     if currency_column is None or date_column is None:
-        return ConversionOutcome(
-            rows,
-            None,
-            "this report does not declare which column names each row's currency "
-            "and which dates it, so its amounts cannot be priced",
-        )
+        # A report that cannot be priced states why in its own `fx_basis`, and
+        # the obstacle differs per report: `core:cashflow` has one date at its
+        # grain and still cannot convert, because `currency_code` sits in its
+        # GROUP BY; `core:merchants` spans a range of dates instead of one.
+        # Deriving a reason from whichever declaration is missing would give one
+        # report's obstacle for another's. A report that declares no basis
+        # either — every user-created one, per `dynamic.py` — gets the generic
+        # reading, which is accurate for it.
+        return ConversionOutcome(rows, None, semantics.fx_basis or _NO_DECLARED_BASIS)
 
     # Resolved once per (currency, date) rather than per row: a 12-month rollup
     # in three currencies asks 36 questions however many rows it holds.

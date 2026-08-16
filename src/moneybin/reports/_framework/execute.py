@@ -169,7 +169,12 @@ def convert_execution(
     return replace(
         execution,
         records=outcome.records,
-        display_currency=outcome.display_currency,
+        # A fallback leaves the rows in their own currencies, so the currency
+        # already derived from those rows is still the true answer. Overwriting
+        # it with the failed conversion's ``None`` would report a mixed result
+        # for rows that all agree — worse than the answer the caller had before
+        # asking. Only a conversion that happened replaces it.
+        display_currency=outcome.display_currency or execution.display_currency,
         degraded_reason=outcome.degraded_reason,
     )
 

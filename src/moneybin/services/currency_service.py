@@ -151,8 +151,8 @@ class CurrencyService:
 
         Raises ``RateUnavailableError`` rather than returning a substitute.
         """
-        base = self._require_currency(from_currency)
-        quote = self._require_currency(to_currency)
+        base = require_currency(from_currency)
+        quote = require_currency(to_currency)
 
         if base == quote:
             # No layer is consulted, so no outcome is counted: an identity pair
@@ -231,8 +231,8 @@ class CurrencyService:
         ``_stored_rate`` uses, so a date listed here answers exactly what a
         conversion on that date would.
         """
-        base = self._require_currency(from_currency)
-        quote = self._require_currency(to_currency)
+        base = require_currency(from_currency)
+        quote = require_currency(to_currency)
         params: list[object] = [OVERRIDE_SOURCE, base, quote, base, quote]
         bound = ""
         if since is not None:
@@ -282,8 +282,8 @@ class CurrencyService:
         both express themselves as untyped DuckDB errors a surface can only
         render as a traceback.
         """
-        base = self._require_currency(from_currency)
-        quote = self._require_currency(to_currency)
+        base = require_currency(from_currency)
+        quote = require_currency(to_currency)
         if base == quote:
             # `resolve_rate` answers an identity pair from `IDENTITY_SOURCE`
             # without reading this table, so a row stored here would be listed
@@ -315,38 +315,12 @@ class CurrencyService:
         reason.
         """
         event = ExchangeRateOverridesRepo(self._db).delete(
-            self._require_currency(from_currency),
-            self._require_currency(to_currency),
+            require_currency(from_currency),
+            require_currency(to_currency),
             on,
             actor=self._actor,
         )
         return event is not None
-
-    def _require_currency(self, value: str) -> str:
-        """Canonicalize and refuse a code that would match nothing.
-
-        A malformed code is not a rejected input — it is a write that succeeds,
-        reports success, and joins no conversion, forever and without a symptom.
-        Both writers and both readers share this one canonicalization, so an
-        override stored under one spelling cannot become unreachable under
-        another.
-        """
-        candidate = canonical_currency(value)
-        try:
-            validate_currency_code(candidate)
-        except ValueError as exc:
-            # The rejected value rides the `hint`, never the `message`, for the
-            # reason `_fetch`'s docstring gives: text-mode `handle_cli_errors`
-            # sends `message` to `logger.error` on the strength of its being a
-            # fixed MoneyBin string, and the file handler is unfiltered. A
-            # currency argument is free text, so a mis-paste would otherwise
-            # persist verbatim to `cli_YYYY-MM-DD.log`.
-            raise UserError(
-                "A currency must be given as a three-letter ISO-4217 code.",
-                code=error_codes.FX_CURRENCY_INVALID,
-                hint=f"{value!r} is not one. Use a code like 'USD' or 'EUR'.",
-            ) from exc
-        return candidate
 
     # -------------------------------- storage --------------------------------
 
@@ -622,6 +596,33 @@ def canonical_currency(value: str) -> str:
     the call site is a copy that drifts the moment this one changes.
     """
     return value.strip().upper()
+
+
+def require_currency(value: str) -> str:
+    """Canonicalize and refuse a code that would match nothing.
+
+    A malformed code is not a rejected input — it is a write that succeeds,
+    reports success, and joins no conversion, forever and without a symptom.
+    Both writers, both readers, and the reports layer's display target share
+    this one canonicalization, so an override stored under one spelling cannot
+    become unreachable under another.
+    """
+    candidate = canonical_currency(value)
+    try:
+        validate_currency_code(candidate)
+    except ValueError as exc:
+        # The rejected value rides the `hint`, never the `message`, for the
+        # reason `_fetch`'s docstring gives: text-mode `handle_cli_errors` sends
+        # `message` to `logger.error` on the strength of its being a fixed
+        # MoneyBin string, and the file handler is unfiltered. A currency
+        # argument is free text, so a mis-paste would otherwise persist verbatim
+        # to `cli_YYYY-MM-DD.log`.
+        raise UserError(
+            "A currency must be given as a three-letter ISO-4217 code.",
+            code=error_codes.FX_CURRENCY_INVALID,
+            hint=f"{value!r} is not one. Use a code like 'USD' or 'EUR'.",
+        ) from exc
+    return candidate
 
 
 def _require_storable(rate: Decimal) -> None:

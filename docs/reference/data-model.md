@@ -51,7 +51,7 @@ If you sum `outflow` from `cash_flow` and `total_spend` from `spending_trend` in
 
 Every `reports.*` view that sums money carries a `currency_code` column and groups by it, so a mixed-currency profile gets one sub-total per currency rather than one combined number. A `NULL` currency is its own segment — never resolved to the home currency, because that guess is one nothing downstream could flag. All unknown-currency rows share that one segment and are summed together, since nothing distinguishes two unknowns; `moneybin system doctor` fails on any of them, and `accounts set --currency` is the fix. `reports.net_worth` is one row per `(balance_date, currency_code)`; a consumer that re-aggregates it must keep `currency_code` in its own `GROUP BY` or it re-blends what the view separated. `reports.balance_drift` projects `currency_code` without grouping by it — asserted and computed balances belong to the same account, so the comparison is single-currency by construction.
 
-MoneyBin does not convert between currencies. `moneybin profile set home_currency <ISO 4217>` records which currency a profile treats as home, but nothing converts to it yet ([`docs/roadmap.md`](../roadmap.md) → M1K.2). The MCP/CLI envelope's `summary.display_currency` is presentation-only; rows are not FX-converted.
+`moneybin profile set home_currency <ISO 4217>` records which currency a profile treats as home, and reports price into it by default; `--display-currency` overrides it per call. Conversion is presentation-only — nothing writes a converted amount, and every `core.*` column keeps its original. Three reports convert: `core:large_transactions`, `core:balance_drift`, and `core:networth`, each of whose rows carries one amount and one date to price it on. Every other report aggregates per `currency_code`, so pricing a row would leave several rows sharing one grain key; those stay segmented and say why in `summary.degraded_reason`. One row that cannot be priced segments the whole result rather than converting part of it, and `summary.display_currency` then names the currency the rows are already in.
 
 ### Pending and posted
 
@@ -308,7 +308,7 @@ Canonical securities dimension. Grain: one row per `security_id`. `VIEW` over `a
 | `figi` | VARCHAR | OpenFIGI mapping. |
 | `coingecko_id` | VARCHAR | Crypto price-lookup slug. |
 | `is_cash_equivalent` | BOOLEAN | Treat-like-cash flag (money-market/sweep); NULL = unknown. |
-| `currency_code` | VARCHAR | Denominating currency; no FX conversion in v1. |
+| `currency_code` | VARCHAR | Denominating currency. Stored amounts are never converted; `--display-currency` prices them at read time and leaves this column alone. |
 
 `created_by`, `created_at`, `updated_at`, and the per-security `cost_basis_method` override live on `app.securities` but are not projected through this view.
 

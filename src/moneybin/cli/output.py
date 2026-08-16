@@ -117,6 +117,16 @@ quiet_option: bool = typer.Option(
     help="Suppress informational output (status lines, progress, ✅).",
 )
 
+display_currency_option: str | None = typer.Option(
+    None,
+    "--display-currency",
+    help=(
+        "ISO-4217 code to price every amount in (e.g. EUR). Each row converts at "
+        "its own date. Amounts stay in their original currency — and the result "
+        "says so — when any row has no rate."
+    ),
+)
+
 json_fields_option: str | None = typer.Option(
     None,
     "--json-fields",

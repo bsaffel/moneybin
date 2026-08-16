@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from moneybin.cli.main import app
 from moneybin.database import Database
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from tests.moneybin.db_helpers import create_core_dim_stub_views, create_core_tables
 
@@ -572,10 +573,10 @@ class TestHoldingsAndGains:
         assert "mixed currencies" not in result.output
 
     @pytest.mark.unit
-    def test_holdings_text_refuses_a_mixed_currency_total(
+    def test_holdings_text_refuses_a_mixed_currency_total_with_no_rate(
         self, runner: CliRunner, db: Database
     ) -> None:
-        """EUR beside USD — print the split, never one added-up figure."""
+        """EUR beside USD and no stored rate — print the split, never a sum."""
         db.conn.execute(
             """
             CREATE OR REPLACE VIEW core.dim_holdings AS
@@ -597,11 +598,52 @@ class TestHoldingsAndGains:
         )
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
-        assert "market_value=- (mixed currencies)" in result.output
+        assert "market_value=- (mixed currencies, no rate)" in result.output
         assert "USD=1200.00" in result.output
         assert "EUR=900.00" in result.output
         # The wrong sum must appear nowhere in the output.
         assert "2100.00" not in result.output
+
+    @pytest.mark.unit
+    def test_holdings_text_shows_the_originals_behind_a_converted_total(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """A converted figure never stands alone — the originals print beside it.
+
+        Same two positions as the refusal above, plus the rate that makes the
+        pair priceable: 900.00 EUR x 1.10 = 990.00 USD, added to 1200.00 USD.
+        """
+        ProfileSettingsRepo(db).set_home_currency("USD", actor="test")
+        db.execute(
+            """
+            INSERT INTO raw.exchange_rates
+                (from_currency, to_currency, rate_date, rate, source_type, loaded_at)
+            VALUES ('EUR', 'USD', DATE '2026-07-15', 1.10, 'frankfurter', NOW())
+            """
+        )
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   1200.00::DECIMAL(18,2) AS market_value,
+                   200.00::DECIMAL(18,2) AS unrealized_gain,
+                   DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
+                   0::INT AS days_since_observed, 'valued' AS valuation_status
+            UNION ALL
+            SELECT 'acct_brokerage', 'sec_2', 5::DECIMAL(28,10),
+                   500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'EUR',
+                   900.00::DECIMAL(18,2), 400.00::DECIMAL(18,2),
+                   DATE '2026-07-15', 'plaid', 0::INT, 'valued'
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+        assert result.exit_code == 0, result.output
+        assert "market_value=2190.00 USD" in result.output
+        assert "(converted from USD=1200.00 EUR=900.00)" in result.output
 
     @pytest.mark.unit
     def test_gains_json_reports_basis_incomplete_warning(

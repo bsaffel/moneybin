@@ -9,15 +9,31 @@ would satisfy the assertions while proving nothing about that.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+import pytest
+
+from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import ReportSemantics
+from moneybin.errors import UserError
+from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.reports._framework.catalog import ReportCatalog
+from moneybin.reports._framework.contract import (
+    OutputColumn,
+    ReportQuery,
+    ReportSemantics,
+    ReportSpec,
+)
 from moneybin.reports._framework.convert import convert_records
+from moneybin.reports._framework.execute import (
+    CatalogReportExecution,
+    convert_execution,
+)
 from moneybin.services.currency_service import CurrencyService
+from moneybin.tables import TableRef
 
 _CLASSES: Mapping[str, DataClass] = {
     "txn_date": DataClass.TXN_DATE,
@@ -27,14 +43,20 @@ _CLASSES: Mapping[str, DataClass] = {
 }
 
 
-def _semantics(*, fx_date: str | None = "txn_date") -> ReportSemantics:
+def _semantics(
+    *,
+    fx_date: str | None = "txn_date",
+    fx_basis: str | None = (
+        "converted per row at its own date when a display currency is given"
+    ),
+) -> ReportSemantics:
     return ReportSemantics(
         unit="currency",
         currency="currency_code",
         sign="negative expense; positive income",
         kind="flow",
         valuation_basis="transaction amount",
-        fx_basis="converted per row at its own date when a display currency is given",
+        fx_basis=fx_basis,
         time_basis="transaction date",
         denominator=None,
         comparison_window=None,
@@ -334,6 +356,56 @@ def test_a_report_that_declares_no_fx_date_segments(saved_db: Database) -> None:
     assert outcome.records[0]["amount"] == Decimal("100.00")
 
 
+def test_a_report_that_cannot_be_priced_gives_its_own_declared_reason(
+    saved_db: Database,
+) -> None:
+    """The refusal quotes the report's `fx_basis` rather than inferring one.
+
+    Why a report cannot be priced differs per report. `core:cashflow` has a
+    single date at its grain and still cannot convert, because `currency_code`
+    sits in its GROUP BY — pricing each row into one display currency would
+    return several rows sharing a grain key. `core:merchants` additionally
+    spans a range of dates rather than one. Deriving a reason from which
+    declaration happens to be missing would state one report's obstacle for
+    another's, so the author writes it once and it surfaces both here and
+    through `reports explain`.
+    """
+    basis = (
+        "amounts are aggregated per currency_code, so pricing a row into one "
+        "display currency would leave several rows sharing a grain key"
+    )
+
+    outcome = convert_records(
+        [_row()],
+        classes=_CLASSES,
+        semantics=_semantics(fx_date=None, fx_basis=basis),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+    )
+
+    assert outcome.degraded_reason == basis
+
+
+def test_a_report_declaring_no_basis_at_all_says_that_much(
+    saved_db: Database,
+) -> None:
+    """Every user-created report lands here — `dynamic.py` declares no semantics.
+
+    Nobody wrote an `fx_basis` for a report the user authored, so there is no
+    stated reason to quote and the generic reading is the honest one.
+    """
+    outcome = convert_records(
+        [_row()],
+        classes=_CLASSES,
+        semantics=_semantics(fx_date=None, fx_basis=None),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+    )
+
+    assert outcome.degraded_reason is not None
+    assert "does not declare" in outcome.degraded_reason
+
+
 def test_a_report_with_no_money_columns_is_not_degraded(saved_db: Database) -> None:
     """Having no amounts is not a failed conversion — it is nothing to convert."""
     service = CurrencyService(saved_db)
@@ -371,3 +443,229 @@ def test_a_monthly_grain_prices_at_the_month_close(saved_db: Database) -> None:
 
     assert outcome.degraded_reason is None
     assert outcome.records[0]["amount"] == Decimal("108.00")
+
+
+# --- convert_execution: what the envelope reports after a fallback ------------
+
+
+def _execution(**overrides: Any) -> CatalogReportExecution:
+    fields: dict[str, Any] = {
+        "report_id": "test:summary",
+        "parameters": {},
+        "sql": None,
+        "records": [_row()],
+        "columns": list(_CLASSES),
+        "column_types": ["DATE", "VARCHAR", "DECIMAL(18,2)", "BIGINT"],
+        "output_classes": dict(_CLASSES),
+        "tier": Tier.HIGH,
+        "total_count": 1,
+        "truncated": False,
+        "actions": [],
+        "period": None,
+        "semantics": _semantics(),
+        "provenance": ("reports.test_summary",),
+        "display_currency": "EUR",
+    }
+    fields.update(overrides)
+    return CatalogReportExecution(**fields)
+
+
+def test_a_failed_conversion_keeps_the_currency_the_rows_are_actually_in(
+    saved_db: Database,
+) -> None:
+    """Segmenting must not cost the caller the answer it already had.
+
+    ``build_catalog_execution`` derives ``display_currency`` from the rows
+    themselves — one agreed code, else null. When conversion falls back those
+    rows are unchanged, so the derived answer is still true. Replacing it with
+    the failed conversion's ``None`` reports a mixed-currency result where the
+    rows are in fact all EUR — a worse answer than the caller would have got
+    without asking.
+    """
+    service = CurrencyService(saved_db)
+
+    converted = convert_execution(_execution(), to_currency="USD", service=service)
+
+    assert converted.degraded_reason is not None
+    assert converted.display_currency == "EUR"
+
+
+def test_a_successful_conversion_reports_the_currency_it_converted_into(
+    saved_db: Database,
+) -> None:
+    """The other half: a real conversion must replace the derived value."""
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    service = CurrencyService(saved_db)
+
+    converted = convert_execution(_execution(), to_currency="USD", service=service)
+
+    assert converted.degraded_reason is None
+    assert converted.display_currency == "USD"
+
+
+# --- Requirement 9: the default display currency is the profile's home --------
+
+
+def _money_runner(db: Database) -> ReportQuery:  # noqa: ARG001  # contract handle
+    """One EUR amount on a fixed date.
+
+    Args:
+        db: Open read-only database connection.
+    """
+    return ReportQuery(
+        "SELECT DATE '2026-03-05' AS txn_date, 'EUR' AS currency_code, "
+        "CAST(100.00 AS DECIMAL(18,2)) AS amount",
+        [],
+    )
+
+
+def _money_report() -> ReportSpec:
+    return ReportSpec(
+        report_id="core:money",
+        name="money",
+        description="Test money report.",
+        view=TableRef("reports", "test_summary"),
+        runner=_money_runner,
+        classes={
+            "txn_date": DataClass.TXN_DATE,
+            "currency_code": DataClass.CURRENCY,
+            "amount": DataClass.TXN_AMOUNT,
+        },
+        columns=(
+            OutputColumn("txn_date", "Transaction date.", DataClass.TXN_DATE),
+            OutputColumn("currency_code", "Currency.", DataClass.CURRENCY),
+            OutputColumn("amount", "Amount.", DataClass.TXN_AMOUNT),
+        ),
+        semantics=_semantics(),
+        params=(),
+    )
+
+
+def _run(saved_db: Database, **currency: str | None) -> Any:
+    return ReportCatalog((_money_report(),)).execute(
+        saved_db,
+        report_id="core:money",
+        parameters={},
+        limit=100,
+        **currency,
+    )
+
+
+def test_the_home_currency_prices_a_report_nobody_gave_a_currency(
+    saved_db: Database,
+) -> None:
+    """Requirement 9's default. Without it a two-currency user retypes the flag."""
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+
+    result = _run(saved_db, home_currency="USD")
+
+    assert result.display_currency == "USD"
+    assert result.degraded is False
+
+
+def test_an_explicit_currency_outranks_the_home_currency(saved_db: Database) -> None:
+    _seed_rate(saved_db, "EUR", "GBP", date(2026, 3, 5), Decimal("0.85"))
+
+    result = _run(saved_db, display_currency="GBP", home_currency="USD")
+
+    assert result.display_currency == "GBP"
+    assert result.degraded is False
+
+
+def test_a_defaulted_currency_that_cannot_resolve_says_nothing(
+    saved_db: Database,
+) -> None:
+    """Silence here is the whole reason the default is safe to turn on.
+
+    Nobody asked for a currency, so nobody is owed an explanation for not
+    getting one — and the rows are still correct, in their own currency. A
+    warning on every read of every money-bearing report is how a reader learns
+    to skip the one that matters.
+    """
+    result = _run(saved_db, home_currency="USD")
+
+    assert result.degraded is False
+    assert result.degraded_reason is None
+    # Not converted: the rows are still the EUR they always were.
+    assert result.display_currency == "EUR"
+
+
+def test_a_requested_currency_that_cannot_resolve_says_why(
+    saved_db: Database,
+) -> None:
+    """The other half. Asking and silently not getting it is the worse failure."""
+    result = _run(saved_db, display_currency="USD", home_currency="USD")
+
+    assert result.degraded is True
+    assert result.degraded_reason is not None
+
+
+# --- A target that names no currency is refused, not segmented ----------------
+
+
+def _empty_runner(db: Database) -> ReportQuery:  # noqa: ARG001  # contract handle
+    """The same columns as ``_money_runner``, and no rows.
+
+    Args:
+        db: Open read-only database connection.
+    """
+    return ReportQuery(
+        "SELECT DATE '2026-03-05' AS txn_date, 'EUR' AS currency_code, "
+        "CAST(100.00 AS DECIMAL(18,2)) AS amount WHERE false",
+        [],
+    )
+
+
+def test_a_requested_currency_that_names_nothing_is_refused(
+    saved_db: Database,
+) -> None:
+    """A code matching no currency is the caller's mistake, not a rate gap.
+
+    Segmenting would be the wrong mercy: it returns the rows in their own
+    currency and blames a missing rate, sending the caller to
+    ``moneybin refresh`` to gather a pair that cannot exist.
+    """
+    with pytest.raises(UserError) as caught:
+        _run(saved_db, display_currency="NOTACURRENCY")
+
+    assert caught.value.code == error_codes.FX_CURRENCY_INVALID
+
+
+def test_an_empty_report_refuses_a_currency_that_names_nothing_too(
+    saved_db: Database,
+) -> None:
+    """The row loop is not a validator — with no rows it never runs.
+
+    ``convert_records`` reaches ``resolve_rate`` only when there is a row to
+    price, so a report returning nothing would otherwise report itself
+    denominated in whatever string arrived.
+    """
+    empty = replace(_money_report(), report_id="core:empty", runner=_empty_runner)
+
+    with pytest.raises(UserError) as caught:
+        ReportCatalog((empty,)).execute(
+            saved_db,
+            report_id="core:empty",
+            parameters={},
+            limit=100,
+            display_currency="NOTACURRENCY",
+        )
+
+    assert caught.value.code == error_codes.FX_CURRENCY_INVALID
+
+
+def test_a_malformed_home_currency_degrades_rather_than_failing_every_report(
+    saved_db: Database,
+) -> None:
+    """A standing profile setting must not break reads nobody parameterized.
+
+    Requirement 9 makes the home currency the default target, so raising on one
+    would fail every money-bearing report the profile owns until it is fixed —
+    including the reads that would show the user what is wrong. It is not this
+    call's request, so it degrades on the same rule every other silent default
+    fallback follows.
+    """
+    result = _run(saved_db, home_currency="NOTACURRENCY")
+
+    assert result.degraded is False
+    assert result.display_currency == "EUR"

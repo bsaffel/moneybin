@@ -198,6 +198,8 @@ class InvestmentHoldingsPayload:
     ``total_market_value`` and ``market_value_by_currency`` are BALANCE for the
     same reason: they are sums of the rows' BALANCE ``market_value``, and
     classifying a portfolio total AGGREGATE would under-classify real money.
+    ``total_market_value_currency`` is CURRENCY like every other currency code —
+    a converted total names its unit, and the unit is not the money.
     """
 
     rows: list[InvestmentHoldingRow]
@@ -207,6 +209,7 @@ class InvestmentHoldingsPayload:
         int | None, DataClass.TIMESTAMP_OBSERVABILITY
     ] = None
     total_market_value: Annotated[Decimal | None, DataClass.BALANCE] = None
+    total_market_value_currency: Annotated[str | None, DataClass.CURRENCY] = None
     market_value_by_currency: Annotated[dict[str, Decimal], DataClass.BALANCE] = field(
         default_factory=dict
     )
@@ -219,6 +222,7 @@ class InvestmentHoldingsPayload:
             warnings=result.warnings,
             max_days_since_observed=result.max_days_since_observed,
             total_market_value=result.total_market_value,
+            total_market_value_currency=result.total_market_value_currency,
             market_value_by_currency=result.market_value_by_currency,
         )
 
@@ -421,7 +425,7 @@ class InvestmentsEventsView(BaseModel):
 class InvestmentsHoldingsView(BaseModel):
     """Paginated current positions with portfolio-level valuation.
 
-    The three portfolio fields mirror ``InvestmentHoldingsPayload``'s (same
+    The four portfolio fields mirror ``InvestmentHoldingsPayload``'s (same
     classifications, same rationale). They are computed over the full position
     set, so a paginated ``rows`` page does not change them.
     """
@@ -435,6 +439,7 @@ class InvestmentsHoldingsView(BaseModel):
         int | None, DataClass.TIMESTAMP_OBSERVABILITY
     ] = None
     total_market_value: Annotated[Decimal | None, DataClass.BALANCE] = None
+    total_market_value_currency: Annotated[str | None, DataClass.CURRENCY] = None
     market_value_by_currency: Annotated[dict[str, Decimal], DataClass.BALANCE] = Field(
         default_factory=dict
     )

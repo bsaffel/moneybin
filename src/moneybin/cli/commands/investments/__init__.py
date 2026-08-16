@@ -280,13 +280,20 @@ def investments_holdings(
         )
         by_ccy = result.market_value_by_currency
         if result.total_market_value is not None:
-            currency = next(iter(by_ccy))
-            total = f"market_value={result.total_market_value} {currency}"
+            total = (
+                f"market_value={result.total_market_value} "
+                f"{result.total_market_value_currency}"
+            )
+            if len(by_ccy) > 1:
+                # A converted total is an inference, so it never appears alone:
+                # the originals it was computed from print beside it.
+                split = " ".join(f"{code}={amount}" for code, amount in by_ccy.items())
+                total += f" (converted from {split})"
         elif by_ccy:
             # No single figure exists across currencies: print the split so no
             # reader can mistake one number for the portfolio's value.
             split = " ".join(f"{code}={amount}" for code, amount in by_ccy.items())
-            total = f"market_value=- (mixed currencies) {split}"
+            total = f"market_value=- (mixed currencies, no rate) {split}"
         else:
             total = "market_value=- (no position is priced)"
         typer.echo(f"portfolio {total} max_days_since_observed={stalest}")

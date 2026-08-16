@@ -65,6 +65,7 @@ from moneybin.metrics.registry import (
     SECURITY_RESOLUTION_OUTCOMES_TOTAL,
 )
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.services.account_service import COST_BASIS_METHODS
 from moneybin.services.audit_service import AuditService
@@ -321,19 +322,24 @@ class HoldingsResult:
     the reader to ignore it. NULL when no position priced, because a 0 there
     would read as "every close is today's".
 
-    ``total_market_value`` is published only when every priced position shares
-    one currency. ``core.fct_security_prices`` converts nothing, so a mixed
-    portfolio's ``market_value`` column holds figures in two units; summing it
-    would add euros to dollars and report one number. When the currencies
-    differ the total is NULL and ``market_value_by_currency`` carries the
-    split — the wrong sum is prevented structurally, not by a caveat the
-    reader has to notice.
+    ``total_market_value`` is one figure for the whole portfolio, and
+    ``total_market_value_currency`` names the unit it is in — always, including
+    the single-currency case, so no reader has to infer it from the breakdown.
+    ``core.fct_security_prices`` converts nothing, so a mixed portfolio's
+    ``market_value`` column holds figures in two units and cannot simply be
+    summed; each position is instead priced into the profile's home currency at
+    its own close's rate (Requirement 16) before the addition. Both are NULL
+    when that pricing is unavailable — an unset home currency, or a pair no
+    stored rate covers — and ``market_value_by_currency`` carries the split in
+    original units either way. A sum across units is prevented structurally,
+    never by a caveat the reader has to notice.
     """
 
     rows: list[HoldingRow]
     warnings: list[str]
     max_days_since_observed: int | None = None
     total_market_value: Decimal | None = None
+    total_market_value_currency: str | None = None
     market_value_by_currency: dict[str, Decimal] = field(default_factory=dict)
 
 
@@ -1868,15 +1874,73 @@ class InvestmentService:
             PRICE_STALENESS_DAYS.set(
                 max(observed_ages) if observed_ages else float("nan")
             )
+        total, total_currency = self._portfolio_total(holding_rows, by_currency)
         return HoldingsResult(
             rows=holding_rows,
             warnings=warnings,
             max_days_since_observed=max(observed_ages) if observed_ages else None,
-            total_market_value=(
-                next(iter(by_currency.values())) if len(by_currency) == 1 else None
-            ),
+            total_market_value=total,
+            total_market_value_currency=total_currency,
             market_value_by_currency=by_currency,
         )
+
+    def _portfolio_total(
+        self, rows: list[HoldingRow], by_currency: dict[str, Decimal]
+    ) -> tuple[Decimal | None, str | None]:
+        """One figure for the portfolio, and the currency it is denominated in.
+
+        Positions are priced individually rather than by converting each
+        currency's subtotal: a subtotal spans however many close dates its
+        positions were valued on, and there is no one rate that prices it. Each
+        position carries the date its own close came from, so pricing it there
+        keeps the converted figure consistent with the valuation it converts.
+
+        Returning ``(None, None)`` for a pair no stored rate covers is
+        Requirement 15's segmentation fallback, not a swallowed error: the
+        per-currency split is already published beside this, so the caller
+        loses the combined figure and nothing else. Rates are never fetched
+        here — a read holds no writer lock (see
+        ``build_cache_only_currency_service``).
+        """
+        if not by_currency:
+            return None, None
+        if len(by_currency) == 1:
+            code, amount = next(iter(by_currency.items()))
+            return amount, code
+        # Deferred: currency_service imports polars, and this module is on the
+        # CLI's eager import chain (tests/moneybin/test_cli/test_cold_start.py).
+        from moneybin.services.currency_service import (  # noqa: PLC0415 — defer to avoid cold-start cost
+            RateUnavailableError,
+            build_cache_only_currency_service,
+            require_currency,
+        )
+
+        home = ProfileSettingsRepo(self._db).get_home_currency()
+        if home is None:
+            # Requirement 9: an unset home currency has no default. Substituting
+            # 'USD' would label a foreign-currency portfolio's total in a unit
+            # its owner never chose.
+            return None, None
+        try:
+            target = require_currency(home)
+        except UserError:
+            # A malformed standing profile setting degrades this one figure
+            # rather than failing the whole holdings read, matching how the
+            # reports layer treats the same setting.
+            return None, None
+        currency = build_cache_only_currency_service(self._db)
+        total = Decimal("0")
+        for row in rows:
+            if row.market_value is None or row.price_date is None:
+                continue
+            try:
+                priced, _ = currency.convert(
+                    row.market_value, row.currency_code, target, row.price_date
+                )
+            except RateUnavailableError:
+                return None, None
+            total += priced
+        return total, target
 
     def lots(
         self,

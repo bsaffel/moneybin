@@ -20,6 +20,7 @@ from moneybin.reports._framework.catalog import (
     catalog_to_payload,
     get_report_catalog,
     open_report_catalog,
+    profile_home_currency,
     result_to_payload,
 )
 
@@ -33,10 +34,11 @@ def reports(
     report_id: str | None = None,
     parameters: dict[str, JsonValue] | None = None,
     limit: Annotated[int, Field(strict=True, ge=1)] | None = None,
+    display_currency: str | None = None,
 ) -> ResponseEnvelope[ReportsPayload]:
     """Browse the report catalog or execute one registered read-only report."""
     if report_id is None:
-        if parameters is not None or limit is not None:
+        if parameters is not None or limit is not None or display_currency is not None:
             raise UserError(
                 "parameters and limit require report_id",
                 code=error_codes.REPORT_ID_REQUIRED,
@@ -76,6 +78,8 @@ def reports(
             report_id=report_id,
             parameters=parameters or {},
             limit=max_rows,
+            display_currency=display_currency,
+            home_currency=profile_home_currency(db),
         )
     payload = result_to_payload(result)
     return build_envelope(

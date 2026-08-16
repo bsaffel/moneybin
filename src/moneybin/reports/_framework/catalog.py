@@ -47,9 +47,50 @@ from moneybin.reports._framework.execute import (
     execute_catalog_report,
     redact_catalog_execution,
 )
-from moneybin.services.currency_service import build_cache_only_currency_service
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+from moneybin.services.currency_service import (
+    build_cache_only_currency_service,
+    require_currency,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def profile_home_currency(db: Database) -> str | None:
+    """The currency to price a report in when the caller named none.
+
+    Every report surface resolves the default through this one function, so a
+    new surface inherits Requirement 9 by spelling it the same way. ``None`` is
+    a real answer, not a missing one: a user who has chosen no home currency
+    gets their amounts in the currencies they are actually in, never a guess.
+    """
+    return ProfileSettingsRepo(db).get_home_currency()
+
+
+def _conversion_target(
+    display_currency: str | None, home_currency: str | None
+) -> str | None:
+    """The currency to price into, refusing a request that names none.
+
+    Resolved *before* the rows are read, because the row loop is not a
+    validator: ``convert_records`` reaches ``resolve_rate`` only when there is a
+    row to price, so a report returning nothing would otherwise label itself
+    denominated in whatever string arrived.
+
+    Only the caller's own request is refused. A malformed ``home_currency`` is a
+    standing profile setting rather than this call's ask, and raising on one
+    would fail every money-bearing report the profile owns until it is fixed —
+    including the reads that would show what is wrong. It falls back silently,
+    on the same rule every other defaulted-currency fallback follows.
+    """
+    if display_currency is not None:
+        return require_currency(display_currency)
+    if home_currency is None:
+        return None
+    try:
+        return require_currency(home_currency)
+    except UserError:
+        return None
 
 
 def _merged_reason(*reasons: str | None) -> str | None:
@@ -214,27 +255,40 @@ class ReportCatalog:
         parameters: Mapping[str, JsonValue],
         limit: int,
         display_currency: str | None = None,
+        home_currency: str | None = None,
     ) -> CatalogReportResult:
         """Validate parameters, then dispatch through the selected report kind.
 
-        ``display_currency`` prices every money column in that currency
-        (Requirement 9). A pair that cannot be resolved from stored rates
-        segments instead of failing, and says why — see ``convert_execution``.
+        Both currencies price every money column in one currency (Requirement 9),
+        and a pair that cannot be resolved from stored rates segments instead of
+        failing — see ``convert_execution``. They differ in who asked, and so in
+        what a fallback owes the caller: ``display_currency`` is the caller's own
+        request and its fallback is explained, while ``home_currency`` is the
+        profile's standing default and its fallback is silent. A default that
+        announced itself would put a warning on every read of every report whose
+        rates are not yet cached, and on every user-created report — which
+        deliberately declares neither a currency nor a date column, so it can
+        never convert. Callers resolve ``home_currency`` themselves (see
+        ``profile_home_currency``) rather than having it read here, which keeps
+        this method a pure function of its arguments.
         """
+        target = _conversion_target(display_currency, home_currency)
         spec, execution = self.execute_raw(
             db,
             report_id=report_id,
             parameters=parameters,
             limit=limit,
         )
-        if display_currency is not None:
+        if target is not None:
             # Between execution and redaction, the only window where the rows
             # are both final and still numeric.
             execution = convert_execution(
                 execution,
-                to_currency=display_currency,
+                to_currency=target,
                 service=build_cache_only_currency_service(db),
             )
+            if display_currency is None:
+                execution = replace(execution, degraded_reason=None)
         result = redact_catalog_execution(spec, execution)
         status = self.status(spec.report_id)
         if not status.degraded:

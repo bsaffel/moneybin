@@ -2,8 +2,13 @@
 
 Builds a command whose ``__signature__`` carries the report's params (each as a
 ``typer.Option``, flag auto-derived from the name) plus the shared
-``--output`` / ``--quiet`` options, then runs the stable report ID through the
-shared catalog and renders text or a JSON envelope via ``render_or_json``.
+``--output`` / ``--quiet`` / ``--display-currency`` options, then runs the stable
+report ID through the shared catalog and renders text or a JSON envelope via
+``render_or_json``.
+
+Every option this module injects must also be listed in ``introspect``'s
+``_RESERVED_CLI_PARAMS``, or a report whose runner happens to use the same
+parameter name takes down the whole reports command group at import.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ import typer
 from moneybin.cli.output import (
     CLI_MAX_ROWS,
     OutputFormat,
+    display_currency_option,
     output_option,
     quiet_option,
     render_or_json,
@@ -44,6 +50,14 @@ def _cli_signature(spec: ReportSpec) -> inspect.Signature:
     ]
     params.append(
         inspect.Parameter(
+            "display_currency",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            default=display_currency_option,
+            annotation=str | None,
+        )
+    )
+    params.append(
+        inspect.Parameter(
             "output",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             default=output_option,
@@ -59,6 +73,49 @@ def _cli_signature(spec: ReportSpec) -> inspect.Signature:
         )
     )
     return inspect.Signature(params)
+
+
+def echo_report_notes(result: CatalogReportResult) -> None:
+    """Echo the envelope metadata the text path would otherwise drop.
+
+    ``render_or_json`` renders the envelope on the JSON path only, so every
+    text renderer of a report result has to say these three things itself.
+    Shared rather than copied: the report commands with hand-written renderers
+    (``reports networth`` and ``networth-history``) printed none of them, so a
+    conversion that fell back to per-currency segmentation showed segmented
+    positions and never said why — the silent masking these echoes exist to
+    prevent, reappearing on the surface that skipped them.
+    """
+    # R4's verdict, on the surface that cannot see the envelope. JSON and MCP
+    # callers read `summary.degraded_reason`; without this a drifted report
+    # printed `*****` and said nothing — the silent masking that teaches a
+    # reader to skip the warning that matters.
+    if result.degraded and result.degraded_reason:
+        typer.echo(f"⚠️  {result.degraded_reason}")
+    # Same gap, same surface: `truncated` rides the envelope to JSON and MCP
+    # callers, so without this the text path renders a capped table that
+    # reads as the whole answer — worse here than a masked cell, because
+    # nothing about the rows themselves looks unusual.
+    #
+    # The count of what was *not* shown is deliberately absent. A truncated
+    # execution fetches `limit + 1` rows and reports that as `total_count`,
+    # so it is a lower bound — "1,000,000 of 1,000,001" would read as one
+    # row missing when millions are, which is a more confident lie than
+    # saying nothing. `mcp.md` calls this a lower-bound total for the same
+    # reason; counting the rest means running the query again without a cap.
+    if result.truncated:
+        typer.echo(
+            f"⚠️  Showing the first {len(result.records):,} rows; more exist. "
+            "Raise --limit or narrow the report to see the rest."
+        )
+    # Third instance of the same asymmetry, and the one that inverted its own
+    # intent: `inspection_hint` deliberately names a CLI command — "Run
+    # `moneybin reports explain …`" — so the surfaces that cannot run it were
+    # told to while the terminal printed `*****` and stopped. Every action is
+    # rendered, not just that hint: a runner's own `actions` are next steps for
+    # whoever called it, and the text path is a caller.
+    for action in result.actions:
+        typer.echo(f"💡 {action}")
 
 
 def render_report_result(
@@ -78,37 +135,7 @@ def render_report_result(
                 for record in result.records
             ]
             render_rich_table(result.columns, rows)
-        # R4's verdict, on the surface that cannot see the envelope. JSON and MCP
-        # callers read `summary.degraded_reason`; `render_or_json` renders no
-        # envelope metadata on the text path, so without this a drifted report
-        # printed `*****` and said nothing — the silent masking that teaches a
-        # reader to skip the warning that matters.
-        if result.degraded and result.degraded_reason:
-            typer.echo(f"⚠️  {result.degraded_reason}")
-        # Same gap, same surface: `truncated` rides the envelope to JSON and MCP
-        # callers, so without this the text path renders a capped table that
-        # reads as the whole answer — worse here than a masked cell, because
-        # nothing about the rows themselves looks unusual.
-        #
-        # The count of what was *not* shown is deliberately absent. A truncated
-        # execution fetches `limit + 1` rows and reports that as `total_count`,
-        # so it is a lower bound — "1,000,000 of 1,000,001" would read as one
-        # row missing when millions are, which is a more confident lie than
-        # saying nothing. `mcp.md` calls this a lower-bound total for the same
-        # reason; counting the rest means running the query again without a cap.
-        if result.truncated:
-            typer.echo(
-                f"⚠️  Showing the first {len(result.records):,} rows; more exist. "
-                "Raise --limit or narrow the report to see the rest."
-            )
-        # Third instance of the same asymmetry, and the one that inverted its own
-        # intent: `inspection_hint` deliberately names a CLI command — "Run
-        # `moneybin reports explain …`" — so the surfaces that cannot run it were
-        # told to while the terminal printed `*****` and stopped. Every action is
-        # rendered, not just that hint: a runner's own `actions` are next steps for
-        # whoever called it, and the text path is a caller.
-        for action in result.actions:
-            typer.echo(f"💡 {action}")
+        echo_report_notes(result)
 
     render_or_json(
         result.to_envelope(),
@@ -128,12 +155,18 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
     def _impl(**kwargs: Any) -> None:
         # Deferred so importing this module (at CLI command registration) does
         # not pull execute → sql_lineage → sqlglot into the CLI cold-start path.
-        from moneybin.reports._framework.catalog import get_report_catalog
+        from moneybin.reports._framework.catalog import (
+            get_report_catalog,
+            profile_home_currency,
+        )
 
         output: OutputFormat = kwargs.pop("output")
         # quiet has nothing to silence here: the text renderer emits only the
         # results table (no status chatter) and JSON output ignores it.
         kwargs.pop("quiet", None)
+        # Popped before `kwargs` becomes `parameters`: display conversion is the
+        # framework's, not the runner's, so a runner would reject it as unknown.
+        display_currency: str | None = kwargs.pop("display_currency", None)
         cli_actor = f"reports_{spec.name}"
         with handle_cli_errors(cli_actor=cli_actor):
             # Runner enum/validation errors raise bare ValueError; let it
@@ -151,6 +184,8 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                     report_id=spec.report_id,
                     parameters=kwargs,
                     limit=CLI_MAX_ROWS,
+                    display_currency=display_currency,
+                    home_currency=profile_home_currency(db),
                 )
             render_report_result(result, output, cli_actor=cli_actor)
 

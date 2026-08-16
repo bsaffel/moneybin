@@ -231,6 +231,33 @@ def test_every_money_bearing_report_projects_the_currency_it_is_denominated_in()
     assert unsegmented == []
 
 
+def test_only_reports_whose_rows_price_exactly_declare_an_fx_date() -> None:
+    """Set equality, because both halves of this membership are load-bearing.
+
+    Declaring `fx_date` opts a report's rows into display conversion, which is
+    defensible only where one row holds one amount and one date to price it on.
+    Five of the eight packaged reports put `currency_code` in their GROUP BY,
+    so pricing each row into one display currency would return several rows
+    sharing a grain key — one month and category in two currencies, both
+    relabelled USD, with nothing left to tell them apart or add them up.
+
+    Adding an id here without checking that report's grain reintroduces exactly
+    that, silently. Dropping one stops converting a report that used to. A
+    subset check or a count would catch neither.
+    """
+    declared = {
+        report.report_id
+        for report in get_report_catalog().list()
+        if report.semantics.fx_date is not None
+    }
+
+    assert declared == {
+        "core:balance_drift",
+        "core:large_transactions",
+        "core:networth",
+    }
+
+
 def test_service_report_privacy_maps_match_independent_contract() -> None:
     """Every service-backed report has an explicit, independently reviewed map."""
     expected = {
@@ -818,10 +845,11 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
         "resolved transaction-adjusted daily positions on or before the "
         "resolved balance_date"
     )
-    assert result.semantics.fx_basis == (
-        "no FX conversion in v1; rows are segmented per currency_code, never blended"
-    )
+    assert result.semantics.fx_date == "balance_date"
     assert result.parameters == {"as_of": "2026-07-02", "account_ids": None}
+    # limit=1 keeps the currency's position and drops the breakdown, because
+    # totals lead: a page capped below the row count still answers "what am I
+    # worth" rather than showing one account and calling it the snapshot.
     assert result.records == [
         {
             "balance_date": date(2026, 7, 1),
@@ -830,15 +858,17 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
             "total_assets": Decimal("1500.12000000"),
             "total_liabilities": Decimal("-265.56000000"),
             "account_count": 2,
-            "account_id": "acct_11112222",
-            "account_name": "Checking",
-            "account_balance": Decimal("500.12000000"),
-            "observation_source": "asserted",
+            "account_id": None,
+            "account_name": None,
+            "account_balance": None,
+            "observation_source": None,
         }
     ]
     assert result.output_classes["account_id"] is DataClass.RECORD_ID
     assert result.tier is Tier.HIGH
     assert result.truncated is True
+    # `max_rows + 1`, the deliberate lower bound a truncated execution reports —
+    # three rows exist here (one totals, two accounts).
     assert result.total_count == 2
     envelope = result.to_envelope().to_dict()
     assert envelope["summary"]["display_currency"] == "USD"
@@ -1522,6 +1552,89 @@ def test_networth_keeps_every_currency_when_the_breakdown_is_filtered(
     )
 
     by_currency = {
-        record["currency_code"]: record["net_worth"] for record in result.records
+        record["currency_code"]: record["net_worth"]
+        for record in result.records
+        if record["account_id"] is None
     }
     assert by_currency == {"USD": Decimal("500.00"), "EUR": Decimal("800.00")}
+
+
+def test_networth_separates_currency_totals_from_account_balances(
+    mocker: MockerFixture,
+) -> None:
+    """A currency's position is one row; each account's balance is another.
+
+    Fusing the headline onto every account row makes two dollar accounts two
+    rows that each claim the same $2,000 position. Display conversion prices
+    rows one at a time, so once both are relabelled into the display currency
+    nothing distinguishes them from two separate positions, and anything that
+    adds them up double-counts. Separate rows keep the grain conversion has to
+    preserve.
+    """
+    account = partial(
+        NetWorthAccountRow,
+        observation_source="asserted",
+        currency_code="USD",
+    )
+    mocker.patch(
+        "moneybin.reports.service_reports.NetworthService.current",
+        return_value=NetWorthSnapshotPayload(
+            balance_date=date(2026, 7, 1),
+            currency_code="USD",
+            net_worth=Decimal("2000.00"),
+            total_assets=Decimal("2000.00"),
+            total_liabilities=Decimal("0.00"),
+            account_count=2,
+            per_currency=[
+                NetWorthCurrencySegment(
+                    currency_code="USD",
+                    net_worth=Decimal("2000.00"),
+                    total_assets=Decimal("2000.00"),
+                    total_liabilities=Decimal("0.00"),
+                    account_count=2,
+                )
+            ],
+            per_account=[
+                account(
+                    account_id="acct_usd00001",
+                    display_name="Checking",
+                    balance=Decimal("1200.00"),
+                ),
+                account(
+                    account_id="acct_usd00002",
+                    display_name="Savings",
+                    balance=Decimal("800.00"),
+                ),
+            ],
+        ),
+    )
+
+    records = (
+        ReportCatalog((NETWORTH_REPORT,))
+        .execute(
+            cast(Database, MagicMock(spec=Database)),
+            report_id="core:networth",
+            parameters={},
+            limit=100,
+        )
+        .records
+    )
+
+    totals = [row for row in records if row["account_id"] is None]
+    accounts = [row for row in records if row["account_id"] is not None]
+    assert [row["net_worth"] for row in totals] == [Decimal("2000.00")]
+    assert [row["account_count"] for row in totals] == [2]
+    # The position is stated once. An account row repeating it would be counted
+    # again by anything summing the column.
+    assert [row["net_worth"] for row in accounts] == [None, None]
+    assert [row["account_count"] for row in accounts] == [None, None]
+    assert [row["account_balance"] for row in accounts] == [
+        Decimal("1200.00"),
+        Decimal("800.00"),
+    ]
+    # Both kinds still say what they hold and when: conversion prices every row
+    # it is handed, and segments the whole result if one cannot answer either.
+    assert {row["currency_code"] for row in records} == {"USD"}
+    assert {row["balance_date"] for row in records} == {date(2026, 7, 1)}
+    # Totals lead, so a limit eats breakdown rows before it eats a position.
+    assert records[0]["account_id"] is None

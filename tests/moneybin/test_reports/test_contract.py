@@ -344,6 +344,19 @@ def test_build_spec_rejects_quiet_reserved_param() -> None:
         )
 
 
+def test_build_spec_rejects_display_currency_reserved_param() -> None:
+    def runner(db: Database, *, display_currency: str | None = None) -> ReportQuery:
+        """Summary."""
+        return ReportQuery("SELECT 1", [])
+
+    with pytest.raises(ValueError, match="display_currency"):
+        _build_spec(
+            runner,
+            name="r",
+            parameter_classes={"display_currency": DataClass.TXN_TYPE},
+        )
+
+
 def test_report_spec_requires_namespaced_id_and_metric_semantics() -> None:
     spec = _build_spec(report_id="core:spending")
 

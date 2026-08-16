@@ -30,6 +30,7 @@ from moneybin.reports._framework.execute import ReportResult
 from moneybin.reports._framework.explain import ColumnProvenance, ReportExplanation
 from moneybin.repositories.user_reports_repo import UNSET
 from moneybin.services.user_reports_service import ReclassifyOutcome, SaveOutcome
+from tests.database_mocks import no_profile_database
 
 runner = CliRunner()
 
@@ -40,13 +41,6 @@ _ROW: dict[str, Any] = {
     # so the approval cannot land on a revision the user never saw.
     "class_fingerprint": "fp-at-prompt-time",
 }
-
-
-def _database() -> MagicMock:
-    """A ``get_database`` stand-in whose context manager yields a mock."""
-    context = MagicMock()
-    context.__enter__.return_value = MagicMock()
-    return context
 
 
 def _service(**attributes: Any) -> MagicMock:
@@ -78,7 +72,7 @@ def _patch_database() -> Any:
     """
     return patch(
         "moneybin.cli.commands.reports.user_reports.get_database",
-        return_value=_database(),
+        return_value=no_profile_database(),
     )
 
 
@@ -92,7 +86,7 @@ def _patch_catalog_database() -> Any:
     """
     return patch(
         "moneybin.reports._framework.catalog.get_database",
-        return_value=_database(),
+        return_value=no_profile_database(),
     )
 
 
@@ -1511,7 +1505,7 @@ def test_a_confirm_prompt_is_never_held_open_over_the_writer_lock(
 
     def _record(*, read_only: bool, **_: Any) -> MagicMock:
         opened.append(read_only)
-        return _database()
+        return no_profile_database()
 
     def _decline(*_args: Any, **_kwargs: Any) -> bool:
         at_prompt.append(list(opened))

@@ -94,7 +94,12 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
         sign="cost amounts are positive absolute outflows",
         kind="flow",
         valuation_basis="mean observed transaction amount annualized by inferred cadence",
-        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
+        fx_basis=(
+            "amounts are aggregated per currency_code across a subscription's "
+            "occurrences rather than one date, so pricing a row into one display "
+            "currency would leave several rows sharing a grain key; rows stay "
+            "segmented per currency_code, never blended"
+        ),
         time_basis="inclusive rolling 18-month period ending on current date",
         denominator=(
             "six occurrences and fourteen days of interval variation scale confidence"

@@ -87,7 +87,12 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         sign="negative expense; positive income; ranking uses absolute amount",
         kind="flow",
         valuation_basis="transaction amount ranked by absolute magnitude",
-        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
+        fx_basis=(
+            "each row is one transaction on one date, so a requested display "
+            "currency prices it at that date's rate; a row that cannot be priced "
+            "leaves the whole report segmented per currency_code, never blended"
+        ),
+        fx_date="txn_date",
         time_basis="inclusive full observed transaction period",
         denominator=(
             "account or category median absolute deviation scaled by 1.4826 "

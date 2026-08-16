@@ -46,7 +46,7 @@ _ARG_ENTRY = re.compile(r"^(\w+)\s*(?:\([^)]*\))?\s*:\s*(.*)$")
 # A runner param colliding with one of these would raise a cryptic duplicate-
 # parameter error deep in Signature construction, crashing the whole reports
 # command group at build; reject it here with a clear message instead.
-_RESERVED_CLI_PARAMS = frozenset({"output", "quiet"})
+_RESERVED_CLI_PARAMS = frozenset({"output", "quiet", "display_currency"})
 
 
 def _section_tag(stripped: str) -> str | None:
@@ -76,7 +76,7 @@ def build_spec(
     Raises:
         ValueError: if the runner has no docstring, its first parameter is not
             ``db``, any non-``db`` parameter is not keyword-only or collides with
-            a reserved CLI option (``output``/``quiet``), ``classes`` is empty
+            one of the shared CLI options the registrar injects, ``classes`` is empty
             (every report must declare its column privacy contract), or
             ``class_downgrades`` names a column absent from ``classes`` or
             carries an empty reason (a stale or unexplained downgrade).
