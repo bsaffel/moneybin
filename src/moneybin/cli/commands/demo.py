@@ -1,6 +1,7 @@
 """`moneybin demo` — one-command evaluator preset (synthetic profile + answer)."""
 
 import logging
+from decimal import Decimal
 
 import typer
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 _PERSONAS = ("basic", "family", "freelancer", "international")
 
 
-def _opt_str(value: object | None) -> str | None:
+def _opt_str(value: Decimal | None) -> str | None:
     """Stringify a Decimal for JSON, preserving null rather than spelling it."""
     return None if value is None else str(value)
 

@@ -20,6 +20,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   holds more than one currency, `demo` prints net worth per currency instead of
   a single total, and its JSON emits `net_worth: null` beside a `per_currency`
   breakdown — a null a consumer can read, never the string `"None"`.
+
+  A persona's `currency_code` is shape-checked when the YAML loads, by the same
+  validator every other currency entry point uses: a typo like `usd` would
+  otherwise reach `raw` and `core` verbatim and surface as a second segment
+  beside `USD`. A well-formed code the FX provider does not publish, like AED,
+  still loads — the check is shape, not membership. A transfer between two
+  accounts in different currencies is now refused outright: the generator moves
+  one magnitude to both sides without converting, so it would have paid a 100
+  USD outflow as a +100 EUR inflow. Fund each currency from its own income
+  until the conversion layer lands.
 - **Exchange rates, and your own corrections to them (M1K.2).** `moneybin fx
   rate USD EUR 2026-03-13` answers with the rate, the day it was published for,
   and which layer supplied it. Precedence is your own correction, then the

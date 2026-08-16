@@ -224,6 +224,87 @@ class TestPersonaConfig:
         )
         assert account.currency_code == "AED"
 
+    @pytest.mark.parametrize("bad_code", ["usd", "US", "USDD", "U5D", "", "  "])
+    def test_malformed_currency_code_rejected(self, bad_code: str) -> None:
+        """A typo would reach raw and core verbatim and split the report segments.
+
+        `reports.net_worth` groups by this string and the doctor's currency check
+        treats every non-null value as known, so `usd` becomes a second segment
+        beside `USD` rather than an error.
+        """
+        with pytest.raises(ValueError, match="3 uppercase letters"):
+            AccountConfig(
+                name="Typo",
+                type="checking",
+                source_type="ofx",
+                institution="Test Bank",
+                currency_code=bad_code,
+            )
+
+    def test_provider_unsupported_currency_code_still_accepted(self) -> None:
+        """Shape, not membership — AED is deliberately outside the FX provider."""
+        account = AccountConfig(
+            name="Dubai Checking",
+            type="checking",
+            source_type="csv",
+            institution="Emirates Bank",
+            currency_code="AED",
+        )
+        assert account.currency_code == "AED"
+
+    def test_cross_currency_transfer_rejected(
+        self, minimal_persona_dict: dict[str, Any]
+    ) -> None:
+        """`TransferGenerator` moves one magnitude to both sides without converting.
+
+        Each side then inherits its own account's currency, so an unconverted
+        100 USD outflow lands as a +100 EUR inflow — balances and any ground
+        truth derived from them are silently wrong. Reject until M1K.3 gives the
+        generator a conversion.
+        """
+        minimal_persona_dict["accounts"].append({
+            "name": "Eurozone Savings",
+            "type": "savings",
+            "source_type": "ofx",
+            "institution": "Test Bank EU",
+            "opening_balance": 500.00,
+            "currency_code": "EUR",
+        })
+        minimal_persona_dict["transfers"] = [
+            {
+                "from": "Checking",
+                "to": "Eurozone Savings",
+                "amount": 100.0,
+                "schedule": "monthly",
+                "day_of_month": 5,
+            }
+        ]
+        with pytest.raises(ValueError, match="cross-currency transfer"):
+            PersonaConfig.model_validate(minimal_persona_dict)
+
+    def test_same_currency_transfer_still_allowed(
+        self, minimal_persona_dict: dict[str, Any]
+    ) -> None:
+        """The guard must reject only the unconvertible case, not transfers."""
+        minimal_persona_dict["accounts"].append({
+            "name": "Savings",
+            "type": "savings",
+            "source_type": "ofx",
+            "institution": "Test Bank",
+            "opening_balance": 500.00,
+        })
+        minimal_persona_dict["transfers"] = [
+            {
+                "from": "Checking",
+                "to": "Savings",
+                "amount": 100.0,
+                "schedule": "monthly",
+                "day_of_month": 5,
+            }
+        ]
+        persona = PersonaConfig.model_validate(minimal_persona_dict)
+        assert len(persona.transfers) == 1
+
 
 class TestSpendingCategoryConfig:
     """Test spending category config validation."""
