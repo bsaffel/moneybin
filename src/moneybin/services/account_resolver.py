@@ -34,6 +34,7 @@ from moneybin.services.account_resolution_types import (
     SourceAccount,
     normalize_account_identifier,
 )
+from moneybin.services.pdf_account_identity import legacy_pdf_identifier_key
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
     ACCOUNT_LINKS,
@@ -930,10 +931,11 @@ class AccountResolver:
         self, src: SourceAccount, exclude_account_id: str
     ) -> list[_Candidate]:
         """Match PDF accounts loaded earlier in a batch but not refreshed yet."""
-        if src.source_type != "pdf" or not src.last_four or not src.institution:
+        if src.source_type != "pdf" or not src.institution:
             return []
         target_institution = _institution_key(src.institution)
-        if target_institution is None:
+        legacy_key = src.legacy_source_account_key
+        if target_institution is None or (not src.last_four and not legacy_key):
             return []
         try:
             materialized_ids = {
@@ -958,21 +960,42 @@ class AccountResolver:
             ).fetchall()
         except duckdb.CatalogException:
             return []
-        candidates = [
-            _Candidate(
-                account_id=str(account_id),
-                signal="institution_last4",
-                value=f"{target_institution}:{src.last_four}",
-                confidence=0.5,
+        candidates: list[_Candidate] = []
+        for account_id, masked_number, institution in rows:
+            if (
+                str(account_id) in materialized_ids
+                or masked_number is None
+                or institution is None
+                or _institution_key(str(institution)) != target_institution
+            ):
+                continue
+            digits = "".join(
+                character for character in str(masked_number) if character.isdigit()
             )
-            for account_id, masked_number, institution in rows
-            if str(account_id) not in materialized_ids
-            and masked_number is not None
-            and "".join(char for char in str(masked_number) if char.isdigit())[-4:]
-            == src.last_four
-            and institution is not None
-            and _institution_key(str(institution)) == target_institution
-        ]
+            if src.last_four:
+                if digits[-4:] != src.last_four:
+                    continue
+                signal = "institution_last4"
+                value = f"{target_institution}:{src.last_four}"
+            else:
+                candidate_legacy_key = legacy_pdf_identifier_key(
+                    issuer=str(institution), identifier=str(masked_number)
+                )
+                if candidate_legacy_key != legacy_key:
+                    continue
+                # Keep the literal out of the decision payload. The exact
+                # issuer-scoped pre-document key is evidence only, never a
+                # source_native or full_number ref.
+                signal = "legacy_pdf_identity"
+                value = "legacy_pdf_identity"
+            candidates.append(
+                _Candidate(
+                    account_id=str(account_id),
+                    signal=signal,
+                    value=value,
+                    confidence=0.5,
+                )
+            )
         return _dedupe_candidates(candidates)
 
     def _legacy_source_candidates(
@@ -980,8 +1003,8 @@ class AccountResolver:
     ) -> list[_Candidate]:
         """Return superseded PDF native links as review-only evidence.
 
-        Search historical PDF refs by their stable final token because issuer
-        classification can change between the old import and today's detector.
+        A historical tuple must be proven by raw account metadata or the same
+        source path. Filename aliases and suffixes are not account identity.
         """
         legacy_key = src.legacy_source_account_key
         if not legacy_key or legacy_key == src.source_account_key:
@@ -993,16 +1016,45 @@ class AccountResolver:
             "AND source_type = ? ORDER BY account_id, source_origin, ref_value",
             [src.source_type],
         ).fetchall()
+        try:
+            identifier_refs = {
+                (str(row[0]), str(row[1]))
+                for row in self._db.execute(
+                    f"SELECT DISTINCT source_origin, account_id, "  # noqa: S608  # TableRef only
+                    f"account_number_masked FROM {TABULAR_ACCOUNTS.full_name} "
+                    "WHERE source_type = 'pdf' AND account_number_masked IS NOT NULL"
+                ).fetchall()
+                if legacy_pdf_identifier_key(issuer=str(row[0]), identifier=str(row[2]))
+                == str(row[1])
+            }
+        except duckdb.CatalogException:
+            identifier_refs = set()
+        try:
+            alias_refs = {
+                (str(row[0]), str(row[1]))
+                for row in self._db.execute(
+                    f"SELECT DISTINCT source_origin, account_id "  # noqa: S608  # TableRef only
+                    f"FROM {TABULAR_ACCOUNTS.full_name} "
+                    "WHERE source_type = 'pdf' AND account_number_masked IS NULL"
+                ).fetchall()
+            }
+        except duckdb.CatalogException:
+            alias_refs = set()
         expected_origin = src.legacy_source_origin or src.source_origin
         exact = [
             row
             for row in rows
-            if str(row[1]) == expected_origin and str(row[2]) == legacy_key
+            if str(row[1]) == expected_origin
+            and str(row[2]) == legacy_key
+            and (
+                (str(row[1]), str(row[2])) in identifier_refs
+                or (
+                    src.legacy_source_account_key_is_filename_alias
+                    and (str(row[1]), str(row[2])) in alias_refs
+                )
+            )
         ]
         if src.source_type == "pdf":
-            target_institution = (
-                _institution_key(src.institution) if src.institution else None
-            )
             try:
                 provenance_refs = (
                     {
@@ -1019,32 +1071,10 @@ class AccountResolver:
                 )
             except duckdb.CatalogException:
                 provenance_refs = set()
-            try:
-                account_institutions = {
-                    str(row[0]): _institution_key(str(row[1]))
-                    for row in self._db.execute(
-                        f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef only
-                        "WHERE institution_slug IS NOT NULL"
-                    ).fetchall()
-                }
-            except duckdb.CatalogException:
-                account_institutions = {}
             historical = [
                 row
                 for row in rows
-                if row not in exact
-                and (
-                    (str(row[1]), str(row[2])) in provenance_refs
-                    or (
-                        target_institution is not None
-                        and account_institutions.get(str(row[0])) == target_institution
-                    )
-                )
-                and (
-                    str(row[2]).rpartition("_")[2] == src.last_four
-                    if src.last_four
-                    else str(row[2]) == legacy_key
-                )
+                if row not in exact and (str(row[1]), str(row[2])) in provenance_refs
             ]
         else:
             historical = []

@@ -47,6 +47,20 @@ class PdfAccountKey:
     legacy_source_origin: str | None
 
 
+def legacy_pdf_identifier_key(*, issuer: str, identifier: str | None) -> str | None:
+    """Return the pre-document PDF key only for usable account evidence."""
+    stripped = identifier.strip() if identifier is not None else ""
+    if not stripped or not any(
+        character.isalnum() and character not in ACCOUNT_ID_MASK_CHARACTERS
+        for character in stripped
+    ):
+        return None
+    digits = "".join(character for character in stripped if character.isdigit())
+    legacy_value = f"****{digits[-4:]}" if len(digits) >= 4 else stripped
+    legacy_slug = slugify(legacy_value)
+    return f"{slugify(issuer)}_{legacy_slug}" if legacy_slug else None
+
+
 def derive_pdf_account_identity(
     *,
     issuer: str,
@@ -87,9 +101,9 @@ def derive_pdf_account_identity(
 
     digits = "".join(character for character in stripped if character.isdigit())
     last_four = digits[-4:] if len(digits) >= 4 else None
-    legacy_value = f"****{last_four}" if last_four is not None else stripped
-    legacy_slug = slugify(legacy_value)
-    legacy_source_account_key = f"{issuer_slug}_{legacy_slug}" if legacy_slug else None
+    legacy_source_account_key = legacy_pdf_identifier_key(
+        issuer=issuer, identifier=stripped
+    )
 
     normalized = normalize_account_identifier(stripped)
     is_partial = (

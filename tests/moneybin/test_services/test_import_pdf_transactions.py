@@ -1155,7 +1155,7 @@ def test_regenerated_pdf_reuses_transactions_when_document_bytes_change(
 def test_reimport_retires_pre_document_identity_pdf_transaction_hashes(
     db: Database, tmp_path: Path
 ) -> None:
-    """A moved post-upgrade reimport must not double-count legacy PDF rows."""
+    """A same-path post-upgrade reimport must not double-count legacy PDF rows."""
     from moneybin.repositories.account_links_repo import AccountLinksRepo
 
     doc = _standard_doc()
@@ -1194,7 +1194,7 @@ def test_reimport_retires_pre_document_identity_pdf_transaction_hashes(
                 day,
                 amount,
                 description,
-                str(tmp_path / "old-statement-name.pdf"),
+                str(pdf),
                 row_number,
             ],
         )
@@ -1221,6 +1221,132 @@ def test_reimport_retires_pre_document_identity_pdf_transaction_hashes(
     assert db.execute(
         "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_type = 'pdf'"
     ).fetchone() == (2,)
+
+
+@pytest.mark.integration
+def test_reimport_keeps_new_rows_beside_superseded_legacy_pdf_rows(
+    db: Database, tmp_path: Path
+) -> None:
+    """Legacy retirement is per row; it cannot discard new statement content."""
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    doc = _standard_doc()
+    svc, pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "
+        "(account_id, display_name, institution_slug, last_four) "
+        "VALUES ('acct_legacy_pdf', 'Chase account', 'chase', '1234')"
+    )
+    AccountLinksRepo(db).insert(
+        link_id="legacy_pdf_partial_link",
+        account_id="acct_legacy_pdf",
+        ref_kind="source_native",
+        ref_value="unknown_1234",
+        source_type="pdf",
+        source_origin="unknown",
+        decided_by="auto",
+        actor="system",
+    )
+    content_key = "2024-01-01-2024-01-31|2024-01-15|-50.00|0|0|Coffee Shop|unknown_1234"
+    transaction_id = f"pdf_{hashlib.sha256(content_key.encode()).hexdigest()[:16]}"
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_file, source_type, source_origin, import_id, row_number) "
+        "VALUES (?, 'unknown_1234', '2024-01-15', -50, 'Coffee Shop', ?, "
+        "'pdf', 'unknown', 'legacy_import', 1)",
+        [transaction_id, str(pdf)],
+    )
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(pdf, refresh=False)
+    [proposal] = exc.value.outcome.account_proposals
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        result = svc.import_file(
+            pdf,
+            refresh=False,
+            account_bindings={proposal["source_account_key"]: "acct_legacy_pdf"},
+        )
+
+    assert result.transactions == 1
+    assert db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_type = 'pdf'"
+    ).fetchone() == (2,)
+
+
+@pytest.mark.integration
+def test_filename_alias_collision_cannot_retire_account_identifier_rows(
+    db: Database, tmp_path: Path
+) -> None:
+    """An unproven filename key cannot suppress a current account's transaction."""
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    doc = _make_doc(
+        text_lines=[
+            line.replace("Account Number: 1234", "Account Number: 2024")
+            for line in _standard_text_lines()
+        ],
+        tables=[_standard_table()],
+    )
+    svc, pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "
+        "(account_id, display_name, institution_slug, last_four) "
+        "VALUES ('acct_existing', 'Chase account', 'chase', '2024')"
+    )
+    AccountLinksRepo(db).insert(
+        link_id="filename_alias_collision",
+        account_id="acct_existing",
+        ref_kind="source_native",
+        ref_value="chase_2024",
+        source_type="pdf",
+        source_origin="chase",
+        decided_by="auto",
+        actor="system",
+    )
+    content_key = "2024-01-01-2024-01-31|2024-01-15|-50.00|0|0|Coffee Shop|chase_2024"
+    transaction_id = f"pdf_{hashlib.sha256(content_key.encode()).hexdigest()[:16]}"
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_file, source_type, source_origin, import_id, row_number) "
+        "VALUES (?, 'chase_2024', '2024-01-15', -50, 'Coffee Shop', "
+        "'/unrelated/chase_2024.pdf', 'pdf', 'chase', 'legacy_import', 1)",
+        [transaction_id],
+    )
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(pdf, refresh=False)
+    [proposal] = exc.value.outcome.account_proposals
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        result = svc.import_file(
+            pdf,
+            refresh=False,
+            account_bindings={proposal["source_account_key"]: "acct_existing"},
+        )
+
+    assert result.transactions == 2
+    assert db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_type = 'pdf'"
+    ).fetchone() == (3,)
 
 
 @pytest.mark.integration
@@ -2529,12 +2655,34 @@ def test_anchorless_pdf_surfaces_pre_document_identity_binding(
         ref_kind="source_native",
         ref_value="statement",
         source_type="pdf",
-        source_origin="unknown",
+        source_origin="chase",
         decided_by="user",
         actor="system",
     )
     doc = _anchorless_doc()
     svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "
+        "(account_id, account_name, account_number_masked, institution_name, "
+        "source_file, source_type, source_origin, import_id) VALUES "
+        "('statement', 'Legacy statement', NULL, 'Chase', "
+        "'/legacy/location/statement.pdf', 'pdf', 'chase', 'legacy_import')"
+    )
+    period = "2024-01-01-2024-01-31"
+    for row_number, (day, description, amount) in enumerate(
+        (("2024-01-15", "Coffee Shop", "-50.00"), ("2024-01-20", "Paycheck", "150.00")),
+        start=1,
+    ):
+        content_key = f"{period}|{day}|{amount}|0|0|{description}|statement"
+        transaction_id = f"pdf_{hashlib.sha256(content_key.encode()).hexdigest()[:16]}"
+        db.execute(
+            "INSERT INTO raw.tabular_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, "
+            "source_file, source_type, source_origin, import_id, row_number) "
+            "VALUES (?, 'statement', ?, ?, ?, '/legacy/location/statement.pdf', "
+            "'pdf', 'chase', 'legacy_import', ?)",
+            [transaction_id, day, amount, description, row_number],
+        )
 
     with (
         patch(
@@ -2550,6 +2698,20 @@ def test_anchorless_pdf_surfaces_pre_document_identity_binding(
         (candidate["account_id"], candidate["signal"])
         for candidate in proposal["candidates"]
     ] == [("acct_existing01", "legacy_pdf_identity")]
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        result = svc.import_file(
+            fake_pdf,
+            refresh=False,
+            account_bindings={proposal["source_account_key"]: "acct_existing01"},
+        )
+
+    assert result.transactions == 0
+    assert db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_type = 'pdf'"
+    ).fetchone() == (2,)
 
 
 @pytest.mark.integration

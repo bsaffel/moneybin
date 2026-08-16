@@ -118,6 +118,7 @@ def test_grouped_masked_account_number_keeps_the_last_four() -> None:
     meta = capture_metadata(_CHASE_GROUPED_MASKED_TEXT)
     assert meta.account_id is not None
     assert meta.account_id.endswith("1234")
+    assert meta.account_id_complete is False
 
 
 def test_grouped_plain_account_number_last_four_is_the_final_group() -> None:

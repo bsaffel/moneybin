@@ -177,6 +177,8 @@ class SourceAccount:
     """A superseded source key that may nominate a review candidate, never adopt."""
     legacy_source_origin: str | None = None
     """The origin that scoped ``legacy_source_account_key`` before replacement."""
+    legacy_source_account_key_is_filename_alias: bool = False
+    """Whether the legacy key came from an anchorless PDF filename alias."""
     source_file: str | None = None
     """Canonical source path used only to recover a proven historical PDF tuple."""
 

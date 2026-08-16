@@ -498,17 +498,18 @@ def test_old_detected_recipe_replaces_unsafe_account_anchor(db: Database) -> Non
     assert decision.metadata.routing_number == "021000021"
 
 
-def test_old_bridge_recipe_does_not_gain_unrequested_metadata_fields(
-    db: Database,
+@pytest.mark.parametrize("source", ["bridge", "manual"])
+def test_explicit_recipe_does_not_gain_unrequested_metadata_fields(
+    db: Database, source: str
 ) -> None:
-    """Explicit bridge omissions remain authoritative on saved replay."""
+    """Bridge and manual recipe omissions remain authoritative on replay."""
     _save_chase_format(
         db,
         recipe={
             **_valid_recipe_dict(),
             "metadata_anchors": _legacy_default_metadata_anchors(),
         },
-        source="bridge",
+        source=source,
     )
     doc = _make_doc(
         text_lines=[*_standard_text_lines(), "Currency: usd"],

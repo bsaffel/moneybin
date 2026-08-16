@@ -1551,6 +1551,9 @@ def _pdf_source_account(
                 derived.legacy_source_origin
                 or (slugify(issuer) if not anchored else None)
             ),
+            legacy_source_account_key_is_filename_alias=(
+                derived.legacy_source_account_key is None and not anchored
+            ),
             source_file=source_file,
             # None for a digits-free token ("xxxx"), which correctly denies the
             # institution+last4 signal and routes to name review rather than
@@ -4735,6 +4738,26 @@ class ImportService:
                 [str(canonical)],
             ).fetchall()
         }
+        from moneybin.services.pdf_account_identity import legacy_pdf_identifier_key
+
+        legacy_identifier_refs = {
+            (str(row[0]), str(row[1]))
+            for row in self._db.execute(
+                f"SELECT DISTINCT source_origin, account_id, account_number_masked "  # noqa: S608  # TableRef only
+                f"FROM {TABULAR_ACCOUNTS.full_name} "
+                "WHERE source_type = 'pdf' AND account_number_masked IS NOT NULL"
+            ).fetchall()
+            if legacy_pdf_identifier_key(issuer=str(row[0]), identifier=str(row[2]))
+            == str(row[1])
+        }
+        legacy_alias_refs = {
+            (str(row[0]), str(row[1]))
+            for row in self._db.execute(
+                f"SELECT DISTINCT source_origin, account_id "  # noqa: S608  # TableRef only
+                f"FROM {TABULAR_ACCOUNTS.full_name} "
+                "WHERE source_type = 'pdf' AND account_number_masked IS NULL"
+            ).fetchall()
+        }
         pdf_hash_namespaces: dict[tuple[str, str], set[str]] = {}
         for (
             historical_origin,
@@ -4760,10 +4783,16 @@ class ImportService:
                 source_ref == (identity_origin, account_id)
                 or source_ref in current_file_refs
                 or str(historical_account_id) != resolved_account.account_id
-                or (legacy_key is not None and source_ref[1] == legacy_key)
                 or (
-                    source_account.last_four is not None
-                    and source_ref[1].rpartition("_")[2] == source_account.last_four
+                    legacy_key is not None
+                    and source_ref[1] == legacy_key
+                    and (
+                        source_ref in legacy_identifier_refs
+                        or (
+                            source_account.legacy_source_account_key_is_filename_alias
+                            and source_ref in legacy_alias_refs
+                        )
+                    )
                 )
             ):
                 continue
