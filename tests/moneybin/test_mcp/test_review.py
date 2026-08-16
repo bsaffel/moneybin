@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -1564,6 +1565,7 @@ async def test_ordinary_batch_coalesces_shared_new_merchant_in_input_order() -> 
 
 def test_ordinary_outer_commit_failure_rolls_back_state_and_committed_metrics(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     seeded = _seed_alternating_ordinary_decisions()
     requests: list[OrdinaryReviewDecisionRequest] = [
@@ -1582,17 +1584,23 @@ def test_ordinary_outer_commit_failure_rolls_back_state_and_committed_metrics(
     ]
     retirement_before = _retirement_metric()
     merchant_metrics_before = _merchant_exemplar_metrics()
+    caplog.clear()
 
     def _fail_commit() -> None:
         raise RuntimeError("outer commit failed")
 
     with get_database(read_only=False) as db:
         monkeypatch.setattr(db, "commit", _fail_commit)
-        with pytest.raises(RuntimeError, match="outer commit failed"):
-            ReviewDecisionsService(db, actor="mcp").apply_ordinary(requests)
+        with caplog.at_level(
+            logging.INFO,
+            logger="moneybin.services.categorization.applier",
+        ):
+            with pytest.raises(RuntimeError, match="outer commit failed"):
+                ReviewDecisionsService(db, actor="mcp").apply_ordinary(requests)
 
     assert _retirement_metric() == retirement_before
     assert _merchant_exemplar_metrics() == merchant_metrics_before
+    assert "user merchant" not in caplog.text
     with get_database(read_only=True) as db:
         assert (
             db.execute(
