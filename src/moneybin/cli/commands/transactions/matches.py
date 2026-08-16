@@ -7,9 +7,17 @@ import duckdb as duckdb_mod
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.utils import (
+    emit_json,
+    handle_cli_errors,
+    warn_match_decisions_committed,
+    warn_transfers_retired,
+)
 from moneybin.database import get_database
+from moneybin.errors import exception_origin
+from moneybin.matching.engine import MatchRunError
 from moneybin.matching.persistence import VALID_MATCH_TYPES
+from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 from moneybin.services.matching_service import PENDING_MATCHES_HINT, MatchingService
 from moneybin.tables import INT_TRANSACTIONS_UNIONED
 
@@ -92,15 +100,39 @@ def matches_run(
     try:
         with handle_cli_errors():
             with get_database(read_only=False) as db:
-                result = MatchingService(db).run(
-                    auto_accept_transfers=auto_accept_transfers, actor="cli"
-                )
+                try:
+                    result = MatchingService(db).run(
+                        auto_accept_transfers=auto_accept_transfers, actor="cli"
+                    )
+                except MatchRunError as exc:
+                    # The decisions and the reversals both committed before
+                    # whatever failed; this exception is the last thing that
+                    # knows either count. Warn, then re-raise so the failure
+                    # keeps its own presentation — `classify_user_error`
+                    # answers this type with a message that withholds the
+                    # cause, which is why the frames are logged here.
+                    warn_match_decisions_committed(exc.partial)
+                    warn_transfers_retired(
+                        exc.partial.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                    )
+                    logger.error(
+                        f"Matching failed during 'matches run' at "
+                        f"{exception_origin(exc.__cause__ or exc)}"
+                    )
+                    raise
                 if result.has_matches:
                     logger.info(f"Matching: {result.summary()}")
                     if result.has_pending:
                         logger.info(PENDING_MATCHES_HINT)
                 else:
                     logger.info("No new matches found")
+                # Outside the branch above: the reconciliation runs inside
+                # `run()` whatever the tiers find, so "No new matches found" is
+                # the very case where a silent retirement reads as "nothing
+                # changed".
+                warn_transfers_retired(
+                    result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                )
 
                 if not skip_transform and result.auto_merged:
                     from moneybin.services.import_service import ImportService
@@ -190,8 +222,30 @@ def matches_set(
         raise typer.Exit(2)
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            MatchingService(db).set_status(match_id, status=status, actor="cli")
-    logger.info(f"✅ Set match {match_id[:8]}... to {status}")
+            outcome = MatchingService(db).set_status(
+                match_id, status=status, actor="cli"
+            )
+    if outcome.match_status == status:
+        logger.info(f"✅ Set match {match_id[:8]}... to {status}")
+    else:
+        # The reconciliation this accept triggered reversed this very row. A ✅
+        # here would report the opposite of what committed, and the count-shaped
+        # warning below would not contradict it.
+        logger.warning(
+            f"⚠️  Match {match_id[:8]}... was not {status}: it is "
+            f"{outcome.match_status} — an accepted transfer already claims the "
+            "merged pair, and the earlier decision stands"
+        )
+    warn_transfers_retired(
+        outcome.transfers_retired,
+        cause=RETIRED_SIDES_COLLAPSED,
+        rematch_follow_up=True,
+    )
+    if outcome.match_status != status:
+        # The status the caller asked for is not the one that committed, which
+        # cli.md calls a failed operation. Warning alone leaves an agent gating
+        # on exit status recording an accept the reconciliation refused.
+        raise typer.Exit(1)
 
 
 @app.command("backfill")
@@ -217,13 +271,30 @@ def matches_backfill(
                     f"Scanning {total:,} existing transactions for duplicates and transfers..."
                 )
 
-                result = MatchingService(db).run(
-                    auto_accept_transfers=auto_accept_transfers, actor="cli"
-                )
+                try:
+                    result = MatchingService(db).run(
+                        auto_accept_transfers=auto_accept_transfers, actor="cli"
+                    )
+                except MatchRunError as exc:
+                    # Same guard as `run` above, repeated rather than shared:
+                    # the two commands own their own summaries, and a helper
+                    # here would hide which one lost the disclosure.
+                    warn_match_decisions_committed(exc.partial)
+                    warn_transfers_retired(
+                        exc.partial.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                    )
+                    logger.error(
+                        f"Matching failed during 'matches backfill' at "
+                        f"{exception_origin(exc.__cause__ or exc)}"
+                    )
+                    raise
 
                 logger.info(f"Backfill complete: {result.summary()}")
                 if result.has_pending:
                     logger.info(PENDING_MATCHES_HINT)
+                warn_transfers_retired(
+                    result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                )
 
                 if not skip_transform and result.auto_merged:
                     from moneybin.services.import_service import ImportService

@@ -14,16 +14,18 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any
 
 import duckdb
 
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.matching.reconciliation import record_account_merge_retirements
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.account_resolution_types import (
     PendingLinkCandidate,
     PendingLinkGroup,
@@ -40,6 +42,9 @@ from moneybin.tables import (
     FCT_TRANSACTIONS,
 )
 from moneybin.utils.parsing import signal_from_match_signals
+
+if TYPE_CHECKING:
+    from moneybin.services.refresh import RefreshResult
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +100,15 @@ class AccountLinksService:
         self._actor = actor
         self._links = AccountLinksRepo(db)
         self._decisions = AccountLinkDecisionsRepo(db)
+        # Accepted transfers the account collapse retired inside set()'s
+        # transaction, waiting for rematch_after_merge to disclose them. The
+        # retirement has to happen before the commit (the FK invariant), the
+        # disclosure is assembled after it, and on the batched path those are
+        # two separate calls on this instance — so the count travels here.
+        # set() folds in only what survived its writes and rematch_after_merge
+        # reads-and-resets, so neither a failed accept nor a second merge can
+        # disclose a retirement twice.
+        self._transfers_retired_by_collapse = 0
 
     # ------------------------------------------------------------------
     # Read-only methods
@@ -467,8 +481,13 @@ class AccountLinksService:
         decided_by: str = "user",
         verify_accept: Callable[[AccountLinkAcceptImpact], None] | None = None,
         in_outer_txn: bool = False,
-    ) -> None:
+    ) -> RefreshResult | None:
         """Accept (merge) or standalone-reject a pending link decision atomically.
+
+        Returns the post-merge re-match outcome (see :meth:`rematch_after_merge`)
+        so the caller can report what that pass found — it may have auto-merged
+        without asking. ``None`` when no pass ran: a standalone reject repoints
+        nothing, and under ``in_outer_txn`` the batched caller owns the trigger.
 
         ``target_account_id`` is not None (accept → merge):
           1. Validates the arg matches the decision's own ``candidate_account_id``.
@@ -493,6 +512,7 @@ class AccountLinksService:
         - ``target_account_id`` does not match the decision's ``candidate_account_id``
           (MUTATION_INVALID_INPUT).
         """
+        collapsed = 0
         if not in_outer_txn:
             self._db.begin()
         try:
@@ -559,6 +579,28 @@ class AccountLinksService:
                         actor=self._actor,
                         in_outer_txn=True,
                     )
+                # Carry existing match decisions onto the survivor in the same
+                # transaction. They store the account_id they were made under,
+                # and both the rejected-pair key and the active-edge NodeKey are
+                # built from it — so a decision left on the merged-away account
+                # stops describing any live pair. The rejection in particular
+                # stops matching itself, and the re-match below can then
+                # auto-accept a pair the user explicitly rejected. Ordering is
+                # load-bearing: this must precede the commit that rematch_after_merge
+                # reads.
+                repointed = MatchDecisionsRepo(self._db).repoint_account(
+                    from_account_id=provisional_id,
+                    to_account_id=target_account_id,
+                    actor=self._actor,
+                    in_outer_txn=True,
+                )
+                # A transfer whose two accounts just became one is retired in
+                # there. That is a decision of the user's being undone, so it
+                # is owed the same disclosure as the dedup retirement below —
+                # dropping the count would report "0 transfers retired" over
+                # an accepted transfer this call had just reversed. Held local
+                # until the writes below have all survived; see the fold-in.
+                collapsed = repointed.accepted_transfers_retired
                 # Accept the named decision.
                 self._decisions.update_status(
                     decision_id,
@@ -617,8 +659,13 @@ class AccountLinksService:
             if not in_outer_txn:
                 self._db.rollback()
             raise
+        # Only a merge that survived every write owes the disclosure. DuckDB
+        # rolls a failed one back; a counter already folded into the instance
+        # would not roll back with it, and the next merge here would report a
+        # transfer retired that is still accepted.
+        self._transfers_retired_by_collapse += collapsed
         if in_outer_txn:
-            return
+            return None
         # Accept/reject changed the pending count — refresh the gauge (only
         # reached on a successful commit; the except above re-raises).
         from moneybin.services.account_resolver import (  # noqa: PLC0415
@@ -626,3 +673,77 @@ class AccountLinksService:
         )
 
         refresh_account_link_pending_gauge(self._db)
+        if target_account_id is None:
+            return None
+        return self.rematch_after_merge()
+
+    def rematch_after_merge(self) -> RefreshResult:
+        """Re-run matching now that the merge made two sources' rows co-resident.
+
+        The matcher blocks dedup candidates on ``a.account_id = b.account_id``
+        (``matching/scoring.py``), so a reissued card's two sides are not even
+        considered while their ids differ. The repoint above is what makes them
+        candidates, and the staging views resolve it at read time — so the rows
+        are matchable the instant this commits, and nothing else in the pipeline
+        looks again. Skipping this is what left 377 duplicates unproposed.
+
+        ``transform`` follows ``match`` so an auto-accepted edge collapses in
+        ``core`` in the same step; ``identity`` is deliberately absent, but not
+        for recursion — ``_run_identity_step`` calls ``run()`` (propose), never
+        ``set()``, so it cannot re-enter here. It is absent because proposing
+        new links is not this trigger's job, and running it would re-examine
+        the accounts the merge just collapsed.
+
+        Callers on the batched path (``ReviewDecisionsService.apply_identity``)
+        invoke this themselves after their own commit — ``set`` returns early
+        under ``in_outer_txn`` and never reaches it.
+
+        The pass carries ``self._actor`` rather than letting ``refresh`` default:
+        the decisions it writes exist because a user accepted a link on that
+        surface, and ``app-integrity-invariant.md`` binds matcher-created
+        decisions to the surface that caused them. ``system`` is for the
+        automated callers that spec names, which this is not.
+
+        ``transfers_retired`` sums the two ways this merge can invalidate an
+        accepted transfer: its two legs turning out to be one transaction and
+        its two accounts turning out to be one account. The first is the
+        matcher's own reconciliation, which every trigger gets and which
+        ``refresh`` already reports
+        (``TransactionMatcher._retire_transfers_invalidated_by_dedup``); the
+        second happens inside ``set``'s transaction and reaches no matcher, so
+        it is added here. One counter because the user is owed one fact — a
+        transfer they accepted is gone — and one way back for both.
+        """
+        from moneybin.services.refresh import (
+            refresh,  # noqa: PLC0415 — cycle: refresh's identity step imports this module
+        )
+
+        collapsed = self._transfers_retired_by_collapse
+        self._transfers_retired_by_collapse = 0
+        # Emitted here rather than where the repo reverses, because this is the
+        # one seam both paths reach only after their own commit — `set` calls it
+        # at the end of its post-commit tail, and the batched caller calls it
+        # itself once `apply_identity` commits. Nothing the repo writes is
+        # durable until one of those lands, and a counter cannot be rolled back
+        # with it. Best-effort by construction, so it cannot abort the rematch
+        # on the next line.
+        record_account_merge_retirements(collapsed)
+        try:
+            result = refresh(self._db, steps=["match", "transform"], actor=self._actor)
+        except Exception:
+            # The reversal committed with the merge, but `collapsed` has already
+            # been taken off the instance and is only re-attached to the result
+            # below — so without this the crash takes the one fact the user is
+            # owed with it, and nothing later can reconstruct it. Stated here
+            # rather than at the callers because this is where the count still
+            # exists. Re-raised untouched: the failure is still the caller's to
+            # report, this only refuses to lose the disclosure on the way out.
+            if collapsed:
+                logger.warning(
+                    f"⚠️  The merge reversed {collapsed} accepted transfer(s) "
+                    "before the rebuild failed; that reversal stands. Inspect "
+                    "with 'moneybin system audit list' and restore with "
+                    "'moneybin system audit undo <operation-id>' if that was wrong"
+                )
+            raise
+        return replace(result, transfers_retired=collapsed + result.transfers_retired)

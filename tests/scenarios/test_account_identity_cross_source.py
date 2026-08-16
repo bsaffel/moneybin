@@ -22,9 +22,11 @@ from pathlib import Path
 import pytest
 
 from moneybin.database import Database
+from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.account_resolution_types import AccountProposalDict
 from moneybin.services.import_confirmation import ImportConfirmationRequiredError
 from moneybin.services.import_service import ImportService
+from moneybin.services.refresh import refresh
 from tests.import_helpers import import_answering_gate
 from tests.scenarios._runner.loader import Scenario, SetupSpec
 from tests.scenarios._runner.runner import scenario_env
@@ -493,3 +495,144 @@ def test_tabular_display_name_lands_as_the_canonical_registry_slug() -> None:
 
     assert row is not None, "seeded tabular account never reached core.dim_accounts"
     assert row[0] == "us_bank", row[0]
+
+
+def _account_count(db: Database) -> int:
+    """Canonical accounts standing in the ledger."""
+    row = db.execute("SELECT COUNT(*) FROM core.dim_accounts").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _transaction_count(db: Database) -> int:
+    """Gold transaction rows — halves when a twin pair collapses."""
+    row = db.execute("SELECT COUNT(*) FROM core.fct_transactions").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _match_decision_count(db: Database) -> int:
+    """Match decisions of any status — zero means the matcher never looked."""
+    row = db.execute("SELECT COUNT(*) FROM app.match_decisions").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _pending_link_decision(db: Database) -> tuple[str, str]:
+    """The pending link decision, and the account it proposes merging into.
+
+    Returns the candidate rather than letting the caller name one: which side
+    of the pair is provisional and which is the candidate follows the order
+    ``run()`` walked ``core.dim_accounts``, so an accept that hard-codes a
+    direction is asserting about iteration order rather than about the merge.
+    """
+    row = db.execute(
+        "SELECT decision_id, candidate_account_id FROM app.account_link_decisions "
+        "WHERE status = 'pending' ORDER BY decision_id LIMIT 1"
+    ).fetchone()
+    assert row is not None, "backfill reported a proposal but wrote no pending row"
+    return str(row[0]), str(row[1])
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_accepting_a_link_rematches_without_a_second_manual_step() -> None:
+    """The 2026-08-08 regression: accepting a merge must re-run the matcher.
+
+    Reproduces the shape that silently duplicated 377 rows. One card's history
+    arrives from two sources; the user declines the merge the import gate offers,
+    so the two ledgers sit side by side — the matcher blocks candidate pairs on
+    ``account_id`` (``matching/scoring.py``), so it is structurally unable to
+    pair them and writes no decision at all. Later the user changes their mind,
+    backfills the proposal with ``accounts links run``, and accepts it. Before
+    this fix that accept repointed the links and stopped: ``CANONICAL_STEPS``
+    runs ``match`` three stages before ``identity``, so no refresh ever saw its
+    own accepts and the twins stayed doubled with nothing queued to review.
+
+    The pair shares a last four so ``AccountResolver.propose_existing`` can
+    surface it: the backfill path runs with ``reissue=False``, so a genuinely
+    reissued card (new last four) raises no proposal to accept at all. That gap
+    is real and documented in ``moneybin-doctor.md``; it is not what this test
+    covers, and ``test_reissued_card_surfaces_a_reissue_candidate_through_real_import``
+    holds the reissue signal's own coverage on the import path.
+
+    The load-bearing detail is what this test does NOT do: there is no
+    ``run_step("match", ...)`` after the accept. Every earlier scenario in this
+    file drives the matcher by hand, which is exactly why none of them could
+    have caught this. If the accept stops triggering the pass, step 6 fails.
+
+    Counts are hand-derived from the fixtures, not observed: ``wf_checking.qfx``
+    and ``wells_fargo_checking.csv`` carry the same 3 transactions, so two
+    unmerged accounts hold 6 rows and one merged account holds 3.
+    """
+    scenario = Scenario(
+        scenario="account-identity-cross-source",
+        setup=SetupSpec(persona="family"),
+        pipeline=[],
+    )
+    # `env` goes unused: this test drives the real refresh() rather than the
+    # runner's env-carrying step helpers, deliberately (see step 1).
+    with scenario_env(scenario) as (db, _tmp, _env):
+        svc = ImportService(db)
+        # 1) OFX mints the original card.
+        import_answering_gate(svc, _FIXTURES / "wf_checking.qfx", refresh=False)
+        checking_id = _ofx_canonical_id(db, "1111")
+        # The real refresh, not run_step("transform"). core.dim_accounts is
+        # `kind FULL`; the scenario runner's step is `ctx.plan(auto_apply=True)`
+        # alone, which applies model *changes* and so rebuilds a materialized
+        # model only on the pass that first creates it. TransformService follows
+        # its plan with `ctx.run()` and an explicit restate of every FULL model,
+        # which is what a user's `moneybin refresh` does — and the only thing
+        # that reflects a second import into the accounts dimension.
+        refresh(db, steps=["transform"])
+
+        # 2) The CSV twin arrives. The gate fires and names the ofx account —
+        #    asserted so that answering it below is an answer, not a shortcut.
+        csv_kwargs = {
+            "account_name": "WF Checking (...1111)",
+            "confirm": True,
+            "actor_kind": "agent",
+            "refresh": False,
+        }
+        proposal = _gated_proposal(
+            svc, _FIXTURES / "wells_fargo_checking.csv", **csv_kwargs
+        )
+        assert [c["signal"] for c in proposal["candidates"]] == ["institution_last4"]
+        assert proposal["candidates"][0]["account_id"] == checking_id
+
+        # 3) The user answers "different account" — declining the merge the gate
+        #    offered. A real answer, not a bypass, and the one that produces the
+        #    two-ledger state. Answering "new" here is what the 2026-08-08 card
+        #    was in: two accounts holding the same charges, with the matcher
+        #    unable to see across them.
+        svc.import_file(
+            _FIXTURES / "wells_fargo_checking.csv",
+            account_bindings={proposal["source_account_key"]: "new"},
+            **csv_kwargs,  # pyright: ignore[reportArgumentType]
+        )
+        refresh(db, steps=["transform", "match"])
+
+        # 4) The precondition the incident ran into: two accounts, both ledgers
+        #    intact, and the matcher blind to the pair rather than declining it.
+        accounts = db.execute(
+            "SELECT account_id, display_name, institution_slug, last_four "
+            "FROM core.dim_accounts ORDER BY account_id"
+        ).fetchall()
+        assert len(accounts) == 2, accounts
+        assert _transaction_count(db) == 6, "twins should not have deduped yet"
+        assert _match_decision_count(db) == 0, (
+            "the matcher blocks on account_id, so it cannot have proposed anything"
+        )
+
+        # 5) The user changes their mind: backfill the proposal, then accept it.
+        links = AccountLinksService(db, actor="test")
+        assert links.run() > 0, "backfill produced no link proposal to accept"
+        decision_id, target_id = _pending_link_decision(db)
+        rematch = links.set(decision_id, target_account_id=target_id, decided_by="user")
+
+        # 6) No run_step("match") here. The accept is the only thing that ran.
+        assert rematch is not None, "accept returned no re-match result"
+        assert rematch.matches_auto_merged + rematch.matches_pending_review > 0, (
+            "the accept re-ran matching but the pass found nothing"
+        )
+        assert _account_count(db) == 1, "the merge left two accounts standing"
+        assert _transaction_count(db) == 3, (
+            "the twins did not collapse — the accept did not re-run the matcher"
+        )

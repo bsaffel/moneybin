@@ -455,6 +455,70 @@ def test_apply_returns_apply_result_shape(
     fake_ctx.plan.assert_called_once_with(auto_apply=True, no_prompts=True)
 
 
+def test_a_failing_duration_metric_does_not_abort_a_completed_apply(
+    db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The last thing apply() touches must not be able to undo it.
+
+    Every SQLMesh failure inside apply() already becomes
+    ``ApplyResult(applied=False)``, and the checkpoint is guarded, so this
+    histogram in the ``finally`` is the method's only unguarded exit. Because
+    it is a ``finally``, a raise there does not merely lose the timing — it
+    *replaces* the successful return, so the transforms commit and the caller
+    is told the apply died.
+
+    That reaches further than one bad duration sample. ``rematch_after_merge``
+    zeroes ``_transfers_retired_by_collapse`` before calling ``refresh``, and
+    only re-attaches it on the success path, so an exception escaping here
+    discards the count of accepted transfers the merge already reversed — the
+    user is never told a decision of theirs was undone. Third of three
+    post-commit telemetry guards on this path, after the retirement counter
+    and the pending gauge.
+    """
+    from contextlib import contextmanager
+
+    fake_ctx = MagicMock()
+    fake_ctx.run.return_value.is_failure = False
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database):  # type: ignore[no-untyped-def]
+        yield fake_ctx
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context",
+        fake_sqlmesh_context,
+    )
+
+    def fake_seed(_self: object) -> None:
+        return None
+
+    def fake_refresh(_db: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "moneybin.services.matching_service.MatchingService.seed_priority",
+        fake_seed,
+    )
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.refresh_views",
+        fake_refresh,
+    )
+    # Path-shaped for the same reason as the sibling guards: a metrics client
+    # failing mid-write is the likeliest way a path reaches the durable log.
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.SQLMESH_RUN_DURATION_SECONDS.labels",
+        MagicMock(side_effect=RuntimeError("/var/lib/some-profile/metrics.db gone")),
+    )
+
+    with caplog.at_level("WARNING"):
+        result = TransformService(db).apply()
+
+    assert result.applied is True
+    assert result.error is None
+    assert "RuntimeError" in caplog.text
+    assert "metrics.db" not in caplog.text
+
+
 def test_apply_soft_fails_when_run_reports_failure(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

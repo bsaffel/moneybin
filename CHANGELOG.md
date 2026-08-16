@@ -522,6 +522,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **A merge whose rebuild failed, or an accept the reconciliation refused, now
+  exits non-zero.** `accounts links set`, `transactions matches set`, and
+  `transactions review --confirm/--confirm-all` printed a warning and exited
+  `0`, while `refresh` exits `1` on the identical failure. A script or agent
+  gating on exit status could not tell that a merge is still invisible in
+  `core.dim_accounts`, or that the status it asked for is not the one that
+  committed, without scraping stderr. All three now exit `1`; a `--confirm X
+  --reject Y` invocation still performs both before reporting (#388).
 - **Breaking:** **PDF account matching now uses statement identity without a
   new secret or user setting.** Exact files get opaque content-derived keys;
   validated complete account identifiers are retained only as routing-scoped
@@ -902,6 +910,289 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **Accepting an account-link merge now re-runs the matcher, so the duplicates it
+  makes visible actually get found.** The transaction matcher blocks candidate
+  pairs on `account_id`, so while a reissued card's two sources sit under
+  separate accounts it cannot pair their duplicates — it does not decline them,
+  it never sees them. Accepting the link is what makes them comparable, but
+  `CANONICAL_STEPS` runs `match` three stages before `identity`, so no refresh
+  ever observed its own accepts: the accept repointed the links and stopped. One
+  card carrying OFX and CSV history for the same period held 377 duplicated rows
+  with zero proposals raised, and needed hand-remediation to recover.
+
+  Both accept paths now trigger the pass — the direct
+  `accounts links set` / `identity_links_decide` route, and the batched review
+  route, whose inner calls join the outer transaction and return before their own
+  post-commit tail. Because that pass can auto-merge rows without asking, it
+  reports what it did on both: the CLI prints how many were auto-merged and how
+  many are newly queued, and `accounts_links_set` and `identity_links_decide`
+  both return `rematch_auto_merged` / `rematch_pending_review`. All are null
+  after a reject, which runs no pass at all — distinct from a pass that ran and
+  found nothing. `--yes` waives the confirmation prompt, never the report. A
+  half-failed pass says so: matching and the rebuild fail independently, and
+  either alone still leaves the merge unfinished in a way the user would
+  otherwise have to discover for themselves.
+
+  Telemetry does not decide whether that pass runs. Both accept paths refresh
+  the review-queue gauge in the post-commit tail, immediately ahead of the
+  rematch. A metrics failure there aborted the tail with the accept already
+  committed, and an accepted decision is refused on a retry — so the merged
+  account's duplicates would have waited for an unrelated refresh with nothing
+  reporting it. That refresh is now best-effort and logs what it lost; a stale
+  gauge is the cheaper loss. The retirement counter is best-effort for the same
+  reason and by the same mechanism: every one of its three emissions stands
+  after the reversal it counts is already durable, so a raise there reports
+  failure for committed work a retry will not replay.
+
+  The match pass also retires transfers a dedup collapse invalidates.
+  Deduplication is blocked on `a.account_id = b.account_id`, so two rows each
+  claimed as a transfer leg by a *different* account can never be dedup
+  candidates — until a merge makes those accounts one, and neither dedup tier
+  declines a row on the grounds that a transfer already claims it.
+  `core.bridge_transfers` resolves every leg through the dedup mapping, so two
+  surviving decisions would name the same physical transaction and double-count
+  it in anything joining `fct_transactions` to `bridge_transfers`. Tier 4
+  already refuses to *propose* that shape; the matcher now enforces the same
+  rule against decisions that predate the collapse — a dedup component is a leg
+  of at most one accepted transfer, earliest decision keeps it. Only accepted
+  dedup decisions count toward a component: a pending one is an unreviewed
+  proposal that leaves both rows distinct in `core`, so it never retires a
+  transfer. Reversed, not deleted, and reported as `rematch_transfers_retired`
+  on both tools plus a CLI warning naming `moneybin system audit undo`, because the
+  user accepted those transfers. That counter also covers the account-level
+  form of the same collapse — a transfer whose two endpoints became one
+  account, retired during the re-key — which previously reversed an accepted
+  transfer while every surface reported `0`.
+
+  The reconciliation is not merge-only. Every path that folds a duplicate runs
+  it: the matcher (so any `refresh` covers it), a review-queue accept
+  (`moneybin review --confirm`, `transactions_matches_set`), and a bulk
+  `moneybin review --confirm-all`. `core.fct_transactions` and
+  `core.bridge_transfers` are views over `app.match_decisions`, so a collision
+  double-counts on the next read rather than waiting for a refresh — which is
+  why the two accept paths, which re-derive nothing, each fold the reversals
+  into the transaction that accepted the duplicate. Inside the matcher it runs
+  between the dedup tiers and transfer detection, so a leg the reversal frees is
+  re-examined as a transfer candidate by the same pass and the reversal lands
+  before `transform`, leaving the corrupt bridge never built rather than rebuilt
+  correctly one refresh later.
+
+  A `refresh` covering the reconciliation is not the same as the surfaces that
+  *call* `refresh` reporting it. Six embedded callers reach it and previously
+  copied only the three transform fields off its result: `moneybin import
+  files` on both its batch and its single-file path, `moneybin sync pull` (and
+  `sync link`'s auto-pull), the inbox drain, the single-file MCP import path,
+  and `moneybin gsheet pull` — the last by naming `match` explicitly rather
+  than running the full cascade. Each could therefore reverse an accepted
+  transfer and report nothing but a successful import. All six now carry
+  `transfers_retired` back — the CLI through the same warning naming `moneybin
+  system audit undo`, the MCP twins (`import_files`, `sync_pull`,
+  `import_inbox_sync`) through the payload and an `actions[]` hint pointing at
+  `system_audit_undo()`. Every CLI surface prints that warning even under
+  `--quiet`, which suppresses informational output and not a reversal of the
+  user's own decision.
+
+  The single-file import's failure path reports it too. That path is fail-loud:
+  the refresh reconciles inside its `match` step and commits there, so a
+  transform apply that dies afterwards leaves the reversal on disk while the
+  raise discards the result that would have named it. The exception now carries
+  the count, so `moneybin import files <one-file>` names the reversal and still
+  exits non-zero for the transform.
+
+  Two smaller gaps in the same disclosure closed with them. The
+  `unproposed_cross_source_duplicates` invariant's crash branch put DuckDB's
+  raw exception text in a `detail` that `doctor` and `system_status` return
+  over both surfaces — and that query joins on amounts, dates, and
+  descriptions, so a conversion failure could echo a row back; it now logs the
+  frame chain locally and returns a fixed string, matching every other crash
+  branch here. And `identity_links_decide`'s tool description, the only prose
+  an agent reads when choosing it, never mentioned that accepting an account
+  decision re-runs matching; its sibling `reviews_decide` already did.
+
+  Because that pass walks every accepted transfer — including the row the accept
+  just wrote — **an accept can be the decision it reverses**, and the surfaces
+  now report the committed status instead of the requested one.
+  `transactions_matches_set` returns the re-read value in `data.match_status`;
+  `moneybin transactions matches set` and `moneybin review --confirm` print a
+  refusal naming the standing decision rather than a success mark.
+  `moneybin review --confirm-all` counts only the rows that stood and names the
+  rest separately, since a batch can hold both a duplicate and the transfer that
+  duplicate invalidates. A crashed match step no longer drops the count either:
+  the matcher wraps no transaction around a run, so reversals already committed
+  are reported even when the reconciliation or a later tier raises. The recovery
+  hint follows the same status: `transactions_matches_set` offered
+  `transactions matches undo` unconditionally, and undo refuses a row that is
+  already reversed — so the one outcome the reconciliation had just produced was
+  handed the one command certain to fail. It is now offered only for a decision
+  that stood, and a reversed one gets a route that works.
+
+  `refresh_run` and `moneybin refresh` now disclose what the match step decided
+  — `matches_auto_merged`, `matches_pending_review`,
+  `matches_pending_transfers`, `matching_skipped`, and `transfers_retired` —
+  and the CLI warns when a transfer was retired. Any refresh reaches the match
+  step, including the one every import and sync triggers, so a pass could
+  previously auto-merge duplicates or reverse an accepted transfer and report an
+  ordinary success. `matching_skipped` separates a zero that means "found
+  nothing" from one that means "never looked".
+
+  Every surface that can reach the reconciliation now discloses it, not just
+  the ones that report matches. `moneybin transactions matches run`,
+  `moneybin transactions matches backfill`, and the `transactions_matches_run`
+  tool each ran the pass and reported only what the tiers found, so a run that
+  reversed an accepted transfer while finding nothing printed "No new matches
+  found". The two counts are independent: the reconciliation fires whatever the
+  tiers return.
+
+  That disclosure no longer depends on the output mode. `moneybin sync pull`
+  and `moneybin import inbox` placed the warning inside their text branch, so
+  `--output json` — the mode an unattended caller actually uses — dropped the
+  sentence naming `system audit undo` while still carrying the raw count. Both
+  now warn ahead of either branch, as `moneybin refresh` and `gsheet pull`
+  already did. `refresh_run`'s registered description had the same shape of
+  gap: the prose an agent reads at tool-selection time still said "No revert
+  path" while the tool could reverse a transfer, and `import_files`,
+  `import_inbox_sync`, and `sync_pull` never mentioned the reversal at all.
+
+  The retirement notices no longer claim the triggering action caused the
+  invalidation. The pass walks every accepted transfer, so a count can include
+  one an earlier decision had already broken and this run merely found —
+  wording that said "this decision invalidated" asserted a cause the number
+  does not carry. The notices now report what was reversed and leave the cause
+  to the audit log.
+
+  A retirement now survives the crash that follows it. The reconciliation
+  commits its reversals as it goes, so a later transfer-tier failure leaves them
+  on disk — which is why the error carries the count. Only `refresh` read it:
+  `transactions_matches_run`, `moneybin transactions matches run`, and `matches
+  backfill` let the exception through, and the sole record that a decision the
+  user made had been undone died with it. All three now report the count and the
+  way back before failing. `refresh_run` had the opposite half of the same gap —
+  it reported the count with no action beside it — so the surface most users
+  reach the reconciliation through named the reversal without naming the
+  restore. Both halves now match what the accept path already did.
+
+  That guard started one step too low. It opened after the two dedup tiers, but
+  the tiers are the run's *first* durable writes: each persists one decision per
+  pair with no transaction around the loop, so a pair that raises leaves every
+  earlier merge on disk — suppressing the duplicate side of those transactions —
+  while the caller was told only that matching failed. A late `CatalogException`
+  from a tier was worse than silent: `refresh` read it as the first-load "views
+  not built yet" precondition and reported a *skipped* step, claiming nothing had
+  been examined after decisions were already written. The guard now spans every
+  step that writes, and the error carries the whole partial result rather than
+  the retirement count alone, so all four surfaces report the merges as well as
+  the reversals. A run that committed nothing is still left unwrapped, which is
+  what keeps a genuine first load quiet.
+
+  Four smaller corrections to the same disclosure. `transfers_retired` counted
+  the row the *caller* had just accepted whenever the reconciliation reversed it,
+  so an accept that refused itself reported a standing transfer as undone and
+  pointed at an undo that only returns the proposal to `pending`; both the single
+  and bulk accept paths now discount their own flipped rows, which
+  `match_status` and `reversed_by_reconciliation` already report. Those accept
+  paths reconcile and return without a transfer-detection pass, so a leg the
+  reversal freed stayed unproposed until an unrelated refresh — they now say so
+  and name the pass. The MCP matcher error interpolated the raw cause, sending
+  DuckDB binder text and file paths through the tool boundary; the cause is
+  logged locally and the counts still cross. And retirements now increment
+  `moneybin_transfer_retirements_total`, labelled by which collapse caused them —
+  the only counter here that measures an undo of something the user decided,
+  which the match counts cannot show.
+
+  The post-merge re-match's crash branch names what landed. Carrying the partial
+  counts through `MatchRunError` made them real on that path, but both the CLI
+  warning and the agent-facing action still said duplicates "may" have been
+  merged — spending an exact number on a hedge, about the one outcome that
+  changes the ledger without being asked. Both now name the committed merges and
+  proposals, and say plainly when nothing had committed, which the carrier makes
+  trustworthy.
+
+  `doctor`'s unproposed-duplicates finding now reports its pair count as an upper
+  bound. Its component closure reads persisted decisions, while the matcher also
+  links candidates as it walks them, so three mutually duplicate rows with no
+  prior decision count as three pairs and become two proposals — the remedy the
+  finding recommends under-delivered against its own number.
+
+  The batch review path reconciles too. `reviews_decide` accepts match rows
+  through `ReviewDecisionsService.apply_ordinary`, which wrote them straight to
+  the repo — so an agent folding a queued duplicate that way left two accepted
+  transfers resolving to one gold transaction, the exact corruption the single
+  and bulk accepts were fixed for. The batch now runs the same reconciliation
+  once after its writes, reports `transfers_retired` in `data` beside an
+  `actions[]` route back, and re-reads each decision's committed status: an
+  accept that loses the reconciliation's tiebreak comes back `reversed` instead
+  of claiming it stands.
+
+  A crashed matcher no longer reaches the terminal as a traceback.
+  `MatchRunError`'s own message is `str(cause)` — DuckDB binder text, file
+  paths — and it was registered nowhere in the user-error classifier, whose
+  contract is that unrecognized exceptions propagate unchanged. `matches run`
+  and `matches backfill` therefore printed all of it, the leak the MCP twin was
+  hardened against in this same change. Both now exit through the `❌` + code-1
+  path with a message MoneyBin wrote; the frame chain, not the message, goes to
+  the log.
+
+  `refresh` was the third surface holding the same cause, and it held it in a
+  returned field rather than a traceback: `matching_error` and
+  `categorization_error` were assigned `str(exc)`, and both are declared
+  `DESCRIPTION` on `RefreshRunPayload` — so `refresh_run` handed the raw text to
+  the model provider and `moneybin refresh --output json` wrote it to stdout.
+  All three crash branches now return the classifier's wording, the same
+  boundary the matcher commands use, and a type it does not recognize returns a
+  generic line naming the step. The counts beside the error are unchanged: they
+  were always the disclosable half.
+
+  `transactions_matches_run` withheld the cause from its envelope and then wrote
+  it to the log, message and full traceback, one line above. Nine other failure
+  logs on the matcher path record the frame chain instead — a traceback's last
+  line is `<Type>: <str(exc)>`, so `exc_info` re-admits exactly what the
+  envelope refused. It now matches them.
+
+  The re-match a merge triggers now audits as the surface that triggered it.
+  `refresh` ran the match step with no actor, so decisions written because a
+  user accepted a link recorded `system` — the value
+  `app-integrity-invariant.md` reserves for automated callers. `moneybin
+  refresh`, `refresh_run`, and the scenario runner still record `system`; the
+  post-merge pass records `cli` or `mcp`, so audit history stops attributing a
+  user's merge to the pipeline.
+- **An accepted merge no longer strands the match decisions made under the old
+  account, which could silently reverse a rejection.** Accepting a link
+  re-points `app.account_links`, but a row in `app.match_decisions` stores the
+  `account_id` it was decided under — and that column is what the matcher keys
+  its rejected-pair tuple and its active-edge node on. Left behind, the row
+  stopped describing any live pair. For a rejection that is the worst case: it
+  no longer matched itself, so the next match pass treated the pair as new and,
+  above the confidence threshold with agreeing descriptions, auto-accepted the
+  two transactions the user had explicitly said were not duplicates — with
+  nothing to show it happened. The merge now re-keys both account columns onto
+  the surviving account in the same transaction, one audit row apiece so an
+  undo can replay them individually. Reachable before through any refresh
+  following a merge; the post-merge re-match above would have made it
+  deterministic.
+- **`moneybin system doctor` can now see a duplicate nobody proposed.** Neither existing
+  invariant could. `dedup_reconciliation` asserts
+  `raw_total - core_count == dedup_absorbed`, which balances whether or not a
+  duplicate was ever *proposed* — a pair nobody looked at moves both sides of the
+  equation together, so it stayed green across all 377 rows. `duplicate_account_overlap`
+  saw the split while it was still two accounts and stopped applying the instant
+  the link was accepted, which is precisely when the rows became matchable. The
+  new `unproposed_cross_source_duplicates` warns when a pair the matcher's own
+  Tier 3 blocking test would admit — differing `source_type` **or** differing
+  `source_origin`, so two CSV integrations and two Plaid connections count —
+  matches on amount and date within the matcher's window and no live match
+  decision explains the silence. "Explains" mirrors each of the matcher's own
+  reasons for dropping a candidate: the two rows are already in one component
+  (the transitive closure of accepted and pending dedup edges), their components
+  already share a `(source_type, source_origin, source_file)` — the cardinality
+  guard that keeps two rows of one import file apart — or the exact pair was
+  rejected. Accepted and pending decisions read at component grain, rejections at
+  pair grain, and each keyed exactly as the matcher keys it — components on
+  `NodeKey` and rejections on the pair tuple `scoring.py` actually tests, neither
+  of which carries `source_origin`. `get_rejected_pairs` selects origin, but the
+  matcher discards it when building its rejected set, so requiring it here would
+  warn about a pair no refresh can clear. Scoping both by `account_id` is what
+  keeps a source-native id reused by an unrelated account from marking a row
+  "already decided."
 - **Reconnecting a bank no longer splits one account's ledger in two.** Plaid
   reissues every `account_id` when an institution is relinked, so an account that
   came back under a new id read as one MoneyBin had never seen: it minted

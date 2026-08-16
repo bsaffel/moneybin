@@ -175,6 +175,18 @@ def inbox_default(
         with get_database(read_only=False) as db:
             result = InboxService(db=db, settings=get_settings()).sync()
 
+    # Ahead of both output branches: -q drops informational output and the JSON
+    # branch returns before ever reaching the text path, but a reversal of the
+    # user's own decision is neither. The drain is the least supervised surface
+    # reaching the reconciliation, so this is the one it can least afford to
+    # swallow — and --output json is the mode an unattended caller actually uses.
+    from moneybin.cli.utils import warn_transfers_retired  # noqa: PLC0415
+    from moneybin.matching.reconciliation import (  # noqa: PLC0415
+        RETIRED_SIDES_COLLAPSED,
+    )
+
+    warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
+
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json
         from moneybin.protocol.envelope import build_envelope

@@ -540,6 +540,293 @@ Guard-2 free-text resolution):
   auto-rejecting siblings; `decision="reject"` forbids `target_id`. The envelope,
   sensitivity tier (low — `ref_value` masked/omitted), and `actions[]` follow
   `mcp.md`.
+- **An accepted merge re-runs matching, and says what it found.** The merge is
+  what makes the two sources' rows comparable at all: the transaction matcher
+  blocks candidate pairs on `account_id` (`matching/scoring.py`), so while the
+  provisional and the candidate are separate accounts it is structurally unable
+  to pair their duplicates — it does not decline them, it never sees them. But
+  `CANONICAL_STEPS` runs `match` three stages before `identity`, so no refresh
+  ever observes its own accepts. Before this behavior shipped, an accept
+  repointed the links and stopped; on 2026-08-08 that left 377 duplicated rows
+  with zero proposals raised, and both `dedup_reconciliation` and
+  `duplicate_account_overlap` green throughout (`moneybin-doctor.md`,
+  `unproposed_cross_source_duplicates`, is the invariant that now catches it).
+
+  **The merge carries existing match decisions with it.** A decision row stores
+  the `account_id` it was made under, and both the rejected-pair key
+  (`get_rejected_pairs`) and the active-edge `NodeKey`
+  (`_fetch_active_dedup_decisions`) are built from that column — while
+  `AccountLinksRepo.repoint()` moves only `app.account_links`. A decision left
+  on the merged-away provisional therefore stops describing any live pair. The
+  sharp end is a **rejection**: it stops matching itself, so the re-match below
+  sees the pair as brand new and, above `high_confidence_threshold` with
+  agreeing descriptions, auto-accepts the two rows the user explicitly said were
+  not duplicates. `MatchDecisionsRepo.repoint_account()` re-keys both
+  `account_id` and `account_id_b` onto the survivor inside the merge
+  transaction, one audit per row so undo can replay them individually. The
+  ordering is load-bearing: it precedes the commit the re-match reads.
+
+  So `AccountLinksService.set()` calls `rematch_after_merge()` after its commit,
+  running `refresh(steps=["match", "transform"])`. The batched review path has
+  its own seam in `apply_identity()`: its inner `set()` calls run with
+  `in_outer_txn=True` and return before their own post-commit tail, so the
+  single-accept trigger does not cover it. `identity` is deliberately excluded —
+  not for recursion, since `_run_identity_step` calls `run()` (propose) and
+  never `set()`, but because proposing new links is not this trigger's job and
+  would re-examine the accounts the merge just collapsed.
+
+  **The pass carries the accepting surface's actor.** `refresh` takes an `actor`
+  and hands it to `MatchingService.run()`; `rematch_after_merge()` passes
+  `AccountLinksService`'s own, so decisions written because a user accepted a
+  merge audit as `cli`/`mcp`. `app-integrity-invariant.md` binds matcher-created
+  decisions to the surface that caused them and reserves `system` for the
+  automated callers it names — `moneybin refresh`, `refresh_run`, the scenario
+  runner — which keep `refresh`'s default. Without this the re-match is the one
+  matcher path where a user's decision records as the pipeline's own.
+
+  `transform` is included even though `prep.int_transactions__{unioned,matched,
+  merged}` and `core.fct_transactions` are all `kind VIEW` and collapse on the
+  next read. `core.dim_accounts` is `kind FULL`, and the staging models it is
+  built from `LEFT JOIN app.account_links` — so without the transform the
+  transactions merge while the accounts dimension still lists both accounts,
+  which reads to the user as a merge that did not happen. The cost is a SQLMesh
+  apply on the accept path.
+
+  Because the pass can auto-accept without asking (`engine._classify_pair`
+  returns `("accepted", "auto")` above `high_confidence_threshold` with agreeing
+  descriptions), it reports what it did rather than merging rows silently —
+  "magic stays visible" (`design-principles.md`). `RefreshResult` carries
+  `matches_auto_merged` / `matches_pending_review` / `matches_pending_transfers`;
+  the CLI prints them and MCP returns `rematch_auto_merged` /
+  `rematch_pending_review` on the payload. Both are **null on a reject**, which
+  runs no pass at all — distinct from a pass that ran and found nothing (`0`).
+  On the CLI the report is outside the confirmation branch, so `--yes` waives
+  the prompt but never the disclosure.
+
+  **Both accept surfaces disclose, not only the direct one.** The batched path
+  returns just its `IdentityDecisionPlan`, so that plan carries the
+  `RefreshResult` out — `apply_identity` attaches it after its commit — and
+  `IdentityLinksDecidePayload` exposes the same two fields as
+  `AccountLinksSetPayload`. Without that, the identical merge driven through
+  `identity_links_decide` returns an apparently clean result over a silent
+  auto-merge: the same invisibility, on the other seam.
+
+  **The pass retires transfers it invalidates.** Dedup blocking requires
+  `a.account_id = b.account_id`, so two rows each already claimed as a transfer
+  leg by a *different* account can never be dedup candidates of each other —
+  until this merge makes those accounts one. Neither dedup tier declines a row
+  because a transfer claims it (`engine.run` passes `excluded_ids=None` to
+  both), and `core.bridge_transfers` resolves every leg through the dedup
+  mapping (`MAX(transaction_id)` per group). Two decisions whose legs collapsed
+  would therefore name the same physical transaction, double-counting it in
+  anything joining `fct_transactions` to `bridge_transfers`. Tier 4 already
+  refuses to *propose* that shape — it excludes rows in active transfers and
+  every non-primary dedup member — but nothing revisited decisions made before
+  the collapse, so the match pass itself enforces the same rule in the missing
+  direction: **a dedup component is a leg of at most one accepted transfer**,
+  walked earliest-decided first so the first claimant keeps it. A transfer whose
+  own two legs share a component always goes; it is the transaction-level form
+  of the collapse `repoint_account` already retires at account level.
+
+  **The reconciliation belongs to no single trigger.** A merge is one way a
+  component grows past a transfer's legs; accepting a queued duplicate one at a
+  time is another, a batch of them through `reviews_decide` a third, and a bulk
+  `--confirm-all` a fourth. They share no chokepoint, so the rule lives in
+  `moneybin/matching/reconciliation.py::retire_transfers_invalidated_by_dedup`
+  and each calls it:
+
+  | Trigger | Caller | Where it runs |
+  |---|---|---|
+  | Matcher pass (auto-merge, post-merge re-match, any `refresh`) | `TransactionMatcher.run` | Between the dedup tiers and Tier 4 |
+  | Single accept (`transactions_matches_set`, `review --confirm`) | `MatchingService.set_status` | Inside the accept's own transaction |
+  | Batch review accept (`reviews_decide`) | `ReviewDecisionsService.apply_ordinary` | Once after the batch's writes, inside its transaction |
+  | Bulk accept (`review --confirm-all`) | `MatchingService.accept_all_pending` | Inside the batch transaction |
+
+  The batch row is the one that reads as a duplicate of the single accept and
+  is not: `reviews_decide` never reaches `set_status`. It writes match rows
+  through `MatchDecisionsRepo.update_status` directly, so for three rounds it
+  was the one accept path that folded duplicates without reconciling. Once per
+  batch rather than once per row — the pass walks every accepted transfer
+  whatever triggered it, so a per-row call repeats one scan to the same
+  fixpoint.
+
+  The matcher's position is the load-bearing one: it is the only point where the
+  components already include the edges that run just wrote *and* Tier 4 has not
+  yet built its exclusion set, so a leg the reversal frees is a transfer
+  candidate in that same run rather than the next one — and the reversal
+  precedes `transform`, so a corrupt `bridge_transfers` is never built rather
+  than rebuilt correctly one refresh later.
+
+  The three accept paths need their own call because they re-derive nothing:
+  each writes the decision and returns. **That is not a deferral.**
+  `prep.int_transactions__matched`, `core.fct_transactions` and
+  `core.bridge_transfers` are all `kind VIEW`, so a component that now holds two
+  accepted transfers' legs double-counts on the next read whether or not a
+  refresh ever follows. Each folds the reversals into the transaction that
+  accepted the duplicate, so the accept and the retirements it forces commit
+  together or not at all.
+
+  `refresh` reports the count on `RefreshResult.transfers_retired`, which
+  `refresh_run` and `moneybin refresh` both disclose alongside
+  `matches_auto_merged`, `matches_pending_review`, `matches_pending_transfers`,
+  and `matching_skipped` — an ordinary refresh reaches the match step, so it can
+  auto-merge or reverse without a merge anywhere in sight.
+
+  No accept path is scoped to `match_type = 'dedup'`. Accepting a duplicate
+  is the usual way to collide two transfers' legs, but a *transfer* proposed
+  before the edge that invalidated it survives in the queue — Tier 4 refuses to
+  raise that shape and never revisits what it already raised — so accepting it
+  claims a component another transfer holds. Earliest-decided-first means the
+  standing decision wins and the stale accept is the one reversed.
+
+  **So an accept can reverse itself, and the surfaces report the committed
+  status rather than the requested one.** The reconciliation walks every
+  accepted transfer including the row `set_status` just wrote, inside the same
+  transaction; when that row loses the tiebreak it commits as `reversed`. The
+  requested status is therefore the one value that cannot describe the outcome,
+  so `set_status` re-reads the row and returns `MatchDecisionOutcome`
+  (`match_status`, `transfers_retired`). `transactions_matches_set` puts that
+  field in `data.match_status`; `transactions matches set` and
+  `review --confirm` print a refusal instead of a success mark. A count-shaped
+  warning alone does not correct a "✅ accepted" line printed above it.
+
+  The bulk path owes the same correction and cannot get it from one row.
+  `review --confirm-all` folds every queued edge at once, so a batch holding a
+  dedup edge *and* a transfer that edge invalidates reverses one of its own rows
+  inside its own transaction. `accept_all_pending` therefore returns
+  `BulkAcceptOutcome` (`accepted`, `reversed_by_reconciliation`,
+  `transfers_retired`): `accept_pending` hands back the ids it flipped, and the
+  accepted count is re-read over exactly those after the reconciliation.
+  `transfers_retired` cannot stand in for the subtraction — it also counts
+  transfers accepted in earlier sessions, so netting it against the batch would
+  under-report an ordinary bulk accept.
+
+  `reviews_decide` owes the correction per decision, not in aggregate: it
+  returns one outcome per row, so `apply_ordinary` re-reads the committed
+  status of every match it accepted and reports that instead of the requested
+  one. Its `transfers_retired` discounts the rows the batch itself flipped, for
+  the reason the other two do, and is `null` rather than `0` when the batch
+  accepted no match at all — no pass ran, which is not the same as a pass that
+  reversed nothing.
+
+  Components here are built from **accepted dedup edges only**, which is
+  narrower than the accepted+pending graph the matcher seeds union-find with
+  and the review queue clusters by. Those two want the *prospective* shape —
+  what has been proposed. This one is the only caller acting on what actually
+  collapsed: `prep.int_transactions__matched` folds accepted rows alone, so a
+  pending edge leaves both source rows distinct in `core` and neither transfer
+  invalid yet. Reading the wider graph here would reverse a decision the user
+  made on the strength of a merge that has not happened, and may never — the
+  same unreviewed action this trigger exists to prevent. `get_active_dedup_edges`
+  therefore takes `statuses` with no default, so each caller states which graph
+  it means.
+
+  The retirement is a **reversal, not a delete**, so the audit row survives and
+  `system audit undo` restores it — and it is reported as
+  `rematch_transfers_retired` in `data` on both tools, plus a CLI warning
+  naming the undo path. That disclosure is not optional: every other counter
+  reports what the pass *found*, while this one reports a decision of the
+  user's that it *undid*.
+
+  **The disclosure is owed by every trigger, including the ones that report no
+  matches.** The reconciliation runs inside `TransactionMatcher.run` between the
+  dedup tiers and Tier 4, so it fires whatever the tiers return — a run that
+  finds nothing can still reverse an accepted transfer. `matches run`,
+  `matches backfill`, and `transactions_matches_run` therefore report
+  `transfers_retired` beside the match counts rather than inside the
+  has-matches branch, where "No new matches found" would otherwise be the whole
+  output of a run that undid a decision.
+
+  **A run that fails owes the same disclosure for whatever it already
+  committed.** `TransactionMatcher.run` opens no transaction: each dedup tier
+  persists one decision per pair, and the reconciliation commits each reversal as
+  it goes, so everything written before the failing step is durable while the
+  `MatchResult` dies with the exception. `MatchRunError` carries that partial
+  result — all three match counts and `transfers_retired` — and `refresh`,
+  `matches run`, `matches backfill`, and `transactions_matches_run` each report
+  it before failing. The guard spans every step that writes, starting at the
+  first dedup tier rather than at the reconciliation: a tier crash strands
+  committed merges exactly the way a Tier 4 crash strands committed reversals.
+  Two consequences fall out. A run that committed **nothing** raises its own
+  exception unwrapped, because `refresh` reads a bare `CatalogException` from the
+  tiers as the first-load "views not built yet" precondition and stays quiet —
+  wrapping every failure would report that expected first run as an error, while
+  wrapping a *late* one would claim nothing was examined after decisions were
+  written. And the tier counters increment after each write rather than before,
+  so a carried count names what committed rather than what the loop reached.
+
+  **The notices say what was reversed, never what caused it.** The pass walks
+  every accepted transfer, not only the ones this call invalidated, so a count
+  can include a transfer that an unrelated earlier decision broke and this run
+  merely reached first — most likely on the first pass over a ledger carrying
+  historical corruption. Wording of the form "this decision invalidated"
+  asserted a cause the counter does not carry. What the sentence may claim is
+  that this call did the reversing, which is always true, and what collapsed:
+  two sides into one transaction, or — only after a merge, the one trigger that
+  can fold accounts — two accounts into one. That distinction is the reason two
+  cause clauses survive where three trigger-named ones did not.
+
+  **One counter covers both ways a merge invalidates an accepted transfer.**
+  The transaction-level form above is the dedup pass's; the account-level form
+  is `repoint_account`'s, which retires a transfer whose two endpoints just
+  became one account and does so *inside* the accept transaction, before the
+  disclosure is assembled. `MatchDecisionsRepo.repoint_account` therefore
+  returns that count — accepted rows only, since a pending proposal was never
+  the user's decision and a reversed rejection removes nothing — and
+  `AccountLinksService` carries it to `rematch_after_merge()`, which sums the
+  two. Splitting them into two counters would ask the user to learn a
+  distinction that changes nothing they do: either way a transfer they
+  accepted is gone, and either way `system audit undo` is the way back. The
+  transaction-level form is deliberately global rather than scoped to the merged
+  account, because the invariant is global, the batched path merges several
+  accounts at once, and a pre-existing violation is corrupt whichever run
+  exposed it. The account-level form is the one piece `rematch_after_merge()`
+  still adds itself: it happens inside `set`'s transaction and reaches no
+  matcher, so `refresh`'s count would omit it.
+
+  **`moneybin_transfer_retirements_total` is emitted after the commit, by
+  whoever owns it.** A reversal written inside a caller's transaction is not
+  durable until that caller commits, and a counter cannot be rolled back — an
+  increment taken as the row is written outlives the rollback that takes the
+  reversal away, leaving a permanent claim that a transfer the user accepted is
+  gone while the row still stands. So the reconciliation increments per reversal
+  only when it owns the transaction itself (the matcher's run, where each
+  reversal commits alone and the count must survive `ReconciliationError`);
+  under `in_outer_txn` it stays silent and each accept path calls
+  `record_dedup_retirements` once its own commit lands. `repoint_account`
+  likewise returns its count rather than emitting, and `rematch_after_merge()`
+  — the one seam both the direct and batched paths reach only after their
+  commit — feeds the `account_merge` cause. What the metric receives is the
+  **raw** reversal count, not the disclosed one: `transfers_retired` discounts a
+  row the same call flipped moments earlier because that was never a *standing*
+  decision to undo, while the metric measures reversals, and that one committed.
+
+  A **partially failed pass reports as partial**, and the two halves fail
+  independently. `RefreshResult.matching_error` means the proposals are
+  incomplete — but not that nothing happened. The matcher wraps no transaction
+  around the run and the reconciliation commits each reversal as it goes, so a
+  failure anywhere after it — or *inside* it — leaves those reversals durable.
+  The guard therefore starts at the reconciliation, not after it: a crash
+  partway through its own loop leaves the same committed reversals behind, and
+  its running total lives in a local the exception never lets it return. It
+  raises `ReconciliationError` carrying that total, `TransactionMatcher` maps
+  that to `MatchRunError`, and `refresh` takes the count off the exception: a
+  dropped count would report a decision the user made as untouched when it has
+  in fact been undone. The carrier is raised only when the caller holds no
+  transaction — an accept path folds the reversals into its own, so its rollback
+  restores every one of them and a count there would be the same over-report in
+  the opposite direction. Catching it before the
+  first-load `CatalogException` branch is part of the same rule — a *late*
+  catalog failure is not a skipped match step, and calling it one claims nothing
+  was examined after the tiers had already written decisions.
+  `RefreshResult.error` means matching succeeded — the
+  decisions are written and the counts are true — but the SQLMesh apply did
+  not, so `core.dim_accounts` was never rebuilt and still lists both accounts.
+  Reporting the counts alone there would describe a collapse the user cannot
+  find anywhere in their ledger, which is the same invisibility this whole
+  behavior exists to remove. The CLI warns and names `moneybin refresh`; MCP
+  prepends an `actions[]` entry naming the narrower retry
+  (`refresh_run(steps=['transform'])`).
 - **What a queue row carries — measured overlap, not a stored score.** Each
   candidate reports the **ledger overlap**: how many of the provisional
   account's transactions already appear in the candidate's, matched on equal

@@ -88,6 +88,73 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "PlaidExtractor",
     ),
     # --- Pure type / format descriptors ---------------------------------
+    # MatchRunError is the exception MatchingService.run() raises, and it
+    # carries the count of accepted transfers the reconciliation already
+    # reversed and committed. An adapter that cannot name it cannot report
+    # that a decision the user made was undone before the run died — the
+    # count exists nowhere else. Catching what the service throws is not
+    # matching work crossing the layer; it is the service's own contract.
+    (
+        "mcp/tools/transactions.py",
+        "moneybin.matching.engine",
+        "MatchRunError",
+    ),
+    (
+        "cli/commands/transactions/matches.py",
+        "moneybin.matching.engine",
+        "MatchRunError",
+    ),
+    # The clause naming what collapsed, in the module that does the
+    # collapsing. Pure text, no side effects. It lives there rather than in
+    # each surface's helpers because the MCP twin (mcp/rematch_report.py)
+    # prints the same sentence, and a copy per surface is exactly how the two
+    # wordings drifted apart before.
+    (
+        "cli/commands/transactions/matches.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    (
+        "cli/commands/transactions/review.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    (
+        "cli/commands/refresh.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    # The four embedded refresh callers. Each reaches the same reconciliation
+    # the dedicated refresh surfaces do — three by running the full cascade,
+    # `gsheet pull` by naming `match` explicitly — and each owes the user the
+    # same sentence when it reverses a decision of theirs. An import, a pull,
+    # a sheet sync, and an unattended drain are where that reversal is least
+    # expected, which is why they name it rather than staying quiet.
+    (
+        "cli/commands/import_cmd.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    (
+        "cli/commands/import_inbox.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    (
+        "cli/commands/sync.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    (
+        "cli/commands/gsheet.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    (
+        "cli/commands/accounts/links.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED",
+    ),
     # Format descriptors and column-mapping types from the tabular
     # extractor subpackage — pure types and constants, no DB access.
     (

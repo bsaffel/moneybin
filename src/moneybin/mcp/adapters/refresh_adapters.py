@@ -8,6 +8,7 @@ mapping so the two surfaces cannot drift.
 from __future__ import annotations
 
 from moneybin.errors import RecoveryAction
+from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.payloads.system import RefreshRunPayload, SelfHealActionRow
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.refresh import RefreshResult
@@ -117,6 +118,15 @@ def refresh_envelope(
             actions.append(REFRESH_ACCOUNT_LINKS_REVIEW_HINT)
         if "merchants" not in result.identity_errors:
             actions.append(REFRESH_MERCHANT_LINKS_REVIEW_HINT)
+    # Ahead of every hint above: those are routine next steps, this one says a
+    # decision the user already made was undone. Shared with the embedded
+    # refresh callers (import, sync pull, inbox drain) — a user who finds the
+    # way back on one surface has to find it on the one they actually reach the
+    # reconciliation through, and any of them can be that surface.
+    if retired := retired_transfers_action(
+        result.transfers_retired, operation="refresh"
+    ):
+        actions.insert(0, retired)
     recovery = _step_crash_recovery_actions(result)
     # `or None` (omit the key when empty) is correct here: refresh always uses
     # build_envelope, whose ResponseEnvelope.error is None, so there is no
@@ -131,6 +141,11 @@ def refresh_envelope(
             matching_error=result.matching_error,
             categorization_error=result.categorization_error,
             identity_errors=list(result.identity_errors),
+            matches_auto_merged=result.matches_auto_merged,
+            matches_pending_review=result.matches_pending_review,
+            matches_pending_transfers=result.matches_pending_transfers,
+            matching_skipped=result.matching_skipped,
+            transfers_retired=result.transfers_retired,
             self_heal_actions=[
                 SelfHealActionRow(
                     recipe_id=r.recipe_id,

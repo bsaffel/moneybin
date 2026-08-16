@@ -356,6 +356,11 @@ class PullResult(BaseModel):
     transforms_applied: bool = False
     transforms_duration_seconds: float | None = None
     transforms_error: str | None = None
+    # Not a transform statistic like the three above: a pull runs the full
+    # refresh cascade, so its match step can reverse a transfer the user had
+    # accepted. That is the one outcome here the user did not ask for, so it
+    # rides back with the rest rather than living only in the audit log.
+    transfers_retired: int = 0
     opening_bootstrap_rows: int = 0
     investment_source_overlap_accounts: list[str] = Field(default_factory=list)
     security_resolution: dict[str, int] = Field(default_factory=dict)

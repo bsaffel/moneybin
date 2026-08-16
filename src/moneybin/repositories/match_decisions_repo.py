@@ -16,6 +16,7 @@ caller supplies both.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from moneybin.repositories.base import BaseRepo
@@ -43,6 +44,23 @@ _MATCH_DECISIONS_COLUMNS = (
     "reversed_at",
     "reversed_by",
 )
+
+
+@dataclass(frozen=True)
+class RepointAccountResult:
+    """What :meth:`MatchDecisionsRepo.repoint_account` did.
+
+    ``accepted_transfers_retired`` is separate from ``events`` because it is
+    the only part a *user* has to be told about: every other effect of a
+    re-key is bookkeeping, while reversing an accepted transfer undoes a
+    decision they made. Counting it here rather than at the call site keeps
+    the collapse predicate in one place — the caller cannot re-derive which
+    rows collapsed without copying it.
+    """
+
+    events: tuple[AuditEvent, ...]
+    accepted_transfers_retired: int
+
 
 # Columns stored as JSON-encoded text. Reads decode them to Python objects so the
 # audit ``before``/``after`` payload carries nested JSON, not a doubly-encoded
@@ -184,6 +202,157 @@ class MatchDecisionsRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
             )
 
+    def repoint_account(
+        self,
+        *,
+        from_account_id: str,
+        to_account_id: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> RepointAccountResult:
+        """Re-key decisions naming a merged-away account onto the survivor.
+
+        An account merge re-points ``app.account_links``, but a decision row
+        stores the ``account_id`` it was made under. Left behind, that row no
+        longer describes any live pair: ``get_rejected_pairs`` keys its tuple on
+        ``account_id`` and ``_fetch_active_dedup_decisions`` builds its
+        ``NodeKey`` from it, while the same transactions now sit under the
+        survivor. The rejection therefore stops matching itself, and a matcher
+        run that clears the confidence threshold can auto-accept a pair the user
+        explicitly said were not duplicates.
+
+        Both columns move. ``account_id`` is the shared account on a dedup row
+        and side A on a transfer; ``account_id_b`` is the transfer's second
+        account and is NULL for dedup. Either can name the account that just
+        went away.
+
+        A transfer whose *other* leg is already the survivor is retired rather
+        than re-keyed: both endpoints collapse onto one account, and a transfer
+        between an account and itself is not a thing that can be true. Accepted
+        and rejected rows are reversed; pending ones are rejected, since a
+        pending row has no decision to undo.
+
+        One audit per row, like every other method here — the undo engine
+        replays rows individually, and a single event covering N updates could
+        not restore them one at a time. Returns the events in mutation order,
+        alongside a count of the *accepted* transfers the collapse retired —
+        the caller owes the user a disclosure for those and nothing else here.
+        Re-keying is idempotent: a second call finds no rows and returns empty.
+        """
+        if from_account_id == to_account_id:
+            raise ValueError(
+                "match_decisions.repoint_account: from_account_id and "
+                f"to_account_id are both {to_account_id!r}"
+            )
+        with self._transaction(in_outer_txn=in_outer_txn):
+            rows = self._db.execute(
+                f"""
+                SELECT match_id FROM {MATCH_DECISIONS.full_name}
+                WHERE account_id = ? OR account_id_b = ?
+                ORDER BY match_id
+                """,  # noqa: S608  # TableRef + parameterized values
+                [from_account_id, from_account_id],
+            ).fetchall()
+            events: list[AuditEvent] = []
+            accepted_transfers_retired = 0
+            for (match_id,) in rows:
+                before = self._require(self._fetch_row(match_id), "match_id", match_id)
+                # A transfer whose other leg is already the survivor has both
+                # endpoints collapsing onto one account. Re-keying it would
+                # write account_id == account_id_b: an accepted row then
+                # materializes in core.bridge_transfers as a transfer from an
+                # account to itself, and a pending one sits in the queue as a
+                # proposal nobody can action. A transfer cannot survive its two
+                # sides becoming one account, so retire it instead.
+                other = (
+                    before["account_id_b"]
+                    if before["account_id"] == from_account_id
+                    else before["account_id"]
+                )
+                collapsed = (
+                    before["match_type"] == "transfer" and other == to_account_id
+                )
+                self._db.execute(
+                    f"""
+                    UPDATE {MATCH_DECISIONS.full_name}
+                    SET account_id = CASE WHEN account_id = ? THEN ? ELSE account_id END,
+                        account_id_b = CASE
+                            WHEN account_id_b = ? THEN ? ELSE account_id_b
+                        END
+                    WHERE match_id = ?
+                    """,  # noqa: S608  # TableRef + parameterized values
+                    [
+                        from_account_id,
+                        to_account_id,
+                        from_account_id,
+                        to_account_id,
+                        match_id,
+                    ],
+                )
+                after = self._fetch_row(match_id)
+                events.append(
+                    self._emit_audit(
+                        action="match_decision.repoint_account",
+                        target=(*self._audit_target, match_id),
+                        before=self._serialize_for_audit(before),
+                        after=self._serialize_for_audit(after),
+                        actor=actor,
+                        parent_audit_id=parent_audit_id,
+                    )
+                )
+                # Retirement follows the re-key rather than replacing it. The
+                # row must still name a live account: transform drops the
+                # provisional from core.dim_accounts moments later, and the
+                # app_match_decisions_account_fk invariant checks every row
+                # regardless of status, so a retired row left pointing at the
+                # dead account fails it.
+                if not collapsed:
+                    continue
+                status = before["match_status"]
+                if status == "accepted":
+                    # Only this branch is disclosable. A rejected row being
+                    # reversed removes nothing from the ledger, and a pending
+                    # one was never the user's decision to undo.
+                    #
+                    # Returned rather than counted here: nothing in this loop is
+                    # durable until whoever owns the transaction commits, and a
+                    # metric incremented as the row is written outlives the
+                    # rollback that takes the reversal back. `AccountLinksService`
+                    # feeds the counter once its commit lands.
+                    accepted_transfers_retired += 1
+                if status in ("accepted", "rejected"):
+                    events.append(
+                        self.reverse(
+                            match_id,
+                            reversed_by="system",
+                            actor=actor,
+                            parent_audit_id=parent_audit_id,
+                            in_outer_txn=True,
+                        )
+                    )
+                elif status == "pending":
+                    events.append(
+                        self.update_status(
+                            match_id,
+                            status="rejected",
+                            decided_by="system",
+                            actor=actor,
+                            parent_audit_id=parent_audit_id,
+                            in_outer_txn=True,
+                        )
+                    )
+                # The fourth status, `reversed`, needs nothing further and is
+                # named here because two branches covering three of four reads
+                # like an omission. The re-key above already ran unconditionally,
+                # so the row still points at a live account; there is no standing
+                # decision left to undo, and re-reversing it would overwrite the
+                # original reversal's audit trail.
+            return RepointAccountResult(
+                events=tuple(events),
+                accepted_transfers_retired=accepted_transfers_retired,
+            )
+
     def reverse(
         self,
         match_id: str,
@@ -236,14 +405,20 @@ class MatchDecisionsRepo(BaseRepo):
         decided_by: str,
         actor: str,
         in_outer_txn: bool = False,
-    ) -> int:
+    ) -> list[str]:
         """Accept every pending, non-reversed match (optionally filtered by type).
 
         Bulk acceptance is the per-row ``update_status`` applied inside one
         transaction, so each acceptance emits its own paired ``app.audit_log``
         row (Invariant 10) and the batch is all-or-nothing. ``match_type`` is a
         code-supplied filter (validated by the caller); ``decided_by`` is the
-        domain column, ``actor`` the audit surface. Returns the count accepted.
+        domain column, ``actor`` the audit surface.
+
+        Returns the ids it flipped rather than their count: a caller that also
+        runs the transfer reconciliation needs to know *which* rows were its
+        own, because the reconciliation can reverse one of them inside the same
+        transaction. Re-deriving that set from the filter would duplicate this
+        predicate and drift from it.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
@@ -264,4 +439,4 @@ class MatchDecisionsRepo(BaseRepo):
                     actor=actor,
                     in_outer_txn=True,
                 )
-            return len(rows)
+            return [match_id for (match_id,) in rows]

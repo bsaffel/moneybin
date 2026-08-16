@@ -79,6 +79,25 @@ from moneybin.utils.file import source_sha256
 logger = logging.getLogger(__name__)
 
 
+class ImportRefreshError(RuntimeError):
+    """A closing refresh that failed after it had already reversed transfers.
+
+    Sibling of ``MatchRunError``, and carries state for the same reason: the
+    refresh reconciles inside its *match* step and commits there, so a transform
+    apply that dies afterwards leaves those reversals on disk. Without a carrier
+    the count dies with the exception and the command exits reporting a failed
+    transform while saying nothing about a decision the user made being undone.
+
+    Subclasses ``RuntimeError`` because that is what this raise site has always
+    been and callers catch it as such; the narrower type only adds the payload.
+    """
+
+    def __init__(self, message: str, *, transfers_retired: int) -> None:
+        """Carry ``transfers_retired`` — the reversals already committed."""
+        super().__init__(message)
+        self.transfers_retired = transfers_retired
+
+
 @dataclass(frozen=True, slots=True)
 class CreatedAccount:
     """One canonical account an import minted.
@@ -238,6 +257,13 @@ class ImportResult:
     date_range: str = ""
     details: dict[str, int] = field(default_factory=dict)
     core_tables_rebuilt: bool = False
+    transfers_retired: int = 0
+    """Standing transfers this import's own refresh reversed.
+
+    Twin of ``BatchImportResult.transfers_retired``: the closing refresh runs
+    the matcher, so folding a duplicate can undo a transfer the user accepted.
+    Unlike ``core_tables_rebuilt`` this reports something undone, so it has to
+    reach the surface rather than being inferred from a success."""
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     sign_override_replayed: bool = False
@@ -448,6 +474,10 @@ class BatchImportResult:
     transforms_applied: bool
     transforms_duration_seconds: float | None
     transforms_error: str | None = None
+    # An import's closing refresh runs the matcher, so folding a duplicate can
+    # reverse a transfer the user had accepted. Unlike the transform fields,
+    # this one reports something undone rather than something built.
+    transfers_retired: int = 0
 
     @property
     def imported_count(self) -> int:
@@ -5420,8 +5450,21 @@ class ImportService:
             # CLI exit codes reflect the broken state. Batch imports use the
             # soft-fail variant via import_files() instead.
             refresh_result = _refresh(self._db)
+            # Ahead of the fail-loud raise: the reconciliation runs in the match
+            # step and commits there, so a transform apply that dies afterwards
+            # leaves the reversal on disk.
+            result.transfers_retired = refresh_result.transfers_retired
             if not refresh_result.applied:
-                raise RuntimeError(f"SQLMesh transforms failed: {refresh_result.error}")
+                # The raise discards `result`, and this exception escapes past
+                # the success path's warning rather than landing in
+                # `_single_file_failure`. So the count travels on the exception
+                # — the reversal is the user's own decision being undone, and it
+                # is disclosed whether or not the transform that followed it
+                # succeeded.
+                raise ImportRefreshError(
+                    f"SQLMesh transforms failed: {refresh_result.error}",
+                    transfers_retired=refresh_result.transfers_retired,
+                )
             result.core_tables_rebuilt = True
 
         logger.info(f"Import complete: {result.summary()}")
@@ -5644,17 +5687,20 @@ class ImportService:
         applied = False
         duration_seconds: float | None = None
         error: str | None = None
+        transfers_retired = 0
         if refresh and any_succeeded and any_transformable:
             refresh_result = _refresh(self._db)
             applied = refresh_result.applied
             duration_seconds = refresh_result.duration_seconds
             error = refresh_result.error
+            transfers_retired = refresh_result.transfers_retired
 
         return BatchImportResult(
             per_file=per_file,
             transforms_applied=applied,
             transforms_duration_seconds=duration_seconds,
             transforms_error=error,
+            transfers_retired=transfers_retired,
         )
 
     def list_formats(

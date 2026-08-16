@@ -7,6 +7,7 @@ service layer and test argument parsing, exit codes, and output shape.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from datetime import date
 from unittest.mock import MagicMock, patch
@@ -29,6 +30,7 @@ from moneybin.mcp.write_contracts import AccountLinkDecisionRequest
 from moneybin.services.account_links_service import AccountLinkAcceptImpact
 from moneybin.services.identity_confirmation import identity_confirm_message
 from moneybin.services.ledger_overlap import LedgerOverlap
+from moneybin.services.refresh import RefreshResult
 from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
@@ -40,6 +42,17 @@ runner = CliRunner()
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _clean_rematch() -> RefreshResult:
+    """A post-merge pass that succeeded, for tests about something else.
+
+    Never leave `AccountLinksService.set` returning a bare ``MagicMock`` here:
+    its auto-created ``.error`` is a truthy Mock, so the command reads the
+    rebuild as failed and exits 1, and ``transfers_retired`` renders as a repr
+    inside the retirement warning.
+    """
+    return RefreshResult(applied=True, duration_seconds=0.0)
 
 
 def _make_pending_group(
@@ -377,6 +390,7 @@ class TestLinksSet:
         half of that gate, not an unrelated convenience.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = _clean_rematch()
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
         assert result.exit_code == 0
@@ -391,6 +405,240 @@ class TestLinksSet:
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_reports_what_the_rematch_found(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The merge re-matches, and a pass that auto-merged must say so.
+
+        Silently collapsing rows the operator never reviewed is the failure the
+        confirm gate exists to prevent — so the counts belong on the terminal,
+        not only in the log file.
+        """
+        from moneybin.services.refresh import RefreshResult
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matches_auto_merged=2,
+            matches_pending_review=5,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        assert result.exit_code == 0
+        assert "2" in caplog.text
+        assert "5" in caplog.text
+        assert "re-match" in caplog.text.lower()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_does_not_call_a_skipped_pass_clean(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Nothing examined is not the same as nothing found.
+
+        ``refresh()`` treats a missing or stale matching view as a precondition
+        rather than a crash, so it returns zero counts with no error. Reading
+        those zeros as a clean pass would tell the user their merge exposed no
+        duplicates when the rows were never looked at.
+        """
+        from moneybin.services.refresh import RefreshResult
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matching_skipped=True,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        assert result.exit_code == 0
+        assert "no new duplicates found" not in caplog.text
+        assert "could not run" in caplog.text
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_reports_transfers_the_pass_raised(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A full match pass raises Tier 4 candidates, and those are news too.
+
+        Judging the run clean on the two dedup counters alone would print "no
+        new duplicates found" over a merge that just queued transfers for
+        review — the counters are the only place the user learns of them.
+        """
+        from moneybin.services.refresh import RefreshResult
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matches_pending_transfers=3,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        assert result.exit_code == 0
+        assert "no new duplicates found" not in caplog.text
+        assert "3" in caplog.text
+        assert "transfer" in caplog.text.lower()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_standalone_reports_no_rematch(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A reject ran no match pass, so the output must not claim one."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = None
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--standalone"])
+
+        assert result.exit_code == 0
+        assert "re-match" not in caplog.text.lower()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_warns_when_the_rebuild_after_the_merge_failed(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Matching succeeded, SQLMesh did not — the counts alone would mislead.
+
+        ``core.dim_accounts`` is ``kind FULL``, which is the whole reason
+        ``transform`` follows ``match`` here. Without the apply it still lists
+        both accounts, so reporting "2 auto-merged" and stopping describes a
+        collapse the user cannot see anywhere in their ledger.
+        """
+        from moneybin.services.refresh import RefreshResult
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = RefreshResult(
+            applied=False,
+            duration_seconds=1.0,
+            error="sqlmesh apply failed",
+            matches_auto_merged=2,
+            matches_pending_review=5,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        # Exit 1, like `refresh` on the identical RefreshResult.error: the merge
+        # committed but is invisible in core.dim_accounts until an apply lands,
+        # and a script or agent gating on status must not read that as done.
+        assert result.exit_code == 1
+        # The match counts are real — decisions were written — so they stay.
+        assert "2" in caplog.text
+        assert [r for r in caplog.records if r.levelno == logging.WARNING], (
+            "a failed rebuild must warn, not ride along under the match counts"
+        )
+        assert "refresh" in caplog.text.lower()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_warns_when_the_pass_retired_an_accepted_transfer(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An otherwise-clean pass that undid a decision the user made.
+
+        Every other counter reports what the pass *found*. This one reports
+        what it took away: a transfer the user had accepted, reversed because
+        the merge invalidated it — its two sides turned out to be one
+        transaction, or its two accounts one account. Riding along inside the
+        ordinary "re-matched" line would bury it, so it warns and names the
+        route back.
+        """
+        from moneybin.services.refresh import RefreshResult
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            matches_auto_merged=1,
+            transfers_retired=2,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        assert result.exit_code == 0
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("2" in m and "transfer" in m for m in warnings), (
+            "reversing a transfer the user accepted must warn, not ride along "
+            "under the match counts"
+        )
+        assert "undo" in caplog.text.lower(), "the user must be told how to restore it"
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_warns_about_both_failures_when_both_happened(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Match and rebuild fail independently, so neither may mask the other.
+
+        ``refresh()`` runs the transform step whether or not the match step
+        raised, so one call can carry both errors. They also tell the user two
+        different things: nothing was proposed, *and* the merge itself is not
+        visible yet. Reporting only the first leaves the second silent.
+        """
+        from moneybin.services.refresh import RefreshResult
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = RefreshResult(
+            applied=False,
+            duration_seconds=1.0,
+            error="sqlmesh apply failed",
+            matching_error="matcher blew up",
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        assert result.exit_code == 1
+        warnings = [
+            r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+        ]
+        assert any("stopped partway" in m for m in warnings), (
+            f"no warning covers the failed match: {warnings}"
+        )
+        # Collapsed before matching because the production message is wrapped
+        # across source lines: a substring spanning the wrap point matches the
+        # source and never the runtime string, which is how the previous
+        # `"not\nreflected"` half of this assertion came to be permanently inert.
+        collapsed = [" ".join(m.split()) for m in warnings]
+        assert any("not reflected in your accounts" in m for m in collapsed), (
+            f"no warning covers the failed rebuild: {warnings}"
+        )
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
     def test_set_standalone_calls_service_with_none(
         self,
         mock_set: MagicMock,
@@ -398,6 +646,7 @@ class TestLinksSet:
     ) -> None:
         """--standalone passes target_account_id=None to service."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = _clean_rematch()
 
         result = runner.invoke(app, ["set", "dec001", "--standalone"])
         assert result.exit_code == 0
@@ -450,6 +699,7 @@ class TestLinksSet:
         makes the answer more than a coin flip.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = _clean_rematch()
         mock_preview.return_value = _previewed_merge(transactions=("t1", "t2", "t3"))
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="y\n")
@@ -475,6 +725,7 @@ class TestLinksSet:
         rejection on one surface and not the other.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = _clean_rematch()
 
         result = runner.invoke(app, ["set", "dec001", "--standalone"])
 
@@ -655,6 +906,7 @@ class TestLinksSet:
         inventing one would refuse a write on a comparison never shown.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = _clean_rematch()
         mock_preview.return_value = None
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"])
@@ -795,6 +1047,7 @@ class TestLinksSet:
         rather than answering a prompt that still cost a read.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = _clean_rematch()
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
 

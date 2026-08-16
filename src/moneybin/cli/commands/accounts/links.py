@@ -17,9 +17,13 @@ import typer
 
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.utils import (
+    handle_cli_errors,
+    warn_transfers_retired,
+)
 from moneybin.database import get_database
 from moneybin.errors import UserError
+from moneybin.matching.reconciliation import RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED
 from moneybin.privacy.payloads.accounts import (
     AccountLinksHistoryPayload,
     AccountLinksPendingPayload,
@@ -37,6 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from moneybin.database import Database
+    from moneybin.services.refresh import RefreshResult
     from moneybin.services.review_decisions_service import IdentityDecisionPlan
 
 app = typer.Typer(
@@ -159,12 +164,13 @@ def links_set(
 
     target_account_id: str | None = into if not standalone else None
 
+    rematch: RefreshResult | None = None
     with handle_cli_errors():
         approved: _ApprovedMerge | None = None
         if target_account_id is not None and not yes:
             approved = _confirm_merge(decision_id, target_account_id)
         with get_database(read_only=False) as db:
-            AccountLinksService(db, actor="cli").set(
+            rematch = AccountLinksService(db, actor="cli").set(
                 decision_id,
                 target_account_id=target_account_id,
                 decided_by="user",
@@ -177,6 +183,111 @@ def links_set(
         else "standalone (rejected)"
     )
     logger.info(f"✅ Decision {decision_id[:12]}... → {action}")
+    _report_rematch(rematch)
+    if rematch is not None and rematch.error is not None:
+        # `refresh_command` exits 1 on this identical RefreshResult.error, and
+        # cli.md reads 1 as "operation ran and failed". The merge did commit,
+        # but core.dim_accounts is kind FULL: until an apply lands it still
+        # lists both accounts, so a script or agent gating on status would
+        # record a collapse that is nowhere in the user's ledger.
+        raise typer.Exit(1)
+
+
+def _report_rematch(rematch: RefreshResult | None) -> None:
+    """Say what the post-merge match pass did — it may have merged rows unasked.
+
+    ``None`` means no pass ran (a standalone reject repoints nothing), and
+    printing nothing is then the honest output.
+    """
+    if rematch is None:
+        return
+    # Deferred, and below the guard: matching_service pulls duckdb and the match
+    # engine, this module is on the CLI cold-start path (.claude/rules/cli.md),
+    # and the reject path reaches here needing none of it.
+    from moneybin.services.matching_service import (  # noqa: PLC0415
+        PENDING_MATCHES_HINT,
+    )
+
+    # The two failures are independent — refresh() attempts the transform step
+    # whether or not the match step raised, so one call can carry both — and
+    # they say different things: nothing was proposed, *and* the merge itself
+    # is not visible yet. Neither may short-circuit the other.
+    if rematch.matching_skipped:
+        # Zero counts here mean nothing was examined, not that nothing was
+        # found — so the clean-run line below would be inventing a result.
+        logger.warning(
+            "⚠️  Re-match after the merge could not run — its matching views "
+            "were missing or stale, so the newly co-resident rows were never "
+            "examined; re-run 'moneybin refresh'"
+        )
+    elif rematch.matching_error is not None:
+        # Not "still unproposed": the matcher commits each edge as it goes and
+        # wraps no transaction around the run, so a crash mid-pass leaves
+        # earlier tiers' decisions durable. `MatchRunError` carries those counts
+        # and `refresh` copies them onto the result, so this branch can name
+        # them exactly instead of hedging — and zero is trustworthy too, because
+        # a run that committed nothing raises unwrapped and never reaches the
+        # branch that would populate them.
+        landed = ", ".join(
+            f"{count} {noun}"
+            for count, noun in (
+                (rematch.matches_auto_merged, "auto-merged"),
+                (rematch.matches_pending_review, "new proposal(s)"),
+                (rematch.matches_pending_transfers, "possible transfer(s)"),
+            )
+            if count
+        )
+        committed = (
+            f"after committing {landed}, which are durable"
+            if landed
+            else "before it had committed anything"
+        )
+        logger.warning(
+            f"⚠️  Re-match after the merge stopped partway {committed}; its "
+            "remaining counts are incomplete — re-run 'moneybin refresh', then "
+            "check 'moneybin review --type matches' and "
+            "'moneybin system audit list'"
+        )
+    else:
+        merged = rematch.matches_auto_merged
+        pending = rematch.matches_pending_review
+        # The pass is a full match run, so it raises Tier 4 transfer candidates
+        # too. Judging it clean on the dedup counters alone would report "no new
+        # duplicates" over a merge that just queued transfers for review.
+        transfers = rematch.matches_pending_transfers
+        if not merged and not pending and not transfers:
+            logger.info("Re-matched after the merge: no new duplicates found")
+        else:
+            logger.info(
+                f"👀 Re-matched after the merge: {merged} auto-merged, "
+                f"{pending} new proposal(s) to review, "
+                f"{transfers} possible transfer(s)"
+            )
+            if pending:
+                logger.info(f"  💡 {PENDING_MATCHES_HINT}")
+            if transfers:
+                logger.info(
+                    "  💡 Review possible transfers with "
+                    "'moneybin review --type matches'"
+                )
+    # Independent of every branch above: this is a decision the *user* made being
+    # undone, so it must be stated whether or not the pass was otherwise clean,
+    # and it must name the way back.
+    warn_transfers_retired(
+        rematch.transfers_retired, cause=RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED
+    )
+    if rematch.error is not None:
+        # The counts above are true — match decisions were written — but the
+        # SQLMesh apply that follows them is what rebuilds core.dim_accounts,
+        # a kind FULL model. Without it the merge is invisible: the accounts
+        # dimension still lists both, which reads as a merge that never
+        # happened. Reporting the counts and stopping would describe a
+        # collapse the user cannot find anywhere.
+        logger.warning(
+            "⚠️  The rebuild after the merge failed, so the merge is not "
+            "reflected in your accounts or totals yet; re-run "
+            "'moneybin refresh'"
+        )
 
 
 def _plan_merge(

@@ -10,7 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app
-from moneybin.services.import_service import ImportResult
+from moneybin.services.import_service import ImportRefreshError, ImportResult
 
 runner = CliRunner()
 
@@ -165,6 +165,121 @@ def test_import_files_single_no_knobs_surfaces_sign_correction_warning(
 
     assert result.exit_code == 0, result.output
     assert "Sign convention may be inverted" in result.output
+
+
+def test_import_files_single_surfaces_the_retirement_its_refresh_caused(
+    csv_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A single-file import names transfers its own refresh reversed.
+
+    The single-file invocation routes through ``import_file``, whose refresh
+    runs the same match step the batch path does. ``_single_file_success`` has
+    to carry the count onto the batch it synthesizes, or the shared warning
+    below it can never fire for the most common way to run this command.
+    """
+
+    def fake_run_import(**kwargs: Any) -> ImportResult:
+        return ImportResult(
+            file_path=str(kwargs["file_path"]),
+            file_type="tabular",
+            core_tables_rebuilt=True,
+            transfers_retired=2,
+        )
+
+    with (
+        patch("moneybin.cli.utils.handle_cli_errors", _fake_db_ctx),
+        patch("moneybin.database.get_database", _fake_db_ctx),
+        patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=fake_run_import,
+        ),
+    ):
+        with caplog.at_level("WARNING"):
+            result = runner.invoke(
+                app, ["files", str(csv_path)], catch_exceptions=False
+            )
+
+    assert result.exit_code == 0, result.output
+    # The helper reports through the project logger, which targets stderr.
+    assert "Retired 2 previously accepted transfer(s)" in caplog.text
+    assert "moneybin system audit undo" in caplog.text
+
+
+def test_import_files_retirement_warning_survives_quiet(
+    csv_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``-q`` drops informational output; it must not drop this.
+
+    ``moneybin refresh``, ``moneybin sync pull``, and the inbox drain all emit
+    this warning regardless of ``--quiet`` — the reversal is a decision the
+    *user* made being undone, not a status line. Leaving ``import files`` as
+    the one surface that swallows it would be the second pattern for one job.
+    """
+
+    def fake_run_import(**kwargs: Any) -> ImportResult:
+        return ImportResult(
+            file_path=str(kwargs["file_path"]),
+            file_type="tabular",
+            core_tables_rebuilt=True,
+            transfers_retired=3,
+        )
+
+    with (
+        patch("moneybin.cli.utils.handle_cli_errors", _fake_db_ctx),
+        patch("moneybin.database.get_database", _fake_db_ctx),
+        patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=fake_run_import,
+        ),
+    ):
+        with caplog.at_level("INFO"):
+            result = runner.invoke(
+                app, ["files", str(csv_path), "--quiet"], catch_exceptions=False
+            )
+
+    assert result.exit_code == 0, result.output
+    assert "Retired 3 previously accepted transfer(s)" in caplog.text
+    # -q still suppresses the per-file status line it is meant to suppress.
+    assert "✅" not in caplog.text
+
+
+def test_import_files_reports_a_retirement_its_failed_refresh_committed(
+    csv_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed transform must not swallow a reversal the match step committed.
+
+    The refresh reconciles inside its *match* step and commits there, so a
+    transform apply that dies afterwards leaves the reversal on disk. Neither
+    of the two paths that report it can see this one: the raise discards
+    ``ImportResult``, and the exception escapes past the success-path warning
+    entirely rather than landing in ``_single_file_failure`` (which catches
+    only ``ValueError``/``PermissionError``). So the count rides on the
+    exception, the way ``MatchRunError`` carries a partial run.
+    """
+
+    def fake_run_import(**kwargs: Any) -> ImportResult:
+        _ = kwargs
+        raise ImportRefreshError(
+            "SQLMesh transforms failed: apply reported no plan",
+            transfers_retired=2,
+        )
+
+    with (
+        patch("moneybin.cli.utils.handle_cli_errors", _fake_db_ctx),
+        patch("moneybin.database.get_database", _fake_db_ctx),
+        patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=fake_run_import,
+        ),
+    ):
+        with caplog.at_level("WARNING"):
+            result = runner.invoke(app, ["files", str(csv_path)])
+
+    # The failure still fails: this discloses the reversal, it does not absolve
+    # the transform.
+    assert result.exit_code != 0
+    assert "Retired 2 previously accepted transfer(s)" in caplog.text
+    assert "moneybin system audit undo" in caplog.text
 
 
 def test_import_file_surfaces_ratified_sign_replay_note(csv_path: Path) -> None:

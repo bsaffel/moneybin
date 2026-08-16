@@ -162,3 +162,77 @@ def test_recovery_actions_are_idempotent() -> None:
         requested=expand_steps(None),
     )
     assert all(ra.idempotent for ra in env.recovery_actions or [])
+
+
+@pytest.mark.unit
+def test_envelope_discloses_what_the_match_step_decided() -> None:
+    """A refresh that merges rows or undoes a transfer must say so.
+
+    The match step auto-merges above the confidence threshold without asking
+    and reverses transfers a dedup collapse invalidated. Both are decisions the
+    user did not make, and until these keys existed only the two merge-accept
+    tools reported them — a plain ``refresh_run`` after an import returned an
+    ordinary success.
+    """
+    env = refresh_envelope(
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            matches_auto_merged=3,
+            matches_pending_review=2,
+            matches_pending_transfers=1,
+            transfers_retired=4,
+        ),
+        requested=expand_steps(None),
+    )
+    payload = _payload(env)
+    assert payload.matches_auto_merged == 3
+    assert payload.matches_pending_review == 2
+    assert payload.matches_pending_transfers == 1
+    assert payload.transfers_retired == 4
+    assert payload.matching_skipped is False
+
+
+@pytest.mark.unit
+def test_envelope_routes_a_retirement_to_the_way_back() -> None:
+    """The count is not the disclosure; the route back is.
+
+    ``transactions_matches_run`` already pairs its count with the audit/undo
+    route, and refresh is the surface most users reach the reconciliation
+    through — it runs the matcher on every import. Reporting the number here
+    with no action left the primary path stating that an accepted transfer was
+    undone while saying nothing about how to restore it.
+    """
+    env = refresh_envelope(
+        RefreshResult(applied=True, duration_seconds=1.0, transfers_retired=4),
+        requested=expand_steps(None),
+    )
+    retirement = [a for a in env.actions if "4" in a and "system_audit_undo" in a]
+    assert retirement, f"no action names the retirement or its way back: {env.actions}"
+
+
+@pytest.mark.unit
+def test_envelope_stays_quiet_about_undo_when_nothing_was_retired() -> None:
+    """Negative twin: an ordinary refresh must not imply a decision was undone."""
+    env = refresh_envelope(
+        RefreshResult(applied=True, duration_seconds=1.0, transfers_retired=0),
+        requested=expand_steps(None),
+    )
+    assert not [a for a in env.actions if "system_audit_undo" in a]
+
+
+@pytest.mark.unit
+def test_envelope_marks_zero_counts_as_unexamined_when_match_was_skipped() -> None:
+    """``matching_skipped`` is what separates an honest zero from an invented one.
+
+    The counts are zero on a skipped step because nothing was examined, not
+    because nothing was found. Without this key an agent reads the same payload
+    as "no duplicates" — which is the claim the flag exists to refuse.
+    """
+    env = refresh_envelope(
+        RefreshResult(applied=True, duration_seconds=1.0, matching_skipped=True),
+        requested=expand_steps(None),
+    )
+    payload = _payload(env)
+    assert payload.matching_skipped is True
+    assert payload.matches_auto_merged == 0

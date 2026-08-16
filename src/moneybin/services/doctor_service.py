@@ -12,7 +12,7 @@ from sqlglot import exp
 from moneybin.audits import recipes as recipe_registry
 from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
-from moneybin.errors import RecoveryAction
+from moneybin.errors import RecoveryAction, exception_origin
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
@@ -240,6 +240,7 @@ class DoctorService:
         sqlmesh_results = self._run_sqlmesh_audits(verbose)
         dedup_reconciliation = self._run_dedup_reconciliation()
         duplicate_accounts = self._run_duplicate_account_overlap()
+        unproposed_duplicates = self._run_unproposed_cross_source_duplicates()
         categorization = self._run_categorization_coverage()
         currency_integrity = self._run_currency_integrity()
         app_integrity = self._run_app_integrity(full=full)
@@ -264,6 +265,7 @@ class DoctorService:
             self._run_sqlmesh_model_presence(),
             dedup_reconciliation,
             duplicate_accounts,
+            unproposed_duplicates,
             categorization,
             currency_integrity,
             *app_integrity,
@@ -2326,6 +2328,376 @@ class DoctorService:
                 affected_ids=[
                     f"{a}:{b} ({round(float(ratio) * 100)}% overlap)"
                     for a, b, ratio in rows
+                ],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_unproposed_cross_source_duplicates(self) -> InvariantResult:
+        """Two sources co-resident in one account that the matcher never considered.
+
+        The blind spot ``dedup_reconciliation`` cannot see. That check asserts
+        ``raw_total - core_count == dedup_absorbed``, which balances whether or
+        not a duplicate was ever *proposed* — a pair nobody looked at moves both
+        sides of the equation together, so it stayed green through all 377 rows
+        of the 2026-08-08 incident. ``duplicate_account_overlap`` saw that split
+        while it was two accounts and stopped applying the instant the link was
+        accepted, which is precisely when this one starts.
+
+        The evidence is a pair the matcher's own blocking join would have
+        produced — same account, equal amount (sign included), inside
+        ``matching.date_window_days``, neither side manual — where **neither
+        side carries any ``app.match_decisions`` row, in any status, in either
+        direction**.
+
+        That last clause is what makes silence mean something, because the
+        matcher drops candidate pairs for two legitimate reasons and both leave
+        the *other* side holding a decision:
+
+        - ``assign_components`` skips a redundant edge when the two rows are
+          already connected, and skips an edge that would co-locate two rows
+          from one physical source. In both cases the row is spoken for by the
+          pairing that won.
+        - Tier 2b declines a within-source pair by writing nothing at all
+          (``engine._classify_pair`` returns ``None``), which is why this check
+          requires the matcher's own Tier 3 test — differing ``source_type``
+          **or** differing ``source_origin``. For a pair matching on both, no
+          row is the normal resting state and flagging it would nag on every
+          ordinary near-duplicate. Testing ``source_type`` alone would be the
+          opposite error: two CSV bank integrations, or two Plaid connections,
+          are cross-source candidates the matcher does consider.
+
+        Cross-source is the case where silence is diagnostic: every Tier 3 pair
+        that survives assignment is persisted, ``pending`` if nothing else. So a
+        cross-source pair with no decision on either side was never a candidate
+        — the two rows were not in the same account when matching last ran.
+
+        ``warn``, not ``fail``: equal amounts days apart can be two real
+        charges, and only a match pass can tell. A user-rejected pair keeps its
+        row, so dismissing a proposal silences this permanently rather than
+        nagging.
+        """
+        name = "unproposed_cross_source_duplicates"
+        settings = get_settings()
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH RECURSIVE candidates AS (
+                    SELECT a.account_id,
+                           a.source_type AS type_a,
+                           a.source_origin AS origin_a,
+                           a.source_transaction_id AS id_a,
+                           a.source_file AS file_a,
+                           b.source_type AS type_b,
+                           b.source_origin AS origin_b,
+                           b.source_transaction_id AS id_b,
+                           b.source_file AS file_b
+                    FROM {INT_TRANSACTIONS_UNIONED.full_name} AS a
+                    JOIN {INT_TRANSACTIONS_UNIONED.full_name} AS b
+                      ON a.account_id = b.account_id
+                     AND a.amount = b.amount
+                     -- Mirrors the matcher's blocking join exactly, including
+                     -- its NULL tolerance: currency_code is nullable at this
+                     -- layer, and reading NULL as "differs" would hide the
+                     -- duplicate wherever one source is quiet.
+                     AND (
+                         a.currency_code IS NULL
+                         OR b.currency_code IS NULL
+                         OR a.currency_code = b.currency_code
+                     )
+                     AND ABS(
+                         DATEDIFF('day', a.transaction_date, b.transaction_date)
+                     ) <= ?
+                     AND a.source_type <> 'manual'
+                     AND b.source_type <> 'manual'
+                     -- The matcher's Tier 3 test verbatim (scoring.py
+                     -- _get_candidates): differing type OR differing origin.
+                     -- Type alone would miss two CSV bank integrations and two
+                     -- Plaid connections, which are cross-source to the matcher
+                     -- and so are exactly as capable of holding a duplicate.
+                     AND (
+                         a.source_type <> b.source_type
+                         OR a.source_origin <> b.source_origin
+                     )
+                     AND (
+                         a.source_type, a.source_origin, a.source_transaction_id
+                     ) < (
+                         b.source_type, b.source_origin, b.source_transaction_id
+                     )
+                ),
+                -- Both directions flattened: the matcher writes a pair once, in
+                -- whichever order the blocking join produced, so a row can be
+                -- spoken for from either column. Node identity is the matcher's
+                -- NodeKey exactly -- (source_type, source_transaction_id) keyed
+                -- per account, per assignment.py's _node_a/_node_b. The account
+                -- scoping is load-bearing: a source-native id is unique only
+                -- within its account, so an un-namespaced FITID reused by
+                -- another account would otherwise mark this row "already
+                -- decided" and suppress the warning, most likely on two
+                -- accounts at one institution -- precisely the pair an
+                -- account-link merge just joined.
+                --
+                -- source_origin is deliberately absent, because NodeKey omits
+                -- it: two rows alike on (source_type, source_transaction_id)
+                -- under one account ARE one node to the matcher, so
+                -- find(a) == find(b) and assign_components drops the candidate
+                -- without writing anything. Adding origin here would split that
+                -- single node in two and warn about a pair no refresh can
+                -- clear. Rejected pairs key the same way below, and for the
+                -- same reason: get_rejected_pairs selects origin, but scoring.py
+                -- drops it when building rejected_set, so the matcher skips a
+                -- rejected pair whatever origin the rows now carry. Demanding
+                -- origin there would warn about a pair no refresh can clear --
+                -- the identical failure, one CTE down.
+                -- Two kinds of decision suppress, at two different grains,
+                -- because the matcher treats them differently.
+                --
+                -- accepted/pending: a live union-find edge. These are read at
+                -- *component* grain, not node grain -- see the two suppression
+                -- clauses on the final SELECT, which together mirror the two
+                -- reasons assign_components drops an edge.
+                --
+                -- rejected: NOT a union-find seed. The matcher excludes only the
+                -- exact rejected pair, so a row rejected against one partner is
+                -- still a live candidate against every other. Suppressing at
+                -- node grain would hide a genuinely unproposed pair behind an
+                -- unrelated rejection -- the blind spot this check exists to
+                -- close. Pair grain, both orders.
+                --
+                -- reversed rows suppress nothing: the decision was undone, so
+                -- the pair is undecided again.
+                --
+                -- match_type = 'dedup' throughout: Tier 4 transfers are
+                -- cross-account and never run through the Tier 3 blocking join
+                -- this mirrors, and on a transfer row account_id names only
+                -- side A anyway.
+                -- Live dedup edges, both directions, as opaque node keys.
+                -- chr(31) is the ASCII unit separator, which no source_type or
+                -- source-native id contains -- so the concatenation cannot
+                -- alias two different pairs onto one key.
+                --
+                -- Pending counts here, unlike in the transfer retirement
+                -- (AccountLinksService), which asks accepted-only. This
+                -- invariant asks whether a pair has been *proposed*, and a
+                -- pending row is a proposal sitting in the review queue -- the
+                -- user has been told. The retirement asks what actually
+                -- collapsed in core, which the prep fold answers with accepted
+                -- alone. Both readings are correct for their question; do not
+                -- align them.
+                dedup_edges AS (
+                    SELECT account_id AS acct,
+                           source_type_a || chr(31)
+                               || source_transaction_id_a AS n1,
+                           source_type_b || chr(31)
+                               || source_transaction_id_b AS n2
+                    FROM {MATCH_DECISIONS.full_name}
+                    WHERE match_type = 'dedup'
+                      AND match_status IN ('accepted', 'pending')
+                    UNION
+                    SELECT account_id,
+                           source_type_b || chr(31)
+                               || source_transaction_id_b,
+                           source_type_a || chr(31)
+                               || source_transaction_id_a
+                    FROM {MATCH_DECISIONS.full_name}
+                    WHERE match_type = 'dedup'
+                      AND match_status IN ('accepted', 'pending')
+                ),
+                -- Transitive closure, then each node labelled by the smallest
+                -- node it can reach. Two nodes share a label exactly when
+                -- union-find would put them in one component.
+                reach AS (
+                    SELECT acct, n1 AS src, n1 AS dst FROM dedup_edges
+                    UNION
+                    SELECT e.acct, r.src, e.n2
+                    FROM reach AS r
+                    JOIN dedup_edges AS e
+                      ON e.acct = r.acct AND e.n1 = r.dst
+                ),
+                component AS (
+                    SELECT acct, src AS node, MIN(dst) AS comp
+                    FROM reach
+                    GROUP BY acct, src
+                ),
+                rejected_pairs AS (
+                    SELECT account_id AS acct,
+                           source_transaction_id_a AS stid_a,
+                           source_type_a AS stype_a,
+                           source_transaction_id_b AS stid_b,
+                           source_type_b AS stype_b
+                    FROM {MATCH_DECISIONS.full_name}
+                    WHERE match_type = 'dedup' AND match_status = 'rejected'
+                    UNION
+                    SELECT account_id,
+                           source_transaction_id_b,
+                           source_type_b,
+                           source_transaction_id_a,
+                           source_type_a
+                    FROM {MATCH_DECISIONS.full_name}
+                    WHERE match_type = 'dedup' AND match_status = 'rejected'
+                ),
+                -- Each endpoint's component, or the endpoint itself when it is
+                -- in none -- a lone row is a component of one.
+                resolved AS (
+                    SELECT c.*,
+                           COALESCE(
+                               ca.comp, c.type_a || chr(31) || c.id_a
+                           ) AS comp_a,
+                           COALESCE(
+                               cb.comp, c.type_b || chr(31) || c.id_b
+                           ) AS comp_b
+                    FROM candidates AS c
+                    LEFT JOIN component AS ca
+                      ON ca.acct = c.account_id
+                     AND ca.node = c.type_a || chr(31) || c.id_a
+                    LEFT JOIN component AS cb
+                      ON cb.acct = c.account_id
+                     AND cb.node = c.type_b || chr(31) || c.id_b
+                ),
+                -- The matcher's candidate list, which a rejected pair never
+                -- reaches: scoring.py skips it before appending to `results`,
+                -- and everything downstream reads that list. So the filter
+                -- belongs here, ahead of both consumers, not only in the final
+                -- SELECT -- a rejected row left in would lend its file to
+                -- component_sources below and let the cardinality guard drop a
+                -- live pair the matcher would propose.
+                live_candidates AS (
+                    SELECT r.*
+                    FROM resolved AS r
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM rejected_pairs AS rp
+                        WHERE rp.acct = r.account_id
+                          AND rp.stid_a = r.id_a
+                          AND rp.stype_a = r.type_a
+                          AND rp.stid_b = r.id_b
+                          AND rp.stype_b = r.type_b
+                    )
+                ),
+                -- Physical sources per component, for the cardinality guard
+                -- below -- registered from candidate *endpoints* only, which is
+                -- what assign_components does: it walks this run's candidate
+                -- list, so a node no candidate names contributes nothing and
+                -- never blocks (assignment.py, "seed-only nodes"). Reading a
+                -- component's other members instead would let a row the matcher
+                -- never looks at supply the shared file that suppresses a live
+                -- pair -- silence in the check whose whole job is to break it.
+                -- A component of one carries its own file in via resolved's
+                -- COALESCE. NULL source_file imposes no constraint, matching
+                -- the Python. The registration set now matches the matcher's:
+                -- both dedup tiers pass excluded_ids=None (engine.py) and
+                -- neither the blocking SQL nor the scoring loop applies a
+                -- score cutoff, so every surviving blocking pair registers.
+                component_sources AS (
+                    SELECT account_id AS acct,
+                           comp_a AS comp,
+                           type_a AS s_type,
+                           origin_a AS s_origin,
+                           file_a AS s_file
+                    FROM live_candidates
+                    WHERE file_a IS NOT NULL
+                    UNION
+                    SELECT account_id, comp_b, type_b, origin_b, file_b
+                    FROM live_candidates
+                    WHERE file_b IS NOT NULL
+                )
+                -- The two clauses below are assign_components' two skips, in
+                -- its own order (assignment.py) -- but read from *persisted*
+                -- decisions only. assign_components additionally unions
+                -- candidates as it walks them inside one run, which nothing here
+                -- can see: a cluster of N mutually-duplicate rows with no prior
+                -- decision has no edges yet, so all N*(N-1)/2 pairs survive
+                -- while the matcher will persist N-1. The count is therefore an
+                -- upper bound on the proposals a rematch produces, and the
+                -- detail below says so rather than promising one each. It is
+                -- not a false positive -- those pairs genuinely have no decision
+                -- -- and the next doctor run, reading the now-persisted edges,
+                -- reports the settled number.
+                --
+                -- Both clauses are component-grain, not
+                -- node-grain: two endpoints carrying *unrelated* decisions in
+                -- disjoint components are still a live candidate the matcher
+                -- would evaluate, and suppressing those hides exactly the
+                -- unproposed pair this check exists to find.
+                --
+                -- 1. find(a) == find(b) -- the redundant edge inside one
+                --    component, already spoken for by the pairing that won.
+                -- 2. sources_a & sources_b -- the cardinality guard. Two rows
+                --    of one import file are distinct transactions, so an edge
+                --    joining their components is refused. Omitting this warns
+                --    about a pair no refresh can ever clear, since the remedy
+                --    this check recommends is the very pass that re-drops it.
+                --    Origin compares NULL-equal because the Python intersects
+                --    SourceKey *tuples*, and (type, None, file) equals itself
+                --    where SQL '=' reads unknown. V003 leaves legacy OFX rows'
+                --    source_origin NULL, so plain '=' would diverge -- today
+                --    unobservably, because app.match_decisions demands a
+                --    non-NULL origin and so keeps every such row a component
+                --    of one. That is another table's constraint, not this
+                --    query's, which is why the mirror is written out here.
+                SELECT r.account_id, COUNT(*) AS pairs
+                FROM live_candidates AS r
+                WHERE r.comp_a <> r.comp_b
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM component_sources AS sa
+                    JOIN component_sources AS sb
+                      ON sb.acct = sa.acct
+                     AND sb.s_type = sa.s_type
+                     AND sb.s_origin IS NOT DISTINCT FROM sa.s_origin
+                     AND sb.s_file = sa.s_file
+                    WHERE sa.acct = r.account_id
+                      AND sa.comp = r.comp_a
+                      AND sb.comp = r.comp_b
+                )
+                GROUP BY r.account_id
+                ORDER BY r.account_id
+                """,  # noqa: S608 — TableRef constants, parameterized values
+                [settings.matching.date_window_days],
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — prep views absent before first transform
+            # `detail` is returned verbatim by doctor and system_status over
+            # both surfaces, and this query joins on amounts, dates, and
+            # descriptions — so a conversion failure can carry a user's row in
+            # its message. Same split as `refresh._step_error`: the frame chain
+            # to the local log, a fixed string on the wire. The frame chain
+            # rather than the message for the reason `exception_origin`
+            # documents — a traceback's last line *is* the message, and
+            # AGENTS.md's no-financial-data rule has no local-log carve-out.
+            logger.error(
+                f"{name} skipped — matcher input unavailable at "
+                f"{exception_origin(e.__cause__ or e)}"
+            )
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail="matcher input unavailable — the cause is in the local log",
+                affected_ids=[],
+            )
+        if rows:
+            total = sum(int(pairs) for _, pairs in rows)
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"up to {total} cross-source transaction pair(s) across "
+                    f"{len(rows)} account(s) match on amount and date but have "
+                    "never been considered by the matcher — neither side "
+                    "carries a match decision. This is what an accepted "
+                    "account link leaves behind when nothing re-runs matching "
+                    "afterwards: the rows became comparable, but no pass ever "
+                    "looked. The figure is an upper bound — three mutually "
+                    "duplicate rows count as three pairs here and become two "
+                    "proposals, because the matcher links them into one "
+                    "component as it goes. Run `moneybin refresh --step match "
+                    "--step transform` to propose them, then "
+                    "`moneybin review --type matches` to decide. Note that "
+                    "`doctor`'s dedup reconciliation cannot see this — its "
+                    "staging counts balance whether or not a duplicate was "
+                    "ever proposed"
+                ),
+                affected_ids=[
+                    f"{account_id} (up to {pairs} unreviewed "
+                    f"pair{'' if pairs == 1 else 's'})"
+                    for account_id, pairs in rows
                 ],
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])

@@ -335,6 +335,20 @@ class AccountLinksSetPayload:
 
     decision_id: Annotated[str, DataClass.RECORD_ID]
     status: Annotated[str, DataClass.TXN_TYPE]  # "accepted" or "rejected"
+    # What the merge's re-match found. None on a reject, which runs no match
+    # pass at all — distinct from a pass that ran and found nothing (0), which
+    # the caller may report as "checked, clean".
+    rematch_auto_merged: Annotated[int | None, DataClass.AGGREGATE] = None
+    rematch_pending_review: Annotated[int | None, DataClass.AGGREGATE] = None
+    # The pass is a full match run, so it also raises Tier 4 transfer
+    # candidates. Omitting them would let an accept queue transfer proposals
+    # the response never mentions.
+    rematch_pending_transfers: Annotated[int | None, DataClass.AGGREGATE] = None
+    # Transfers the user had already accepted that the pass reversed, because
+    # dedup made both sides the same physical transaction. In `data`, not only
+    # in `actions[]`: a caller reading the counts alone would otherwise never
+    # learn a decision of theirs was undone.
+    rematch_transfers_retired: Annotated[int | None, DataClass.AGGREGATE] = None
 
 
 @dataclass(frozen=True, slots=True)

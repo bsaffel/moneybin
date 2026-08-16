@@ -123,6 +123,154 @@ def test_review_modes_are_mutually_exclusive(extra: list[str]) -> None:
     assert "pass only one" in result.output
 
 
+def _bulk_outcome(*, accepted: int, reversed_: int, retired: int) -> MagicMock:
+    outcome = MagicMock()
+    outcome.accepted = accepted
+    outcome.reversed_by_reconciliation = reversed_
+    outcome.transfers_retired = retired
+    return outcome
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_reports_only_the_rows_that_stayed_accepted(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """The bulk path owes the same effective count the single path reports.
+
+    Three rows flipped, one reversed by the reconciliation the same call ran, so
+    two stood. Printing the pre-reconciliation three calls a row accepted that
+    committed as ``reversed``.
+    """
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.accept_all_pending.return_value = _bulk_outcome(
+        accepted=2, reversed_=1, retired=1
+    )
+
+    result = runner.invoke(app, ["review", "--type", "matches", "--confirm-all"])
+
+    # Part of what the user asked for did not commit, so the exit code carries
+    # it: --confirm-all is the surface most likely to be run unattended.
+    assert result.exit_code == 1
+    assert "Accepted 2 pending match(es)" in result.output
+    assert "Accepted 3" not in result.output
+    assert "1 of them did not stand" in result.output
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_targeted_confirm_exits_non_zero_when_the_accept_was_reversed(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """The single-id path owes the same exit code as the bulk path above.
+
+    `review --confirm <id>` and `matches set --status accepted` reach the same
+    refusal through the same reconciliation, so a caller cannot be left to
+    discover on one surface what the other reports in its status.
+    """
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status="reversed", transfers_retired=1
+    )
+
+    result = runner.invoke(
+        app, ["review", "--type", "matches", "--confirm", "tx_stale00001"]
+    )
+
+    assert result.exit_code == 1
+    assert "was not accepted" in result.output
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_targeted_confirm_exits_zero_when_the_accept_stood(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """Negative twin: an accept that committed keeps the success status."""
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status="accepted", transfers_retired=0
+    )
+
+    result = runner.invoke(
+        app, ["review", "--type", "matches", "--confirm", "tx_good000001"]
+    )
+
+    assert result.exit_code == 0
+    assert "Accepted match" in result.output
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_a_refused_confirm_still_performs_the_reject_asked_for_beside_it(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """The non-zero exit must not cost the caller the other half of the call.
+
+    `--confirm X --reject Y` is two decisions in one invocation. Raising as soon
+    as the confirm is refused would silently drop the reject, so the caller
+    reads exit 1, assumes neither landed, and re-runs — re-rejecting a match
+    that was already rejected. The raise therefore sits after the reject block,
+    and this test is what pins that ordering: move the raise up and the
+    ``status="rejected"`` call below disappears while the exit code stays 1.
+    """
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status="reversed", transfers_retired=1
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--type",
+            "matches",
+            "--confirm",
+            "tx_stale00001",
+            "--reject",
+            "tx_other00002",
+        ],
+    )
+
+    assert result.exit_code == 1
+    rejected = [
+        call
+        for call in mock_service.return_value.set_status.call_args_list
+        if call.kwargs.get("status") == "rejected"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0].args[0] == "tx_other00002"
+    assert "Rejected match" in result.output
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_is_silent_about_reversals_when_none_happened(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """Negative twin: the ordinary bulk accept says nothing about reversals.
+
+    Without it, a message printed unconditionally would satisfy the assertion
+    above while telling every user that part of their bulk accept was refused.
+    """
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.accept_all_pending.return_value = _bulk_outcome(
+        accepted=3, reversed_=0, retired=0
+    )
+
+    result = runner.invoke(app, ["review", "--type", "matches", "--confirm-all"])
+
+    assert result.exit_code == 0
+    assert "Accepted 3 pending match(es)" in result.output
+    assert "did not stand" not in result.output
+
+
 @patch("moneybin.cli.commands.transactions.review.get_database")
 @patch("moneybin.config.get_settings")
 def test_review_status_flag(

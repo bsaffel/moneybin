@@ -151,7 +151,11 @@ def transactions_review(
 def _review_matches_noninteractive(
     *, confirm_id: str | None, reject_id: str | None, confirm_all: bool
 ) -> None:
-    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.cli.utils import (
+        handle_cli_errors,
+        warn_transfers_retired,
+    )
+    from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
     from moneybin.services.matching_service import MatchingService
 
     # --confirm-all bulk-accepts the whole queue; pairing it with a targeted
@@ -173,17 +177,60 @@ def _review_matches_noninteractive(
         with get_database(read_only=False) as db:
             svc = MatchingService(db)
             if confirm_all:
-                n = svc.accept_all_pending(actor="cli")
-                logger.info(f"✅ Accepted {n} pending match(es)")
+                bulk = svc.accept_all_pending(actor="cli")
+                logger.info(f"✅ Accepted {bulk.accepted} pending match(es)")
+                if bulk.reversed_by_reconciliation:
+                    # Named separately from the retirement warning below: that
+                    # one counts every transfer this call reversed, most of
+                    # which the user accepted in some earlier session. This
+                    # counts the rows they just asked for and did not get.
+                    logger.warning(
+                        f"⚠️  {bulk.reversed_by_reconciliation} of them did not "
+                        "stand: an accepted transfer already claims the merged "
+                        "pair, and the earlier decision stands"
+                    )
+                warn_transfers_retired(
+                    bulk.transfers_retired,
+                    cause=RETIRED_SIDES_COLLAPSED,
+                    rematch_follow_up=True,
+                )
+                # Part of what the caller asked for did not commit, which
+                # cli.md reads as a failed operation. --confirm-all is the
+                # surface most likely to run unattended, so the status is the
+                # only signal some callers will ever check.
+                if bulk.reversed_by_reconciliation:
+                    raise typer.Exit(1)
                 return
             # Independent ifs (not elif): `--confirm X --reject Y` targets two
             # different matches in one invocation.
+            refused = False
             if confirm_id:
-                svc.set_status(confirm_id, status="accepted", actor="cli")
-                logger.info(f"✅ Accepted match {confirm_id[:8]}...")
+                outcome = svc.set_status(confirm_id, status="accepted", actor="cli")
+                if outcome.match_status == "accepted":
+                    logger.info(f"✅ Accepted match {confirm_id[:8]}...")
+                else:
+                    # Same refusal `matches set` can hit: the reconciliation this
+                    # accept triggers walks every accepted transfer, this row
+                    # included, and the earliest-decided one keeps the component.
+                    logger.warning(
+                        f"⚠️  Match {confirm_id[:8]}... was not accepted: it is "
+                        f"{outcome.match_status} — an accepted transfer already "
+                        "claims the merged pair, and the earlier decision stands"
+                    )
+                    refused = True
+                warn_transfers_retired(
+                    outcome.transfers_retired,
+                    cause=RETIRED_SIDES_COLLAPSED,
+                    rematch_follow_up=True,
+                )
             if reject_id:
                 svc.set_status(reject_id, status="rejected", actor="cli")
                 logger.info(f"✅ Rejected match {reject_id[:8]}...")
+            # After both, for the same reason they are independent ifs: a
+            # refused confirm must not skip the reject the caller also asked
+            # for. Same exit code as `matches set` on the identical refusal.
+            if refused:
+                raise typer.Exit(1)
 
 
 def _print_status(type_: str, output: OutputFormat) -> None:

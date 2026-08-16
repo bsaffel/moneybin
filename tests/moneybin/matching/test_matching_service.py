@@ -175,8 +175,12 @@ def test_accept_all_pending_accepts_and_counts(db: Database) -> None:
     _seed(db, "q1", "pending")
     _seed(db, "q2", "pending")
     _seed(db, "q3", "accepted")
-    count = MatchingService(db).accept_all_pending()
-    assert count == 2
+    outcome = MatchingService(db).accept_all_pending()
+    assert outcome.accepted == 2
+    # No transfer decisions in this fixture, so the reconciliation the bulk
+    # accept now runs has nothing to invalidate and nothing of its own to undo.
+    assert outcome.transfers_retired == 0
+    assert outcome.reversed_by_reconciliation == 0
     assert _status_of(db, "q1") == "accepted"
     assert MatchingService(db).get_pending() == []
 

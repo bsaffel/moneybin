@@ -303,10 +303,19 @@ class MatchesPendingPayload:
 
 @dataclass(frozen=True, slots=True)
 class MatchSetPayload:
-    """Payload for transactions_matches_set — the decision's new state."""
+    """Payload for transactions_matches_set — the decision's new state.
+
+    ``transfers_retired`` counts accepted transfers this acceptance reversed:
+    once a dedup component holds both of their legs they name the same physical
+    transaction, which would double-count it in ``core.bridge_transfers``. The
+    reversal is this call's; the invalidation need not be, since the pass walks
+    every accepted transfer. AGGREGATE (Tier.LOW) — a count, naming no
+    transaction. Always zero on a rejection.
+    """
 
     match_id: Annotated[str, DataClass.RECORD_ID]
     match_status: Annotated[str, DataClass.TXN_TYPE]
+    transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
 
 
 # ---------------------------------------------------------------------------
@@ -335,8 +344,16 @@ class MatchesHistoryPayload:
 
 @dataclass(frozen=True, slots=True)
 class MatchRunPayload:
-    """Payload for transactions_matches_run — counts from the matcher run."""
+    """Payload for transactions_matches_run — counts from the matcher run.
+
+    ``transfers_retired`` counts accepted transfers the run reversed. It is not
+    one of the three counts above and does not move ``auto_merged``: nothing was
+    *found*, something the user had decided was undone. Defaulted so the three
+    original counts keep their positions for callers constructing this
+    positionally.
+    """
 
     auto_merged: Annotated[int, DataClass.AGGREGATE]
     pending_review: Annotated[int, DataClass.AGGREGATE]
     pending_transfers: Annotated[int, DataClass.AGGREGATE]
+    transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0

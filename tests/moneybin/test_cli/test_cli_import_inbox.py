@@ -85,6 +85,31 @@ def test_inbox_drain_prints_summary(runner: CliRunner, patch_inbox: MagicMock) -
     assert "0 failed" in result.stderr
 
 
+def test_inbox_drain_warns_about_a_retired_transfer_in_both_output_modes(
+    runner: CliRunner,
+    patch_inbox: MagicMock,
+) -> None:
+    """The drain says the reversal aloud whichever output mode the caller picked.
+
+    `inbox_default` already places this warning ahead of the `quiet` return,
+    because the drain is the least supervised surface reaching the
+    reconciliation. `--output json` returned before ever reaching it, so the
+    guarantee held against `-q` and not against the mode an agent actually
+    uses. The count rides in the payload either way; the warning is what names
+    `system audit undo`.
+    """
+    for mode in (["import", "inbox"], ["import", "inbox", "--output", "json"]):
+        patch_inbox.sync.return_value = InboxSyncResult(
+            processed=[{"filename": "chase-checking/march.csv", "transactions": 47}],
+            failed=[],
+            transfers_retired=2,
+        )
+        result = runner.invoke(app, mode)
+        assert result.exit_code == 0, result.stderr
+        assert "Retired 2 previously accepted transfer(s)" in result.stderr, mode
+        assert "moneybin system audit undo" in result.stderr, mode
+
+
 def test_inbox_drain_failure_exits_zero_but_warns(
     runner: CliRunner, patch_inbox: MagicMock
 ) -> None:

@@ -8,9 +8,11 @@ projections the matcher and CLI consume.
 """
 
 import logging
+from collections.abc import Sequence
 from typing import Any, Literal, get_args
 
 from moneybin.database import Database
+from moneybin.tables import MATCH_DECISIONS
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +61,7 @@ def get_active_matches(
         params.append(match_type)
     rows = db.execute(
         f"""
-        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
+        SELECT {_MATCH_DECISION_SELECT} FROM {MATCH_DECISIONS.full_name}
         {where}
         ORDER BY decided_at DESC
         """,  # noqa: S608 — match_type validated above
@@ -91,7 +93,7 @@ def get_pending_matches(
         params.append(limit)
     rows = db.execute(
         f"""
-        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
+        SELECT {_MATCH_DECISION_SELECT} FROM {MATCH_DECISIONS.full_name}
         {where}
         ORDER BY confidence_score DESC
         {limit_clause}
@@ -105,7 +107,7 @@ def get_match_decision(db: Database, match_id: str) -> dict[str, Any] | None:
     """Return one match decision by id, or None if absent."""
     row = db.execute(
         f"""
-        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
+        SELECT {_MATCH_DECISION_SELECT} FROM {MATCH_DECISIONS.full_name}
         WHERE match_id = ?
         """,  # noqa: S608 — column list is a module constant, not user input
         [match_id],
@@ -115,30 +117,85 @@ def get_match_decision(db: Database, match_id: str) -> dict[str, Any] | None:
     return dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True))
 
 
+def count_matches_with_status(
+    db: Database, match_ids: Sequence[str], *, status: str
+) -> int:
+    """How many of ``match_ids`` currently carry ``match_status = status``.
+
+    One query rather than a read per id: the bulk accept asks this about every
+    row it just flipped, and the answer is only meaningful read after the
+    reconciliation that may have reversed some of them.
+    """
+    if not match_ids:
+        return 0
+    placeholders = ", ".join("?" for _ in match_ids)
+    row = db.execute(
+        f"""
+        SELECT COUNT(*) FROM {MATCH_DECISIONS.full_name}
+        WHERE match_status = ? AND match_id IN ({placeholders})
+        """,  # noqa: S608 — placeholders are '?' literals; every value is parameterized
+        [status, *match_ids],
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def get_match_statuses(db: Database, match_ids: Sequence[str]) -> dict[str, str]:
+    """Current ``match_status`` for each of ``match_ids`` that still exists.
+
+    One query rather than a read per id, for the reason
+    ``count_matches_with_status`` gives above. A count is enough where one
+    number is reported; a batch reporting one outcome per decision needs to
+    know *which* rows the reconciliation reversed.
+    """
+    if not match_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in match_ids)
+    rows = db.execute(
+        f"""
+        SELECT match_id, match_status FROM {MATCH_DECISIONS.full_name}
+        WHERE match_id IN ({placeholders})
+        """,  # noqa: S608 — placeholders are '?' literals; every value is parameterized
+        list(match_ids),
+    ).fetchall()
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
 def get_active_dedup_edges(
     db: Database,
+    *,
+    statuses: tuple[MatchStatus, ...],
 ) -> list[dict[str, str]]:
-    """Return all active (accepted + pending, non-reversed) dedup edges.
+    """Return non-reversed dedup edges in the requested statuses.
 
     Each row carries the four fields needed to build UnionFind components:
     ``source_type_a``, ``source_transaction_id_a``, ``source_type_b``,
     ``source_transaction_id_b``, and ``account_id``.
 
-    Used by MatchingService.get_pending to compute component_key for pending
-    rows — the same component identity the prep fold uses for match_group_id.
+    ``statuses`` is required and has no default because the two answers mean
+    different things and picking the wrong one is not visible at the call site.
+    ``('accepted', 'pending')`` is the *prospective* graph — what the matcher
+    has proposed — and is what the engine seeds union-find with and what
+    ``MatchingService.get_pending`` clusters the review queue by. Only
+    ``('accepted',)`` describes what has actually collapsed: the prep fold
+    (``int_transactions__matched``) folds accepted rows alone, so a pending edge
+    leaves both source rows distinct in ``core``. Anything acting on rows that
+    really did merge — and especially anything destructive — asks for accepted
+    only.
     """
+    placeholders = ", ".join("?" for _ in statuses)
     rows = db.execute(
-        """
+        f"""
         SELECT source_type_a, source_transaction_id_a,
                source_type_b, source_transaction_id_b,
                account_id
-        FROM app.match_decisions
+        FROM {MATCH_DECISIONS.full_name}
         WHERE match_type = 'dedup'
-          AND match_status IN ('accepted', 'pending')
+          AND match_status IN ({placeholders})
           AND reversed_at IS NULL
         ORDER BY account_id, source_type_a, source_transaction_id_a,
                  source_type_b, source_transaction_id_b
-        """,  # noqa: S608 — no user-supplied values; all literals
+        """,  # noqa: S608 — placeholders only; every status is bound
+        list(statuses),
     ).fetchall()
     cols = (
         "source_type_a",
@@ -155,14 +212,14 @@ def get_rejected_pairs(
 ) -> list[dict[str, Any]]:
     """Return rejected pair keys to avoid re-proposing them."""
     rows = db.execute(
-        """
+        f"""
         SELECT source_type_a, source_transaction_id_a, source_origin_a,
                source_type_b, source_transaction_id_b, source_origin_b,
                account_id, account_id_b
-        FROM app.match_decisions
+        FROM {MATCH_DECISIONS.full_name}
         WHERE match_status = 'rejected'
           AND match_type = ?
-        """,
+        """,  # noqa: S608 — TableRef constant; match_type is parameterized
         [match_type],
     ).fetchall()
     columns = [
@@ -200,7 +257,7 @@ def get_match_log(
         params.append(limit)
     rows = db.execute(
         f"""
-        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
+        SELECT {_MATCH_DECISION_SELECT} FROM {MATCH_DECISIONS.full_name}
         {where}
         ORDER BY decided_at DESC, match_id DESC
         {limit_clause}

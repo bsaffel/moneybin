@@ -13,8 +13,10 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin.database import Database
 from moneybin.errors import UserError
@@ -24,6 +26,7 @@ from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
     AccountLinksService,
 )
+from moneybin.services.refresh import RefreshResult
 from tests.moneybin.db_helpers import create_core_tables
 
 # ---------------------------------------------------------------------------
@@ -165,6 +168,23 @@ def _link_rows(db: Database, **kw: Any) -> list[tuple[Any, ...]]:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def rematch(mocker: MockerFixture) -> MagicMock:
+    """Stand in for the post-merge re-match on every test in this module.
+
+    ``set``'s accept path re-runs match+transform once the repoint commits.
+    Every test here asserts merge *mechanics*, so letting that reach a real
+    SQLMesh apply costs seconds per accept and proves nothing about the
+    mechanics. The two tests that assert the trigger itself take this mock as
+    a parameter; the real pipeline is covered by the integration regression
+    test instead.
+    """
+    return mocker.patch(
+        "moneybin.services.refresh.refresh",
+        return_value=RefreshResult(applied=True, duration_seconds=0.0),
+    )
 
 
 @pytest.fixture()
@@ -685,6 +705,764 @@ def test_set_accept_does_not_affect_other_provisional(
 
 
 # ---------------------------------------------------------------------------
+# set — accept re-runs the matcher
+# ---------------------------------------------------------------------------
+
+
+def test_set_accept_reruns_the_matcher(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """Accepting a merge re-matches — the repoint is what makes the rows candidates.
+
+    The matcher blocks candidate pairs on ``a.account_id = b.account_id``
+    (``matching/scoring.py``), so a reissued card's two sides cannot match while
+    their ids differ. The accept is the moment they become co-resident, and
+    nothing else in the pipeline looks again.
+    """
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    rematch.assert_called_once_with(db, steps=["match", "transform"], actor="cli")
+
+
+def test_a_failing_pending_gauge_does_not_abort_the_post_merge_rematch(
+    seeded: AccountLinksService,
+    mocker: MockerFixture,
+    rematch: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Observability must not decide whether the rematch runs.
+
+    The repoint has already committed by the time the gauge refreshes, so an
+    exception there leaves the decision accepted while skipping the rematch.
+    ``set`` refuses a second attempt as non-pending, so the newly co-resident
+    duplicates stay unproposed until some unrelated refresh — the same silent
+    failure this trigger exists to prevent, reintroduced through a metrics
+    call. The gauge going stale is the cheaper loss, and it says so in the log.
+    """
+    # Path-shaped, like the retirement-counter guard: this gauge's own query
+    # names the profile database, so a DuckDB error here is the likeliest way
+    # a path reaches the durable log.
+    mocker.patch(
+        "moneybin.services.account_resolver.ACCOUNT_LINK_REVIEW_PENDING.set",
+        side_effect=RuntimeError("/var/lib/some-profile/moneybin.duckdb unavailable"),
+    )
+
+    with caplog.at_level("WARNING"):
+        seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    rematch.assert_called_once()
+    assert "account-link pending gauge" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "moneybin.duckdb" not in caplog.text
+
+
+def test_set_accept_carries_a_rejected_pair_onto_the_survivor(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """A user's "these are not duplicates" must survive the account merge.
+
+    ``get_rejected_pairs`` keys its tuple on ``account_id`` and the matcher
+    checks membership by exact tuple, so a rejection left on the merged-away
+    provisional stops matching the live pair — which now sits under the
+    survivor. The re-match fired on the very next line would then treat it as
+    brand new and, above ``high_confidence_threshold`` with agreeing
+    descriptions, auto-accept the pair the user explicitly rejected.
+    """
+    from moneybin.matching.persistence import get_rejected_pairs
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00001",
+        source_transaction_id_a="ofx1",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="csv1",
+        source_type_b="csv",
+        source_origin_b="bank",
+        account_id=_PROV1,
+        confidence_score=0.99,
+        match_signals={},
+        match_status="rejected",
+        match_tier="3",
+        decided_by="user",
+        actor="test",
+    )
+
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    pairs = get_rejected_pairs(db)
+    assert [p["account_id"] for p in pairs] == [_CAND_A], (
+        "the rejection must name the surviving account, or it stops matching "
+        "the pair it was made about"
+    )
+
+
+def test_set_accept_carries_the_transfer_side_of_a_decision_too(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """``account_id_b`` names the merged-away account on a transfer, and goes stale too.
+
+    Isolated from the dedup test by exactly one property: here the provisional
+    is the transfer's *second* leg, so only the ``account_id_b`` half of the
+    re-key can move it. A version that migrated ``account_id`` alone would pass
+    the dedup test and leave this row pointing at an account holding nothing.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00002",
+        source_transaction_id_a="ofx9",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx8",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_PROV2,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    row = db.execute(
+        "SELECT account_id, account_id_b FROM app.match_decisions "
+        "WHERE match_id = 'match_id00002'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == _PROV2, "the untouched leg must stay where it was"
+    assert row[1] == _CAND_A, (
+        "the merged-away leg must follow the merge, or the transfer names an "
+        "account that no longer holds any transactions"
+    )
+
+
+def test_set_accept_retires_a_transfer_whose_two_legs_collapse(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """A transfer between an account and itself is not a thing that can be true.
+
+    When the merged-away account is one leg and the survivor is already the
+    other, re-keying would write ``account_id == account_id_b``. Accepted, that
+    materializes in ``core.bridge_transfers`` as a transfer from an account to
+    itself; pending, it sits in the review queue as a proposal nobody can act
+    on. Neither is recoverable by a later pass, so the merge retires it.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00003",
+        source_transaction_id_a="ofx7",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx6",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    row = db.execute(
+        "SELECT match_status, account_id, account_id_b FROM app.match_decisions "
+        "WHERE match_id = 'match_id00003'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "reversed", (
+        "a transfer whose endpoints collapsed must be retired, not left "
+        "pointing an account at itself"
+    )
+    # Retired *and* re-keyed. transform drops the provisional from
+    # dim_accounts moments later and app_match_decisions_account_fk checks
+    # every row regardless of status, so retiring alone strands this one.
+    assert row[1] == _CAND_A
+    assert row[2] == _CAND_A
+
+
+def test_set_accept_rejects_a_pending_transfer_whose_two_legs_collapse(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """The same collapse, retired the other way because the row was never decided.
+
+    Isolated from the accepted-collapse test by exactly one property: the
+    status. ``reverse()`` refuses a pending row — there is no accept/reject to
+    undo — so the retirement has to go through ``update_status``, and the
+    resting status is ``rejected`` rather than ``reversed``. A version that
+    called ``reverse()`` on both would raise here and pass there.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00004",
+        source_transaction_id_a="ofx5",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx4",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="pending",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="system",
+        actor="test",
+    )
+
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    row = db.execute(
+        "SELECT match_status, account_id, account_id_b FROM app.match_decisions "
+        "WHERE match_id = 'match_id00004'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "rejected", (
+        "a pending transfer whose endpoints collapsed must leave the review "
+        "queue, or it sits there as a proposal nobody can action"
+    )
+    assert row[1] == _CAND_A
+    assert row[2] == _CAND_A
+
+
+def test_set_accept_reports_the_collapsed_transfer_it_retired(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """Retiring the transfer is half the job; telling the caller is the other half.
+
+    Same fixture as the accepted-collapse test above, asserting the *return*
+    rather than the row. The matcher is stubbed here and no dedup edge exists,
+    so its own reconciliation contributes 0 — a zero total therefore means the
+    collapse branch's own retirement went unreported, and every surface prints
+    its silent "no transfers retired" over a decision of the user's that this
+    call just undid.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00005",
+        source_transaction_id_a="ofx9",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx8",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    result = seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert result is not None
+    assert result.transfers_retired == 1, (
+        "the merge reversed an accepted transfer; a caller told 0 has no "
+        "reason to look for it in the audit log"
+    )
+
+
+def test_set_accept_does_not_report_a_collapsed_pending_transfer(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """The pending twin of the test above — retired, but nothing to disclose.
+
+    One property apart: ``match_status``. The collapse rejects this row too,
+    but the counter says "transfers you had already accepted", and the user
+    never accepted this one. Counting it would send them to ``audit undo`` to
+    restore a proposal they had not yet answered.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00006",
+        source_transaction_id_a="ofx11",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx10",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="pending",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="system",
+        actor="test",
+    )
+
+    result = seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert result is not None
+    assert result.transfers_retired == 0, (
+        "a pending transfer was never the user's decision, so its collapse "
+        "is not something they need to be told was undone"
+    )
+
+
+def test_set_accept_does_not_report_a_collapsed_rejected_transfer(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """The third status, and the one the pair above cannot speak for.
+
+    A rejected row shares the ``reverse()`` call with the accepted one and the
+    silence with the pending one, so neither existing test constrains it: the
+    accepted twin fixes the count at 1 and the pending twin reaches the count
+    through a different branch (``update_status``). Asserted together because
+    the negative claim needs its positive half — ``transfers_retired == 0``
+    over a row that was never retired would pass while proving nothing.
+
+    Reversing a rejection removes nothing from the ledger. Counting it would
+    tell the user an accepted transfer had gone and point them at an undo that
+    restores a "these are not duplicates" answer they never lost.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00007",
+        source_transaction_id_a="ofx13",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx12",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="rejected",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    result = seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    row = db.execute(
+        "SELECT match_status FROM app.match_decisions WHERE match_id = 'match_id00007'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "reversed", "the collapse must retire a rejection too"
+    assert result is not None
+    assert result.transfers_retired == 0, (
+        "a reversed rejection takes nothing out of the ledger, so there is "
+        "nothing for the user to restore"
+    )
+
+
+def test_the_collapse_count_reaches_the_batched_path_s_separate_rematch(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """The batch splits retirement and disclosure across two calls.
+
+    ``ReviewDecisionsService.apply_identity`` calls ``set(in_outer_txn=True)``
+    — which returns before its own post-commit tail — and then
+    ``rematch_after_merge()`` separately on the same service. The retirement
+    happens in the first call and the count is reported by the second, so a
+    count held only in ``set``'s locals would be dropped on exactly the path
+    that merges several accounts at once. Shaped like the batch, not mocked
+    like it, because what is under test is that seam.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00007",
+        source_transaction_id_a="ofx13",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx12",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    db.begin()
+    assert seeded.set(_DEC1, target_account_id=_CAND_A, in_outer_txn=True) is None
+    db.commit()
+
+    assert seeded.rematch_after_merge().transfers_retired == 1
+
+
+def test_a_crashing_rematch_still_discloses_the_transfers_the_merge_retired(
+    seeded: AccountLinksService,
+    db: Database,
+    rematch: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A reversal the user must hear about cannot depend on what happens next.
+
+    ``rematch_after_merge`` takes the collapse count off the instance and zeroes
+    it *before* running the refresh, and re-attaches it only to the returned
+    result. So any exception out of the refresh discards the fact that an
+    accepted transfer was reversed — permanently, since the reversal itself
+    committed with the merge and the counter is now zero. The user sees a
+    failure, re-runs, and is never told a decision of theirs was undone.
+
+    Asserted against a generic ``RuntimeError`` rather than the specific
+    telemetry bug that surfaced this: guarding only the call that happens to
+    raise today leaves the next one to be found in review. The disclosure has
+    to hold for anything the refresh can raise, so the fixture raises something
+    with no special handling anywhere.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00009",
+        source_transaction_id_a="ofx17",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx16",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    db.begin()
+    assert seeded.set(_DEC1, target_account_id=_CAND_A, in_outer_txn=True) is None
+    db.commit()
+
+    rematch.side_effect = RuntimeError("the rebuild died after the merge committed")
+
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
+        seeded.rematch_after_merge()
+
+    # The count and the way back, not just "something failed" — a reversal the
+    # user cannot find is the whole failure this discloses.
+    assert "1" in caplog.text
+    assert "transfer" in caplog.text.lower()
+    assert "audit" in caplog.text.lower()
+
+
+def test_the_collapse_count_accumulates_across_two_merges_in_one_batch(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """The batch's counter sums its merges; it does not track the last one.
+
+    ``_transfers_retired_by_collapse`` exists because the batch splits
+    retirement from disclosure across calls, and a batch is free to merge
+    several accounts before its single ``rematch_after_merge``. Every other
+    test here accepts one decision per batch, so an accumulator written with
+    ``=`` instead of ``+=`` passes all of them while silently reporting one of
+    two reversed transfers — under-reporting undone user decisions, which is
+    the one direction nothing else on the surface signals.
+
+    Two independent merges: prov1 → cand_a and prov2 → cand_a, each carrying
+    its own accepted transfer that the collapse invalidates. Hand-derived
+    expectation: one reversal each, so two.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    repo = MatchDecisionsRepo(db)
+    for match_id, tx_a, tx_b, provisional in (
+        ("match_id00012", "ofx21", "ofx20", _PROV1),
+        ("match_id00013", "ofx23", "ofx22", _PROV2),
+    ):
+        repo.insert(
+            match_id=match_id,
+            source_transaction_id_a=tx_a,
+            source_type_a="ofx",
+            source_origin_a="bank",
+            source_transaction_id_b=tx_b,
+            source_type_b="ofx",
+            source_origin_b="bank",
+            account_id=_CAND_A,
+            confidence_score=0.95,
+            match_signals={},
+            match_status="accepted",
+            match_type="transfer",
+            account_id_b=provisional,
+            decided_by="user",
+            actor="test",
+        )
+
+    db.begin()
+    assert seeded.set(_DEC1, target_account_id=_CAND_A, in_outer_txn=True) is None
+    assert seeded.set(_DEC3, target_account_id=_CAND_A, in_outer_txn=True) is None
+    db.commit()
+
+    assert seeded.rematch_after_merge().transfers_retired == 2
+
+
+def test_a_rolled_back_accept_leaves_no_collapse_count_behind(
+    seeded: AccountLinksService,
+    db: Database,
+    rematch: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A merge that failed retired nothing, so it owes no disclosure.
+
+    The collapse count is produced inside ``set``'s transaction, ahead of
+    writes that can still raise. DuckDB rolls those back; a counter held on the
+    service does not roll back with them, so the next merge on the same
+    instance would report a transfer retired that is in fact still accepted —
+    and send the user to ``audit undo`` over a reversal that never happened.
+
+    Fault-injected because nothing in the fixture can fail at that exact point:
+    the failure is the condition under test, and the assertion is on real
+    behaviour afterwards. Every caller today builds a fresh service per
+    top-level call, so this holds a latent bug closed rather than a live one.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00008",
+        source_transaction_id_a="ofx15",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx14",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("a later write in the same transaction failed")
+
+    monkeypatch.setattr(AccountLinkDecisionsRepo, "update_status", _fail)
+
+    with pytest.raises(RuntimeError):
+        seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert seeded.rematch_after_merge().transfers_retired == 0, (
+        "the accept rolled back, so the transfer it would have retired is "
+        "still accepted — reporting it undone points the user at an audit "
+        "entry that does not exist"
+    )
+
+
+def _collapse_retirement_count() -> float:
+    """Current value of the retirement counter for the account-merge cause.
+
+    Read through the private attribute because prometheus_client exposes no
+    public getter. Callers assert a delta, never an absolute: the registry is
+    process-wide and other tests in the same xdist worker share it.
+    """
+    from moneybin.metrics.registry import TRANSFER_RETIREMENTS_TOTAL
+
+    counter = TRANSFER_RETIREMENTS_TOTAL.labels(cause="account_merge")
+    return counter._value.get()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_collapsed_transfer_increments_its_own_counter(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """The merge's own cause on the shared retirement counter.
+
+    Separate from the dedup cause because the reconciliation never sees this
+    one — it runs on components, not accounts — so a regression here shows up
+    in no other series.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00009",
+        source_transaction_id_a="ofx17",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx16",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+    before = _collapse_retirement_count()
+
+    result = seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert result is not None
+    assert result.transfers_retired == 1
+    assert _collapse_retirement_count() - before == 1
+
+
+def test_a_failing_retirement_counter_does_not_abort_the_post_merge_rematch(
+    seeded: AccountLinksService,
+    db: Database,
+    rematch: MagicMock,
+    mocker: MockerFixture,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The counter stands after the reversal it counts is already durable.
+
+    Same shape as the pending-gauge guard a few callers over: by the time this
+    counter is emitted the merge and its reversal have committed, so an
+    exception here skips the rematch while the accept stays accepted — and
+    ``set`` refuses the retry as non-pending. The disclosure must survive too;
+    a caller told the operation failed, holding a committed reversal it was
+    never told about, is the silent outcome this whole trigger exists to close.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00011",
+        source_transaction_id_a="ofx17",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx16",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+    # A path-shaped message, because that is the leak the log must not carry:
+    # a DuckDB or metrics-client failure can name the profile database, and
+    # SanitizedLogFormatter masks known PII patterns, not arbitrary paths.
+    mocker.patch(
+        "moneybin.matching.reconciliation.TRANSFER_RETIREMENTS_TOTAL.labels",
+        side_effect=RuntimeError("/var/lib/some-profile/moneybin.duckdb unavailable"),
+    )
+
+    with caplog.at_level("WARNING"):
+        result = seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert result is not None
+    assert result.transfers_retired == 1
+    rematch.assert_called_once()
+    assert "transfer retirement" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "moneybin.duckdb" not in caplog.text
+
+
+def test_a_rolled_back_collapse_leaves_the_counter_unchanged(
+    seeded: AccountLinksService,
+    db: Database,
+    rematch: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The metric twin of the rolled-back disclosure above.
+
+    The reversal is written early in ``set``'s transaction, ahead of writes
+    that can still raise. DuckDB takes it back; a counter incremented as it was
+    written does not come back with it, leaving a permanent claim that a
+    transfer the user accepted is gone while the row is still accepted.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00010",
+        source_transaction_id_a="ofx19",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx18",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+    before = _collapse_retirement_count()
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("a later write in the same transaction failed")
+
+    monkeypatch.setattr(AccountLinkDecisionsRepo, "update_status", _fail)
+
+    with pytest.raises(RuntimeError):
+        seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert _collapse_retirement_count() == before
+    # The positive half: the rollback really did take the reversal back, so the
+    # unchanged counter is agreement with the ledger rather than a metric that
+    # never fires at all.
+    row = db.execute(
+        "SELECT match_status FROM app.match_decisions WHERE match_id = 'match_id00010'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "accepted"
+
+
+def test_set_standalone_does_not_rerun_the_matcher(
+    seeded: AccountLinksService, rematch: MagicMock
+) -> None:
+    """A standalone reject repoints nothing, so no account gains new candidates."""
+    seeded.set(_DEC1, target_account_id=None)
+
+    rematch.assert_not_called()
+
+
+def test_set_accept_returns_what_the_rematch_found(
+    seeded: AccountLinksService, rematch: MagicMock
+) -> None:
+    """Callers get the re-match outcome so they can report it to the user.
+
+    The re-match can auto-merge without asking, so an accept that hides the
+    number is the silent action the confirm gate exists to prevent.
+    """
+    rematch.return_value = RefreshResult(
+        applied=True,
+        duration_seconds=0.0,
+        matches_auto_merged=2,
+        matches_pending_review=5,
+    )
+
+    result = seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert result is not None
+    assert result.matches_auto_merged == 2
+    assert result.matches_pending_review == 5
+
+
+def test_set_standalone_returns_no_rematch_result(
+    seeded: AccountLinksService,
+) -> None:
+    """A reject ran no match pass, so there is no outcome to report."""
+    assert seeded.set(_DEC1, target_account_id=None) is None
+
+
+# ---------------------------------------------------------------------------
 # set — standalone (target_account_id = None)
 # ---------------------------------------------------------------------------
 
@@ -1014,3 +1792,24 @@ def test_set_accept_rejects_proposals_where_provisional_is_candidate(
     assert _decision_status(db, "qp_dec000001") == "rejected"
     # The unrelated prov2→cand_a proposal (neither side is prov1) stays pending.
     assert _decision_status(db, _DEC3) == "pending"
+
+
+def test_the_rematch_attributes_its_decisions_to_the_accepting_surface(
+    db: Database, rematch: MagicMock
+) -> None:
+    """A user accepting a link is not the automated caller ``refresh`` defaults to.
+
+    ``app-integrity-invariant.md`` binds matcher-created decisions to the surface
+    that caused them, and this pass exists only because someone accepted a merge.
+    Left to ``refresh``'s default the decisions it writes would audit as
+    ``system``, which reads as the pipeline having decided on its own.
+
+    Asserted through a service built with ``"mcp"`` rather than the module's
+    ``"cli"`` default so a value arriving from anywhere else — the service
+    default, ``refresh``'s own — fails the assertion.
+    """
+    create_core_tables(db)
+
+    AccountLinksService(db, actor="mcp").rematch_after_merge()
+
+    assert rematch.call_args.kwargs["actor"] == "mcp"

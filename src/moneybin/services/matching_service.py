@@ -9,6 +9,7 @@ Exposes ``run``, ``seed_priority``, ``undo``, ``get_log``, and
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import duckdb
@@ -21,12 +22,17 @@ from moneybin.matching.assignment import NodeKey, connected_components
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import (
     VALID_MATCH_TYPES,
+    count_matches_with_status,
     get_active_dedup_edges,
     get_match_decision,
     get_match_log,
     get_pending_matches,
 )
 from moneybin.matching.priority import seed_source_priority
+from moneybin.matching.reconciliation import (
+    record_dedup_retirements,
+    retire_transfers_invalidated_by_dedup,
+)
 from moneybin.tables import MATCH_DECISIONS
 
 if TYPE_CHECKING:
@@ -47,6 +53,41 @@ PENDING_MATCHES_HINT = (
 )
 
 _SETTABLE_STATUSES: frozenset[str] = frozenset({"accepted", "rejected"})
+
+
+@dataclass(frozen=True)
+class MatchDecisionOutcome:
+    """What :meth:`MatchingService.set_status` actually committed.
+
+    ``match_status`` is re-read after the reconciliation rather than echoed from
+    the request, because accepting a match runs a pass over *every* accepted
+    transfer — including the row just written. When that row loses the
+    earliest-decided-first tiebreak it is reversed inside the same transaction,
+    so the requested status is the one value that cannot be trusted to describe
+    the outcome. Surfaces report this field, never their own argument.
+    """
+
+    match_status: str
+    transfers_retired: int
+
+
+@dataclass(frozen=True)
+class BulkAcceptOutcome:
+    """What :meth:`MatchingService.accept_all_pending` actually committed.
+
+    The bulk twin of :class:`MatchDecisionOutcome`, and it needs both counts for
+    the same reason. A batch can hold a dedup edge and a transfer that edge
+    invalidates; the reconciliation reverses the loser inside this transaction,
+    so the number of rows flipped is not the number that stood.
+
+    ``transfers_retired`` is the wider figure — it also counts transfers accepted
+    long before this batch — so it never substitutes for
+    ``reversed_by_reconciliation``, which is only ever this call's own rows.
+    """
+
+    accepted: int
+    reversed_by_reconciliation: int
+    transfers_retired: int
 
 
 def _non_pending_recovery(
@@ -182,7 +223,7 @@ class MatchingService:
         status: str,
         decided_by: str = "user",
         actor: str = "system",
-    ) -> None:
+    ) -> MatchDecisionOutcome:
         """Accept or reject one pending match decision by id (audited via repo).
 
         Validates the transition: only a ``pending`` decision may move to
@@ -191,6 +232,20 @@ class MatchingService:
         carrying ``recovery_actions``. ``decided_by`` is the domain column
         (``user``/``system``); ``actor`` is the audit surface (``cli``/``mcp``,
         default ``"system"``).
+
+        ``transfers_retired`` counts the *standing* accepted transfers this
+        acceptance invalidated and therefore reversed — see
+        :func:`~moneybin.matching.reconciliation.retire_transfers_invalidated_by_dedup`.
+        Zero on a rejection and on the idempotent no-op: neither collapses
+        anything, so neither can invalidate a transfer. Also zero when the only
+        row reversed is *this* one: a proposal accepted and reversed inside this
+        transaction was never standing, ``match_status`` below is what reports
+        it, and undo returns it to ``pending`` rather than to accepted. Surfaces
+        are expected to report a non-zero count rather than swallow it.
+
+        ``match_status`` is what committed, which is not always ``status``: that
+        same reconciliation can reverse *this* row when it loses the
+        earliest-decided-first tiebreak against a standing transfer.
         """
         if status not in _SETTABLE_STATUSES:
             raise UserError(
@@ -209,6 +264,14 @@ class MatchingService:
 
         # Read-validate-write in one transaction so a concurrent writer can't
         # slip between the guard read and the update (closes the TOCTOU window).
+        # The reconciliation below joins it, so the acceptance and the
+        # retirements it forces commit together or not at all — a crash between
+        # them would otherwise leave exactly the corrupt bridge it prevents.
+        # Two numbers, deliberately: `reversals` is what the pass did and feeds
+        # the counter; `retired` is what the user is told and discounts this
+        # call's own row below.
+        retired = reversals = 0
+        committed_status = status
         self._db.begin()
         try:
             current = get_match_decision(self._db, match_id)
@@ -259,11 +322,56 @@ class MatchingService:
                     actor=actor,
                     in_outer_txn=True,
                 )
+                if status == "accepted":
+                    # Not gated on match_type='dedup'. Accepting a dedup edge is
+                    # the common way to collide two transfers' legs, but a
+                    # transfer proposed *before* an edge that invalidated it
+                    # survives in the queue — Tier 4 refuses to raise that shape
+                    # and never revisits the ones it already raised — so
+                    # accepting it claims a component another transfer holds.
+                    retired = reversals = retire_transfers_invalidated_by_dedup(
+                        self._db,
+                        decisions=self._match_repo(),
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                    # That pass walks every accepted transfer, this row
+                    # included, so it can have reversed the acceptance written
+                    # two lines up. Re-read rather than echo `status`: this is
+                    # the only branch where the two can differ, and reporting
+                    # the request here tells the caller the opposite of what
+                    # committed.
+                    committed_status = self._read_status(match_id)
+                    if committed_status == "reversed":
+                        # Discount this call's own row. `transfers_retired` is a
+                        # claim about *standing* decisions the user made and
+                        # this call undid; the row flipped moments ago inside
+                        # this transaction is neither standing nor undone —
+                        # `match_status` above is what reports it, and undo
+                        # returns it to `pending` rather than to accepted. Exact
+                        # rather than a floor: only a transfer row can be
+                        # self-reversed, so it is counted exactly once.
+                        retired -= 1
             # current_status == status falls through as an idempotent no-op.
             self._db.commit()
         except BaseException:
             self._db.rollback()
             raise
+        # Past the commit, so the reversals it counts are durable.
+        record_dedup_retirements(reversals)
+        return MatchDecisionOutcome(
+            match_status=committed_status, transfers_retired=retired
+        )
+
+    def _read_status(self, match_id: str) -> str:
+        """Current ``match_status`` for ``match_id``, read inside the caller's txn."""
+        row = get_match_decision(self._db, match_id)
+        if row is None:  # pragma: no cover — the caller just wrote this row
+            raise UserError(
+                f"No match decision found for id {match_id!r}.",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+        return str(row["match_status"])
 
     def _compute_component_keys(self) -> dict[tuple[str, str, str], str]:
         """Build a map from (account_id, source_type, stid) to component_key.
@@ -286,7 +394,7 @@ class MatchingService:
                 (e["source_type_a"], e["source_transaction_id_a"], e["account_id"]),
                 (e["source_type_b"], e["source_transaction_id_b"], e["account_id"]),
             )
-            for e in get_active_dedup_edges(self._db)
+            for e in get_active_dedup_edges(self._db, statuses=("accepted", "pending"))
         ]
         # Dedup edges only ever connect same-account nodes, so each component is
         # account-scoped. component_key = account_id prefixed onto the MIN packed
@@ -382,18 +490,68 @@ class MatchingService:
 
     def accept_all_pending(
         self, *, match_type: str | None = None, actor: str = "system"
-    ) -> int:
-        """Accept every pending match decision in scope. Returns the count accepted.
+    ) -> BulkAcceptOutcome:
+        """Accept every pending match decision in scope.
 
         Routes through ``MatchDecisionsRepo.accept_pending`` so each acceptance
         emits a paired ``app.audit_log`` row (Invariant 10), all inside one
-        transaction (all-or-nothing). ``actor`` is the audit surface
+        transaction (all-or-nothing) that the reconciliation joins — a bulk
+        accept is the sharpest way to collide two transfers' legs, since it
+        folds every queued edge at once. ``actor`` is the audit surface
         (``cli``/``mcp``, default ``"system"``). ``match_type``, when given, is
         validated here (the repo's filter is parameterized but unguarded) so a
         bad value raises instead of silently accepting nothing.
+
+        The accepted count is re-read after the reconciliation for the same
+        reason ``set_status`` re-reads one row: the batch can contain both a
+        dedup edge and a transfer the edge invalidates, and the reconciliation
+        reverses the loser inside this transaction. Those self-reversals are
+        reported as ``reversed_by_reconciliation`` and excluded from
+        ``transfers_retired``, which counts only *standing* transfers this batch
+        undid.
         """
         if match_type is not None and match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
-        return self._match_repo().accept_pending(
-            match_type=match_type, decided_by="user", actor=actor
+        repo = self._match_repo()
+        self._db.begin()
+        try:
+            flipped = repo.accept_pending(
+                match_type=match_type,
+                decided_by="user",
+                actor=actor,
+                in_outer_txn=True,
+            )
+            # Skip the scan when the queue was empty: nothing was folded, so
+            # nothing can have been invalidated.
+            retired = (
+                retire_transfers_invalidated_by_dedup(
+                    self._db, decisions=repo, actor=actor, in_outer_txn=True
+                )
+                if flipped
+                else 0
+            )
+            # Counted over the ids this call flipped, not over `retired`: that
+            # total also covers transfers accepted long before this batch, so
+            # subtracting it would under-report an ordinary bulk accept.
+            still_accepted = count_matches_with_status(
+                self._db, flipped, status="accepted"
+            )
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+        # The raw count, before the discount below: that discount is a
+        # disclosure rule, and every one of these reversals committed.
+        record_dedup_retirements(retired)
+        # Discount the rows this call itself flipped, for the reason `set_status`
+        # discounts its one row: `transfers_retired` claims standing decisions
+        # were undone, and a proposal accepted and reversed inside this same
+        # transaction is neither. `reversed_by_reconciliation` is exactly that
+        # set — the reconciliation only ever reverses transfers, so every flipped
+        # row that did not stay accepted is one of `retired`.
+        self_reversed = len(flipped) - still_accepted
+        return BulkAcceptOutcome(
+            accepted=still_accepted,
+            reversed_by_reconciliation=self_reversed,
+            transfers_retired=retired - self_reversed,
         )

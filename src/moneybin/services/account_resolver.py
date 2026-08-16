@@ -56,13 +56,31 @@ def refresh_account_link_pending_gauge(db: Database) -> None:
     up. Counts DISTINCT provisional accounts — the review *unit* is the
     provisional, not the raw decision row — so the gauge matches
     ``AccountLinksService.count_pending`` and the queue users actually see.
+
+    Best-effort by construction. Two of its callers refresh this gauge in the
+    post-commit tail of an accepted merge, immediately before the rematch that
+    keeps that merge's newly co-resident duplicates from going unproposed
+    (``AccountLinksService.set`` and, on the batched path,
+    ``record_committed_outer_decisions``). Propagating a metrics failure there
+    would skip the rematch while the accept stayed committed — and an accepted
+    decision is refused on a retry, so the duplicates would wait for an
+    unrelated refresh with nothing reporting it. A stale gauge is the far
+    cheaper loss, so the gauge is what gives way.
     """
-    row = db.execute(
-        f"SELECT COUNT(DISTINCT provisional_account_id) "  # noqa: S608  # TableRef constant, no user input
-        f"FROM {ACCOUNT_LINK_DECISIONS.full_name} "
-        "WHERE status = 'pending' AND reversed_at IS NULL"
-    ).fetchone()
-    ACCOUNT_LINK_REVIEW_PENDING.set(int(row[0]) if row else 0)
+    try:
+        row = db.execute(
+            f"SELECT COUNT(DISTINCT provisional_account_id) "  # noqa: S608  # TableRef constant, no user input
+            f"FROM {ACCOUNT_LINK_DECISIONS.full_name} "
+            "WHERE status = 'pending' AND reversed_at IS NULL"
+        ).fetchone()
+        ACCOUNT_LINK_REVIEW_PENDING.set(int(row[0]) if row else 0)
+    except Exception as exc:  # noqa: BLE001  # telemetry must not abort its caller's tail
+        # Type, not message: this query names the profile database, so a DuckDB
+        # connection or encryption error can carry that path into the durable
+        # log, and SanitizedLogFormatter masks known PII patterns, not paths.
+        logger.warning(
+            f"Could not refresh the account-link pending gauge: {type(exc).__name__}"
+        )
 
 
 def fetch_display_name(db: Database, account_id: str) -> str:

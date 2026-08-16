@@ -4174,6 +4174,7 @@ class TestImportFilesConfirmationRequired:
             transforms_applied=True,
             transforms_duration_seconds=0.1,
             transforms_error=None,
+            transfers_retired=0,
         )
         service = MagicMock()
         service.sync.return_value = sync_result

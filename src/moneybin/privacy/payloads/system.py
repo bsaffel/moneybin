@@ -510,6 +510,17 @@ class RefreshRunPayload:
     matching_error: Annotated[str | None, DataClass.DESCRIPTION]
     categorization_error: Annotated[str | None, DataClass.DESCRIPTION]
     identity_errors: Annotated[list[str], DataClass.TXN_TYPE]
+    # What the match step decided on its own. AGGREGATE (Tier.LOW) — plain
+    # counts of decisions, naming no transaction. Emitted because the step acts
+    # without asking: it auto-merges above the confidence threshold and reverses
+    # transfers a dedup collapse invalidated. ``matching_skipped`` is what
+    # separates an honest zero from an invented one — on a skipped step nothing
+    # was examined, so "no duplicates" is a claim the counts cannot support.
+    matches_auto_merged: Annotated[int, DataClass.AGGREGATE]
+    matches_pending_review: Annotated[int, DataClass.AGGREGATE]
+    matches_pending_transfers: Annotated[int, DataClass.AGGREGATE]
+    matching_skipped: Annotated[bool, DataClass.TXN_TYPE]
+    transfers_retired: Annotated[int, DataClass.AGGREGATE]
     self_heal_actions: list[SelfHealActionRow]
 
 
