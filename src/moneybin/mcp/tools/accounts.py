@@ -578,12 +578,28 @@ def _account_link_binding(
     fail the digest instead of passing it.
 
     **Known accepted gap**, shared with the CLI's ``_ApprovedMerge``: the
-    ledger facts the prompt renders are not bound here, so two things can
+    ledger facts the prompt renders are not bound here, so three things can
     change between the grant and the commit without anything refusing the
     write. A survivor emptied by another accept loses its check-the-direction
     warning; and the overlap ratio can worsen on its own, because the probe's
     window is bounded by the *survivor's* dates and one row arriving outside it
     admits absorbed rows that match nothing.
+
+    The third is worse in kind than those two, and is called out separately
+    because they are display drift and it is not. ``resolved_ids`` names the
+    account-link decisions and links; it does not name **match** decisions. But
+    ``set`` repoints those onto the survivor, and a repoint can reverse a
+    transfer the user had accepted (``repoint_account`` →
+    ``accepted_transfers_retired``). So a match decision that is added, or
+    changes, while this grant is open alters what the commit actually writes
+    while the digest still verifies — an accepted transfer can be retired
+    outside the approved blast radius. Bounded, not silent: the reversal is
+    disclosed with its ``system audit undo`` route the way every other
+    retirement on this path is, and it needs the decision to move inside the
+    preview→confirm window. Closing it means carrying the affected
+    match-decision ids and state through ``accept_impact`` and both live-state
+    recomputations (here and the batch's ``_prepare_account``); deferred
+    deliberately rather than overlooked.
 
     A digest is symmetric and would also refuse the harmless directions — a
     survivor that gained its first transactions, an import that strengthened
