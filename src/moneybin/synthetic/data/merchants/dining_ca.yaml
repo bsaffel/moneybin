@@ -1,0 +1,46 @@
+# Amounts are CAD, denominated in the account's own currency.
+category: dining
+merchants:
+  - name: "Tim Hortons"
+    weight: 18
+    amount: { mean: 8.20, stddev: 3.00 }
+    description_prefix: "TIM HORTONS CANADA"
+  - name: "A&W Canada"
+    weight: 11
+    amount: { mean: 16.50, stddev: 6.00 }
+    description_prefix: "A AND W"
+  - name: "Harvey's"
+    weight: 8
+    amount: { mean: 18.00, stddev: 6.50 }
+    description_prefix: "HARVEYS"
+  - name: "Boston Pizza"
+    weight: 9
+    amount: { mean: 52.00, stddev: 17.00 }
+    description_prefix: "BOSTON PIZZA"
+  - name: "Swiss Chalet"
+    weight: 8
+    amount: { mean: 44.00, stddev: 14.00 }
+    description_prefix: "SWISS CHALET"
+  - name: "St-Hubert"
+    weight: 6
+    amount: { mean: 47.00, stddev: 15.00 }
+    description_prefix: "ST-HUBERT"
+  - name: "Earls"
+    weight: 6
+    amount: { mean: 68.00, stddev: 22.00 }
+    description_prefix: "EARLS KITCHEN"
+  - name: "The Keg"
+    weight: 4
+    amount: { mean: 112.00, stddev: 34.00 }
+    description_prefix: "THE KEG STEAKHOUSE"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "TORONTO ON"
+  - "MONTREAL QC"
+  - "VANCOUVER BC"
+  - "CALGARY AB"
+  - "OTTAWA ON"
+  - "HALIFAX NS"
+  - "WINNIPEG MB"
+  - "VICTORIA BC"

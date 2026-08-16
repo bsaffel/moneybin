@@ -14,11 +14,12 @@ from pydantic import JsonValue
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.matching.persistence import get_match_decision, get_match_statuses
-from moneybin.matching.reconciliation import (
-    record_dedup_retirements,
-    retire_transfers_invalidated_by_dedup,
+from moneybin.matching.application import (
+    MatchDecisionApplication,
+    SettableMatchStatus,
+    record_committed_match_effects,
 )
+from moneybin.matching.persistence import get_match_decision
 from moneybin.mcp.write_contracts import (
     AccountLinkDecisionRequest,
     CategorizationDecisionRequest,
@@ -451,7 +452,6 @@ class ReviewDecisionsService:
         initial = self.plan_ordinary(decisions)
         created_merchant_ids: list[str] = []
         touched_merchant_ids: list[str] = []
-        accepted_match_ids: list[str] = []
         self._db.begin()
         try:
             decision_repo = CategorizationDecisionsRepo(self._db)
@@ -466,6 +466,12 @@ class ReviewDecisionsService:
             live = self.plan_ordinary(decisions)
             category_service = CategorizationService(self._db)
             match_repo = MatchDecisionsRepo(self._db)
+            match_application = MatchDecisionApplication(
+                self._db,
+                decisions=match_repo,
+                actor=self._actor,
+                decided_by="user",
+            )
             batch_merchants: dict[tuple[str, str, str | None], str] = {}
             for item in live:
                 if not item.changed:
@@ -512,83 +518,35 @@ class ReviewDecisionsService:
                         in_outer_txn=True,
                     )
                 else:
-                    match_repo.update_status(
+                    match_application.set_status(
                         request.decision_id,
-                        status=item.status,
-                        decided_by="user",
-                        actor=self._actor,
-                        in_outer_txn=True,
+                        status=cast(SettableMatchStatus, item.status),
                     )
-                    if item.status == "accepted":
-                        accepted_match_ids.append(request.decision_id)
-            # Once for the whole batch, not once per row: the pass walks every
-            # accepted transfer regardless of which edge triggered it, so a
-            # per-row call repeats the same scan to the same fixpoint. Skipped
-            # entirely without an accept — nothing was folded, so nothing can
-            # have been invalidated. Not gated on match_type='dedup' either,
-            # for the reason `MatchingService.set_status` gives: a transfer
-            # proposed before the edge that invalidated it survives in the
-            # queue, and accepting *it* claims a component another holds.
-            retired = (
-                retire_transfers_invalidated_by_dedup(
-                    self._db,
-                    decisions=match_repo,
-                    actor=self._actor,
-                    in_outer_txn=True,
-                )
-                if accepted_match_ids
-                else None
-            )
-            # Inside the transaction, like `set_status`'s single-row re-read:
-            # the pass above can have reversed rows this batch just accepted,
-            # and the plan's `status` is the requested one.
-            committed = get_match_statuses(self._db, accepted_match_ids)
+            effects = match_application.finalize()
             self._db.commit()
         except BaseException:
             self._db.rollback()
             raise
-        # Past the commit, and the raw count rather than the discounted one
-        # below: that discount is a disclosure rule, and every one of these
-        # reversals committed.
-        record_dedup_retirements(retired or 0)
+        record_committed_match_effects(effects)
         if touched_merchant_ids:
             category_service.record_committed_review_merchants(
                 created_merchant_ids=tuple(created_merchant_ids),
                 touched_merchant_ids=tuple(touched_merchant_ids),
             )
+        statuses = effects.effective_statuses
         return OrdinaryApplyOutcome(
-            items=tuple(self._committed(item, committed) for item in live),
+            items=tuple(
+                item
+                if isinstance(item.request, CategorizationDecisionRequest)
+                else replace(item, status=statuses[item.request.decision_id])
+                for item in live
+            ),
             transfers_retired=(
-                None
-                if retired is None
-                # Discount the rows this batch itself flipped, exactly as the
-                # single and bulk accepts do: `transfers_retired` claims
-                # standing decisions were undone, and a proposal accepted and
-                # reversed inside this one transaction is neither. Only a
-                # transfer row can be self-reversed, so each is counted once.
-                else retired
-                - sum(
-                    1 for mid in accepted_match_ids if committed.get(mid) == "reversed"
-                )
+                effects.standing_transfers_retired
+                if effects.reconciliation_ran
+                else None
             ),
         )
-
-    @staticmethod
-    def _committed(
-        item: OrdinaryDecisionPlanItem, statuses: dict[str, str]
-    ) -> OrdinaryDecisionPlanItem:
-        """Replace a match item's requested status with the one that committed.
-
-        Gated on the request type rather than on the lookup alone: the two
-        kinds carry ids from different tables, and nothing stops one from
-        spelling the other's.
-        """
-        if isinstance(item.request, CategorizationDecisionRequest):
-            return item
-        landed = statuses.get(item.request.decision_id)
-        if landed is None or landed == item.status:
-            return item
-        return replace(item, status=landed)
 
     def _prepare_account(
         self,

@@ -1,14 +1,27 @@
 """`moneybin demo` — one-command evaluator preset (synthetic profile + answer)."""
 
 import logging
+from decimal import Decimal
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.output import (
+    UNKNOWN_CURRENCY,
+    OutputFormat,
+    currency_label,
+    output_option,
+    quiet_option,
+)
 
 logger = logging.getLogger(__name__)
 
-_PERSONAS = ("basic", "family", "freelancer")
+_PERSONAS = ("basic", "family", "freelancer", "international")
+
+
+def _opt_str(value: Decimal | None) -> str | None:
+    """Stringify a Decimal for JSON, preserving null rather than spelling it."""
+    return None if value is None else str(value)
+
 
 _NEXT_STEPS = (
     "\nTry next:\n"
@@ -93,9 +106,24 @@ def demo_command(
                         "categorized_count": result.categorized_count,
                         "doctor_failing": result.doctor_failing,
                         "doctor_failing_names": result.doctor_failing_names,
-                        "net_worth": str(result.net_worth),
-                        "total_assets": str(result.total_assets),
-                        "total_liabilities": str(result.total_liabilities),
+                        # null, never "None": a multi-currency profile has no
+                        # single total, and a consumer must be able to tell that
+                        # from a string that happens to spell it.
+                        "net_worth": _opt_str(result.net_worth),
+                        "total_assets": _opt_str(result.total_assets),
+                        "total_liabilities": _opt_str(result.total_liabilities),
+                        "per_currency": [
+                            {
+                                "currency_code": segment.currency_code,
+                                "net_worth": _opt_str(segment.net_worth),
+                                "total_assets": _opt_str(segment.total_assets),
+                                "total_liabilities": _opt_str(
+                                    segment.total_liabilities
+                                ),
+                                "account_count": segment.account_count,
+                            }
+                            for segment in result.per_currency
+                        ],
                         "previous_default_profile": result.previous_default,
                     },
                     sensitivity="low",
@@ -113,8 +141,24 @@ def demo_command(
                     err=True,
                 )
             # The one obvious answer (stdout). Bare Decimal matches the sibling
-            # `reports networth` command's convention (coherence).
-            typer.echo(f"Net worth: {result.net_worth}")
+            # `reports networth` command's convention (coherence). Holding more
+            # than one currency, there is no one answer to give — print each
+            # currency's own rather than a total that would mean nothing.
+            if result.net_worth is not None:
+                typer.echo(f"Net worth: {result.net_worth}")
+            else:
+                typer.echo("Net worth by currency:")
+                for segment in result.per_currency:
+                    # Both fields are nullable: reports.net_worth pools every
+                    # account whose currency is unknown into one NULL-coded
+                    # segment. Formatting that directly renders a bare "None"
+                    # (or raises, for a null total) at the demo's headline.
+                    # One token for both slots, the same one every other
+                    # currency-bearing command prints.
+                    amount = _opt_str(segment.net_worth) or UNKNOWN_CURRENCY
+                    typer.echo(
+                        f"  {currency_label(segment.currency_code)}  {amount:>14}"
+                    )
             if not quiet:
                 if result.doctor_failing == 0:
                     typer.echo("✅ system doctor clean", err=True)

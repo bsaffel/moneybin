@@ -204,6 +204,107 @@ class TestPersonaConfig:
                 institution="Test Bank",
             )
 
+    def test_currency_code_defaults_to_usd(self) -> None:
+        """Existing personas declare no currency, so they must stay USD."""
+        account = AccountConfig(
+            name="Chase Checking",
+            type="checking",
+            source_type="ofx",
+            institution="Chase Bank",
+        )
+        assert account.currency_code == "USD"
+
+    def test_currency_code_is_configurable_per_account(self) -> None:
+        account = AccountConfig(
+            name="UAE Checking",
+            type="checking",
+            source_type="csv",
+            institution="Emirates Bank",
+            currency_code="AED",
+        )
+        assert account.currency_code == "AED"
+
+    @pytest.mark.parametrize("bad_code", ["usd", "US", "USDD", "U5D", "", "  "])
+    def test_malformed_currency_code_rejected(self, bad_code: str) -> None:
+        """A typo would reach raw and core verbatim and split the report segments.
+
+        `reports.net_worth` groups by this string and the doctor's currency check
+        treats every non-null value as known, so `usd` becomes a second segment
+        beside `USD` rather than an error.
+        """
+        with pytest.raises(ValueError, match="3 uppercase letters"):
+            AccountConfig(
+                name="Typo",
+                type="checking",
+                source_type="ofx",
+                institution="Test Bank",
+                currency_code=bad_code,
+            )
+
+    def test_provider_unsupported_currency_code_still_accepted(self) -> None:
+        """Shape, not membership — AED is deliberately outside the FX provider."""
+        account = AccountConfig(
+            name="Dubai Checking",
+            type="checking",
+            source_type="csv",
+            institution="Emirates Bank",
+            currency_code="AED",
+        )
+        assert account.currency_code == "AED"
+
+    def test_cross_currency_transfer_rejected(
+        self, minimal_persona_dict: dict[str, Any]
+    ) -> None:
+        """`TransferGenerator` moves one magnitude to both sides without converting.
+
+        Each side then inherits its own account's currency, so an unconverted
+        100 USD outflow lands as a +100 EUR inflow — balances and any ground
+        truth derived from them are silently wrong. Reject until M1K.3 gives the
+        generator a conversion.
+        """
+        minimal_persona_dict["accounts"].append({
+            "name": "Eurozone Savings",
+            "type": "savings",
+            "source_type": "ofx",
+            "institution": "Test Bank EU",
+            "opening_balance": 500.00,
+            "currency_code": "EUR",
+        })
+        minimal_persona_dict["transfers"] = [
+            {
+                "from": "Checking",
+                "to": "Eurozone Savings",
+                "amount": 100.0,
+                "schedule": "monthly",
+                "day_of_month": 5,
+            }
+        ]
+        with pytest.raises(ValueError, match="cross-currency transfer"):
+            PersonaConfig.model_validate(minimal_persona_dict)
+
+    def test_same_currency_transfer_still_allowed(
+        self, minimal_persona_dict: dict[str, Any]
+    ) -> None:
+        """The guard must reject only the unconvertible case, not transfers."""
+        minimal_persona_dict["accounts"].append({
+            "name": "Savings",
+            "type": "savings",
+            "source_type": "ofx",
+            "institution": "Test Bank",
+            "opening_balance": 500.00,
+        })
+        minimal_persona_dict["transfers"] = [
+            {
+                "from": "Checking",
+                "to": "Savings",
+                "amount": 100.0,
+                "schedule": "monthly",
+                "day_of_month": 5,
+            }
+        ]
+        persona = PersonaConfig.model_validate(minimal_persona_dict)
+        assert len(persona.transfers) == 1
+
 
 class TestSpendingCategoryConfig:
     """Test spending category config validation."""
@@ -258,7 +359,7 @@ class TestYAMLDataLoading:
         "education",
         "gifts",
     ]
-    PERSONAS = ["basic", "family", "freelancer"]
+    PERSONAS = ["basic", "family", "freelancer", "international"]
 
     @pytest.mark.parametrize("catalog", MERCHANT_CATALOGS)
     def test_merchant_catalog_loads(self, catalog: str) -> None:
@@ -280,6 +381,105 @@ class TestYAMLDataLoading:
     def test_unknown_catalog_raises(self) -> None:
         with pytest.raises(FileNotFoundError, match="Unknown merchant catalog"):
             load_merchant_catalog("nonexistent")
+
+    # Personas that deliberately hold more than one currency. Everything else
+    # is asserted USD-only below, so a new persona is covered the day it lands
+    # rather than the day someone remembers to add it here.
+    MULTI_CURRENCY_PERSONAS = {"international"}
+
+    def test_single_currency_personas_stay_usd(self) -> None:
+        """Every persona but the declared multi-currency ones must stay USD."""
+        single = [p for p in self.PERSONAS if p not in self.MULTI_CURRENCY_PERSONAS]
+        assert single, "the exemption set swallowed every persona"
+        for persona_name in single:
+            persona = load_persona(persona_name)
+            currencies = {acct.currency_code for acct in persona.accounts}
+            assert currencies == {"USD"}, (
+                f"Persona {persona_name!r} changed currency: {currencies}"
+            )
+
+    def test_international_persona_spans_five_currencies(self) -> None:
+        persona = load_persona("international")
+        currencies = {acct.currency_code for acct in persona.accounts}
+        assert currencies == {"USD", "EUR", "GBP", "CAD", "AED"}
+
+    def test_international_persona_covers_an_unpriced_currency(self) -> None:
+        """AED is absent from Frankfurter's 30-currency set.
+
+        That is what exercises the FX_CURRENCY_UNSUPPORTED branch, which a
+        wholly ECB-covered persona would never reach.
+        """
+        persona = load_persona("international")
+        assert "AED" in {acct.currency_code for acct in persona.accounts}
+
+    def test_international_persona_exercises_both_writer_paths(self) -> None:
+        """OFX and tabular write currency to different tables and columns.
+
+        A persona whose non-USD accounts all shared one source_type would
+        leave the other path's hard-coded currency undetected.
+        """
+        persona = load_persona("international")
+        foreign_source_types = {
+            acct.source_type for acct in persona.accounts if acct.currency_code != "USD"
+        }
+        assert foreign_source_types == {"ofx", "csv"}
+
+    def test_every_spending_account_is_funded(self) -> None:
+        """An account that only spends drifts to a large negative balance.
+
+        The generator does no conversion, so a multi-currency persona cannot
+        fund a foreign account by transfer — each one needs income in its own
+        currency or the demo's headline shows a checking account thousands
+        below zero.
+        """
+        for persona_name in self.PERSONAS:
+            persona = load_persona(persona_name)
+            funded = {inc.account for inc in persona.income}
+            funded |= {xfer.to_account for xfer in persona.transfers}
+            spending = {
+                account
+                for category in persona.spending.categories
+                for account in category.accounts
+            }
+            spending |= {rec.account for rec in persona.recurring}
+            assert spending <= funded, (
+                f"Persona {persona_name!r} spends from unfunded accounts: "
+                f"{sorted(spending - funded)}"
+            )
+
+    def test_international_merchant_patterns_do_not_shadow_each_other(self) -> None:
+        """`contains` matching means a shorter pattern swallows a longer one.
+
+        The matcher takes the first merchant whose pattern is contained in the
+        description, ordered by canonical name, so "COSTA COFFEE" would claim
+        every "COSTA COFFEE AE ..." transaction and misattribute the merchant.
+        """
+        persona = load_persona("international")
+        patterns = {
+            merchant.description_prefix or merchant.name
+            for category in persona.spending.categories
+            for merchant in load_merchant_catalog(category.merchant_catalog).merchants
+        }
+        shadowed = [
+            (short, long)
+            for short in patterns
+            for long in patterns
+            if short != long and short in long
+        ]
+        assert shadowed == []
+
+    def test_non_us_catalogs_declare_their_own_cities(self) -> None:
+        """Otherwise a Dubai grocery run reads "CARREFOUR HYPER #4450 AUSTIN TX"."""
+        persona = load_persona("international")
+        foreign = {
+            category.merchant_catalog
+            for category in persona.spending.categories
+            if category.merchant_catalog.rsplit("_", 1)[-1] in {"eu", "uk", "ca", "ae"}
+        }
+        assert foreign
+        for catalog_name in sorted(foreign):
+            catalog = load_merchant_catalog(catalog_name)
+            assert catalog.cities, f"{catalog_name} has no cities of its own"
 
     def test_persona_merchant_catalogs_exist(self) -> None:
         """Every merchant_catalog referenced in personas has a matching file."""

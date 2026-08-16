@@ -1,0 +1,46 @@
+# Amounts are EUR, denominated in the account's own currency.
+category: dining
+merchants:
+  - name: "Vapiano"
+    weight: 12
+    amount: { mean: 26.00, stddev: 9.00 }
+    description_prefix: "VAPIANO"
+  - name: "Paul"
+    weight: 13
+    amount: { mean: 11.00, stddev: 4.00 }
+    description_prefix: "BOULANGERIE PAUL"
+  - name: "L'Osteria"
+    weight: 10
+    amount: { mean: 33.00, stddev: 11.00 }
+    description_prefix: "L OSTERIA"
+  - name: "Nordsee"
+    weight: 9
+    amount: { mean: 14.50, stddev: 5.00 }
+    description_prefix: "NORDSEE GMBH"
+  - name: "Telepizza"
+    weight: 8
+    amount: { mean: 21.00, stddev: 7.00 }
+    description_prefix: "TELEPIZZA"
+  - name: "Del Arte"
+    weight: 7
+    amount: { mean: 29.00, stddev: 10.00 }
+    description_prefix: "DEL ARTE"
+  - name: "FEBO"
+    weight: 6
+    amount: { mean: 8.00, stddev: 3.00 }
+    description_prefix: "FEBO AUTOMATIEK"
+  - name: "Goiko"
+    weight: 5
+    amount: { mean: 35.00, stddev: 12.00 }
+    description_prefix: "GOIKO GRILL"
+
+# Statement descriptions place each merchant in one of these.
+cities:
+  - "AMSTERDAM NL"
+  - "BERLIN DE"
+  - "PARIS FR"
+  - "MADRID ES"
+  - "MILANO IT"
+  - "ROTTERDAM NL"
+  - "MUENCHEN DE"
+  - "LYON FR"

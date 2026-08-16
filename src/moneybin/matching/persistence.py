@@ -117,35 +117,11 @@ def get_match_decision(db: Database, match_id: str) -> dict[str, Any] | None:
     return dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True))
 
 
-def count_matches_with_status(
-    db: Database, match_ids: Sequence[str], *, status: str
-) -> int:
-    """How many of ``match_ids`` currently carry ``match_status = status``.
-
-    One query rather than a read per id: the bulk accept asks this about every
-    row it just flipped, and the answer is only meaningful read after the
-    reconciliation that may have reversed some of them.
-    """
-    if not match_ids:
-        return 0
-    placeholders = ", ".join("?" for _ in match_ids)
-    row = db.execute(
-        f"""
-        SELECT COUNT(*) FROM {MATCH_DECISIONS.full_name}
-        WHERE match_status = ? AND match_id IN ({placeholders})
-        """,  # noqa: S608 — placeholders are '?' literals; every value is parameterized
-        [status, *match_ids],
-    ).fetchone()
-    return int(row[0]) if row else 0
-
-
 def get_match_statuses(db: Database, match_ids: Sequence[str]) -> dict[str, str]:
-    """Current ``match_status`` for each of ``match_ids`` that still exists.
+    """Return current status for each existing match ID.
 
-    One query rather than a read per id, for the reason
-    ``count_matches_with_status`` gives above. A count is enough where one
-    number is reported; a batch reporting one outcome per decision needs to
-    know *which* rows the reconciliation reversed.
+    A batch result identifies which decisions reconciliation reversed, not only
+    how many.
     """
     if not match_ids:
         return {}

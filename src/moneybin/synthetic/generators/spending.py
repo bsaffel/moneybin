@@ -78,11 +78,13 @@ class SpendingGenerator:
                     float(w) for w in cat_config.account_weights
                 ]
 
-    def _make_description(self, merchant: MerchantEntry) -> str:
+    def _make_description(self, merchant: MerchantEntry, catalog_key: str) -> str:
         """Generate a bank-statement-style description for a merchant.
 
         Args:
             merchant: The merchant entry from the catalog.
+            catalog_key: Catalog the merchant came from, so a non-US catalog can
+                place its merchants in its own cities.
 
         Returns:
             A description string. If the merchant has a description_prefix,
@@ -90,7 +92,7 @@ class SpendingGenerator:
         """
         if merchant.description_prefix:
             store_num = self._rng.randint(1000, 9999)
-            city = self._rng.choice(_CITIES)
+            city = self._rng.choice(self._catalogs[catalog_key].cities or _CITIES)
             return f"{merchant.description_prefix} #{store_num} {city}"
         return merchant.name
 
@@ -147,7 +149,7 @@ class SpendingGenerator:
                 day_weights = cat_config.day_of_week_weights or None
                 day = self._rng.day_in_month(year, month, day_weights)
 
-                description = self._make_description(merchant)
+                description = self._make_description(merchant, cat_key)
 
                 txns.append(
                     GeneratedTransaction(

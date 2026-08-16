@@ -11,20 +11,21 @@ Per persona you get:
 
 - **Multiple accounts.** Checking, savings, and credit-card accounts. No investment accounts today; brokerage / 401(k) generation is a future addition.
 - **Mixed source paths.** Some accounts route through the OFX loader (`raw.ofx_*`); others through the tabular CSV loader (`raw.tabular_*`). Provenance columns flag them as synthetic (see below).
-- **Categorized merchants in the input, NOT pre-applied categories.** Each transaction is generated against one of 14 merchant catalogs (`grocery`, `dining`, `transport`, `subscriptions`, `health`, `utilities`, `insurance`, `kids`, `shopping`, `entertainment`, `personal_care`, `travel`, `education`, `gifts`). The expected category is recorded in `synthetic.ground_truth`; the raw transaction itself ships uncategorized so the categorizer has work to do.
+- **Categorized merchants in the input, NOT pre-applied categories.** Each transaction is generated against a merchant catalog. Fourteen cover the categories a US persona spends in (`grocery`, `dining`, `transport`, `subscriptions`, `health`, `utilities`, `insurance`, `kids`, `shopping`, `entertainment`, `personal_care`, `travel`, `education`, `gifts`); twelve more hold non-US merchants and non-US cities for `international` (`grocery`, `dining`, and `transport`, each in a `_eu`, `_uk`, `_ca`, and `_ae` edition). The expected category is recorded in `synthetic.ground_truth`; the raw transaction itself ships uncategorized so the categorizer has work to do.
 - **Realistic merchant strings.** Each catalog ships a weighted list of real-world merchant names so descriptions look like what a categorizer would actually see.
-- **Income.** Biweekly direct deposits (`basic`, `family`), dual-income households (`family`), or irregular freelance invoices plus a monthly retainer (`freelancer`).
+- **Income.** Biweekly direct deposits (`basic`, `family`), dual-income households (`family`), irregular freelance invoices plus a monthly retainer (`freelancer`), or one local monthly stream per country (`international`).
 - **Recurring transactions.** Rent or mortgage, utilities, insurance premiums, subscription services, and (for `freelancer`) quarterly IRS estimated payments — fired on declared days of month.
-- **Transfers.** Inter-account movements: checking → savings, credit-card statement payments, and (for `freelancer`) business → personal owner draws. Both legs of every transfer share a `transfer_pair_id` in ground truth.
+- **Transfers.** Inter-account movements: checking → savings, credit-card statement payments, and (for `freelancer`) business → personal owner draws. Both legs of every transfer share a `transfer_pair_id` in ground truth. `international` has none — a transfer between two currencies needs a conversion the generator does not perform, so each of its accounts is funded in its own currency instead.
 - **Seasonal modifiers.** November/December grocery and shopping spikes; summer kids-activities bumps for `family`.
 
 ### Date range and volume
 
-Each persona declares a default of **3 years** ending at the calendar year before the current year (e.g., generating in 2026 covers 2023-01-01 through 2025-12-31). Override with `--years`. Volume scales with persona complexity:
+Each persona declares its own default, ending at the calendar year before the current year (e.g., generating in 2026 covers 2023-01-01 through 2025-12-31 for a 3-year persona). Override with `--years`. Volume scales with persona complexity:
 
-- `basic` — ~300 transactions per year (one checking + one credit card, modest spending).
-- `family` — ~950-1,000 per year across four accounts.
-- `freelancer` — irregular but heavy business activity across three accounts.
+- `basic` — ~300 transactions per year (one checking + one credit card, modest spending). 3 years.
+- `family` — ~950-1,000 per year across four accounts. 3 years.
+- `freelancer` — irregular but heavy business activity across three accounts. 3 years.
+- `international` — ~690 per year across five accounts, one per currency. 2 years.
 
 Exact counts are deterministic given a seed — see Seed stability below.
 
@@ -39,13 +40,14 @@ Each persona generates into its **own profile**, which means its own encrypted D
 | `basic` | `alice` |
 | `family` | `bob` |
 | `freelancer` | `charlie` |
+| `international` | `eve` |
 
-If `alice`/`bob`/`charlie` collide with profiles you already use, pass `--profile <name>` to route the generator into a different name. Your real profile is never touched.
+If `alice`/`bob`/`charlie`/`eve` collide with profiles you already use, pass `--profile <name>` to route the generator into a different name. Your real profile is never touched.
 
 To completely remove synthetic data when you're done:
 
 ```bash
-moneybin profile delete alice    # or bob, charlie, whatever you used
+moneybin profile delete alice    # or bob, charlie, eve, whatever you used
 ```
 
 `profile delete` removes the DuckDB file, the encryption key in the keychain, the backups directory, and the config entry — leaving no synthetic data on disk.
@@ -87,6 +89,7 @@ moneybin synthetic reset --persona family --seed 7 --years 5 --yes
 | Are a single-income renter, few accounts, no kids, want a fast smoke test | `basic` | ~300 txns/year, 2 accounts (checking + credit card) |
 | Have a mortgage, kids, dual income, multiple cards | `family` | ~1,000 txns/year, 4 accounts, summer + holiday seasonality |
 | Are self-employed with irregular income and business expenses | `freelancer` | Quarterly estimated tax payments, owner draws, business-vs-personal account split |
+| Hold accounts in more than one currency | `international` | Five banks in five countries, one currency each (EUR, GBP, CAD, AED, USD); net worth reports per currency instead of one total |
 
 If you're evaluating MoneyBin and your real finances would be closest to `family`, `family` is what you should generate — it also exercises the most of the reports surface: 4 accounts, 11 recurring streams, and 3 monthly transfers, versus 2 accounts and 5 recurring streams for `basic`.
 
@@ -142,9 +145,9 @@ moneybin synthetic generate --persona <name> [--profile <name>] [--years <N>] [-
 
 | Flag | Required | Default | Notes |
 |---|---|---|---|
-| `--persona` | yes | — | One of `basic`, `family`, `freelancer` |
-| `--profile` | no | derived from persona (`alice`, `bob`, `charlie`) | Target MoneyBin profile to write into |
-| `--years` | no | persona default (3) | Number of complete years to generate |
+| `--persona` | yes | — | One of `basic`, `family`, `freelancer`, `international` |
+| `--profile` | no | derived from persona (`alice`, `bob`, `charlie`, `eve`) | Target MoneyBin profile to write into |
+| `--years` | no | persona default (3, or 2 for `international`) | Number of complete years to generate |
 | `--seed` | no | random `1..9999` | Integer seed for deterministic output |
 | `--skip-transform` | no | `False` | Skip running SQLMesh after the raw write |
 
@@ -214,6 +217,7 @@ CREATE TABLE synthetic.ground_truth (
 | `basic` | `alice` | 1 checking, 1 credit card | ~300 | Single biweekly salary, 3% annual raise | Holiday shopping bump; weekend dining bias; statement-balance card payoff |
 | `family` | `bob` | 1 checking, 1 savings, 2 credit cards | ~950-1,000 | Dual biweekly salaries | Mortgage, 3 subscriptions, 2 card payments, automatic savings transfer; summer kids-activities bump; holiday grocery + shopping spike |
 | `freelancer` | `charlie` | 2 checking (personal + business), 1 credit card | ~hundreds, irregular | Irregular client invoices + monthly retainer | Quarterly IRS estimated tax (Jan/Apr/Jun/Sep); business-vs-personal account split; monthly owner draw |
+| `international` | `eve` | 5 checking, one each at a Dutch, British, Canadian, Emirati, and US bank | ~690 | One local monthly stream per account, in that account's currency | Five currencies (EUR, GBP, CAD, AED, USD) with no conversion and no transfers; local merchants and cities per country; AED sits outside the FX provider's published set, so its rate is unavailable by construction |
 
 Persona definitions are YAML files under `src/moneybin/synthetic/data/personas/`. Merchant catalogs live in `src/moneybin/synthetic/data/merchants/`. To add a new persona or expand a catalog, drop a YAML file and follow the existing schema — see `CONTRIBUTING.md`.
 
@@ -274,6 +278,6 @@ Practical implications for CI and regression tests:
 - **Not a realistic distribution of any specific user's spending.** Volumes, merchant mixes, and income shapes are parametric — deliberate, declared, deterministic. They are not learned from real data and should not be treated as representative of a real household.
 - **No Plaid pull semantics.** The generator writes directly to raw tables. It does not exercise the Plaid sync cursor, incremental-pull skip logic, or auth refresh flows — those paths are covered by mocks elsewhere.
 - **No investment accounts yet.** Only checking, savings, and credit-card account types are generated. Brokerage, retirement, and crypto accounts are planned.
-- **No multi-currency.** Every persona is USD-only.
+- **No cross-currency transfers, and no conversion.** Accounts carry their own `currency_code` (see the `international` persona), but the generator moves one magnitude to both sides of a transfer without converting it. A transfer between accounts in different currencies is refused at persona load rather than written unconverted; fund each currency from its own income instead. Reports sub-total per currency — nothing is converted to a single display currency yet.
 - **No manual entries or rule training.** The generator produces raw transactions and ground truth; it does not seed `app.*` user-state tables (manual entries, custom rules, budgets).
 - **Random `--seed` is logged but not persisted.** If you omit `--seed`, the generator picks a value in `1..9999` and logs it. Save it from the log if you need to reproduce that exact run; otherwise prefer passing an explicit seed.

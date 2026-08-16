@@ -77,6 +77,7 @@ class GeneratorEngine:
                     source_type=acct_config.source_type,
                     institution=acct_config.institution,
                     opening_balance=Decimal(str(acct_config.opening_balance)),
+                    currency_code=acct_config.currency_code,
                 )
             )
         return accounts
