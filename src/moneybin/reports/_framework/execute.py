@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Protocol, cast
 
@@ -43,6 +43,8 @@ from moneybin.reports._framework.contract import (
     ReportSpec,
     bound_value,
 )
+from moneybin.reports._framework.convert import convert_records
+from moneybin.services.currency_service import CurrencyService
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +142,36 @@ class CatalogReportExecution:
     provenance: tuple[str, ...]
     # Same contract as ReportResult.display_currency — see the note there.
     display_currency: str | None = None
+    #: Why a requested display currency was not applied, when one was requested
+    #: and the rows fell back to per-currency segmentation (Requirement 15).
+    degraded_reason: str | None = None
+
+
+def convert_execution(
+    execution: CatalogReportExecution,
+    *,
+    to_currency: str,
+    service: CurrencyService,
+) -> CatalogReportExecution:
+    """Price one execution's rows in ``to_currency``, or leave them segmented.
+
+    Applied to the raw execution rather than the redacted result because masking
+    replaces an amount with a string: a converted ``'*****'`` is not a number,
+    and a partially masked one would be a different number than it claims.
+    """
+    outcome = convert_records(
+        execution.records,
+        classes=execution.output_classes,
+        semantics=execution.semantics,
+        to_currency=to_currency,
+        service=service,
+    )
+    return replace(
+        execution,
+        records=outcome.records,
+        display_currency=outcome.display_currency,
+        degraded_reason=outcome.degraded_reason,
+    )
 
 
 def _resolve_display_currency(records: list[dict[str, Any]]) -> str | None:
@@ -355,6 +387,8 @@ def redact_catalog_execution(
         actions=actions,
         period=execution.period,
         display_currency=execution.display_currency,
+        degraded=execution.degraded_reason is not None,
+        degraded_reason=execution.degraded_reason,
     )
 
 

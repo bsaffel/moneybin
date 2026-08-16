@@ -152,6 +152,15 @@ class ReportSemantics:
     comparison_window: str | None
     exclusions: tuple[str, ...]
     provenance: tuple[str, ...]
+    fx_date: str | None = None
+    """The column whose value dates each row for display conversion.
+
+    Defaults to ``None`` — no declared date — which segments rather than
+    converting. That is the safe direction: a report that has not said which
+    column dates its rows cannot be converted at a defensible rate, and picking
+    one by guessing (the only ``TXN_DATE`` column, say) would silently price a
+    lifetime total at whichever date happened to be named first.
+    """
 
 
 @dataclass(frozen=True, slots=True)

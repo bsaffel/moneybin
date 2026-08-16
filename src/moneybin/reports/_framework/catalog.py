@@ -43,11 +43,20 @@ from moneybin.reports._framework.derive import json_scalar, typed_value
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     CatalogReportResult,
+    convert_execution,
     execute_catalog_report,
     redact_catalog_execution,
 )
+from moneybin.services.currency_service import build_cache_only_currency_service
 
 logger = logging.getLogger(__name__)
+
+
+def _merged_reason(*reasons: str | None) -> str | None:
+    """Every stated reason a result is degraded, or ``None`` if it is not."""
+    stated = [reason for reason in reasons if reason]
+    return "; ".join(stated) if stated else None
+
 
 _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 
@@ -204,22 +213,45 @@ class ReportCatalog:
         report_id: str,
         parameters: Mapping[str, JsonValue],
         limit: int,
+        display_currency: str | None = None,
     ) -> CatalogReportResult:
-        """Validate parameters, then dispatch through the selected report kind."""
+        """Validate parameters, then dispatch through the selected report kind.
+
+        ``display_currency`` prices every money column in that currency
+        (Requirement 9). A pair that cannot be resolved from stored rates
+        segments instead of failing, and says why — see ``convert_execution``.
+        """
         spec, execution = self.execute_raw(
             db,
             report_id=report_id,
             parameters=parameters,
             limit=limit,
         )
+        if display_currency is not None:
+            # Between execution and redaction, the only window where the rows
+            # are both final and still numeric.
+            execution = convert_execution(
+                execution,
+                to_currency=display_currency,
+                service=build_cache_only_currency_service(db),
+            )
         result = redact_catalog_execution(spec, execution)
         status = self.status(spec.report_id)
         if not status.degraded:
             return result
         # R4's drift reason belongs on the response, not only on the intermediate
         # object the catalog built the spec from: masked rows with no stated cause
-        # are the failure the whole degraded flag exists to prevent.
-        return replace(result, degraded=True, degraded_reason=status.degraded_reason)
+        # are the failure the whole degraded flag exists to prevent. A conversion
+        # that also degraded keeps its reason beside it rather than losing to it:
+        # they are independent, and a reader told only about drift would think
+        # the currency label was trustworthy.
+        return replace(
+            result,
+            degraded=True,
+            degraded_reason=_merged_reason(
+                status.degraded_reason, result.degraded_reason
+            ),
+        )
 
     def execute_raw(
         self,
@@ -646,6 +678,7 @@ def _semantics_to_payload(semantics: ReportSemantics) -> ReportSemanticsPayload:
         kind=semantics.kind,
         valuation_basis=semantics.valuation_basis,
         fx_basis=semantics.fx_basis,
+        fx_date=semantics.fx_date,
         time_basis=semantics.time_basis,
         denominator=semantics.denominator,
         comparison_window=semantics.comparison_window,

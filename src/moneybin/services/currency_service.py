@@ -599,6 +599,21 @@ def build_currency_service(db: Database, *, actor: str = "system") -> CurrencySe
     return CurrencyService(db, adapter=FrankfurterRateAdapter(), actor=actor)
 
 
+def build_cache_only_currency_service(db: Database) -> CurrencyService:
+    """Wire a CurrencyService that resolves from stored rates and never fetches.
+
+    For read paths — report execution above all. Rates are gathered during the
+    refresh cascade, which already holds the exclusive per-profile writer lock; a
+    read opens the database read-only, so fetching here would take that lock
+    behind a read-only-looking command and fail whenever a sync held it.
+
+    Passing no adapter is what enforces that, and this factory exists so the
+    invariant has a name a reader can grep for rather than living in an omitted
+    keyword argument at each call site.
+    """
+    return CurrencyService(db)
+
+
 def canonical_currency(value: str) -> str:
     """Trim and upper a currency code so one spelling reaches every lookup.
 
