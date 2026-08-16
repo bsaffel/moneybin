@@ -584,7 +584,14 @@ def register_sync_workflow_tools(mcp: FastMCP) -> None:
             "sync_status",
             "Read global health, one link session, or advance one device-login session.",
         ),
-        (sync_pull_coarse, "sync_pull", "Pull connected financial data."),
+        (
+            sync_pull_coarse,
+            "sync_pull",
+            "Pull connected financial data. The pull runs the refresh cascade, "
+            "whose match step can reverse a transfer the user already accepted: "
+            "`transfers_retired` counts those, and system_audit_undo() restores "
+            "them.",
+        ),
         (
             sync_disconnect,
             "sync_disconnect",

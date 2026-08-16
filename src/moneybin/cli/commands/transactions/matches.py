@@ -241,6 +241,11 @@ def matches_set(
         cause=RETIRED_SIDES_COLLAPSED,
         rematch_follow_up=True,
     )
+    if outcome.match_status != status:
+        # The status the caller asked for is not the one that committed, which
+        # cli.md calls a failed operation. Warning alone leaves an agent gating
+        # on exit status recording an accept the reconciliation refused.
+        raise typer.Exit(1)
 
 
 @app.command("backfill")

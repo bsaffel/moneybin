@@ -2632,7 +2632,10 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "unresolved it imports nothing and returns account proposals whose "
             "source_account_key is masked; answer with account_bindings="
             '{ref: account_id or "new"}, where ref is a proposal\'s '
-            "proposal_ref (@0 is the file's first source account).",
+            "proposal_ref (@0 is the file's first source account). A completed "
+            "import runs the refresh cascade, whose match step can reverse a "
+            "transfer the user already accepted: `transfers_retired` counts "
+            "those, and system_audit_undo() restores them.",
         ),
         (
             import_preview_coarse,
@@ -2676,7 +2679,10 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
         (
             import_inbox_sync_coarse,
             "import_inbox_sync",
-            "Synchronize the import inbox.",
+            "Synchronize the import inbox. Draining it imports every staged "
+            "file and runs the refresh cascade, whose match step can reverse a "
+            "transfer the user already accepted: `transfers_retired` counts "
+            "those, and system_audit_undo() restores them.",
         ),
         (
             import_labels_set_coarse,

@@ -1,5 +1,5 @@
 {
-  "sha256": "092b47f51516e5dfe17215c81e0261747cb7b6567ed9d9c5ee9b44bc78d5ca36",
+  "sha256": "eecf189975f5ddc4efdd5154e1bf760fc3e4b4a29534c514372a59bb4646c8ca",
   "tool_count": 49,
   "tools": [
     {
@@ -1585,7 +1585,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account).",
+        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1630,12 +1630,12 @@
         },
         "name": "import_files"
       },
-      "description_bytes": 292,
+      "description_bytes": 477,
       "input_schema_bytes": 341,
       "name": "import_files",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 827
+      "total_bytes": 1012
     },
     {
       "annotation_bytes": 91,
@@ -1646,7 +1646,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Synchronize the import inbox.",
+        "description": "Synchronize the import inbox. Draining it imports every staged file and runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1664,12 +1664,12 @@
         },
         "name": "import_inbox_sync"
       },
-      "description_bytes": 29,
+      "description_bytes": 237,
       "input_schema_bytes": 105,
       "name": "import_inbox_sync",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 331
+      "total_bytes": 539
     },
     {
       "annotation_bytes": 90,
@@ -2611,7 +2611,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, and identity proposal backfill in canonical order. Pass steps to select from gsheet, match, transform, categorize, and identity. Rebuilds core.* and reports.* and may write app categorization or identity-review state. No revert path; fix inputs and rerun.",
+        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, and identity proposal backfill in canonical order. Pass steps to select from gsheet, match, transform, categorize, and identity. Rebuilds core.* and reports.* and may write app categorization or identity-review state. The match step acts without asking, and folding a duplicate can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them. The rebuild itself has no revert; fix inputs and rerun.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2647,12 +2647,12 @@
         },
         "name": "refresh_run"
       },
-      "description_bytes": 389,
+      "description_bytes": 590,
       "input_schema_bytes": 612,
       "name": "refresh_run",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 1191
+      "total_bytes": 1392
     },
     {
       "annotation_bytes": 89,
@@ -3232,7 +3232,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Pull connected financial data.",
+        "description": "Pull connected financial data. The pull runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3257,12 +3257,12 @@
         },
         "name": "sync_pull"
       },
-      "description_bytes": 30,
+      "description_bytes": 205,
       "input_schema_bytes": 136,
       "name": "sync_pull",
       "other_bytes": 51,
       "output_schema_bytes": 0,
-      "total_bytes": 354
+      "total_bytes": 529
     },
     {
       "annotation_bytes": 89,
@@ -5022,5 +5022,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 56231
+  "total_bytes": 57000
 }

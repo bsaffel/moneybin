@@ -30,6 +30,7 @@ from moneybin.mcp.write_contracts import AccountLinkDecisionRequest
 from moneybin.services.account_links_service import AccountLinkAcceptImpact
 from moneybin.services.identity_confirmation import identity_confirm_message
 from moneybin.services.ledger_overlap import LedgerOverlap
+from moneybin.services.refresh import RefreshResult
 from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
@@ -41,6 +42,17 @@ runner = CliRunner()
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _clean_rematch() -> RefreshResult:
+    """A post-merge pass that succeeded, for tests about something else.
+
+    Never leave `AccountLinksService.set` returning a bare ``MagicMock`` here:
+    its auto-created ``.error`` is a truthy Mock, so the command reads the
+    rebuild as failed and exits 1, and ``transfers_retired`` renders as a repr
+    inside the retirement warning.
+    """
+    return RefreshResult(applied=True, duration_seconds=0.0)
 
 
 def _make_pending_group(
@@ -378,6 +390,7 @@ class TestLinksSet:
         half of that gate, not an unrelated convenience.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = _clean_rematch()
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
         assert result.exit_code == 0
@@ -531,7 +544,10 @@ class TestLinksSet:
         with caplog.at_level(logging.INFO):
             result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
 
-        assert result.exit_code == 0
+        # Exit 1, like `refresh` on the identical RefreshResult.error: the merge
+        # committed but is invisible in core.dim_accounts until an apply lands,
+        # and a script or agent gating on status must not read that as done.
+        assert result.exit_code == 1
         # The match counts are real — decisions were written — so they stay.
         assert "2" in caplog.text
         assert [r for r in caplog.records if r.levelno == logging.WARNING], (
@@ -605,7 +621,7 @@ class TestLinksSet:
         with caplog.at_level(logging.INFO):
             result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         warnings = [
             r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
         ]
@@ -630,6 +646,7 @@ class TestLinksSet:
     ) -> None:
         """--standalone passes target_account_id=None to service."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = _clean_rematch()
 
         result = runner.invoke(app, ["set", "dec001", "--standalone"])
         assert result.exit_code == 0
@@ -682,6 +699,7 @@ class TestLinksSet:
         makes the answer more than a coin flip.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = _clean_rematch()
         mock_preview.return_value = _previewed_merge(transactions=("t1", "t2", "t3"))
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="y\n")
@@ -707,6 +725,7 @@ class TestLinksSet:
         rejection on one surface and not the other.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = _clean_rematch()
 
         result = runner.invoke(app, ["set", "dec001", "--standalone"])
 
@@ -887,6 +906,7 @@ class TestLinksSet:
         inventing one would refuse a write on a comparison never shown.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = _clean_rematch()
         mock_preview.return_value = None
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"])
@@ -1027,6 +1047,7 @@ class TestLinksSet:
         rather than answering a prompt that still cost a read.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = _clean_rematch()
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
 

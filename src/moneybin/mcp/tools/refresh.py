@@ -81,5 +81,8 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         "and identity proposal backfill in canonical order. Pass steps to "
         "select from gsheet, match, transform, categorize, and identity. "
         "Rebuilds core.* and reports.* and may write app categorization or "
-        "identity-review state. No revert path; fix inputs and rerun.",
+        "identity-review state. The match step acts without asking, and folding "
+        "a duplicate can reverse a transfer the user already accepted: "
+        "`transfers_retired` counts those, and system_audit_undo() restores "
+        "them. The rebuild itself has no revert; fix inputs and rerun.",
     )

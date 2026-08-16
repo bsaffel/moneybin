@@ -194,9 +194,16 @@ def _review_matches_noninteractive(
                     cause=RETIRED_SIDES_COLLAPSED,
                     rematch_follow_up=True,
                 )
+                # Part of what the caller asked for did not commit, which
+                # cli.md reads as a failed operation. --confirm-all is the
+                # surface most likely to run unattended, so the status is the
+                # only signal some callers will ever check.
+                if bulk.reversed_by_reconciliation:
+                    raise typer.Exit(1)
                 return
             # Independent ifs (not elif): `--confirm X --reject Y` targets two
             # different matches in one invocation.
+            refused = False
             if confirm_id:
                 outcome = svc.set_status(confirm_id, status="accepted", actor="cli")
                 if outcome.match_status == "accepted":
@@ -210,6 +217,7 @@ def _review_matches_noninteractive(
                         f"{outcome.match_status} — an accepted transfer already "
                         "claims the merged pair, and the earlier decision stands"
                     )
+                    refused = True
                 warn_transfers_retired(
                     outcome.transfers_retired,
                     cause=RETIRED_SIDES_COLLAPSED,
@@ -218,6 +226,11 @@ def _review_matches_noninteractive(
             if reject_id:
                 svc.set_status(reject_id, status="rejected", actor="cli")
                 logger.info(f"✅ Rejected match {reject_id[:8]}...")
+            # After both, for the same reason they are independent ifs: a
+            # refused confirm must not skip the reject the caller also asked
+            # for. Same exit code as `matches set` on the identical refusal.
+            if refused:
+                raise typer.Exit(1)
 
 
 def _print_status(type_: str, output: OutputFormat) -> None:

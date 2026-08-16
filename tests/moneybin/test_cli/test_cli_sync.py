@@ -31,6 +31,7 @@ def _fake_pull_result(
     investment_source_overlap_accounts: list[str] | None = None,
     security_resolution: dict[str, int] | None = None,
     security_resolution_error: str | None = None,
+    transfers_retired: int = 0,
 ) -> PullResult:
     return PullResult(
         job_id="job-xyz",
@@ -56,6 +57,7 @@ def _fake_pull_result(
         investment_source_overlap_accounts=investment_source_overlap_accounts or [],
         security_resolution=security_resolution or {},
         security_resolution_error=security_resolution_error,
+        transfers_retired=transfers_retired,
     )
 
 
@@ -113,6 +115,31 @@ def test_sync_pull_json_output(mock_build: MagicMock) -> None:
     assert data["job_id"] == "job-xyz"
     assert data["transactions_loaded"] == 10
     assert data["institutions"][0]["institution_name"] == "Chase"
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_warns_about_a_retired_transfer_in_both_output_modes(
+    mock_build: MagicMock,
+) -> None:
+    """The reversal is said aloud whichever output mode the caller picked.
+
+    A pull runs the full refresh, so its match step can reverse a transfer the
+    user accepted. The count reaches the JSON body either way, but the count
+    alone does not name `system audit undo` — the warning is what carries the
+    way back, and an agent driving `--output json` is exactly the caller least
+    able to notice a reversal on its own. Gating it on text mode drops the
+    recovery route from the surface, matching `gsheet pull`, which places the
+    same call ahead of both branches for this reason.
+    """
+    for mode in (["sync", "pull"], ["sync", "pull", "--output", "json"]):
+        service = MagicMock()
+        service.pull.return_value = _fake_pull_result(transfers_retired=2)
+        mock_build.return_value.__enter__.return_value = service
+        result = runner.invoke(app, mode)
+        assert result.exit_code == 0, result.output
+        assert "Retired 2 previously accepted transfer(s)" in result.stderr, mode
+        assert "moneybin system audit undo" in result.stderr, mode
 
 
 @pytest.mark.unit

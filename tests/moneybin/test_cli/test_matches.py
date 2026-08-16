@@ -505,7 +505,10 @@ class TestMatchesSet:
                 app, ["set", "tx_stale00001", "--status", "accepted"]
             )
 
-        assert result.exit_code == 0
+        # The requested status is not what committed, so the exit code says so
+        # too: an agent that only checks status would otherwise record an accept
+        # that the reconciliation refused.
+        assert result.exit_code == 1
         assert not any("✅" in m for m in caplog.messages)
         assert any("reversed" in m for m in caplog.messages)
 
