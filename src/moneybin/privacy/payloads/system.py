@@ -511,14 +511,21 @@ class RefreshRunPayload:
     categorization_error: Annotated[str | None, DataClass.DESCRIPTION]
     identity_errors: Annotated[list[str], DataClass.TXN_TYPE]
     self_heal_actions: list[SelfHealActionRow]
-    # Counts of rates gathered, and the pairs whose provider call failed. A
+    # Counts of rates gathered, and the pairs the provider could not answer. A
     # currency pair is CURRENCY (Tier.LOW): it names no account and discloses
     # no amount. `rates_written` is None when the rates step did not run —
     # distinct from 0, which means it ran and had nothing to fetch. It is the
-    # only did-it-run signal: an empty `rate_pairs_failed` is the same list
-    # either way.
+    # only did-it-run signal: an empty pair list is the same list either way.
+    #
+    # The two pair lists are separate because their remedies are: a failed pair
+    # retries itself on the next refresh, while an unsupported one never will,
+    # and only `moneybin fx set` can fill it. Merging them would send a user to
+    # record rates by hand over a dropped connection.
     rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
     rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    rate_pairs_unsupported: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
 

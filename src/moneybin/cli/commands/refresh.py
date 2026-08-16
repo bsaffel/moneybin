@@ -104,10 +104,30 @@ def refresh_command(
         # matters, and a currency pair discloses no amount.
         pairs = ", ".join(result.rate_backfill.pairs_failed)
         logger.warning(f"⚠️  Exchange rates unavailable for {pairs}")
-    has_step_error = (
+    if result.rate_backfill is not None and result.rate_backfill.pairs_unsupported:
+        # Separate line from the one above because the remedy is different, and
+        # the remedy is the whole reason to print it: retrying never fills this.
+        pairs = ", ".join(result.rate_backfill.pairs_unsupported)
+        logger.warning(
+            f"⚠️  No exchange rate series is published for {pairs}. "
+            "Record these rates yourself with `moneybin fx set`."
+        )
+    rates = result.rate_backfill
+    # Retrying is the right advice for everything here except an unsupported
+    # pair, which no number of refreshes will fill — so it suppresses the ✅
+    # without earning the "re-run the failed step" hint below, whose own remedy
+    # already rode the warning above.
+    retryable_error = (
         result.matching_error is not None
         or result.categorization_error is not None
         or bool(result.identity_errors)
+        or (rates is not None and bool(rates.pairs_failed))
+    )
+    # The rates step is best-effort like the three above, so an unfilled pair
+    # suppresses the ✅ for the same reason they do: a success banner printed
+    # directly beneath the warning above contradicts it.
+    has_step_error = retryable_error or (
+        rates is not None and bool(rates.pairs_unsupported)
     )
 
     if output == OutputFormat.JSON:
@@ -128,7 +148,7 @@ def refresh_command(
     # Suppress the step-retry hint when apply also failed: the apply error is
     # the blocker (reported by ❌ below), so "re-run the failed step" would
     # misdirect the agent before it resolves the blocking failure.
-    if has_step_error and result.error is None:
+    if retryable_error and result.error is None:
         logger.info(
             "💡 Re-run the failed step (e.g. `moneybin refresh --step match`) "
             "or run `moneybin system doctor` to diagnose."

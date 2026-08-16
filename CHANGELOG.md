@@ -16,9 +16,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transform, categorize and identity — and caches the reference rates needed to
   convert what you actually hold. It reads the currencies and earliest dates
   off your own transactions, daily balances, investment trades and open
-  positions, then asks the provider for one date range per currency pair. A
-  first run covering 1999 to today is a single request per pair; later runs ask
-  only for the span since the newest rate already stored.
+  positions, then asks the provider for one date range per currency pair — a
+  span covering 1999 to today is a single request.
+
+  It asks for the whole span every time rather than resuming after the newest
+  rate it already holds. Stored rates cannot prove a span was ever fetched:
+  looking up two single dates years apart with `moneybin fx rate` leaves two
+  rows that a resume would read as "everything between these is covered", and
+  because the window only moves forward, those years would never be fetched.
+  The cache discards what it already has, so the cost is one request per
+  currency per refresh and the gap cannot happen.
 
   This is why a report can convert offline. Display conversion prices every row
   at its own date, so a three-year report needs a rate for every date it
@@ -26,11 +33,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the exclusive writer lock behind a command that looks read-only, and would
   fail outright whenever a sync held that lock. Refresh already holds it.
 
-  The step is best-effort and never fails the command: a pair the provider
-  could not answer is warned on stderr by name, listed in `rate_pairs_failed`
-  under `--output json` and in the MCP envelope, and retried on the next refresh —
-  the rest of the cascade keeps its results. A profile with no home currency
-  set fetches nothing. Run it alone with `moneybin refresh --step rates` or
+  The step is best-effort and never fails the command; the rest of the cascade
+  keeps its results either way. A pair the provider could not answer is warned
+  on stderr by name, listed in `rate_pairs_failed` under `--output json` and in
+  the MCP envelope, and retried on the next refresh. A currency the provider
+  does not publish at all is reported separately, as `rate_pairs_unsupported`,
+  because retrying will never fill it — that warning names `moneybin fx set`,
+  which will. A profile with no home currency set fetches nothing. Run it alone with `moneybin refresh --step rates` or
   `refresh_run(steps=["rates"])`. Only currency codes and dates leave the
   machine.
 - **Exchange rates, and your own corrections to them (M1K.2).** `moneybin fx

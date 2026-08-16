@@ -73,9 +73,11 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         "identity proposal backfill, and an exchange-rate gather in canonical "
         "order. Pass steps to select from gsheet, match, transform, "
         "categorize, identity, and rates. The rates step caches the rates this "
-        "profile's own rows imply so later report reads convert offline; a "
-        "pair the provider could not answer appears in rate_pairs_failed and "
-        "is retried next run. Rebuilds core.* and reports.* "
+        "profile's own rows imply so later report reads convert offline. A "
+        "pair whose provider call failed appears in rate_pairs_failed and is "
+        "retried next run; one the provider does not publish at all appears in "
+        "rate_pairs_unsupported and is never retried — only `moneybin fx set` "
+        "fills it. Rebuilds core.* and reports.* "
         "and may write app categorization or identity-review state, plus the "
         "raw exchange-rate cache. No revert path; fix inputs and rerun.",
     )

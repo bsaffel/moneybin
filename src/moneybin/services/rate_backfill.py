@@ -23,10 +23,10 @@ from moneybin.services.currency_service import (
     MAX_BACKWARD_RESOLUTION_DAYS,
     CurrencyService,
     canonical_currency,
+    is_storable_after_rounding,
 )
 from moneybin.tables import (
     DIM_HOLDINGS,
-    EXCHANGE_RATES,
     FCT_BALANCES_DAILY,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
@@ -44,10 +44,17 @@ class RateBackfillResult:
     Those two need different remedies: the first resolves itself on the next
     refresh, the second needs a manual override, and collapsing them would send
     a user to the override table over a dropped connection.
+
+    ``pairs_unsupported`` is that second kind: a currency the provider has never
+    published. It is separate rather than absent because an empty result is
+    otherwise indistinguishable from "nothing new to fetch", so the pair would
+    be re-requested on every refresh forever while the user was never told that
+    only a manual ``moneybin fx set`` can fill it.
     """
 
     rates_written: int
     pairs_failed: tuple[str, ...]
+    pairs_unsupported: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,12 +86,15 @@ def run_rate_backfill(
     the rates step is the only one whose input lives outside the machine, so
     letting a transient network fault propagate would discard a successful run.
 
-    The store is deliberately outside that isolation. Its failures are not
-    per-pair — refresh holds the exclusive writer lock, so a write that raises
-    here means the database itself is unusable, and attributing that to the
-    currency being stored would report a lie. Such a failure aborts the step and
-    surfaces through ``_run_rates_step`` as "the step did not run", which is what
-    actually happened.
+    The store stays outside that isolation, and the two gates above it are what
+    earn that. Its failures are meant to be non-per-pair — refresh holds the
+    exclusive writer lock, so a write that raises here means the database itself
+    is unusable, and attributing that to the currency being stored would report
+    a lie. That only holds if nothing pair-specific can reach it: an out-of-window
+    date or a rate the column cannot hold is the *provider's* fault for one pair,
+    and letting either through would abort the whole loop and report every
+    currency after it as never attempted. Both are filtered first, so a raise
+    from the store means what the sentence above says it means.
     """
     windows = plan_rate_backfill(db, home_currency=home_currency, through=through)
     service = CurrencyService(db, adapter=adapter)
@@ -92,6 +102,7 @@ def run_rate_backfill(
 
     written = 0
     failed: list[str] = []
+    unsupported: list[str] = []
     for window in windows:
         pair = f"{window.from_currency}/{window.to_currency}"
         try:
@@ -106,19 +117,37 @@ def run_rate_backfill(
             failed.append(pair)
             FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="failed").inc()
             continue
+        if not observations and _is_unsupported(adapter, window.from_currency):
+            logger.warning(f"No exchange rate series is published for {pair}")
+            unsupported.append(pair)
+            FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="unsupported").inc()
+            continue
         answered = _within_window(observations, window)
         if len(answered) != len(observations):
             logger.warning(
                 f"Discarded {len(observations) - len(answered)} out-of-window "
                 f"rate(s) for {pair}"
             )
-        written += service.store_observations(answered)
+        storable = tuple(o for o in answered if is_storable_after_rounding(o.rate))
+        if len(storable) != len(answered):
+            # Counted, never quoted: the rejected value is the provider's
+            # answer for a dated pair, and the reason it was rejected is a
+            # property of the column, not information the user can act on.
+            logger.warning(
+                f"Discarded {len(answered) - len(storable)} unstorable "
+                f"rate(s) for {pair}"
+            )
+        written += service.store_observations(storable)
 
     logger.info(
         f"Rate backfill: {len(windows)} pair(s) planned, {written} rate(s) written, "
-        f"{len(failed)} pair(s) failed"
+        f"{len(failed)} pair(s) failed, {len(unsupported)} pair(s) unsupported"
     )
-    return RateBackfillResult(rates_written=written, pairs_failed=tuple(failed))
+    return RateBackfillResult(
+        rates_written=written,
+        pairs_failed=tuple(failed),
+        pairs_unsupported=tuple(unsupported),
+    )
 
 
 def plan_rate_backfill(
@@ -132,21 +161,21 @@ def plan_rate_backfill(
         # malformed code contains.
         logger.warning("Rate backfill skipped: the home currency is not a valid code")
         return ()
-    # Coverage is the span `[covered.oldest, covered.newest]`, and both bounds
-    # are load-bearing. `newest + 1` is what keeps a refresh from re-requesting
-    # a span it already holds; `oldest` is what keeps a *newly implied* earlier
-    # date from being silently skipped — a single row cached by `moneybin fx
-    # rate`, or a statement imported years after the first backfill, leaves the
-    # newest bound at today while the earliest needed date moves backwards, and
-    # a newest-only model would plan a window starting tomorrow and drop it.
-    # Neither bound reads the set of dates *within* the span: a reference series
-    # has legitimate holes on every weekend and holiday, so a date-set model
-    # would treat each one as missing coverage and re-request it forever.
+    # The window is what the profile needs, never what the cache appears to
+    # hold. Stored rows cannot answer the question: `raw.exchange_rates` records
+    # the dates a provider published, not the ranges MoneyBin asked for, so a
+    # span fetched in full and a span bracketed by two rows from separate
+    # `moneybin fx rate` lookups are byte-for-byte identical in it. Reading
+    # `MIN`/`MAX` as coverage would resume from the newest row and — since the
+    # window only ever moves forward — strand every date between those two
+    # lookups permanently, which is the exact gap this module exists to close.
+    # A date-set model fails the other way: a reference series has legitimate
+    # holes on every weekend and holiday, so it would re-request them forever.
     #
-    # An earlier need therefore re-requests the whole span in one call. The
-    # append-only cache ignores the rows it already holds, and the next refresh
-    # is back on the `newest + 1` path, so this costs one extra call per pair
-    # per backwards extension.
+    # So the whole implied span is re-requested each refresh and the append-only
+    # cache discards what it already holds. That costs one provider call per
+    # foreign currency per refresh, spent to make the stranded-span case
+    # impossible rather than merely unlikely.
     rows = db.execute(
         f"""
         WITH dated AS (
@@ -159,43 +188,35 @@ def plan_rate_backfill(
             SELECT currency_code, trade_date
               FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}
             UNION ALL
-            -- A position is a rebuilt snapshot with no date column, so the only
-            -- day it implies is the one being valued. Widening it to the whole
-            -- history would be a guess; narrowing it to nothing would leave a
+            -- A position is valued as of the day being reported, so that is the
+            -- day it implies. `dim_holdings` does carry a `price_date` — the
+            -- close its market value came from, which for a `carried_forward`
+            -- position can be older than today — but conversion keys off the
+            -- date being reported, not the date the price was struck, so the
+            -- rate this needs is today's. Narrowing to nothing would leave a
             -- foreign holding unconvertible in a profile that synced positions
-            -- but no investment ledger.
+            -- but no investment ledger. Whether display conversion should
+            -- instead price each holding at its own `price_date` is open:
+            -- followups.md, "Rate coverage for a stale holding price_date".
             SELECT currency_code, ?
               FROM {DIM_HOLDINGS.full_name}
         ),
         needed AS (
-            -- TRIM as well as UPPER: `canonical_currency` strips before it
-            -- uppercases, so a padded code would otherwise reach `covered`
-            -- under a spelling no stored rate carries and re-request its whole
-            -- span every refresh.
+            -- TRIM as well as UPPER so a padded code groups with its bare
+            -- spelling: `canonical_currency` strips before it uppercases, and
+            -- two spellings of one currency would otherwise plan two windows
+            -- and fetch the same span twice.
             SELECT UPPER(TRIM(currency_code)) AS from_currency,
                    MIN(on_date) AS earliest
               FROM dated
              WHERE currency_code IS NOT NULL AND UPPER(TRIM(currency_code)) <> ?
              GROUP BY 1
-        ),
-        covered AS (
-            SELECT from_currency,
-                   MIN(rate_date) AS oldest,
-                   MAX(rate_date) AS newest
-              FROM {EXCHANGE_RATES.full_name}
-             WHERE to_currency = ?
-             GROUP BY 1
         )
-        SELECT n.from_currency,
-               CASE
-                   WHEN c.newest IS NULL OR n.earliest < c.oldest THEN n.earliest
-                   ELSE GREATEST(n.earliest, c.newest + 1)
-               END
-          FROM needed AS n
-          LEFT JOIN covered AS c USING (from_currency)
-         ORDER BY n.from_currency
+        SELECT from_currency, earliest
+          FROM needed
+         ORDER BY from_currency
         """,  # noqa: S608  # TableRef + parameterized values
-        [through, home, home],
+        [through, home],
     ).fetchall()
     windows: list[RateWindow] = []
     unusable = 0
@@ -210,11 +231,12 @@ def plan_rate_backfill(
             # request would repeat on every refresh.
             unusable += 1
             continue
-        # A pair cached through `through` needs nothing. Dropping it here rather
-        # than letting it out as a backwards range matters because the provider
-        # answers a reversed range 404 — the same status it uses for a currency
-        # it does not publish — so a fully-covered pair would be reported as an
-        # unsupported one, every refresh, forever.
+        # Every row this currency has is dated after the window ends — a
+        # scheduled transaction, or a clock-skewed import. Dropping the pair
+        # rather than letting it out as a backwards range matters because the
+        # provider answers a reversed range 404, the same status it uses for a
+        # currency it does not publish, so the pair would be reported as
+        # unsupported on every refresh forever.
         if row[1] > through:
             continue
         windows.append(
@@ -229,6 +251,26 @@ def plan_rate_backfill(
         logger.warning(f"Rate backfill skipped {unusable} unusable currency code(s)")
         FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="unusable").inc(unusable)
     return tuple(windows)
+
+
+def _is_unsupported(adapter: RateAdapter, from_currency: str) -> bool:
+    """Whether the provider publishes ``from_currency`` at all.
+
+    Only ever asked about an empty result, which is two absences wearing one
+    shape: a currency the provider has never carried, and a range it simply had
+    no rows for. Consulting the currency list is what the adapter protocol
+    documents as the way to tell them apart.
+
+    A provider that cannot answer leaves them indistinguishable, and the
+    fail-closed reading is "not proven unsupported": naming a pair unsupported
+    sends the user to record rates by hand, which is the wrong instruction to
+    give over a dropped connection. The list is memoized per adapter, so this
+    costs at most one extra call per run however many pairs come back empty.
+    """
+    try:
+        return from_currency not in adapter.supported_currencies()
+    except FeedError:
+        return False
 
 
 def _usable_currency(value: str) -> str | None:
@@ -257,12 +299,13 @@ def _within_window(
     the Protocol, not to one provider's response shape, so one guard covers
     every adapter instead of each having to remember its own.
 
-    What it protects is specific. ``raw.exchange_rates`` is append-only and the
-    planner reads its ``MIN``/``MAX`` as the coverage span, so one stray date
-    moves a bound permanently: a future-dated row pushes ``newest`` past
-    ``through`` and the pair is never extended again, while a far-past row drags
-    ``oldest`` back and the branch that reopens a window for newly implied
-    history stops firing.
+    What it protects is specific. ``raw.exchange_rates`` is append-only and its
+    rows are read as a record of what the provider published on a date, so a row
+    landing under a date nobody asked about is wrong for as long as the profile
+    exists — and being append-only, it cannot be corrected in place. Every later
+    conversion on that date reads it. A range endpoint that echoed a wider span
+    than requested, or resolved a bound outward instead of inward, would write
+    exactly that.
 
     The lower bound allows the same publication-day slack a single fetch does —
     a window opening on a closed market is legitimately answered with the last

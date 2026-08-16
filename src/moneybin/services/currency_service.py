@@ -494,7 +494,7 @@ class CurrencyService:
 
         if observation is None:
             raise self._absence(base, quote, on)
-        if not _is_storable_after_rounding(observation.rate):
+        if not is_storable_after_rounding(observation.rate):
             # `resolve_rate` stores this observation outside the `FeedError`
             # handling above, so an unstorable rate reaches DuckDB: one that
             # quantizes to zero trips `CHECK (rate > 0)`, an oversized one
@@ -662,7 +662,7 @@ def _require_storable(rate: Decimal) -> None:
         )
 
 
-def _is_storable_after_rounding(rate: Decimal) -> bool:
+def is_storable_after_rounding(rate: Decimal) -> bool:
     """Whether ``DECIMAL(18,8)`` can hold this rate at all, once quantized.
 
     Deliberately not ``_require_storable``, which the override path uses. That

@@ -120,17 +120,21 @@ def test_a_foreign_currency_yields_one_window_from_its_earliest_row(
     )
 
 
-def test_stored_coverage_moves_the_window_past_what_is_already_cached(
+def test_two_sparse_cached_rows_do_not_hide_the_span_between_them(
     db: Database,
 ) -> None:
-    """Refresh extends coverage forward; it never re-requests a cached span.
+    """Stored rows are not evidence that the span between them was ever fetched.
 
-    Without this the backfill would re-fetch every date it already holds on
-    every refresh — years of provider calls for rows that are already on disk,
-    and the append-only cache would ignore every one of them.
+    This is the whole reason the window is re-requested rather than resumed.
+    ``moneybin fx rate`` caches exactly one date per call, so two ordinary
+    lookups years apart leave two isolated rows. A planner that read the stored
+    ``MIN``/``MAX`` as coverage would treat every date between them as held and
+    resume from the newest — and because the window only ever moves forward,
+    that interval would never be fetched again. The dates in between are exactly
+    the ones a report spanning them has to convert.
     """
-    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
-    _add_stored_rate(db, on=date(2026, 3, 10))
+    _add_transaction(db, on=date(2020, 1, 1), currency="EUR")
+    _add_stored_rate(db, on=date(2020, 1, 1))
     _add_stored_rate(db, on=date(2026, 6, 1))
 
     windows = plan_rate_backfill(db, home_currency="USD", through=_TODAY)
@@ -139,7 +143,7 @@ def test_stored_coverage_moves_the_window_past_what_is_already_cached(
         RateWindow(
             from_currency="EUR",
             to_currency="USD",
-            start=date(2026, 6, 2),
+            start=date(2020, 1, 1),
             end=_TODAY,
         ),
     )
@@ -206,7 +210,7 @@ def _add_investment_transaction(db: Database, *, on: date, currency: str) -> Non
 
 
 def _add_holding(db: Database, *, currency: str) -> None:
-    """Insert one open position. A snapshot — it carries no historical date."""
+    """Insert one open position, valued as of the reporting day."""
     db.execute(
         """
         INSERT INTO core.dim_holdings
@@ -234,15 +238,19 @@ def test_an_investment_trade_is_covered_from_its_trade_date(db: Database) -> Non
     )
 
 
-def test_a_holding_is_covered_for_today_even_with_no_dated_row(db: Database) -> None:
-    """A position carries no date, so it implies exactly one day: the one being valued.
+def test_a_holding_is_covered_for_the_day_it_is_valued(db: Database) -> None:
+    """A position implies the day it is reported on, not the day it was priced.
 
-    ``core.dim_holdings`` is a rebuilt snapshot whose final projection has no
-    date column at all — the acquisition date it computes stays inside a CTE. A
-    profile that synced positions but no investment ledger would otherwise have
-    a market value with no rate to convert it, so net worth would silently omit
-    the position. Today alone is the honest implication: nothing in the snapshot
-    says when it was acquired.
+    ``core.dim_holdings`` does publish a ``price_date`` — the close its market
+    value came from, which on a ``carried_forward`` position can be older than
+    today. It is deliberately not the window: conversion prices the report's own
+    date. A profile that synced positions but no investment ledger would
+    otherwise hold a market value with no rate to convert it, and net worth
+    would silently omit the position.
+
+    Whether display conversion should key off ``price_date`` instead is a real
+    open question, tracked in followups.md; if it changes, this window changes
+    with it.
     """
     _add_holding(db, currency="JPY")
 
@@ -278,35 +286,36 @@ def test_a_row_with_no_currency_contributes_nothing(db: Database) -> None:
     assert plan_rate_backfill(db, home_currency="USD", through=_TODAY) == ()
 
 
-def test_coverage_already_complete_yields_no_window_at_all(db: Database) -> None:
-    """A pair needing nothing is dropped, not sent as a backwards range.
+def test_a_currency_seen_only_in_the_future_is_not_sent_as_a_reversed_range(
+    db: Database,
+) -> None:
+    """A window can only run forwards, so a pair implying none is dropped.
 
-    Once the newest stored rate reaches ``through``, ``newest + 1`` runs past the
-    end of the window. Emitting it would send the provider a reversed range,
-    which Frankfurter answers 404 — indistinguishable from "no such series", so
-    a fully-cached pair would report as an unsupported one on every refresh.
+    A row dated after ``through`` — a scheduled transaction, a clock-skewed
+    import — is the one case where the earliest needed date lands past the end
+    of the window. Emitting it would send the provider a reversed range, which
+    Frankfurter answers 404: the same status it uses for a currency it does not
+    publish, so the pair would be reported unsupported on every refresh forever.
     """
-    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
-    # Both bounds, deliberately: a rate stored only at `through` leaves the
-    # transaction's own date uncovered, and asserting on an empty plan there
-    # would pin the stranded-history bug rather than the drop rule.
-    _add_stored_rate(db, on=date(2026, 3, 10))
-    _add_stored_rate(db, on=_TODAY)
+    _add_transaction(db, on=_TODAY + timedelta(days=30), currency="EUR")
 
     assert plan_rate_backfill(db, home_currency="USD", through=_TODAY) == ()
 
 
-def test_a_gap_inside_the_cached_span_is_not_refetched(db: Database) -> None:
-    """Holidays leave real holes in a reference series; they are not missing coverage.
+def test_a_fully_cached_pair_is_still_requested(db: Database) -> None:
+    """The accepted cost of not trusting stored rows as coverage.
 
-    A date-set model would see every non-trading day as absent and re-request it
-    forever. Coverage is therefore a span bounded by what is stored, not the set
-    of dates within it.
+    Nothing distinguishes a span that was genuinely fetched from one bracketed
+    by two stray rows, so the planner does not try: it re-requests the whole
+    implied span every refresh and lets the append-only cache discard what it
+    already holds. That is one provider call per pair per refresh, deliberately
+    spent to make the sparse-row case above impossible rather than merely
+    unlikely. Asserted explicitly so the cost cannot be reintroduced as a
+    surprise, or optimized away without re-reading why it is here.
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
     _add_stored_rate(db, on=date(2026, 3, 10))
-    # 2026-03-11 and 03-12 deliberately absent — a closed market.
-    _add_stored_rate(db, on=date(2026, 3, 13))
+    _add_stored_rate(db, on=_TODAY)
 
     windows = plan_rate_backfill(db, home_currency="USD", through=_TODAY)
 
@@ -314,20 +323,21 @@ def test_a_gap_inside_the_cached_span_is_not_refetched(db: Database) -> None:
         RateWindow(
             from_currency="EUR",
             to_currency="USD",
-            start=date(2026, 3, 14),
+            start=date(2026, 3, 10),
             end=_TODAY,
         ),
     )
 
 
 def test_a_newly_implied_earlier_date_reopens_the_window(db: Database) -> None:
-    """Coverage has two bounds; only reading the newest one strands history.
+    """History can arrive long after the backfill that would have covered it.
 
-    `moneybin fx rate` caches a single day, so one lookup can leave the newest
-    stored date at today with nothing behind it — and importing a years-old
-    statement moves the earliest *needed* date backwards long after a backfill
-    has run. A newest-only model plans `newest + 1`, which is past `through`,
-    drops the window, and never fetches the missing years at all.
+    Importing a years-old statement moves the earliest *needed* date backwards
+    after rates have already been gathered — a different route to the same
+    stranded history as the sparse rows above, and the one a user hits by
+    importing rather than by looking a rate up. The window is planned from what
+    the profile now needs, so the newly implied years are fetched on the next
+    refresh rather than being permanently behind the stored rows.
     """
     _add_transaction(db, on=date(2019, 4, 2), currency="EUR")
     _add_stored_rate(db, on=_TODAY)
@@ -440,7 +450,37 @@ class _FlakyAdapter(_SpanAdapter):
         self.ranges.append((from_currency, to_currency, start, end))
         if from_currency == "EUR":
             raise RateFeedUnreachableError("rate feed unreachable: ConnectError")
-        return super().fetch_range(from_currency, to_currency, start, end)
+        return (
+            RateObservation(
+                from_currency, to_currency, start, Decimal("1.10"), self.source_type
+            ),
+        )
+
+
+class _UnstorableAdapter(_SpanAdapter):
+    """Prices EUR at a rate the column cannot hold; fine for everything else.
+
+    ``0.000000001`` is chosen over a zero or a negative because it is what a
+    real feed produces — a hyperinflated currency quoted against a strong one
+    genuinely rounds to nothing at ``DECIMAL(18,8)``. It is numeric, positive,
+    and finite, so only the *quantized* check rejects it.
+    """
+
+    def fetch_range(
+        self, from_currency: str, to_currency: str, start: date, end: date
+    ) -> tuple[RateObservation, ...]:
+        self.ranges.append((from_currency, to_currency, start, end))
+        rate = Decimal("0.000000001") if from_currency == "EUR" else Decimal("1.10")
+        return (
+            RateObservation(from_currency, to_currency, start, rate, self.source_type),
+        )
+
+
+class _UnknowingAdapter(_SilentAdapter):
+    """Publishes nothing and cannot say which currencies it supports."""
+
+    def supported_currencies(self) -> frozenset[str]:
+        raise RateFeedUnreachableError("rate feed unreachable: ConnectError")
 
 
 def test_a_planned_window_is_fetched_once_and_stored(db: Database) -> None:
@@ -455,8 +495,15 @@ def test_a_planned_window_is_fetched_once_and_stored(db: Database) -> None:
     assert result.pairs_failed == ()
 
 
-def test_a_pair_the_provider_does_not_publish_is_not_a_failure(db: Database) -> None:
-    """An unpublished pair is an absence to route around, not an error to raise."""
+def test_a_supported_pair_with_nothing_published_is_neither_failed_nor_unsupported(
+    db: Database,
+) -> None:
+    """An empty answer for a pair the provider *does* carry is just an absence.
+
+    The remedy is to wait: the series exists, so the next refresh over a wider
+    span will find rows. Naming it in either list would send the user to fix
+    something that is not broken.
+    """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
     adapter = _SilentAdapter()
 
@@ -464,6 +511,86 @@ def test_a_pair_the_provider_does_not_publish_is_not_a_failure(db: Database) -> 
 
     assert result.rates_written == 0
     assert result.pairs_failed == ()
+    assert result.pairs_unsupported == ()
+
+
+def test_a_pair_the_provider_does_not_publish_is_reported_as_unsupported(
+    db: Database,
+) -> None:
+    """An empty answer means two different things, and only one of them waits.
+
+    A 404 for a currency the provider has never published is permanent: every
+    later refresh sends the same doomed request and reports the same silence.
+    Its remedy is a manual `moneybin fx set`, which the user can only reach by
+    being told the pair needs one — so it is carried out separately from
+    ``pairs_failed``, whose members resolve themselves on the next run.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="JPY")
+    adapter = _SilentAdapter()
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_unsupported == ("JPY/USD",)
+    assert result.pairs_failed == ()
+    assert result.rates_written == 0
+
+
+def test_an_unreadable_currency_list_never_declares_a_pair_unsupported(
+    db: Database,
+) -> None:
+    """Claiming "unsupported" on a dropped connection sends the user to fix nothing.
+
+    ``supported_currencies`` is what separates the permanent absence from the
+    transient one, so when it cannot be read the separation is unavailable —
+    and the fail-closed answer is to claim neither, exactly as the adapter
+    protocol refuses to answer an empty set for the same reason.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="JPY")
+    adapter = _UnknowingAdapter()
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_unsupported == ()
+    assert result.pairs_failed == ()
+
+
+def test_a_rate_the_column_cannot_hold_is_dropped_rather_than_raised(
+    db: Database,
+) -> None:
+    """A malformed provider value must not reach DuckDB from the bulk path.
+
+    ``CurrencyService._fetch`` guards the single-date path with
+    ``is_storable_after_rounding`` because an unstorable rate is not a typed
+    failure downstream: one that quantizes to zero trips ``CHECK (rate > 0)``,
+    an oversized one overflows ``_as_stored``, and a NaN panics the frame
+    builder in native code. The bulk path reaches the same writer, so it needs
+    the same gate.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _UnstorableAdapter()
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.rates_written == 0
+    assert result.pairs_failed == ()
+
+
+def test_one_unstorable_rate_does_not_cost_the_pairs_after_it(db: Database) -> None:
+    """The isolation `FeedError` already gets, for the same reason.
+
+    A rate that raises out of the store aborts the loop over windows, so every
+    currency planned after the offending one is never attempted and the step
+    reports as though it never ran. One malformed value in one provider
+    response must cost exactly its own pair.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    _add_transaction(db, on=date(2026, 4, 1), currency="GBP")
+    adapter = _UnstorableAdapter()
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert [pair[0] for pair in adapter.ranges] == ["EUR", "GBP"]
+    assert result.rates_written == 1, "GBP still got its rate"
 
 
 def test_one_unreachable_pair_does_not_abandon_the_others(db: Database) -> None:
@@ -509,12 +636,12 @@ def test_a_malformed_code_does_not_cost_the_currencies_beside_it(
 
 
 def test_a_rate_dated_after_the_window_is_not_stored(db: Database) -> None:
-    """A date past `end` corrupts the coverage bound that plans the next window.
+    """A rate dated past `end` is a claim about a day nobody asked about.
 
-    `raw.exchange_rates` is append-only and the planner reads its span, so one
-    future-dated row pushes `newest` past `through` permanently: every later
-    refresh plans a window starting after the end date, drops it, and the pair
-    is never extended again.
+    `raw.exchange_rates` records what a provider published on a date, and it is
+    append-only — so a row filed under the wrong day is wrong for the life of
+    the profile and cannot be corrected in place. Every later conversion on that
+    date reads it.
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
     adapter = _DatedAdapter(_TODAY + timedelta(days=1))
@@ -525,11 +652,13 @@ def test_a_rate_dated_after_the_window_is_not_stored(db: Database) -> None:
 
 
 def test_a_rate_dated_far_before_the_window_is_not_stored(db: Database) -> None:
-    """The other coverage bound, corrupted the other way.
+    """The same bound, the other way, past the slack a real answer can use.
 
-    A row dated well before the window drags `oldest` back with it, so the
-    `earliest < oldest` branch that reopens a window for newly implied history
-    stops firing and that history is stranded.
+    Separate from the upper bound because the lower one is not symmetric: a
+    provider legitimately answers a closed day with an earlier one, so the
+    window opens with `MAX_BACKWARD_RESOLUTION_DAYS` of slack. This date is one
+    day beyond it — far enough that no publication-day resolution explains it,
+    which is what makes it a wrong date rather than a resolved one.
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
     adapter = _DatedAdapter(

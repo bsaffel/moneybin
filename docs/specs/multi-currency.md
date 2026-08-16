@@ -430,26 +430,35 @@ Numbered, testable. Tagged by phase.
     imply: for each currency reachable from `core.fct_transactions`,
     `core.fct_balances_daily`, `core.fct_investment_transactions` or
     `core.dim_holdings`, one provider call covering the earliest date that currency
-    appears through today. Coverage is tracked as a span bounded by the oldest
-    and newest stored `rate_date`, never as a set of dates — a reference series
-    has legitimate holes on every weekend and holiday, and a date-set model would
-    re-request each one forever. Both bounds are load-bearing: the newest stops a
-    refresh re-requesting what it holds, and the oldest is what reopens the span
-    when an earlier date becomes implied — a single day cached by `moneybin fx
-    rate`, or a years-old statement imported after the first backfill. Reading
-    only the newest bound would plan a window starting after today and drop it,
-    stranding that history permanently.
+    appears through today.
+
+    The window is derived from what the profile needs, never from what the cache
+    appears to hold. `raw.exchange_rates` records the dates a provider published,
+    not the ranges MoneyBin requested, so a span fetched in full and a span
+    bracketed by two rows from separate `moneybin fx rate` lookups are identical
+    in it. Reading its `MIN`/`MAX` as coverage would resume from the newest row
+    and — because the window only moves forward — strand every date between those
+    two lookups permanently, which is the gap this requirement exists to close. A
+    date-set model fails the other way, since a reference series has legitimate
+    holes on every weekend and holiday that it would re-request forever. So the
+    whole implied span is re-requested each refresh and the append-only cache
+    discards what it already holds: one provider call per foreign currency per
+    refresh, spent to make the stranded-span case impossible rather than unlikely.
 
     Both directions across the provider boundary are bounded, because both carry
     untrusted values. Outbound, `currency_code` is source data — a CSV whose
     columns shifted by one puts an account label in it — so a code that fails the
     ISO-4217 shape gate is skipped rather than sent, satisfying Requirement 11 by
     construction instead of by convention; the skip is counted, never logged by
-    value. Inbound, a response date outside the requested window (allowing
-    Requirement 13's bounded backward resolution at the start bound) is discarded
-    rather than cached, because `raw.exchange_rates` is append-only and this
-    requirement reads its `MIN`/`MAX` as coverage: one stray date moves a bound
-    permanently, and the pair is then either never extended or never reopened.
+    value. Inbound, two filters apply before the append-only write: a response
+    date outside the requested window (allowing Requirement 13's bounded backward
+    resolution at the start bound) is discarded, because a row filed under a date
+    nobody asked about cannot be corrected in place and every later conversion on
+    that date reads it; and a rate the `DECIMAL(18,8)` column cannot hold — one
+    that quantizes to zero, exceeds the magnitude bound, or is not finite — is
+    discarded for the reason Requirement 13's single-date path already rejects it,
+    with the added consequence that raising here would abort the remaining pairs
+    in the same refresh rather than costing only its own.
 
     Placement is a correctness constraint, not a preference. A report read opens
     the database read-only; fetching there would need the exclusive per-profile
@@ -457,8 +466,17 @@ Numbered, testable. Tagged by phase.
     sync held it. Refresh already holds that lock. The step runs after `transform`
     because the pairs and dates are derived from `core.*`, and last because nothing
     downstream consumes it, so a provider outage costs the run nothing that had
-    already succeeded. A pair whose call fails is reported and retried next run;
-    a profile with no home currency set fetches nothing.
+    already succeeded. A profile with no home currency set fetches nothing.
+
+    A pair the step could not fill is reported as one of two kinds, because their
+    remedies are opposites. A *failed* pair — the provider call raised — is
+    retried on the next refresh and needs nothing from the user. An *unsupported*
+    pair — the provider does not publish that currency at all — will answer the
+    same way forever, so it is named separately and points at `moneybin fx set`.
+    Collapsing them would either send a user to record rates by hand over a
+    dropped connection, or leave them waiting for a refresh that can never
+    succeed. The two are told apart by the provider's own currency list; when
+    that list cannot be read, neither kind is claimed.
 
     This does not weaken Requirement 12: a rate that is still missing at read time
     is an explicit surfaced error, never a substitution.

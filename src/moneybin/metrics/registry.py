@@ -346,7 +346,11 @@ FX_RATE_BACKFILL_PAIRS_TOTAL = Counter(
     # from the outage that caused them.
     # 'unusable' is counted at plan time, before a pair exists to call: the
     # currency came out of `core.*` in a shape no provider can address.
-    "Exchange-rate backfill pairs by outcome (planned / failed / unusable)",
+    # 'unsupported' is counted after the call and is the one outcome that never
+    # resolves itself — rising against flat 'planned' means a currency needs a
+    # manual rate, not a retry.
+    "Exchange-rate backfill pairs by outcome "
+    "(planned / failed / unusable / unsupported)",
     ["outcome"],
 )
 

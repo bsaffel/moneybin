@@ -9,6 +9,7 @@ import pytest
 from moneybin.mcp.adapters.refresh_adapters import refresh_envelope
 from moneybin.privacy.payloads.system import RefreshRunPayload
 from moneybin.protocol.envelope import ResponseEnvelope
+from moneybin.services.rate_backfill import RateBackfillResult
 from moneybin.services.refresh import RefreshResult, SelfHealRecord, expand_steps
 from tests.moneybin.test_mcp.schema_assertions import (
     assert_recovery_actions_executable,
@@ -19,6 +20,66 @@ def _payload(env: ResponseEnvelope[Any]) -> RefreshRunPayload:
     """Narrow the envelope payload to the typed RefreshRunPayload refresh returns."""
     assert isinstance(env.data, RefreshRunPayload)
     return env.data
+
+
+@pytest.mark.unit
+def test_rate_fields_are_absent_when_the_step_did_not_run() -> None:
+    """``rates_written`` is the only did-it-run signal the envelope carries.
+
+    ``None`` and ``0`` mean different things — the step was skipped versus it
+    ran and found nothing to fetch — and neither pair list can tell them apart,
+    since both are empty either way.
+    """
+    env = refresh_envelope(
+        RefreshResult(applied=True, duration_seconds=1.0), requested=expand_steps(None)
+    )
+
+    assert _payload(env).rates_written is None
+    assert _payload(env).rate_pairs_failed == []
+    assert _payload(env).rate_pairs_unsupported == []
+
+
+@pytest.mark.unit
+def test_rate_backfill_counts_and_pairs_reach_the_envelope() -> None:
+    """The two pair lists stay separate all the way to the agent.
+
+    An agent reading this envelope decides what to tell the user, and the two
+    lists carry opposite instructions: wait for the next refresh, or record the
+    rate by hand. Collapsing them here would erase that distinction after the
+    service went to the trouble of making it.
+    """
+    env = refresh_envelope(
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            rate_backfill=RateBackfillResult(
+                rates_written=7,
+                pairs_failed=("EUR/USD",),
+                pairs_unsupported=("JPY/USD",),
+            ),
+        ),
+        requested=expand_steps(None),
+    )
+
+    assert _payload(env).rates_written == 7
+    assert _payload(env).rate_pairs_failed == ["EUR/USD"]
+    assert _payload(env).rate_pairs_unsupported == ["JPY/USD"]
+
+
+@pytest.mark.unit
+def test_a_rates_step_that_found_nothing_is_not_a_skipped_step() -> None:
+    """Zero written with no failures still proves the step ran."""
+    env = refresh_envelope(
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            rate_backfill=RateBackfillResult(rates_written=0, pairs_failed=()),
+        ),
+        requested=expand_steps(None),
+    )
+
+    assert _payload(env).rates_written == 0
+    assert _payload(env).rate_pairs_failed == []
 
 
 @pytest.mark.unit
