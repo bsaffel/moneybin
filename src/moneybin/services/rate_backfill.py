@@ -66,15 +66,16 @@ class RateBackfillResult:
 
     ``pairs_discarded`` names pairs the provider *answered* where the answer did
     not cover the window — a rate thrown away before the store, dated outside
-    the window or too small for the column to hold, or a series that simply
-    begins after the window does. That last kind is a currency the provider
-    started publishing partway through the profile's history: it drops nothing,
-    so only comparing the answer against the requested start finds it. It exists
-    for the reason above read once more: a pair whose every rate was dropped
-    reports zero written and empty lists, which is exactly what a profile
-    needing nothing reports. Membership is not exclusive with the other two and
-    does not mean the pair is empty — some of its dates may have stored fine, so
-    it says coverage *may* have holes.
+    the window or too small for the column to hold, or a series that begins
+    after the window does or stops before it does. Those last two are a currency
+    the provider only started carrying partway through the profile's history,
+    and one that stopped being carried: both drop nothing, so only comparing the
+    answer's own span against the requested one finds them. It exists for the
+    reason above read once more: a pair whose every rate was dropped reports
+    zero written and empty lists, which is exactly what a profile needing
+    nothing reports. Membership is not exclusive with the other two and does not
+    mean the pair is empty — some of its dates may have stored fine, so it says
+    coverage *may* have holes.
     """
 
     rates_written: int
@@ -145,7 +146,20 @@ def run_rate_backfill(
         pair = f"{window.from_currency}/{window.to_currency}"
         try:
             observations = adapter.fetch_range(
-                window.from_currency, window.to_currency, window.start, window.end
+                window.from_currency,
+                window.to_currency,
+                # Asked for earlier than the window opens, by exactly the span
+                # `_within_window` already accepts. A profile whose earliest row
+                # falls on a closed market opens its window on a day no provider
+                # publishes, and nothing resolves that day forward: a request
+                # starting on it could not come back covering it, so the check
+                # below would name the pair on every refresh with nothing the
+                # user could do. Reaching back fetches the last publication day
+                # before the window instead — the row `resolve_rate`'s hop then
+                # reads — so the opening date converts offline rather than
+                # merely being reported as short.
+                window.start - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS),
+                window.end,
             )
         except FeedError:
             # Only the pair is named. The dates are deliberately absent: this
@@ -178,12 +192,18 @@ def run_rate_backfill(
                 f"rate(s) for {pair}"
             )
         short_at_the_start = not _covers_window_start(storable, window)
+        # Only the start bound reports an empty answer, so the two lines below
+        # cannot both fire on one: a pair the provider published nothing for is
+        # short at one end, not at both.
+        short_at_the_end = bool(storable) and not _covers_window_end(storable, window)
         if short_at_the_start:
             # Only the pair is named, for the reason the FeedError branch above
             # gives: this line reaches the durable log and an FX date is
             # classified TXN_DATE.
             logger.warning(f"Exchange rates for {pair} begin after the window does")
-        if short_at_the_start or len(storable) != len(observations):
+        if short_at_the_end:
+            logger.warning(f"Exchange rates for {pair} stop before the window does")
+        if short_at_the_start or short_at_the_end or len(storable) != len(observations):
             discarded.append(pair)
             FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="discarded").inc()
         written += service.store_observations(storable)
@@ -271,6 +291,7 @@ def plan_rate_backfill(
     ).fetchall()
     windows: list[RateWindow] = []
     unusable = 0
+    future_dated = 0
     for row in rows:
         from_currency = _usable_currency(str(row[0]))
         if from_currency is None:
@@ -289,6 +310,7 @@ def plan_rate_backfill(
         # currency it does not publish, so the pair would be reported as
         # unsupported on every refresh forever.
         if row[1] > through:
+            future_dated += 1
             continue
         windows.append(
             RateWindow(
@@ -301,6 +323,17 @@ def plan_rate_backfill(
     if unusable:
         logger.warning(f"Rate backfill skipped {unusable} unusable currency code(s)")
         FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="unusable").inc(unusable)
+    if future_dated:
+        # Counted for the same reason as the skip above: both drop a currency
+        # before it becomes a pair, so a profile whose only foreign rows sit
+        # past `through` plans nothing and reports exactly what a profile
+        # needing no rates at all reports. Only the count rides the line — the
+        # code is untrusted source data and its date is classified TXN_DATE.
+        logger.warning(
+            f"Rate backfill skipped {future_dated} currency code(s) "
+            "dated after the window"
+        )
+        FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="future_dated").inc(future_dated)
     return tuple(windows)
 
 
@@ -340,7 +373,9 @@ def _within_window(
 
     The lower bound allows the same publication-day slack a single fetch does —
     a window opening on a closed market is legitimately answered with the last
-    trading day before it.
+    trading day before it — and the request deliberately reaches that far back
+    rather than waiting to be offered it, so this bound is the span asked for
+    rather than a tolerance around a narrower one.
     """
     earliest = window.start - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
     return tuple(
@@ -361,13 +396,46 @@ def _covers_window_start(stored: Sequence[RateObservation], window: RateWindow) 
     either — it is derived from rows that already exist, so it only ever opens
     earlier when *earlier data* is imported, never when time passes.
 
-    The same publication slack applies, read forward instead of back: a window
-    opening on a closed market is legitimately first answered days later, so a
-    series starting within ``MAX_BACKWARD_RESOLUTION_DAYS`` of the request is
-    covered. An empty set never is — zero coverage is the total case of the
+    The slack the lower bound allows does not run in this direction, and reading
+    it forward would be wrong: nothing prices a date from a later observation.
+    ``CurrencyService.resolve_rate`` refuses one dated after the day asked about
+    outright, and its cache path tries only that exact day and the last
+    publication day *before* it. A series whose first rate lands even a few days
+    into the window therefore leaves every date ahead of it needing a live fetch,
+    and offline it fails outright — which is the shortfall this reports, so the
+    bound is the window's own opening day. The request reaching back over the
+    publication slack is what keeps that strictness from firing on a window that
+    opens on a closed market; ``run_rate_backfill`` explains why it does.
+
+    An empty set never covers anything — zero coverage is the total case of the
     same shortfall, not a separate one.
     """
     if not stored:
         return False
-    latest_covered_start = window.start + timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
-    return min(observation.rate_date for observation in stored) <= latest_covered_start
+    return min(observation.rate_date for observation in stored) <= window.start
+
+
+def _covers_window_end(stored: Sequence[RateObservation], window: RateWindow) -> bool:
+    """Whether the rates being kept reach forward to near the day ``window`` closes.
+
+    The mirror of the bound above, and needed for the same reason: a series that
+    stopped being published — or a stale proxy replaying an old copy of the
+    range — sends only rates that are in range and storable, so nothing is
+    dropped and no length comparison notices the missing tail.
+
+    Not exact, though, and the asymmetry is deliberate rather than an oversight
+    to tidy up later. A missing *leading* date is permanent: the window opens at
+    the profile's earliest row, so it reopens only when older data is imported.
+    A missing *trailing* date is routine and self-healing: the provider has no
+    rate for a weekend and often none for today until the afternoon, while the
+    window's end moves forward on its own, so the next refresh collects it. An
+    exact bound here would warn on every healthy profile. Allowing the span a
+    backward resolution may cross catches a series that has genuinely stopped
+    and stays quiet through an ordinary publication lag.
+
+    An empty set is left to the bound above rather than reported twice.
+    """
+    if not stored:
+        return False
+    earliest_covered_end = window.end - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
+    return max(observation.rate_date for observation in stored) >= earliest_covered_end

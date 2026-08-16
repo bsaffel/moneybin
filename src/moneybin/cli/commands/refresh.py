@@ -133,8 +133,9 @@ def refresh_command(
         # Hedged, unlike the two above: this pair may have stored most of its
         # span and lost a day at one end, so it says coverage may be short
         # rather than that the pair is missing. Worded around the shortfall
-        # rather than around a dropped rate, because one of the three causes —
-        # a series that starts after the window — never sent one to drop.
+        # rather than around a dropped rate, because the causes that bound the
+        # answer's span — a series starting after the window or stopping before
+        # it — never sent one to drop.
         pairs = ", ".join(result.rate_backfill.pairs_discarded)
         logger.warning(
             f"⚠️  Exchange rate coverage is short for {pairs}. "

@@ -14,6 +14,7 @@ missing coverage and re-fetched forever.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -303,6 +304,24 @@ def test_a_currency_seen_only_in_the_future_is_not_sent_as_a_reversed_range(
     assert plan_rate_backfill(db, home_currency="USD", through=_TODAY) == ()
 
 
+def test_a_future_dated_currency_is_counted_rather_than_skipped_in_silence(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The skip above leaves the trace its sibling three lines up leaves.
+
+    Both drop a currency before it ever becomes a pair, so a profile whose only
+    foreign rows sit past ``through`` plans nothing and reports exactly what a
+    profile needing no rates at all reports. A count is all that can be said:
+    the code is untrusted source data and the date it carries is ``TXN_DATE``.
+    """
+    _add_transaction(db, on=_TODAY + timedelta(days=30), currency="EUR")
+
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        plan_rate_backfill(db, home_currency="USD", through=_TODAY)
+
+    assert "skipped 1 currency code(s) dated after the window" in caplog.text
+
+
 def test_a_fully_cached_pair_is_still_requested(db: Database) -> None:
     """The accepted cost of not trusting stored rows as coverage.
 
@@ -485,13 +504,25 @@ class _UnknowingAdapter(_SilentAdapter):
 
 
 def test_a_planned_window_is_fetched_once_and_stored(db: Database) -> None:
-    """One call per pair, over the whole span — never one call per day."""
+    """One call per pair, over the whole span — never one call per day.
+
+    The span opens ``MAX_BACKWARD_RESOLUTION_DAYS`` before the window it covers;
+    ``test_a_window_opening_on_a_closed_market_is_covered_from_before_it`` is
+    where that reach is explained.
+    """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
     adapter = _SpanAdapter()
 
     result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
 
-    assert adapter.ranges == [("EUR", "USD", date(2026, 3, 10), _TODAY)]
+    assert adapter.ranges == [
+        (
+            "EUR",
+            "USD",
+            date(2026, 3, 10) - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS),
+            _TODAY,
+        )
+    ]
     assert result.rates_written == 1
     assert result.pairs_failed == ()
 
@@ -684,40 +715,118 @@ def test_a_series_that_begins_after_the_window_reports_its_leading_gap(
     assert result.pairs_unsupported == ()
 
 
-def test_a_series_starting_within_the_publication_slack_is_not_a_leading_gap(
+def test_a_series_that_starts_days_into_the_window_is_a_leading_gap_too(
     db: Database,
 ) -> None:
-    """The negative control on the bound above: a closed market is not a gap.
+    """The slack the lower window bound allows does not run in this direction.
 
-    A window opening on a holiday stretch is legitimately first answered days
-    later, so the check allows the same publication slack the single-date path
-    resolves across. Without this bound a normal refresh over a quiet opening
-    would warn on a pair that is completely covered.
+    Nothing resolves a date forward. ``CurrencyService.resolve_rate`` refuses an
+    observation dated after the day asked about outright, and its cache path
+    tries only that exact day and the last publication day *before* it. A series
+    whose first rate lands even a few days into the window therefore leaves
+    every transaction ahead of it unpriceable offline, however short the gap —
+    so the check asks for a rate on or before the day the window opens, not one
+    within reach of it.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _DatedAdapter(date(2026, 3, 10) + timedelta(days=3))
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_discarded == ("EUR/USD",)
+    assert result.rates_written == 1, "the dates it did answer are still cached"
+
+
+def test_a_window_opening_on_a_closed_market_is_covered_from_before_it(
+    db: Database,
+) -> None:
+    """The negative control on the bound above, and why the request reaches back.
+
+    A profile whose earliest row falls on a weekend opens its window on a day
+    the provider never publishes. A request starting exactly there could not
+    come back covering it, so the strict bound above would warn on every refresh
+    forever with nothing the user could do. The request opens
+    ``MAX_BACKWARD_RESOLUTION_DAYS`` earlier instead — exactly the span
+    ``_within_window`` already accepts — so the last publication day before the
+    window is fetched and stored, which is the row ``resolve_rate``'s hop back
+    to the last publication day then reads.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _DatedAdapter(date(2026, 3, 10) - timedelta(days=2), _TODAY)
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert adapter.ranges == [
+        (
+            "EUR",
+            "USD",
+            date(2026, 3, 10) - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS),
+            _TODAY,
+        )
+    ]
+    assert result.pairs_discarded == ()
+
+
+def test_a_series_that_stops_short_of_the_window_end_reports_its_trailing_gap(
+    db: Database,
+) -> None:
+    """A series that ceased publication leaves the recent dates uncached.
+
+    The mirror of the leading gap, and invisible for the same reason: every rate
+    the provider sent is in range and storable, so nothing is dropped and no
+    length comparison notices. A currency that stopped being published — or a
+    stale proxy replaying an old copy of the range — therefore reports exactly
+    like a pair stored in full, while the newest dates a report touches have no
+    rate at all.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _DatedAdapter(date(2026, 3, 10) - timedelta(days=1), date(2026, 3, 15))
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_discarded == ("EUR/USD",)
+    assert result.rates_written == 2, "the dates it did answer are still cached"
+
+
+def test_a_series_answered_up_to_the_publication_lag_is_not_a_trailing_gap(
+    db: Database,
+) -> None:
+    """The negative control on the bound above: an unpublished today is routine.
+
+    Unlike the opening edge, the closing one is deliberately not exact. The
+    provider has no rate for a weekend and often none for today until the
+    afternoon, so a window ending on the day it is run is normally answered a
+    little short — and the next refresh collects the rest, because the window's
+    end moves forward on its own. Firing there would warn on every healthy
+    profile, so the bound allows the same span a backward resolution may cross
+    and catches only a series that has genuinely stopped.
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
     adapter = _DatedAdapter(
-        date(2026, 3, 10) + timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
+        date(2026, 3, 10) - timedelta(days=1),
+        _TODAY - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS),
     )
 
     result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
 
     assert result.pairs_discarded == ()
-    assert result.rates_written == 1
+    assert result.rates_written == 2
 
 
 def test_a_pair_stored_in_full_is_not_reported_as_discarded(db: Database) -> None:
     """The negative control: the ordinary path must stay quiet.
 
     A list that named every pair would carry no information, and the CLI
-    warning it drives would print on every healthy refresh.
+    warning it drives would print on every healthy refresh. Both edges are
+    answered here, so neither coverage bound can be what keeps it quiet.
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
-    adapter = _SpanAdapter()
+    adapter = _DatedAdapter(date(2026, 3, 10), _TODAY)
 
     result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
 
     assert result.pairs_discarded == ()
-    assert result.rates_written == 1
+    assert result.rates_written == 2
 
 
 def test_one_unstorable_rate_does_not_cost_the_pairs_after_it(db: Database) -> None:
@@ -776,7 +885,14 @@ def test_a_malformed_code_does_not_cost_the_currencies_beside_it(
 
     result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
 
-    assert adapter.ranges == [("EUR", "USD", date(2026, 3, 10), _TODAY)]
+    assert adapter.ranges == [
+        (
+            "EUR",
+            "USD",
+            date(2026, 3, 10) - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS),
+            _TODAY,
+        )
+    ]
     assert result.rates_written == 1
 
 

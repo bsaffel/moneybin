@@ -355,17 +355,19 @@ FX_RATE_BACKFILL_PAIRS_TOTAL = Counter(
     # 'failed' rising against flat 'planned' means every refresh is now leaving
     # conversion gaps that a report will surface as a hard error later, far
     # from the outage that caused them.
-    # 'unusable' is counted at plan time, before a pair exists to call: the
-    # currency came out of `core.*` in a shape no provider can address.
+    # 'unusable' and 'future_dated' are counted at plan time, before a pair
+    # exists to call: the currency came out of `core.*` in a shape no provider
+    # can address, or every row carrying it is dated past the window's end.
     # 'unsupported' is counted after the call and is the one outcome that never
     # resolves itself — rising against flat 'planned' means a currency needs a
     # manual rate, not a retry.
     # 'discarded' is the only outcome that can coincide with a successful write:
     # the provider answered and the answer did not cover the window — part of it
-    # was dropped, or the series began after the window did — so it rises on a
-    # pair whose coverage is merely incomplete rather than absent.
+    # was dropped, or the series began after the window did or stopped before it
+    # did — so it rises on a pair whose coverage is merely incomplete rather
+    # than absent.
     "Exchange-rate backfill pairs by outcome "
-    "(planned / failed / unusable / unsupported / discarded)",
+    "(planned / failed / unusable / future_dated / unsupported / discarded)",
     ["outcome"],
 )
 

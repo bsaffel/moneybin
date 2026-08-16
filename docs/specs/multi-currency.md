@@ -483,13 +483,27 @@ Numbered, testable. Tagged by phase.
     A *discarded* pair is the third: the provider answered, and the answer did
     not cover the window. Either MoneyBin threw part of it away — the rate fell
     outside the requested range, or the rate column could not hold it — or the
-    series began after the window did, which is a currency the provider only
-    started publishing partway through the profile's history. That last kind
-    drops nothing, so it is found only by comparing the earliest rate kept
-    against the requested start, allowing the same publication slack
-    Requirement 13 resolves across; an empty answer for a published pair is its
-    total case. Waiting does not fill it, because the window opens at the
-    profile's earliest row and moves back only when earlier data is imported.
+    answer's own span fell short of the requested one at either end. Those last
+    two are a currency the provider only started carrying partway through the
+    profile's history, and one it stopped carrying; both drop nothing, so they
+    are found only by comparing the earliest and latest rates kept against the
+    requested bounds. An empty answer for a published pair is the total case of
+    the first.
+
+    The two bounds are deliberately not equally strict. The opening one is
+    exact, because nothing prices a date from a later observation —
+    Requirement 13 resolves backward only — so a series starting even a few days
+    in leaves those dates needing a live fetch, and waiting cannot fill the gap:
+    the window opens at the profile's earliest row and moves back only when
+    earlier data is imported. The publication slack lives in the *request*
+    instead, which opens `MAX_BACKWARD_RESOLUTION_DAYS` before the window does,
+    so a profile whose earliest row falls on a closed market is covered by the
+    last publication day before it rather than reported short forever. The
+    closing bound allows that same span, because a missing recent date is
+    routine and self-healing — no rate is published on a weekend, often none for
+    today until the afternoon, and the window's end moves forward on its own —
+    so an exact bound there would warn on every healthy profile instead of on a
+    series that has genuinely stopped.
     It is not exclusive with the other two and does not mean the pair is empty,
     so it reports that coverage may be short on some dates rather than naming a
     remedy. Without it, a pair whose every rate was discarded is
@@ -498,6 +512,18 @@ Numbered, testable. Tagged by phase.
 
     This does not weaken Requirement 12: a rate that is still missing at read time
     is an explicit surfaced error, never a substitution.
+
+    **Open — coverage is checked at the answer's edges, not through its
+    middle.** Both bounds above ask how far the answer reaches. Neither asks
+    whether what lies between is whole, and an interior hole is invisible from
+    either end: a response that omits a single weekday inside its span passes
+    every check and is reported as fully covered. That includes a dated entry
+    the provider returns without the requested quote, which the adapter drops as
+    absent. Nothing files a rate under a wrong date, so Requirement 12 holds
+    either way; what is missing is the warning. Closing it means verifying
+    stored coverage against the dates the profile actually needs rather than
+    against the answer's bounds — the span model the hole below already calls
+    for.
 
     **Open for the conversion layer — the weekday-holiday hole.** A complete
     backfill still leaves no row on a weekday the market was closed; verified

@@ -49,11 +49,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   does not carry is caught too. A pair whose answer was partly unusable —
   dated outside the window, or too small for the rate column — is listed as
   `rate_pairs_discarded`, which says coverage may be short on some dates rather
-  than that the pair is missing. A series that begins later than asked lands
-  there too: a currency the provider only started publishing partway through
-  your history answers every date it has and none of the ones before, which
-  nothing else would mark. Waiting does not fill it — the window opens at your
-  earliest row, so it moves back only when earlier data is imported.
+  than that the pair is missing. A series that does not span what was asked for
+  lands there too: a currency the provider only started publishing partway
+  through your history answers every date it has and none of the ones before,
+  and one that stopped being published answers nothing recent. Neither drops a
+  rate, so nothing else would mark them, and neither is filled by waiting — the
+  window opens at your earliest row, so it moves back only when earlier data is
+  imported, and a series that has stopped does not resume because you refreshed
+  again. An ordinary unpublished today is not this: the check allows two weeks,
+  so it fires on a series that has stopped, not on one that lags.
 
   A profile with no home currency set fetches nothing. Run it alone with
   `moneybin refresh --step rates` or `refresh_run(steps=["rates"])`. A
