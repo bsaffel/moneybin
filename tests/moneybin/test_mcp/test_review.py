@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import duckdb
 import pytest
+from prometheus_client import REGISTRY
 
 from moneybin import error_codes
 from moneybin.database import get_database
@@ -35,6 +36,7 @@ from moneybin.mcp.write_contracts import (
     OrdinaryReviewDecisionRequest,
     SecurityLinkDecisionRequest,
 )
+from moneybin.metrics.registry import MERCHANT_EXEMPLAR_COUNT
 from moneybin.privacy.payloads.reviews import IdentityLinksDecidePayload
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.repositories.categorization_decisions_repo import (
@@ -979,35 +981,214 @@ def _seed_ordinary_decisions() -> tuple[str, str, str, str]:
     )
 
 
-async def test_ordinary_decisions_route_by_kind_and_share_operation() -> None:
-    _transaction_id, categorization_id, match_id, category = _seed_ordinary_decisions()
+def _seed_alternating_ordinary_decisions() -> dict[str, str]:
+    """Seed two categorization rows and two match rows for ordered mixed batches."""
+    first_transaction_id, first_categorization_id, reject_match_id, category = (
+        _seed_ordinary_decisions()
+    )
+    second_transaction_id = "TX_REVIEW_DECIDE_SECOND"
+    keep_match_id = "MATCH_REVIEW_KEEP"
+    stale_match_id = "MATCH_REVIEW_STALE"
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                transaction_type, is_pending, currency_code, source_type,
+                source_extracted_at, loaded_at, transaction_year,
+                transaction_month, transaction_day, transaction_day_of_week,
+                transaction_year_month, transaction_year_quarter
+            ) VALUES (
+                ?, 'ACC001', '2026-07-19', -13.00, 13.00, 'expense',
+                'Task 3 second review decision', 'DEBIT', false, 'USD', 'ofx',
+                '2026-07-19', CURRENT_TIMESTAMP, 2026, 7, 19, 7,
+                '2026-07', '2026-Q3'
+            )
+            """,  # noqa: S608  # test fixture data
+            [second_transaction_id],
+        )
+        repo = MatchDecisionsRepo(db)
+        repo.insert(
+            match_id=keep_match_id,
+            source_transaction_id_a="ordinary-keep-a",
+            source_type_a="ofx",
+            source_origin_a="fixture-a",
+            source_transaction_id_b="ordinary-keep-b",
+            source_type_b="ofx",
+            source_origin_b="fixture-b",
+            account_id="checking",
+            account_id_b="brokerage",
+            confidence_score=0.9,
+            match_signals={"reason": "standing transfer"},
+            match_type="transfer",
+            match_status="accepted",
+            decided_by="user",
+            actor="test",
+        )
+        repo.insert(
+            match_id="MATCH_REVIEW_EDGE",
+            source_transaction_id_a="ordinary-keep-a",
+            source_type_a="ofx",
+            source_origin_a="fixture-a",
+            source_transaction_id_b="ordinary-stale-a",
+            source_type_b="csv",
+            source_origin_b="fixture-c",
+            account_id="checking",
+            confidence_score=0.9,
+            match_signals={"reason": "accepted dedup edge"},
+            match_type="dedup",
+            match_status="accepted",
+            decided_by="user",
+            actor="test",
+        )
+        repo.insert(
+            match_id=stale_match_id,
+            source_transaction_id_a="ordinary-stale-a",
+            source_type_a="csv",
+            source_origin_a="fixture-c",
+            source_transaction_id_b="ordinary-stale-b",
+            source_type_b="ofx",
+            source_origin_b="fixture-d",
+            account_id="checking",
+            account_id_b="savings",
+            confidence_score=0.9,
+            match_signals={"reason": "stale transfer"},
+            match_type="transfer",
+            match_status="pending",
+            decided_by="auto",
+            actor="test",
+        )
+    return {
+        "first_transaction_id": first_transaction_id,
+        "first_categorization_id": first_categorization_id,
+        "reject_match_id": reject_match_id,
+        "second_transaction_id": second_transaction_id,
+        "second_categorization_id": categorization_decision_id(second_transaction_id),
+        "stale_match_id": stale_match_id,
+        "category": category,
+    }
+
+
+def _retirement_metric() -> float:
+    return (
+        REGISTRY.get_sample_value(
+            "moneybin_transfer_retirements_total",
+            {"cause": "dedup_component"},
+        )
+        or 0.0
+    )
+
+
+def _merchant_exemplar_metrics() -> dict[str, float]:
+    return {
+        str(sample.labels["merchant_id"]): sample.value
+        for family in MERCHANT_EXEMPLAR_COUNT.collect()
+        for sample in family.samples
+        if sample.name == "moneybin_merchant_exemplar_count"
+    }
+
+
+async def test_ordinary_decisions_preserve_mixed_order_and_final_effects() -> None:
+    seeded = _seed_alternating_ordinary_decisions()
 
     response = await reviews_decide_coarse(
         decisions=[
             CategorizationDecisionRequest(
                 kind="categorization",
-                decision_id=categorization_id,
+                decision_id=seeded["first_categorization_id"],
                 decision="accept",
-                category=category,
+                category=seeded["category"],
             ),
             MatchDecisionRequest(
                 kind="match",
-                decision_id=match_id,
+                decision_id=seeded["reject_match_id"],
                 decision="reject",
+            ),
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=seeded["second_categorization_id"],
+                decision="accept",
+                category=seeded["category"],
+            ),
+            MatchDecisionRequest(
+                kind="match",
+                decision_id=seeded["stale_match_id"],
+                decision="accept",
             ),
         ]
     )
 
-    assert [item.kind for item in response.data.results] == [
-        "categorization",
-        "match",
+    assert response.error is None
+    assert [
+        (item.kind, item.decision_id, item.status, item.changed)
+        for item in response.data.results
+    ] == [
+        ("categorization", seeded["first_categorization_id"], "accepted", True),
+        ("match", seeded["reject_match_id"], "rejected", True),
+        ("categorization", seeded["second_categorization_id"], "accepted", True),
+        ("match", seeded["stale_match_id"], "reversed", True),
     ]
-    assert response.data.applied_count == 2
+    assert response.data.applied_count == 4
+    assert response.data.transfers_retired == 0
     assert response.data.operation_id
     assert all(
         item.operation_id == response.data.operation_id
         for item in response.data.results
     )
+    with get_database(read_only=True) as db:
+        assert db.execute(
+            """
+            SELECT decision_id, status
+            FROM app.categorization_decisions
+            WHERE decision_id IN (?, ?)
+            ORDER BY decision_id
+            """,
+            [
+                seeded["first_categorization_id"],
+                seeded["second_categorization_id"],
+            ],
+        ).fetchall() == sorted([
+            (seeded["first_categorization_id"], "accepted"),
+            (seeded["second_categorization_id"], "accepted"),
+        ])
+        assert db.execute(
+            """
+            SELECT match_id, match_status
+            FROM app.match_decisions
+            WHERE match_id IN (?, ?)
+            ORDER BY match_id
+            """,
+            [seeded["reject_match_id"], seeded["stale_match_id"]],
+        ).fetchall() == sorted([
+            (seeded["reject_match_id"], "rejected"),
+            (seeded["stale_match_id"], "reversed"),
+        ])
+        audits = db.execute(
+            """
+            SELECT action, target_id
+            FROM app.audit_log
+            WHERE actor = 'mcp'
+            ORDER BY rowid
+            """
+        ).fetchall()
+    assert audits == [
+        ("categorization_decision.insert", seeded["first_categorization_id"]),
+        ("categorization_decision.insert", seeded["second_categorization_id"]),
+        ("category.set", seeded["first_transaction_id"]),
+        (
+            "categorization_decision.update_status",
+            seeded["first_categorization_id"],
+        ),
+        ("match_decision.update_status", seeded["reject_match_id"]),
+        ("category.set", seeded["second_transaction_id"]),
+        (
+            "categorization_decision.update_status",
+            seeded["second_categorization_id"],
+        ),
+        ("match_decision.update_status", seeded["stale_match_id"]),
+        ("match_decision.reverse", seeded["stale_match_id"]),
+    ]
 
 
 async def test_a_batch_match_accept_reports_that_it_reconciled() -> None:
@@ -1382,59 +1563,49 @@ async def test_ordinary_batch_coalesces_shared_new_merchant_in_input_order() -> 
     ]
 
 
-def test_ordinary_late_failure_rolls_back_state_audit_and_observability(
+def test_ordinary_outer_commit_failure_rolls_back_state_and_committed_metrics(
+    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    transaction_id, categorization_id, match_id, category = _seed_ordinary_decisions()
+    seeded = _seed_alternating_ordinary_decisions()
     requests: list[OrdinaryReviewDecisionRequest] = [
         CategorizationDecisionRequest(
             kind="categorization",
-            decision_id=categorization_id,
+            decision_id=seeded["first_categorization_id"],
             decision="accept",
-            category=category,
+            category=seeded["category"],
             canonical_merchant_name="Rolled Back Review Merchant",
         ),
         MatchDecisionRequest(
             kind="match",
-            decision_id=match_id,
-            decision="reject",
+            decision_id=seeded["stale_match_id"],
+            decision="accept",
         ),
     ]
-    with get_database(read_only=True) as db:
-        audit_before_row = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
-    assert audit_before_row is not None
-    audit_before = int(audit_before_row[0])
+    retirement_before = _retirement_metric()
+    merchant_metrics_before = _merchant_exemplar_metrics()
     caplog.clear()
 
-    with (
-        get_database(read_only=False) as db,
-        patch.object(
-            MatchDecisionsRepo,
-            "update_status",
-            side_effect=RuntimeError("late match failure"),
-        ),
-        patch(
-            "moneybin.services.categorization.applier.MERCHANT_EXEMPLAR_COUNT.labels"
-        ) as metric_labels,
-        pytest.raises(RuntimeError, match="late match failure"),
-    ):
+    def _fail_commit() -> None:
+        raise RuntimeError("outer commit failed")
+
+    with get_database(read_only=False) as db:
+        monkeypatch.setattr(db, "commit", _fail_commit)
         with caplog.at_level(
             logging.INFO,
             logger="moneybin.services.categorization.applier",
         ):
-            ReviewDecisionsService(db, actor="mcp").apply_ordinary(requests)
+            with pytest.raises(RuntimeError, match="outer commit failed"):
+                ReviewDecisionsService(db, actor="mcp").apply_ordinary(requests)
 
-    metric_labels.assert_not_called()
-    # "user merchant" — not the full sentence. Both applier log sites (the
-    # per-merchant create and the post-commit batch) contain it, so this
-    # catches either firing and survives a reword of the count line, which
-    # silently voided the old `"Created user merchant"` match in #356.
+    assert _retirement_metric() == retirement_before
+    assert _merchant_exemplar_metrics() == merchant_metrics_before
     assert "user merchant" not in caplog.text
     with get_database(read_only=True) as db:
         assert (
             db.execute(
                 "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
-                [transaction_id],
+                [seeded["first_transaction_id"]],
             ).fetchone()
             is None
         )
@@ -1448,14 +1619,73 @@ def test_ordinary_late_failure_rolls_back_state_audit_and_observability(
         assert (
             db.execute(
                 "SELECT 1 FROM app.categorization_decisions WHERE decision_id = ?",
-                [categorization_id],
+                [seeded["first_categorization_id"]],
             ).fetchone()
             is None
         )
-        audit_after_row = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
-    assert audit_after_row is not None
-    audit_after = int(audit_after_row[0])
-    assert audit_after == audit_before
+        assert db.execute(
+            "SELECT match_status FROM app.match_decisions WHERE match_id = ?",
+            [seeded["stale_match_id"]],
+        ).fetchone() == ("pending",)
+        assert db.execute(
+            "SELECT COUNT(*) FROM app.audit_log WHERE actor = 'mcp'"
+        ).fetchone() == (0,)
+
+
+def test_ordinary_matching_metric_failure_preserves_later_committed_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_alternating_ordinary_decisions()
+    merchant_name = "Committed Review Merchant"
+    requests: list[OrdinaryReviewDecisionRequest] = [
+        CategorizationDecisionRequest(
+            kind="categorization",
+            decision_id=seeded["first_categorization_id"],
+            decision="accept",
+            category=seeded["category"],
+            canonical_merchant_name=merchant_name,
+        ),
+        MatchDecisionRequest(
+            kind="match",
+            decision_id=seeded["stale_match_id"],
+            decision="accept",
+        ),
+    ]
+    retirement_before = _retirement_metric()
+    merchant_metrics_before = _merchant_exemplar_metrics()
+
+    def _fail_matching_metric(_: int) -> None:
+        raise RuntimeError("matching metric unavailable")
+
+    monkeypatch.setattr(
+        "moneybin.matching.application.record_dedup_retirements",
+        _fail_matching_metric,
+    )
+    with get_database(read_only=False) as db:
+        outcome = ReviewDecisionsService(db, actor="mcp").apply_ordinary(requests)
+
+    assert [item.status for item in outcome.items] == ["accepted", "reversed"]
+    assert outcome.transfers_retired == 0
+    assert _retirement_metric() == retirement_before
+    with get_database(read_only=True) as db:
+        merchant = db.execute(
+            "SELECT merchant_id, exemplars FROM app.user_merchants "
+            "WHERE canonical_name = ?",
+            [merchant_name],
+        ).fetchone()
+        assert merchant is not None
+        assert list(merchant[1]) == ["Task 5 review decision"]
+        assert db.execute(
+            "SELECT status FROM app.categorization_decisions WHERE decision_id = ?",
+            [seeded["first_categorization_id"]],
+        ).fetchone() == ("accepted",)
+        assert db.execute(
+            "SELECT match_status FROM app.match_decisions WHERE match_id = ?",
+            [seeded["stale_match_id"]],
+        ).fetchone() == ("reversed",)
+    merchant_metrics_after = _merchant_exemplar_metrics()
+    assert str(merchant[0]) not in merchant_metrics_before
+    assert merchant_metrics_after[str(merchant[0])] == 1
 
 
 async def test_ordinary_already_decided_ids_return_structured_errors() -> None:

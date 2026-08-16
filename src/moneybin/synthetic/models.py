@@ -12,7 +12,9 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from moneybin.services._validators import validate_currency_code
 
 # ---------------------------------------------------------------------------
 # YAML config models
@@ -44,6 +46,10 @@ class MerchantCatalog(BaseModel):
 
     category: str = Field(min_length=1)
     merchants: list[MerchantEntry] = Field(min_length=1)
+    # Statement descriptions carry a city, so a catalog of non-US merchants has
+    # to name its own — otherwise a Dubai grocery run reads "AUSTIN TX". Unset
+    # keeps the generator's US default, which is what every US catalog wants.
+    cities: list[str] | None = Field(default=None, min_length=1)
 
 
 class AccountConfig(BaseModel):
@@ -54,6 +60,20 @@ class AccountConfig(BaseModel):
     source_type: Literal["ofx", "csv"]
     institution: str = Field(min_length=1)
     opening_balance: float = 0.0
+    currency_code: str = "USD"
+
+    @field_validator("currency_code")
+    @classmethod
+    def _validate_currency_code(cls, value: str) -> str:
+        """Shape-check via the same validator every other currency entry point uses.
+
+        A persona typo reaches `raw` and `core` verbatim, and `reports.net_worth`
+        groups by the string — so `usd` would surface as a second segment beside
+        `USD` rather than an error. Shape only: a provider-unsupported but
+        well-formed code like AED must still load.
+        """
+        validate_currency_code(value)
+        return value
 
 
 class PriceIncrease(BaseModel):
@@ -177,6 +197,7 @@ class PersonaConfig(BaseModel):
                         f"unknown account: {acct!r}"
                     )
 
+        currency_of = {a.name: a.currency_code for a in self.accounts}
         for xfer in self.transfers:
             if xfer.from_account not in account_names:
                 raise ValueError(
@@ -185,6 +206,21 @@ class PersonaConfig(BaseModel):
             if xfer.to_account not in account_names:
                 raise ValueError(
                     f"Transfer references unknown account: {xfer.to_account!r}"
+                )
+            # `TransferGenerator` puts one magnitude on both sides, and each side
+            # inherits its own account's currency downstream — so an unconverted
+            # 100 USD outflow lands as a +100 EUR inflow and quietly corrupts
+            # both balances. Refuse until M1K.3 gives the generator a conversion;
+            # a persona that needs cross-currency funding declares income in each
+            # currency instead.
+            from_currency = currency_of[xfer.from_account]
+            to_currency = currency_of[xfer.to_account]
+            if from_currency != to_currency:
+                raise ValueError(
+                    f"cross-currency transfer {xfer.from_account!r} "
+                    f"({from_currency}) → {xfer.to_account!r} ({to_currency}) "
+                    f"is not supported: the generator does not convert, so both "
+                    f"sides would move the same number in different currencies"
                 )
 
         return self
@@ -266,6 +302,7 @@ class GeneratedAccount:
     source_type: str
     institution: str
     opening_balance: Decimal
+    currency_code: str = "USD"
 
 
 @dataclass

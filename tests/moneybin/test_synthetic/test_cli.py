@@ -198,3 +198,41 @@ class TestResetCommand:
             assert result.exit_code != 0 or "Aborted" in (result.output or "")
         # Profile must be restored even after user declines
         self.mock_set_profile.assert_called_with("default")
+
+
+class TestPersonaEnumerationSites:
+    """Every persona YAML must be reachable from both CLI surfaces.
+
+    These are hand-maintained lists beside a directory of files, so they are
+    asserted by set equality rather than membership — a subset check would
+    still pass with a persona nobody wired up.
+    """
+
+    def _persona_names_on_disk(self) -> set[str]:
+        from moneybin.synthetic import models
+
+        personas_dir = Path(models.__file__).parent / "data" / "personas"
+        return {path.stem for path in personas_dir.glob("*.yaml")}
+
+    def test_demo_offers_every_persona(self) -> None:
+        from moneybin.cli.commands.demo import (
+            _PERSONAS,  # pyright: ignore[reportPrivateUsage]  # the guard's subject
+        )
+
+        assert set(_PERSONAS) == self._persona_names_on_disk()
+
+    def test_every_persona_has_a_profile_name(self) -> None:
+        from moneybin.cli.commands.synthetic import (
+            _PERSONA_PROFILES,  # pyright: ignore[reportPrivateUsage]  # the subject
+        )
+
+        assert set(_PERSONA_PROFILES) == self._persona_names_on_disk()
+
+    def test_profile_names_are_distinct(self) -> None:
+        """Two personas sharing a profile would generate into one database."""
+        from moneybin.cli.commands.synthetic import (
+            _PERSONA_PROFILES,  # pyright: ignore[reportPrivateUsage]  # the subject
+        )
+
+        profiles = list(_PERSONA_PROFILES.values())
+        assert len(profiles) == len(set(profiles))

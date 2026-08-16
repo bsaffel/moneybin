@@ -7,6 +7,7 @@ import pytest
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.matching.application import MatchApplicationEffects, MatchStatusChange
 from moneybin.matching.persistence import (
     MatchStatus,
     get_match_decision,
@@ -42,6 +43,71 @@ def _status_of(db: Database, match_id: str) -> str:
     row = get_match_decision(db, match_id)
     assert row is not None
     return row["match_status"]
+
+
+def _retirement_count() -> float:
+    """Read the committed retirement counter for the matching reconciliation."""
+    from moneybin.metrics.registry import TRANSFER_RETIREMENTS_TOTAL
+
+    counter = TRANSFER_RETIREMENTS_TOTAL.labels(cause="dedup_component")
+    return counter._value.get()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # no public counter getter
+
+
+def _seed_transfer_collision_fixture(db: Database) -> tuple[str, str, str]:
+    """Seed two standing transfers and the pending dedup edge that collides them."""
+    keep_id = "tx-keep"
+    drop_id = "tx-drop"
+    dedup_id = "dedup-edge"
+    repo = MatchDecisionsRepo(db)
+    for match_id, source_a, source_b, source_type_a, account_id_b, status in (
+        (keep_id, "ofx-p", "ofx-x", "ofx", "brokerage", "accepted"),
+        (drop_id, "csv-c", "ofx-y", "csv", "savings", "accepted"),
+    ):
+        repo.insert(
+            match_id=match_id,
+            source_transaction_id_a=source_a,
+            source_type_a=source_type_a,
+            source_origin_a="origin-a",
+            source_transaction_id_b=source_b,
+            source_type_b="ofx",
+            source_origin_b="origin-b",
+            account_id="checking",
+            account_id_b=account_id_b,
+            confidence_score=0.9,
+            match_signals={},
+            match_tier=None,
+            match_type="transfer",
+            match_status=status,
+            decided_by="matcher",
+            actor="test",
+        )
+    repo.insert(
+        match_id=dedup_id,
+        source_transaction_id_a="ofx-p",
+        source_type_a="ofx",
+        source_origin_a="origin-a",
+        source_transaction_id_b="csv-c",
+        source_type_b="csv",
+        source_origin_b="origin-b",
+        account_id="checking",
+        confidence_score=0.9,
+        match_signals={},
+        match_tier="3",
+        match_status="pending",
+        decided_by="matcher",
+        actor="test",
+    )
+    return keep_id, drop_id, dedup_id
+
+
+def _audit_actions(db: Database, match_id: str) -> list[str]:
+    """Return the audited mutations for one decision, newest first."""
+    return [
+        event.action
+        for event in AuditService(db).list_events(
+            target_table="match_decisions", target_id=match_id, limit=None
+        )
+    ]
 
 
 def test_set_status_accepts_pending(db: Database) -> None:
@@ -183,6 +249,199 @@ def test_accept_all_pending_accepts_and_counts(db: Database) -> None:
     assert outcome.reversed_by_reconciliation == 0
     assert _status_of(db, "q1") == "accepted"
     assert MatchingService(db).get_pending() == []
+
+
+def test_set_status_application_effects_match_persisted_outcome(db: Database) -> None:
+    """A decision, its audited reversals, and the metric agree after commit."""
+    keep_id, drop_id, dedup_id = _seed_transfer_collision_fixture(db)
+    before = _retirement_count()
+
+    outcome = MatchingService(db).set_status(dedup_id, status="accepted", actor="cli")
+
+    assert outcome.match_status == "accepted"
+    assert outcome.transfers_retired == 1
+    assert {
+        keep_id: _status_of(db, keep_id),
+        drop_id: _status_of(db, drop_id),
+        dedup_id: _status_of(db, dedup_id),
+    } == {
+        keep_id: "accepted",
+        drop_id: "reversed",
+        dedup_id: "accepted",
+    }
+    assert _audit_actions(db, dedup_id) == [
+        "match_decision.update_status",
+        "match_decision.insert",
+    ]
+    assert _audit_actions(db, drop_id) == [
+        "match_decision.reverse",
+        "match_decision.insert",
+    ]
+    assert _retirement_count() - before == 1
+
+
+def test_accept_all_application_effects_match_persisted_outcome(db: Database) -> None:
+    """Bulk acceptance reports only standing reversals and audits all effects."""
+    keep_id, drop_id, dedup_id = _seed_transfer_collision_fixture(db)
+    before = _retirement_count()
+
+    outcome = MatchingService(db).accept_all_pending(actor="cli")
+
+    assert outcome.accepted == 1
+    assert outcome.reversed_by_reconciliation == 0
+    assert outcome.transfers_retired == 1
+    assert {
+        keep_id: _status_of(db, keep_id),
+        drop_id: _status_of(db, drop_id),
+        dedup_id: _status_of(db, dedup_id),
+    } == {
+        keep_id: "accepted",
+        drop_id: "reversed",
+        dedup_id: "accepted",
+    }
+    assert _audit_actions(db, dedup_id) == [
+        "match_decision.update_status",
+        "match_decision.insert",
+    ]
+    assert _audit_actions(db, drop_id) == [
+        "match_decision.reverse",
+        "match_decision.insert",
+    ]
+    assert _retirement_count() - before == 1
+
+
+def test_set_status_does_not_record_metrics_when_commit_fails(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed decision commit rolls back rows and emits no durable metric."""
+    keep_id, drop_id, dedup_id = _seed_transfer_collision_fixture(db)
+    before = _retirement_count()
+
+    def _fail_commit() -> None:
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(db, "commit", _fail_commit)
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        MatchingService(db).set_status(dedup_id, status="accepted", actor="cli")
+
+    assert {
+        keep_id: _status_of(db, keep_id),
+        drop_id: _status_of(db, drop_id),
+        dedup_id: _status_of(db, dedup_id),
+    } == {
+        keep_id: "accepted",
+        drop_id: "accepted",
+        dedup_id: "pending",
+    }
+    assert _audit_actions(db, dedup_id) == ["match_decision.insert"]
+    assert _audit_actions(db, drop_id) == ["match_decision.insert"]
+    assert _retirement_count() == before
+
+
+def test_accept_all_does_not_record_metrics_when_commit_fails(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed bulk commit rolls back rows and emits no durable metric."""
+    keep_id, drop_id, dedup_id = _seed_transfer_collision_fixture(db)
+    before = _retirement_count()
+
+    def _fail_commit() -> None:
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(db, "commit", _fail_commit)
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        MatchingService(db).accept_all_pending(actor="cli")
+
+    assert {
+        keep_id: _status_of(db, keep_id),
+        drop_id: _status_of(db, drop_id),
+        dedup_id: _status_of(db, dedup_id),
+    } == {
+        keep_id: "accepted",
+        drop_id: "accepted",
+        dedup_id: "pending",
+    }
+    assert _audit_actions(db, dedup_id) == ["match_decision.insert"]
+    assert _audit_actions(db, drop_id) == ["match_decision.insert"]
+    assert _retirement_count() == before
+
+
+def test_set_status_returns_the_application_effects_outcome(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The returned decision outcome is the finalized boundary effect."""
+    _seed(db, "seam-single", "pending")
+    effects = MatchApplicationEffects(
+        changes=(
+            MatchStatusChange(
+                match_id="seam-single",
+                requested_status="accepted",
+                prior_status="pending",
+                effective_status="reversed",
+                changed=True,
+            ),
+        ),
+        reconciliation_reversals=6,
+    )
+
+    class _Application:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def set_status(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def finalize(self) -> MatchApplicationEffects:
+            return effects
+
+    monkeypatch.setattr(
+        "moneybin.services.matching_service.MatchDecisionApplication",
+        _Application,
+        raising=False,
+    )
+
+    outcome = MatchingService(db).set_status("seam-single", status="accepted")
+
+    assert outcome.match_status == "reversed"
+    assert outcome.transfers_retired == 5
+
+
+def test_accept_all_returns_the_application_effects_outcome(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bulk outcome is derived from the finalized boundary effect."""
+    effects = MatchApplicationEffects(
+        changes=(
+            MatchStatusChange("one", "accepted", "pending", "accepted", True),
+            MatchStatusChange("two", "accepted", "pending", "accepted", True),
+            MatchStatusChange("three", "accepted", "pending", "reversed", True),
+        ),
+        reconciliation_reversals=5,
+    )
+
+    class _Application:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def accept_pending(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def finalize(self) -> MatchApplicationEffects:
+            return effects
+
+    monkeypatch.setattr(
+        "moneybin.services.matching_service.MatchDecisionApplication",
+        _Application,
+        raising=False,
+    )
+
+    outcome = MatchingService(db).accept_all_pending()
+
+    assert outcome.accepted == 2
+    assert outcome.reversed_by_reconciliation == 1
+    assert outcome.transfers_retired == 4
 
 
 def test_count_pending_filters_by_match_type(db: Database) -> None:

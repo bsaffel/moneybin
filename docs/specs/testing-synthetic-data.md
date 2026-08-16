@@ -50,9 +50,10 @@ evaluation without exposing real financial data.
 ## Requirements
 
 ### Data generation
-1. Generate multi-year transaction histories for three v1 personas: `basic` (single
+1. Generate multi-year transaction histories for four personas: `basic` (single
    income, simple spending), `family` (dual income, joint + individual accounts),
-   `freelancer` (irregular income, business + personal).
+   `freelancer` (irregular income, business + personal), `international` (five
+   currencies across five banks, one of them outside the FX provider's coverage).
 2. All randomness flows through a single seeded `Random` instance per generation run.
    Same persona + seed + years = byte-identical output for a given generator version.
 3. Write generated transactions to raw tables (`raw.ofx_transactions`,
@@ -88,7 +89,7 @@ evaluation without exposing real financial data.
 
 ### CLI behavior
 13. Auto-derive profile name from persona (`basic`→`alice`, `family`→`bob`,
-    `freelancer`→`charlie`). Allow `--profile` override.
+    `freelancer`→`charlie`, `international`→`eve`). Allow `--profile` override.
 14. Refuse to generate into a profile that already has data. Provide actionable guidance
     directing the user to `moneybin synthetic reset`.
 15. Run `sqlmesh run` automatically after generation to materialize the full pipeline
@@ -161,7 +162,8 @@ src/moneybin/synthetic/
 │   ├── personas/
 │   │   ├── basic.yaml
 │   │   ├── family.yaml
-│   │   └── freelancer.yaml
+│   │   ├── freelancer.yaml
+│   │   └── international.yaml
 │   └── merchants/
 │       ├── grocery.yaml
 │       ├── dining.yaml
@@ -176,7 +178,8 @@ src/moneybin/synthetic/
 │       ├── personal_care.yaml
 │       ├── insurance.yaml
 │       ├── education.yaml
-│       └── gifts.yaml
+│       ├── gifts.yaml
+│       └── {grocery,dining,transport}_{eu,uk,ca,ae}.yaml  # non-US merchants + cities
 └── seed.py                # Seeded Random wrapper
 ```
 
@@ -363,7 +366,14 @@ transfers:
 - **`source_type` per account** controls which raw table receives that account's
   transactions. This exercises the multi-source union path in core models — the `family`
   persona has OFX checking/savings and tabular credit cards, just like a real user.
-- **`opening_balance`** is the account balance at the start of the generated date range.
+- **`opening_balance`** is the account balance at the start of the generated date
+  range, before any of its transactions. Both writers anchor it that way: the OFX
+  path stamps a balance row on the day *before* the first transaction, and the
+  tabular path starts its running balance at `opening_balance + first
+  transaction`. Stamping the OFX anchor on the first transaction date instead
+  makes `core.fct_balances_daily` — which treats an observed balance as final for
+  its day — swallow that day's activity, leaving the account's whole series short
+  by the day-one net.
   For OFX accounts, written as a balance snapshot to `raw.ofx_balances`. For tabular
   accounts, used to compute the running `balance` column on
   `raw.tabular_transactions`. Not written as a compensating transaction.
@@ -542,10 +552,10 @@ where doing so exercises real code paths. Columns not listed default to NULL.
 | Column | Generator value |
 |---|---|
 | `account_id` | Matching `account_id` from `raw.ofx_accounts` |
-| `statement_start_date` | Start of generated date range |
-| `statement_end_date` | Start of generated date range (initial snapshot) |
+| `statement_start_date` | Day before the generated date range |
+| `statement_end_date` | Day before the generated date range (opening snapshot) |
 | `ledger_balance` | From persona YAML `opening_balance` |
-| `ledger_balance_date` | Start of generated date range |
+| `ledger_balance_date` | Day before the generated date range |
 | `available_balance` | NULL |
 | `source_file` | `synthetic://{persona}/{seed}/{account-slug}` |
 | `extracted_at` | Generation timestamp |
@@ -634,7 +644,7 @@ moneybin synthetic generate --persona=family [--profile=bob] [--years=3] [--seed
 
 | Flag | Required | Default | Description |
 |---|---|---|---|
-| `--persona` | Yes | — | Persona to generate (`basic`, `family`, `freelancer`) |
+| `--persona` | Yes | — | Persona to generate (`basic`, `family`, `freelancer`, `international`) |
 | `--profile` | No | Auto-derived from persona | Target profile name |
 | `--years` | No | Persona's `years_default` | Number of years of history to generate |
 | `--seed` | No | Random (displayed in output) | Seed for deterministic output |

@@ -1,0 +1,187 @@
+# Every amount below is denominated in its own account's currency — the
+# generator does no conversion. AED is deliberately outside Frankfurter's
+# 30-currency set, so the UAE account exercises the unpriced-pair path that a
+# wholly ECB-covered persona would never reach. The non-USD accounts span both
+# source types on purpose: OFX and tabular write currency to different tables,
+# so a persona weighted to one would leave the other's threading unproven.
+persona: international
+profile: eve
+description: "Multi-bank across countries, five currencies, ~690 txns/yr"
+years_default: 2
+
+accounts:
+  - name: "Eurozone Checking"
+    type: checking
+    source_type: ofx
+    institution: "ING"
+    opening_balance: 6400.00
+    currency_code: EUR
+  - name: "UK Current Account"
+    type: checking
+    source_type: csv
+    institution: "Barclays"
+    opening_balance: 2900.00
+    currency_code: GBP
+  - name: "Canada Checking"
+    type: checking
+    source_type: ofx
+    institution: "RBC Royal Bank"
+    opening_balance: 5100.00
+    currency_code: CAD
+  - name: "UAE Checking"
+    type: checking
+    source_type: csv
+    institution: "Emirates NBD"
+    opening_balance: 18500.00
+    currency_code: AED
+  - name: "US Checking"
+    type: checking
+    source_type: ofx
+    institution: "Chase Bank"
+    opening_balance: 3800.00
+
+# Every account that spends is funded in its own currency. The generator does
+# no conversion and this persona has no transfers, so an unfunded account can
+# only drift toward a large negative balance — a checking account thousands
+# below zero is not a position any demo should show.
+income:
+  - type: salary
+    account: "Eurozone Checking"
+    amount: 4600.00
+    schedule: monthly
+    annual_raise_pct: 2.5
+    description_template: "SALARIS {employer}"
+    employer: "Meridian Analytics BV"
+  - type: freelance
+    account: "UK Current Account"
+    amount: 560.00
+    schedule: monthly
+    annual_raise_pct: 2.0
+    description_template: "FASTER PAYMENT {employer}"
+    employer: "Thames Ridge Consulting Ltd"
+  - type: freelance
+    account: "Canada Checking"
+    amount: 800.00
+    schedule: monthly
+    annual_raise_pct: 2.0
+    description_template: "EFT DEPOSIT {employer}"
+    employer: "Maple Line Advisory Inc"
+  - type: freelance
+    account: "UAE Checking"
+    amount: 2400.00
+    schedule: monthly
+    annual_raise_pct: 2.0
+    description_template: "SALARY TRANSFER {employer}"
+    employer: "Gulf Data Partners FZ LLC"
+  - type: freelance
+    account: "US Checking"
+    amount: 320.00
+    schedule: monthly
+    annual_raise_pct: 2.0
+    description_template: "ACH CREDIT {employer}"
+    employer: "Redwood Editorial LLC"
+
+recurring:
+  - category: housing
+    description: "Huur Amsterdam"
+    account: "Eurozone Checking"
+    amount: 1750.00
+    day_of_month: 1
+  - category: utilities
+    description: "Eneco Energie"
+    account: "Eurozone Checking"
+    amount: { mean: 118.00, stddev: 32.00 }
+    day_of_month: 14
+  - category: subscriptions
+    description: "Mobile Plan UK"
+    account: "UK Current Account"
+    amount: 22.00
+    day_of_month: 8
+  - category: insurance
+    description: "Motor Insurance Dubai"
+    account: "UAE Checking"
+    amount: 385.00
+    day_of_month: 6
+  - category: utilities
+    description: "Rogers Internet"
+    account: "Canada Checking"
+    amount: 94.00
+    day_of_month: 19
+
+spending:
+  categories:
+    - name: grocery
+      merchant_catalog: grocery_eu
+      monthly_budget: { mean: 420.00, stddev: 90.00 }
+      transactions_per_month: { mean: 6, stddev: 1 }
+      accounts: ["Eurozone Checking"]
+      seasonal_modifiers:
+        december: 1.3
+    - name: dining
+      merchant_catalog: dining_eu
+      monthly_budget: { mean: 210.00, stddev: 60.00 }
+      transactions_per_month: { mean: 5, stddev: 1 }
+      accounts: ["Eurozone Checking"]
+      day_of_week_weights:
+        friday: 1.8
+        saturday: 1.8
+    - name: transport
+      merchant_catalog: transport_eu
+      monthly_budget: { mean: 165.00, stddev: 55.00 }
+      transactions_per_month: { mean: 3, stddev: 1 }
+      accounts: ["Eurozone Checking"]
+    - name: grocery
+      merchant_catalog: grocery_uk
+      monthly_budget: { mean: 180.00, stddev: 50.00 }
+      transactions_per_month: { mean: 3, stddev: 1 }
+      accounts: ["UK Current Account"]
+    - name: dining
+      merchant_catalog: dining_uk
+      monthly_budget: { mean: 95.00, stddev: 30.00 }
+      transactions_per_month: { mean: 4, stddev: 1 }
+      accounts: ["UK Current Account"]
+    - name: transport
+      merchant_catalog: transport_uk
+      monthly_budget: { mean: 140.00, stddev: 45.00 }
+      transactions_per_month: { mean: 4, stddev: 1 }
+      accounts: ["UK Current Account"]
+    - name: grocery
+      merchant_catalog: grocery_ca
+      monthly_budget: { mean: 240.00, stddev: 70.00 }
+      transactions_per_month: { mean: 2, stddev: 1 }
+      accounts: ["Canada Checking"]
+    - name: dining
+      merchant_catalog: dining_ca
+      monthly_budget: { mean: 130.00, stddev: 40.00 }
+      transactions_per_month: { mean: 3, stddev: 1 }
+      accounts: ["Canada Checking"]
+    - name: transport
+      merchant_catalog: transport_ca
+      monthly_budget: { mean: 175.00, stddev: 50.00 }
+      transactions_per_month: { mean: 2, stddev: 1 }
+      accounts: ["Canada Checking"]
+    - name: grocery
+      merchant_catalog: grocery_ae
+      monthly_budget: { mean: 760.00, stddev: 210.00 }
+      transactions_per_month: { mean: 3, stddev: 1 }
+      accounts: ["UAE Checking"]
+    - name: dining
+      merchant_catalog: dining_ae
+      monthly_budget: { mean: 430.00, stddev: 130.00 }
+      transactions_per_month: { mean: 4, stddev: 1 }
+      accounts: ["UAE Checking"]
+    - name: transport
+      merchant_catalog: transport_ae
+      monthly_budget: { mean: 480.00, stddev: 140.00 }
+      transactions_per_month: { mean: 3, stddev: 1 }
+      accounts: ["UAE Checking"]
+    - name: shopping
+      merchant_catalog: shopping
+      monthly_budget: { mean: 190.00, stddev: 70.00 }
+      transactions_per_month: { mean: 2, stddev: 1 }
+      accounts: ["US Checking"]
+    - name: subscriptions
+      merchant_catalog: subscriptions
+      monthly_budget: { mean: 55.00, stddev: 12.00 }
+      transactions_per_month: { mean: 3, stddev: 1 }
+      accounts: ["US Checking"]
