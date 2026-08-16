@@ -24,6 +24,7 @@ from moneybin.utils.user_config import ensure_default_profile
 if TYPE_CHECKING:
     from moneybin.database import Database
     from moneybin.matching.engine import MatchResult
+    from moneybin.services.rate_backfill import RateBackfillResult
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,52 @@ def warn_transfers_retired(
         "inspect with 'moneybin system audit list' and restore with "
         f"'moneybin system audit undo <operation-id>' if that was wrong{follow_up}"
     )
+
+
+def warn_rate_backfill(rates: RateBackfillResult | None, error: str | None) -> None:
+    """Warn about whatever the exchange-rate step could not gather.
+
+    One helper for the same reason as :func:`warn_transfers_retired` above: any
+    command that runs the ``rates`` step reaches the network on the user's
+    behalf, and each of these four outcomes carries a *different* remedy —
+    retry, wait, record the rate by hand, accept a short span. A surface that
+    prints three of them teaches a remedy that does not exist for the fourth.
+
+    Silent when the step gathered everything it planned, so a warning keeps its
+    meaning. Pairs are named rather than counted: which pair is missing decides
+    whether the gap matters at all, and a currency pair discloses no amount.
+    """
+    if error is not None:
+        # Ahead of the three pair warnings below, and never instead of them: a
+        # crash names no pair, so those lines stay silent and this is the only
+        # signal the step failed at all.
+        logger.warning(f"⚠️  Exchange rate backfill failed: {error}")
+    if rates is None:
+        return
+    if rates.pairs_failed:
+        logger.warning(
+            f"⚠️  Exchange rates unavailable for {', '.join(rates.pairs_failed)}"
+        )
+    if rates.pairs_unsupported:
+        # Separate line from the one above because the remedy is different, and
+        # the remedy is the whole reason to print it: retrying never fills this.
+        logger.warning(
+            f"⚠️  No exchange rate series is published for "
+            f"{', '.join(rates.pairs_unsupported)}. "
+            "Record these rates yourself with `moneybin fx set`."
+        )
+    if rates.pairs_discarded:
+        # Hedged, unlike the two above: this pair may have stored most of its
+        # span and lost a day at one end, so it says coverage may be short
+        # rather than that the pair is missing. Worded around the shortfall
+        # rather than around a dropped rate, because the causes that bound the
+        # answer's span — a series starting after the window or stopping before
+        # it — never sent one to drop.
+        logger.warning(
+            f"⚠️  Exchange rate coverage is short for "
+            f"{', '.join(rates.pairs_discarded)}. "
+            "Conversion may be incomplete on those dates."
+        )
 
 
 def warn_match_decisions_committed(partial: MatchResult) -> None:

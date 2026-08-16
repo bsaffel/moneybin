@@ -482,6 +482,142 @@ def test_gsheet_pull_json_carries_transfers_retired(
     assert json.loads(result.stdout)["transfers_retired"] == 2
 
 
+@pytest.mark.unit
+@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.database.get_database")
+@patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
+@patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_pull_reports_a_crashed_rates_step(
+    mock_oauth: MagicMock,
+    mock_service_cls: MagicMock,
+    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_get_db: MagicMock,
+    mock_refresh: MagicMock,
+) -> None:
+    """A crashed rates step is the case `applied` cannot report.
+
+    The pull names `rates` in its step list, so it reaches the network. SQLMesh
+    still applies when the backfill crashes, so the command's own
+    `applied`/`error` check stays silent and only this signal remains.
+    """
+    from moneybin.services.refresh import RefreshResult
+
+    service = MagicMock()
+    service.pull_connection.return_value = PullResult(
+        connection_id="conn_abc123",
+        status="complete",
+        load_result=_make_load_result(),
+    )
+    mock_service_cls.return_value = service
+    mock_oauth.return_value = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_refresh.return_value = RefreshResult(
+        applied=True, duration_seconds=0.05, rate_backfill_error="provider timeout"
+    )
+
+    result = runner.invoke(app, ["gsheet", "pull", "conn_abc123"])
+    assert result.exit_code == 0, result.output
+    assert "Exchange rate backfill failed" in result.output
+
+
+@pytest.mark.unit
+@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.database.get_database")
+@patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
+@patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_pull_names_an_unsupported_pair_and_its_remedy(
+    mock_oauth: MagicMock,
+    mock_service_cls: MagicMock,
+    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_get_db: MagicMock,
+    mock_refresh: MagicMock,
+) -> None:
+    """A pair no provider publishes carries its own remedy, not a retry hint.
+
+    Distinct from the crash above on purpose: this result has no
+    ``rate_backfill_error``, so it isolates the per-pair lines rather than
+    passing on the crash warning.
+    """
+    from moneybin.services.rate_backfill import RateBackfillResult
+    from moneybin.services.refresh import RefreshResult
+
+    service = MagicMock()
+    service.pull_connection.return_value = PullResult(
+        connection_id="conn_abc123",
+        status="complete",
+        load_result=_make_load_result(),
+    )
+    mock_service_cls.return_value = service
+    mock_oauth.return_value = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_refresh.return_value = RefreshResult(
+        applied=True,
+        duration_seconds=0.05,
+        rate_backfill=RateBackfillResult(
+            rates_written=0,
+            pairs_failed=(),
+            pairs_unsupported=("EUR/XTS",),
+        ),
+    )
+
+    result = runner.invoke(app, ["gsheet", "pull", "conn_abc123"])
+    assert result.exit_code == 0, result.output
+    assert "EUR/XTS" in result.output
+    assert "moneybin fx set" in result.output
+
+
+@pytest.mark.unit
+@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.database.get_database")
+@patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
+@patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_pull_json_carries_the_rate_backfill_outcome(
+    mock_oauth: MagicMock,
+    mock_service_cls: MagicMock,
+    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_get_db: MagicMock,
+    mock_refresh: MagicMock,
+) -> None:
+    """The agent parsing JSON is owed the same outcome the human is told.
+
+    Field names match ``refresh_envelope`` so a caller reading one surface does
+    not have to learn a second spelling for the same outcome.
+    """
+    from moneybin.services.rate_backfill import RateBackfillResult
+    from moneybin.services.refresh import RefreshResult
+
+    service = MagicMock()
+    service.pull_connection.return_value = PullResult(
+        connection_id="conn_abc123",
+        status="complete",
+        load_result=_make_load_result(),
+    )
+    mock_service_cls.return_value = service
+    mock_oauth.return_value = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_refresh.return_value = RefreshResult(
+        applied=True,
+        duration_seconds=0.05,
+        rate_backfill=RateBackfillResult(
+            rates_written=7,
+            pairs_failed=("EUR/USD",),
+            pairs_discarded=("GBP/USD",),
+        ),
+    )
+
+    result = runner.invoke(app, ["gsheet", "pull", "conn_abc123", "--output", "json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["rates_written"] == 7
+    assert payload["rate_pairs_failed"] == ["EUR/USD"]
+    assert payload["rate_pairs_discarded"] == ["GBP/USD"]
+    assert payload["rate_pairs_unsupported"] == []
+    assert payload["rate_backfill_error"] is None
+
+
 # -------------------------------------------------------------------- list ---
 
 

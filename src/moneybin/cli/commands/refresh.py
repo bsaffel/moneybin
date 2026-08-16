@@ -14,6 +14,7 @@ import typer
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import (
     handle_cli_errors,
+    warn_rate_backfill,
     warn_transfers_retired,
 )
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
@@ -103,44 +104,13 @@ def refresh_command(
         logger.warning(f"⚠️  Categorization step failed: {result.categorization_error}")
     for domain in result.identity_errors:
         logger.warning(f"⚠️  {domain.title()} identity backfill failed")
-    if result.rate_backfill_error is not None:
-        # Ahead of the three pair warnings below, and never instead of them: a
-        # crash names no pair, so those lines stay silent and this is the only
-        # signal the step failed at all.
-        logger.warning(
-            f"⚠️  Exchange rate backfill failed: {result.rate_backfill_error}"
-        )
     # Sits with the crash warnings, not with the ✅ status line, for the same
     # reason: this is a decision the *user* made being undone, so it survives
     # --quiet and is emitted under --output json too (where the count is also in
     # the payload). Every refresh reaches the reconciliation through the match
     # step, so an ordinary `moneybin refresh` after an import can hit it.
     warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
-    if result.rate_backfill is not None and result.rate_backfill.pairs_failed:
-        # Named, not counted: which pair is missing decides whether the gap
-        # matters, and a currency pair discloses no amount.
-        pairs = ", ".join(result.rate_backfill.pairs_failed)
-        logger.warning(f"⚠️  Exchange rates unavailable for {pairs}")
-    if result.rate_backfill is not None and result.rate_backfill.pairs_unsupported:
-        # Separate line from the one above because the remedy is different, and
-        # the remedy is the whole reason to print it: retrying never fills this.
-        pairs = ", ".join(result.rate_backfill.pairs_unsupported)
-        logger.warning(
-            f"⚠️  No exchange rate series is published for {pairs}. "
-            "Record these rates yourself with `moneybin fx set`."
-        )
-    if result.rate_backfill is not None and result.rate_backfill.pairs_discarded:
-        # Hedged, unlike the two above: this pair may have stored most of its
-        # span and lost a day at one end, so it says coverage may be short
-        # rather than that the pair is missing. Worded around the shortfall
-        # rather than around a dropped rate, because the causes that bound the
-        # answer's span — a series starting after the window or stopping before
-        # it — never sent one to drop.
-        pairs = ", ".join(result.rate_backfill.pairs_discarded)
-        logger.warning(
-            f"⚠️  Exchange rate coverage is short for {pairs}. "
-            "Conversion may be incomplete on those dates."
-        )
+    warn_rate_backfill(result.rate_backfill, result.rate_backfill_error)
     rates = result.rate_backfill
     # Retrying is the right advice for everything here except an unsupported
     # pair, which no number of refreshes will fill — so it suppresses the ✅

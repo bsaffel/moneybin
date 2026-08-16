@@ -62,7 +62,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A profile with no home currency set fetches nothing. Run it alone with
   `moneybin refresh --step rates` or `refresh_run(steps=["rates"])`. A
   `gsheet pull` runs it too, because a pulled sheet can carry foreign-currency
-  rows. Only currency codes and dates leave the machine.
+  rows, and reports every one of those outcomes the way `moneybin refresh`
+  does — as warnings, and on the JSON envelope under `--output json`. Only
+  currency codes and dates leave the machine.
 - **A multi-currency demo persona.** `moneybin demo --persona international`
   (and `moneybin synthetic generate --persona international`) builds five
   accounts at five banks in EUR, GBP, CAD, AED, and USD, each funded and spent

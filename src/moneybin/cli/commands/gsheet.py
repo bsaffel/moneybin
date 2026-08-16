@@ -11,11 +11,16 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from typing import TYPE_CHECKING
 
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import handle_cli_errors, warn_transfers_retired
+from moneybin.cli.utils import (
+    handle_cli_errors,
+    warn_rate_backfill,
+    warn_transfers_retired,
+)
 from moneybin.connectors.gsheet.service_factory import (
     build_connection_service as _build_connection_service,
 )
@@ -27,6 +32,9 @@ from moneybin.connectors.gsheet.service_factory import (
 )
 from moneybin.extractors.tabular.formats import SignConventionType
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
+
+if TYPE_CHECKING:
+    from moneybin.services.rate_backfill import RateBackfillResult
 
 logger = logging.getLogger(__name__)
 
@@ -259,8 +267,8 @@ def gsheet_pull(
     refresh: bool = typer.Option(
         True,
         "--refresh/--no-refresh",
-        help="Run the refresh pipeline (match → transform → categorize) after "
-        "the pull. Default: on. Pass --no-refresh to defer.",
+        help="Run the refresh pipeline (match → transform → categorize → rates) "
+        "after the pull. Default: on. Pass --no-refresh to defer.",
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
@@ -270,6 +278,8 @@ def gsheet_pull(
 
     refresh_error: str | None = None
     transfers_retired = 0
+    rate_backfill: RateBackfillResult | None = None
+    rate_backfill_error: str | None = None
     with handle_cli_errors():
         with _build_pull_service() as (service, db):
             if not quiet and output == OutputFormat.TEXT:
@@ -301,6 +311,14 @@ def gsheet_pull(
                 # transfer the user accepted — reported even when the apply
                 # failed, because the retirement commits before it.
                 transfers_retired = refresh_result.transfers_retired
+                # Read for the same reason, and outside the `applied` check
+                # above for a sharper one: the rates step is best-effort, so it
+                # can crash or come back short while SQLMesh applies cleanly.
+                # Neither `applied` nor `error` moves in that case, and without
+                # these two the network step this command just ran would report
+                # nothing at all.
+                rate_backfill = refresh_result.rate_backfill
+                rate_backfill_error = refresh_result.rate_backfill_error
 
     # Hard-failure statuses (auth_expired, unreachable, rate_limited, failed)
     # exit non-zero so CI/agents detect them without parsing output. drift_detected
@@ -314,6 +332,7 @@ def gsheet_pull(
     # user's own decision is not informational output, so it survives --quiet
     # and is said aloud next to the JSON that also carries the count.
     warn_transfers_retired(transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
+    warn_rate_backfill(rate_backfill, rate_backfill_error)
 
     if output == OutputFormat.JSON:
         typer.echo(
@@ -339,6 +358,29 @@ def gsheet_pull(
                     ],
                     "refresh_error": refresh_error,
                     "transfers_retired": transfers_retired,
+                    # Spelled as `refresh_envelope` spells them, so an agent
+                    # reading both surfaces does not learn the outcome twice.
+                    "rates_written": (
+                        0 if rate_backfill is None else rate_backfill.rates_written
+                    ),
+                    "rate_pairs_failed": (
+                        []
+                        if rate_backfill is None
+                        else list(rate_backfill.pairs_failed)
+                    ),
+                    "rate_pairs_unsupported": (
+                        []
+                        if rate_backfill is None
+                        else list(rate_backfill.pairs_unsupported)
+                    ),
+                    "rate_pairs_discarded": (
+                        []
+                        if rate_backfill is None
+                        else list(rate_backfill.pairs_discarded)
+                    ),
+                    # Not gated on `rate_backfill is None`: a crash is exactly
+                    # the case that leaves no result to read it off.
+                    "rate_backfill_error": rate_backfill_error,
                 },
                 indent=2,
             )
