@@ -1,7 +1,7 @@
 # Matching Consistency Boundaries
 
 > Last updated: 2026-08-15
-> Status: ready
+> Status: in-progress
 > Address: M1B.4 (Ingestion Core — matching consistency boundaries)
 > Type: Architecture
 > Owns: executable ownership of match-decision consequences and dedup-candidate
