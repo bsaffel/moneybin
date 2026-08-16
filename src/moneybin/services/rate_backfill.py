@@ -14,6 +14,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+import duckdb
+
 from moneybin.connectors.feed_errors import FeedError
 from moneybin.connectors.rates.protocol import RateAdapter, RateObservation
 from moneybin.database import Database
@@ -34,6 +36,16 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class RateBackfillNotReadyError(Exception):
+    """Planning could not read ``core.*`` — a first-load precondition, not a crash.
+
+    Named rather than left as the underlying DuckDB error so a caller can tell
+    this apart from the identical exception types the store raises later in the
+    same call. Carries no message: the refusal is about the database's state,
+    not about any currency, and the step reports it by staying quiet.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +121,15 @@ def run_rate_backfill(
     ``pairs_discarded``, because a pair that lost every rate to a filter would
     otherwise be reported exactly as a profile that needed no rates at all.
     """
-    windows = plan_rate_backfill(db, home_currency=home_currency, through=through)
+    try:
+        windows = plan_rate_backfill(db, home_currency=home_currency, through=through)
+    except (duckdb.CatalogException, duckdb.BinderException) as exc:
+        # Raised here, rather than read off the exception type at the call site,
+        # so that only *planning* can mean "core.* is not built yet". The store
+        # below raises the same two types on a drifted cache or a bind failure
+        # on write, and a caller matching on the type alone would report that
+        # crash as a step that quietly declined to run.
+        raise RateBackfillNotReadyError from exc
     service = CurrencyService(db, adapter=adapter)
     FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="planned").inc(len(windows))
 

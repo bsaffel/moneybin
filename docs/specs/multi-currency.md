@@ -512,7 +512,7 @@ Numbered, testable. Tagged by phase.
 
 ### M1K.3 — Realized FX gain/loss
 
-17. **Conversion-pair identity.** A currency conversion event (e.g. a EUR debit paired
+19. **Conversion-pair identity.** A currency conversion event (e.g. a EUR debit paired
     with a USD credit) is modeled as a first-class pair, not inferred from two
     unrelated rows.
 
@@ -529,12 +529,12 @@ Numbered, testable. Tagged by phase.
     (schema reservation, not yet built) keeps a later importer from coining an
     ad-hoc, differently-ordered name and compounding the currency-column naming
     drift §Key Decisions already flags.
-18. **Currency-lot accounting.** Realized FX gain/loss on disposing a foreign-currency
+20. **Currency-lot accounting.** Realized FX gain/loss on disposing a foreign-currency
     holding is computed via the **investments cost-basis engine** (FIFO / average per
     the elected method in `investments-data-model.md`), treating currency holdings as
     lots. Realized FX gain/loss on a foreign-denominated *security* sale is the same
     engine applied to the currency leg.
-19. **Decimal throughout.** All amounts and rates are `DECIMAL`, never `FLOAT`
+21. **Decimal throughout.** All amounts and rates are `DECIMAL`, never `FLOAT`
     (`DECIMAL(18,2)` amounts; `DECIMAL(18,8)` rates per the `database.md` precision
     convention).
 

@@ -25,7 +25,10 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.services import matching_service
 from moneybin.services.merchant_resolver import HarvestResult
-from moneybin.services.rate_backfill import RateBackfillResult
+from moneybin.services.rate_backfill import (
+    RateBackfillNotReadyError,
+    RateBackfillResult,
+)
 from moneybin.services.refresh import (
     RefreshResult,
     # The step's own branches are the subject of the last section in this file.
@@ -569,21 +572,25 @@ def test_rates_step_survives_an_unreadable_home_currency(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "exc",
-    [duckdb.CatalogException("nope"), duckdb.BinderException("no col")],
-)
 def test_rates_step_missing_core_views_is_not_an_error(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, exc: Exception
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """`core.*` not built yet is a first-load precondition, not a failure.
 
     Distinguished from the generic swallow below by the log level: this one is
     expected on a fresh profile and must not put an error in the operator's log
     every time refresh runs before the first transform.
+
+    Raises the named precondition rather than the DuckDB types it wraps, because
+    those types alone no longer mean this — see the test above.
     """
     reached: list[str] = []
-    _patch_rates_step(monkeypatch, home_currency="USD", backfill=exc, reached=reached)
+    _patch_rates_step(
+        monkeypatch,
+        home_currency="USD",
+        backfill=RateBackfillNotReadyError(),
+        reached=reached,
+    )
     caplog.set_level(logging.ERROR, logger="moneybin.services.refresh")
 
     assert _run_rates_step(MagicMock()) == (None, None), (
@@ -591,6 +598,31 @@ def test_rates_step_missing_core_views_is_not_an_error(
     )
     assert reached == ["USD"], "the backfill is what raised"
     assert caplog.records == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "exc",
+    [duckdb.CatalogException("late"), duckdb.BinderException("late bind")],
+)
+def test_rates_step_reports_a_duckdb_failure_raised_after_planning(
+    monkeypatch: pytest.MonkeyPatch, exc: Exception
+) -> None:
+    """Only planning may read a DuckDB error as "core.* is not built yet".
+
+    The storage half of the step raises those same two types — a drifted rate
+    cache, a bind failure on write. Reading one of those as the first-load
+    precondition tells the user nothing happened on a profile whose core models
+    were built long ago, and an explicitly requested `--step rates` run is
+    exactly where that answer is wrong.
+    """
+    reached: list[str] = []
+    _patch_rates_step(monkeypatch, home_currency="USD", backfill=exc, reached=reached)
+
+    backfill, error = _run_rates_step(MagicMock())
+    assert backfill is None
+    assert error is not None, "a DuckDB failure after planning is a crash, not a skip"
+    assert reached == ["USD"]
 
 
 @pytest.mark.unit

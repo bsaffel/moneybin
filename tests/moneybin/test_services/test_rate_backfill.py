@@ -24,6 +24,7 @@ from moneybin.connectors.rates.protocol import RateObservation
 from moneybin.database import Database
 from moneybin.services.currency_service import MAX_BACKWARD_RESOLUTION_DAYS
 from moneybin.services.rate_backfill import (
+    RateBackfillNotReadyError,
     RateWindow,
     plan_rate_backfill,
     run_rate_backfill,
@@ -493,6 +494,26 @@ def test_a_planned_window_is_fetched_once_and_stored(db: Database) -> None:
     assert adapter.ranges == [("EUR", "USD", date(2026, 3, 10), _TODAY)]
     assert result.rates_written == 1
     assert result.pairs_failed == ()
+
+
+def test_planning_against_an_unbuilt_core_raises_the_named_precondition(
+    db: Database,
+) -> None:
+    """A fresh profile's missing `core.*` is raised by name, not as a DuckDB error.
+
+    Refresh runs before the first transform, so this is the normal state of a new
+    install. The store raises these same DuckDB types on a late write failure, so
+    the distinction has to be drawn here — where planning is the only thing that
+    has run — rather than by matching the exception type at the call site, which
+    would report a genuine write crash as a step that declined to run.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    db.execute("DROP TABLE core.fct_transactions")
+
+    with pytest.raises(RateBackfillNotReadyError):
+        run_rate_backfill(
+            db, home_currency="USD", through=_TODAY, adapter=_SpanAdapter()
+        )
 
 
 def test_a_supported_pair_with_nothing_published_is_neither_failed_nor_unsupported(

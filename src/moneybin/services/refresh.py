@@ -531,7 +531,10 @@ def _run_rates_step(db: Database) -> tuple[RateBackfillResult | None, str | None
     from moneybin.repositories.profile_settings_repo import (  # noqa: PLC0415
         ProfileSettingsRepo,
     )
-    from moneybin.services.rate_backfill import run_rate_backfill  # noqa: PLC0415
+    from moneybin.services.rate_backfill import (  # noqa: PLC0415
+        RateBackfillNotReadyError,
+        run_rate_backfill,
+    )
 
     try:
         home_currency = ProfileSettingsRepo(db).get_home_currency()
@@ -548,9 +551,13 @@ def _run_rates_step(db: Database) -> tuple[RateBackfillResult | None, str | None
             through=date.today(),
             adapter=FrankfurterRateAdapter(),
         ), None
-    except (duckdb.CatalogException, duckdb.BinderException):
+    except RateBackfillNotReadyError:
         # core.* not built yet — the same first-load precondition the matching
-        # stage tolerates, not a failure worth reporting.
+        # stage tolerates, not a failure worth reporting. Matched by name and
+        # not by the DuckDB exception types it wraps, for the reason the
+        # matching step catches MatchRunError ahead of its own catalog branch:
+        # the store raises those same types on a late write failure, and
+        # calling that a skipped step would claim nothing was attempted.
         logger.debug("Rate backfill skipped (core views may not exist yet)")
         return None, None
     except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
