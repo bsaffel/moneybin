@@ -132,10 +132,12 @@ def refresh_command(
     if result.rate_backfill is not None and result.rate_backfill.pairs_discarded:
         # Hedged, unlike the two above: this pair may have stored most of its
         # span and lost a day at one end, so it says coverage may be short
-        # rather than that the pair is missing.
+        # rather than that the pair is missing. Worded around the shortfall
+        # rather than around a dropped rate, because one of the three causes —
+        # a series that starts after the window — never sent one to drop.
         pairs = ", ".join(result.rate_backfill.pairs_discarded)
         logger.warning(
-            f"⚠️  Some exchange rates could not be used for {pairs}. "
+            f"⚠️  Exchange rate coverage is short for {pairs}. "
             "Conversion may be incomplete on those dates."
         )
     rates = result.rate_backfill

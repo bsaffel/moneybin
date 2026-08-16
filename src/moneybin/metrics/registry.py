@@ -361,8 +361,9 @@ FX_RATE_BACKFILL_PAIRS_TOTAL = Counter(
     # resolves itself — rising against flat 'planned' means a currency needs a
     # manual rate, not a retry.
     # 'discarded' is the only outcome that can coincide with a successful write:
-    # the provider answered and part of the answer was dropped, so it rises on
-    # a pair whose coverage is merely incomplete rather than absent.
+    # the provider answered and the answer did not cover the window — part of it
+    # was dropped, or the series began after the window did — so it rises on a
+    # pair whose coverage is merely incomplete rather than absent.
     "Exchange-rate backfill pairs by outcome "
     "(planned / failed / unusable / unsupported / discarded)",
     ["outcome"],

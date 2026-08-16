@@ -64,13 +64,17 @@ class RateBackfillResult:
     be re-requested on every refresh forever while the user was never told that
     only a manual ``moneybin fx set`` can fill it.
 
-    ``pairs_discarded`` names pairs the provider *answered* where at least one
-    rate was thrown away before the store — dated outside the window, or too
-    small for the column to hold. It exists for the reason above read once more:
-    a pair whose every rate was dropped reports zero written and empty lists,
-    which is exactly what a profile needing nothing reports. Membership is not
-    exclusive with the other two and does not mean the pair is empty — some of
-    its dates may have stored fine, so it says coverage *may* have holes.
+    ``pairs_discarded`` names pairs the provider *answered* where the answer did
+    not cover the window — a rate thrown away before the store, dated outside
+    the window or too small for the column to hold, or a series that simply
+    begins after the window does. That last kind is a currency the provider
+    started publishing partway through the profile's history: it drops nothing,
+    so only comparing the answer against the requested start finds it. It exists
+    for the reason above read once more: a pair whose every rate was dropped
+    reports zero written and empty lists, which is exactly what a profile
+    needing nothing reports. Membership is not exclusive with the other two and
+    does not mean the pair is empty — some of its dates may have stored fine, so
+    it says coverage *may* have holes.
     """
 
     rates_written: int
@@ -173,7 +177,13 @@ def run_rate_backfill(
                 f"Discarded {len(answered) - len(storable)} unstorable "
                 f"rate(s) for {pair}"
             )
-        if len(storable) != len(observations):
+        short_at_the_start = not _covers_window_start(storable, window)
+        if short_at_the_start:
+            # Only the pair is named, for the reason the FeedError branch above
+            # gives: this line reaches the durable log and an FX date is
+            # classified TXN_DATE.
+            logger.warning(f"Exchange rates for {pair} begin after the window does")
+        if short_at_the_start or len(storable) != len(observations):
             discarded.append(pair)
             FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="discarded").inc()
         written += service.store_observations(storable)
@@ -338,3 +348,26 @@ def _within_window(
         for observation in observations
         if earliest <= observation.rate_date <= window.end
     )
+
+
+def _covers_window_start(stored: Sequence[RateObservation], window: RateWindow) -> bool:
+    """Whether the rates being kept reach back to the day ``window`` opens on.
+
+    The bound above rejects an answer that reaches *too far*; this one asks
+    whether it reached far enough. Nothing else does: a provider that began
+    publishing a currency partway through the profile's history answers every
+    date it has, so each rate passes the window bound, none is dropped, and the
+    uncovered prefix leaves no trace. The window cannot grow into it later
+    either — it is derived from rows that already exist, so it only ever opens
+    earlier when *earlier data* is imported, never when time passes.
+
+    The same publication slack applies, read forward instead of back: a window
+    opening on a closed market is legitimately first answered days later, so a
+    series starting within ``MAX_BACKWARD_RESOLUTION_DAYS`` of the request is
+    covered. An empty set never is — zero coverage is the total case of the
+    same shortfall, not a separate one.
+    """
+    if not stored:
+        return False
+    latest_covered_start = window.start + timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
+    return min(observation.rate_date for observation in stored) <= latest_covered_start

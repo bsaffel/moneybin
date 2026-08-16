@@ -519,11 +519,13 @@ def test_planning_against_an_unbuilt_core_raises_the_named_precondition(
 def test_a_supported_pair_with_nothing_published_is_neither_failed_nor_unsupported(
     db: Database,
 ) -> None:
-    """An empty answer for a pair the provider *does* carry is just an absence.
+    """An empty answer for a pair the provider *does* carry names no remedy.
 
-    The remedy is to wait: the series exists, so the next refresh over a wider
-    span will find rows. Naming it in either list would send the user to fix
-    something that is not broken.
+    Neither of those lists fits: nothing raised, and the currency list says the
+    series exists, so pointing at a retry or at `moneybin fx set` would send the
+    user to fix something that is not broken. It is still the total case of the
+    leading gap below — zero coverage over a window that needs it — so it is
+    reported as discarded, which claims a shortfall without naming a cure.
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
     adapter = _SilentAdapter()
@@ -533,6 +535,7 @@ def test_a_supported_pair_with_nothing_published_is_neither_failed_nor_unsupport
     assert result.rates_written == 0
     assert result.pairs_failed == ()
     assert result.pairs_unsupported == ()
+    assert result.pairs_discarded == ("EUR/USD",)
 
 
 def test_a_pair_the_provider_does_not_publish_is_reported_as_unsupported(
@@ -653,6 +656,53 @@ def test_a_rate_dated_outside_the_window_is_discarded_visibly_too(
 
     assert result.pairs_discarded == ("EUR/USD",)
     assert result.rates_written == 0
+
+
+def test_a_series_that_begins_after_the_window_reports_its_leading_gap(
+    db: Database,
+) -> None:
+    """A provider that started publishing mid-history leaves the years before it.
+
+    The window opens at the profile's earliest row, so a currency the provider
+    only began carrying later answers every date it has and none of the ones
+    before. Every returned rate passes the window bound, nothing is dropped, and
+    the pair would otherwise be named in no list at all — reported exactly like
+    a pair stored in full. The window never widens on its own either: it is
+    derived from rows that already exist, so waiting for a later refresh cannot
+    fill a prefix the provider does not publish.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _DatedAdapter(
+        date(2026, 3, 10) + timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS + 1)
+    )
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_discarded == ("EUR/USD",)
+    assert result.rates_written == 1, "the dates it did answer are still cached"
+    assert result.pairs_failed == ()
+    assert result.pairs_unsupported == ()
+
+
+def test_a_series_starting_within_the_publication_slack_is_not_a_leading_gap(
+    db: Database,
+) -> None:
+    """The negative control on the bound above: a closed market is not a gap.
+
+    A window opening on a holiday stretch is legitimately first answered days
+    later, so the check allows the same publication slack the single-date path
+    resolves across. Without this bound a normal refresh over a quiet opening
+    would warn on a pair that is completely covered.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _DatedAdapter(
+        date(2026, 3, 10) + timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
+    )
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_discarded == ()
+    assert result.rates_written == 1
 
 
 def test_a_pair_stored_in_full_is_not_reported_as_discarded(db: Database) -> None:

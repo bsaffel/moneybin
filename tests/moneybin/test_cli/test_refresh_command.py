@@ -319,7 +319,7 @@ def test_refresh_reports_a_pair_whose_rates_were_partly_unusable(
     out = _invoke_refresh(runner, _rates_result(discarded=("GBP/USD",)))
 
     assert out.exit_code == 0
-    assert "Some exchange rates could not be used for GBP/USD" in out.output
+    assert "Exchange rate coverage is short for GBP/USD" in out.output
     assert "Re-run the failed step" not in out.output
     assert "✅ Refresh complete" not in out.output
 

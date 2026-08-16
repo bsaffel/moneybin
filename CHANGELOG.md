@@ -42,14 +42,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   two pair lists get none, because no number of retries fills them. A crash in
   the step itself is reported the same way, as `rate_backfill_error` with the
   same retry — without it a step that ran and failed is indistinguishable from
-  one that correctly declined to run. A currency the provider
-  does not publish at all is reported separately, as `rate_pairs_unsupported`,
-  because retrying will never fill it — that warning names `moneybin fx set`,
-  which will. Either side of the pair can be the unpublished one, so a home
-  currency the provider does not carry is caught too. A pair whose answer was
-  partly unusable — dated outside the window, or too small for the rate
-  column — is listed as `rate_pairs_discarded`, which says coverage may be
-  short on some dates rather than that the pair is missing.
+  one that correctly declined to run. A currency the provider does not publish
+  at all is reported separately, as `rate_pairs_unsupported`, because retrying
+  will never fill it — that warning names `moneybin fx set`, which will. Either
+  side of the pair can be the unpublished one, so a home currency the provider
+  does not carry is caught too. A pair whose answer was partly unusable —
+  dated outside the window, or too small for the rate column — is listed as
+  `rate_pairs_discarded`, which says coverage may be short on some dates rather
+  than that the pair is missing. A series that begins later than asked lands
+  there too: a currency the provider only started publishing partway through
+  your history answers every date it has and none of the ones before, which
+  nothing else would mark. Waiting does not fill it — the window opens at your
+  earliest row, so it moves back only when earlier data is imported.
 
   A profile with no home currency set fetches nothing. Run it alone with
   `moneybin refresh --step rates` or `refresh_run(steps=["rates"])`. A

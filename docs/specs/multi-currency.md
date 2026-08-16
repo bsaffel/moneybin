@@ -480,13 +480,21 @@ Numbered, testable. Tagged by phase.
     unsupported through an ordinary base — and when that list cannot be read,
     neither kind is claimed.
 
-    A *discarded* pair is the third: the provider answered, and MoneyBin threw
-    part of the answer away because it fell outside the requested window or the
-    rate column could not hold it. It is not exclusive with the other two and
-    does not mean the pair is empty, so it reports that coverage may be short on
-    some dates rather than naming a remedy. Without it, a pair whose every rate
-    was discarded is indistinguishable from a profile that needed no rates at
-    all: both report zero written and no named pairs.
+    A *discarded* pair is the third: the provider answered, and the answer did
+    not cover the window. Either MoneyBin threw part of it away — the rate fell
+    outside the requested range, or the rate column could not hold it — or the
+    series began after the window did, which is a currency the provider only
+    started publishing partway through the profile's history. That last kind
+    drops nothing, so it is found only by comparing the earliest rate kept
+    against the requested start, allowing the same publication slack
+    Requirement 13 resolves across; an empty answer for a published pair is its
+    total case. Waiting does not fill it, because the window opens at the
+    profile's earliest row and moves back only when earlier data is imported.
+    It is not exclusive with the other two and does not mean the pair is empty,
+    so it reports that coverage may be short on some dates rather than naming a
+    remedy. Without it, a pair whose every rate was discarded is
+    indistinguishable from a profile that needed no rates at all: both report
+    zero written and no named pairs.
 
     This does not weaken Requirement 12: a rate that is still missing at read time
     is an explicit surfaced error, never a substitution.
