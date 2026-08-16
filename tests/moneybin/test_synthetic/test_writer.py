@@ -17,6 +17,25 @@ from moneybin.synthetic.models import (
 )
 
 
+def _txn_for(
+    account_name: str, transaction_id: str = "SYN0000000001"
+) -> GeneratedTransaction:
+    """One transaction on a named account.
+
+    The writer ingests one DataFrame per raw table and DuckDB rejects a
+    column-less frame, so an account under test needs at least one transaction.
+    """
+    return GeneratedTransaction(
+        date=date(2024, 1, 15),
+        amount=Decimal("-42.50"),
+        description="TEST STORE",
+        account_name=account_name,
+        category="grocery",
+        transaction_type="DEBIT",
+        transaction_id=transaction_id,
+    )
+
+
 def _make_result(
     accounts: list[GeneratedAccount] | None = None,
     transactions: list[GeneratedTransaction] | None = None,
@@ -125,6 +144,93 @@ class TestSyntheticWriter:
         assert row is not None
         assert row[0] == "SYN00420002"
         assert row[1] == "Test CC"
+
+    def test_ofx_balance_carries_the_account_currency(self, db: Database) -> None:
+        """OFX accounts write their own currency, not a hard-coded USD."""
+        from moneybin.synthetic.writer import SyntheticWriter
+
+        acct = GeneratedAccount(
+            name="Eurozone Checking",
+            account_id="SYN00420003",
+            account_type="checking",
+            source_type="ofx",
+            institution="Banco Iberia",
+            opening_balance=Decimal("2500.00"),
+            currency_code="EUR",
+        )
+        result = _make_result(
+            accounts=[acct], transactions=[_txn_for("Eurozone Checking")]
+        )
+        SyntheticWriter(db).write(result)
+
+        row = db.execute("SELECT currency_code FROM raw.ofx_balances").fetchone()
+        assert row is not None
+        assert row[0] == "EUR"
+
+    def test_tabular_account_carries_the_account_currency(self, db: Database) -> None:
+        """The tabular path writes a different column than OFX — cover it too."""
+        from moneybin.synthetic.writer import SyntheticWriter
+
+        acct = GeneratedAccount(
+            name="UAE Checking",
+            account_id="SYN00420004",
+            account_type="checking",
+            source_type="csv",
+            institution="Emirates Bank",
+            opening_balance=Decimal("9000.00"),
+            currency_code="AED",
+        )
+        result = _make_result(accounts=[acct], transactions=[_txn_for("UAE Checking")])
+        SyntheticWriter(db).write(result)
+
+        row = db.execute("SELECT currency FROM raw.tabular_accounts").fetchone()
+        assert row is not None
+        assert row[0] == "AED"
+
+    def test_accounts_in_one_run_keep_distinct_currencies(self, db: Database) -> None:
+        """A mixed-currency persona must not collapse to one currency."""
+        from moneybin.synthetic.writer import SyntheticWriter
+
+        accounts = [
+            GeneratedAccount(
+                name="US Checking",
+                account_id="SYN00420005",
+                account_type="checking",
+                source_type="ofx",
+                institution="US Bank",
+                opening_balance=Decimal("1000.00"),
+            ),
+            GeneratedAccount(
+                name="UK Current Account",
+                account_id="SYN00420006",
+                account_type="checking",
+                source_type="csv",
+                institution="Thames Bank",
+                opening_balance=Decimal("800.00"),
+                currency_code="GBP",
+            ),
+        ]
+        result = _make_result(
+            accounts=accounts,
+            transactions=[
+                _txn_for("US Checking", "SYN0000000001"),
+                _txn_for("UK Current Account", "SYN0000000002"),
+            ],
+        )
+        SyntheticWriter(db).write(result)
+
+        ofx = db.execute(
+            "SELECT currency_code FROM raw.ofx_balances WHERE account_id = ?",
+            ["SYN00420005"],
+        ).fetchone()
+        tabular = db.execute(
+            "SELECT currency FROM raw.tabular_accounts WHERE account_id = ?",
+            ["SYN00420006"],
+        ).fetchone()
+        assert ofx is not None
+        assert tabular is not None
+        assert ofx[0] == "USD"
+        assert tabular[0] == "GBP"
 
     def test_write_csv_running_balance(self, db: Database) -> None:
         from moneybin.synthetic.writer import SyntheticWriter

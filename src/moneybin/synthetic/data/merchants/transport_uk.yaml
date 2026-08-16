@@ -1,0 +1,35 @@
+# Amounts are GBP, denominated in the account's own currency.
+category: transport
+merchants:
+  - name: "Transport for London"
+    weight: 18
+    amount: { mean: 12.40, stddev: 5.00 }
+    description_prefix: "TFL TRAVEL CH"
+  - name: "Trainline"
+    weight: 11
+    amount: { mean: 42.00, stddev: 18.00 }
+    description_prefix: "TRAINLINE"
+  - name: "National Rail"
+    weight: 10
+    amount: { mean: 36.00, stddev: 15.00 }
+    description_prefix: "NATIONAL RAIL"
+  - name: "Uber UK"
+    weight: 12
+    amount: { mean: 18.50, stddev: 8.00 }
+    description_prefix: "UBER TRIP"
+  - name: "Shell UK"
+    weight: 9
+    amount: { mean: 62.00, stddev: 16.00 }
+    description_prefix: "SHELL SERVICE"
+  - name: "BP"
+    weight: 8
+    amount: { mean: 58.00, stddev: 15.00 }
+    description_prefix: "BP FUEL"
+  - name: "Santander Cycles"
+    weight: 5
+    amount: { mean: 3.00, stddev: 1.00 }
+    description_prefix: "TFL CYCLE HIRE"
+  - name: "Addison Lee"
+    weight: 4
+    amount: { mean: 34.00, stddev: 12.00 }
+    description_prefix: "ADDISON LEE"

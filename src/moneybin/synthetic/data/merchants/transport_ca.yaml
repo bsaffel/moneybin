@@ -1,0 +1,35 @@
+# Amounts are CAD, denominated in the account's own currency.
+category: transport
+merchants:
+  - name: "Presto"
+    weight: 16
+    amount: { mean: 40.00, stddev: 12.00 }
+    description_prefix: "PRESTO RELOAD"
+  - name: "Petro-Canada"
+    weight: 13
+    amount: { mean: 82.00, stddev: 21.00 }
+    description_prefix: "PETRO-CANADA"
+  - name: "Esso"
+    weight: 11
+    amount: { mean: 79.00, stddev: 20.00 }
+    description_prefix: "ESSO CIRCLE K"
+  - name: "Uber Canada"
+    weight: 12
+    amount: { mean: 26.00, stddev: 10.00 }
+    description_prefix: "UBER CANADA"
+  - name: "Via Rail"
+    weight: 7
+    amount: { mean: 148.00, stddev: 52.00 }
+    description_prefix: "VIA RAIL CANADA"
+  - name: "TTC"
+    weight: 9
+    amount: { mean: 3.35, stddev: 0.50 }
+    description_prefix: "TTC FARE"
+  - name: "OC Transpo"
+    weight: 5
+    amount: { mean: 4.05, stddev: 0.60 }
+    description_prefix: "OC TRANSPO"
+  - name: "BC Transit"
+    weight: 5
+    amount: { mean: 2.75, stddev: 0.45 }
+    description_prefix: "BC TRANSIT"

@@ -54,6 +54,7 @@ class AccountConfig(BaseModel):
     source_type: Literal["ofx", "csv"]
     institution: str = Field(min_length=1)
     opening_balance: float = 0.0
+    currency_code: str = "USD"
 
 
 class PriceIncrease(BaseModel):
@@ -266,6 +267,7 @@ class GeneratedAccount:
     source_type: str
     institution: str
     opening_balance: Decimal
+    currency_code: str = "USD"
 
 
 @dataclass

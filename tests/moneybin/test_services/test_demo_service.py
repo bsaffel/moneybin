@@ -43,10 +43,22 @@ def _restore_profile_state() -> Generator[None, None, None]:  # pyright: ignore[
 
 
 def _mock_pipeline(
-    mocker: Any, *, net_worth: str | None = "100.00", failing: int = 0
+    mocker: Any,
+    *,
+    net_worth: str | None = "100.00",
+    failing: int = 0,
+    segments: list[tuple[str, str]] | None = None,
 ) -> None:
-    """Patch the heavy collaborators DemoService.run imports lazily."""
-    from moneybin.privacy.payloads.networth import NetWorthSnapshotPayload
+    """Patch the heavy collaborators DemoService.run imports lazily.
+
+    ``segments`` builds a multi-currency snapshot: the headline scalars go None
+    (no single total is meaningful) while ``per_currency`` carries each
+    currency's own figure — the real shape NetworthService returns.
+    """
+    from moneybin.privacy.payloads.networth import (
+        NetWorthCurrencySegment,
+        NetWorthSnapshotPayload,
+    )
     from moneybin.services.doctor_service import DoctorReport, InvariantResult
     from moneybin.services.refresh import RefreshResult
 
@@ -70,6 +82,27 @@ def _mock_pipeline(
         invariants=invariants, transaction_count=5
     )
     net = mocker.patch("moneybin.services.networth_service.NetworthService")
+    if segments is not None:
+        net.return_value.current.return_value = NetWorthSnapshotPayload(
+            balance_date=datetime.date(2025, 1, 1),
+            currency_code=None,
+            net_worth=None,
+            total_assets=None,
+            total_liabilities=None,
+            account_count=len(segments),
+            per_currency=[
+                NetWorthCurrencySegment(
+                    currency_code=code,
+                    net_worth=Decimal(value),
+                    total_assets=Decimal(value),
+                    total_liabilities=Decimal("0.00"),
+                    account_count=1,
+                )
+                for code, value in segments
+            ],
+            per_account=[],
+        )
+        return
     net.return_value.current.return_value = NetWorthSnapshotPayload(
         balance_date=datetime.date(2025, 1, 1) if net_worth is not None else None,
         currency_code="USD" if net_worth is not None else None,
@@ -77,6 +110,17 @@ def _mock_pipeline(
         total_assets=Decimal("150.00") if net_worth is not None else None,
         total_liabilities=Decimal("50.00") if net_worth is not None else None,
         account_count=2 if net_worth is not None else 0,
+        per_currency=[
+            NetWorthCurrencySegment(
+                currency_code="USD",
+                net_worth=Decimal(net_worth),
+                total_assets=Decimal("150.00"),
+                total_liabilities=Decimal("50.00"),
+                account_count=2,
+            )
+        ]
+        if net_worth is not None
+        else [],
         per_account=[],
     )
 
@@ -157,6 +201,43 @@ def test_run_refuses_missing_net_worth_snapshot(
 
 
 @pytest.mark.integration
+def test_run_accepts_a_multi_currency_position(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    """A profile holding two currencies has no single total — that is not a failure.
+
+    NetworthService nulls the headline scalars once a second currency appears
+    (multi-currency.md Requirement 5) and reports each currency in
+    `per_currency`. Demo used to read that null as a broken refresh, which made
+    every multi-currency persona unrunnable.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _mock_pipeline(mocker, segments=[("EUR", "2500.00"), ("GBP", "900.00")])
+
+    result = DemoService().run(persona="basic", seed=42)
+
+    assert result.net_worth is None
+    assert [(s.currency_code, s.net_worth) for s in result.per_currency] == [
+        ("EUR", Decimal("2500.00")),
+        ("GBP", Decimal("900.00")),
+    ]
+
+
+@pytest.mark.integration
+def test_run_still_reports_a_scalar_for_one_currency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    """The single-currency case — the common one — is unchanged."""
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _mock_pipeline(mocker, net_worth="12345.67")
+
+    result = DemoService().run(persona="basic", seed=42)
+
+    assert result.net_worth == Decimal("12345.67")
+    assert [s.currency_code for s in result.per_currency] == ["USD"]
+
+
+@pytest.mark.integration
 def test_rerun_rebuilds_the_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
 ) -> None:
@@ -222,7 +303,7 @@ def test_rebuild_requires_confirmation(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("persona", ["basic", "family", "freelancer"])
+@pytest.mark.parametrize("persona", ["basic", "family", "freelancer", "international"])
 def test_demo_net_worth_covers_every_account(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persona: str
 ) -> None:
@@ -237,12 +318,18 @@ def test_demo_net_worth_covers_every_account(
 
     result = DemoService().run(persona=persona, seed=42, years=1)
 
-    assert result.net_worth != Decimal("0")
+    # A real position exists. For one currency that is the scalar; for several
+    # the scalar is null by design and each currency carries its own figure.
+    assert result.per_currency
+    assert any(segment.net_worth != Decimal("0") for segment in result.per_currency)
 
     with get_database(read_only=True) as db:
+        # reports.net_worth is one row per (date, currency), so the count has to
+        # be summed across currencies — a bare LIMIT 1 would compare one
+        # currency's account count against the whole profile's and fail.
         row = db.execute(
-            "SELECT account_count FROM reports.net_worth "
-            "ORDER BY balance_date DESC LIMIT 1"
+            "SELECT SUM(account_count) FROM reports.net_worth "
+            "WHERE balance_date = (SELECT MAX(balance_date) FROM reports.net_worth)"
         ).fetchone()
         assert row is not None
         # Every generated account contributes on the latest date — none aged out.
@@ -250,7 +337,7 @@ def test_demo_net_worth_covers_every_account(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("persona", ["basic", "family", "freelancer"])
+@pytest.mark.parametrize("persona", ["basic", "family", "freelancer", "international"])
 def test_demo_ships_a_categorized_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persona: str
 ) -> None:
@@ -277,7 +364,7 @@ def test_demo_ships_a_categorized_profile(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("persona", ["basic", "family", "freelancer"])
+@pytest.mark.parametrize("persona", ["basic", "family", "freelancer", "international"])
 def test_demo_pipeline_output_is_invisible_to_the_real_data_guard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persona: str
 ) -> None:

@@ -1,0 +1,35 @@
+# Amounts are EUR, denominated in the account's own currency.
+category: grocery
+merchants:
+  - name: "Lidl"
+    weight: 15
+    amount: { mean: 38.00, stddev: 13.00 }
+    description_prefix: "LIDL SAGL"
+  - name: "Carrefour"
+    weight: 13
+    amount: { mean: 56.00, stddev: 19.00 }
+    description_prefix: "CARREFOUR MARKET"
+  - name: "Albert Heijn"
+    weight: 11
+    amount: { mean: 42.00, stddev: 14.00 }
+    description_prefix: "ALBERT HEIJN"
+  - name: "Edeka"
+    weight: 11
+    amount: { mean: 48.00, stddev: 16.00 }
+    description_prefix: "EDEKA MARKT"
+  - name: "Mercadona"
+    weight: 10
+    amount: { mean: 51.00, stddev: 17.00 }
+    description_prefix: "MERCADONA"
+  - name: "REWE"
+    weight: 9
+    amount: { mean: 44.00, stddev: 15.00 }
+    description_prefix: "REWE MARKT"
+  - name: "Intermarché"
+    weight: 7
+    amount: { mean: 53.00, stddev: 18.00 }
+    description_prefix: "INTERMARCHE"
+  - name: "Jumbo"
+    weight: 6
+    amount: { mean: 40.00, stddev: 13.00 }
+    description_prefix: "JUMBO SUPERMARKT"

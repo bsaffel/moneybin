@@ -13,7 +13,12 @@ app = typer.Typer(
 )
 
 # Persona -> default profile name mapping
-_PERSONA_PROFILES = {"basic": "alice", "family": "bob", "freelancer": "charlie"}
+_PERSONA_PROFILES = {
+    "basic": "alice",
+    "family": "bob",
+    "freelancer": "charlie",
+    "international": "eve",
+}
 
 
 def _run_generate(
@@ -26,7 +31,7 @@ def _run_generate(
     """Core generate logic — called by both generate() and reset().
 
     Args:
-        persona: Persona name (basic, family, freelancer).
+        persona: Persona name (basic, family, freelancer, international).
         profile: Target profile name.
         years: Number of years of history (None for persona default).
         seed: Deterministic seed (None for random).
@@ -135,7 +140,9 @@ def _run_generate(
 @app.command("generate")
 def synthetic_generate(
     persona: str = typer.Option(
-        ..., "--persona", help="Persona to generate (basic, family, freelancer)"
+        ...,
+        "--persona",
+        help=f"Persona to generate ({', '.join(_PERSONA_PROFILES)})",
     ),
     profile: str | None = typer.Option(
         None, "--profile", help="Target profile name (auto-derived from persona)"

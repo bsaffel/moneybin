@@ -1,0 +1,36 @@
+# Amounts are AED, denominated in the account's own currency. The dirham is
+# pegged to the dollar at 3.6725, so these run ~3.7x their USD equivalents.
+category: dining
+merchants:
+  - name: "Zaroob"
+    weight: 13
+    amount: { mean: 62.00, stddev: 22.00 }
+    description_prefix: "ZAROOB REST"
+  - name: "Al Mallah"
+    weight: 12
+    amount: { mean: 38.00, stddev: 14.00 }
+    description_prefix: "AL MALLAH CAFETERIA"
+  - name: "Ravi Restaurant"
+    weight: 11
+    amount: { mean: 45.00, stddev: 16.00 }
+    description_prefix: "RAVI RESTAURANT"
+  - name: "Operation Falafel"
+    weight: 10
+    amount: { mean: 55.00, stddev: 19.00 }
+    description_prefix: "OPERATION FALAFEL"
+  - name: "Costa Coffee UAE"
+    weight: 12
+    amount: { mean: 28.00, stddev: 9.00 }
+    description_prefix: "COSTA COFFEE AE"
+  - name: "Shake Shack UAE"
+    weight: 8
+    amount: { mean: 96.00, stddev: 30.00 }
+    description_prefix: "SHAKE SHACK UAE"
+  - name: "Tim Hortons UAE"
+    weight: 9
+    amount: { mean: 32.00, stddev: 11.00 }
+    description_prefix: "TIM HORTONS AE"
+  - name: "P.F. Chang's"
+    weight: 5
+    amount: { mean: 248.00, stddev: 78.00 }
+    description_prefix: "PF CHANGS DUBAI"

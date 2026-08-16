@@ -40,6 +40,13 @@ data/
 *.pdf
 *.xlsx
 *.xls
+# The synthetic generator's persona and merchant definitions are invented data,
+# not financial records. `data/` above excludes the directory itself, so git
+# never descends into it and negating the files alone would not work — the
+# directory has to be re-included. Without this, a NEW persona or catalog is
+# silently absent from every commit while the ones predating the rule stay
+# tracked, so the generator looks fine locally and ships broken.
+!src/moneybin/synthetic/data/
 # SQLMesh seed data is safe to track (static reference data, not financial)
 !src/moneybin/sqlmesh/models/seeds/*.csv
 # Test fixtures are synthetic/non-sensitive and must be tracked for CI

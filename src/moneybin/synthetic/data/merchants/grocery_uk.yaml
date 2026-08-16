@@ -1,0 +1,35 @@
+# Amounts are GBP, denominated in the account's own currency.
+category: grocery
+merchants:
+  - name: "Tesco"
+    weight: 16
+    amount: { mean: 48.00, stddev: 16.00 }
+    description_prefix: "TESCO STORES"
+  - name: "Sainsbury's"
+    weight: 13
+    amount: { mean: 45.00, stddev: 14.00 }
+    description_prefix: "SAINSBURYS SMKT"
+  - name: "ASDA"
+    weight: 12
+    amount: { mean: 52.00, stddev: 18.00 }
+    description_prefix: "ASDA SUPERSTORE"
+  - name: "Lidl GB"
+    weight: 11
+    amount: { mean: 32.00, stddev: 11.00 }
+    description_prefix: "LIDL GB"
+  - name: "Morrisons"
+    weight: 9
+    amount: { mean: 44.00, stddev: 15.00 }
+    description_prefix: "WM MORRISONS"
+  - name: "Waitrose"
+    weight: 7
+    amount: { mean: 58.00, stddev: 19.00 }
+    description_prefix: "WAITROSE"
+  - name: "Co-op Food"
+    weight: 8
+    amount: { mean: 18.00, stddev: 7.00 }
+    description_prefix: "CO-OP GROUP"
+  - name: "M&S Food"
+    weight: 6
+    amount: { mean: 26.00, stddev: 9.00 }
+    description_prefix: "MARKS AND SPENCER"

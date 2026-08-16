@@ -1,0 +1,35 @@
+# Amounts are EUR, denominated in the account's own currency.
+category: transport
+merchants:
+  - name: "Deutsche Bahn"
+    weight: 15
+    amount: { mean: 58.00, stddev: 24.00 }
+    description_prefix: "DB VERTRIEB"
+  - name: "SNCF"
+    weight: 12
+    amount: { mean: 64.00, stddev: 26.00 }
+    description_prefix: "SNCF VOYAGEURS"
+  - name: "NS"
+    weight: 11
+    amount: { mean: 22.00, stddev: 9.00 }
+    description_prefix: "NS GROEP"
+  - name: "Renfe"
+    weight: 9
+    amount: { mean: 47.00, stddev: 19.00 }
+    description_prefix: "RENFE VIAJEROS"
+  - name: "FlixBus"
+    weight: 8
+    amount: { mean: 29.00, stddev: 12.00 }
+    description_prefix: "FLIXBUS"
+  - name: "TotalEnergies"
+    weight: 10
+    amount: { mean: 71.00, stddev: 18.00 }
+    description_prefix: "TOTALENERGIES"
+  - name: "Shell"
+    weight: 9
+    amount: { mean: 68.00, stddev: 17.00 }
+    description_prefix: "SHELL STATION"
+  - name: "BlaBlaCar"
+    weight: 4
+    amount: { mean: 24.00, stddev: 9.00 }
+    description_prefix: "BLABLACAR"

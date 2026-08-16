@@ -14,6 +14,8 @@ doctor-clean) and needs no raw mutation of audited ``app.*`` tables, which may
 only be written through their ``*Repo`` (Invariant 10).
 """
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
@@ -24,6 +26,7 @@ from moneybin.errors import UserError
 
 if TYPE_CHECKING:
     from moneybin.database import Database
+    from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
     from moneybin.services.refresh import RefreshResult
 
 logger = logging.getLogger(__name__)
@@ -47,9 +50,14 @@ class DemoResult:
     categorized_count: int
     doctor_failing: int
     doctor_failing_names: list[str]
-    net_worth: Decimal
-    total_assets: Decimal
-    total_liabilities: Decimal
+    # None once the profile holds more than one currency: no single total is
+    # meaningful before conversion (multi-currency.md Requirement 5), so the
+    # figure each currency does have lives in `per_currency`. A single-currency
+    # profile — the common case — still gets the scalars it always did.
+    net_worth: Decimal | None
+    total_assets: Decimal | None
+    total_liabilities: Decimal | None
+    per_currency: list[NetWorthCurrencySegment]
     # The default profile demo displaced, so the CLI can name the way back.
     # None when no default was set (or it was already `demo`).
     previous_default: str | None
@@ -96,7 +104,7 @@ class DemoRefreshFailedError(UserError):
         )
 
 
-def _count_categorized(db: "Database") -> int:
+def _count_categorized(db: Database) -> int:
     """Transactions that came out of the pipeline with a category."""
     from moneybin.tables import FCT_TRANSACTIONS
 
@@ -110,7 +118,7 @@ def _count_categorized(db: "Database") -> int:
     return int(row[0]) if row else 0
 
 
-def _check_refresh(result: "RefreshResult") -> None:
+def _check_refresh(result: RefreshResult) -> None:
     """Abort the demo if any refresh step reported a failure.
 
     `refresh()` reports crashes as returned errors rather than exceptions, so an
@@ -122,7 +130,7 @@ def _check_refresh(result: "RefreshResult") -> None:
         raise DemoRefreshFailedError(str(error))
 
 
-def _count_transactions(db: "Database") -> int:
+def _count_transactions(db: Database) -> int:
     try:
         row = db.execute(
             "SELECT (SELECT COUNT(*) FROM raw.ofx_transactions) "
@@ -338,11 +346,10 @@ class DemoService:
             failing_names = [r.name for r in report.invariants if r.status == "fail"]
             snapshot = NetworthService(db).current()
 
-        if (
-            snapshot.net_worth is None
-            or snapshot.total_assets is None
-            or snapshot.total_liabilities is None
-        ):
+        # Test the segments, not the scalars: a multi-currency profile nulls the
+        # scalars by design, so testing those would refuse a perfectly good run.
+        # No segments at all is the real failure — the refresh produced nothing.
+        if not snapshot.per_currency:
             raise DemoRefreshFailedError("net worth unavailable after refresh")
 
         # 9. Only now — a complete, successful run — make demo the persisted
@@ -374,5 +381,6 @@ class DemoService:
             net_worth=snapshot.net_worth,
             total_assets=snapshot.total_assets,
             total_liabilities=snapshot.total_liabilities,
+            per_currency=list(snapshot.per_currency),
             previous_default=previous_default,
         )

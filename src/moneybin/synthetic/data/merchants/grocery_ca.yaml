@@ -1,0 +1,35 @@
+# Amounts are CAD, denominated in the account's own currency.
+category: grocery
+merchants:
+  - name: "Loblaws"
+    weight: 14
+    amount: { mean: 96.00, stddev: 31.00 }
+    description_prefix: "LOBLAWS"
+  - name: "No Frills"
+    weight: 13
+    amount: { mean: 78.00, stddev: 26.00 }
+    description_prefix: "NO FRILLS"
+  - name: "Metro"
+    weight: 11
+    amount: { mean: 88.00, stddev: 29.00 }
+    description_prefix: "METRO ONTARIO"
+  - name: "Sobeys"
+    weight: 11
+    amount: { mean: 92.00, stddev: 30.00 }
+    description_prefix: "SOBEYS INC"
+  - name: "Save-On-Foods"
+    weight: 9
+    amount: { mean: 85.00, stddev: 28.00 }
+    description_prefix: "SAVE ON FOODS"
+  - name: "FreshCo"
+    weight: 8
+    amount: { mean: 64.00, stddev: 22.00 }
+    description_prefix: "FRESHCO"
+  - name: "IGA"
+    weight: 7
+    amount: { mean: 74.00, stddev: 25.00 }
+    description_prefix: "IGA MARCHE"
+  - name: "Costco Canada"
+    weight: 9
+    amount: { mean: 198.00, stddev: 55.00 }
+    description_prefix: "COSTCO WHOLESALE CDA"

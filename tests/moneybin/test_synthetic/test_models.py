@@ -204,6 +204,26 @@ class TestPersonaConfig:
                 institution="Test Bank",
             )
 
+    def test_currency_code_defaults_to_usd(self) -> None:
+        """Existing personas declare no currency, so they must stay USD."""
+        account = AccountConfig(
+            name="Chase Checking",
+            type="checking",
+            source_type="ofx",
+            institution="Chase Bank",
+        )
+        assert account.currency_code == "USD"
+
+    def test_currency_code_is_configurable_per_account(self) -> None:
+        account = AccountConfig(
+            name="UAE Checking",
+            type="checking",
+            source_type="csv",
+            institution="Emirates Bank",
+            currency_code="AED",
+        )
+        assert account.currency_code == "AED"
+
 
 class TestSpendingCategoryConfig:
     """Test spending category config validation."""
@@ -258,7 +278,7 @@ class TestYAMLDataLoading:
         "education",
         "gifts",
     ]
-    PERSONAS = ["basic", "family", "freelancer"]
+    PERSONAS = ["basic", "family", "freelancer", "international"]
 
     @pytest.mark.parametrize("catalog", MERCHANT_CATALOGS)
     def test_merchant_catalog_loads(self, catalog: str) -> None:
@@ -280,6 +300,41 @@ class TestYAMLDataLoading:
     def test_unknown_catalog_raises(self) -> None:
         with pytest.raises(FileNotFoundError, match="Unknown merchant catalog"):
             load_merchant_catalog("nonexistent")
+
+    def test_single_currency_personas_stay_usd(self) -> None:
+        """The three original personas must not drift off USD."""
+        for persona_name in ("basic", "family", "freelancer"):
+            persona = load_persona(persona_name)
+            currencies = {acct.currency_code for acct in persona.accounts}
+            assert currencies == {"USD"}, (
+                f"Persona {persona_name!r} changed currency: {currencies}"
+            )
+
+    def test_international_persona_spans_five_currencies(self) -> None:
+        persona = load_persona("international")
+        currencies = {acct.currency_code for acct in persona.accounts}
+        assert currencies == {"USD", "EUR", "GBP", "CAD", "AED"}
+
+    def test_international_persona_covers_an_unpriced_currency(self) -> None:
+        """AED is absent from Frankfurter's 30-currency set.
+
+        That is what exercises the FX_CURRENCY_UNSUPPORTED branch, which a
+        wholly ECB-covered persona would never reach.
+        """
+        persona = load_persona("international")
+        assert "AED" in {acct.currency_code for acct in persona.accounts}
+
+    def test_international_persona_exercises_both_writer_paths(self) -> None:
+        """OFX and tabular write currency to different tables and columns.
+
+        A persona whose non-USD accounts all shared one source_type would
+        leave the other path's hard-coded currency undetected.
+        """
+        persona = load_persona("international")
+        foreign_source_types = {
+            acct.source_type for acct in persona.accounts if acct.currency_code != "USD"
+        }
+        assert foreign_source_types == {"ofx", "csv"}
 
     def test_persona_merchant_catalogs_exist(self) -> None:
         """Every merchant_catalog referenced in personas has a matching file."""

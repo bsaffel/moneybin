@@ -31,9 +31,32 @@ def _fake_result(**overrides: Any) -> DemoResult:
         net_worth=Decimal("12345.67"),
         total_assets=Decimal("20000.00"),
         total_liabilities=Decimal("7654.33"),
+        per_currency=[_segment("USD", "12345.67")],
         previous_default="personal",
     )
     return dataclasses.replace(base, **overrides)
+
+
+def _segment(code: str, net_worth: str) -> Any:
+    from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
+
+    return NetWorthCurrencySegment(
+        currency_code=code,
+        net_worth=Decimal(net_worth),
+        total_assets=Decimal(net_worth),
+        total_liabilities=Decimal("0.00"),
+        account_count=1,
+    )
+
+
+def _multi_currency_result() -> DemoResult:
+    """The shape DemoService returns for a profile holding two currencies."""
+    return _fake_result(
+        net_worth=None,
+        total_assets=None,
+        total_liabilities=None,
+        per_currency=[_segment("EUR", "29668.74"), _segment("GBP", "-1278.75")],
+    )
 
 
 def _patch_service(mocker: Any, result: DemoResult) -> Any:
@@ -64,6 +87,59 @@ def test_demo_json_uses_standard_envelope(mocker: Any) -> None:
     assert envelope["data"]["profile"] == "demo"
     assert envelope["data"]["net_worth"] == "12345.67"
     assert envelope["data"]["transaction_count"] == 900
+
+
+@pytest.mark.unit
+def test_demo_prints_every_currency_when_there_is_no_single_total(
+    mocker: Any,
+) -> None:
+    """A multi-currency profile has no one number — show each currency instead."""
+    _patch_service(mocker, _multi_currency_result())
+    result = runner.invoke(app, ["demo", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "EUR" in result.output
+    assert "29668.74" in result.output
+    assert "GBP" in result.output
+    assert "-1278.75" in result.output
+    # The bare "Net worth: None" that a null scalar would otherwise render.
+    assert "None" not in result.output
+
+
+@pytest.mark.unit
+def test_demo_json_carries_null_scalar_and_per_currency(mocker: Any) -> None:
+    """`null` is an answer here, not a missing key — and never the string "None"."""
+    _patch_service(mocker, _multi_currency_result())
+    result = runner.invoke(app, ["demo", "--yes", "--output", "json"])
+    assert result.exit_code == 0, result.output
+    envelope = json.loads(result.stdout)
+    assert envelope["data"]["net_worth"] is None
+    assert envelope["data"]["total_assets"] is None
+    assert envelope["data"]["per_currency"] == [
+        {
+            "currency_code": "EUR",
+            "net_worth": "29668.74",
+            "total_assets": "29668.74",
+            "total_liabilities": "0.00",
+            "account_count": 1,
+        },
+        {
+            "currency_code": "GBP",
+            "net_worth": "-1278.75",
+            "total_assets": "-1278.75",
+            "total_liabilities": "0.00",
+            "account_count": 1,
+        },
+    ]
+
+
+@pytest.mark.unit
+def test_demo_json_single_currency_still_carries_its_segment(mocker: Any) -> None:
+    _patch_service(mocker, _fake_result())
+    result = runner.invoke(app, ["demo", "--yes", "--output", "json"])
+    assert result.exit_code == 0, result.output
+    envelope = json.loads(result.stdout)
+    assert envelope["data"]["net_worth"] == "12345.67"
+    assert [s["currency_code"] for s in envelope["data"]["per_currency"]] == ["USD"]
 
 
 @pytest.mark.unit
