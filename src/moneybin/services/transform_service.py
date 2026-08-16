@@ -360,9 +360,23 @@ class TransformService:
             logger.info(f"SQLMesh transforms completed in {elapsed:.2f}s")
             return ApplyResult(applied=True, duration_seconds=elapsed)
         finally:
-            SQLMESH_RUN_DURATION_SECONDS.labels(model="transform_apply").observe(
-                time.monotonic() - t0
-            )
+            # Guarded because this is a `finally`: an unguarded raise here does
+            # not just lose a timing sample, it replaces the return above, so a
+            # committed transform reports as a crash. Callers act on that —
+            # `rematch_after_merge` has already zeroed its retirement counter by
+            # then and re-attaches it only on the success path, so the reversal
+            # of a transfer the user accepted would go undisclosed.
+            try:
+                SQLMESH_RUN_DURATION_SECONDS.labels(model="transform_apply").observe(
+                    time.monotonic() - t0
+                )
+            except Exception as exc:  # noqa: BLE001  # telemetry must not undo a committed apply
+                # Type, not message: a metrics-client failure can name the
+                # profile path, and SanitizedLogFormatter masks known PII
+                # patterns, not arbitrary paths.
+                logger.warning(
+                    f"Could not record the transform duration: {type(exc).__name__}"
+                )
 
     def freshness(self) -> TransformFreshness:
         """Return warehouse staleness without initializing SQLMesh.

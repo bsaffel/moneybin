@@ -1106,6 +1106,63 @@ def test_the_collapse_count_reaches_the_batched_path_s_separate_rematch(
     assert seeded.rematch_after_merge().transfers_retired == 1
 
 
+def test_a_crashing_rematch_still_discloses_the_transfers_the_merge_retired(
+    seeded: AccountLinksService,
+    db: Database,
+    rematch: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A reversal the user must hear about cannot depend on what happens next.
+
+    ``rematch_after_merge`` takes the collapse count off the instance and zeroes
+    it *before* running the refresh, and re-attaches it only to the returned
+    result. So any exception out of the refresh discards the fact that an
+    accepted transfer was reversed — permanently, since the reversal itself
+    committed with the merge and the counter is now zero. The user sees a
+    failure, re-runs, and is never told a decision of theirs was undone.
+
+    Asserted against a generic ``RuntimeError`` rather than the specific
+    telemetry bug that surfaced this: guarding only the call that happens to
+    raise today leaves the next one to be found in review. The disclosure has
+    to hold for anything the refresh can raise, so the fixture raises something
+    with no special handling anywhere.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00009",
+        source_transaction_id_a="ofx17",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx16",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    db.begin()
+    assert seeded.set(_DEC1, target_account_id=_CAND_A, in_outer_txn=True) is None
+    db.commit()
+
+    rematch.side_effect = RuntimeError("the rebuild died after the merge committed")
+
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
+        seeded.rematch_after_merge()
+
+    # The count and the way back, not just "something failed" — a reversal the
+    # user cannot find is the whole failure this discloses.
+    assert "1" in caplog.text
+    assert "transfer" in caplog.text.lower()
+    assert "audit" in caplog.text.lower()
+
+
 def test_the_collapse_count_accumulates_across_two_merges_in_one_batch(
     seeded: AccountLinksService, db: Database, rematch: MagicMock
 ) -> None:

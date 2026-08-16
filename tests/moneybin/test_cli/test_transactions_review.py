@@ -206,6 +206,51 @@ def test_targeted_confirm_exits_zero_when_the_accept_stood(
 
 @patch("moneybin.services.matching_service.MatchingService")
 @patch("moneybin.cli.commands.transactions.review.get_database")
+def test_a_refused_confirm_still_performs_the_reject_asked_for_beside_it(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """The non-zero exit must not cost the caller the other half of the call.
+
+    `--confirm X --reject Y` is two decisions in one invocation. Raising as soon
+    as the confirm is refused would silently drop the reject, so the caller
+    reads exit 1, assumes neither landed, and re-runs — re-rejecting a match
+    that was already rejected. The raise therefore sits after the reject block,
+    and this test is what pins that ordering: move the raise up and the
+    ``status="rejected"`` call below disappears while the exit code stays 1.
+    """
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status="reversed", transfers_retired=1
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--type",
+            "matches",
+            "--confirm",
+            "tx_stale00001",
+            "--reject",
+            "tx_other00002",
+        ],
+    )
+
+    assert result.exit_code == 1
+    rejected = [
+        call
+        for call in mock_service.return_value.set_status.call_args_list
+        if call.kwargs.get("status") == "rejected"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0].args[0] == "tx_other00002"
+    assert "Rejected match" in result.output
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
 def test_confirm_all_is_silent_about_reversals_when_none_happened(
     mock_get_db: MagicMock, mock_service: MagicMock
 ) -> None:

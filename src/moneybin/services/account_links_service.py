@@ -728,5 +728,22 @@ class AccountLinksService:
         # with it. Best-effort by construction, so it cannot abort the rematch
         # on the next line.
         record_account_merge_retirements(collapsed)
-        result = refresh(self._db, steps=["match", "transform"], actor=self._actor)
+        try:
+            result = refresh(self._db, steps=["match", "transform"], actor=self._actor)
+        except Exception:
+            # The reversal committed with the merge, but `collapsed` has already
+            # been taken off the instance and is only re-attached to the result
+            # below — so without this the crash takes the one fact the user is
+            # owed with it, and nothing later can reconstruct it. Stated here
+            # rather than at the callers because this is where the count still
+            # exists. Re-raised untouched: the failure is still the caller's to
+            # report, this only refuses to lose the disclosure on the way out.
+            if collapsed:
+                logger.warning(
+                    f"⚠️  The merge reversed {collapsed} accepted transfer(s) "
+                    "before the rebuild failed; that reversal stands. Inspect "
+                    "with 'moneybin system audit list' and restore with "
+                    "'moneybin system audit undo <operation-id>' if that was wrong"
+                )
+            raise
         return replace(result, transfers_retired=collapsed + result.transfers_retired)
