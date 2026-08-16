@@ -39,7 +39,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the MCP envelope, and retried on the next refresh. A currency the provider
   does not publish at all is reported separately, as `rate_pairs_unsupported`,
   because retrying will never fill it — that warning names `moneybin fx set`,
-  which will. A profile with no home currency set fetches nothing. Run it alone with `moneybin refresh --step rates` or
+  which will. Either side of the pair can be the unpublished one, so a home
+  currency the provider does not carry is caught too. A pair whose answer was
+  partly unusable — dated outside the window, or too small for the rate column —
+  is listed as `rate_pairs_discarded`, which says coverage may be short on some
+  dates rather than that the pair is missing.
+  A profile with no home currency set fetches nothing. Run it alone with `moneybin refresh --step rates` or
   `refresh_run(steps=["rates"])`. Only currency codes and dates leave the
   machine.
 - **Exchange rates, and your own corrections to them (M1K.2).** `moneybin fx

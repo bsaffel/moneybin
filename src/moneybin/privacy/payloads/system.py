@@ -517,15 +517,24 @@ class RefreshRunPayload:
     # distinct from 0, which means it ran and had nothing to fetch. It is the
     # only did-it-run signal: an empty pair list is the same list either way.
     #
-    # The two pair lists are separate because their remedies are: a failed pair
-    # retries itself on the next refresh, while an unsupported one never will,
-    # and only `moneybin fx set` can fill it. Merging them would send a user to
-    # record rates by hand over a dropped connection.
+    # The three pair lists are separate because their remedies are: a failed
+    # pair retries itself on the next refresh, an unsupported one never will and
+    # only `moneybin fx set` can fill it, and a discarded one had its answer
+    # thrown away by a MoneyBin gate rather than by the provider. Merging any
+    # two would send a user to the wrong remedy — record rates by hand over a
+    # dropped connection, or wait out an outage that already ended.
+    #
+    # `rate_pairs_discarded` is the only one that can carry a pair the run also
+    # wrote rates for: it means part of the answer was unusable, so coverage may
+    # be short on some dates rather than absent on all of them.
     rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
     rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
     rate_pairs_unsupported: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
 

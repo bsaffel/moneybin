@@ -535,6 +535,27 @@ def test_a_pair_the_provider_does_not_publish_is_reported_as_unsupported(
     assert result.rates_written == 0
 
 
+def test_a_home_currency_the_provider_does_not_publish_is_reported_as_unsupported(
+    db: Database,
+) -> None:
+    """Either side of the pair can be the one the provider has never carried.
+
+    An AED home profile holding EUR rows asks for EUR/AED: the base is
+    published and the quote is not, so a check that reads only the base sees a
+    supported currency and calls the empty answer an absence. Every refresh
+    then re-sends the same doomed request while the user is told nothing —
+    the exact failure ``pairs_unsupported`` exists to prevent, reached from the
+    other end. ``CurrencyService._unsupported`` already reads both.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _SilentAdapter()
+
+    result = run_rate_backfill(db, home_currency="AED", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_unsupported == ("EUR/AED",)
+    assert result.pairs_failed == ()
+
+
 def test_an_unreadable_currency_list_never_declares_a_pair_unsupported(
     db: Database,
 ) -> None:
@@ -573,6 +594,59 @@ def test_a_rate_the_column_cannot_hold_is_dropped_rather_than_raised(
 
     assert result.rates_written == 0
     assert result.pairs_failed == ()
+
+
+def test_a_pair_whose_rates_were_all_discarded_says_so(db: Database) -> None:
+    """Dropping a provider answer silently recreates the ambiguity above.
+
+    ``rates_written == 0`` with three empty lists is what a profile that needed
+    nothing reports, so a pair whose every rate was thrown away is
+    indistinguishable from one that was never in the plan. Conversion stays
+    impossible on those dates either way, and only one of the two is worth
+    telling the user about.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _UnstorableAdapter()
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_discarded == ("EUR/USD",)
+    assert result.pairs_failed == ()
+    assert result.pairs_unsupported == ()
+
+
+def test_a_rate_dated_outside_the_window_is_discarded_visibly_too(
+    db: Database,
+) -> None:
+    """The window bound drops rates for a different reason and hides it the same way.
+
+    Both filters stand between a provider answer and the store, and neither
+    leaves a trace a caller can read. Reporting only the unstorable one would
+    fix half the blind spot and leave the half that fires when a range endpoint
+    echoes dates nobody asked for.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _DatedAdapter(_TODAY + timedelta(days=1))
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_discarded == ("EUR/USD",)
+    assert result.rates_written == 0
+
+
+def test_a_pair_stored_in_full_is_not_reported_as_discarded(db: Database) -> None:
+    """The negative control: the ordinary path must stay quiet.
+
+    A list that named every pair would carry no information, and the CLI
+    warning it drives would print on every healthy refresh.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _SpanAdapter()
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_discarded == ()
+    assert result.rates_written == 1
 
 
 def test_one_unstorable_rate_does_not_cost_the_pairs_after_it(db: Database) -> None:

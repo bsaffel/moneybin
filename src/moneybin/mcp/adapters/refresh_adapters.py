@@ -155,6 +155,11 @@ def refresh_envelope(
                 if result.rate_backfill is None
                 else list(result.rate_backfill.pairs_unsupported)
             ),
+            rate_pairs_discarded=(
+                []
+                if result.rate_backfill is None
+                else list(result.rate_backfill.pairs_discarded)
+            ),
         ),
         sensitivity="low",
         actions=actions,

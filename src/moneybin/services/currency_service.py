@@ -584,20 +584,8 @@ class CurrencyService:
         )
 
     def _unsupported(self, base: str, quote: str) -> set[str]:
-        """Which of the two currencies the provider prices on no date at all.
-
-        An unreadable list answers "none": claiming a currency is unsupported on
-        the strength of a dropped connection would send the user to a permanent
-        remedy for a transient failure.
-        """
-        if self._adapter is None:
-            return set()
-        try:
-            published = self._adapter.supported_currencies()
-        except FeedError:
-            logger.info("Could not read the provider's currency list")
-            return set()
-        return {code for code in (base, quote) if code not in published}
+        """Which of the two currencies the provider prices on no date at all."""
+        return unsupported_currencies(self._adapter, base, quote)
 
 
 def build_currency_service(db: Database, *, actor: str = "system") -> CurrencyService:
@@ -660,6 +648,30 @@ def _require_storable(rate: Decimal) -> None:
             "different number than the one reported back. Round it first.",
             code=error_codes.FX_OVERRIDE_RATE_INVALID,
         )
+
+
+def unsupported_currencies(adapter: RateAdapter | None, *codes: str) -> set[str]:
+    """Which of ``codes`` the provider prices on no date at all.
+
+    Every caller asks about a *pair*, and either side can be the one the
+    provider has never carried — a profile whose home currency is unpublished
+    reaches this with a perfectly ordinary base. Reading one side is what makes
+    such a profile report an empty result forever with nothing to act on, so
+    the check is shared rather than re-derived per caller.
+
+    An unreadable list answers "none": claiming a currency is unsupported on
+    the strength of a dropped connection would send the user to a permanent
+    remedy for a transient failure. Adapters memoize the list, so asking about
+    many pairs still costs one call.
+    """
+    if adapter is None:
+        return set()
+    try:
+        published = adapter.supported_currencies()
+    except FeedError:
+        logger.info("Could not read the provider's currency list")
+        return set()
+    return {code for code in codes if code not in published}
 
 
 def is_storable_after_rounding(rate: Decimal) -> bool:

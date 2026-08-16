@@ -1,5 +1,5 @@
 {
-  "sha256": "06ee78f0eb1d3ea52681fd76cf2837e6abedbb61d289a5c1671755bf08b6ad4f",
+  "sha256": "839a8e5c0f476fe803a8cbc890a2b60d2f01c051e530c50c30bf66690f021405",
   "tool_count": 49,
   "tools": [
     {
@@ -2611,7 +2611,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, identity proposal backfill, and an exchange-rate gather in canonical order. Pass steps to select from gsheet, match, transform, categorize, identity, and rates. The rates step caches the rates this profile's own rows imply so later report reads convert offline. A pair whose provider call failed appears in rate_pairs_failed and is retried next run; one the provider does not publish at all appears in rate_pairs_unsupported and is never retried \u2014 only `moneybin fx set` fills it. Rebuilds core.* and reports.* and may write app categorization or identity-review state, plus the raw exchange-rate cache. No revert path; fix inputs and rerun.",
+        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, identity proposal backfill, and an exchange-rate gather in canonical order. Pass steps to select from gsheet, match, transform, categorize, identity, and rates. The rates step caches the rates this profile's own rows imply so later report reads convert offline. A pair whose provider call failed appears in rate_pairs_failed and is retried next run; one the provider does not publish at all appears in rate_pairs_unsupported and is never retried \u2014 only `moneybin fx set` fills it; one whose answer was partly unusable appears in rate_pairs_discarded, so its coverage may be short on some dates. Rebuilds core.* and reports.* and may write app categorization or identity-review state, plus the raw exchange-rate cache. No revert path; fix inputs and rerun.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2648,12 +2648,12 @@
         },
         "name": "refresh_run"
       },
-      "description_bytes": 777,
+      "description_bytes": 891,
       "input_schema_bytes": 706,
       "name": "refresh_run",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 1676
+      "total_bytes": 1790
     },
     {
       "annotation_bytes": 89,
@@ -5023,5 +5023,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 56260
+  "total_bytes": 56374
 }

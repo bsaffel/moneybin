@@ -77,7 +77,9 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         "pair whose provider call failed appears in rate_pairs_failed and is "
         "retried next run; one the provider does not publish at all appears in "
         "rate_pairs_unsupported and is never retried — only `moneybin fx set` "
-        "fills it. Rebuilds core.* and reports.* "
+        "fills it; one answered with partly unusable rates appears in "
+        "rate_pairs_discarded and may have gaps. "
+        "Rebuilds core.* and reports.* "
         "and may write app categorization or identity-review state, plus the "
         "raw exchange-rate cache. No revert path; fix inputs and rerun.",
     )

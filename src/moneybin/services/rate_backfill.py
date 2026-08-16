@@ -24,6 +24,7 @@ from moneybin.services.currency_service import (
     CurrencyService,
     canonical_currency,
     is_storable_after_rounding,
+    unsupported_currencies,
 )
 from moneybin.tables import (
     DIM_HOLDINGS,
@@ -50,11 +51,20 @@ class RateBackfillResult:
     otherwise indistinguishable from "nothing new to fetch", so the pair would
     be re-requested on every refresh forever while the user was never told that
     only a manual ``moneybin fx set`` can fill it.
+
+    ``pairs_discarded`` names pairs the provider *answered* where at least one
+    rate was thrown away before the store — dated outside the window, or too
+    small for the column to hold. It exists for the reason above read once more:
+    a pair whose every rate was dropped reports zero written and empty lists,
+    which is exactly what a profile needing nothing reports. Membership is not
+    exclusive with the other two and does not mean the pair is empty — some of
+    its dates may have stored fine, so it says coverage *may* have holes.
     """
 
     rates_written: int
     pairs_failed: tuple[str, ...]
     pairs_unsupported: tuple[str, ...] = ()
+    pairs_discarded: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +104,10 @@ def run_rate_backfill(
     date or a rate the column cannot hold is the *provider's* fault for one pair,
     and letting either through would abort the whole loop and report every
     currency after it as never attempted. Both are filtered first, so a raise
-    from the store means what the sentence above says it means.
+    from the store means what the sentence above says it means. Filtering is not
+    the same as hiding: whichever gate drops a rate, the pair is named in
+    ``pairs_discarded``, because a pair that lost every rate to a filter would
+    otherwise be reported exactly as a profile that needed no rates at all.
     """
     windows = plan_rate_backfill(db, home_currency=home_currency, through=through)
     service = CurrencyService(db, adapter=adapter)
@@ -103,6 +116,7 @@ def run_rate_backfill(
     written = 0
     failed: list[str] = []
     unsupported: list[str] = []
+    discarded: list[str] = []
     for window in windows:
         pair = f"{window.from_currency}/{window.to_currency}"
         try:
@@ -117,7 +131,9 @@ def run_rate_backfill(
             failed.append(pair)
             FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="failed").inc()
             continue
-        if not observations and _is_unsupported(adapter, window.from_currency):
+        if not observations and unsupported_currencies(
+            adapter, window.from_currency, window.to_currency
+        ):
             logger.warning(f"No exchange rate series is published for {pair}")
             unsupported.append(pair)
             FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="unsupported").inc()
@@ -137,16 +153,21 @@ def run_rate_backfill(
                 f"Discarded {len(answered) - len(storable)} unstorable "
                 f"rate(s) for {pair}"
             )
+        if len(storable) != len(observations):
+            discarded.append(pair)
+            FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="discarded").inc()
         written += service.store_observations(storable)
 
     logger.info(
         f"Rate backfill: {len(windows)} pair(s) planned, {written} rate(s) written, "
-        f"{len(failed)} pair(s) failed, {len(unsupported)} pair(s) unsupported"
+        f"{len(failed)} pair(s) failed, {len(unsupported)} pair(s) unsupported, "
+        f"{len(discarded)} pair(s) with discarded rate(s)"
     )
     return RateBackfillResult(
         rates_written=written,
         pairs_failed=tuple(failed),
         pairs_unsupported=tuple(unsupported),
+        pairs_discarded=tuple(discarded),
     )
 
 
@@ -251,26 +272,6 @@ def plan_rate_backfill(
         logger.warning(f"Rate backfill skipped {unusable} unusable currency code(s)")
         FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="unusable").inc(unusable)
     return tuple(windows)
-
-
-def _is_unsupported(adapter: RateAdapter, from_currency: str) -> bool:
-    """Whether the provider publishes ``from_currency`` at all.
-
-    Only ever asked about an empty result, which is two absences wearing one
-    shape: a currency the provider has never carried, and a range it simply had
-    no rows for. Consulting the currency list is what the adapter protocol
-    documents as the way to tell them apart.
-
-    A provider that cannot answer leaves them indistinguishable, and the
-    fail-closed reading is "not proven unsupported": naming a pair unsupported
-    sends the user to record rates by hand, which is the wrong instruction to
-    give over a dropped connection. The list is memoized per adapter, so this
-    costs at most one extra call per run however many pairs come back empty.
-    """
-    try:
-        return from_currency not in adapter.supported_currencies()
-    except FeedError:
-        return False
 
 
 def _usable_currency(value: str) -> str | None:

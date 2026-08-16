@@ -37,16 +37,18 @@ def test_rate_fields_are_absent_when_the_step_did_not_run() -> None:
     assert _payload(env).rates_written is None
     assert _payload(env).rate_pairs_failed == []
     assert _payload(env).rate_pairs_unsupported == []
+    assert _payload(env).rate_pairs_discarded == []
 
 
 @pytest.mark.unit
 def test_rate_backfill_counts_and_pairs_reach_the_envelope() -> None:
-    """The two pair lists stay separate all the way to the agent.
+    """The three pair lists stay separate all the way to the agent.
 
-    An agent reading this envelope decides what to tell the user, and the two
-    lists carry opposite instructions: wait for the next refresh, or record the
-    rate by hand. Collapsing them here would erase that distinction after the
-    service went to the trouble of making it.
+    An agent reading this envelope decides what to tell the user, and the lists
+    carry different instructions: wait for the next refresh, record the rate by
+    hand, or expect gaps on some dates of an otherwise-filled pair. Collapsing
+    any two here would erase a distinction the service went to the trouble of
+    making.
     """
     env = refresh_envelope(
         RefreshResult(
@@ -56,6 +58,7 @@ def test_rate_backfill_counts_and_pairs_reach_the_envelope() -> None:
                 rates_written=7,
                 pairs_failed=("EUR/USD",),
                 pairs_unsupported=("JPY/USD",),
+                pairs_discarded=("GBP/USD",),
             ),
         ),
         requested=expand_steps(None),
@@ -64,6 +67,7 @@ def test_rate_backfill_counts_and_pairs_reach_the_envelope() -> None:
     assert _payload(env).rates_written == 7
     assert _payload(env).rate_pairs_failed == ["EUR/USD"]
     assert _payload(env).rate_pairs_unsupported == ["JPY/USD"]
+    assert _payload(env).rate_pairs_discarded == ["GBP/USD"]
 
 
 @pytest.mark.unit

@@ -112,6 +112,15 @@ def refresh_command(
             f"⚠️  No exchange rate series is published for {pairs}. "
             "Record these rates yourself with `moneybin fx set`."
         )
+    if result.rate_backfill is not None and result.rate_backfill.pairs_discarded:
+        # Hedged, unlike the two above: this pair may have stored most of its
+        # span and lost a day at one end, so it says coverage may be short
+        # rather than that the pair is missing.
+        pairs = ", ".join(result.rate_backfill.pairs_discarded)
+        logger.warning(
+            f"⚠️  Some exchange rates could not be used for {pairs}. "
+            "Conversion may be incomplete on those dates."
+        )
     rates = result.rate_backfill
     # Retrying is the right advice for everything here except an unsupported
     # pair, which no number of refreshes will fill — so it suppresses the ✅
@@ -125,9 +134,11 @@ def refresh_command(
     )
     # The rates step is best-effort like the three above, so an unfilled pair
     # suppresses the ✅ for the same reason they do: a success banner printed
-    # directly beneath the warning above contradicts it.
+    # directly beneath the warning above contradicts it. A discarded rate joins
+    # them without joining `retryable_error`: the provider answered, so the same
+    # request returns the same unusable value however many times it is re-sent.
     has_step_error = retryable_error or (
-        rates is not None and bool(rates.pairs_unsupported)
+        rates is not None and bool(rates.pairs_unsupported or rates.pairs_discarded)
     )
 
     if output == OutputFormat.JSON:

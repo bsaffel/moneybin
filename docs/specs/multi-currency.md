@@ -468,15 +468,25 @@ Numbered, testable. Tagged by phase.
     downstream consumes it, so a provider outage costs the run nothing that had
     already succeeded. A profile with no home currency set fetches nothing.
 
-    A pair the step could not fill is reported as one of two kinds, because their
-    remedies are opposites. A *failed* pair — the provider call raised — is
+    A pair the step could not fill is reported as one of three kinds, because
+    their remedies differ. A *failed* pair — the provider call raised — is
     retried on the next refresh and needs nothing from the user. An *unsupported*
     pair — the provider does not publish that currency at all — will answer the
     same way forever, so it is named separately and points at `moneybin fx set`.
-    Collapsing them would either send a user to record rates by hand over a
+    Collapsing those two would either send a user to record rates by hand over a
     dropped connection, or leave them waiting for a refresh that can never
-    succeed. The two are told apart by the provider's own currency list; when
-    that list cannot be read, neither kind is claimed.
+    succeed. They are told apart by the provider's own currency list, read for
+    *both* sides of the pair — a profile whose home currency is unpublished is
+    unsupported through an ordinary base — and when that list cannot be read,
+    neither kind is claimed.
+
+    A *discarded* pair is the third: the provider answered, and MoneyBin threw
+    part of the answer away because it fell outside the requested window or the
+    rate column could not hold it. It is not exclusive with the other two and
+    does not mean the pair is empty, so it reports that coverage may be short on
+    some dates rather than naming a remedy. Without it, a pair whose every rate
+    was discarded is indistinguishable from a profile that needed no rates at
+    all: both report zero written and no named pairs.
 
     This does not weaken Requirement 12: a rate that is still missing at read time
     is an explicit surfaced error, never a substitution.

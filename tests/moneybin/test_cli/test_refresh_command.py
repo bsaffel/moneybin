@@ -206,13 +206,17 @@ def _rates_result(
     *,
     failed: tuple[str, ...] = (),
     unsupported: tuple[str, ...] = (),
+    discarded: tuple[str, ...] = (),
 ) -> RefreshResult:
     """An applied refresh whose only complaint is about exchange rates."""
     return RefreshResult(
         applied=True,
         duration_seconds=2.0,
         rate_backfill=RateBackfillResult(
-            rates_written=0, pairs_failed=failed, pairs_unsupported=unsupported
+            rates_written=0,
+            pairs_failed=failed,
+            pairs_unsupported=unsupported,
+            pairs_discarded=discarded,
         ),
     )
 
@@ -279,11 +283,34 @@ def test_refresh_rate_warnings_survive_quiet(runner: CliRunner) -> None:
     assert "No exchange rate series is published for JPY/USD" in out.output
 
 
-def test_refresh_json_carries_both_rate_pair_lists(runner: CliRunner) -> None:
+def test_refresh_reports_a_pair_whose_rates_were_partly_unusable(
+    runner: CliRunner,
+) -> None:
+    """A discarded rate is neither an outage nor a missing series.
+
+    The provider answered, so retrying re-sends a request that returns the same
+    unusable value — which is why this earns no retry hint. It is also not a
+    permanent absence: the pair may have stored most of its span, so the line
+    says coverage *may* be short instead of naming a manual remedy for a gap
+    that might not exist.
+    """
+    out = _invoke_refresh(runner, _rates_result(discarded=("GBP/USD",)))
+
+    assert out.exit_code == 0
+    assert "Some exchange rates could not be used for GBP/USD" in out.output
+    assert "Re-run the failed step" not in out.output
+    assert "✅ Refresh complete" not in out.output
+
+
+def test_refresh_json_carries_every_rate_pair_list(runner: CliRunner) -> None:
     """An agent on the JSON surface gets the same split a human gets on stderr."""
     out = _invoke_refresh(
         runner,
-        _rates_result(failed=("EUR/USD",), unsupported=("JPY/USD",)),
+        _rates_result(
+            failed=("EUR/USD",),
+            unsupported=("JPY/USD",),
+            discarded=("GBP/USD",),
+        ),
         "--output",
         "json",
     )
@@ -291,6 +318,7 @@ def test_refresh_json_carries_both_rate_pair_lists(runner: CliRunner) -> None:
     payload = json.loads(out.stdout)["data"]
     assert payload["rate_pairs_failed"] == ["EUR/USD"]
     assert payload["rate_pairs_unsupported"] == ["JPY/USD"]
+    assert payload["rate_pairs_discarded"] == ["GBP/USD"]
 
 
 def test_refresh_clean_rates_still_prints_the_success_banner(

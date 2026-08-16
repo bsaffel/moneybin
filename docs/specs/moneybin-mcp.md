@@ -177,8 +177,10 @@ and confirmation contracts.
   in that canonical order. `rates` caches the reference rates the profile's own
   transactions, balances and holdings imply; it runs last because nothing
   downstream consumes it, and it reports `rates_written` plus any
-  `rate_pairs_failed` (retried next run) and `rate_pairs_unsupported` (never
-  retried; needs `moneybin fx set`) rather than failing the call.
+  `rate_pairs_failed` (retried next run), `rate_pairs_unsupported` (never
+  retried; needs `moneybin fx set`), and `rate_pairs_discarded` (the provider
+  answered and part of the answer was unusable, so coverage may be short on some
+  dates) rather than failing the call.
 - `sql_query` is the read-only escape hatch and `sql_schema` explains the
   interface schema. They do not replace domain validation for writes.
 
