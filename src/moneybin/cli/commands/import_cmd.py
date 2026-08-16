@@ -33,7 +33,7 @@ from moneybin.extractors.tabular.formats import NumberFormatType, SignConvention
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from moneybin.database import Database
     from moneybin.extractors.tabular.formats import TabularFormat
@@ -1101,6 +1101,28 @@ def _confirmation_envelope_data(
     )
 
 
+def format_account_candidate(candidate: Mapping[str, object]) -> str:
+    """Format one account candidate with any available ledger evidence."""
+    account_id = str(candidate.get("account_id", ""))
+    display_name = str(candidate.get("display_name", ""))
+    signal = str(candidate.get("signal", ""))
+    rendered = f"{account_id}  ({display_name}, {signal})"
+
+    matched = candidate.get("overlap_matched")
+    comparable = candidate.get("overlap_comparable")
+    if type(matched) is not int or type(comparable) is not int:
+        return rendered
+    if comparable == 0:
+        return f"{rendered} · ledger overlap: no comparable transactions"
+
+    overlap = f"ledger overlap: {matched}/{comparable} matched"
+    window_start = candidate.get("overlap_window_start")
+    window_end = candidate.get("overlap_window_end")
+    if isinstance(window_start, str) and isinstance(window_end, str):
+        overlap += f" ({window_start} to {window_end})"
+    return f"{rendered} · {overlap}"
+
+
 def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None:
     """Print the source keys + candidate accounts for an account_confirmation.
 
@@ -1141,8 +1163,7 @@ def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None
         )
         for c in p["candidates"]:
             typer.echo(
-                f"       candidate: {c['account_id']}  "
-                f"({c['display_name']}, {c['signal']})",
+                f"       candidate: {format_account_candidate(c)}",
                 err=err,
             )
 
@@ -1199,10 +1220,11 @@ def _import_files_account_args(
     # gate's own proposals, but the sign gate fires BEFORE the account gate on
     # PDF, so there are no proposals here to re-key from — and passing the
     # caller's key through would put a raw source_account_key (an OFX <ACCTID>,
-    # or issuer+last4 on PDF) into `actions[]`, which sits outside the redaction
-    # walk. Dropping it is the honest half: a ref answers the same account and
-    # discloses nothing, a raw key cannot be printed, and `_sign_recovery_note`
-    # tells the caller what to re-supply rather than letting the pin vanish.
+    # or an opaque PDF document digest) into `actions[]`, which sits outside the
+    # redaction walk. Dropping it is the honest half: a ref answers the same
+    # account and discloses nothing, a raw key cannot be printed, and
+    # `_sign_recovery_note` tells the caller what to re-supply rather than
+    # letting the pin vanish.
     from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
         is_proposal_ref,
     )

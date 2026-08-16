@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import shlex
+from datetime import date
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -38,6 +39,7 @@ from moneybin.services.import_service import (
     CreatedAccount,
     ImportResult,
 )
+from moneybin.services.ledger_overlap import LedgerOverlap
 
 runner = CliRunner()
 
@@ -45,7 +47,10 @@ _MINTED = (CreatedAccount(account_id="acct00000001", display_name="WF Checking")
 
 
 def _account_proposal_dict(
-    source_account_key: str, ref: str = "@0"
+    source_account_key: str,
+    ref: str = "@0",
+    *,
+    overlap: LedgerOverlap | None = None,
 ) -> AccountProposalDict:
     """One account proposal dict via the real serializer (guarantees the shape)."""
     return AccountProposal(
@@ -58,6 +63,7 @@ def _account_proposal_dict(
                 display_name="Checking",
                 confidence=0.5,
                 signal="name",
+                overlap=overlap,
             ),
         ),
     ).to_dict(proposal_ref=ref)
@@ -1357,6 +1363,90 @@ class TestImportFilesConfirmFlow:
         # is not exempt from it. @0 is what the user types.
         assert "@0" in result.output
         assert "****king" in result.output
+
+    def test_account_confirmation_tty_renders_ledger_overlap(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The account decision shows how much incoming history already matches."""
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4 fake\n")
+        outcome = ConfirmationRequired(
+            channel="pdf",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[
+                _account_proposal_dict(
+                    "pdf_doc_1234567890abcdef",
+                    overlap=LedgerOverlap(
+                        comparable=2,
+                        matched=2,
+                        window_start=date(2024, 1, 15),
+                        window_end=date(2024, 1, 20),
+                    ),
+                )
+            ],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(app, ["files", str(pdf_file)])
+
+        assert "ledger overlap: 2/2 matched" in result.output
+        assert "2024-01-15 to 2024-01-20" in result.output
+
+    def test_account_confirmation_tty_distinguishes_no_comparable_period(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """Zero comparable rows is absence of evidence, not zero matched history."""
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4 fake\n")
+        outcome = ConfirmationRequired(
+            channel="pdf",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[
+                _account_proposal_dict(
+                    "pdf_doc_1234567890abcdef",
+                    overlap=LedgerOverlap(
+                        comparable=0,
+                        matched=0,
+                        window_start=None,
+                        window_end=None,
+                    ),
+                )
+            ],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(app, ["files", str(pdf_file)])
+
+        assert "ledger overlap: no comparable transactions" in result.output
+        assert "0/0 matched" not in result.output
 
     def test_the_tty_prompt_never_prints_the_institutions_account_number(
         self,

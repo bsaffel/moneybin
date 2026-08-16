@@ -261,8 +261,11 @@ flowchart TD
   resolver found candidates but confidence is too low to auto-adopt; and (b) a
   source that states no account identity at all (`account_id`, `account_name`,
   and account-name column all absent) — `identity_unknown` on the proposal,
-  because the mint would otherwise be under the filename stem. Both cases ride
-  the same one-shape envelope and are ratified via `account_bindings`.
+  because its display name would otherwise be only a filename-derived
+  placeholder. PDF still uses an opaque document digest for exact-file
+  idempotency; that digest is not evidence that two different statements are
+  the same account. Both cases ride the same one-shape envelope and are ratified
+  via `account_bindings`.
 
   A first-contact mint is **not** case (b). A source that states an identity
   and matches nothing has no second answer available, so it resolves and the
