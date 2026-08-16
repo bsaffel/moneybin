@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import duckdb
 
@@ -18,21 +18,22 @@ from moneybin import error_codes
 from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
 from moneybin.errors import RecoveryAction, UserError
+from moneybin.matching.application import (
+    MatchDecisionApplication,
+    MatchDecisionNotFoundError,
+    MatchDecisionStateError,
+    SettableMatchStatus,
+    record_committed_match_effects,
+)
 from moneybin.matching.assignment import NodeKey, connected_components
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import (
     VALID_MATCH_TYPES,
-    count_matches_with_status,
     get_active_dedup_edges,
-    get_match_decision,
     get_match_log,
     get_pending_matches,
 )
 from moneybin.matching.priority import seed_source_priority
-from moneybin.matching.reconciliation import (
-    record_dedup_retirements,
-    retire_transfers_invalidated_by_dedup,
-)
 from moneybin.tables import MATCH_DECISIONS
 
 if TYPE_CHECKING:
@@ -262,116 +263,64 @@ class MatchingService:
                 ],
             )
 
-        # Read-validate-write in one transaction so a concurrent writer can't
-        # slip between the guard read and the update (closes the TOCTOU window).
-        # The reconciliation below joins it, so the acceptance and the
-        # retirements it forces commit together or not at all — a crash between
-        # them would otherwise leave exactly the corrupt bridge it prevents.
-        # Two numbers, deliberately: `reversals` is what the pass did and feeds
-        # the counter; `retired` is what the user is told and discounts this
-        # call's own row below.
-        retired = reversals = 0
-        committed_status = status
         self._db.begin()
         try:
-            current = get_match_decision(self._db, match_id)
-            if current is None:
-                raise UserError(
-                    f"No match decision found for id {match_id!r}.",
-                    code=error_codes.MUTATION_NOT_FOUND,
-                    recovery_actions=[
-                        RecoveryAction(
-                            tool="reviews",
-                            arguments={"kind": "matches", "status": "pending"},
-                            rationale="List current pending matches to find a valid match_id.",
-                            confidence="suggested",
-                            idempotent=True,
-                        )
-                    ],
-                )
-
-            current_status = current["match_status"]
-            if current_status != status:
-                if current_status != "pending":
-                    accepted_operation_id = None
-                    if current_status == "accepted":
-                        from moneybin.services.audit_service import AuditService
-
-                        events = AuditService(self._db).list_events(
-                            target_table="match_decisions",
-                            target_id=match_id,
-                            limit=1,
-                        )
-                        if events:
-                            accepted_operation_id = events[0].operation_id
-                    raise UserError(
-                        f"Cannot set match {match_id!r} to {status!r}: it is "
-                        f"{current_status!r}, not pending.",
-                        code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
-                        recovery_actions=[
-                            _non_pending_recovery(
-                                current_status,
-                                accepted_operation_id=accepted_operation_id,
-                            )
-                        ],
-                    )
-                self._match_repo().update_status(
-                    match_id,
-                    status=status,
-                    decided_by=decided_by,
-                    actor=actor,
-                    in_outer_txn=True,
-                )
-                if status == "accepted":
-                    # Not gated on match_type='dedup'. Accepting a dedup edge is
-                    # the common way to collide two transfers' legs, but a
-                    # transfer proposed *before* an edge that invalidated it
-                    # survives in the queue — Tier 4 refuses to raise that shape
-                    # and never revisits the ones it already raised — so
-                    # accepting it claims a component another transfer holds.
-                    retired = reversals = retire_transfers_invalidated_by_dedup(
-                        self._db,
-                        decisions=self._match_repo(),
-                        actor=actor,
-                        in_outer_txn=True,
-                    )
-                    # That pass walks every accepted transfer, this row
-                    # included, so it can have reversed the acceptance written
-                    # two lines up. Re-read rather than echo `status`: this is
-                    # the only branch where the two can differ, and reporting
-                    # the request here tells the caller the opposite of what
-                    # committed.
-                    committed_status = self._read_status(match_id)
-                    if committed_status == "reversed":
-                        # Discount this call's own row. `transfers_retired` is a
-                        # claim about *standing* decisions the user made and
-                        # this call undid; the row flipped moments ago inside
-                        # this transaction is neither standing nor undone —
-                        # `match_status` above is what reports it, and undo
-                        # returns it to `pending` rather than to accepted. Exact
-                        # rather than a floor: only a transfer row can be
-                        # self-reversed, so it is counted exactly once.
-                        retired -= 1
-            # current_status == status falls through as an idempotent no-op.
+            application = MatchDecisionApplication(
+                self._db,
+                decisions=self._match_repo(),
+                actor=actor,
+                decided_by=decided_by,
+            )
+            application.set_status(match_id, status=cast(SettableMatchStatus, status))
+            effects = application.finalize()
             self._db.commit()
+        except MatchDecisionNotFoundError as exc:
+            self._db.rollback()
+            raise UserError(
+                f"No match decision found for id {exc.match_id!r}.",
+                code=error_codes.MUTATION_NOT_FOUND,
+                recovery_actions=[
+                    RecoveryAction(
+                        tool="reviews",
+                        arguments={"kind": "matches", "status": "pending"},
+                        rationale="List current pending matches to find a valid match_id.",
+                        confidence="suggested",
+                        idempotent=True,
+                    )
+                ],
+            ) from None
+        except MatchDecisionStateError as exc:
+            self._db.rollback()
+            accepted_operation_id = None
+            if exc.current_status == "accepted":
+                from moneybin.services.audit_service import AuditService
+
+                events = AuditService(self._db).list_events(
+                    target_table="match_decisions",
+                    target_id=match_id,
+                    limit=1,
+                )
+                if events:
+                    accepted_operation_id = events[0].operation_id
+            raise UserError(
+                f"Cannot set match {match_id!r} to {status!r}: it is "
+                f"{exc.current_status!r}, not pending.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                recovery_actions=[
+                    _non_pending_recovery(
+                        exc.current_status,
+                        accepted_operation_id=accepted_operation_id,
+                    )
+                ],
+            ) from None
         except BaseException:
             self._db.rollback()
             raise
-        # Past the commit, so the reversals it counts are durable.
-        record_dedup_retirements(reversals)
+        record_committed_match_effects(effects)
         return MatchDecisionOutcome(
-            match_status=committed_status, transfers_retired=retired
+            match_status=effects.effective_statuses[match_id],
+            transfers_retired=effects.standing_transfers_retired,
         )
-
-    def _read_status(self, match_id: str) -> str:
-        """Current ``match_status`` for ``match_id``, read inside the caller's txn."""
-        row = get_match_decision(self._db, match_id)
-        if row is None:  # pragma: no cover — the caller just wrote this row
-            raise UserError(
-                f"No match decision found for id {match_id!r}.",
-                code=error_codes.MUTATION_NOT_FOUND,
-            )
-        return str(row["match_status"])
 
     def _compute_component_keys(self) -> dict[tuple[str, str, str], str]:
         """Build a map from (account_id, source_type, stid) to component_key.
@@ -512,46 +461,25 @@ class MatchingService:
         """
         if match_type is not None and match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
-        repo = self._match_repo()
         self._db.begin()
         try:
-            flipped = repo.accept_pending(
-                match_type=match_type,
-                decided_by="user",
+            application = MatchDecisionApplication(
+                self._db,
+                decisions=self._match_repo(),
                 actor=actor,
-                in_outer_txn=True,
+                decided_by="user",
             )
-            # Skip the scan when the queue was empty: nothing was folded, so
-            # nothing can have been invalidated.
-            retired = (
-                retire_transfers_invalidated_by_dedup(
-                    self._db, decisions=repo, actor=actor, in_outer_txn=True
-                )
-                if flipped
-                else 0
+            application.accept_pending(
+                match_type=match_type,
             )
-            # Counted over the ids this call flipped, not over `retired`: that
-            # total also covers transfers accepted long before this batch, so
-            # subtracting it would under-report an ordinary bulk accept.
-            still_accepted = count_matches_with_status(
-                self._db, flipped, status="accepted"
-            )
+            effects = application.finalize()
             self._db.commit()
         except BaseException:
             self._db.rollback()
             raise
-        # The raw count, before the discount below: that discount is a
-        # disclosure rule, and every one of these reversals committed.
-        record_dedup_retirements(retired)
-        # Discount the rows this call itself flipped, for the reason `set_status`
-        # discounts its one row: `transfers_retired` claims standing decisions
-        # were undone, and a proposal accepted and reversed inside this same
-        # transaction is neither. `reversed_by_reconciliation` is exactly that
-        # set — the reconciliation only ever reverses transfers, so every flipped
-        # row that did not stay accepted is one of `retired`.
-        self_reversed = len(flipped) - still_accepted
+        record_committed_match_effects(effects)
         return BulkAcceptOutcome(
-            accepted=still_accepted,
-            reversed_by_reconciliation=self_reversed,
-            transfers_retired=retired - self_reversed,
+            accepted=effects.accepted_count,
+            reversed_by_reconciliation=effects.immediate_reversals,
+            transfers_retired=effects.standing_transfers_retired,
         )
