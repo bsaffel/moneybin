@@ -2117,7 +2117,14 @@ class TestHoldings:
         assert result.market_value_by_currency == {"USD": Decimal("2000.50")}
 
     def test_mixed_currency_portfolio_refuses_a_total(self, db: Database) -> None:
-        """Summing EUR into USD would invent a figure; publish the split instead."""
+        """With no home currency, there is no unit to sum into; publish the split.
+
+        Mixing currencies is no longer refused outright — a home currency plus a
+        stored rate produces a combined figure, which
+        ``test_a_mixed_portfolio_totals_in_the_home_currency`` covers. What this
+        profile lacks is the target: nothing names the unit a combined number
+        would be in, so stating one would invent it.
+        """
         _seed_read_fixtures(db)
         _replace_holdings_view(
             db,

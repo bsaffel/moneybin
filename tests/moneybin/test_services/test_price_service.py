@@ -1581,7 +1581,7 @@ def test_deleting_with_a_malformed_currency_is_refused(db: Database) -> None:
 def test_a_rejected_mark_currency_does_not_reach_the_logged_message(
     db: Database,
 ) -> None:
-    """The twin of the same split in ``CurrencyService._require_currency``.
+    """The twin of the same split in ``currency_service.require_currency``.
 
     ``quote_currency`` is free text a user types, and text-mode
     ``handle_cli_errors`` sends ``message`` to ``logger.error`` against a file

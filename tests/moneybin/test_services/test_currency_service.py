@@ -638,7 +638,7 @@ def test_set_override_refuses_a_pair_that_prices_itself(db: Database) -> None:
 
     Accepting the write would store an audited correction that ``list_rates``
     displays and ``resolve_rate`` can never honour — the succeeds-and-joins-
-    nothing failure ``_require_currency`` refuses a malformed code for, reached
+    nothing failure ``require_currency`` refuses a malformed code for, reached
     through a pair that is spelled perfectly well.
 
     The two codes are spelled differently on purpose: the rule is about the

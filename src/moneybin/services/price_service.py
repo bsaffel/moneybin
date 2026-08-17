@@ -763,7 +763,7 @@ class PriceService:
         try:
             validate_currency_code(candidate)
         except ValueError as exc:
-            # Same split as `CurrencyService._require_currency`, for the same
+            # Same split as `currency_service.require_currency`, for the same
             # reason: text-mode `handle_cli_errors` sends `message` to
             # `logger.error` on the strength of its being a fixed MoneyBin
             # string, and a currency argument is free text the user typed.

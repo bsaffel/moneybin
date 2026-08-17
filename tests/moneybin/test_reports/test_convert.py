@@ -291,11 +291,10 @@ def test_a_malformed_currency_code_segments_rather_than_raising(
 ) -> None:
     """``currency_code`` is whatever the source file put in it.
 
-    ``CurrencyService._require_currency`` refuses a code that would match
-    nothing, and it raises a plain ``UserError`` — not ``RateUnavailableError``.
-    Letting that escape would break a whole net-worth read over one mis-mapped
-    cell, which is the failure Requirement 15 exists to prevent.
-    ``rate_backfill`` guards the same case with ``_usable_currency``.
+    ``require_currency`` refuses a code that would match nothing, and it raises
+    a plain ``UserError`` — not ``RateUnavailableError``. Letting that escape
+    would break a whole net-worth read over one mis-mapped cell, which is the
+    failure Requirement 15 exists to prevent.
     """
     _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
     service = CurrencyService(saved_db)
@@ -321,7 +320,7 @@ def test_a_malformed_currency_code_stays_out_of_the_reason(
 ) -> None:
     """A mis-mapped cell holds arbitrary source text, so it is never echoed.
 
-    ``_require_currency`` keeps a rejected code out of its own ``message`` for
+    ``require_currency`` keeps a rejected code out of its own ``message`` for
     this reason; the reports layer must not reintroduce it one level up.
     """
     service = CurrencyService(saved_db)
@@ -422,6 +421,56 @@ def test_a_report_with_no_money_columns_is_not_degraded(saved_db: Database) -> N
     assert outcome.degraded_reason is None
     assert outcome.display_currency is None
     assert outcome.records[0]["txn_count"] == 3
+
+
+def test_a_placeholder_row_holding_no_amount_is_not_degraded(
+    saved_db: Database,
+) -> None:
+    """Declaring a money column is not the same as holding money in it.
+
+    ``core:networth`` on an empty profile returns one placeholder row whose
+    amounts and ``currency_code`` are all NULL. Reading that as "some rows do
+    not record which currency they hold" reports a conversion that failed, when
+    in fact there was nothing to price — the same state as a report with no
+    money columns at all, which is already not degraded.
+    """
+    service = CurrencyService(saved_db)
+
+    outcome = convert_records(
+        [_row(amount=None, currency_code=None)],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+    )
+
+    assert outcome.degraded_reason is None
+    assert outcome.display_currency is None
+    # The row survives untouched — nothing to convert is not nothing to return.
+    assert outcome.records[0]["txn_count"] == 3
+
+
+def test_a_report_with_no_rows_names_no_currency(saved_db: Database) -> None:
+    """Zero rows cannot be denominated in the currency that was asked for.
+
+    The row loop is the only thing that resolves a rate, so an empty result
+    would otherwise label itself converted without a single rate having been
+    read. It is the same nothing-to-convert state as the placeholder above and
+    answers identically, rather than the two disagreeing on one case.
+    """
+    service = CurrencyService(saved_db)
+
+    outcome = convert_records(
+        [],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+    )
+
+    assert outcome.degraded_reason is None
+    assert outcome.display_currency is None
+    assert outcome.records == []
 
 
 def test_a_monthly_grain_prices_at_the_month_close(saved_db: Database) -> None:

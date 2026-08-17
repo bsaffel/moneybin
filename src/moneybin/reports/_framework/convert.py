@@ -103,10 +103,18 @@ def convert_records(
     rows = [dict(record) for record in records]
 
     amounts = money_columns(classes)
-    if not amounts:
+    if not _holds_money(rows, amounts):
         # Nothing to convert is not a degraded conversion. A report of counts and
         # categories has no amounts to denominate, so it reports no currency and
         # no complaint.
+        #
+        # Declaring a money column is not holding money in one, so the test is
+        # the values rather than the schema: `core:networth` on an empty profile
+        # returns one placeholder row with every amount NULL, and its NULL
+        # `currency_code` would otherwise be read below as a row that lost its
+        # currency. A report returning no rows at all reaches the same state
+        # from the other side — the row loop is what resolves a rate, so it
+        # would otherwise claim the target currency without reading one.
         return ConversionOutcome(rows, None)
 
     currency_column = semantics.currency
@@ -197,12 +205,16 @@ def convert_records(
     return ConversionOutcome(converted, target, None)
 
 
+def _holds_money(rows: Sequence[Mapping[str, Any]], amounts: Sequence[str]) -> bool:
+    """Whether any declared money column holds a value in any row."""
+    return any(row.get(column) is not None for row in rows for column in amounts)
+
+
 def _is_currency_code(candidate: str) -> bool:
     """Whether ``candidate`` can name a currency at all.
 
-    Shares ``CurrencyService``'s own shape gate rather than re-deriving one, so a
-    code the service would refuse is refused here identically — the same reason
-    ``rate_backfill._usable_currency`` gives for sharing it.
+    Shares the shape gate ``require_currency`` applies rather than re-deriving
+    one, so a code the service would refuse is refused here identically.
     """
     try:
         validate_currency_code(candidate)
