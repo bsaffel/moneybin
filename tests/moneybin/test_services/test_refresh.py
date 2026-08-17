@@ -1001,3 +1001,59 @@ def test_refresh_attributes_an_unasked_for_actor_to_system() -> None:
         refresh(MagicMock(), steps=["match"])
 
     assert run.call_args.kwargs["actor"] == "system"
+
+
+@pytest.mark.unit
+def test_step_outcome_carries_every_best_effort_failure_channel() -> None:
+    """Every channel a caller must report, flattened onto one carrier.
+
+    The four best-effort steps fail independently and route to different
+    remedies, so a carrier that folded them into one flag would send a caller
+    to the wrong one. Flattened rather than nesting ``RateBackfillResult``
+    because the Pydantic result carriers that embed this sit on the CLI's cold
+    path, and that type pulls polars in behind it.
+    """
+    from moneybin.services.rate_backfill import RateBackfillResult
+    from moneybin.services.refresh import RefreshResult, step_outcome
+
+    outcome = step_outcome(
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            matching_error="matcher blew up",
+            categorization_error="categorizer blew up",
+            identity_errors=("merchants",),
+            rate_backfill=RateBackfillResult(
+                rates_written=3,
+                pairs_failed=("EUR/USD",),
+                pairs_unsupported=("EUR/XTS",),
+                pairs_discarded=("GBP/USD",),
+            ),
+            rate_backfill_error=None,
+        )
+    )
+
+    assert outcome.matching_error == "matcher blew up"
+    assert outcome.categorization_error == "categorizer blew up"
+    assert outcome.identity_errors == ("merchants",)
+    assert outcome.rates_written == 3
+    assert outcome.rate_pairs_failed == ("EUR/USD",)
+    assert outcome.rate_pairs_unsupported == ("EUR/XTS",)
+    assert outcome.rate_pairs_discarded == ("GBP/USD",)
+    assert outcome.has_failure is True
+
+
+@pytest.mark.unit
+def test_step_outcome_keeps_null_rates_written_distinct_from_zero() -> None:
+    """A step that never ran must not read as a step that found nothing.
+
+    The pair lists are empty in both cases, so ``rates_written`` is the only
+    field that separates them; a 0 here would tell a caller coverage was
+    checked.
+    """
+    from moneybin.services.refresh import RefreshResult, step_outcome
+
+    outcome = step_outcome(RefreshResult(applied=True, duration_seconds=1.0))
+
+    assert outcome.rates_written is None
+    assert outcome.has_failure is False

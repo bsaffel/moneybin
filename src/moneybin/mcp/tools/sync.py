@@ -12,12 +12,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import Any, Literal, cast
 
 from fastmcp import FastMCP
 
 from moneybin import error_codes
 from moneybin.config import get_settings
+from moneybin.connectors.sync_models import ConnectedInstitution, PullResult
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.confirmation import (
@@ -52,9 +53,7 @@ from moneybin.protocol.envelope import (
     build_envelope,
     build_error_envelope,
 )
-
-if TYPE_CHECKING:
-    from moneybin.connectors.sync_models import ConnectedInstitution, PullResult
+from moneybin.services.refresh_outcome import refresh_steps_fields
 
 
 def _build_sync_client() -> Any:
@@ -164,6 +163,7 @@ def sync_pull(
             ),
             security_resolution=dict(result.security_resolution),
             security_resolution_error=result.security_resolution_error,
+            **refresh_steps_fields(result.refresh_steps),
         ),
         actions=_pull_actions(result),
     )

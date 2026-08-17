@@ -618,6 +618,44 @@ def test_gsheet_pull_json_carries_the_rate_backfill_outcome(
     assert payload["rate_backfill_error"] is None
 
 
+@pytest.mark.unit
+@patch("moneybin.database.get_database")
+@patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
+@patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_pull_json_says_null_when_the_rates_step_did_not_run(
+    mock_oauth: MagicMock,
+    mock_service_cls: MagicMock,
+    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_get_db: MagicMock,
+) -> None:
+    """``null`` and ``0`` are different answers, and only one of them is true here.
+
+    ``rates_written`` is the sole did-it-run signal on this envelope — the three
+    pair lists are empty whether the step ran clean or never ran at all. Under
+    ``--no-refresh`` it did not run, so a ``0`` would tell a script that rate
+    coverage was checked and found complete, and it would skip the refresh that
+    is actually owed.
+    """
+    service = MagicMock()
+    service.pull_connection.return_value = PullResult(
+        connection_id="conn_abc123",
+        status="complete",
+        load_result=_make_load_result(),
+    )
+    mock_service_cls.return_value = service
+    mock_oauth.return_value = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+    result = runner.invoke(
+        app, ["gsheet", "pull", "conn_abc123", "--no-refresh", "--output", "json"]
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["rates_written"] is None
+    assert payload["rate_backfill_error"] is None
+
+
 # -------------------------------------------------------------------- list ---
 
 

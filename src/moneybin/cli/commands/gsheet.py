@@ -18,7 +18,7 @@ import typer
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import (
     handle_cli_errors,
-    warn_rate_backfill,
+    warn_refresh_steps,
     warn_transfers_retired,
 )
 from moneybin.connectors.gsheet.service_factory import (
@@ -34,7 +34,7 @@ from moneybin.extractors.tabular.formats import SignConventionType
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 
 if TYPE_CHECKING:
-    from moneybin.services.rate_backfill import RateBackfillResult
+    from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -275,11 +275,14 @@ def gsheet_pull(
 ) -> None:
     """Pull a single connection by ID, or every healthy connection."""
     from moneybin.services.refresh import refresh as run_refresh  # noqa: PLC0415
+    from moneybin.services.refresh import step_outcome  # noqa: PLC0415
+    from moneybin.services.refresh_outcome import (  # noqa: PLC0415
+        refresh_steps_fields,
+    )
 
     refresh_error: str | None = None
     transfers_retired = 0
-    rate_backfill: RateBackfillResult | None = None
-    rate_backfill_error: str | None = None
+    steps_outcome: RefreshStepOutcome | None = None
     with handle_cli_errors():
         with _build_pull_service() as (service, db):
             if not quiet and output == OutputFormat.TEXT:
@@ -312,13 +315,12 @@ def gsheet_pull(
                 # failed, because the retirement commits before it.
                 transfers_retired = refresh_result.transfers_retired
                 # Read for the same reason, and outside the `applied` check
-                # above for a sharper one: the rates step is best-effort, so it
-                # can crash or come back short while SQLMesh applies cleanly.
-                # Neither `applied` nor `error` moves in that case, and without
-                # these two the network step this command just ran would report
-                # nothing at all.
-                rate_backfill = refresh_result.rate_backfill
-                rate_backfill_error = refresh_result.rate_backfill_error
+                # above for a sharper one: every step named above except the
+                # apply is best-effort, so any of them can crash or come back
+                # short while SQLMesh applies cleanly. Neither `applied` nor
+                # `error` moves in that case, and without this the work this
+                # command just did on the user's behalf would report nothing.
+                steps_outcome = step_outcome(refresh_result)
 
     # Hard-failure statuses (auth_expired, unreachable, rate_limited, failed)
     # exit non-zero so CI/agents detect them without parsing output. drift_detected
@@ -332,7 +334,7 @@ def gsheet_pull(
     # user's own decision is not informational output, so it survives --quiet
     # and is said aloud next to the JSON that also carries the count.
     warn_transfers_retired(transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
-    warn_rate_backfill(rate_backfill, rate_backfill_error)
+    warn_refresh_steps(steps_outcome)
 
     if output == OutputFormat.JSON:
         typer.echo(
@@ -358,29 +360,7 @@ def gsheet_pull(
                     ],
                     "refresh_error": refresh_error,
                     "transfers_retired": transfers_retired,
-                    # Spelled as `refresh_envelope` spells them, so an agent
-                    # reading both surfaces does not learn the outcome twice.
-                    "rates_written": (
-                        0 if rate_backfill is None else rate_backfill.rates_written
-                    ),
-                    "rate_pairs_failed": (
-                        []
-                        if rate_backfill is None
-                        else list(rate_backfill.pairs_failed)
-                    ),
-                    "rate_pairs_unsupported": (
-                        []
-                        if rate_backfill is None
-                        else list(rate_backfill.pairs_unsupported)
-                    ),
-                    "rate_pairs_discarded": (
-                        []
-                        if rate_backfill is None
-                        else list(rate_backfill.pairs_discarded)
-                    ),
-                    # Not gated on `rate_backfill is None`: a crash is exactly
-                    # the case that leaves no result to read it off.
-                    "rate_backfill_error": rate_backfill_error,
+                    **refresh_steps_fields(steps_outcome),
                 },
                 indent=2,
             )

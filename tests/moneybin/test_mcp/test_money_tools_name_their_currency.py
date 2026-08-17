@@ -48,6 +48,22 @@ _STATES_ITS_CURRENCY = {
     "transactions",
 }
 
+# Payloads carrying a CURRENCY-classed field that is NOT a denomination: a
+# currency *pair* naming an exchange-rate series the run could not gather.
+# `DataClass.CURRENCY` marks a field as *currency-shaped*, not as *the currency
+# these amounts are in* — the split above rests on the second reading, and a
+# pair satisfies only the first. Keeping these out of `_STATES_ITS_CURRENCY`
+# rather than widening it: `build_envelope` derives `display_currency` from a
+# reachable `currency_code` field (`envelope._CURRENCY_FIELD`), which a pair
+# list is not and must never be mistaken for. A payload landing here still owes
+# its own `currency_code` if it ever returns a denominable amount.
+_NAMES_A_CURRENCY_PAIR = {
+    # rate_pairs_failed/unsupported/discarded — the refresh this import ran
+    # reached a rate provider on the user's behalf and reports which pairs it
+    # could not fill. Its money leaves remain the sign samples pinned below.
+    "import_files",
+}
+
 # Money-classed leaves that are not denominable amounts, so there is no currency
 # to state and adding one would be noise. The value is (reason, leaves), where
 # leaves is every money-classed (field name, declared type) reachable in the
@@ -187,7 +203,7 @@ def test_tools_that_carry_a_currency_are_exactly_the_declared_set(
         if DataClass.CURRENCY in extract_data_classes(payload)
     }
 
-    assert carries == _STATES_ITS_CURRENCY
+    assert carries == _STATES_ITS_CURRENCY | _NAMES_A_CURRENCY_PAIR
 
 
 def test_the_silent_set_only_shrinks(money_payloads: dict[str, Any]) -> None:

@@ -190,6 +190,14 @@ and confirmation contracts.
   matching the match and categorize steps; the other two pair lists name
   conditions a retry cannot change, so offering one would be a loop with no
   terminating condition.
+- The tools that *embed* a refresh — `sync_pull`, `import_files`,
+  `import_inbox_sync` — carry that same step outcome on their own payloads,
+  under the same field names, because each runs the full cascade on the user's
+  behalf. `transforms_error` on those payloads reports only the SQLMesh apply;
+  `matching_error`, `categorization_error`, `identity_errors` and the
+  exchange-rate group report the four best-effort steps it cannot speak for.
+  The names are deliberately identical to `refresh_run`'s so an agent reading
+  two surfaces learns one vocabulary for one outcome.
 - `sql_query` is the read-only escape hatch and `sql_schema` explains the
   interface schema. They do not replace domain validation for writes.
 

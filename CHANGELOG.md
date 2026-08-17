@@ -65,6 +65,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rows, and reports every one of those outcomes the way `moneybin refresh`
   does — as warnings, and on the JSON envelope under `--output json`. Only
   currency codes and dates leave the machine.
+
+  Every other command that closes with a refresh reports it the same way.
+  `moneybin import files`, `moneybin sync pull`, the inbox drain and their MCP
+  tools all run the full cascade, so each of them reaches a rate provider on
+  your behalf; each now surfaces the outcome instead of reporting only whether
+  SQLMesh applied. The three best-effort steps that were already silent on
+  those surfaces — matching, categorization and identity — come with it, so a
+  crash in any of them is named wherever it happens rather than only under
+  `moneybin refresh`. `rates_written` is `null` when the step did not run and
+  `0` when it ran and had nothing to fetch: an empty pair list reads the same
+  either way, so that field is what separates them.
 - **A multi-currency demo persona.** `moneybin demo --persona international`
   (and `moneybin synthetic generate --persona international`) builds five
   accounts at five banks in EUR, GBP, CAD, AED, and USD, each funded and spent

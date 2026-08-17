@@ -38,6 +38,7 @@ from moneybin.metrics.registry import (
 from moneybin.services.account_resolution_types import SourceAccount
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.refresh import refresh as _refresh
+from moneybin.services.refresh import step_outcome as _step_outcome
 from moneybin.services.security_resolver import SecurityResolver
 from moneybin.tables import (
     ACCOUNT_LINKS,
@@ -266,6 +267,7 @@ class SyncService:
             result.transforms_duration_seconds = refresh_result.duration_seconds
             result.transforms_error = refresh_result.error
             result.transfers_retired = refresh_result.transfers_retired
+            result.refresh_steps = _step_outcome(refresh_result)
             if not refresh_result.error:
                 result.opening_bootstrap_rows = self._count_bootstrap_rows()
         return result

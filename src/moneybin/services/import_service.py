@@ -74,6 +74,8 @@ from moneybin.services.ledger_overlap import (
     probe_incoming_ledger_overlap,
 )
 from moneybin.services.refresh import refresh as _refresh
+from moneybin.services.refresh import step_outcome as _step_outcome
+from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.utils.file import source_sha256
 
 logger = logging.getLogger(__name__)
@@ -264,6 +266,13 @@ class ImportResult:
     the matcher, so folding a duplicate can undo a transfer the user accepted.
     Unlike ``core_tables_rebuilt`` this reports something undone, so it has to
     reach the surface rather than being inferred from a success."""
+    refresh_steps: RefreshStepOutcome | None = None
+    """What that same refresh's four best-effort steps did.
+
+    Twin of ``BatchImportResult.refresh_steps``, and carried for the same
+    reason the count above is: a single-file import runs the whole cascade too,
+    so it reaches the network for exchange rates. Everything downstream reads
+    the synthesized batch, so this has to ride across onto it."""
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     sign_override_replayed: bool = False
@@ -478,6 +487,10 @@ class BatchImportResult:
     # reverse a transfer the user had accepted. Unlike the transform fields,
     # this one reports something undone rather than something built.
     transfers_retired: int = 0
+    # The rest of that refresh: a categorizer, an identity pass and a network
+    # rate backfill all run here too, and `transforms_error` above reports none
+    # of them. None means no refresh ran.
+    refresh_steps: RefreshStepOutcome | None = None
 
     @property
     def imported_count(self) -> int:
@@ -5454,6 +5467,7 @@ class ImportService:
             # step and commits there, so a transform apply that dies afterwards
             # leaves the reversal on disk.
             result.transfers_retired = refresh_result.transfers_retired
+            result.refresh_steps = _step_outcome(refresh_result)
             if not refresh_result.applied:
                 # The raise discards `result`, and this exception escapes past
                 # the success path's warning rather than landing in
@@ -5688,12 +5702,14 @@ class ImportService:
         duration_seconds: float | None = None
         error: str | None = None
         transfers_retired = 0
+        refresh_steps: RefreshStepOutcome | None = None
         if refresh and any_succeeded and any_transformable:
             refresh_result = _refresh(self._db)
             applied = refresh_result.applied
             duration_seconds = refresh_result.duration_seconds
             error = refresh_result.error
             transfers_retired = refresh_result.transfers_retired
+            refresh_steps = _step_outcome(refresh_result)
 
         return BatchImportResult(
             per_file=per_file,
@@ -5701,6 +5717,7 @@ class ImportService:
             transforms_duration_seconds=duration_seconds,
             transforms_error=error,
             transfers_retired=transfers_retired,
+            refresh_steps=refresh_steps,
         )
 
     def list_formats(

@@ -180,12 +180,21 @@ def inbox_default(
     # user's own decision is neither. The drain is the least supervised surface
     # reaching the reconciliation, so this is the one it can least afford to
     # swallow — and --output json is the mode an unattended caller actually uses.
-    from moneybin.cli.utils import warn_transfers_retired  # noqa: PLC0415
+    from moneybin.cli.utils import (  # noqa: PLC0415
+        warn_refresh_steps,
+        warn_transfers_retired,
+    )
     from moneybin.matching.reconciliation import (  # noqa: PLC0415
         RETIRED_SIDES_COLLAPSED,
     )
+    from moneybin.services.refresh_outcome import (  # noqa: PLC0415
+        refresh_steps_fields,
+    )
 
     warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
+    # Ahead of both branches for the same reason, and with the same argument
+    # about supervision: the drain reached the network on the user's behalf.
+    warn_refresh_steps(result.refresh_steps)
 
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json
@@ -232,6 +241,11 @@ def inbox_default(
             )
         payload = dataclasses.asdict(result)
         payload["pending"] = _masked_pending(result.pending)
+        # Flattened out of the nested field `asdict` produced, so these read
+        # exactly as every other surface spells them. The carrier is internal
+        # transport; the envelope is the public contract.
+        payload.pop("refresh_steps", None)
+        payload.update(refresh_steps_fields(result.refresh_steps))
         render_or_json(
             build_envelope(data=payload, sensitivity=sensitivity),
             output,

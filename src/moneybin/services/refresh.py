@@ -61,6 +61,7 @@ import duckdb
 
 from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.services.transform_service import TransformService
 
 if TYPE_CHECKING:
@@ -152,6 +153,26 @@ CANONICAL_STEPS: tuple[RefreshStep, ...] = (
     "identity",
     "rates",
 )
+
+
+def step_outcome(result: RefreshResult) -> RefreshStepOutcome:
+    """Flatten the best-effort step outcomes a caller has to pass on.
+
+    Lives here rather than on :class:`RefreshStepOutcome` so that carrier stays
+    a stdlib-only leaf the Pydantic result models can embed without importing
+    this module.
+    """
+    rates = result.rate_backfill
+    return RefreshStepOutcome(
+        matching_error=result.matching_error,
+        categorization_error=result.categorization_error,
+        identity_errors=tuple(result.identity_errors),
+        rates_written=None if rates is None else rates.rates_written,
+        rate_pairs_failed=() if rates is None else tuple(rates.pairs_failed),
+        rate_pairs_unsupported=() if rates is None else tuple(rates.pairs_unsupported),
+        rate_pairs_discarded=() if rates is None else tuple(rates.pairs_discarded),
+        rate_backfill_error=result.rate_backfill_error,
+    )
 
 
 def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:

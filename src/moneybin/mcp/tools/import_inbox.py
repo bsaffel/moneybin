@@ -16,6 +16,7 @@ from moneybin.privacy.payloads.imports import (
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.inbox_service import InboxService
+from moneybin.services.refresh_outcome import refresh_steps_fields
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,7 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
             transforms_duration_seconds=sync_result.transforms_duration_seconds,
             transforms_error=sync_result.transforms_error,
             transfers_retired=sync_result.transfers_retired,
+            **refresh_steps_fields(sync_result.refresh_steps),
         ),
         actions=actions,
     )

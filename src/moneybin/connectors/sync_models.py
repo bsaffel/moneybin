@@ -20,6 +20,11 @@ from pydantic import (
     model_validator,
 )
 
+# Runtime import, not TYPE_CHECKING: Pydantic resolves field types at class
+# construction. Safe on the CLI's cold path because that module is stdlib-only
+# by design — see its docstring.
+from moneybin.services.refresh_outcome import RefreshStepOutcome
+
 
 def _blank_to_none(value: object) -> object:
     """An empty or whitespace-only string means absent, not ''."""
@@ -361,6 +366,12 @@ class PullResult(BaseModel):
     # accepted. That is the one outcome here the user did not ask for, so it
     # rides back with the rest rather than living only in the audit log.
     transfers_retired: int = 0
+    # Same reason as the field above, widened: a pull runs the whole cascade,
+    # so its matcher, categorizer, identity pass and network rate backfill all
+    # act on the user's behalf and can each fail on their own. `transforms_error`
+    # covers only the SQLMesh apply, so without this the other four are silent.
+    # None means no refresh ran, distinct from one that ran clean.
+    refresh_steps: RefreshStepOutcome | None = None
     opening_bootstrap_rows: int = 0
     investment_source_overlap_accounts: list[str] = Field(default_factory=list)
     security_resolution: dict[str, int] = Field(default_factory=dict)

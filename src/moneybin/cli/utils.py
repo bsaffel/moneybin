@@ -24,7 +24,7 @@ from moneybin.utils.user_config import ensure_default_profile
 if TYPE_CHECKING:
     from moneybin.database import Database
     from moneybin.matching.engine import MatchResult
-    from moneybin.services.rate_backfill import RateBackfillResult
+    from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -186,39 +186,49 @@ def warn_transfers_retired(
     )
 
 
-def warn_rate_backfill(rates: RateBackfillResult | None, error: str | None) -> None:
-    """Warn about whatever the exchange-rate step could not gather.
+def warn_refresh_steps(outcome: RefreshStepOutcome | None) -> None:
+    """Warn about every best-effort refresh step that failed or came up short.
 
-    One helper for the same reason as :func:`warn_transfers_retired` above: any
-    command that runs the ``rates`` step reaches the network on the user's
-    behalf, and each of these four outcomes carries a *different* remedy —
-    retry, wait, record the rate by hand, accept a short span. A surface that
-    prints three of them teaches a remedy that does not exist for the fourth.
+    One helper for the same reason as :func:`warn_transfers_retired` above, and
+    a sharper one: ``refresh(steps=None)`` runs four best-effort steps, so every
+    command that closes with a refresh — import, sync pull, inbox drain, sheet
+    pull — silently does the same work on the user's behalf. Each of these
+    outcomes carries a *different* remedy: re-run the step, wait out an outage,
+    record the rate by hand, accept a short span. A surface that prints some of
+    them teaches a remedy that does not exist for the ones it drops.
 
-    Silent when the step gathered everything it planned, so a warning keeps its
-    meaning. Pairs are named rather than counted: which pair is missing decides
-    whether the gap matters at all, and a currency pair discloses no amount.
+    Silent when every step did what it planned, so a warning keeps its meaning.
+    Pairs are named rather than counted: which pair is missing decides whether
+    the gap matters at all, and a currency pair discloses no amount.
     """
-    if error is not None:
+    if outcome is None:
+        return
+    if outcome.matching_error is not None:
+        logger.warning(f"⚠️  Matching step failed: {outcome.matching_error}")
+    if outcome.categorization_error is not None:
+        logger.warning(f"⚠️  Categorization step failed: {outcome.categorization_error}")
+    for domain in outcome.identity_errors:
+        logger.warning(f"⚠️  {domain.title()} identity backfill failed")
+    if outcome.rate_backfill_error is not None:
         # Ahead of the three pair warnings below, and never instead of them: a
         # crash names no pair, so those lines stay silent and this is the only
         # signal the step failed at all.
-        logger.warning(f"⚠️  Exchange rate backfill failed: {error}")
-    if rates is None:
-        return
-    if rates.pairs_failed:
         logger.warning(
-            f"⚠️  Exchange rates unavailable for {', '.join(rates.pairs_failed)}"
+            f"⚠️  Exchange rate backfill failed: {outcome.rate_backfill_error}"
         )
-    if rates.pairs_unsupported:
+    if outcome.rate_pairs_failed:
+        logger.warning(
+            f"⚠️  Exchange rates unavailable for {', '.join(outcome.rate_pairs_failed)}"
+        )
+    if outcome.rate_pairs_unsupported:
         # Separate line from the one above because the remedy is different, and
         # the remedy is the whole reason to print it: retrying never fills this.
         logger.warning(
             f"⚠️  No exchange rate series is published for "
-            f"{', '.join(rates.pairs_unsupported)}. "
+            f"{', '.join(outcome.rate_pairs_unsupported)}. "
             "Record these rates yourself with `moneybin fx set`."
         )
-    if rates.pairs_discarded:
+    if outcome.rate_pairs_discarded:
         # Hedged, unlike the two above: this pair may have stored most of its
         # span and lost a day at one end, so it says coverage may be short
         # rather than that the pair is missing. Worded around the shortfall
@@ -227,7 +237,7 @@ def warn_rate_backfill(rates: RateBackfillResult | None, error: str | None) -> N
         # it — never sent one to drop.
         logger.warning(
             f"⚠️  Exchange rate coverage is short for "
-            f"{', '.join(rates.pairs_discarded)}. "
+            f"{', '.join(outcome.rate_pairs_discarded)}. "
             "Conversion may be incomplete on those dates."
         )
 

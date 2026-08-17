@@ -27,10 +27,14 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
 )
-from moneybin.cli.utils import emit_json, warn_transfers_retired
+from moneybin.cli.utils import emit_json, warn_refresh_steps, warn_transfers_retired
 from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
+from moneybin.services.refresh_outcome import (
+    RefreshStepOutcome,
+    refresh_steps_fields,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -460,6 +464,11 @@ def import_files_command(
     # a synthesized one-file batch, when the file itself fails — that is what
     # gives both paths the same counts, files[] rows, status, and exit code.
     batch_result: BatchImportResult | None = None
+    # Tracked separately from `batch_result`, which the single-file *success*
+    # path deliberately never assigns (it would drag `mark_total_failure` onto a
+    # successful import). That is the same trap `transfers_retired` sidesteps by
+    # reading from `data`, and the most common invocation is the one it drops.
+    refresh_steps: RefreshStepOutcome | None = None
     try:
         with handle_cli_errors():
             # Single-file invocations keep fast-fail on missing paths (typo
@@ -561,9 +570,11 @@ def import_files_command(
                             # dict: the per-file row is a public contract agents
                             # branch on, and a second copy of it is how
                             # `error`/`hint` once reached the batch path only.
-                            files_list, data = _batch_payload(
-                                _single_file_success(file_paths[0], result, refresh)
+                            synthesized = _single_file_success(
+                                file_paths[0], result, refresh
                             )
+                            files_list, data = _batch_payload(synthesized)
+                            refresh_steps = synthesized.refresh_steps
                     else:
                         batch_result = svc.import_files(
                             [str(p) for p in file_paths],
@@ -586,6 +597,7 @@ def import_files_command(
                         if any(r.sign_override_replayed for r in batch_result.per_file):
                             typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
                         files_list, data = _batch_payload(batch_result)
+                        refresh_steps = batch_result.refresh_steps
     except Exception as _exc:  # noqa: BLE001 — dispatch on type below
         from moneybin.services.import_confirmation import (  # noqa: PLC0415
             ImportConfirmationRequiredError,
@@ -846,6 +858,10 @@ def import_files_command(
     warn_transfers_retired(
         int(data.get("transfers_retired") or 0), cause=RETIRED_SIDES_COLLAPSED
     )
+    # Outside both branches for the same reason: the import reached the network
+    # for exchange rates and ran three other best-effort steps on the user's
+    # behalf, and each carries a remedy the count above does not.
+    warn_refresh_steps(refresh_steps)
 
     # Batch import succeeds file-by-file but the post-import SQLMesh apply is
     # a separate failure surface. Exit non-zero so scripts and agents detect
@@ -950,6 +966,10 @@ def _batch_payload(
         "transforms_duration_seconds": batch.transforms_duration_seconds,
         "transfers_retired": batch.transfers_retired,
         "files": files_list,
+        # Flat, and named as every other surface names them: the import ran a
+        # matcher, a categorizer, an identity pass and a network rate backfill,
+        # and `transforms_error` below reports only the SQLMesh apply.
+        **refresh_steps_fields(batch.refresh_steps),
     }
     if batch.transforms_error:
         data["transforms_error"] = batch.transforms_error
@@ -1027,6 +1047,8 @@ def _single_file_success(
         # does, so the count has to ride onto the batch this synthesizes —
         # everything downstream reads it from here, not from ImportResult.
         transfers_retired=result.transfers_retired,
+        # And the rest of that refresh, for the same reason.
+        refresh_steps=result.refresh_steps,
     )
 
 
