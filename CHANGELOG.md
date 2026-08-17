@@ -50,18 +50,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the provider's list of published currencies, and when that request is the one
   that fails the pair is reported as failed: nothing at that moment separates a
   currency that will never publish from one briefly unreachable, and only the
-  retryable outcome leaves a later run able to separate them. A pair whose answer was partly unusable —
-  dated outside the window, or too small for the rate column — is listed as
-  `rate_pairs_discarded`, which says coverage may be short on some dates rather
-  than that the pair is missing. A series that does not span what was asked for
-  lands there too: a currency the provider only started publishing partway
-  through your history answers every date it has and none of the ones before,
-  and one that stopped being published answers nothing recent. Neither drops a
-  rate, so nothing else would mark them, and neither is filled by waiting — the
-  window opens at your earliest row, so it moves back only when earlier data is
-  imported, and a series that has stopped does not resume because you refreshed
-  again. An ordinary unpublished today is not this: the check allows two weeks,
-  so it fires on a series that has stopped, not on one that lags.
+  retryable outcome leaves a later run able to separate them. A pair whose
+  answer was partly unusable — dated outside the window, or too small for the
+  rate column — is listed as `rate_pairs_discarded`, which says coverage may
+  be short on some dates rather than that the pair is missing. A series that
+  does not span what was asked for lands there too: a currency the provider
+  only started publishing partway through your history answers every date it
+  has and none of the ones before, and one that stopped being published
+  answers nothing recent. Neither drops a rate, so nothing else would mark
+  them, and neither is filled by waiting — the window opens at your earliest
+  row, so it moves back only when earlier data is imported, and a series that
+  has stopped does not resume because you refreshed again. An ordinary
+  unpublished today is not this: the check allows two weeks, so it fires on a
+  series that has stopped, not on one that lags.
 
   A profile with no home currency set fetches nothing. Run it alone with
   `moneybin refresh --step rates` or `refresh_run(steps=["rates"])`. A
@@ -82,7 +83,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   either way, so that field is what separates them. Their MCP envelopes carry
   the same executable `refresh_run` retries `refresh_run` itself returns — a
   step that crashed inside an import is no less retryable for having crashed
-  there, and MCP has no stderr to warn on.
+  there, and MCP has no stderr to warn on. They withhold those retries when the
+  SQLMesh apply itself failed, the way `refresh_run` always has: the apply is
+  the blocker, and a step retry beside it would run against the same broken
+  warehouse and fail identically. A crashed identity pass now offers its retry
+  too, which is the one step that carried its failure with nothing executable
+  beside it.
+
+  A drifted `core.*` schema is reported rather than skipped. Refresh runs
+  before the first transform, so a missing `core.*` is the normal state of a
+  new install and the step stays quiet for it — but a renamed column or a
+  dropped model on a mature database raises the same error from the same call,
+  and answering `rates_written: null` with no error made real drift look like a
+  profile that had nothing to fetch. The quiet path now applies only when none
+  of the relations it reads exist at all.
+
+  The window closes on the UTC day rather than the host's. Reference rates are
+  published against UTC dates, so east of UTC a host-local "today" asks for a
+  day the provider has not published yet.
 - **A multi-currency demo persona.** `moneybin demo --persona international`
   (and `moneybin synthetic generate --persona international`) builds five
   accounts at five banks in EUR, GBP, CAD, AED, and USD, each funded and spent

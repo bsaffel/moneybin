@@ -31,22 +31,19 @@ REFRESH_MERCHANT_LINKS_REVIEW_HINT = (
 
 
 def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
-    """The step retries for a refresh whose SQLMesh apply survived.
-
-    Returns ``[]`` when the apply itself failed (``result.error``): that is the
-    blocking failure, surfaced via the ``error`` field and the apply-failed
-    ``actions`` hint. A best-effort step retry here would misdirect the agent to
-    chase the secondary crash before the blocker.
-    """
-    if result.error is not None:
-        return []
-    return refresh_step_actions(step_outcome(result))
+    """The step retries for a refresh whose SQLMesh apply survived."""
+    return refresh_step_actions(
+        step_outcome(result), apply_failed=result.error is not None
+    )
 
 
-def refresh_step_actions(steps: RefreshStepOutcome | None) -> list[RecoveryAction]:
-    """Build recovery actions for best-effort step crashes (match/categorize/rates).
+def refresh_step_actions(
+    steps: RefreshStepOutcome | None, *, apply_failed: bool
+) -> list[RecoveryAction]:
+    """Build recovery actions for best-effort step crashes.
 
-    Ordered most-likely-correct first: the targeted retry(s), then a single
+    Ordered by ``CANONICAL_STEPS``, so an agent running them top-down never runs
+    a later step before an earlier one it depends on, then closed by a single
     diagnostic ``system_status`` doctor call. A recovery action must stay
     directly executable.
 
@@ -56,8 +53,16 @@ def refresh_step_actions(steps: RefreshStepOutcome | None) -> list[RecoveryActio
     the callers that need it most: the CLI warns on stderr about a step that
     crashed mid-import, and MCP has no equivalent, so without this the crash
     reaches the agent as a payload string with nothing naming its cure.
+
+    ``apply_failed`` withholds every retry, because a step that crashed beside a
+    failed SQLMesh apply is the symptom and the apply is the blocker: retrying it
+    runs against the same broken warehouse and fails identically. It has no
+    default on purpose. Those embedded callers hold the apply outcome in their
+    own ``transforms_error`` field rather than in ``RefreshStepOutcome``, so a
+    defaulted parameter would read as answered while silently meaning "no", which
+    is exactly how the two surfaces drifted apart the first time.
     """
-    if steps is None:
+    if steps is None or apply_failed:
         return []
     actions: list[RecoveryAction] = []
     if steps.matching_error is not None:
@@ -81,6 +86,19 @@ def refresh_step_actions(steps: RefreshStepOutcome | None) -> list[RecoveryActio
                 rationale=(
                     "Categorization crashed mid-refresh; re-run just the "
                     "categorize step to retry."
+                ),
+                confidence="suggested",
+                idempotent=True,
+            )
+        )
+    if steps.identity_errors:
+        actions.append(
+            RecoveryAction(
+                tool="refresh_run",
+                arguments={"steps": ["identity"]},
+                rationale=(
+                    "The account/merchant identity pass crashed mid-refresh; "
+                    "re-run just the identity step to retry."
                 ),
                 confidence="suggested",
                 idempotent=True,

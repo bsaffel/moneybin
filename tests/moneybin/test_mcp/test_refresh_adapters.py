@@ -455,8 +455,11 @@ def test_envelope_marks_zero_counts_as_unexamined_when_match_was_skipped() -> No
 @pytest.mark.unit
 def test_a_clean_step_outcome_earns_no_recovery_actions() -> None:
     """Silent when nothing broke, so an action keeps the meaning of an action."""
-    assert refresh_step_actions(None) == []
-    assert refresh_step_actions(RefreshStepOutcome(rates_written=0)) == []
+    assert refresh_step_actions(None, apply_failed=False) == []
+    assert (
+        refresh_step_actions(RefreshStepOutcome(rates_written=0), apply_failed=False)
+        == []
+    )
 
 
 @pytest.mark.unit
@@ -473,7 +476,8 @@ async def test_each_crashed_step_is_offered_the_retry_that_fits_it() -> None:
             categorization_error="categorizer blew up",
             rates_written=0,
             rate_backfill_error="rates blew up",
-        )
+        ),
+        apply_failed=False,
     )
 
     await assert_recovery_actions_executable(actions)
@@ -487,6 +491,76 @@ async def test_each_crashed_step_is_offered_the_retry_that_fits_it() -> None:
 
 
 @pytest.mark.unit
+async def test_a_crashed_identity_pass_is_offered_its_own_retry() -> None:
+    """The fourth channel `RefreshStepOutcome` carries, and the one that had no retry.
+
+    ``identity`` is already a `RefreshStep`, so ``refresh_run(steps=["identity"])``
+    needs nothing new to be executable — the omission was the builder's, not the
+    contract's. An identity-only crash was the one failure that reached an agent
+    with a populated error field and an empty action list.
+    """
+    actions = refresh_step_actions(
+        RefreshStepOutcome(identity_errors=("account identity pass blew up",)),
+        apply_failed=False,
+    )
+
+    await assert_recovery_actions_executable(actions)
+    assert [action.arguments.get("steps") for action in actions] == [
+        ["identity"],
+        None,
+    ]
+
+
+@pytest.mark.unit
+async def test_retries_are_offered_in_the_order_refresh_runs_them() -> None:
+    """Identity sits between categorize and rates, as it does in `CANONICAL_STEPS`.
+
+    Ordering is load-bearing: the list is "most-likely-correct first", and an
+    agent that re-runs them top-down must not run a later step before an earlier
+    one it depends on.
+    """
+    actions = refresh_step_actions(
+        RefreshStepOutcome(
+            matching_error="matcher blew up",
+            categorization_error="categorizer blew up",
+            identity_errors=("identity blew up",),
+            rate_backfill_error="rates blew up",
+        ),
+        apply_failed=False,
+    )
+
+    await assert_recovery_actions_executable(actions)
+    assert [action.arguments.get("steps") for action in actions[:4]] == [
+        ["match"],
+        ["categorize"],
+        ["identity"],
+        ["rates"],
+    ]
+
+
+@pytest.mark.unit
+def test_a_failed_apply_withholds_every_step_retry() -> None:
+    """The blocker outranks the steps it took down with it.
+
+    A step retry offered beside a failed SQLMesh apply sends the agent to chase
+    the secondary crash while the thing that caused it stays unfixed — and the
+    retry would run against the same broken warehouse and fail the same way.
+    `refresh_envelope` has always suppressed this; the parameter exists so the
+    surfaces that embed a refresh cannot answer it differently.
+    """
+    crashed = RefreshStepOutcome(
+        matching_error="matcher blew up",
+        identity_errors=("identity blew up",),
+        rate_backfill_error="rates blew up",
+    )
+
+    assert refresh_step_actions(crashed, apply_failed=True) == []
+    assert refresh_step_actions(crashed, apply_failed=False), (
+        "the same outcome must still earn retries when the apply survived"
+    )
+
+
+@pytest.mark.unit
 def test_a_pair_the_provider_never_answered_is_offered_a_retry() -> None:
     """``rate_pairs_failed`` is retryable even with no step crash beside it.
 
@@ -494,7 +568,9 @@ def test_a_pair_the_provider_never_answered_is_offered_a_retry() -> None:
     unfetched, so gating the retry on ``rate_backfill_error`` alone would drop
     the action in a case a later run does fix.
     """
-    actions = refresh_step_actions(RefreshStepOutcome(rate_pairs_failed=("EUR/USD",)))
+    actions = refresh_step_actions(
+        RefreshStepOutcome(rate_pairs_failed=("EUR/USD",)), apply_failed=False
+    )
 
     assert [action.arguments.get("steps") for action in actions] == [["rates"], None]
 
@@ -513,7 +589,8 @@ def test_pairs_a_retry_cannot_fill_are_offered_no_retry() -> None:
                 rates_written=3,
                 rate_pairs_unsupported=("XBT/USD",),
                 rate_pairs_discarded=("JPY/USD",),
-            )
+            ),
+            apply_failed=False,
         )
         == []
     )

@@ -170,7 +170,10 @@ def sync_pull(
         # `or None` to omit the key when empty, matching `refresh_envelope`:
         # this envelope's `error` is None, so there is no `error.recovery_actions`
         # for an empty list to fall through to.
-        recovery_actions=refresh_step_actions(result.refresh_steps) or None,
+        recovery_actions=refresh_step_actions(
+            result.refresh_steps, apply_failed=result.transforms_error is not None
+        )
+        or None,
     )
 
 

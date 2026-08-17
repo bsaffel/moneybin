@@ -201,7 +201,11 @@ and confirmation contracts.
   `recovery_actions` too, built by the same function: a step that crashed inside
   an import is no less retryable for having crashed there, and these are the
   surfaces where the CLI's stderr warning has no counterpart, so a payload field
-  with nothing executable beside it is the whole of what the agent gets.
+  with nothing executable beside it is the whole of what the agent gets. That
+  function takes the apply outcome as a required argument, because these callers
+  hold it in their own `transforms_error` field rather than in the step outcome:
+  when the apply failed it is the blocker, and every step retry is withheld so
+  the agent fixes it before chasing a secondary crash that would recur anyway.
 - `sql_query` is the read-only escape hatch and `sql_schema` explains the
   interface schema. They do not replace domain validation for writes.
 

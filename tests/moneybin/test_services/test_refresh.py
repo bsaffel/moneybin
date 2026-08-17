@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
+from datetime import date, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import duckdb
 import pytest
+import time_machine
 
 from moneybin.database import Database
 from moneybin.errors import UserError
@@ -484,6 +487,7 @@ def _patch_rates_step(
     home_currency: str | Exception | None,
     backfill: RateBackfillResult | Exception,
     reached: list[str],
+    through_seen: list[date] | None = None,
 ) -> None:
     """Stand in for the two collaborators `_run_rates_step` composes."""
     from moneybin.connectors.rates import frankfurter
@@ -495,8 +499,12 @@ def _patch_rates_step(
             raise home_currency
         return home_currency
 
-    def _run(_db: Database, *, home_currency: str, **_kw: Any) -> RateBackfillResult:
+    def _run(
+        _db: Database, *, home_currency: str, through: date, **_kw: Any
+    ) -> RateBackfillResult:
         reached.append(home_currency)
+        if through_seen is not None:
+            through_seen.append(through)
         if isinstance(backfill, Exception):
             raise backfill
         return backfill
@@ -510,6 +518,41 @@ def _patch_rates_step(
     # Keeps the step hermetic: the real constructor opens an httpx client that
     # nothing here would close.
     monkeypatch.setattr(frankfurter, "FrankfurterRateAdapter", MagicMock())
+
+
+@pytest.mark.unit
+def test_rates_step_closes_its_window_on_the_provider_s_day_not_the_host_s(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The window closes on the UTC day, the one Frankfurter keys its series by.
+
+    Frozen at 00:30 in a UTC+2 zone, where the host has already turned over to
+    the 11th while UTC is still on the 10th. A host-local ``through`` asks for a
+    day the provider has not published yet, which is the failure
+    ``PriceService.__init__`` documents for the same class of feed
+    (``price_service.py``: "a host-local clock disagrees with the data whenever
+    the host is not on UTC"). Harmless for one refresh — the pair simply comes
+    back short and re-requests next run — but it is the same mistake in the same
+    shape, and the codebase already resolved it once.
+    """
+    reached: list[str] = []
+    through_seen: list[date] = []
+    _patch_rates_step(
+        monkeypatch,
+        home_currency="USD",
+        backfill=RateBackfillResult(rates_written=1, pairs_failed=()),
+        reached=reached,
+        through_seen=through_seen,
+    )
+
+    with time_machine.travel(
+        datetime(2026, 3, 11, 0, 30, tzinfo=ZoneInfo("Europe/Kyiv")), tick=False
+    ):
+        _run_rates_step(MagicMock())
+
+    assert through_seen == [date(2026, 3, 10)], (
+        "the window must close on the UTC day, not the host's already-turned-over one"
+    )
 
 
 @pytest.mark.unit

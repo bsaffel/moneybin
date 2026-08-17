@@ -134,6 +134,16 @@ def run_rate_backfill(
         # below raises the same two types on a drifted cache or a bind failure
         # on write, and a caller matching on the type alone would report that
         # crash as a step that quietly declined to run.
+        #
+        # The phase alone is not enough, though. A mature database with a
+        # renamed column or a dropped model raises the same two types from the
+        # same call, and the quiet branch answers `rates_written=null` with no
+        # error and no recovery action — the same thing a profile with nothing
+        # to fetch answers. Only a core that is *wholly* unbuilt earns the
+        # first-load excuse; anything else is drift the user has to be told
+        # about, so it propagates to the step's error field.
+        if _core_is_built(db):
+            raise
         raise RateBackfillNotReadyError from exc
     service = CurrencyService(db, adapter=adapter)
     FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="planned").inc(len(windows))
@@ -234,6 +244,32 @@ def run_rate_backfill(
         pairs_unsupported=tuple(unsupported),
         pairs_discarded=tuple(discarded),
     )
+
+
+def _core_is_built(db: Database) -> bool:
+    """Whether any relation the planner reads exists.
+
+    "Any", not "all": a partially-applied transform is already past first load,
+    and treating it as unbuilt would re-hide the drift this separates out. The
+    catalog is asked rather than the failed exception parsed, because the
+    message differs by DuckDB version and by which relation was missing.
+    """
+    relations = (
+        FCT_TRANSACTIONS,
+        FCT_BALANCES_DAILY,
+        FCT_INVESTMENT_TRANSACTIONS,
+        DIM_HOLDINGS,
+    )
+    placeholders = " OR ".join(
+        ["(table_schema = ? AND table_name = ?)"] * len(relations)
+    )
+    params = [part for ref in relations for part in (ref.schema, ref.name)]
+    row = db.execute(
+        # Fixed predicate count, values bound; no interpolation of caller input.
+        f"SELECT COUNT(*) FROM information_schema.tables WHERE {placeholders}",  # noqa: S608
+        params,
+    ).fetchone()
+    return bool(row and row[0] > 0)
 
 
 def plan_rate_backfill(

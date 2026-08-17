@@ -54,7 +54,7 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 import duckdb
@@ -569,7 +569,11 @@ def _run_rates_step(db: Database) -> tuple[RateBackfillResult | None, str | None
         return run_rate_backfill(
             db,
             home_currency=home_currency,
-            through=date.today(),
+            # The UTC day, not the host's: Frankfurter keys its series by UTC
+            # date, so east of UTC a host-local `today` names a day the provider
+            # has not published. Same reasoning, same shape, as
+            # `PriceService.__init__`.
+            through=datetime.now(UTC).date(),
             adapter=FrankfurterRateAdapter(),
         ), None
     except RateBackfillNotReadyError:

@@ -537,14 +537,51 @@ def test_planning_against_an_unbuilt_core_raises_the_named_precondition(
     the distinction has to be drawn here — where planning is the only thing that
     has run — rather than by matching the exception type at the call site, which
     would report a genuine write crash as a step that declined to run.
+
+    Every relation the planner reads is dropped, not just one. A fresh install
+    has none of them, and dropping a single table instead would be the drifted
+    schema the test below covers — a fixture that reaches the same catch for the
+    opposite reason, so it could not tell the two apart.
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
-    db.execute("DROP TABLE core.fct_transactions")
+    # `dim_holdings` is a table in this module (see `_DIM_HOLDINGS_TABLE_DDL`),
+    # so all four drop the same way here.
+    for relation in (
+        "core.fct_transactions",
+        "core.fct_balances_daily",
+        "core.fct_investment_transactions",
+        "core.dim_holdings",
+    ):
+        db.execute(f"DROP TABLE IF EXISTS {relation}")  # noqa: S608  # fixed literals
 
     with pytest.raises(RateBackfillNotReadyError):
         run_rate_backfill(
             db, home_currency="USD", through=_TODAY, adapter=_SpanAdapter()
         )
+
+
+def test_a_drifted_core_schema_is_reported_rather_than_silently_skipped(
+    db: Database,
+) -> None:
+    """A built-but-drifted `core.*` is a real failure, not a first-load precondition.
+
+    The two states raise the same DuckDB types from the same call, and the quiet
+    branch answers `rates_written=null` with no error and no recovery action —
+    indistinguishable from a profile that had nothing to fetch. On a mature
+    database that is a renamed column or a dropped model going unreported
+    forever, so the suppression has to prove the models are wholly unbuilt
+    before claiming the first-load excuse.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    db.execute("ALTER TABLE core.fct_transactions RENAME currency_code TO ccy")
+
+    with pytest.raises(Exception) as caught:  # noqa: B017, PT011  # asserted below
+        run_rate_backfill(
+            db, home_currency="USD", through=_TODAY, adapter=_SpanAdapter()
+        )
+    assert not isinstance(caught.value, RateBackfillNotReadyError), (
+        "the other three relations are built, so this is drift the user must see"
+    )
 
 
 def test_a_supported_pair_with_nothing_published_is_neither_failed_nor_unsupported(

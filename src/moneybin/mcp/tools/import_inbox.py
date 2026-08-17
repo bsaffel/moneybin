@@ -197,7 +197,11 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
         ),
         actions=actions,
         # `or None` to omit the key when empty, matching `refresh_envelope`.
-        recovery_actions=refresh_step_actions(sync_result.refresh_steps) or None,
+        recovery_actions=refresh_step_actions(
+            sync_result.refresh_steps,
+            apply_failed=sync_result.transforms_error is not None,
+        )
+        or None,
     )
 
 

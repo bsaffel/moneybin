@@ -5159,6 +5159,106 @@ class TestEmbeddedRefreshRecoveryActions:
         # The matcher did not crash, so nothing must offer to re-run it.
         assert ["match"] not in steps
 
+    async def test_import_files_withholds_retries_when_the_apply_failed(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """A step that crashed beside a failed apply is the symptom, not the blocker.
+
+        ``refresh_run`` has always suppressed this. The embedded surfaces hold the
+        apply outcome in ``transforms_error`` rather than in
+        ``RefreshStepOutcome``, so nothing about the step data itself tells the
+        shared builder to stay quiet — the caller has to say so.
+        """
+        from moneybin.mcp.tools.import_tools import import_files
+        from moneybin.services.import_service import BatchImportResult, PerFileResult
+        from moneybin.services.refresh_outcome import RefreshStepOutcome
+
+        # Two paths, matching the sibling test above: a single path routes
+        # through a different envelope that never reaches the batch payload, so
+        # a one-file fixture here asserts nothing about the retries.
+        first = tmp_path / "a.csv"
+        second = tmp_path / "b.csv"
+        for path in (first, second):
+            path.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        mock_service = MagicMock()
+        mock_service.import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(path),
+                    status="imported",
+                    source_type="csv",
+                    rows_loaded=1,
+                )
+                for path in (first, second)
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=0.1,
+            transforms_error="sqlmesh apply blew up",
+            transfers_retired=0,
+            refresh_steps=RefreshStepOutcome(
+                matching_error="matcher blew up",
+                categorization_error="categorizer blew up",
+            ),
+        )
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = import_files(paths=[str(first), str(second)])
+
+        assert result.data.matching_error == "matcher blew up", (
+            "guard: the fixture must reach the batch payload, or the assertion "
+            "below passes on an envelope that never saw the crashed step"
+        )
+        assert not result.recovery_actions, (
+            "the failed apply is the blocker; step retries would run against the "
+            "same broken warehouse"
+        )
+
+    async def test_inbox_drain_withholds_retries_when_the_apply_failed(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Same suppression on the unattended surface."""
+        from moneybin.mcp.tools.import_inbox import import_inbox_sync
+        from moneybin.services.inbox_service import InboxSyncResult
+        from moneybin.services.refresh_outcome import RefreshStepOutcome
+
+        service = MagicMock()
+        service.sync.return_value = InboxSyncResult(
+            processed=[],
+            failed=[],
+            pending=[],
+            skipped=[],
+            ignored=[],
+            transforms_applied=False,
+            transforms_duration_seconds=0.1,
+            transforms_error="sqlmesh apply blew up",
+            transfers_retired=0,
+            refresh_steps=RefreshStepOutcome(matching_error="matcher blew up"),
+        )
+
+        def _fake_inbox_service(**_kw: object) -> MagicMock:
+            return service
+
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox.InboxService", _fake_inbox_service
+        )
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox.get_database", _fake_database
+        )
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox._uncategorized_count", lambda: 0
+        )
+
+        result = import_inbox_sync(refresh=True)
+
+        assert not result.recovery_actions
+
     async def test_inbox_drain_offers_the_embedded_refresh_its_retries(
         self, monkeypatch: MonkeyPatch
     ) -> None:

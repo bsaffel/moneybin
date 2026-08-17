@@ -409,3 +409,27 @@ async def test_sync_pull_offers_the_embedded_refresh_its_own_retries(
     ]
     assert ["match"] in steps
     assert ["rates"] in steps
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_pull_withholds_retries_when_the_apply_failed(
+    mock_build: MagicMock,
+) -> None:
+    """The apply is the blocker; a step retry would run against the same wreck."""
+    service = MagicMock()
+    service.pull.return_value = PullResult(
+        job_id="j1",
+        transactions_loaded=5,
+        accounts_loaded=1,
+        balances_loaded=1,
+        transactions_removed=0,
+        institutions=[],
+        transforms_applied=False,
+        transforms_error="sqlmesh apply blew up",
+        refresh_steps=RefreshStepOutcome(matching_error="matcher blew up"),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_pull
+
+    assert not sync_pull().recovery_actions

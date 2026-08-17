@@ -660,7 +660,10 @@ def import_files(
         ),
         actions=actions,
         # `or None` to omit the key when empty, matching `refresh_envelope`.
-        recovery_actions=refresh_step_actions(batch.refresh_steps) or None,
+        recovery_actions=refresh_step_actions(
+            batch.refresh_steps, apply_failed=batch.transforms_error is not None
+        )
+        or None,
     )
     return mark_total_failure(envelope, batch)
 
