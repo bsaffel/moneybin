@@ -192,11 +192,20 @@ def convert_execution(
     # Only a conversion that happened can leave a derived value stale, and only
     # then is there a target currency to recompute against. A segmented result
     # still holds its original amounts, so its derived values are already right.
+    removed = 0
     if outcome.display_currency is not None and execution.on_converted is not None:
+        before = len(outcome.records)
         execution.on_converted(outcome.records, outcome.display_currency)
+        removed = before - len(outcome.records)
     return replace(
         execution,
         records=outcome.records,
+        # `total_count` was fixed before conversion ran, so a callback that
+        # collapses rows — `core:networth` merging its per-currency totals —
+        # would leave the envelope deriving `has_more` from rows that no longer
+        # exist, reporting an untruncated result as truncated. Floored at what
+        # is actually being returned, since a total below that is never true.
+        total_count=max(execution.total_count - removed, len(outcome.records)),
         applied_rates=outcome.applied_rates,
         # A fallback leaves the rows in their own currencies, so the currency
         # already derived from those rows is still the true answer. Overwriting

@@ -31,6 +31,7 @@ from moneybin.reports._framework.execute import (
     build_catalog_execution,
 )
 from moneybin.reports._framework.registry import register_generic_reports_tool
+from moneybin.services.currency_service import ResolvedRate
 from tests.database_mocks import without_a_profile
 from tests.moneybin.db_helpers import create_core_tables_raw
 
@@ -340,6 +341,16 @@ async def test_reports_with_id_opens_one_read_only_database_and_executes() -> No
         actions=["Inspect another registered report."],
         period="2026-06",
         display_currency="CAD",
+        applied_rates=(
+            ResolvedRate(
+                from_currency="USD",
+                to_currency="CAD",
+                requested_date=date(2026, 6, 1),
+                rate_date=date(2026, 5, 29),
+                rate=Decimal("1.37"),
+                source="frankfurter",
+            ),
+        ),
     )
     catalog = MagicMock(spec=ReportCatalog)
     catalog.execute.return_value = result
@@ -380,6 +391,21 @@ async def test_reports_with_id_opens_one_read_only_database_and_executes() -> No
     assert response.summary.has_more is True
     assert response.summary.period == "2026-06"
     assert response.summary.display_currency == "CAD"
+    # The tool's own registered description promises this field. It builds its
+    # envelope by hand rather than through `ReportResult.to_envelope`, because
+    # it publishes a typed payload rather than raw records — which is exactly
+    # how the field went missing on the one report-reading surface an agent
+    # actually calls.
+    assert response.summary.applied_rates == [
+        {
+            "from_currency": "USD",
+            "to_currency": "CAD",
+            "requested_date": "2026-06-01",
+            "rate_date": "2026-05-29",
+            "rate": Decimal("1.37"),
+            "source": "frankfurter",
+        }
+    ]
     assert response.actions == ["Inspect another registered report."]
     assert response.classes_returned == [
         "account_identifier",

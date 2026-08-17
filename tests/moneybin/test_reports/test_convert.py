@@ -184,6 +184,55 @@ def test_one_applied_rate_per_currency_and_date_however_many_rows(
     assert len(outcome.applied_rates) == 1
 
 
+def test_a_row_already_in_the_target_names_no_applied_rate(saved_db: Database) -> None:
+    """An identity rate is not a conversion, and must not claim to be one.
+
+    ``display_currency`` defaults to the profile's home currency, so the
+    ordinary single-currency read reaches ``convert_records`` with every row
+    already denominated in the target. ``resolve_rate`` answers those with an
+    in-memory identity rate that was never stored; publishing it would make the
+    terminal print "Converted from USD at 1 (identity)" on a report where
+    nothing was priced, and make the MCP envelope carry a fabricated entry.
+    ``InvestmentService._portfolio_total`` already refuses it for this reason.
+    """
+    service = CurrencyService(saved_db)
+
+    outcome = convert_records(
+        [_row(currency_code="USD")],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+    )
+
+    assert outcome.display_currency == "USD"
+    assert outcome.applied_rates == ()
+
+
+def test_a_mixed_report_names_only_the_rate_it_actually_applied(
+    saved_db: Database,
+) -> None:
+    """The identity entry drops out; the real one survives beside it.
+
+    Filtering must not cost the genuine rate in the same result — a mixed
+    EUR/USD report priced into USD applied exactly one stored rate, and the CLI
+    counts these to decide whether to print the rate or a summary line.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    service = CurrencyService(saved_db)
+
+    outcome = convert_records(
+        [_row(), _row(currency_code="USD")],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+    )
+
+    assert len(outcome.records) == 2
+    assert [rate.from_currency for rate in outcome.applied_rates] == ["EUR"]
+
+
 def test_a_segmented_report_names_no_applied_rate(saved_db: Database) -> None:
     """Nothing was priced, so nothing may claim to have priced it.
 
@@ -649,6 +698,69 @@ def test_a_successful_conversion_reports_the_currency_it_converted_into(
 
     assert converted.degraded_reason is None
     assert converted.display_currency == "USD"
+
+
+def _drop_the_second_row(rows: list[dict[str, Any]], _currency: str) -> None:
+    """Stand-in for a collapsing callback, e.g. `core:networth`'s totals merge."""
+    del rows[1:]
+
+
+def test_a_callback_that_drops_rows_corrects_the_reported_total(
+    saved_db: Database,
+) -> None:
+    """A shape-changing callback must leave the counts describing the answer.
+
+    ``total_count`` is fixed before conversion runs, so a callback that
+    collapses rows leaves ``build_envelope`` deriving ``has_more`` from rows
+    that no longer exist anywhere — an untruncated result reporting itself
+    truncated, and sending a caller to fetch a page that is not there.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    service = CurrencyService(saved_db)
+
+    converted = convert_execution(
+        _execution(
+            records=[_row(), _row(amount=Decimal("50.00"))],
+            total_count=2,
+            on_converted=_drop_the_second_row,
+        ),
+        to_currency="USD",
+        service=service,
+    )
+
+    assert len(converted.records) == 1
+    assert converted.total_count == 1
+
+
+def test_a_callback_that_keeps_every_row_leaves_the_total_alone(
+    saved_db: Database,
+) -> None:
+    """The correction is for rows actually removed, not for running a callback.
+
+    ``core:balance_drift`` restates values in place without changing the row
+    count, and a total that drifted on every converted read would be the same
+    defect pointed the other way.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    service = CurrencyService(saved_db)
+
+    def _restate_in_place(rows: list[dict[str, Any]], _currency: str) -> None:
+        for row in rows:
+            row["txn_count"] = 0
+
+    converted = convert_execution(
+        _execution(
+            records=[_row(), _row(amount=Decimal("50.00"))],
+            total_count=7,
+            truncated=True,
+            on_converted=_restate_in_place,
+        ),
+        to_currency="USD",
+        service=service,
+    )
+
+    assert len(converted.records) == 2
+    assert converted.total_count == 7
 
 
 # --- Requirement 9: the default display currency is the profile's home --------

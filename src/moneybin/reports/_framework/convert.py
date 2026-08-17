@@ -214,11 +214,20 @@ def convert_records(
         priced[currency_column] = target
         converted.append(priced)
 
-    # Sorted rather than left in resolution order so the provenance a caller
-    # reads does not depend on which row happened to come first.
+    # A row already in the target resolves to an in-memory identity rate that
+    # was never stored, and `display_currency` defaults to the home currency —
+    # so the ordinary single-currency read arrives here with every row in that
+    # state. Publishing those would have the terminal announce a conversion on
+    # a report where nothing was priced, and have the CLI count an entry that
+    # is not a stored rate. Sorted, rather than left in resolution order, so
+    # the provenance a caller reads does not depend on which row came first.
     applied = tuple(
         sorted(
-            resolved.values(),
+            (
+                rate
+                for rate in resolved.values()
+                if rate.from_currency != rate.to_currency
+            ),
             key=lambda r: (r.from_currency, r.requested_date, r.rate_date),
         )
     )

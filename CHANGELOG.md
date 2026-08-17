@@ -168,7 +168,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pair with its rate, its source, the date asked for, and the date actually
   priced, which differ whenever a weekend or holiday falls back to the previous
   published day (Requirement 10). The terminal prints the rate when one priced
-  the whole report and a summary line when several did.
+  the whole report and a summary line when several did. Only rates that were
+  actually applied appear: a row already in the target currency resolves to an
+  identity rate that was never stored, and listing it would announce a
+  conversion on a single-currency report where nothing was priced.
 
   `moneybin export report` deliberately takes no `--display-currency`: an
   exported file outlives the rate that priced it, so exports carry original
