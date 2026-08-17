@@ -110,6 +110,35 @@ def test_inbox_drain_warns_about_a_retired_transfer_in_both_output_modes(
         assert "moneybin system audit undo" in result.stderr, mode
 
 
+def test_inbox_drain_reports_the_best_effort_steps_its_refresh_ran(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """The drain runs four best-effort steps and reported none of them.
+
+    ``InboxService.sync`` closes with ``run_refresh(steps=None)``, so a watched
+    folder quietly reaches the network for exchange rates. Nobody watches a
+    watched folder, so this is the surface where a swallowed provider outage
+    would sit longest.
+    """
+    from moneybin.services.refresh_outcome import RefreshStepOutcome
+
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[{"filename": "chase-checking/march.csv", "transactions": 47}],
+        failed=[],
+        refresh_steps=RefreshStepOutcome(
+            matching_error="matcher blew up",
+            rate_pairs_unsupported=("EUR/XTS",),
+        ),
+    )
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.stderr
+    assert "Matching step failed" in result.stderr
+    assert "EUR/XTS" in result.stderr
+    assert "moneybin fx set" in result.stderr
+
+
 def test_inbox_drain_failure_exits_zero_but_warns(
     runner: CliRunner, patch_inbox: MagicMock
 ) -> None:

@@ -253,6 +253,26 @@ class ImportFilesPayload:
     files: list[ImportPerFileRow]
     # Accepted transfers this import's refresh reversed (AGGREGATE, Tier.LOW).
     transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
+    # This import's own refresh, in its four best-effort steps. Named exactly as
+    # `RefreshRunPayload` names them — see that payload for why each stays a
+    # separate field and why `rates_written` is None rather than 0 when the
+    # step did not run.
+    matching_error: Annotated[str | None, DataClass.DESCRIPTION] = None
+    categorization_error: Annotated[str | None, DataClass.DESCRIPTION] = None
+    identity_errors: Annotated[list[str], DataClass.TXN_TYPE] = field(
+        default_factory=list
+    )
+    rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
+    rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    rate_pairs_unsupported: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    rate_backfill_error: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +608,26 @@ class ImportInboxSyncPayload:
     transforms_error: Annotated[str | None, DataClass.DESCRIPTION]
     # Accepted transfers the drain's refresh reversed (AGGREGATE, Tier.LOW).
     transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
+    # The drain's own refresh, in its four best-effort steps. Named exactly as
+    # `RefreshRunPayload` names them — see that payload for why each stays a
+    # separate field and why `rates_written` is None rather than 0 when the
+    # step did not run.
+    matching_error: Annotated[str | None, DataClass.DESCRIPTION] = None
+    categorization_error: Annotated[str | None, DataClass.DESCRIPTION] = None
+    identity_errors: Annotated[list[str], DataClass.TXN_TYPE] = field(
+        default_factory=list
+    )
+    rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
+    rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    rate_pairs_unsupported: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    rate_backfill_error: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
 # ---------------------------------------------------------------------------

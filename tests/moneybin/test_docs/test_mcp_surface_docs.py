@@ -2927,7 +2927,11 @@ def test_final_review_refresh_and_report_counts_match_runtime() -> None:
     features = FEATURES.read_text()
     roadmap = (ROOT / "docs/roadmap.md").read_text()
     reports = REPORT_RECIPE_SPEC.read_text()
-    default_sequence = "gsheet → match → transform → categorize → identity"
+    # Derived, not spelled: a literal here pins whatever the docs happen to say,
+    # so adding a canonical step leaves both prose copies stale and green.
+    from moneybin.services.refresh import CANONICAL_STEPS
+
+    default_sequence = " → ".join(CANONICAL_STEPS)
 
     assert default_sequence in recovery
     assert default_sequence in features

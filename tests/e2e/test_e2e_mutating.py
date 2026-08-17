@@ -246,6 +246,22 @@ class TestTransformMutating:
         result = run_cli("refresh", "--step", "transform", env=env, timeout=180)
         result.assert_success()
 
+    def test_refresh_step_rates_only(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`moneybin refresh --step rates` is accepted and exits clean.
+
+        The template profile sets no home currency, so this proves the step is
+        wired end to end AND that it makes no network call when nothing implies
+        one — an E2E that reached Frankfurter would be a flaky test and an
+        outbound request from CI.
+        """
+        env = make_workflow_env_fast(
+            tmp_path, "refresh-step-rates", _mutating_profile_template
+        )
+        result = run_cli("refresh", "--step", "rates", env=env, timeout=180)
+        result.assert_success()
+
     def test_refresh_step_json_envelope_shape(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:

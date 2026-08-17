@@ -9,9 +9,14 @@ from contextlib import contextmanager
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import handle_cli_errors, warn_transfers_retired
+from moneybin.cli.utils import (
+    handle_cli_errors,
+    warn_refresh_steps,
+    warn_transfers_retired,
+)
 from moneybin.connectors.sync_models import LinkInitiateResponse
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
+from moneybin.services.refresh_outcome import refresh_steps_fields
 
 from .stubs import _not_implemented
 
@@ -213,6 +218,8 @@ def sync_link(
             )
         # connect's auto-pull reaches the same reconciliation `sync pull` does.
         warn_transfers_retired(pr.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
+        # And the same best-effort steps, for the same reason.
+        warn_refresh_steps(pr.refresh_steps)
         if pr.transforms_error or pr.security_resolution_error:
             raise typer.Exit(1)
 
@@ -359,9 +366,19 @@ def sync_pull(
     # line names the way back, and an agent driving --output json is the caller
     # least able to notice a reversal on its own.
     warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
+    # Ahead of both branches for the same reason as the line above: this pull
+    # ran a matcher, a categorizer, an identity pass and a network rate
+    # backfill, and only these lines carry each one's remedy.
+    warn_refresh_steps(result.refresh_steps)
 
     if output == OutputFormat.JSON:
-        typer.echo(result.model_dump_json(indent=2))
+        # Flattened rather than dumped as the nested field it travels in, so
+        # these read exactly as `refresh_envelope` spells them on every other
+        # surface. The carrier is internal transport; the envelope is public.
+        body = result.model_dump(mode="json")
+        body.pop("refresh_steps", None)
+        body.update(refresh_steps_fields(result.refresh_steps))
+        typer.echo(json.dumps(body, indent=2))
         # Fall through to the shared exit-code check so JSON-mode agents
         # gating on process status see the same signal as text-mode users.
     else:

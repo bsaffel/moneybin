@@ -195,7 +195,40 @@ and confirmation contracts.
   expiry transitions are audit events; unused previews expire after the
   configured TTL. Its `readOnlyHint=false` annotation reflects that retained
   state even though it does not commit ledger rows.
-- `refresh_run` owns the bounded derived-state workflow.
+- `refresh_run` owns the bounded derived-state workflow. Its `steps` vocabulary
+  is `gsheet`, `match`, `transform`, `categorize`, `identity`, `rates`, executed
+  in that canonical order. `rates` caches the reference rates the profile's own
+  transactions, balances and holdings imply; it runs last because nothing
+  downstream consumes it, and it reports `rates_written` plus any
+  `rate_pairs_failed` (retried next run), `rate_pairs_unsupported` (never
+  retried; needs `moneybin fx set`), and `rate_pairs_discarded` (the provider
+  answered and part of the answer was unusable, so coverage may be short on some
+  dates) rather than failing the call. A crash in the step itself reports
+  `rate_backfill_error`, the same `DESCRIPTION`-classified shape
+  `matching_error` and `categorization_error` use: `rates_written` is `null`
+  both when the step declined to run and when it ran and died, so the error is
+  the only field that separates them. `rate_pairs_failed` and
+  `rate_backfill_error` each earn a `recovery_actions` entry
+  (`refresh_run(steps=["rates"])`, emitted once even when both are set),
+  matching the match and categorize steps; the other two pair lists name
+  conditions a retry cannot change, so offering one would be a loop with no
+  terminating condition.
+- The tools that *embed* a refresh — `sync_pull`, `import_files`,
+  `import_inbox_sync` — carry that same step outcome on their own payloads,
+  under the same field names, because each runs the full cascade on the user's
+  behalf. `transforms_error` on those payloads reports only the SQLMesh apply;
+  `matching_error`, `categorization_error`, `identity_errors` and the
+  exchange-rate group report the four best-effort steps it cannot speak for.
+  The names are deliberately identical to `refresh_run`'s so an agent reading
+  two surfaces learns one vocabulary for one outcome. They carry its
+  `recovery_actions` too, built by the same function: a step that crashed inside
+  an import is no less retryable for having crashed there, and these are the
+  surfaces where the CLI's stderr warning has no counterpart, so a payload field
+  with nothing executable beside it is the whole of what the agent gets. That
+  function takes the apply outcome as a required argument, because these callers
+  hold it in their own `transforms_error` field rather than in the step outcome:
+  when the apply failed it is the blocker, and every step retry is withheld so
+  the agent fixes it before chasing a secondary crash that would recur anyway.
 - `sql_query` is the read-only escape hatch and `sql_schema` explains the
   interface schema. They do not replace domain validation for writes.
 

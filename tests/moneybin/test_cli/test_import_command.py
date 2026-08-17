@@ -205,6 +205,48 @@ def test_import_files_single_surfaces_the_retirement_its_refresh_caused(
     assert "moneybin system audit undo" in caplog.text
 
 
+def test_import_files_reports_the_best_effort_steps_its_refresh_ran(
+    csv_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An import runs four best-effort steps and reported none of them.
+
+    ``import_file``'s refresh runs a matcher, a categorizer, an identity pass
+    and a network-touching rate backfill. ``transforms_error`` covers only the
+    SQLMesh apply, so a provider outage mid-import read as a clean import — and
+    each of these outcomes carries a remedy the others do not.
+    """
+    from moneybin.services.refresh_outcome import RefreshStepOutcome
+
+    def fake_run_import(**kwargs: Any) -> ImportResult:
+        return ImportResult(
+            file_path=str(kwargs["file_path"]),
+            file_type="tabular",
+            core_tables_rebuilt=True,
+            refresh_steps=RefreshStepOutcome(
+                categorization_error="categorizer blew up",
+                rate_pairs_unsupported=("EUR/XTS",),
+            ),
+        )
+
+    with (
+        patch("moneybin.cli.utils.handle_cli_errors", _fake_db_ctx),
+        patch("moneybin.database.get_database", _fake_db_ctx),
+        patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=fake_run_import,
+        ),
+    ):
+        with caplog.at_level("WARNING"):
+            result = runner.invoke(
+                app, ["files", str(csv_path)], catch_exceptions=False
+            )
+
+    assert result.exit_code == 0, result.output
+    assert "Categorization step failed" in caplog.text
+    assert "EUR/XTS" in caplog.text
+    assert "moneybin fx set" in caplog.text
+
+
 def test_import_files_retirement_warning_survives_quiet(
     csv_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

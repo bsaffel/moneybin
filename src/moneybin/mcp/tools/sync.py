@@ -12,14 +12,19 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import Any, Literal, cast
 
 from fastmcp import FastMCP
 
 from moneybin import error_codes
 from moneybin.config import get_settings
+from moneybin.connectors.sync_models import ConnectedInstitution, PullResult
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.adapters.refresh_adapters import (
+    refresh_rate_gap_hints,
+    refresh_step_actions,
+)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -52,9 +57,7 @@ from moneybin.protocol.envelope import (
     build_envelope,
     build_error_envelope,
 )
-
-if TYPE_CHECKING:
-    from moneybin.connectors.sync_models import ConnectedInstitution, PullResult
+from moneybin.services.refresh_outcome import refresh_steps_fields
 
 
 def _build_sync_client() -> Any:
@@ -164,8 +167,16 @@ def sync_pull(
             ),
             security_resolution=dict(result.security_resolution),
             security_resolution_error=result.security_resolution_error,
+            **refresh_steps_fields(result.refresh_steps),
         ),
         actions=_pull_actions(result),
+        # `or None` to omit the key when empty, matching `refresh_envelope`:
+        # this envelope's `error` is None, so there is no `error.recovery_actions`
+        # for an empty list to fall through to.
+        recovery_actions=refresh_step_actions(
+            result.refresh_steps, apply_failed=result.transforms_error is not None
+        )
+        or None,
     )
 
 
@@ -210,6 +221,7 @@ def _pull_actions(result: PullResult) -> list[str]:
             "double-count until one source is chosen per account "
             "(see system_status(sections=['doctor']))."
         )
+    actions.extend(refresh_rate_gap_hints(result.refresh_steps))
     actions.append("Use sync_status to see connection health going forward.")
     return actions
 

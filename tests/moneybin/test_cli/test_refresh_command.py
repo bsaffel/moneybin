@@ -6,10 +6,12 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from click.testing import Result
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
 from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
+from moneybin.services.rate_backfill import RateBackfillResult
 from moneybin.services.refresh import RefreshResult
 
 
@@ -198,6 +200,160 @@ def test_refresh_matcher_crash_surfaced_in_json(runner: CliRunner) -> None:
     }
     # The crash is also surfaced as a stderr warning, not only in the payload.
     assert "Matching step failed" in result.output
+
+
+def _rates_result(
+    *,
+    failed: tuple[str, ...] = (),
+    unsupported: tuple[str, ...] = (),
+    discarded: tuple[str, ...] = (),
+) -> RefreshResult:
+    """An applied refresh whose only complaint is about exchange rates."""
+    return RefreshResult(
+        applied=True,
+        duration_seconds=2.0,
+        rate_backfill=RateBackfillResult(
+            rates_written=0,
+            pairs_failed=failed,
+            pairs_unsupported=unsupported,
+            pairs_discarded=discarded,
+        ),
+    )
+
+
+def _invoke_refresh(runner: CliRunner, result: RefreshResult, *args: str) -> Result:
+    """Run `moneybin refresh` against a canned service result."""
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        return runner.invoke(app, ["refresh", *args])
+
+
+def test_refresh_warns_when_the_rates_step_itself_crashed(runner: CliRunner) -> None:
+    """A crashed rates step is a ⚠️, not silence, and withholds the ✅.
+
+    Distinct from every pair-level warning below: the step never got far enough
+    to name a pair, so all three pair lists are empty and the run would
+    otherwise print a clean success banner over a step that failed outright.
+    """
+    out = _invoke_refresh(
+        runner,
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            rate_backfill=None,
+            rate_backfill_error="Rate backfill failed — the cause is in the local log",
+        ),
+    )
+
+    assert out.exit_code == 0, "the rates step is best-effort, like its siblings"
+    assert "Exchange rate backfill failed" in out.output
+    assert "✅ Refresh complete" not in out.output
+
+
+def test_refresh_unfilled_rate_pair_warns_and_withholds_the_success_banner(
+    runner: CliRunner,
+) -> None:
+    """The ✅ must not print directly beneath a ⚠️ that contradicts it.
+
+    The rates step is best-effort like matching and categorization, so it
+    follows their rule: a warning and a clean success banner in the same output
+    tell the user two different things about the same run.
+    """
+    out = _invoke_refresh(runner, _rates_result(failed=("EUR/USD",)))
+
+    assert out.exit_code == 0
+    assert "Exchange rates unavailable for EUR/USD" in out.output
+    assert "✅ Refresh complete" not in out.output
+
+
+def test_refresh_names_an_unsupported_pair_and_its_manual_remedy(
+    runner: CliRunner,
+) -> None:
+    """A pair the provider never publishes is not fixed by running again.
+
+    Retrying is the remedy for a failed pair and is useless for this one, so
+    the line carries the only thing that does fill it — and the generic
+    "re-run the failed step" hint is deliberately withheld, because following
+    it would change nothing.
+    """
+    out = _invoke_refresh(runner, _rates_result(unsupported=("JPY/USD",)))
+
+    assert out.exit_code == 0
+    assert "No exchange rate series is published for JPY/USD" in out.output
+    assert "moneybin fx set" in out.output
+    assert "Re-run the failed step" not in out.output
+    assert "✅ Refresh complete" not in out.output
+
+
+def test_refresh_offers_a_retry_when_a_rate_pair_merely_failed(
+    runner: CliRunner,
+) -> None:
+    """The negative control on the test above: a failed pair does earn the hint."""
+    out = _invoke_refresh(runner, _rates_result(failed=("EUR/USD",)))
+
+    assert "Re-run the failed step" in out.output
+
+
+def test_refresh_rate_warnings_survive_quiet(runner: CliRunner) -> None:
+    """-q suppresses status and ✅, never a warning — same rule as the matcher."""
+    out = _invoke_refresh(runner, _rates_result(unsupported=("JPY/USD",)), "--quiet")
+
+    assert out.exit_code == 0
+    assert "No exchange rate series is published for JPY/USD" in out.output
+
+
+def test_refresh_reports_a_pair_whose_rates_were_partly_unusable(
+    runner: CliRunner,
+) -> None:
+    """A discarded rate is neither an outage nor a missing series.
+
+    The provider answered, so retrying re-sends a request that returns the same
+    unusable value — which is why this earns no retry hint. It is also not a
+    permanent absence: the pair may have stored most of its span, so the line
+    says coverage *may* be short instead of naming a manual remedy for a gap
+    that might not exist.
+    """
+    out = _invoke_refresh(runner, _rates_result(discarded=("GBP/USD",)))
+
+    assert out.exit_code == 0
+    assert "Exchange rate coverage is short for GBP/USD" in out.output
+    assert "Re-run the failed step" not in out.output
+    assert "✅ Refresh complete" not in out.output
+
+
+def test_refresh_json_carries_every_rate_pair_list(runner: CliRunner) -> None:
+    """An agent on the JSON surface gets the same split a human gets on stderr."""
+    out = _invoke_refresh(
+        runner,
+        _rates_result(
+            failed=("EUR/USD",),
+            unsupported=("JPY/USD",),
+            discarded=("GBP/USD",),
+        ),
+        "--output",
+        "json",
+    )
+
+    payload = json.loads(out.stdout)["data"]
+    assert payload["rate_pairs_failed"] == ["EUR/USD"]
+    assert payload["rate_pairs_unsupported"] == ["JPY/USD"]
+    assert payload["rate_pairs_discarded"] == ["GBP/USD"]
+
+
+def test_refresh_clean_rates_still_prints_the_success_banner(
+    runner: CliRunner,
+) -> None:
+    """The negative control on the banner suppression above.
+
+    Without this, a change that suppressed ✅ unconditionally would leave every
+    assertion in this section passing.
+    """
+    out = _invoke_refresh(runner, _rates_result())
+
+    assert "✅ Refresh complete" in out.output
 
 
 def test_refresh_matcher_crash_warns_in_text(runner: CliRunner) -> None:

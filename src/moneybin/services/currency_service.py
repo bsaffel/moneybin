@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -366,14 +367,25 @@ class CurrencyService:
         return None if row is None else row[0]
 
     def _store(self, observation: RateObservation) -> int:
-        """Append one observation to the cache, returning rows actually written.
+        """Append one observation to the cache, returning rows actually written."""
+        return self.store_observations((observation,))
+
+    def store_observations(self, observations: Sequence[RateObservation]) -> int:
+        """Append observations to the cache, returning rows actually written.
 
         ``on_conflict="ignore"`` keeps the row already stored for a key: the
         table is append-only because a rate a provider published for a date is a
         historical fact. The count is rows the insert WROTE, never rows offered —
-        a weekend request re-offers Friday's row every time, so counting the
-        frame would make this climb steadily through a completely stalled feed.
+        a weekend request re-offers Friday's row every time, and a backfill
+        re-offers a whole cached span, so counting the frame would make this
+        climb steadily through a completely stalled feed.
+
+        Public because the backfill arrives with a span rather than a single
+        rate, and a second write path into an append-only table would be a
+        second place for the quantization and the counter to drift.
         """
+        if not observations:
+            return 0
         frame = pl.DataFrame(
             [
                 {
@@ -383,13 +395,17 @@ class CurrencyService:
                     "rate": _as_stored(observation.rate),
                     "source_type": observation.source_type,
                 }
+                for observation in observations
             ],
             schema=_RAW_RATE_SCHEMA,
         )
         written = self._db.ingest_dataframe(
             EXCHANGE_RATES.full_name, frame, on_conflict="ignore"
         )
-        FX_RATE_ROWS_WRITTEN_TOTAL.labels(source_type=observation.source_type).inc(
+        # Attributed to the source the rows came from. A mixed batch is not a
+        # shape any caller produces — one call fetches one pair from one
+        # provider — so the first observation's source names the whole frame.
+        FX_RATE_ROWS_WRITTEN_TOTAL.labels(source_type=observations[0].source_type).inc(
             written
         )
         return written
@@ -452,7 +468,7 @@ class CurrencyService:
 
         if observation is None:
             raise self._absence(base, quote, on)
-        if not _is_storable_after_rounding(observation.rate):
+        if not is_storable_after_rounding(observation.rate):
             # `resolve_rate` stores this observation outside the `FeedError`
             # handling above, so an unstorable rate reaches DuckDB: one that
             # quantizes to zero trips `CHECK (rate > 0)`, an oversized one
@@ -544,18 +560,12 @@ class CurrencyService:
     def _unsupported(self, base: str, quote: str) -> set[str]:
         """Which of the two currencies the provider prices on no date at all.
 
-        An unreadable list answers "none": claiming a currency is unsupported on
-        the strength of a dropped connection would send the user to a permanent
-        remedy for a transient failure.
+        An unreadable list collapses to "none" here, unlike in the backfill: the
+        caller's other branch already tells the user to try a nearby date or
+        record the rate, which is the right advice for a lookup whose support is
+        unknown. The backfill's fall-through is not, so it reads the ``None``.
         """
-        if self._adapter is None:
-            return set()
-        try:
-            published = self._adapter.supported_currencies()
-        except FeedError:
-            logger.info("Could not read the provider's currency list")
-            return set()
-        return {code for code in (base, quote) if code not in published}
+        return unsupported_currencies(self._adapter, base, quote) or set()
 
 
 def build_currency_service(db: Database, *, actor: str = "system") -> CurrencyService:
@@ -662,7 +672,35 @@ def _require_storable(rate: Decimal) -> None:
         )
 
 
-def _is_storable_after_rounding(rate: Decimal) -> bool:
+def unsupported_currencies(adapter: RateAdapter | None, *codes: str) -> set[str] | None:
+    """Which of ``codes`` the provider prices on no date at all, or ``None``.
+
+    Every caller asks about a *pair*, and either side can be the one the
+    provider has never carried — a profile whose home currency is unpublished
+    reaches this with a perfectly ordinary base. Reading one side is what makes
+    such a profile report an empty result forever with nothing to act on, so
+    the check is shared rather than re-derived per caller.
+
+    ``None`` means the list itself could not be read, and is deliberately not
+    the empty set: claiming a currency is unsupported on the strength of a
+    dropped connection would send the user to a permanent remedy for a
+    transient failure, but so would answering "none unsupported" to a caller
+    that reads an empty answer as proof the pair is fine. Only the caller knows
+    which of those two mistakes its branch would make, so the distinction is
+    handed back rather than resolved here. Adapters memoize the list, so asking
+    about many pairs still costs one call.
+    """
+    if adapter is None:
+        return set()
+    try:
+        published = adapter.supported_currencies()
+    except FeedError:
+        logger.info("Could not read the provider's currency list")
+        return None
+    return {code for code in codes if code not in published}
+
+
+def is_storable_after_rounding(rate: Decimal) -> bool:
     """Whether ``DECIMAL(18,8)`` can hold this rate at all, once quantized.
 
     Deliberately not ``_require_storable``, which the override path uses. That

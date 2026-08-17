@@ -11,6 +11,109 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Refresh gathers the exchange rates your own data implies (M1K.2).** A new
+  `rates` step runs last in the refresh cascade — after gsheet, match,
+  transform, categorize and identity — and caches the reference rates needed to
+  convert what you actually hold. It reads the currencies and earliest dates
+  off your own transactions, daily balances, investment trades and open
+  positions, then asks the provider for one date range per currency pair — a
+  span covering 1999 to today is a single request.
+
+  It asks for the whole span every time rather than resuming after the newest
+  rate it already holds. Stored rates cannot prove a span was ever fetched:
+  looking up two single dates years apart with `moneybin fx rate` leaves two
+  rows that a resume would read as "everything between these is covered", and
+  because the window only moves forward, those years would never be fetched.
+  The cache discards what it already has, so the cost is one request per
+  currency per refresh and the gap cannot happen.
+
+  This is why a report can convert offline. Display conversion prices every row
+  at its own date, so a three-year report needs a rate for every date it
+  touches; fetching those during the report read would put a network call and
+  the exclusive writer lock behind a command that looks read-only, and would
+  fail outright whenever a sync held that lock. Refresh already holds it.
+
+  The step is best-effort and never fails the command; the rest of the cascade
+  keeps its results either way. A pair the provider could not answer is warned
+  on stderr by name, listed in `rate_pairs_failed` under `--output json` and in
+  the MCP envelope, and retried on the next refresh. The MCP envelope also
+  carries an executable `refresh_run(steps=["rates"])` recovery action for it,
+  matching what the matching and categorization steps already offer; the other
+  two pair lists get none, because no number of retries fills them. A crash in
+  the step itself is reported the same way, as `rate_backfill_error` with the
+  same retry — without it a step that ran and failed is indistinguishable from
+  one that correctly declined to run. A currency the provider does not publish
+  at all is reported separately, as `rate_pairs_unsupported`, because retrying
+  will never fill it — that warning names `moneybin fx set`, which will. Either
+  side of the pair can be the unpublished one, so a home currency the provider
+  does not carry is caught too. Telling that apart takes a second request, for
+  the provider's list of published currencies, and when that request is the one
+  that fails the pair is reported as failed: nothing at that moment separates a
+  currency that will never publish from one briefly unreachable, and only the
+  retryable outcome leaves a later run able to separate them. A pair whose
+  answer was partly unusable — dated outside the window, or too small for the
+  rate column — is listed as `rate_pairs_discarded`, which says coverage may
+  be short on some dates rather than that the pair is missing. A series that
+  does not span what was asked for lands there too: a currency the provider
+  only started publishing partway through your history answers every date it
+  has and none of the ones before, and one that stopped being published
+  answers nothing recent. Neither drops a rate, so nothing else would mark
+  them, and neither is filled by waiting — the window opens at your earliest
+  row, so it moves back only when earlier data is imported, and a series that
+  has stopped does not resume because you refreshed again. An ordinary
+  unpublished today is not this: the check allows two weeks, so it fires on a
+  series that has stopped, not on one that lags.
+
+  A profile with no home currency set fetches nothing. Run it alone with
+  `moneybin refresh --step rates` or `refresh_run(steps=["rates"])`. A
+  `gsheet pull` runs it too, because a pulled sheet can carry foreign-currency
+  rows, and reports every one of those outcomes the way `moneybin refresh`
+  does — as warnings, and on the JSON envelope under `--output json`. Only
+  currency codes and dates leave the machine.
+
+  Every other command that closes with a refresh reports it the same way.
+  `moneybin import files`, `moneybin sync pull`, the inbox drain and their MCP
+  tools all run the full cascade, so each of them reaches a rate provider on
+  your behalf; each now surfaces the outcome instead of reporting only whether
+  SQLMesh applied. The three best-effort steps that were already silent on
+  those surfaces — matching, categorization and identity — come with it, so a
+  crash in any of them is named wherever it happens rather than only under
+  `moneybin refresh`. `rates_written` is `null` when the step did not run and
+  `0` when it ran and had nothing to fetch: an empty pair list reads the same
+  either way, so that field is what separates them. Their MCP envelopes carry
+  the same executable `refresh_run` retries `refresh_run` itself returns — a
+  step that crashed inside an import is no less retryable for having crashed
+  there, and MCP has no stderr to warn on. They withhold those retries when the
+  SQLMesh apply itself failed, the way `refresh_run` always has: the apply is
+  the blocker, and a step retry beside it would run against the same broken
+  warehouse and fail identically. A crashed identity pass now offers its retry
+  too, which is the one step that carried its failure with nothing executable
+  beside it.
+
+  A drifted `core.*` schema is reported rather than skipped. Refresh runs
+  before the first transform, so a missing `core.*` is the normal state of a
+  new install and the step stays quiet for it — but a renamed column or a
+  dropped model on a mature database raises the same error from the same call,
+  and answering `rates_written: null` with no error made real drift look like a
+  profile that had nothing to fetch. The quiet path now applies only when none
+  of the relations it reads exist at all.
+
+  The window closes on the UTC day rather than the host's. Reference rates are
+  published against UTC dates, so east of UTC a host-local "today" asks for a
+  day the provider has not published yet.
+
+  A pair no retry can fill now names its remedy on every surface. `moneybin fx
+  set` is a CLI command, so it can never be an executable MCP action — the CLI
+  had warned about it all along while the MCP envelopes carried the field and
+  said nothing about closing the gap. The refusal to offer a futile retry is
+  unchanged; what is added is the sentence saying what does work.
+
+  A malformed currency catalog is refused rather than believed. The provider's
+  published-currency list is what separates "this pair will never publish" from
+  "the provider is having a bad minute", and a 200 carrying `{}` or a status
+  message is object-shaped enough to have been read as the catalog itself —
+  which reported every real currency as permanently unsupported and sent the
+  user to write manual overrides.
 - **A multi-currency demo persona.** `moneybin demo --persona international`
   (and `moneybin synthetic generate --persona international`) builds five
   accounts at five banks in EUR, GBP, CAD, AED, and USD, each funded and spent
