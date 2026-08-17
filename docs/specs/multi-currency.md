@@ -393,8 +393,8 @@ Numbered, testable. Tagged by phase.
     source, fetched_at)`, unique on `(from_currency, to_currency, rate_date, source)`) or a
     user override in `app.*` (Req 14). A "show me the rate" path exposes the exact rate
     behind any converted number (consistent with the lineage promise).
-11. **Free reference-rate source.** Rates fetch lazily on first need from **Frankfurter**
-    (ECB-backed, no auth, historical to 1999), cached in `raw.exchange_rates`.
+11. **Free reference-rate source.** Rates come from **Frankfurter** (ECB-backed, no
+    auth, historical to 1999), cached in `raw.exchange_rates`.
     `ExchangeRate.host`/`open.er-api.com` are documented fallbacks. **Only currency
     codes and dates leave the machine — never amounts or PII** (same structural-signal
     posture as categorization redaction).
@@ -419,10 +419,134 @@ Numbered, testable. Tagged by phase.
 16. **Investment bridge (display).** Investment holdings (which carry their own
     `currency_code` per `investments-data-model.md`) convert to home currency for a
     unified net-worth number through this same layer.
+17. **Each row prices at its own date.** A converted figure uses the rate for the
+    date that row carries — a transaction's `transaction_date`, a daily balance's
+    `balance_date` — never a single as-of rate applied across a range. A report
+    spanning three years therefore needs a rate per date it touches, which is what
+    makes Requirement 18 necessary. Resolution of a non-trading date is Requirement
+    13's; this requirement fixes only *which* date is asked for.
+18. **Rates are gathered during refresh, not during a report read.** A `rates` step
+    runs last in the refresh cascade and caches the span the profile's own rows
+    imply: for each currency reachable from `core.fct_transactions`,
+    `core.fct_balances_daily`, `core.fct_investment_transactions` or
+    `core.dim_holdings`, one provider call covering the earliest date that currency
+    appears through today.
+
+    The window is derived from what the profile needs, never from what the cache
+    appears to hold. `raw.exchange_rates` records the dates a provider published,
+    not the ranges MoneyBin requested, so a span fetched in full and a span
+    bracketed by two rows from separate `moneybin fx rate` lookups are identical
+    in it. Reading its `MIN`/`MAX` as coverage would resume from the newest row
+    and — because the window only moves forward — strand every date between those
+    two lookups permanently, which is the gap this requirement exists to close. A
+    date-set model fails the other way, since a reference series has legitimate
+    holes on every weekend and holiday that it would re-request forever. So the
+    whole implied span is re-requested each refresh and the append-only cache
+    discards what it already holds: one provider call per foreign currency per
+    refresh, spent to make the stranded-span case impossible rather than unlikely.
+
+    Both directions across the provider boundary are bounded, because both carry
+    untrusted values. Outbound, `currency_code` is source data — a CSV whose
+    columns shifted by one puts an account label in it — so a code that fails the
+    ISO-4217 shape gate is skipped rather than sent, satisfying Requirement 11 by
+    construction instead of by convention; the skip is counted, never logged by
+    value. Inbound, two filters apply before the append-only write: a response
+    date outside the requested window (allowing Requirement 13's bounded backward
+    resolution at the start bound) is discarded, because a row filed under a date
+    nobody asked about cannot be corrected in place and every later conversion on
+    that date reads it; and a rate the `DECIMAL(18,8)` column cannot hold — one
+    that quantizes to zero, exceeds the magnitude bound, or is not finite — is
+    discarded for the reason Requirement 13's single-date path already rejects it,
+    with the added consequence that raising here would abort the remaining pairs
+    in the same refresh rather than costing only its own.
+
+    Placement is a correctness constraint, not a preference. A report read opens
+    the database read-only; fetching there would need the exclusive per-profile
+    writer lock behind a command that looks read-only, and would fail whenever a
+    sync held it. Refresh already holds that lock. The step runs after `transform`
+    because the pairs and dates are derived from `core.*`, and last because nothing
+    downstream consumes it, so a provider outage costs the run nothing that had
+    already succeeded. A profile with no home currency set fetches nothing.
+
+    A pair the step could not fill is reported as one of three kinds, because
+    their remedies differ. A *failed* pair — the provider call raised — is
+    retried on the next refresh and needs nothing from the user. An *unsupported*
+    pair — the provider does not publish that currency at all — will answer the
+    same way forever, so it is named separately and points at `moneybin fx set`.
+    Collapsing those two would either send a user to record rates by hand over a
+    dropped connection, or leave them waiting for a refresh that can never
+    succeed. They are told apart by the provider's own currency list, read for
+    *both* sides of the pair — a profile whose home currency is unpublished is
+    unsupported through an ordinary base — and when that list cannot be read,
+    neither kind is claimed.
+
+    A *discarded* pair is the third: the provider answered, and the answer did
+    not cover the window. Either MoneyBin threw part of it away — the rate fell
+    outside the requested range, or the rate column could not hold it — or the
+    answer's own span fell short of the requested one at either end. Those last
+    two are a currency the provider only started carrying partway through the
+    profile's history, and one it stopped carrying; both drop nothing, so they
+    are found only by comparing the earliest and latest rates kept against the
+    requested bounds. An empty answer for a published pair is the total case of
+    the first.
+
+    The two bounds are deliberately not equally strict. The opening one is
+    exact, because nothing prices a date from a later observation —
+    Requirement 13 resolves backward only — so a series starting even a few days
+    in leaves those dates needing a live fetch, and waiting cannot fill the gap:
+    the window opens at the profile's earliest row and moves back only when
+    earlier data is imported. The publication slack lives in the *request*
+    instead, which opens `MAX_BACKWARD_RESOLUTION_DAYS` before the window does,
+    so a profile whose earliest row falls on a closed market is covered by the
+    last publication day before it rather than reported short forever. The
+    closing bound allows that same span, because a missing recent date is
+    routine and self-healing — no rate is published on a weekend, often none for
+    today until the afternoon, and the window's end moves forward on its own —
+    so an exact bound there would warn on every healthy profile instead of on a
+    series that has genuinely stopped.
+    It is not exclusive with the other two and does not mean the pair is empty,
+    so it reports that coverage may be short on some dates rather than naming a
+    remedy. Without it, a pair whose every rate was discarded is
+    indistinguishable from a profile that needed no rates at all: both report
+    zero written and no named pairs.
+
+    This does not weaken Requirement 12: a rate that is still missing at read time
+    is an explicit surfaced error, never a substitution.
+
+    **Open — coverage is checked at the answer's edges, not through its
+    middle.** Both bounds above ask how far the answer reaches. Neither asks
+    whether what lies between is whole, and an interior hole is invisible from
+    either end: a response that omits a single weekday inside its span passes
+    every check and is reported as fully covered. That includes a dated entry
+    the provider returns without the requested quote, which the adapter drops as
+    absent. Nothing files a rate under a wrong date, so Requirement 12 holds
+    either way; what is missing is the warning. Closing it means verifying
+    stored coverage against the dates the profile actually needs rather than
+    against the answer's bounds — the span model the hole below already calls
+    for.
+
+    **Open for the conversion layer — the weekday-holiday hole.** A complete
+    backfill still leaves no row on a weekday the market was closed; verified
+    live 2026-08-15, the EUR/USD series skips Thursday 2026-01-01 entirely. A
+    transaction dated that day therefore misses the cache, and
+    `_last_publication_day` deliberately does not hop a weekday, so
+    `CurrencyService.resolve_rate` falls through to a live fetch **and a cache
+    write** — on a report read that opened the database read-only. The
+    conversion layer must not reach that path.
+
+    The backfill is what makes this fixable. `_last_publication_day`'s docstring
+    rejects a general "nearest earlier stored day" fallback because a missing
+    weekday is ambiguous — closed market, or nobody fetched it yet. Coverage
+    recorded as a span removes the ambiguity: **inside** `[earliest stored,
+    newest stored]` for a pair, a missing date is provably a non-publication
+    day and may resolve back to the last stored one; **outside** that span it is
+    genuinely unfetched and stays an error. Resolving backward within proven
+    coverage is not a guess, and it is what lets Requirement 17 price a
+    holiday-dated row offline.
 
 ### M1K.3 — Realized FX gain/loss
 
-17. **Conversion-pair identity.** A currency conversion event (e.g. a EUR debit paired
+19. **Conversion-pair identity.** A currency conversion event (e.g. a EUR debit paired
     with a USD credit) is modeled as a first-class pair, not inferred from two
     unrelated rows.
 
@@ -439,12 +563,12 @@ Numbered, testable. Tagged by phase.
     (schema reservation, not yet built) keeps a later importer from coining an
     ad-hoc, differently-ordered name and compounding the currency-column naming
     drift §Key Decisions already flags.
-18. **Currency-lot accounting.** Realized FX gain/loss on disposing a foreign-currency
+20. **Currency-lot accounting.** Realized FX gain/loss on disposing a foreign-currency
     holding is computed via the **investments cost-basis engine** (FIFO / average per
     the elected method in `investments-data-model.md`), treating currency holdings as
     lots. Realized FX gain/loss on a foreign-denominated *security* sale is the same
     engine applied to the currency leg.
-19. **Decimal throughout.** All amounts and rates are `DECIMAL`, never `FLOAT`
+21. **Decimal throughout.** All amounts and rates are `DECIMAL`, never `FLOAT`
     (`DECIMAL(18,2)` amounts; `DECIMAL(18,8)` rates per the `database.md` precision
     convention).
 
@@ -618,7 +742,15 @@ realized FX gain/loss on the conversion pairs.
    rebuilt from raw.
 2. **Home currency default = locale auto-detect with confirm; mutable.**
    Mutability is cheap *because* of decision 1.
-3. **Rates lazy-fetch + cache, never pre-populated.**
+3. **Rates are cached and never invented; gathered during refresh** *(timing
+   superseded 2026-08-16 by Requirement 18).* Originally "lazy-fetch + cache":
+   fetch on the read that needs a rate. Requirement 18 moved the fetch to a
+   `rates` step in the refresh cascade, because display conversion prices every
+   row at its own date — a report read would put a network call and the
+   exclusive writer lock behind a command that looks read-only, and would fail
+   outright whenever a sync held that lock. Unchanged: no rate table ships
+   pre-populated, and no rate is ever invented — an unfilled pair is reported,
+   not estimated.
 4. **Realized FX gain/loss lives in a dedicated conversion-pair model, not a column on
    `fct_transactions`** — a conversion is a relationship between two
    events, and reuses the investments cost-basis engine.

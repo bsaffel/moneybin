@@ -42,6 +42,7 @@ from moneybin.services.import_service import (
     honors_account_name,
     rekey_bare_proposals_for_path,
 )
+from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,10 @@ class InboxSyncResult:
     # transfer the user accepted. Nobody watches a watched folder, so this is
     # the surface where an undisclosed reversal would sit longest.
     transfers_retired: int = 0
+    # And the same argument for the rest of that refresh: it runs a categorizer,
+    # an identity pass and a network rate backfill too, none of which
+    # `transforms_error` above reports. None means no refresh ran.
+    refresh_steps: RefreshStepOutcome | None = None
 
 
 @dataclass
@@ -462,6 +467,7 @@ class InboxService:
         the result.
         """
         from moneybin.services.refresh import refresh as run_refresh  # noqa: PLC0415
+        from moneybin.services.refresh import step_outcome  # noqa: PLC0415
 
         if self._db is None:
             raise RuntimeError("InboxService.sync() requires a database connection")
@@ -491,6 +497,7 @@ class InboxService:
                     result.transforms_duration_seconds = refresh_result.duration_seconds
                     result.transforms_error = refresh_result.error
                     result.transfers_retired = refresh_result.transfers_retired
+                    result.refresh_steps = step_outcome(refresh_result)
                 INBOX_SYNC_DURATION_SECONDS.observe(time.monotonic() - t0)
                 return result
         except InboxBusyError:

@@ -1,5 +1,5 @@
 {
-  "sha256": "eecf189975f5ddc4efdd5154e1bf760fc3e4b4a29534c514372a59bb4646c8ca",
+  "sha256": "c738c188acfd7d6d6d388f2ba5a0b8272b3d79046e3f4cc1ebddddd3db15eea7",
   "tool_count": 49,
   "tools": [
     {
@@ -2611,7 +2611,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, and identity proposal backfill in canonical order. Pass steps to select from gsheet, match, transform, categorize, and identity. Rebuilds core.* and reports.* and may write app categorization or identity-review state. The match step acts without asking, and folding a duplicate can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them. The rebuild itself has no revert; fix inputs and rerun.",
+        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, identity proposal backfill, and an exchange-rate gather in canonical order. Pass steps to select from gsheet, match, transform, categorize, identity, and rates. The match step acts without asking, and folding a duplicate can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them. The rates step caches the rates this profile's own rows imply so reports convert offline; an unfilled pair lands in rate_pairs_failed (retried), rate_pairs_unsupported (needs `moneybin fx set`), or rate_pairs_discarded (partly unusable, so gaps). Rebuilds core.* and reports.* and may write app categorization or identity-review state, plus the raw exchange-rate cache. No revert; fix inputs and rerun.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2624,7 +2624,8 @@
                       "match",
                       "transform",
                       "categorize",
-                      "identity"
+                      "identity",
+                      "rates"
                     ],
                     "type": "string"
                   },
@@ -2635,7 +2636,7 @@
                 }
               ],
               "default": null,
-              "description": "Subset of ``[\"gsheet\", \"match\", \"transform\", \"categorize\",\n\"identity\"]``\nto run. Defaults to None (full cascade). Steps execute in\ncanonical order (gsheet \u2192 match \u2192 transform \u2192 categorize \u2192 identity)\nregardless of input order; dependencies enforce it (categorize\nreads SQLMesh-built views). Pass ``[\"transform\"]`` to run only\nSQLMesh apply."
+              "description": "Subset of ``[\"gsheet\", \"match\", \"transform\", \"categorize\",\n\"identity\", \"rates\"]``\nto run. Defaults to None (full cascade). Steps execute in canonical\norder (gsheet \u2192 match \u2192 transform \u2192 categorize \u2192 identity \u2192 rates)\nregardless of input order; dependencies enforce it (categorize\nreads SQLMesh-built views, and rates derives the currency pairs it\nfetches from core.*). Pass ``[\"transform\"]`` to run only\nSQLMesh apply."
             }
           },
           "type": "object"
@@ -2647,12 +2648,12 @@
         },
         "name": "refresh_run"
       },
-      "description_bytes": 590,
-      "input_schema_bytes": 612,
+      "description_bytes": 880,
+      "input_schema_bytes": 706,
       "name": "refresh_run",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 1392
+      "total_bytes": 1776
     },
     {
       "annotation_bytes": 89,
@@ -5022,5 +5023,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 57000
+  "total_bytes": 57384
 }

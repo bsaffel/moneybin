@@ -16,6 +16,7 @@ from moneybin.connectors.sync_models import (
     PullResult,
     SyncConnectionView,
 )
+from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 runner = CliRunner()
 
@@ -32,6 +33,7 @@ def _fake_pull_result(
     security_resolution: dict[str, int] | None = None,
     security_resolution_error: str | None = None,
     transfers_retired: int = 0,
+    refresh_steps: RefreshStepOutcome | None = None,
 ) -> PullResult:
     return PullResult(
         job_id="job-xyz",
@@ -58,6 +60,7 @@ def _fake_pull_result(
         security_resolution=security_resolution or {},
         security_resolution_error=security_resolution_error,
         transfers_retired=transfers_retired,
+        refresh_steps=refresh_steps,
     )
 
 
@@ -628,3 +631,64 @@ def test_sync_status_shows_error_code_when_present(mock_build: MagicMock) -> Non
     result = runner.invoke(app, ["sync", "status"])
     assert result.exit_code == 0, result.output
     assert "ITEM_LOGIN_REQUIRED" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_reports_the_best_effort_steps_its_refresh_ran(
+    mock_build: MagicMock,
+) -> None:
+    """A pull runs four best-effort steps; none of them used to reach the user.
+
+    ``SyncService.pull`` closes with ``refresh(steps=None)``, so it executes a
+    matcher, a categorizer, an identity pass and a network-touching rate
+    backfill on the user's behalf. It reported only the SQLMesh apply, so a
+    provider outage mid-pull looked exactly like a clean pull.
+    """
+    from moneybin.services.refresh_outcome import RefreshStepOutcome
+
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        refresh_steps=RefreshStepOutcome(
+            matching_error="matcher blew up",
+            categorization_error="categorizer blew up",
+            identity_errors=("merchants",),
+            rate_backfill_error="provider timeout",
+        )
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull"])
+
+    assert "Matching step failed" in result.stderr
+    assert "Categorization step failed" in result.stderr
+    assert "Merchants identity backfill failed" in result.stderr
+    assert "Exchange rate backfill failed" in result.stderr
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_json_carries_the_refresh_step_outcome(
+    mock_build: MagicMock,
+) -> None:
+    """The agent parsing JSON is owed what the human at the terminal is told.
+
+    Keys are spelled as ``refresh_envelope`` spells them, so a caller reading
+    `sync pull` and `refresh_run` does not learn two names for one outcome.
+    """
+    from moneybin.services.refresh_outcome import RefreshStepOutcome
+
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        refresh_steps=RefreshStepOutcome(
+            rates_written=4,
+            rate_pairs_unsupported=("EUR/XTS",),
+        )
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["rates_written"] == 4
+    assert payload["rate_pairs_unsupported"] == ["EUR/XTS"]
+    assert payload["matching_error"] is None

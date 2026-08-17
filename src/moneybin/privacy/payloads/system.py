@@ -38,7 +38,7 @@ Tier derivation summary:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -522,6 +522,38 @@ class RefreshRunPayload:
     matching_skipped: Annotated[bool, DataClass.TXN_TYPE]
     transfers_retired: Annotated[int, DataClass.AGGREGATE]
     self_heal_actions: list[SelfHealActionRow]
+    # Counts of rates gathered, and the pairs the provider could not answer. A
+    # currency pair is CURRENCY (Tier.LOW): it names no account and discloses
+    # no amount. `rates_written` is None when the rates step did not run —
+    # distinct from 0, which means it ran and had nothing to fetch. It is the
+    # only did-it-run signal: an empty pair list is the same list either way.
+    #
+    # The three pair lists are separate because their remedies are: a failed
+    # pair retries itself on the next refresh, an unsupported one never will and
+    # only `moneybin fx set` can fill it, and a discarded one had its answer
+    # thrown away by a MoneyBin gate rather than by the provider. Merging any
+    # two would send a user to the wrong remedy — record rates by hand over a
+    # dropped connection, or wait out an outage that already ended.
+    #
+    # `rate_pairs_discarded` is the only one that can carry a pair the run also
+    # wrote rates for: it means part of the answer was unusable, so coverage may
+    # be short on some dates rather than absent on all of them.
+    rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
+    rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    rate_pairs_unsupported: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    # The step ran and crashed. DESCRIPTION for the same reason the two errors
+    # above are, and required for a reason `rates_written` cannot cover: that
+    # field is null both when the step declined to run and when it died, and
+    # all three pair lists are empty on a crash because it never got far enough
+    # to name a pair. Without this the failure has no representation at all.
+    rate_backfill_error: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
 # ---------------------------------------------------------------------------

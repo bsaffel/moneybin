@@ -52,6 +52,12 @@ class _OfflineAdapter:
         self.calls += 1
         raise RateFeedUnreachableError("rate feed unreachable: ConnectError")
 
+    def fetch_range(
+        self, from_currency: str, to_currency: str, start: date, end: date
+    ) -> tuple[RateObservation, ...]:
+        self.calls += 1
+        raise RateFeedUnreachableError("rate feed unreachable: ConnectError")
+
     def supported_currencies(self) -> frozenset[str]:
         raise RateFeedUnreachableError("rate feed unreachable: ConnectError")
 
@@ -64,6 +70,11 @@ class _BrokenAdapter:
     def fetch(
         self, from_currency: str, to_currency: str, on: date
     ) -> RateObservation | None:
+        raise RateFeedAPIError("Exchange rate feed returned a non-object body")
+
+    def fetch_range(
+        self, from_currency: str, to_currency: str, start: date, end: date
+    ) -> tuple[RateObservation, ...]:
         raise RateFeedAPIError("Exchange rate feed returned a non-object body")
 
     def supported_currencies(self) -> frozenset[str]:
@@ -90,6 +101,12 @@ class _StubAdapter:
     ) -> RateObservation | None:
         self.calls += 1
         return self._obs
+
+    def fetch_range(
+        self, from_currency: str, to_currency: str, start: date, end: date
+    ) -> tuple[RateObservation, ...]:
+        self.calls += 1
+        return () if self._obs is None else (self._obs,)
 
     def supported_currencies(self) -> frozenset[str]:
         return self._supported
@@ -739,3 +756,44 @@ def test_each_resolution_records_which_layer_answered(db: Database) -> None:
     assert _outcome("fetched") == before["fetched"] + 1
     assert _outcome("cached") == before["cached"] + 1
     assert _outcome("override") == before["override"] + 1
+
+
+# ----------------------------- bulk cache writes -----------------------------
+
+
+def test_many_observations_are_stored_in_one_write(db: Database) -> None:
+    """The backfill arrives with a span of rates, not one."""
+    service = CurrencyService(db, adapter=None)
+
+    written = service.store_observations((
+        RateObservation("EUR", "USD", _MON, Decimal("1.1555"), "frankfurter"),
+        RateObservation("EUR", "USD", _TUE, Decimal("1.1641"), "frankfurter"),
+    ))
+
+    assert written == 2
+    assert service.resolve_rate("EUR", "USD", _MON).rate == Decimal("1.15550000")
+
+
+def test_storing_a_rate_already_cached_writes_nothing(db: Database) -> None:
+    """Append-only: a published rate for a date is a fact, never rewritten.
+
+    The count is what a refresh reports, so it must be rows actually WRITTEN.
+    Counting rows offered would make a completely stalled feed look productive,
+    because a re-run offers the whole span back every time.
+    """
+    _cache(
+        db, from_currency="EUR", to_currency="USD", rate_date=_MON, rate="1.15550000"
+    )
+    service = CurrencyService(db, adapter=None)
+
+    written = service.store_observations((
+        RateObservation("EUR", "USD", _MON, Decimal("9.99"), "frankfurter"),
+    ))
+
+    assert written == 0
+    assert service.resolve_rate("EUR", "USD", _MON).rate == Decimal("1.15550000")
+
+
+def test_storing_nothing_is_not_a_write(db: Database) -> None:
+    """A pair the provider had nothing new for must not open a write at all."""
+    assert CurrencyService(db, adapter=None).store_observations(()) == 0

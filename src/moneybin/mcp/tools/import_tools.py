@@ -43,6 +43,10 @@ from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.adapters.refresh_adapters import (
+    refresh_rate_gap_hints,
+    refresh_step_actions,
+)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -96,6 +100,10 @@ from moneybin.protocol.pagination import (
     encode_keyset_cursor,
 )
 from moneybin.services.import_confirmation import sign_convention_effect
+from moneybin.services.refresh_outcome import (
+    RefreshStepOutcome,
+    refresh_steps_fields,
+)
 from moneybin.utils.file import file_sha256
 
 logger = logging.getLogger(__name__)
@@ -364,6 +372,7 @@ def import_files(
     # The multi-file path has the same structure (see ImportService.import_files).
     if len(validated) == 1:
         transforms_error: str | None = None
+        refresh_steps: RefreshStepOutcome | None = None
         transforms_applied = False
         transfers_retired = 0
         # Track import_id BEFORE refresh so a hard exception from _refresh
@@ -402,10 +411,15 @@ def import_files(
                     )
                 ):
                     from moneybin.services.refresh import refresh as _refresh
+                    from moneybin.services.refresh import step_outcome
 
                     refresh_result = _refresh(db)
                     transforms_applied = refresh_result.applied
                     transfers_retired = refresh_result.transfers_retired
+                    # This branch runs its own refresh rather than going
+                    # through ImportService, so it has to read the same
+                    # best-effort outcomes the service path reads.
+                    refresh_steps = step_outcome(refresh_result)
                     if not refresh_result.applied:
                         transforms_error = refresh_result.error or (
                             "SQLMesh transforms failed (no error detail)"
@@ -522,6 +536,7 @@ def import_files(
                 transforms_duration_seconds=None,
                 transforms_error=transforms_error,
                 transfers_retired=transfers_retired,
+                refresh_steps=refresh_steps,
             )
     else:
         with get_database(read_only=False) as db:
@@ -620,6 +635,7 @@ def import_files(
     # they did not ask for.
     if retired := retired_transfers_action(batch.transfers_retired, operation="import"):
         actions.append(retired)
+    actions.extend(refresh_rate_gap_hints(batch.refresh_steps))
     actions.append("Use system_status to confirm refreshed counts")
 
     envelope = build_envelope(
@@ -632,6 +648,7 @@ def import_files(
             transforms_error=batch.transforms_error,
             files=files,
             transfers_retired=batch.transfers_retired,
+            **refresh_steps_fields(batch.refresh_steps),
         ),
         # confirmation_required entries carry sample rows + proposed mapping
         # (DataClass.DESCRIPTION, MEDIUM). Per moneybin-mcp.md the envelope's
@@ -646,6 +663,11 @@ def import_files(
             else "low"
         ),
         actions=actions,
+        # `or None` to omit the key when empty, matching `refresh_envelope`.
+        recovery_actions=refresh_step_actions(
+            batch.refresh_steps, apply_failed=batch.transforms_error is not None
+        )
+        or None,
     )
     return mark_total_failure(envelope, batch)
 

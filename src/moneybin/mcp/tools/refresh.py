@@ -1,7 +1,8 @@
 """refresh_* tools — the always-visible umbrella over the refresh domain.
 
 Tool:
-    - refresh_run — match + SQLMesh apply + categorization + identity backfill
+    - refresh_run — gsheet pull + match + SQLMesh apply + categorization +
+      identity backfill + exchange-rate gather
 
 Wraps :func:`moneybin.services.refresh.refresh`. Operators needing
 SQLMesh-step granularity can pass ``steps=["transform"]`` (the granular
@@ -27,7 +28,7 @@ from moneybin.services.refresh import RefreshStep, expand_steps, refresh
 def refresh_run(
     steps: list[RefreshStep] | None = None,
 ) -> ResponseEnvelope[RefreshRunPayload]:
-    """Run refresh: matching → SQLMesh apply → categorization → identity backfill.
+    """Run refresh: match → SQLMesh apply → categorize → identity → rate gather.
 
     The single user-facing entry point for refreshing derived state from raw
     inputs. Idempotent; safe to retry after a failure. Matching and
@@ -50,11 +51,12 @@ def refresh_run(
 
     Args:
         steps: Subset of ``["gsheet", "match", "transform", "categorize",
-            "identity"]``
-            to run. Defaults to None (full cascade). Steps execute in
-            canonical order (gsheet → match → transform → categorize → identity)
+            "identity", "rates"]``
+            to run. Defaults to None (full cascade). Steps execute in canonical
+            order (gsheet → match → transform → categorize → identity → rates)
             regardless of input order; dependencies enforce it (categorize
-            reads SQLMesh-built views). Pass ``["transform"]`` to run only
+            reads SQLMesh-built views, and rates derives the currency pairs it
+            fetches from core.*). Pass ``["transform"]`` to run only
             SQLMesh apply.
 
     For SQLMesh-step granularity beyond apply (plan, validate, audit,
@@ -76,13 +78,24 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         mcp,
         refresh_run,
         "refresh_run",
+        # 880 of the 900-char cap, first sentence 35 of 120. Both halves are
+        # load-bearing and the verbatim union of the two branches was 1049, so
+        # the rate detail is compressed to parenthetical remedies while the
+        # transfer-reversal warning keeps its full wording — it is the one that
+        # undoes a decision the user made. The opening two sentences stay split
+        # rather than joined by a colon: `FIRST_SENTENCE_CHARACTER_LIMIT` is 120
+        # and the whole enumeration does not fit in one.
         "Run the post-load refresh pipeline. By default it performs Google "
         "Sheets pull, matching, SQLMesh apply, deterministic categorization, "
-        "and identity proposal backfill in canonical order. Pass steps to "
-        "select from gsheet, match, transform, categorize, and identity. "
-        "Rebuilds core.* and reports.* and may write app categorization or "
-        "identity-review state. The match step acts without asking, and folding "
-        "a duplicate can reverse a transfer the user already accepted: "
+        "identity proposal backfill, and an exchange-rate gather in canonical "
+        "order. Pass steps to select from gsheet, match, transform, categorize, "
+        "identity, and rates. The match step acts without asking, and folding a "
+        "duplicate can reverse a transfer the user already accepted: "
         "`transfers_retired` counts those, and system_audit_undo() restores "
-        "them. The rebuild itself has no revert; fix inputs and rerun.",
+        "them. The rates step caches the rates this profile's own rows imply so "
+        "reports convert offline; an unfilled pair lands in rate_pairs_failed "
+        "(retried), rate_pairs_unsupported (needs `moneybin fx set`), or "
+        "rate_pairs_discarded (partly unusable, so gaps). Rebuilds core.* and "
+        "reports.* and may write app categorization or identity-review state, "
+        "plus the raw exchange-rate cache. No revert; fix inputs and rerun.",
     )

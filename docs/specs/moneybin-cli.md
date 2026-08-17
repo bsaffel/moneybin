@@ -187,13 +187,16 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |         [--purge]                        Drops the seed view + deletes raw rows.
 |         [--yes / -y]                     Required for --purge in non-TTY contexts.
 |
-+-- refresh                        -- Run gsheet -> match -> transform -> categorize -> identity
++-- refresh                        -- Run gsheet -> match -> transform -> categorize -> identity -> rates
 |         [--step STEP]              Subset of canonical steps; repeatable.
-|                                    Choices: match, transform, categorize, identity.
+|                                    Choices: match, transform, categorize, identity, rates.
 |                                    Default: full cascade. Steps execute in canonical
 |                                    order regardless of flag order. `--step transform`
 |                                    is the granular form formerly exposed as the
 |                                    `refresh_run(steps=["transform"])` MCP path.
+|                                    `rates` caches the exchange rates this profile's
+|                                    transactions, balances and holdings imply, so a
+|                                    later report converts without reaching the network.
 |         [--output json] [-q]
 |
 +-- review                         -- What needs my attention? Pending counts across all review queues.

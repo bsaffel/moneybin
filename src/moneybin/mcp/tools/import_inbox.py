@@ -7,6 +7,10 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 from moneybin.database import get_database
+from moneybin.mcp.adapters.refresh_adapters import (
+    refresh_rate_gap_hints,
+    refresh_step_actions,
+)
 from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.payloads.imports import (
     ImportInboxPendingEntry,
@@ -16,6 +20,7 @@ from moneybin.privacy.payloads.imports import (
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.inbox_service import InboxService
+from moneybin.services.refresh_outcome import refresh_steps_fields
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +168,8 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
             "field for the recovery step",
         )
 
+    actions.extend(refresh_rate_gap_hints(sync_result.refresh_steps))
+
     threshold = get_settings().categorization.assist_offer_threshold
     uncategorized = _uncategorized_count()
     if uncategorized >= threshold:
@@ -191,8 +198,15 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
             transforms_duration_seconds=sync_result.transforms_duration_seconds,
             transforms_error=sync_result.transforms_error,
             transfers_retired=sync_result.transfers_retired,
+            **refresh_steps_fields(sync_result.refresh_steps),
         ),
         actions=actions,
+        # `or None` to omit the key when empty, matching `refresh_envelope`.
+        recovery_actions=refresh_step_actions(
+            sync_result.refresh_steps,
+            apply_failed=sync_result.transforms_error is not None,
+        )
+        or None,
     )
 
 

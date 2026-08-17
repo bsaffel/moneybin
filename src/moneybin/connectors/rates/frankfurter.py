@@ -16,6 +16,7 @@ Response shapes recorded from the live API on 2026-08-14:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import date
 from decimal import Decimal
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 FRANKFURTER_BASE_URL = "https://api.frankfurter.dev/v1"
 FRANKFURTER_SOURCE = "frankfurter"
+_IS_CURRENCY_CODE = re.compile(r"[A-Z]{3}")
 
 
 class FrankfurterRateAdapter:
@@ -78,7 +80,19 @@ class FrankfurterRateAdapter:
                 "Exchange rate feed did not answer with a currency list"
             )
         codes: dict[str, object] = payload
-        return frozenset(code.upper() for code in codes)
+        published = frozenset(code.upper() for code in codes)
+        # A dict is not yet a catalog. `{}` is the empty set this method exists
+        # to never return, and `{"message": "..."}` is a status payload whose one
+        # key would become the whole published set — both arrive with a 200, so
+        # the transport check above cannot see either. Every ISO 4217 alphabetic
+        # code is exactly three letters, which is what separates a catalog from
+        # prose; a real one carries ~30 entries, so requiring all keys to match
+        # costs nothing and refuses a body that is only partly a catalog.
+        if not published or not all(_IS_CURRENCY_CODE.fullmatch(c) for c in published):
+            raise RateFeedAPIError(
+                "Exchange rate feed did not answer with a currency list"
+            )
+        return published
 
     def fetch(
         self, from_currency: str, to_currency: str, on: date
@@ -177,6 +191,122 @@ class FrankfurterRateAdapter:
             rate=rate,
             source_type=FRANKFURTER_SOURCE,
         )
+
+    def fetch_range(
+        self, from_currency: str, to_currency: str, start: date, end: date
+    ) -> tuple[RateObservation, ...]:
+        """Every rate the provider publishes for the pair between two dates.
+
+        One call covers the whole span — a request for the full series since
+        1999 answered with 7,071 days in a single body, so a first backfill
+        never needs chunking.
+
+        Dates come from the response's own keys, never from the requested range.
+        The provider omits days it did not publish rather than sending a null,
+        and resolves a closed day backward, so a single Saturday comes back
+        under the preceding Friday's key. Reading the keys is what keeps
+        `raw.exchange_rates` an honest record of what was published.
+        """
+        base = from_currency.upper()
+        quote = to_currency.upper()
+        if base == quote:
+            # 422 on an identity pair, so it must not reach the network. One row
+            # for the start date is enough: `resolve_rate` short-circuits an
+            # identity pair itself and never consults the cache for one.
+            return (
+                RateObservation(
+                    from_currency=base,
+                    to_currency=quote,
+                    rate_date=start,
+                    rate=Decimal(1),
+                    source_type=FRANKFURTER_SOURCE,
+                ),
+            )
+
+        try:
+            payload = fetch_json(
+                self._client,
+                f"{FRANKFURTER_BASE_URL}/{start.isoformat()}..{end.isoformat()}",
+                params={"base": base, "symbols": quote},
+                sleep=self._sleep,
+                errors=RATE_FEED_ERRORS,
+            )
+        except RateFeedNotFoundError:
+            # 404 answers three different absences here — an unsupported
+            # currency, a range entirely before the series began, and a range
+            # whose start is after its end. All three mean the provider has no
+            # rows to give, which is the caller's empty result, not a failure.
+            logger.info(f"No {base}/{quote} series published for the requested range")
+            return ()
+
+        if not isinstance(payload, dict):
+            raise RateFeedAPIError("Exchange rate feed returned a non-object body")
+        fields: dict[str, object] = payload
+
+        # `base` and `amount` are echoed request parameters, so a proxy, a
+        # redirect, or a cached answer can return well-formed rates for a pair
+        # MoneyBin never asked for — and nothing downstream could notice, since
+        # the rows would be labelled with the requested pair in an append-only
+        # table. Same check, and same reasoning, as `fetch`.
+        echoed = fields.get("base")
+        if echoed is not None and (
+            not isinstance(echoed, str) or echoed.upper() != base
+        ):
+            raise RateFeedAPIError(
+                "Exchange rate feed answered for a different base currency"
+            )
+        amount = fields.get("amount")
+        if amount is not None and _as_exact_decimal(amount) != 1:
+            raise RateFeedAPIError(
+                "Exchange rate feed priced something other than one unit"
+            )
+
+        rates = fields.get("rates")
+        if not isinstance(rates, dict):
+            raise RateFeedAPIError(
+                "Exchange rate feed response carried no 'rates' object"
+            )
+        by_date: dict[str, object] = rates
+
+        observations: list[RateObservation] = []
+        for raw_day in sorted(by_date):
+            rate_date = _as_date(raw_day, default=start)
+            if rate_date is None:
+                raise RateFeedAPIError(
+                    "Exchange rate feed answered with an unreadable date"
+                )
+            rate = _quoted_rate(by_date[raw_day], quote)
+            if rate is None:
+                continue
+            observations.append(
+                RateObservation(
+                    from_currency=base,
+                    to_currency=quote,
+                    rate_date=rate_date,
+                    rate=rate,
+                    source_type=FRANKFURTER_SOURCE,
+                )
+            )
+        return tuple(observations)
+
+
+def _quoted_rate(quoted: object, quote: str) -> Decimal | None:
+    """Read one currency's rate out of a `rates` entry, or None if absent.
+
+    Raises on a present-but-unreadable number for `fetch_range`'s reasons: the
+    cache is append-only, so a rate stored wrong cannot be corrected in place.
+    """
+    if not isinstance(quoted, dict):
+        raise RateFeedAPIError("Exchange rate feed returned an unreadable rates entry")
+    per_currency: dict[str, object] = quoted
+    if quote not in per_currency:
+        return None
+    rate = _as_exact_decimal(per_currency[quote])
+    if rate is None:
+        raise RateFeedAPIError(
+            "Exchange rate feed answered with a rate it could not read"
+        )
+    return rate
 
 
 def _as_exact_decimal(raw: object) -> Decimal | None:

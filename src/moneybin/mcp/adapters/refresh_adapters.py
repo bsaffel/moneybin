@@ -11,7 +11,8 @@ from moneybin.errors import RecoveryAction
 from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.payloads.system import RefreshRunPayload, SelfHealActionRow
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.refresh import RefreshResult
+from moneybin.services.refresh import RefreshResult, step_outcome
+from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 REFRESH_APPLY_FAILED_HINT = (
     "SQLMesh apply failed — run `moneybin transform plan` to inspect, "
@@ -27,24 +28,79 @@ REFRESH_ACCOUNT_LINKS_REVIEW_HINT = (
 REFRESH_MERCHANT_LINKS_REVIEW_HINT = (
     'Review pending merchant identity proposals with reviews(kind="merchant_links").'
 )
+REFRESH_UNPUBLISHED_RATES_HINT = (
+    "No exchange rate series is published for at least one currency pair "
+    "(see rate_pairs_unsupported) — refreshing again will never fill it. "
+    "The user can record those rates directly with `moneybin fx set`."
+)
+REFRESH_SHORT_RATE_COVERAGE_HINT = (
+    "Exchange rate coverage is short for at least one currency pair "
+    "(see rate_pairs_discarded), so conversion may be incomplete on some dates."
+)
 
 
 def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
-    """Build recovery actions for best-effort step crashes (matcher/categorizer).
+    """The step retries for a refresh whose SQLMesh apply survived."""
+    return refresh_step_actions(
+        step_outcome(result), apply_failed=result.error is not None
+    )
 
-    Ordered most-likely-correct first: the targeted retry(s), then a single
+
+def refresh_rate_gap_hints(steps: RefreshStepOutcome | None) -> list[str]:
+    """Ordinary next-step hints for the rate gaps no retry closes.
+
+    Prose rather than ``RecoveryAction`` because the remedy is `moneybin fx set`,
+    a CLI command: a recovery action must be a directly executable MCP tool, and
+    no tool records a manual rate. Withholding the futile retry is right, but on
+    its own it left these two fields naming a permanent gap with nothing
+    anywhere saying what closes it — `refresh_run`'s tool description says so in
+    static prose read at connect, and the embedded surfaces did not say it at
+    all. Shared for the reason `retired_transfers_action` is: the surface a user
+    happens to reach the gap through must not decide whether they are told.
+
+    Mirrors the CLI's two warnings, including their asymmetry — a discarded pair
+    usually stored most of its span, so pointing at a manual override for it
+    would overstate what is missing.
+    """
+    if steps is None:
+        return []
+    hints: list[str] = []
+    if steps.rate_pairs_unsupported:
+        hints.append(REFRESH_UNPUBLISHED_RATES_HINT)
+    if steps.rate_pairs_discarded:
+        hints.append(REFRESH_SHORT_RATE_COVERAGE_HINT)
+    return hints
+
+
+def refresh_step_actions(
+    steps: RefreshStepOutcome | None, *, apply_failed: bool
+) -> list[RecoveryAction]:
+    """Build recovery actions for best-effort step crashes.
+
+    Ordered by ``CANONICAL_STEPS``, so an agent running them top-down never runs
+    a later step before an earlier one it depends on, then closed by a single
     diagnostic ``system_status`` doctor call. A recovery action must stay
     directly executable.
 
-    Returns ``[]`` when the SQLMesh apply itself failed (``result.error``):
-    that is the blocking failure, surfaced via the ``error`` field and the
-    apply-failed ``actions`` hint. A best-effort step retry here would
-    misdirect the agent to chase the secondary crash before the blocker.
+    Takes the flattened outcome rather than a ``RefreshResult`` so the commands
+    that run a refresh *inside* something else — ``sync_pull``, ``import_files``,
+    ``import_inbox_sync`` — offer the same retries from the same list. They are
+    the callers that need it most: the CLI warns on stderr about a step that
+    crashed mid-import, and MCP has no equivalent, so without this the crash
+    reaches the agent as a payload string with nothing naming its cure.
+
+    ``apply_failed`` withholds every retry, because a step that crashed beside a
+    failed SQLMesh apply is the symptom and the apply is the blocker: retrying it
+    runs against the same broken warehouse and fails identically. It has no
+    default on purpose. Those embedded callers hold the apply outcome in their
+    own ``transforms_error`` field rather than in ``RefreshStepOutcome``, so a
+    defaulted parameter would read as answered while silently meaning "no", which
+    is exactly how the two surfaces drifted apart the first time.
     """
-    if result.error is not None:
+    if steps is None or apply_failed:
         return []
     actions: list[RecoveryAction] = []
-    if result.matching_error is not None:
+    if steps.matching_error is not None:
         actions.append(
             RecoveryAction(
                 tool="refresh_run",
@@ -57,7 +113,7 @@ def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
                 idempotent=True,
             )
         )
-    if result.categorization_error is not None:
+    if steps.categorization_error is not None:
         actions.append(
             RecoveryAction(
                 tool="refresh_run",
@@ -65,6 +121,41 @@ def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
                 rationale=(
                     "Categorization crashed mid-refresh; re-run just the "
                     "categorize step to retry."
+                ),
+                confidence="suggested",
+                idempotent=True,
+            )
+        )
+    if steps.identity_errors:
+        actions.append(
+            RecoveryAction(
+                tool="refresh_run",
+                arguments={"steps": ["identity"]},
+                rationale=(
+                    "The account/merchant identity pass crashed mid-refresh; "
+                    "re-run just the identity step to retry."
+                ),
+                confidence="suggested",
+                idempotent=True,
+            )
+        )
+    if steps.rate_backfill_error is not None or steps.rate_pairs_failed:
+        # `pairs_failed` and a step crash, matching the CLI's `retryable_error`.
+        # The other two lists name pairs a retry cannot fill: the provider
+        # publishes no series at all for an unsupported one, and it *answered*
+        # for a discarded one, so re-sending returns the identical unusable
+        # value. Handing the agent an executable retry for either is a loop with
+        # no terminating condition; their remedies rode their own warnings.
+        # One branch, not two: both conditions select the same retry, and a run
+        # that crashed after some pairs failed must not queue it twice.
+        actions.append(
+            RecoveryAction(
+                tool="refresh_run",
+                arguments={"steps": ["rates"]},
+                rationale=(
+                    "The rates step crashed, or the provider did not answer "
+                    "for at least one currency pair; re-run just the rates "
+                    "step to retry."
                 ),
                 confidence="suggested",
                 idempotent=True,
@@ -123,6 +214,7 @@ def refresh_envelope(
     # refresh callers (import, sync pull, inbox drain) — a user who finds the
     # way back on one surface has to find it on the one they actually reach the
     # reconciliation through, and any of them can be that surface.
+    actions.extend(refresh_rate_gap_hints(step_outcome(result)))
     if retired := retired_transfers_action(
         result.transfers_retired, operation="refresh"
     ):
@@ -155,6 +247,29 @@ def refresh_envelope(
                 )
                 for r in result.self_heal_actions
             ],
+            rates_written=(
+                None
+                if result.rate_backfill is None
+                else result.rate_backfill.rates_written
+            ),
+            rate_pairs_failed=(
+                []
+                if result.rate_backfill is None
+                else list(result.rate_backfill.pairs_failed)
+            ),
+            rate_pairs_unsupported=(
+                []
+                if result.rate_backfill is None
+                else list(result.rate_backfill.pairs_unsupported)
+            ),
+            rate_pairs_discarded=(
+                []
+                if result.rate_backfill is None
+                else list(result.rate_backfill.pairs_discarded)
+            ),
+            # Not gated on `rate_backfill is None`: a crash is exactly the case
+            # where there is no backfill to read the answer off.
+            rate_backfill_error=result.rate_backfill_error,
         ),
         sensitivity="low",
         actions=actions,

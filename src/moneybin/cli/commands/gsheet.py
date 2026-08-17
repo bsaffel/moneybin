@@ -11,11 +11,16 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from typing import TYPE_CHECKING
 
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import handle_cli_errors, warn_transfers_retired
+from moneybin.cli.utils import (
+    handle_cli_errors,
+    warn_refresh_steps,
+    warn_transfers_retired,
+)
 from moneybin.connectors.gsheet.service_factory import (
     build_connection_service as _build_connection_service,
 )
@@ -27,6 +32,9 @@ from moneybin.connectors.gsheet.service_factory import (
 )
 from moneybin.extractors.tabular.formats import SignConventionType
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
+
+if TYPE_CHECKING:
+    from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -259,17 +267,22 @@ def gsheet_pull(
     refresh: bool = typer.Option(
         True,
         "--refresh/--no-refresh",
-        help="Run the refresh pipeline (match → transform → categorize) after "
-        "the pull. Default: on. Pass --no-refresh to defer.",
+        help="Run the refresh pipeline (match → transform → categorize → rates) "
+        "after the pull. Default: on. Pass --no-refresh to defer.",
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
     """Pull a single connection by ID, or every healthy connection."""
     from moneybin.services.refresh import refresh as run_refresh  # noqa: PLC0415
+    from moneybin.services.refresh import step_outcome  # noqa: PLC0415
+    from moneybin.services.refresh_outcome import (  # noqa: PLC0415
+        refresh_steps_fields,
+    )
 
     refresh_error: str | None = None
     transfers_retired = 0
+    steps_outcome: RefreshStepOutcome | None = None
     with handle_cli_errors():
         with _build_pull_service() as (service, db):
             if not quiet and output == OutputFormat.TEXT:
@@ -286,8 +299,14 @@ def gsheet_pull(
                 # the error so the CLI can surface a non-zero exit + a
                 # warning line; agents parsing --output json see it on the
                 # envelope too.
+                # An explicit list is never widened by a later canonical step,
+                # so every stage a pulled row needs is named here. `rates` is
+                # named because a sheet can carry foreign-currency rows: without
+                # it the pull rebuilds core.* against an empty rate cache and
+                # reports cannot convert offline until some unrelated refresh
+                # happens to fill it.
                 refresh_result = run_refresh(
-                    db, steps=["match", "transform", "categorize"]
+                    db, steps=["match", "transform", "categorize", "rates"]
                 )
                 if not refresh_result.applied and refresh_result.error is not None:
                     refresh_error = refresh_result.error
@@ -295,6 +314,13 @@ def gsheet_pull(
                 # transfer the user accepted — reported even when the apply
                 # failed, because the retirement commits before it.
                 transfers_retired = refresh_result.transfers_retired
+                # Read for the same reason, and outside the `applied` check
+                # above for a sharper one: every step named above except the
+                # apply is best-effort, so any of them can crash or come back
+                # short while SQLMesh applies cleanly. Neither `applied` nor
+                # `error` moves in that case, and without this the work this
+                # command just did on the user's behalf would report nothing.
+                steps_outcome = step_outcome(refresh_result)
 
     # Hard-failure statuses (auth_expired, unreachable, rate_limited, failed)
     # exit non-zero so CI/agents detect them without parsing output. drift_detected
@@ -308,6 +334,7 @@ def gsheet_pull(
     # user's own decision is not informational output, so it survives --quiet
     # and is said aloud next to the JSON that also carries the count.
     warn_transfers_retired(transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
+    warn_refresh_steps(steps_outcome)
 
     if output == OutputFormat.JSON:
         typer.echo(
@@ -333,6 +360,7 @@ def gsheet_pull(
                     ],
                     "refresh_error": refresh_error,
                     "transfers_retired": transfers_retired,
+                    **refresh_steps_fields(steps_outcome),
                 },
                 indent=2,
             )

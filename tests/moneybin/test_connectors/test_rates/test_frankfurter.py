@@ -410,6 +410,40 @@ def test_supported_currencies_raises_on_a_body_it_cannot_read() -> None:
 
 
 @respx.mock
+def test_an_empty_currency_catalog_is_refused_rather_than_believed() -> None:
+    """`{}` is the inversion itself, arriving with a 200 instead of an error.
+
+    An object body clears the shape check, so its zero keys become "the set of
+    everything this provider publishes" — the exact empty set the two tests
+    above exist to prevent, reached by the one route that still allowed it.
+    """
+    respx.get(f"{FRANKFURTER_BASE_URL}/currencies").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().supported_currencies()
+
+
+@respx.mock
+def test_a_status_payload_is_not_mistaken_for_a_currency_catalog() -> None:
+    """A provider that answers 200 with prose must not define the published set.
+
+    `{"message": "unavailable"}` is a dict and non-empty, so only the *shape of
+    its keys* separates it from a catalog. Believed, it publishes exactly
+    `MESSAGE`, which reports every real currency as permanently unsupported and
+    sends the user to write manual overrides for a provider that was merely
+    having a bad minute.
+    """
+    respx.get(f"{FRANKFURTER_BASE_URL}/currencies").mock(
+        return_value=httpx.Response(200, json={"message": "unavailable"})
+    )
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().supported_currencies()
+
+
+@respx.mock
 def test_a_failed_currency_lookup_is_not_memoized() -> None:
     """A transient outage must not pin the adapter to a permanent failure."""
     route = respx.get(f"{FRANKFURTER_BASE_URL}/currencies").mock(
@@ -459,3 +493,188 @@ def test_the_message_names_the_rate_feed_not_the_price_feed() -> None:
 
     assert "exchange rate feed" in str(exc.value)
     assert "price" not in str(exc.value)
+
+
+# --------------------------- bulk date-range fetch ---------------------------
+#
+# Recorded live 2026-08-15 from /v1/2026-03-09..2026-03-16?base=EUR&symbols=USD.
+# Note 03-14 and 03-15 (a weekend) are simply ABSENT from `rates` — the provider
+# sends no null, no carried-forward value, and no gap marker. A range running
+# past the newest publication comes back with a clamped `end_date`, and a
+# reversed range comes back 404; both were recorded the same day.
+
+_RANGE_START = date(2026, 3, 9)
+_RANGE_END = date(2026, 3, 16)
+
+_RANGE_BODY = {
+    "amount": 1.0,
+    "base": "EUR",
+    "start_date": "2026-03-09",
+    "end_date": "2026-03-16",
+    "rates": {
+        "2026-03-09": {"USD": 1.1555},
+        "2026-03-10": {"USD": 1.1641},
+        "2026-03-11": {"USD": 1.1581},
+        "2026-03-12": {"USD": 1.1547},
+        "2026-03-13": {"USD": 1.1476},
+        "2026-03-16": {"USD": 1.1478},
+    },
+}
+
+
+def _range_url(start: date, end: date) -> str:
+    return f"{FRANKFURTER_BASE_URL}/{start.isoformat()}..{end.isoformat()}"
+
+
+@respx.mock
+def test_a_range_yields_one_observation_per_published_day() -> None:
+    """Six observations from an eight-day span — the weekend is simply not there."""
+    respx.get(_range_url(_RANGE_START, _RANGE_END)).mock(
+        return_value=httpx.Response(200, json=_RANGE_BODY)
+    )
+
+    observations = FrankfurterRateAdapter().fetch_range(
+        "EUR", "USD", _RANGE_START, _RANGE_END
+    )
+
+    assert [obs.rate_date for obs in observations] == [
+        date(2026, 3, 9),
+        date(2026, 3, 10),
+        date(2026, 3, 11),
+        date(2026, 3, 12),
+        date(2026, 3, 13),
+        date(2026, 3, 16),
+    ]
+
+
+@respx.mock
+def test_a_range_dates_each_rate_by_the_key_not_by_the_request() -> None:
+    """The provider resolves backward, so only its own keys say what a rate is for.
+
+    Asking for a single Sunday returns Friday's row under Friday's key. Filing it
+    under the requested date would record a rate the provider never published,
+    on a day it was closed.
+    """
+    respx.get(_range_url(_SUNDAY, _SUNDAY)).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "amount": 1.0,
+                "base": "EUR",
+                "start_date": "2026-03-13",
+                "end_date": "2026-03-13",
+                "rates": {"2026-03-13": {"USD": 1.1476}},
+            },
+        )
+    )
+
+    observations = FrankfurterRateAdapter().fetch_range("EUR", "USD", _SUNDAY, _SUNDAY)
+
+    assert [obs.rate_date for obs in observations] == [_FRIDAY]
+
+
+@respx.mock
+def test_a_range_parses_every_rate_as_decimal() -> None:
+    """A float here would lose precision on an append-only DECIMAL(18,8) column."""
+    respx.get(_range_url(_RANGE_START, _RANGE_END)).mock(
+        return_value=httpx.Response(200, json=_RANGE_BODY)
+    )
+
+    observations = FrankfurterRateAdapter().fetch_range(
+        "EUR", "USD", _RANGE_START, _RANGE_END
+    )
+
+    assert observations[0].rate == Decimal("1.1555")
+    assert all(isinstance(obs.rate, Decimal) for obs in observations)
+    assert all(obs.source_type == FRANKFURTER_SOURCE for obs in observations)
+    assert all(obs.from_currency == "EUR" for obs in observations)
+    assert all(obs.to_currency == "USD" for obs in observations)
+
+
+@respx.mock
+def test_a_range_the_provider_does_not_publish_is_an_absence_not_a_failure() -> None:
+    """404 covers an unsupported currency, a pre-1999 range, and a reversed one."""
+    respx.get(_range_url(_RANGE_START, _RANGE_END)).mock(
+        return_value=httpx.Response(404, json={"message": "not found"})
+    )
+
+    assert (
+        FrankfurterRateAdapter().fetch_range("EUR", "XXX", _RANGE_START, _RANGE_END)
+        == ()
+    )
+
+
+def test_an_identity_range_is_answered_without_a_call() -> None:
+    """Base == symbols is a 422, so the pair must never reach the network.
+
+    No respx mock is installed here deliberately: a request would raise, so this
+    test passing is itself the proof that the short-circuit fired.
+    """
+    observations = FrankfurterRateAdapter().fetch_range(
+        "USD", "usd", _RANGE_START, _RANGE_END
+    )
+
+    assert [obs.rate for obs in observations] == [Decimal(1)]
+    assert observations[0].rate_date == _RANGE_START
+
+
+@respx.mock
+def test_a_range_answered_for_a_different_base_is_refused() -> None:
+    """Same reasoning as `fetch`: a redirected or cached body is not our question."""
+    respx.get(_range_url(_RANGE_START, _RANGE_END)).mock(
+        return_value=httpx.Response(200, json={**_RANGE_BODY, "base": "GBP"})
+    )
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().fetch_range("EUR", "USD", _RANGE_START, _RANGE_END)
+
+
+@respx.mock
+def test_a_range_priced_in_other_than_one_unit_is_refused() -> None:
+    """The range path owes the same refusal `fetch` gives, for a worse reason.
+
+    A body priced in 100 units yields rates 100x too large on *every* day it
+    covers, not one, and the cache is append-only — a rate stored wrong cannot
+    be corrected in place.
+    """
+    respx.get(_range_url(_RANGE_START, _RANGE_END)).mock(
+        return_value=httpx.Response(200, json={**_RANGE_BODY, "amount": 100})
+    )
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().fetch_range("EUR", "USD", _RANGE_START, _RANGE_END)
+
+
+@respx.mock
+def test_a_range_carrying_no_rates_object_is_refused() -> None:
+    """A body whose `rates` is not an object would otherwise read as "no days".
+
+    An empty list rather than a string on purpose: a string is iterable, so
+    without this guard it would reach the date check character by character and
+    raise there instead — passing the test while proving nothing about this
+    branch. A list iterates to nothing, so only this guard can refuse it.
+    """
+    respx.get(_range_url(_RANGE_START, _RANGE_END)).mock(
+        return_value=httpx.Response(200, json={**_RANGE_BODY, "rates": []})
+    )
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().fetch_range("EUR", "USD", _RANGE_START, _RANGE_END)
+
+
+@respx.mock
+def test_a_range_day_that_is_not_a_date_is_refused() -> None:
+    """An unreadable key must not be silently dated to the window's start.
+
+    `_as_date` takes a `default`, so a key it cannot parse would otherwise
+    stamp that day's rate with the range's opening date — filing a real rate
+    under the wrong day, in a table that cannot be corrected in place.
+    """
+    respx.get(_range_url(_RANGE_START, _RANGE_END)).mock(
+        return_value=httpx.Response(
+            200, json={**_RANGE_BODY, "rates": {"not-a-date": {"USD": 1.09}}}
+        )
+    )
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().fetch_range("EUR", "USD", _RANGE_START, _RANGE_END)
