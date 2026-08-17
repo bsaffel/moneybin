@@ -178,16 +178,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   currency and conversion stays a read-time act.
 
   A value *derived* from a converted amount is restated rather than left
-  describing the old currency. `core:balance_drift` re-buckets its
-  clean/warning/drift verdict against the converted drift — a 500 JPY drift
-  shown as 3.40 USD reads `warning`, not the `drift` it was at 500 — and
-  `core:networth` recomputes `net_worth` from its own converted parts, so
-  independent per-column rounding cannot leave the total disagreeing with
-  assets plus liabilities. A converted `core:networth` read also collapses its
-  per-currency totals into a single headline row, because conversion relabels
-  every row into the target currency and several rows all claiming the same
-  unit would hand a consumer an arbitrary fraction of the position.
-  `no-data` and `currency-mismatch` are untouched:
+  describing the old currency. `core:balance_drift` restates `drift` itself as
+  the converted asserted balance minus the converted computed one — all three
+  columns are priced independently and round apart, so the published difference
+  would otherwise disagree with the two balances printed beside it — then
+  derives `drift_abs`, `drift_pct`, and the clean/warning/drift verdict from
+  that single figure: a 500 JPY drift shown as 3.40 USD reads `warning`, not
+  the `drift` it was at 500. `core:networth` recomputes `net_worth` from its
+  own converted parts, so independent per-column rounding cannot leave the
+  total disagreeing with assets plus liabilities. A converted `core:networth`
+  read also collapses its per-currency totals into a single headline row,
+  because conversion relabels every row into the target currency and several
+  rows all claiming the same unit would hand a consumer an arbitrary fraction
+  of the position; the row `limit` applies to that collapsed result, so asking
+  for fewer rows than the profile holds currencies no longer cuts a subtotal
+  out of the sum. `no-data` and `currency-mismatch` are untouched:
   neither describes a magnitude. The `status` *filter* still selects in the
   account's own currency, so filter on `all` and read the returned status when
   converting.

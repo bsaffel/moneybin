@@ -259,7 +259,9 @@ historical net worth.
   would count it once per account. Totals lead for a related reason — the
   result is truncated to `limit`, and a profile with two dollar accounts and
   one euro account would otherwise push the euro total off a short page and
-  return something that reads as single-currency.
+  return something that reads as single-currency. That ordering is what carries
+  a *segmented* read, which merges nothing; a converted one applies `limit`
+  after the collapse below.
 - Sum nothing across differing `currency_code` values. One totals row per
   currency is the segmented answer; `display_currency` is what collapses them
   into one priced figure — and it collapses the **rows**, not just the labels.
@@ -268,7 +270,9 @@ historical net worth.
   row per original currency would publish several rows all claiming the same
   unit, and a consumer reading "the totals row" would get an arbitrary
   fraction of the position. That is blend by omission, the same defect the
-  split exists to prevent.
+  split exists to prevent. The collapse runs *before* `limit` is applied, so a
+  limit smaller than the number of currencies held still returns the whole
+  position rather than whichever subtotal happened to fit the page.
 - No-data contract: if no position exists on or before the requested date, the
   result contains exactly one totals row with every field null — including
   `account_count`, which is null rather than `0` because no currency was

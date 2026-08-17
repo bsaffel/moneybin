@@ -997,6 +997,61 @@ def test_drift_status_is_rebucketed_against_the_converted_amount() -> None:
     assert rows[0]["drift_abs"] == Decimal("3.40")
 
 
+def test_drift_is_restated_from_the_converted_balances() -> None:
+    """Converting each money column alone can leave the row's own subtraction false.
+
+    ``drift`` is declared as asserted minus computed, but conversion prices all
+    three independently: asserted 1.00, computed 0.01 and drift 0.99 at rate
+    0.50 round to 0.50, 0.01 and 0.50, so the published drift claims 0.50 while
+    the two balances printed beside it subtract to 0.49. Bucketing the stale
+    figure then carries the disagreement into ``drift_abs`` and ``status``.
+    """
+    rows: list[dict[str, Any]] = [
+        {
+            "asserted_balance": Decimal("0.50"),
+            "computed_balance": Decimal("0.01"),
+            "drift": Decimal("0.50"),
+            "drift_abs": Decimal("0.50"),
+            "drift_pct": 0.99,
+            "status": "clean",
+        }
+    ]
+
+    _rebucket_status(rows, "USD")
+
+    assert rows[0]["drift"] == Decimal("0.49")
+    assert rows[0]["drift_abs"] == Decimal("0.49")
+    # 0.49 / 0.50, restated from the same two balances rather than left holding
+    # the ratio the pre-conversion amounts produced.
+    assert rows[0]["drift_pct"] == pytest.approx(0.98)  # type: ignore[reportUnknownMemberType]  # pytest.approx stub incomplete
+
+
+def test_restating_the_drift_leaves_a_zero_denominator_undefined() -> None:
+    """``drift_pct`` is null when nothing was asserted, and division would raise.
+
+    The SQL model already guards this (``asserted_balance <> 0``); restating the
+    ratio in Python has to guard it identically or a converted read of an
+    account asserted at zero fails where the unconverted one returned a row.
+    """
+    rows: list[dict[str, Any]] = [
+        {
+            "asserted_balance": Decimal("0.00"),
+            "computed_balance": Decimal("-5.00"),
+            "drift": Decimal("5.00"),
+            "drift_abs": Decimal("5.00"),
+            "drift_pct": None,
+            "status": "clean",
+        }
+    ]
+
+    _rebucket_status(rows, "USD")
+
+    # 0.00 - (-5.00) = 5.00, which sits in the warning band (>= 1.00, < 10.00).
+    assert rows[0]["drift"] == Decimal("5.00")
+    assert rows[0]["drift_pct"] is None
+    assert rows[0]["status"] == "warning"
+
+
 def test_rebucketing_leaves_a_status_that_names_no_magnitude() -> None:
     """``no-data`` and ``currency-mismatch`` report that no drift was computable.
 
@@ -1139,3 +1194,84 @@ def test_a_single_currency_snapshot_keeps_its_one_totals_row() -> None:
     assert rows[0]["total_assets"] == Decimal("10.00")
     assert rows[0]["net_worth"] == Decimal("6.00")
     assert rows[0]["account_count"] == 1
+
+
+# --- The row limit applies to the answer, not to conversion's inputs ----------
+
+
+def _two_currency_runner(db: Database) -> ReportQuery:  # noqa: ARG001  # contract handle
+    """One EUR row and one USD row on the same date, EUR ordered first.
+
+    Args:
+        db: Open read-only database connection.
+    """
+    return ReportQuery(
+        "SELECT t.txn_date, t.currency_code, t.amount FROM (VALUES "
+        "(DATE '2026-03-05', 'EUR', CAST(100.00 AS DECIMAL(18,2))), "
+        "(DATE '2026-03-05', 'USD', CAST(50.00 AS DECIMAL(18,2)))"
+        ") AS t(txn_date, currency_code, amount) ORDER BY t.currency_code",
+        [],
+    )
+
+
+def _collapse_into_one_row(rows: list[dict[str, Any]], _currency: str) -> None:
+    """Stand-in for `core:networth` merging its per-currency totals once priced."""
+    total = sum((row["amount"] for row in rows), Decimal(0))
+    rows[:] = [{**rows[0], "amount": total}]
+
+
+def _two_currency_report(*, collapsing: bool) -> ReportSpec:
+    return replace(
+        _money_report(),
+        report_id="core:two_currency",
+        runner=_two_currency_runner,
+        on_converted=_collapse_into_one_row if collapsing else None,
+    )
+
+
+def _run_two_currency(saved_db: Database, *, collapsing: bool, limit: int) -> Any:
+    return ReportCatalog((_two_currency_report(collapsing=collapsing),)).execute(
+        saved_db,
+        report_id="core:two_currency",
+        parameters={},
+        limit=limit,
+        display_currency="USD",
+    )
+
+
+def test_a_collapsing_conversion_sees_every_row_the_limit_would_have_cut(
+    saved_db: Database,
+) -> None:
+    """Truncating before conversion hands the collapse a subset of its own inputs.
+
+    ``core:networth`` emits one totals row per currency held and merges them
+    only once conversion has priced them into a single unit. Cutting to
+    ``limit`` first means a two-currency profile read at ``limit=1`` collapses
+    one surviving subtotal and publishes it as the whole position — blend by
+    omission, which is the same defect as blend by summation and exactly what
+    the per-currency split exists to prevent.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+
+    result = _run_two_currency(saved_db, collapsing=True, limit=1)
+
+    # 100.00 EUR at 1.09 = 109.00 USD, plus the row already in USD = 159.00.
+    assert len(result.records) == 1
+    assert result.records[0]["amount"] == Decimal("159.00")
+
+
+def test_a_converted_read_still_truncates_to_its_row_limit(
+    saved_db: Database,
+) -> None:
+    """Deferring truncation past conversion must not drop it.
+
+    The limit still describes the answer; only its timing moves. A report with
+    no collapsing repair must page exactly as it did before.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+
+    result = _run_two_currency(saved_db, collapsing=False, limit=1)
+
+    assert len(result.records) == 1
+    assert result.truncated is True
+    assert result.records[0]["amount"] == Decimal("109.00")

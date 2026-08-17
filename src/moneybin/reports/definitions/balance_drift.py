@@ -33,16 +33,34 @@ _MAGNITUDE_FREE_STATUSES = frozenset({"no-data", "currency-mismatch"})
 
 
 def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
-    """Re-derive ``status`` and ``drift_abs`` from the converted ``drift``.
+    """Re-derive the drift and everything read off it from the converted balances.
 
-    The bucket edges are absolute amounts, so they only describe the currency
-    the drift is actually in. Left alone after conversion, a 500 JPY drift shown
-    as 3.40 USD keeps the ``drift`` label it earned at 500 — a verdict that
-    contradicts the figure printed beside it.
+    Two separate things go stale. The bucket edges are absolute amounts, so they
+    only describe the currency the drift is actually in: left alone, a 500 JPY
+    drift shown as 3.40 USD keeps the ``drift`` label it earned at 500, a
+    verdict that contradicts the figure printed beside it. And ``drift`` is
+    declared as asserted minus computed, but conversion prices all three columns
+    independently and rounds each — asserted 1.00, computed 0.01 and drift 0.99
+    at rate 0.50 give 0.50, 0.01 and 0.50, so the published difference disagrees
+    with the two balances it claims to be the difference of.
+
+    Restating the drift from the converted balances fixes the identity, and the
+    magnitude, percentage and bucket all follow from it rather than from three
+    separately rounded values.
     """
     for row in rows:
         if row.get("status") in _MAGNITUDE_FREE_STATUSES:
             continue
+        asserted = row.get("asserted_balance")
+        computed = row.get("computed_balance")
+        if isinstance(asserted, Decimal) and isinstance(computed, Decimal):
+            row["drift"] = asserted - computed
+            # Guarded exactly as the SQL model guards it: a balance asserted at
+            # zero has no ratio, and dividing would raise on a converted read
+            # where the unconverted one returned a null.
+            row["drift_pct"] = (
+                float((asserted - computed) / asserted) if asserted else None
+            )
         drift = row.get("drift")
         if not isinstance(drift, Decimal):
             continue

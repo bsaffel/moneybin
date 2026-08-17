@@ -287,11 +287,13 @@ def _execute_networth(
             "observation_source": account.observation_source,
         }
 
-    # Totals lead because build_catalog_execution truncates to max_rows: a
-    # profile holding two dollar accounts and one euro account would otherwise
-    # push euro past a small limit and return a page that reads as
-    # single-currency. Blend by omission is the same defect as blend by
-    # summation. Taking them from per_currency also keeps an account_ids filter
+    # Totals lead because the row cap is applied as a prefix: a profile holding
+    # two dollar accounts and one euro account would otherwise push euro past a
+    # small limit and return a page that reads as single-currency. Blend by
+    # omission is the same defect as blend by summation. This ordering is what
+    # carries the *segmented* read, which merges nothing; a converting one caps
+    # after `_restate_networth_total` has run (`truncate_execution`), so its
+    # totals cannot be cut before they are summed. Taking them from per_currency
     # narrowing the breakdown without narrowing the position — filtering to a
     # dollar account still reports the euro the profile holds.
     rows = [_totals_row(segment) for segment in snapshot.per_currency]

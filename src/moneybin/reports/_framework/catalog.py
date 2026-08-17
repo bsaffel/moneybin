@@ -47,6 +47,7 @@ from moneybin.reports._framework.execute import (
     convert_execution,
     execute_catalog_report,
     redact_catalog_execution,
+    truncate_execution,
 )
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.services.currency_service import (
@@ -281,6 +282,10 @@ class ReportCatalog:
             report_id=report_id,
             parameters=parameters,
             limit=limit,
+            # A conversion can change the row count — `core:networth` merges its
+            # per-currency totals once they share a unit — so the cap has to
+            # describe what that repair produced, not what fed it.
+            defer_truncation=target is not None,
         )
         if target is not None:
             # Between execution and redaction, the only window where the rows
@@ -292,6 +297,7 @@ class ReportCatalog:
             )
             if display_currency is None:
                 execution = replace(execution, degraded_reason=None)
+        execution = truncate_execution(execution)
         result = redact_catalog_execution(spec, execution)
         status = self.status(spec.report_id)
         if not status.degraded:
@@ -317,8 +323,14 @@ class ReportCatalog:
         report_id: str,
         parameters: Mapping[str, JsonValue],
         limit: int | None,
+        defer_truncation: bool = False,
     ) -> tuple[RegisteredReport, CatalogReportExecution]:
-        """Validate and execute one report without terminal redaction."""
+        """Validate and execute one report without terminal redaction.
+
+        ``defer_truncation`` returns the rows uncut and records the cap on the
+        execution for ``truncate_execution`` to apply later. Callers that do not
+        ask for it get an execution already capped, exactly as before.
+        """
         spec, validated = self.resolve_request(
             report_id=report_id,
             parameters=parameters,
@@ -331,14 +343,22 @@ class ReportCatalog:
                     spec,
                     db,
                     max_rows=limit,
+                    defer_truncation=defer_truncation,
                     **validated,
                 )
             else:
-                execution = spec.executor(db, validated, limit)
+                # A service executor builds every row it has before handing them
+                # over, so withholding the cap costs it nothing and spares the
+                # protocol a flag only one of its two implementations reads.
+                execution = spec.executor(
+                    db, validated, None if defer_truncation else limit
+                )
         except Exception:
             USER_REPORT_RUNS_TOTAL.labels(tier=tier, outcome="error").inc()
             raise
         USER_REPORT_RUNS_TOTAL.labels(tier=tier, outcome="ok").inc()
+        if defer_truncation:
+            execution = replace(execution, pending_limit=limit)
         return spec, execution
 
     def resolve_request(
