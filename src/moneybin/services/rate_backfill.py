@@ -169,13 +169,28 @@ def run_rate_backfill(
             failed.append(pair)
             FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="failed").inc()
             continue
-        if not observations and unsupported_currencies(
-            adapter, window.from_currency, window.to_currency
-        ):
-            logger.warning(f"No exchange rate series is published for {pair}")
-            unsupported.append(pair)
-            FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="unsupported").inc()
-            continue
+        if not observations:
+            never_published = unsupported_currencies(
+                adapter, window.from_currency, window.to_currency
+            )
+            if never_published is None:
+                # The list that separates a permanent absence from a transient
+                # one was itself unreadable, so falling through is not neutral:
+                # an empty answer is short at the start of its window, which
+                # lands the pair in `discarded` — and both the CLI warning and
+                # `_step_crash_recovery_actions` read discarded as "the provider
+                # answered, so a retry returns the same unusable value." Neither
+                # half of that holds here. `failed` is the outcome whose remedy
+                # is a later run, which is the only one that can still resolve.
+                logger.warning(f"Exchange rate support is unknown for {pair}")
+                failed.append(pair)
+                FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="failed").inc()
+                continue
+            if never_published:
+                logger.warning(f"No exchange rate series is published for {pair}")
+                unsupported.append(pair)
+                FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="unsupported").inc()
+                continue
         answered = _within_window(observations, window)
         if len(answered) != len(observations):
             logger.warning(

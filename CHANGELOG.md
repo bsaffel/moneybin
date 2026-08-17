@@ -46,7 +46,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   at all is reported separately, as `rate_pairs_unsupported`, because retrying
   will never fill it — that warning names `moneybin fx set`, which will. Either
   side of the pair can be the unpublished one, so a home currency the provider
-  does not carry is caught too. A pair whose answer was partly unusable —
+  does not carry is caught too. Telling that apart takes a second request, for
+  the provider's list of published currencies, and when that request is the one
+  that fails the pair is reported as failed: nothing at that moment separates a
+  currency that will never publish from one briefly unreachable, and only the
+  retryable outcome leaves a later run able to separate them. A pair whose answer was partly unusable —
   dated outside the window, or too small for the rate column — is listed as
   `rate_pairs_discarded`, which says coverage may be short on some dates rather
   than that the pair is missing. A series that does not span what was asked for
@@ -75,7 +79,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   crash in any of them is named wherever it happens rather than only under
   `moneybin refresh`. `rates_written` is `null` when the step did not run and
   `0` when it ran and had nothing to fetch: an empty pair list reads the same
-  either way, so that field is what separates them.
+  either way, so that field is what separates them. Their MCP envelopes carry
+  the same executable `refresh_run` retries `refresh_run` itself returns — a
+  step that crashed inside an import is no less retryable for having crashed
+  there, and MCP has no stderr to warn on.
 - **A multi-currency demo persona.** `moneybin demo --persona international`
   (and `moneybin synthetic generate --persona international`) builds five
   accounts at five banks in EUR, GBP, CAD, AED, and USD, each funded and spent

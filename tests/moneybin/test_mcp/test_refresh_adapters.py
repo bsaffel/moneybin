@@ -6,11 +6,15 @@ from typing import Any
 
 import pytest
 
-from moneybin.mcp.adapters.refresh_adapters import refresh_envelope
+from moneybin.mcp.adapters.refresh_adapters import (
+    refresh_envelope,
+    refresh_step_actions,
+)
 from moneybin.privacy.payloads.system import RefreshRunPayload
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.rate_backfill import RateBackfillResult
 from moneybin.services.refresh import RefreshResult, SelfHealRecord, expand_steps
+from moneybin.services.refresh_outcome import RefreshStepOutcome
 from tests.moneybin.test_mcp.schema_assertions import (
     assert_recovery_actions_executable,
 )
@@ -446,3 +450,70 @@ def test_envelope_marks_zero_counts_as_unexamined_when_match_was_skipped() -> No
     payload = _payload(env)
     assert payload.matching_skipped is True
     assert payload.matches_auto_merged == 0
+
+
+@pytest.mark.unit
+def test_a_clean_step_outcome_earns_no_recovery_actions() -> None:
+    """Silent when nothing broke, so an action keeps the meaning of an action."""
+    assert refresh_step_actions(None) == []
+    assert refresh_step_actions(RefreshStepOutcome(rates_written=0)) == []
+
+
+@pytest.mark.unit
+async def test_each_crashed_step_is_offered_the_retry_that_fits_it() -> None:
+    """Each channel routes somewhere different, so each gets its own retry.
+
+    The pairing is the point, not the presence: one "the refresh had problems"
+    action would satisfy a naive check while sending an agent to re-run
+    matching over a provider outage.
+    """
+    actions = refresh_step_actions(
+        RefreshStepOutcome(
+            matching_error="matcher blew up",
+            categorization_error="categorizer blew up",
+            rates_written=0,
+            rate_backfill_error="rates blew up",
+        )
+    )
+
+    await assert_recovery_actions_executable(actions)
+    assert [action.arguments.get("steps") for action in actions[:3]] == [
+        ["match"],
+        ["categorize"],
+        ["rates"],
+    ]
+    # The diagnostic closes the list rather than competing with the retries.
+    assert actions[-1].tool == "system_status"
+
+
+@pytest.mark.unit
+def test_a_pair_the_provider_never_answered_is_offered_a_retry() -> None:
+    """``rate_pairs_failed`` is retryable even with no step crash beside it.
+
+    The rates step can return without raising and still have left a pair
+    unfetched, so gating the retry on ``rate_backfill_error`` alone would drop
+    the action in a case a later run does fix.
+    """
+    actions = refresh_step_actions(RefreshStepOutcome(rate_pairs_failed=("EUR/USD",)))
+
+    assert [action.arguments.get("steps") for action in actions] == [["rates"], None]
+
+
+@pytest.mark.unit
+def test_pairs_a_retry_cannot_fill_are_offered_no_retry() -> None:
+    """Unsupported and short-coverage pairs have remedies a re-run is not.
+
+    The provider answered for both, so re-sending returns the identical
+    unusable value — an executable retry here is a loop with no terminating
+    condition. They ride the payload fields, which is why those exist.
+    """
+    assert (
+        refresh_step_actions(
+            RefreshStepOutcome(
+                rates_written=3,
+                rate_pairs_unsupported=("XBT/USD",),
+                rate_pairs_discarded=("JPY/USD",),
+            )
+        )
+        == []
+    )

@@ -584,8 +584,14 @@ class CurrencyService:
         )
 
     def _unsupported(self, base: str, quote: str) -> set[str]:
-        """Which of the two currencies the provider prices on no date at all."""
-        return unsupported_currencies(self._adapter, base, quote)
+        """Which of the two currencies the provider prices on no date at all.
+
+        An unreadable list collapses to "none" here, unlike in the backfill: the
+        caller's other branch already tells the user to try a nearby date or
+        record the rate, which is the right advice for a lookup whose support is
+        unknown. The backfill's fall-through is not, so it reads the ``None``.
+        """
+        return unsupported_currencies(self._adapter, base, quote) or set()
 
 
 def build_currency_service(db: Database, *, actor: str = "system") -> CurrencyService:
@@ -650,8 +656,8 @@ def _require_storable(rate: Decimal) -> None:
         )
 
 
-def unsupported_currencies(adapter: RateAdapter | None, *codes: str) -> set[str]:
-    """Which of ``codes`` the provider prices on no date at all.
+def unsupported_currencies(adapter: RateAdapter | None, *codes: str) -> set[str] | None:
+    """Which of ``codes`` the provider prices on no date at all, or ``None``.
 
     Every caller asks about a *pair*, and either side can be the one the
     provider has never carried — a profile whose home currency is unpublished
@@ -659,10 +665,14 @@ def unsupported_currencies(adapter: RateAdapter | None, *codes: str) -> set[str]
     such a profile report an empty result forever with nothing to act on, so
     the check is shared rather than re-derived per caller.
 
-    An unreadable list answers "none": claiming a currency is unsupported on
-    the strength of a dropped connection would send the user to a permanent
-    remedy for a transient failure. Adapters memoize the list, so asking about
-    many pairs still costs one call.
+    ``None`` means the list itself could not be read, and is deliberately not
+    the empty set: claiming a currency is unsupported on the strength of a
+    dropped connection would send the user to a permanent remedy for a
+    transient failure, but so would answering "none unsupported" to a caller
+    that reads an empty answer as proof the pair is fine. Only the caller knows
+    which of those two mistakes its branch would make, so the distinction is
+    handed back rather than resolved here. Adapters memoize the list, so asking
+    about many pairs still costs one call.
     """
     if adapter is None:
         return set()
@@ -670,7 +680,7 @@ def unsupported_currencies(adapter: RateAdapter | None, *codes: str) -> set[str]
         published = adapter.supported_currencies()
     except FeedError:
         logger.info("Could not read the provider's currency list")
-        return set()
+        return None
     return {code for code in codes if code not in published}
 
 

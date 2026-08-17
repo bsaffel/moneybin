@@ -11,7 +11,8 @@ from moneybin.errors import RecoveryAction
 from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.payloads.system import RefreshRunPayload, SelfHealActionRow
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.refresh import RefreshResult
+from moneybin.services.refresh import RefreshResult, step_outcome
+from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 REFRESH_APPLY_FAILED_HINT = (
     "SQLMesh apply failed — run `moneybin transform plan` to inspect, "
@@ -30,21 +31,36 @@ REFRESH_MERCHANT_LINKS_REVIEW_HINT = (
 
 
 def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
+    """The step retries for a refresh whose SQLMesh apply survived.
+
+    Returns ``[]`` when the apply itself failed (``result.error``): that is the
+    blocking failure, surfaced via the ``error`` field and the apply-failed
+    ``actions`` hint. A best-effort step retry here would misdirect the agent to
+    chase the secondary crash before the blocker.
+    """
+    if result.error is not None:
+        return []
+    return refresh_step_actions(step_outcome(result))
+
+
+def refresh_step_actions(steps: RefreshStepOutcome | None) -> list[RecoveryAction]:
     """Build recovery actions for best-effort step crashes (match/categorize/rates).
 
     Ordered most-likely-correct first: the targeted retry(s), then a single
     diagnostic ``system_status`` doctor call. A recovery action must stay
     directly executable.
 
-    Returns ``[]`` when the SQLMesh apply itself failed (``result.error``):
-    that is the blocking failure, surfaced via the ``error`` field and the
-    apply-failed ``actions`` hint. A best-effort step retry here would
-    misdirect the agent to chase the secondary crash before the blocker.
+    Takes the flattened outcome rather than a ``RefreshResult`` so the commands
+    that run a refresh *inside* something else — ``sync_pull``, ``import_files``,
+    ``import_inbox_sync`` — offer the same retries from the same list. They are
+    the callers that need it most: the CLI warns on stderr about a step that
+    crashed mid-import, and MCP has no equivalent, so without this the crash
+    reaches the agent as a payload string with nothing naming its cure.
     """
-    if result.error is not None:
+    if steps is None:
         return []
     actions: list[RecoveryAction] = []
-    if result.matching_error is not None:
+    if steps.matching_error is not None:
         actions.append(
             RecoveryAction(
                 tool="refresh_run",
@@ -57,7 +73,7 @@ def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
                 idempotent=True,
             )
         )
-    if result.categorization_error is not None:
+    if steps.categorization_error is not None:
         actions.append(
             RecoveryAction(
                 tool="refresh_run",
@@ -70,10 +86,7 @@ def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
                 idempotent=True,
             )
         )
-    rates = result.rate_backfill
-    if result.rate_backfill_error is not None or (
-        rates is not None and rates.pairs_failed
-    ):
+    if steps.rate_backfill_error is not None or steps.rate_pairs_failed:
         # `pairs_failed` and a step crash, matching the CLI's `retryable_error`.
         # The other two lists name pairs a retry cannot fill: the provider
         # publishes no series at all for an unsupported one, and it *answered*

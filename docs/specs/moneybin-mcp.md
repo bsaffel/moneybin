@@ -197,7 +197,11 @@ and confirmation contracts.
   `matching_error`, `categorization_error`, `identity_errors` and the
   exchange-rate group report the four best-effort steps it cannot speak for.
   The names are deliberately identical to `refresh_run`'s so an agent reading
-  two surfaces learns one vocabulary for one outcome.
+  two surfaces learns one vocabulary for one outcome. They carry its
+  `recovery_actions` too, built by the same function: a step that crashed inside
+  an import is no less retryable for having crashed there, and these are the
+  surfaces where the CLI's stderr warning has no counterpart, so a payload field
+  with nothing executable beside it is the whole of what the agent gets.
 - `sql_query` is the read-only escape hatch and `sql_schema` explains the
   interface schema. They do not replace domain validation for writes.
 

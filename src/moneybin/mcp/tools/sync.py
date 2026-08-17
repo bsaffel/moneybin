@@ -21,6 +21,7 @@ from moneybin.config import get_settings
 from moneybin.connectors.sync_models import ConnectedInstitution, PullResult
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.adapters.refresh_adapters import refresh_step_actions
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -166,6 +167,10 @@ def sync_pull(
             **refresh_steps_fields(result.refresh_steps),
         ),
         actions=_pull_actions(result),
+        # `or None` to omit the key when empty, matching `refresh_envelope`:
+        # this envelope's `error` is None, so there is no `error.recovery_actions`
+        # for an empty list to fall through to.
+        recovery_actions=refresh_step_actions(result.refresh_steps) or None,
     )
 
 

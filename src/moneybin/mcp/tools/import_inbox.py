@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 from moneybin.database import get_database
+from moneybin.mcp.adapters.refresh_adapters import refresh_step_actions
 from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.payloads.imports import (
     ImportInboxPendingEntry,
@@ -195,6 +196,8 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
             **refresh_steps_fields(sync_result.refresh_steps),
         ),
         actions=actions,
+        # `or None` to omit the key when empty, matching `refresh_envelope`.
+        recovery_actions=refresh_step_actions(sync_result.refresh_steps) or None,
     )
 
 

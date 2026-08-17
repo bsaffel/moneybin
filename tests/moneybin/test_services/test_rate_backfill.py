@@ -611,15 +611,23 @@ def test_a_home_currency_the_provider_does_not_publish_is_reported_as_unsupporte
     assert result.pairs_failed == ()
 
 
-def test_an_unreadable_currency_list_never_declares_a_pair_unsupported(
+def test_an_unreadable_currency_list_leaves_the_pair_retryable(
     db: Database,
 ) -> None:
     """Claiming "unsupported" on a dropped connection sends the user to fix nothing.
 
     ``supported_currencies`` is what separates the permanent absence from the
-    transient one, so when it cannot be read the separation is unavailable —
-    and the fail-closed answer is to claim neither, exactly as the adapter
-    protocol refuses to answer an empty set for the same reason.
+    transient one, so when it cannot be read the separation is unavailable and
+    the pair must not be called unsupported.
+
+    Claiming *neither* does not follow from that, though, and is what this
+    asserts against: an empty answer that reaches the checks below is short at
+    the start of its window, so falling through lands the pair in
+    ``pairs_discarded`` — which the CLI warning and
+    ``_step_crash_recovery_actions`` both read as "the provider answered, and a
+    retry returns the same unusable value." Neither holds here. The provider
+    answered nothing and the question of whether it ever could was itself
+    unanswered, so this is the one outcome a later run can still resolve.
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="JPY")
     adapter = _UnknowingAdapter()
@@ -627,7 +635,8 @@ def test_an_unreadable_currency_list_never_declares_a_pair_unsupported(
     result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
 
     assert result.pairs_unsupported == ()
-    assert result.pairs_failed == ()
+    assert result.pairs_failed == ("JPY/USD",)
+    assert result.pairs_discarded == ()
 
 
 def test_a_rate_the_column_cannot_hold_is_dropped_rather_than_raised(

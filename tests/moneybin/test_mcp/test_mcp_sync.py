@@ -16,6 +16,7 @@ from moneybin.connectors.sync_models import (
     SyncConnectionView,
 )
 from moneybin.mcp.tools.sync import register_sync_tools
+from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 
 @pytest.mark.unit
@@ -371,3 +372,40 @@ def test_sync_review_prompt_content_includes_required_elements() -> None:
         or "no pii" in text.lower()
         or "do not include" in text.lower()
     )
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_pull_offers_the_embedded_refresh_its_own_retries(
+    mock_build: MagicMock,
+) -> None:
+    """A pull runs the whole refresh cascade, so it owes that cascade's remedies.
+
+    The fields alone are not the remedy. MCP has no stderr warning to carry one
+    the way the CLI does, so a step that crashed inside this pull reaches the
+    agent as a payload string with nothing naming the re-run that fixes it.
+    """
+    service = MagicMock()
+    service.pull.return_value = PullResult(
+        job_id="j1",
+        transactions_loaded=5,
+        accounts_loaded=1,
+        balances_loaded=1,
+        transactions_removed=0,
+        institutions=[],
+        refresh_steps=RefreshStepOutcome(
+            matching_error="matcher blew up",
+            rates_written=0,
+            rate_pairs_failed=("EUR/USD",),
+        ),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_pull
+
+    envelope = sync_pull()
+
+    steps = [
+        action.arguments.get("steps") for action in (envelope.recovery_actions or [])
+    ]
+    assert ["match"] in steps
+    assert ["rates"] in steps

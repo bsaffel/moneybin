@@ -43,6 +43,7 @@ from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.adapters.refresh_adapters import refresh_step_actions
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -658,6 +659,8 @@ def import_files(
             else "low"
         ),
         actions=actions,
+        # `or None` to omit the key when empty, matching `refresh_envelope`.
+        recovery_actions=refresh_step_actions(batch.refresh_steps) or None,
     )
     return mark_total_failure(envelope, batch)
 

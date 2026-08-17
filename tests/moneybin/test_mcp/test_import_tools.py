@@ -5096,3 +5096,106 @@ class TestImportFilesFailureDetail:
         assert "chmod" in failed_row.hint
         # Partial success stays a success envelope — no batch-level error.
         assert envelope.error is None
+
+
+@pytest.mark.unit
+class TestEmbeddedRefreshRecoveryActions:
+    """The refresh an import runs on the user's behalf owes its own remedies."""
+
+    async def test_import_files_offers_the_embedded_refresh_its_retries(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """A crashed step inside the import must name the re-run that fixes it.
+
+        The payload fields alone are not the remedy on this surface: MCP has no
+        stderr warning to carry one the way the CLI's ``warn_refresh_steps``
+        does, so without a recovery action the crash reaches the agent as a
+        string with nothing executable beside it.
+        """
+        from moneybin.mcp.tools.import_tools import import_files
+        from moneybin.services.import_service import BatchImportResult, PerFileResult
+        from moneybin.services.refresh_outcome import RefreshStepOutcome
+
+        first = tmp_path / "a.csv"
+        second = tmp_path / "b.csv"
+        for path in (first, second):
+            path.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        mock_service = MagicMock()
+        mock_service.import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(path),
+                    status="imported",
+                    source_type="csv",
+                    rows_loaded=1,
+                )
+                for path in (first, second)
+            ],
+            transforms_applied=True,
+            transforms_duration_seconds=0.1,
+            transfers_retired=0,
+            refresh_steps=RefreshStepOutcome(
+                categorization_error="categorizer blew up",
+                rates_written=0,
+                rate_backfill_error="rates blew up",
+            ),
+        )
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = import_files(paths=[str(first), str(second)])
+
+        steps = [
+            action.arguments.get("steps") for action in (result.recovery_actions or [])
+        ]
+        assert ["categorize"] in steps
+        assert ["rates"] in steps
+        # The matcher did not crash, so nothing must offer to re-run it.
+        assert ["match"] not in steps
+
+    async def test_inbox_drain_offers_the_embedded_refresh_its_retries(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Same contract on the unattended surface, where nobody is watching."""
+        from moneybin.mcp.tools.import_inbox import import_inbox_sync
+        from moneybin.services.inbox_service import InboxSyncResult
+        from moneybin.services.refresh_outcome import RefreshStepOutcome
+
+        service = MagicMock()
+        service.sync.return_value = InboxSyncResult(
+            processed=[],
+            failed=[],
+            pending=[],
+            skipped=[],
+            ignored=[],
+            transforms_applied=True,
+            transforms_duration_seconds=0.1,
+            transforms_error=None,
+            transfers_retired=0,
+            refresh_steps=RefreshStepOutcome(
+                matching_error="matcher blew up", rates_written=0
+            ),
+        )
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox.InboxService",
+            lambda **_kw: service,
+        )
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox.get_database", _fake_database
+        )
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox._uncategorized_count", lambda: 0
+        )
+
+        result = import_inbox_sync(refresh=True)
+
+        steps = [
+            action.arguments.get("steps") for action in (result.recovery_actions or [])
+        ]
+        assert ["match"] in steps
