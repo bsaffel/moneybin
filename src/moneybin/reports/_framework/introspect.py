@@ -17,6 +17,7 @@ from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     OutputColumn,
     ParamSpec,
+    RecomputeDerived,
     ReportSemantics,
     ReportSpec,
     Runner,
@@ -70,6 +71,7 @@ def build_spec(
     semantics: ReportSemantics,
     domain: str | None = None,
     class_downgrades: Mapping[str, str] | None = None,
+    on_converted: RecomputeDerived | None = None,
 ) -> ReportSpec:
     """Introspect ``fn`` into a :class:`ReportSpec`.
 
@@ -169,6 +171,7 @@ def build_spec(
         examples=examples,
         domain=domain,
         class_downgrades=downgrades,
+        on_converted=on_converted,
     )
 
 

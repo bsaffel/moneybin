@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 import polars as pl
 
@@ -101,6 +102,23 @@ class ResolvedRate:
     rate_date: date
     rate: Decimal
     source: str
+
+    def as_provenance(self) -> dict[str, Any]:
+        """This rate as the response envelope publishes it (Requirement 10).
+
+        ``rate`` stays a ``Decimal`` because the envelope keeps money-shaped
+        values numeric; the two dates become ISO strings, and both are kept
+        because a weekend conversion priced at Friday's rate is only auditable
+        when the reader can see the two differ.
+        """
+        return {
+            "from_currency": self.from_currency,
+            "to_currency": self.to_currency,
+            "requested_date": self.requested_date.isoformat(),
+            "rate_date": self.rate_date.isoformat(),
+            "rate": self.rate,
+            "source": self.source,
+        }
 
 
 class RateUnavailableError(UserError):

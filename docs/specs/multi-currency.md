@@ -393,6 +393,18 @@ Numbered, testable. Tagged by phase.
     source, fetched_at)`, unique on `(from_currency, to_currency, rate_date, source)`) or a
     user override in `app.*` (Req 14). A "show me the rate" path exposes the exact rate
     behind any converted number (consistent with the lineage promise).
+    **Implemented in two halves.** The storage half landed with the rate layer
+    (2026-08-15): every rate is stored with its source, and `moneybin fx rate` /
+    `fx list` read it back. The exposure half needed converted figures to exist,
+    so it landed with display conversion (2026-08-16): `summary.applied_rates`
+    carries one entry per distinct pair and date — rate, source, requested date,
+    and the date actually priced — and the terminal prints the rate when a single
+    one priced the report. Deduplicated by (currency, date), because a thousand
+    rows on one date were priced by one rate. Absent when nothing was converted,
+    which is deliberately distinct from present-but-empty.
+    `moneybin export report` is the one report surface that never converts, so it
+    never needs the trail: an artifact outlives the rate that made it, and the
+    original amount stays checkable forever.
 11. **Free reference-rate source.** Rates come from **Frankfurter** (ECB-backed, no
     auth, historical to 1999), cached in `raw.exchange_rates`.
     `ExchangeRate.host`/`open.er-api.com` are documented fallbacks. **Only currency

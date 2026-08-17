@@ -179,6 +179,28 @@ and confirmation contracts.
   refused before the query runs, so an empty result cannot claim a currency
   that does not exist. Reads never fetch a rate: `refresh_run` gathers them,
   because a read holds no writer lock.
+
+  `summary.applied_rates` carries the provenance behind those figures
+  (`multi-currency.md` Requirement 10): one entry per distinct pair and date,
+  each with `from_currency`, `to_currency`, `rate`, `source`, `requested_date`,
+  and `rate_date`. The two dates differ whenever a weekend or holiday priced
+  against the previous published day, which is the case the field exists to make
+  visible rather than smooth over. `source` names a provider or the `override` /
+  `identity` sentinel, so an agent can tell a user-set rate from a fetched one.
+  The key is present only when a conversion actually happened — absent means
+  nothing was converted, which is a different claim from "converted at an
+  unrecorded rate" — and it is deduplicated, so a thousand rows priced on one
+  date report the single rate that priced them.
+
+  A value **derived** from a converted amount is restated so it cannot describe
+  the old currency: `core:balance_drift` re-buckets its clean/warning/drift
+  verdict against the converted drift, and `core:networth` recomputes
+  `net_worth` from its own converted parts so per-column rounding cannot leave
+  the total disagreeing with assets plus liabilities. `no-data` and
+  `currency-mismatch` are left alone — neither states a magnitude. The
+  `balance_drift` `status` *parameter* still filters in the account's own
+  currency, before any rate is known: filter on `all` and read the returned
+  `status` when converting.
 - `accounts`, `investments`, `transactions`, `reviews`, `taxonomy`, `privacy`,
   and `gsheet` expose typed views or filters under one domain identity. Their
   paired `_set`, `_decide`, or domain verb tools retain material write and

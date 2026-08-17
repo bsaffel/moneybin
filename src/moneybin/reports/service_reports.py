@@ -405,6 +405,25 @@ def _decimal_column_type(
     return f"DECIMAL({precision},{scale})"
 
 
+def _restate_networth_total(rows: list[dict[str, Any]], _currency: str) -> None:
+    """Restate ``net_worth`` as the sum of its own converted parts.
+
+    Each money column converts and rounds independently, so the three can round
+    apart: assets ``1.00`` and liabilities ``-0.01`` at rate ``0.5`` give
+    ``0.50`` and ``-0.01``, while net worth ``0.99`` gives ``0.50`` — a report
+    whose own columns no longer add up. Recomputing from the rounded parts is
+    what keeps the identity the rows already assert.
+
+    Skips the account-breakdown rows, which hold nulls in all three: only a
+    totals row states the identity, so only a totals row can break it.
+    """
+    for row in rows:
+        assets = row.get("total_assets")
+        liabilities = row.get("total_liabilities")
+        if isinstance(assets, Decimal) and isinstance(liabilities, Decimal):
+            row["net_worth"] = assets + liabilities
+
+
 NETWORTH_REPORT = ServiceReportSpec(
     report_id="core:networth",
     name="networth",
@@ -441,6 +460,7 @@ NETWORTH_REPORT = ServiceReportSpec(
     ),
     executor=_execute_networth,
     validator=_validate_networth_parameters,
+    on_converted=_restate_networth_total,
 )
 
 NETWORTH_HISTORY_REPORT = ServiceReportSpec(

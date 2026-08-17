@@ -163,6 +163,15 @@ class ReportSemantics:
     """
 
 
+type RecomputeDerived = Callable[[list[dict[str, Any]], str], None]
+"""Repair a report's derived columns in place after its money columns converted.
+
+Receives the converted rows and the currency they are now in. Mutates rather
+than returns because it repairs a subset of columns on rows the caller already
+owns; rebuilding them would invite a partial copy that silently drops one.
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class ReportSpec:
     """Introspected metadata for one report, built from its runner.
@@ -195,6 +204,13 @@ class ReportSpec:
     """Column → why it is declared below its derived class. CI requires a reason
     for every downgrade; derivation over-classifies computed columns, and
     over-masking a BI surface is its own failure mode."""
+    on_converted: RecomputeDerived | None = None
+    """Repair for columns derived from this report's money columns, or ``None``.
+
+    Only a report holding a value *computed from* an amount needs one — a label
+    bucketed against thresholds, or a total that must keep equalling its parts.
+    Display conversion prices each money column on its own, so without this the
+    derived value keeps describing the original currency."""
 
     def __post_init__(self) -> None:
         if _REPORT_ID.fullmatch(self.report_id) is None:
@@ -229,6 +245,7 @@ def report(
     semantics: ReportSemantics,
     domain: str | None = None,
     class_downgrades: Mapping[str, str] | None = None,
+    on_converted: RecomputeDerived | None = None,
 ) -> Callable[[Runner], Runner]:
     """Mark a runner as a report and attach its introspected :class:`ReportSpec`.
 
@@ -254,6 +271,9 @@ def report(
         class_downgrades: Column → reason, for every column whose declared
             class sits below its CI-derived floor (``derive_report_classes``).
             Over-declaring never needs a reason; only a genuine downgrade does.
+        on_converted: Repair for columns derived from this report's money
+            columns, run after display conversion prices them. Only a report
+            holding a value computed from an amount needs one.
     """
     # Imported lazily to avoid a contract<->introspect import cycle.
     from moneybin.reports._framework.introspect import build_spec
@@ -270,6 +290,7 @@ def report(
             semantics=semantics,
             domain=domain,
             class_downgrades=class_downgrades,
+            on_converted=on_converted,
         )
         return fn
 

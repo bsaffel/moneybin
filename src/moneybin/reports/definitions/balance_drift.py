@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import Any
+
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
@@ -14,6 +17,45 @@ from moneybin.reports._framework.contract import (
 from moneybin.reports.definitions._shared import DRIFT_STATUSES, validate_date
 from moneybin.services.account_service import AccountService
 from moneybin.tables import REPORTS_BALANCE_DRIFT
+
+#: The |drift| bucket edges, in the currency the drift is denominated in.
+#: Mirrors the CASE in ``sqlmesh/models/reports/balance_drift.sql`` — SQL cannot
+#: read a Python constant, so the two must be changed together, and that file
+#: says so beside its own copy.
+_CLEAN_BELOW = Decimal("1.00")
+_WARNING_BELOW = Decimal("10.00")
+
+#: Statuses that say nothing about magnitude, so conversion cannot restate them.
+#: ``no-data`` has no computed balance to drift from and ``currency-mismatch``
+#: means no drift was computable at all — re-bucketing either from an amount
+#: that does not exist would invent a reconciliation verdict.
+_MAGNITUDE_FREE_STATUSES = frozenset({"no-data", "currency-mismatch"})
+
+
+def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
+    """Re-derive ``status`` and ``drift_abs`` from the converted ``drift``.
+
+    The bucket edges are absolute amounts, so they only describe the currency
+    the drift is actually in. Left alone after conversion, a 500 JPY drift shown
+    as 3.40 USD keeps the ``drift`` label it earned at 500 — a verdict that
+    contradicts the figure printed beside it.
+    """
+    for row in rows:
+        if row.get("status") in _MAGNITUDE_FREE_STATUSES:
+            continue
+        drift = row.get("drift")
+        if not isinstance(drift, Decimal):
+            continue
+        magnitude = abs(drift)
+        # Derived from the same column, so it is restated here rather than left
+        # to independent rounding of a second converted value.
+        row["drift_abs"] = magnitude
+        if magnitude < _CLEAN_BELOW:
+            row["status"] = "clean"
+        elif magnitude < _WARNING_BELOW:
+            row["status"] = "warning"
+        else:
+            row["status"] = "drift"
 
 
 @report(
@@ -119,6 +161,7 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
         "status": "coarse 4-way bucket on |drift| (<$1 / <$10 / >=$10 / "
         "no-data, currency-mismatch), never the drift or balance values themselves",
     },
+    on_converted=_rebucket_status,
 )
 def balance_drift(
     db: Database,
@@ -141,6 +184,11 @@ def balance_drift(
         account: Filter to an account; accepts account_id or case-insensitive
             display_name. Ambiguous display_name matches raise; None for all.
         status: drift | warning | clean | no-data | currency-mismatch | all.
+            Selects on the bucket in each row's own currency. A display-
+            converted read re-buckets what it returns, so combining this with
+            a display currency can return a row whose displayed status differs
+            from the one asked for — the filter runs in SQL, before any rate is
+            known. Filter on `all` and read the returned status when converting.
         since: ISO date; only assertions on or after.
 
     Examples:

@@ -32,6 +32,12 @@ from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     convert_execution,
 )
+from moneybin.reports.definitions.balance_drift import (
+    _rebucket_status,  # pyright: ignore[reportPrivateUsage]  # the repair under test
+)
+from moneybin.reports.service_reports import (
+    _restate_networth_total,  # pyright: ignore[reportPrivateUsage]  # ditto
+)
 from moneybin.services.currency_service import CurrencyService
 from moneybin.tables import TableRef
 
@@ -127,6 +133,77 @@ def test_converted_rows_report_the_display_currency_not_the_original(
     )
 
     assert outcome.records[0]["currency_code"] == "USD"
+
+
+def test_a_converted_row_carries_the_rate_that_priced_it(saved_db: Database) -> None:
+    """Requirement 10: the rate behind a converted figure stays reachable.
+
+    ``convert_records`` is the last place that still knows it — the rate is
+    folded into the amount and ``currency_code`` is relabelled to the target, so
+    a caller handed only the rows cannot work backwards to what priced them.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    service = CurrencyService(saved_db)
+
+    outcome = convert_records(
+        [_row()],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+    )
+
+    assert len(outcome.applied_rates) == 1
+    applied = outcome.applied_rates[0]
+    assert applied.from_currency == "EUR"
+    assert applied.to_currency == "USD"
+    assert applied.rate == Decimal("1.09")
+    assert applied.rate_date == date(2026, 3, 5)
+
+
+def test_one_applied_rate_per_currency_and_date_however_many_rows(
+    saved_db: Database,
+) -> None:
+    """Provenance names the distinct rates, not one entry per row.
+
+    A thousand rows on one date were priced by one rate, and repeating it a
+    thousand times would bury the fact that only one was ever consulted.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    service = CurrencyService(saved_db)
+
+    outcome = convert_records(
+        [_row(), _row(amount=Decimal("50.00")), _row(amount=Decimal("25.00"))],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+    )
+
+    assert len(outcome.records) == 3
+    assert len(outcome.applied_rates) == 1
+
+
+def test_a_segmented_report_names_no_applied_rate(saved_db: Database) -> None:
+    """Nothing was priced, so nothing may claim to have priced it.
+
+    The empty tuple is the whole signal: a caller reading provenance must not
+    have to cross-check ``display_currency`` to learn whether the rates it found
+    describe the rows it is holding.
+    """
+    service = CurrencyService(saved_db)
+
+    outcome = convert_records(
+        [_row()],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+    )
+
+    assert outcome.display_currency is None
+    assert outcome.degraded_reason is not None
+    assert outcome.applied_rates == ()
 
 
 def test_non_money_columns_are_left_alone(saved_db: Database) -> None:
@@ -740,3 +817,131 @@ def test_a_malformed_home_currency_degrades_rather_than_failing_every_report(
 
     assert result.degraded is False
     assert result.display_currency == "EUR"
+
+
+# --- derived columns: what conversion leaves stale unless a report restates it -
+
+
+def test_a_converted_execution_carries_its_rates_onward(saved_db: Database) -> None:
+    """Provenance has to survive the step that builds the envelope's input.
+
+    ``convert_records`` retaining the rate is worthless if ``convert_execution``
+    drops it on the way to ``CatalogReportResult`` — the seam Requirement 10
+    actually has to cross.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    service = CurrencyService(saved_db)
+
+    converted = convert_execution(_execution(), to_currency="USD", service=service)
+
+    assert converted.display_currency == "USD"
+    assert [rate.from_currency for rate in converted.applied_rates] == ["EUR"]
+
+
+def test_derived_columns_are_restated_only_when_a_conversion_happened(
+    saved_db: Database,
+) -> None:
+    """A segmented result still holds original amounts, so nothing is stale.
+
+    Running the repair anyway would restate a value against a currency the rows
+    were never priced into — the one case where doing nothing is correct, and
+    the easiest to get backwards.
+    """
+    seen: list[str] = []
+
+    def _restate(rows: list[dict[str, Any]], currency: str) -> None:
+        seen.append(currency)
+
+    convert_execution(
+        _execution(on_converted=_restate),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+    )
+    assert seen == []
+
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    convert_execution(
+        _execution(on_converted=_restate),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+    )
+    assert seen == ["USD"]
+
+
+def test_drift_status_is_rebucketed_against_the_converted_amount() -> None:
+    """A verdict bucketed pre-conversion contradicts the figure beside it.
+
+    500 JPY is ``drift`` at thresholds calibrated in whole currency units; the
+    same position shown as 3.40 USD is a ``warning``. Printing 3.40 beside
+    ``drift`` is the self-contradiction this repair exists to remove.
+    """
+    rows = [{"drift": Decimal("3.40"), "drift_abs": Decimal("500"), "status": "drift"}]
+
+    _rebucket_status(rows, "USD")
+
+    assert rows[0]["status"] == "warning"
+    # Derived from the same column, so it is restated here rather than left to a
+    # second independent rounding.
+    assert rows[0]["drift_abs"] == Decimal("3.40")
+
+
+def test_rebucketing_leaves_a_status_that_names_no_magnitude() -> None:
+    """``no-data`` and ``currency-mismatch`` report that no drift was computable.
+
+    Re-bucketing either from an amount that does not exist would invent a
+    reconciliation verdict — concretely, reading a null drift as ``clean``.
+    """
+    rows: list[dict[str, Any]] = [
+        {"drift": None, "drift_abs": None, "status": "no-data"},
+        {"drift": Decimal("0.00"), "drift_abs": Decimal("0.00"), "status": "no-data"},
+        {"drift": Decimal("0.00"), "status": "currency-mismatch"},
+    ]
+
+    _rebucket_status(rows, "USD")
+
+    assert [row["status"] for row in rows] == [
+        "no-data",
+        "no-data",
+        "currency-mismatch",
+    ]
+
+
+def test_net_worth_is_restated_from_its_own_converted_parts() -> None:
+    """Rounding each column alone can leave a report's own identity false.
+
+    assets 1.00 and liabilities -0.01 at rate 0.5 round to 0.50 and -0.01, while
+    net worth 0.99 rounds to 0.50 — so the parts sum to 0.49 while the total
+    says 0.50. Each number is individually correct, which is what makes the
+    disagreement hard to spot.
+    """
+    rows: list[dict[str, Any]] = [
+        {
+            "total_assets": Decimal("0.50"),
+            "total_liabilities": Decimal("-0.01"),
+            "net_worth": Decimal("0.50"),
+        }
+    ]
+
+    _restate_networth_total(rows, "USD")
+
+    assert rows[0]["net_worth"] == Decimal("0.49")
+
+
+def test_restating_the_total_skips_an_account_breakdown_row() -> None:
+    """Only a totals row states the identity, so only it can break it.
+
+    An account row carries nulls in all three; computing over it would turn a
+    breakdown line into a second, wrong headline.
+    """
+    rows: list[dict[str, Any]] = [
+        {
+            "total_assets": None,
+            "total_liabilities": None,
+            "net_worth": None,
+            "account_balance": Decimal("12.00"),
+        }
+    ]
+
+    _restate_networth_total(rows, "USD")
+
+    assert rows[0]["net_worth"] is None

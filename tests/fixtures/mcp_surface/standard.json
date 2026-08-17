@@ -1,5 +1,5 @@
 {
-  "sha256": "aa032ba31e25033b0741344d95659361988f3583f4af805837ed280ba398b715",
+  "sha256": "525c50cfe77f7ca82d32c1dde59f065f207bb472e418a597e2fe94986c6c749e",
   "tool_count": 49,
   "tools": [
     {
@@ -2664,7 +2664,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Browse registered financial reports or run one by stable report ID. Omit `report_id` to return catalog metadata; supply it to execute a registered read-only report. This tool never accepts SQL; use `sql_query` separately for arbitrary read-only SQL.",
+        "description": "Browse registered financial reports or run one by stable report ID. Omit `report_id` to return catalog metadata; supply it to execute a registered read-only report. Amounts are in the currency named by `summary.display_currency`; set `display_currency` to price a report's rows into one currency, which defaults to the profile's home currency. `summary.applied_rates` names the exact rate, source, and date behind any converted figure. A report that cannot be priced stays segmented per currency and says why in `summary.degraded_reason`. Its `status` filter, where it has one, selects before conversion. This tool never accepts SQL; use `sql_query` separately for arbitrary read-only SQL.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2726,12 +2726,12 @@
         },
         "name": "reports"
       },
-      "description_bytes": 249,
+      "description_bytes": 689,
       "input_schema_bytes": 396,
       "name": "reports",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 839
+      "total_bytes": 1279
     },
     {
       "annotation_bytes": 89,
@@ -5034,5 +5034,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 57580
+  "total_bytes": 58020
 }

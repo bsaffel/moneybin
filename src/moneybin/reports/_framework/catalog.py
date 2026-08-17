@@ -36,6 +36,7 @@ from moneybin.reports._framework.contract import (
     USER_NAMESPACE,
     OutputColumn,
     ParamSpec,
+    RecomputeDerived,
     ReportSemantics,
     ReportSpec,
 )
@@ -120,6 +121,8 @@ class ServiceReportSpec:
         [Database, Mapping[str, JsonValue], int | None], CatalogReportExecution
     ]
     validator: Callable[[Mapping[str, JsonValue]], None] | None = None
+    on_converted: RecomputeDerived | None = None
+    """Same contract as ``ReportSpec.on_converted`` — see the note there."""
 
     def __post_init__(self) -> None:
         if _REPORT_ID.fullmatch(self.report_id) is None:

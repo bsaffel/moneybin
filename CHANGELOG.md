@@ -159,11 +159,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   machine — no amount, account, or description is part of a rate request.
 
 - **Read a report in one currency (M1K.2).** `--display-currency EUR` on every
-  report command, and `display_currency` on the `reports` MCP tool, price a
-  report's amounts into one currency at read time. Omit it and the target is the
-  currency you set with `moneybin profile set home_currency EUR`; a report with
-  nothing to price is unaffected either way. `summary.display_currency` names
-  what the numbers are in.
+  report-reading command, and `display_currency` on the `reports` MCP tool,
+  price a report's amounts into one currency at read time. Omit it and the
+  target is the currency you set with `moneybin profile set home_currency EUR`;
+  a report with nothing to price is unaffected either way.
+  `summary.display_currency` names what the numbers are in, and
+  `summary.applied_rates` names the rates that got them there — each distinct
+  pair with its rate, its source, the date asked for, and the date actually
+  priced, which differ whenever a weekend or holiday falls back to the previous
+  published day (Requirement 10). The terminal prints the rate when one priced
+  the whole report and a summary line when several did.
+
+  `moneybin export report` deliberately takes no `--display-currency`: an
+  exported file outlives the rate that priced it, so exports carry original
+  currency and conversion stays a read-time act.
+
+  A value *derived* from a converted amount is restated rather than left
+  describing the old currency. `core:balance_drift` re-buckets its
+  clean/warning/drift verdict against the converted drift — a 500 JPY drift
+  shown as 3.40 USD reads `warning`, not the `drift` it was at 500 — and
+  `core:networth` recomputes `net_worth` from its own converted parts, so
+  independent per-column rounding cannot leave the total disagreeing with
+  assets plus liabilities. `no-data` and `currency-mismatch` are untouched:
+  neither describes a magnitude. The `status` *filter* still selects in the
+  account's own currency, so filter on `all` and read the returned status when
+  converting.
 
   Three of the eight registered reports convert exactly, because each of their
   rows is one event on one date: `core:large_transactions` at its transaction
@@ -181,7 +201,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not exist.
 
   `moneybin reports networth` prints one position per currency, and one combined
-  position once conversion has priced them into the same one. `moneybin
+  position once conversion has priced them into the same one. The
+  `core:networth` rows change shape to match: per-currency totals now lead as
+  rows of their own, and the account-breakdown rows that follow carry null
+  `net_worth`, `total_assets`, `total_liabilities`, and `account_count` rather
+  than repeating the headline figures on every row. A consumer that read every
+  row as a position must now branch on the row kind — the two are distinguished
+  by which half is null, and `docs/specs/reports-net-worth.md` states the
+  contract. Repeating the headline is what conversion makes unsafe: pricing
+  relabels each row's `currency_code`, so a repeated position would arrive as
+  several indistinguishable ones and anything summing them would count it once
+  per account. `moneybin
   investments holdings` publishes a portfolio total across currencies for the
   first time, pricing each position at its own close's rate and printing the
   original per-currency amounts beside the converted figure;

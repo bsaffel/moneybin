@@ -118,7 +118,14 @@ def register_generic_reports_tool(mcp: FastMCP) -> None:
         "reports",
         "Browse registered financial reports or run one by stable report ID. "
         "Omit `report_id` to return catalog metadata; supply it to execute a "
-        "registered read-only report. This tool never accepts SQL; use "
+        "registered read-only report. Amounts are in the currency named by "
+        "`summary.display_currency`; set `display_currency` to price a report's "
+        "rows into one currency, which defaults to the profile's home currency. "
+        "`summary.applied_rates` names the exact rate, source, and date behind "
+        "any converted figure. A report that cannot be priced stays segmented "
+        "per currency and says why in `summary.degraded_reason`. Its `status` "
+        "filter, where it has one, selects before conversion. "
+        "This tool never accepts SQL; use "
         "`sql_query` separately for arbitrary read-only SQL.",
     )
 

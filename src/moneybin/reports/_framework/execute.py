@@ -39,12 +39,13 @@ from moneybin.protocol.envelope import (
 from moneybin.reports._framework.classify import classify_columns
 from moneybin.reports._framework.contract import (
     ParamSpec,
+    RecomputeDerived,
     ReportSemantics,
     ReportSpec,
     bound_value,
 )
 from moneybin.reports._framework.convert import convert_records
-from moneybin.services.currency_service import CurrencyService
+from moneybin.services.currency_service import CurrencyService, ResolvedRate
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,10 @@ class ReportResult:
     #: a file in the repo and has no stored map to go stale.
     degraded: bool = False
     degraded_reason: str | None = None
+    #: The rates behind these rows' converted amounts, empty when none were
+    #: converted. Rides the response only — never the durable log, which is why
+    #: ``degraded_reason`` still names no date (see ``convert._missing_reason``).
+    applied_rates: tuple[ResolvedRate, ...] = ()
 
     @property
     def classes_returned(self) -> list[str]:
@@ -109,6 +114,7 @@ class ReportResult:
             display_currency=self.display_currency,
             degraded=self.degraded,
             degraded_reason=self.degraded_reason,
+            applied_rates=[rate.as_provenance() for rate in self.applied_rates] or None,
         )
 
 
@@ -145,6 +151,23 @@ class CatalogReportExecution:
     #: Why a requested display currency was not applied, when one was requested
     #: and the rows fell back to per-currency segmentation (Requirement 15).
     degraded_reason: str | None = None
+    #: Every distinct rate that priced these rows (Requirement 10). Empty until
+    #: ``convert_execution`` runs, and on any result that stayed segmented.
+    applied_rates: tuple[ResolvedRate, ...] = ()
+    on_converted: RecomputeDerived | None = None
+    """The report's own repair for values *derived* from its money columns.
+
+    Conversion multiplies each declared money column independently, which leaves
+    anything computed from those columns describing the original currency: a
+    ``balance_drift`` row keeps a status bucketed against the pre-conversion
+    amount, and a row carrying both components and their total can round so the
+    parts no longer sum to it.
+
+    A callable rather than a declared relation because the two repairs have no
+    shared shape — one re-buckets a label against thresholds, the other re-adds
+    two columns — and inventing a vocabulary general enough for both would be a
+    larger contract than the two functions it replaces.
+    """
 
 
 def convert_execution(
@@ -166,9 +189,15 @@ def convert_execution(
         to_currency=to_currency,
         service=service,
     )
+    # Only a conversion that happened can leave a derived value stale, and only
+    # then is there a target currency to recompute against. A segmented result
+    # still holds its original amounts, so its derived values are already right.
+    if outcome.display_currency is not None and execution.on_converted is not None:
+        execution.on_converted(outcome.records, outcome.display_currency)
     return replace(
         execution,
         records=outcome.records,
+        applied_rates=outcome.applied_rates,
         # A fallback leaves the rows in their own currencies, so the currency
         # already derived from those rows is still the true answer. Overwriting
         # it with the failed conversion's ``None`` would report a mixed result
@@ -205,6 +234,9 @@ class _CatalogSpec(Protocol):
 
     @property
     def parameters(self) -> tuple[ParamSpec, ...]: ...
+
+    @property
+    def on_converted(self) -> RecomputeDerived | None: ...
 
 
 def _redact_and_freeze_parameter(
@@ -307,6 +339,7 @@ def build_catalog_execution(
     # and buy no safety, since the narrower claim was never wrong.
     declares_currency = "currency_code" in columns
     return CatalogReportExecution(
+        on_converted=spec.on_converted,
         report_id=spec.report_id,
         parameters=MappingProxyType(dict(parameters)),
         sql=sql,
@@ -323,10 +356,10 @@ def build_catalog_execution(
         period=period,
         semantics=spec.semantics,
         provenance=spec.semantics.provenance,
-        **(
-            {"display_currency": _resolve_display_currency(records)}
-            if declares_currency
-            else {}
+        # `None` is also the field default, so a report that declares no
+        # currency column lands on the unknown default either way.
+        display_currency=(
+            _resolve_display_currency(records) if declares_currency else None
         ),
     )
 
@@ -394,6 +427,7 @@ def redact_catalog_execution(
         display_currency=execution.display_currency,
         degraded=execution.degraded_reason is not None,
         degraded_reason=execution.degraded_reason,
+        applied_rates=execution.applied_rates,
     )
 
 

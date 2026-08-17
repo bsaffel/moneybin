@@ -379,6 +379,43 @@ def test_the_text_path_adds_no_hint_when_the_report_offered_none() -> None:
     assert "💡" not in result.output
 
 
+def test_the_text_path_sends_every_note_to_stderr() -> None:
+    """Diagnostics take fd 2 so a redirected report carries only its rows.
+
+    Asserted against ``stdout``/``stderr`` separately because ``result.output``
+    structurally cannot see it: Click 8.2 turned that into a mix of both streams
+    in write order, so an assertion against it passes whichever stream the note
+    took. Every other note test here reads ``.output``, which is why the routing
+    needs its own case rather than a stricter assertion in one of them.
+    """
+    app = _multi_command_app()
+    noted = replace(
+        _result(),
+        truncated=True,
+        actions=["Run moneybin reports explain test:balance_drift"],
+        degraded=True,
+        degraded_reason="no stored EUR->USD rates at all",
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = noted
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "no stored EUR->USD rates at all" in result.stderr
+    assert "more exist" in result.stderr
+    assert "💡" in result.stderr
+    # The other half: routing the notes away must not take the answer with them.
+    assert "****2222" in result.stdout
+    assert "⚠️" not in result.stdout
+    assert "💡" not in result.stdout
+
+
 def test_the_text_path_stays_silent_when_no_drift_occurred() -> None:
     """R4's other half: the note must not fire on the clean path.
 

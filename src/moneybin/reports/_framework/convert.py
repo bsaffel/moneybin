@@ -76,6 +76,18 @@ class ConversionOutcome:
     records: list[dict[str, Any]]
     display_currency: str | None
     degraded_reason: str | None = None
+    applied_rates: tuple[ResolvedRate, ...] = ()
+    """Every distinct rate that priced a row, deduplicated by (currency, date).
+
+    Requirement 10 wants "the exact rate behind any converted number", and
+    `convert_records` is the only place that still knows it: the rate is applied
+    into the amount and `currency_column` is relabelled to the target, so once
+    this returns, nothing downstream can recover what priced what.
+
+    Empty whenever no conversion happened — a segmented result priced nothing,
+    and an empty tuple says that without a caller having to cross-check
+    ``display_currency``.
+    """
 
 
 def money_columns(classes: Mapping[str, DataClass]) -> tuple[str, ...]:
@@ -202,7 +214,15 @@ def convert_records(
         priced[currency_column] = target
         converted.append(priced)
 
-    return ConversionOutcome(converted, target, None)
+    # Sorted rather than left in resolution order so the provenance a caller
+    # reads does not depend on which row happened to come first.
+    applied = tuple(
+        sorted(
+            resolved.values(),
+            key=lambda r: (r.from_currency, r.requested_date, r.rate_date),
+        )
+    )
+    return ConversionOutcome(converted, target, None, applied)
 
 
 def _holds_money(rows: Sequence[Mapping[str, Any]], amounts: Sequence[str]) -> bool:

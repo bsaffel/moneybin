@@ -241,16 +241,33 @@ rollups and a view-selected balance projection for per-account reads.
 **`reports(report_id="core:networth", parameters={...})`** — Current or
 historical net worth.
 - Params: `{"as_of": "YYYY-MM-DD", "account_ids": ["..."]}`; both are optional
-- Returns rows with `balance_date`, `net_worth`, `total_assets`,
-  `total_liabilities`, `account_count`, `account_id`, `account_name`,
-  `account_balance`, and `observation_source`; headline fields repeat on each
-  account-breakdown row
-- No-data contract: if no position exists on or before the requested date,
-  `balance_date`, `net_worth`, `total_assets`, and `total_liabilities` are null;
-  `account_count` is `0`, and the result contains one sentinel row with null
-  `account_id`, `account_name`, `account_balance`, and `observation_source`. A
-  missing position is never synthesized as a zero balance or assigned the
-  current date.
+- Returns rows with `balance_date`, `currency_code`, `net_worth`,
+  `total_assets`, `total_liabilities`, `account_count`, `account_id`,
+  `account_name`, `account_balance`, and `observation_source`
+- **Two row kinds, distinguished by which half is null.** A consumer must
+  branch on the kind rather than reading every row as a position:
+
+  | Row kind | Populated | Null |
+  |---|---|---|
+  | Totals — one per currency, always first | `balance_date`, `currency_code`, `net_worth`, `total_assets`, `total_liabilities`, `account_count` | `account_id`, `account_name`, `account_balance`, `observation_source` |
+  | Account breakdown | `balance_date`, `currency_code`, `account_id`, `account_name`, `account_balance`, `observation_source` | `net_worth`, `total_assets`, `total_liabilities`, `account_count` |
+
+  Headline fields do **not** repeat on account rows. They did before display
+  conversion (M1K.2): conversion prices each row on its own and relabels its
+  `currency_code`, so a position repeated across its accounts' rows would
+  arrive as several indistinguishable positions and anything summing them
+  would count it once per account. Totals lead for a related reason — the
+  result is truncated to `limit`, and a profile with two dollar accounts and
+  one euro account would otherwise push the euro total off a short page and
+  return something that reads as single-currency.
+- Sum nothing across differing `currency_code` values. One totals row per
+  currency is the segmented answer; `display_currency` is what collapses them
+  into one priced figure.
+- No-data contract: if no position exists on or before the requested date, the
+  result contains exactly one totals row with every field null — including
+  `account_count`, which is null rather than `0` because no currency was
+  resolved to count accounts within. A missing position is never synthesized
+  as a zero balance or assigned the current date.
 
 **`reports(report_id="core:networth_history", parameters={...})`** — Net
 worth time series.

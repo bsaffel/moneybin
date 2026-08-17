@@ -85,13 +85,47 @@ def echo_report_notes(result: CatalogReportResult) -> None:
     conversion that fell back to per-currency segmentation showed segmented
     positions and never said why — the silent masking these echoes exist to
     prevent, reappearing on the surface that skipped them.
+
+    All of it goes to stderr (``cli.md`` "Exit Codes & stderr"): these are
+    diagnostics about the answer, not the answer, and redirecting a report to a
+    file or a downstream parser must not append prose to the data stream.
     """
+    # Requirement 10 on the surface that cannot read `summary.applied_rates`.
+    # Summarized rather than enumerated: a twelve-month rollup in three
+    # currencies applies thirty-six rates, and thirty-six lines under a table is
+    # a wall nobody reads. The exact rate prints when there is exactly one —
+    # the common case, and the only one a single line can state without
+    # choosing which rate to favour. The full set rides the JSON envelope.
+    if result.applied_rates:
+        if len(result.applied_rates) == 1:
+            rate = result.applied_rates[0]
+            priced_on = (
+                f"{rate.rate_date}"
+                if rate.rate_date == rate.requested_date
+                # A weekend or holiday prices at the previous published day, and
+                # Requirement 10 wants that visible rather than smoothed over.
+                else f"{rate.rate_date}, for {rate.requested_date}"
+            )
+            typer.echo(
+                f"💱 Converted from {rate.from_currency} at {rate.rate} "
+                f"({priced_on}, {rate.source})",
+                err=True,
+            )
+        else:
+            sources = sorted({rate.from_currency for rate in result.applied_rates})
+            typer.echo(
+                f"💱 Converted from {', '.join(sources)} using "
+                f"{len(result.applied_rates)} stored rates; run "
+                f"'moneybin fx rate <from> {result.display_currency} <date>' "
+                "for one of them, or --output json for all",
+                err=True,
+            )
     # R4's verdict, on the surface that cannot see the envelope. JSON and MCP
     # callers read `summary.degraded_reason`; without this a drifted report
     # printed `*****` and said nothing — the silent masking that teaches a
     # reader to skip the warning that matters.
     if result.degraded and result.degraded_reason:
-        typer.echo(f"⚠️  {result.degraded_reason}")
+        typer.echo(f"⚠️  {result.degraded_reason}", err=True)
     # Same gap, same surface: `truncated` rides the envelope to JSON and MCP
     # callers, so without this the text path renders a capped table that
     # reads as the whole answer — worse here than a masked cell, because
@@ -106,7 +140,8 @@ def echo_report_notes(result: CatalogReportResult) -> None:
     if result.truncated:
         typer.echo(
             f"⚠️  Showing the first {len(result.records):,} rows; more exist. "
-            "Raise --limit or narrow the report to see the rest."
+            "Raise --limit or narrow the report to see the rest.",
+            err=True,
         )
     # Third instance of the same asymmetry, and the one that inverted its own
     # intent: `inspection_hint` deliberately names a CLI command — "Run
@@ -115,7 +150,7 @@ def echo_report_notes(result: CatalogReportResult) -> None:
     # rendered, not just that hint: a runner's own `actions` are next steps for
     # whoever called it, and the text path is a caller.
     for action in result.actions:
-        typer.echo(f"💡 {action}")
+        typer.echo(f"💡 {action}", err=True)
 
 
 def render_report_result(
