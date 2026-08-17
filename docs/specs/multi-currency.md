@@ -742,7 +742,15 @@ realized FX gain/loss on the conversion pairs.
    rebuilt from raw.
 2. **Home currency default = locale auto-detect with confirm; mutable.**
    Mutability is cheap *because* of decision 1.
-3. **Rates lazy-fetch + cache, never pre-populated.**
+3. **Rates are cached and never invented; gathered during refresh** *(timing
+   superseded 2026-08-16 by Requirement 18).* Originally "lazy-fetch + cache":
+   fetch on the read that needs a rate. Requirement 18 moved the fetch to a
+   `rates` step in the refresh cascade, because display conversion prices every
+   row at its own date — a report read would put a network call and the
+   exclusive writer lock behind a command that looks read-only, and would fail
+   outright whenever a sync held that lock. Unchanged: no rate table ships
+   pre-populated, and no rate is ever invented — an unfilled pair is reported,
+   not estimated.
 4. **Realized FX gain/loss lives in a dedicated conversion-pair model, not a column on
    `fct_transactions`** — a conversion is a relationship between two
    events, and reuses the investments cost-basis engine.

@@ -101,6 +101,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The window closes on the UTC day rather than the host's. Reference rates are
   published against UTC dates, so east of UTC a host-local "today" asks for a
   day the provider has not published yet.
+
+  A pair no retry can fill now names its remedy on every surface. `moneybin fx
+  set` is a CLI command, so it can never be an executable MCP action — the CLI
+  had warned about it all along while the MCP envelopes carried the field and
+  said nothing about closing the gap. The refusal to offer a futile retry is
+  unchanged; what is added is the sentence saying what does work.
+
+  A malformed currency catalog is refused rather than believed. The provider's
+  published-currency list is what separates "this pair will never publish" from
+  "the provider is having a bad minute", and a 200 carrying `{}` or a status
+  message is object-shaped enough to have been read as the catalog itself —
+  which reported every real currency as permanently unsupported and sent the
+  user to write manual overrides.
 - **A multi-currency demo persona.** `moneybin demo --persona international`
   (and `moneybin synthetic generate --persona international`) builds five
   accounts at five banks in EUR, GBP, CAD, AED, and USD, each funded and spent

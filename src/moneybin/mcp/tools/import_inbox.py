@@ -7,7 +7,10 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 from moneybin.database import get_database
-from moneybin.mcp.adapters.refresh_adapters import refresh_step_actions
+from moneybin.mcp.adapters.refresh_adapters import (
+    refresh_rate_gap_hints,
+    refresh_step_actions,
+)
 from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.payloads.imports import (
     ImportInboxPendingEntry,
@@ -164,6 +167,8 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
             "Some files failed — see each .error.yml sidecar's `suggestion` "
             "field for the recovery step",
         )
+
+    actions.extend(refresh_rate_gap_hints(sync_result.refresh_steps))
 
     threshold = get_settings().categorization.assist_offer_threshold
     uncategorized = _uncategorized_count()

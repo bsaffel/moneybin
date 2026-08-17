@@ -8,6 +8,7 @@ import pytest
 
 from moneybin.mcp.adapters.refresh_adapters import (
     refresh_envelope,
+    refresh_rate_gap_hints,
     refresh_step_actions,
 )
 from moneybin.privacy.payloads.system import RefreshRunPayload
@@ -536,6 +537,62 @@ async def test_retries_are_offered_in_the_order_refresh_runs_them() -> None:
         ["identity"],
         ["rates"],
     ]
+
+
+@pytest.mark.unit
+def test_a_pair_no_retry_can_fill_still_names_its_remedy() -> None:
+    """Withholding the futile retry must not leave the gap with no next step.
+
+    These two pair lists earn no executable action on purpose — re-running the
+    step returns the identical unusable answer. But `moneybin fx set` is a CLI
+    command, so it can never be a `RecoveryAction`, and without an ordinary hint
+    the agent receives a populated field naming a permanent gap and nothing at
+    all about how the user closes it. The CLI has warned this all along.
+    """
+    unsupported = refresh_rate_gap_hints(
+        RefreshStepOutcome(rate_pairs_unsupported=("XBT/USD",))
+    )
+    assert any("fx set" in hint for hint in unsupported)
+
+    discarded = refresh_rate_gap_hints(
+        RefreshStepOutcome(rate_pairs_discarded=("JPY/USD",))
+    )
+    assert discarded, "short coverage is hedged, but it is still not nothing"
+    assert not any("fx set" in hint for hint in discarded), (
+        "a discarded pair mostly stored; pointing at a manual override overstates it"
+    )
+
+
+@pytest.mark.unit
+def test_pairs_that_are_merely_retryable_earn_no_manual_remedy() -> None:
+    """Negative twin: a failed pair's remedy is the retry it already gets."""
+    assert (
+        refresh_rate_gap_hints(RefreshStepOutcome(rate_pairs_failed=("EUR/USD",))) == []
+    )
+    assert refresh_rate_gap_hints(RefreshStepOutcome(rates_written=3)) == []
+    assert refresh_rate_gap_hints(None) == []
+
+
+@pytest.mark.unit
+def test_the_unpublished_remedy_reaches_the_refresh_envelope() -> None:
+    """`refresh_run`'s own envelope carried the field but never the remedy.
+
+    Its tool *description* explains `rate_pairs_unsupported`, which is static
+    prose the agent read at connect; the response that actually names the pair
+    said nothing about what to do next.
+    """
+    env = refresh_envelope(
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            rate_backfill=RateBackfillResult(
+                rates_written=0, pairs_failed=(), pairs_unsupported=("XBT/USD",)
+            ),
+        ),
+        requested=expand_steps(None),
+    )
+
+    assert any("fx set" in action for action in (env.actions or []))
 
 
 @pytest.mark.unit

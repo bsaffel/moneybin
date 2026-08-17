@@ -28,6 +28,15 @@ REFRESH_ACCOUNT_LINKS_REVIEW_HINT = (
 REFRESH_MERCHANT_LINKS_REVIEW_HINT = (
     'Review pending merchant identity proposals with reviews(kind="merchant_links").'
 )
+REFRESH_UNPUBLISHED_RATES_HINT = (
+    "No exchange rate series is published for at least one currency pair "
+    "(see rate_pairs_unsupported) — refreshing again will never fill it. "
+    "The user can record those rates directly with `moneybin fx set`."
+)
+REFRESH_SHORT_RATE_COVERAGE_HINT = (
+    "Exchange rate coverage is short for at least one currency pair "
+    "(see rate_pairs_discarded), so conversion may be incomplete on some dates."
+)
 
 
 def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
@@ -35,6 +44,32 @@ def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
     return refresh_step_actions(
         step_outcome(result), apply_failed=result.error is not None
     )
+
+
+def refresh_rate_gap_hints(steps: RefreshStepOutcome | None) -> list[str]:
+    """Ordinary next-step hints for the rate gaps no retry closes.
+
+    Prose rather than ``RecoveryAction`` because the remedy is `moneybin fx set`,
+    a CLI command: a recovery action must be a directly executable MCP tool, and
+    no tool records a manual rate. Withholding the futile retry is right, but on
+    its own it left these two fields naming a permanent gap with nothing
+    anywhere saying what closes it — `refresh_run`'s tool description says so in
+    static prose read at connect, and the embedded surfaces did not say it at
+    all. Shared for the reason `retired_transfers_action` is: the surface a user
+    happens to reach the gap through must not decide whether they are told.
+
+    Mirrors the CLI's two warnings, including their asymmetry — a discarded pair
+    usually stored most of its span, so pointing at a manual override for it
+    would overstate what is missing.
+    """
+    if steps is None:
+        return []
+    hints: list[str] = []
+    if steps.rate_pairs_unsupported:
+        hints.append(REFRESH_UNPUBLISHED_RATES_HINT)
+    if steps.rate_pairs_discarded:
+        hints.append(REFRESH_SHORT_RATE_COVERAGE_HINT)
+    return hints
 
 
 def refresh_step_actions(
@@ -179,6 +214,7 @@ def refresh_envelope(
     # refresh callers (import, sync pull, inbox drain) — a user who finds the
     # way back on one surface has to find it on the one they actually reach the
     # reconciliation through, and any of them can be that surface.
+    actions.extend(refresh_rate_gap_hints(step_outcome(result)))
     if retired := retired_transfers_action(
         result.transfers_retired, operation="refresh"
     ):

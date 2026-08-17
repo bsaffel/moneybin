@@ -43,7 +43,10 @@ from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
-from moneybin.mcp.adapters.refresh_adapters import refresh_step_actions
+from moneybin.mcp.adapters.refresh_adapters import (
+    refresh_rate_gap_hints,
+    refresh_step_actions,
+)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -632,6 +635,7 @@ def import_files(
     # they did not ask for.
     if retired := retired_transfers_action(batch.transfers_retired, operation="import"):
         actions.append(retired)
+    actions.extend(refresh_rate_gap_hints(batch.refresh_steps))
     actions.append("Use system_status to confirm refreshed counts")
 
     envelope = build_envelope(

@@ -410,6 +410,40 @@ def test_supported_currencies_raises_on_a_body_it_cannot_read() -> None:
 
 
 @respx.mock
+def test_an_empty_currency_catalog_is_refused_rather_than_believed() -> None:
+    """`{}` is the inversion itself, arriving with a 200 instead of an error.
+
+    An object body clears the shape check, so its zero keys become "the set of
+    everything this provider publishes" — the exact empty set the two tests
+    above exist to prevent, reached by the one route that still allowed it.
+    """
+    respx.get(f"{FRANKFURTER_BASE_URL}/currencies").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().supported_currencies()
+
+
+@respx.mock
+def test_a_status_payload_is_not_mistaken_for_a_currency_catalog() -> None:
+    """A provider that answers 200 with prose must not define the published set.
+
+    `{"message": "unavailable"}` is a dict and non-empty, so only the *shape of
+    its keys* separates it from a catalog. Believed, it publishes exactly
+    `MESSAGE`, which reports every real currency as permanently unsupported and
+    sends the user to write manual overrides for a provider that was merely
+    having a bad minute.
+    """
+    respx.get(f"{FRANKFURTER_BASE_URL}/currencies").mock(
+        return_value=httpx.Response(200, json={"message": "unavailable"})
+    )
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().supported_currencies()
+
+
+@respx.mock
 def test_a_failed_currency_lookup_is_not_memoized() -> None:
     """A transient outage must not pin the adapter to a permanent failure."""
     route = respx.get(f"{FRANKFURTER_BASE_URL}/currencies").mock(
@@ -589,6 +623,57 @@ def test_a_range_answered_for_a_different_base_is_refused() -> None:
     """Same reasoning as `fetch`: a redirected or cached body is not our question."""
     respx.get(_range_url(_RANGE_START, _RANGE_END)).mock(
         return_value=httpx.Response(200, json={**_RANGE_BODY, "base": "GBP"})
+    )
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().fetch_range("EUR", "USD", _RANGE_START, _RANGE_END)
+
+
+@respx.mock
+def test_a_range_priced_in_other_than_one_unit_is_refused() -> None:
+    """The range path owes the same refusal `fetch` gives, for a worse reason.
+
+    A body priced in 100 units yields rates 100x too large on *every* day it
+    covers, not one, and the cache is append-only — a rate stored wrong cannot
+    be corrected in place.
+    """
+    respx.get(_range_url(_RANGE_START, _RANGE_END)).mock(
+        return_value=httpx.Response(200, json={**_RANGE_BODY, "amount": 100})
+    )
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().fetch_range("EUR", "USD", _RANGE_START, _RANGE_END)
+
+
+@respx.mock
+def test_a_range_carrying_no_rates_object_is_refused() -> None:
+    """A body whose `rates` is not an object would otherwise read as "no days".
+
+    An empty list rather than a string on purpose: a string is iterable, so
+    without this guard it would reach the date check character by character and
+    raise there instead — passing the test while proving nothing about this
+    branch. A list iterates to nothing, so only this guard can refuse it.
+    """
+    respx.get(_range_url(_RANGE_START, _RANGE_END)).mock(
+        return_value=httpx.Response(200, json={**_RANGE_BODY, "rates": []})
+    )
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().fetch_range("EUR", "USD", _RANGE_START, _RANGE_END)
+
+
+@respx.mock
+def test_a_range_day_that_is_not_a_date_is_refused() -> None:
+    """An unreadable key must not be silently dated to the window's start.
+
+    `_as_date` takes a `default`, so a key it cannot parse would otherwise
+    stamp that day's rate with the range's opening date — filing a real rate
+    under the wrong day, in a table that cannot be corrected in place.
+    """
+    respx.get(_range_url(_RANGE_START, _RANGE_END)).mock(
+        return_value=httpx.Response(
+            200, json={**_RANGE_BODY, "rates": {"not-a-date": {"USD": 1.09}}}
+        )
     )
 
     with pytest.raises(RateFeedAPIError):

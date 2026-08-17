@@ -5220,6 +5220,51 @@ class TestEmbeddedRefreshRecoveryActions:
             "same broken warehouse"
         )
 
+    async def test_import_files_names_the_manual_remedy_for_an_unpublished_pair(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The gap a retry cannot close still owes the agent a next step."""
+        from moneybin.mcp.tools.import_tools import import_files
+        from moneybin.services.import_service import BatchImportResult, PerFileResult
+        from moneybin.services.refresh_outcome import RefreshStepOutcome
+
+        first = tmp_path / "a.csv"
+        second = tmp_path / "b.csv"
+        for path in (first, second):
+            path.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        mock_service = MagicMock()
+        mock_service.import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(path),
+                    status="imported",
+                    source_type="csv",
+                    rows_loaded=1,
+                )
+                for path in (first, second)
+            ],
+            transforms_applied=True,
+            transforms_duration_seconds=0.1,
+            transfers_retired=0,
+            refresh_steps=RefreshStepOutcome(rate_pairs_unsupported=("XBT/USD",)),
+        )
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = import_files(paths=[str(first), str(second)])
+
+        assert result.data.rate_pairs_unsupported == ["XBT/USD"], (
+            "guard: the fixture must reach the batch payload"
+        )
+        assert any("fx set" in action for action in result.actions)
+        assert not result.recovery_actions, "the futile retry stays withheld"
+
     async def test_inbox_drain_withholds_retries_when_the_apply_failed(
         self, monkeypatch: MonkeyPatch
     ) -> None:
@@ -5258,6 +5303,46 @@ class TestEmbeddedRefreshRecoveryActions:
         result = import_inbox_sync(refresh=True)
 
         assert not result.recovery_actions
+
+    async def test_inbox_drain_names_the_manual_remedy_for_an_unpublished_pair(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Same gap, same remedy, on the surface nobody is watching."""
+        from moneybin.mcp.tools.import_inbox import import_inbox_sync
+        from moneybin.services.inbox_service import InboxSyncResult
+        from moneybin.services.refresh_outcome import RefreshStepOutcome
+
+        service = MagicMock()
+        service.sync.return_value = InboxSyncResult(
+            processed=[],
+            failed=[],
+            pending=[],
+            skipped=[],
+            ignored=[],
+            transforms_applied=True,
+            transforms_duration_seconds=0.1,
+            transforms_error=None,
+            transfers_retired=0,
+            refresh_steps=RefreshStepOutcome(rate_pairs_unsupported=("XBT/USD",)),
+        )
+
+        def _fake_inbox_service(**_kw: object) -> MagicMock:
+            return service
+
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox.InboxService", _fake_inbox_service
+        )
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox.get_database", _fake_database
+        )
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox._uncategorized_count", lambda: 0
+        )
+
+        result = import_inbox_sync(refresh=True)
+
+        assert any("fx set" in action for action in result.actions)
+        assert not result.recovery_actions, "the futile retry stays withheld"
 
     async def test_inbox_drain_offers_the_embedded_refresh_its_retries(
         self, monkeypatch: MonkeyPatch

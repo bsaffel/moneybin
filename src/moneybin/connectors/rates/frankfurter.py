@@ -16,6 +16,7 @@ Response shapes recorded from the live API on 2026-08-14:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import date
 from decimal import Decimal
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 FRANKFURTER_BASE_URL = "https://api.frankfurter.dev/v1"
 FRANKFURTER_SOURCE = "frankfurter"
+_IS_CURRENCY_CODE = re.compile(r"[A-Z]{3}")
 
 
 class FrankfurterRateAdapter:
@@ -78,7 +80,19 @@ class FrankfurterRateAdapter:
                 "Exchange rate feed did not answer with a currency list"
             )
         codes: dict[str, object] = payload
-        return frozenset(code.upper() for code in codes)
+        published = frozenset(code.upper() for code in codes)
+        # A dict is not yet a catalog. `{}` is the empty set this method exists
+        # to never return, and `{"message": "..."}` is a status payload whose one
+        # key would become the whole published set — both arrive with a 200, so
+        # the transport check above cannot see either. Every ISO 4217 alphabetic
+        # code is exactly three letters, which is what separates a catalog from
+        # prose; a real one carries ~30 entries, so requiring all keys to match
+        # costs nothing and refuses a body that is only partly a catalog.
+        if not published or not all(_IS_CURRENCY_CODE.fullmatch(c) for c in published):
+            raise RateFeedAPIError(
+                "Exchange rate feed did not answer with a currency list"
+            )
+        return published
 
     def fetch(
         self, from_currency: str, to_currency: str, on: date

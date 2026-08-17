@@ -413,6 +413,31 @@ async def test_sync_pull_offers_the_embedded_refresh_its_own_retries(
 
 @pytest.mark.unit
 @patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_pull_names_the_manual_remedy_for_an_unpublished_pair(
+    mock_build: MagicMock,
+) -> None:
+    """A pull reaches the same permanent gap and owes the same next step."""
+    service = MagicMock()
+    service.pull.return_value = PullResult(
+        job_id="j1",
+        transactions_loaded=5,
+        accounts_loaded=1,
+        balances_loaded=1,
+        transactions_removed=0,
+        institutions=[],
+        refresh_steps=RefreshStepOutcome(rate_pairs_unsupported=("XBT/USD",)),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_pull
+
+    envelope = sync_pull()
+
+    assert any("fx set" in action for action in envelope.actions)
+    assert not envelope.recovery_actions, "the futile retry stays withheld"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
 async def test_sync_pull_withholds_retries_when_the_apply_failed(
     mock_build: MagicMock,
 ) -> None:

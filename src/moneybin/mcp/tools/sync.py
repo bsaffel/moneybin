@@ -21,7 +21,10 @@ from moneybin.config import get_settings
 from moneybin.connectors.sync_models import ConnectedInstitution, PullResult
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
-from moneybin.mcp.adapters.refresh_adapters import refresh_step_actions
+from moneybin.mcp.adapters.refresh_adapters import (
+    refresh_rate_gap_hints,
+    refresh_step_actions,
+)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -218,6 +221,7 @@ def _pull_actions(result: PullResult) -> list[str]:
             "double-count until one source is chosen per account "
             "(see system_status(sections=['doctor']))."
         )
+    actions.extend(refresh_rate_gap_hints(result.refresh_steps))
     actions.append("Use sync_status to see connection health going forward.")
     return actions
 
