@@ -2265,6 +2265,47 @@ class TestHoldings:
             "EUR": Decimal("900.00"),
         }
 
+    def test_the_converted_total_names_the_rate_behind_it(self, db: Database) -> None:
+        """Requirement 10: a converted figure states what priced it.
+
+        The reports surface answers this with ``summary.applied_rates``. A
+        holdings total is converted by the same rule at the same layer, so
+        publishing the figure without its rate would leave the contract holding
+        on one surface and not the other.
+        """
+        _seed_read_fixtures(db)
+        _set_home_currency(db, "USD")
+        _seed_rate(db, "EUR", "USD", date(2026, 7, 15), Decimal("1.10"))
+        _replace_holdings_view(
+            db,
+            [
+                _priced("sec_1", "USD", "1200.00"),
+                _priced("sec_2", "EUR", "900.00"),
+            ],
+        )
+
+        result = db_service(db).holdings()
+
+        assert [
+            (rate.from_currency, rate.to_currency, rate.rate)
+            for rate in result.applied_rates
+        ] == [("EUR", "USD", Decimal("1.10"))]
+
+    def test_an_unconverted_total_names_no_rate(self, db: Database) -> None:
+        """A single-currency portfolio converts nothing, so it priced nothing.
+
+        "Nothing was converted" and "converted at a rate nobody recorded" must
+        not read alike, so the empty case stays empty rather than inventing an
+        identity rate.
+        """
+        _seed_read_fixtures(db)
+        _replace_holdings_view(db, [_priced("sec_1", "USD", "1200.00")])
+
+        result = db_service(db).holdings()
+
+        assert result.total_market_value == Decimal("1200.00")
+        assert result.applied_rates == ()
+
     def test_each_position_prices_at_its_own_close_date(self, db: Database) -> None:
         """Two EUR positions valued on different days use each day's own rate.
 

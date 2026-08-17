@@ -49,7 +49,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -79,6 +79,12 @@ from moneybin.tables import (
     MANUAL_INVESTMENT_TRANSACTIONS,
     SECURITIES,
 )
+
+if TYPE_CHECKING:
+    # Type-only: `currency_service` imports polars and this module sits on the
+    # CLI's eager import chain (tests/moneybin/test_cli/test_cold_start.py), so
+    # the runtime import stays deferred inside `_portfolio_total`.
+    from moneybin.services.currency_service import ResolvedRate
 
 logger = logging.getLogger(__name__)
 
@@ -333,6 +339,13 @@ class HoldingsResult:
     stored rate covers — and ``market_value_by_currency`` carries the split in
     original units either way. A sum across units is prevented structurally,
     never by a caveat the reader has to notice.
+
+    ``applied_rates`` names every distinct rate that priced a position, so a
+    converted total can be audited back to what produced it (multi-currency.md
+    Requirement 10) — the same answer the reports surface publishes as
+    ``summary.applied_rates``. Empty whenever nothing was converted, because
+    "no conversion happened" and "converted at a rate nobody recorded" must not
+    look alike to a reader.
     """
 
     rows: list[HoldingRow]
@@ -341,6 +354,7 @@ class HoldingsResult:
     total_market_value: Decimal | None = None
     total_market_value_currency: str | None = None
     market_value_by_currency: dict[str, Decimal] = field(default_factory=dict)
+    applied_rates: tuple[ResolvedRate, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1874,7 +1888,9 @@ class InvestmentService:
             PRICE_STALENESS_DAYS.set(
                 max(observed_ages) if observed_ages else float("nan")
             )
-        total, total_currency = self._portfolio_total(holding_rows, by_currency)
+        total, total_currency, applied_rates = self._portfolio_total(
+            holding_rows, by_currency
+        )
         return HoldingsResult(
             rows=holding_rows,
             warnings=warnings,
@@ -1882,11 +1898,12 @@ class InvestmentService:
             total_market_value=total,
             total_market_value_currency=total_currency,
             market_value_by_currency=by_currency,
+            applied_rates=applied_rates,
         )
 
     def _portfolio_total(
         self, rows: list[HoldingRow], by_currency: dict[str, Decimal]
-    ) -> tuple[Decimal | None, str | None]:
+    ) -> tuple[Decimal | None, str | None, tuple[ResolvedRate, ...]]:
         """One figure for the portfolio, and the currency it is denominated in.
 
         Positions are priced individually rather than by converting each
@@ -1895,18 +1912,24 @@ class InvestmentService:
         position carries the date its own close came from, so pricing it there
         keeps the converted figure consistent with the valuation it converts.
 
-        Returning ``(None, None)`` for a pair no stored rate covers is
+        Returning a null figure for a pair no stored rate covers is
         Requirement 15's segmentation fallback, not a swallowed error: the
         per-currency split is already published beside this, so the caller
         loses the combined figure and nothing else. Rates are never fetched
         here — a read holds no writer lock (see
         ``build_cache_only_currency_service``).
+
+        The third element is every distinct rate that priced a position,
+        deduplicated by pair and date so a portfolio holding twenty euro
+        positions valued on one close names that rate once (Requirement 10).
         """
         if not by_currency:
-            return None, None
+            return None, None, ()
         if len(by_currency) == 1:
             code, amount = next(iter(by_currency.items()))
-            return amount, code
+            # One unit, so the total is already denominated and nothing was
+            # priced — an identity rate here would claim a conversion happened.
+            return amount, code, ()
         # Deferred: currency_service imports polars, and this module is on the
         # CLI's eager import chain (tests/moneybin/test_cli/test_cold_start.py).
         from moneybin.services.currency_service import (  # noqa: PLC0415 — defer to avoid cold-start cost
@@ -1920,21 +1943,22 @@ class InvestmentService:
             # Requirement 9: an unset home currency has no default. Substituting
             # 'USD' would label a foreign-currency portfolio's total in a unit
             # its owner never chose.
-            return None, None
+            return None, None, ()
         try:
             target = require_currency(home)
         except UserError:
             # A malformed standing profile setting degrades this one figure
             # rather than failing the whole holdings read, matching how the
             # reports layer treats the same setting.
-            return None, None
+            return None, None, ()
         currency = build_cache_only_currency_service(self._db)
         total = Decimal("0")
+        resolved: dict[tuple[str, date], ResolvedRate] = {}
         for row in rows:
             if row.market_value is None or row.price_date is None:
                 continue
             try:
-                priced, _ = currency.convert(
+                priced, rate = currency.convert(
                     row.market_value, row.currency_code, target, row.price_date
                 )
             except (RateUnavailableError, UserError):
@@ -1945,9 +1969,19 @@ class InvestmentService:
                 # mis-mapped or non-ISO position must degrade this one figure,
                 # never fail the whole holdings read — the same rule
                 # `reports/_framework/convert.py` applies to a report's rows.
-                return None, None
+                return None, None, ()
             total += priced
-        return total, target
+            if rate.from_currency != rate.to_currency:
+                resolved.setdefault((rate.from_currency, rate.requested_date), rate)
+        # Sorted rather than left in row order so the provenance a caller reads
+        # does not depend on which position happened to come first.
+        applied = tuple(
+            sorted(
+                resolved.values(),
+                key=lambda r: (r.from_currency, r.requested_date, r.rate_date),
+            )
+        )
+        return total, target, applied
 
     def lots(
         self,

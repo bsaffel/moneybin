@@ -180,7 +180,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   shown as 3.40 USD reads `warning`, not the `drift` it was at 500 — and
   `core:networth` recomputes `net_worth` from its own converted parts, so
   independent per-column rounding cannot leave the total disagreeing with
-  assets plus liabilities. `no-data` and `currency-mismatch` are untouched:
+  assets plus liabilities. A converted `core:networth` read also collapses its
+  per-currency totals into a single headline row, because conversion relabels
+  every row into the target currency and several rows all claiming the same
+  unit would hand a consumer an arbitrary fraction of the position.
+  `no-data` and `currency-mismatch` are untouched:
   neither describes a magnitude. The `status` *filter* still selects in the
   account's own currency, so filter on `all` and read the returned status when
   converting.
@@ -215,8 +219,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   investments holdings` publishes a portfolio total across currencies for the
   first time, pricing each position at its own close's rate and printing the
   original per-currency amounts beside the converted figure;
-  `data.total_market_value_currency` names its unit. Investment positions still
-  do not contribute to net worth — that integration is unbuilt.
+  `data.total_market_value_currency` names its unit, and `data.applied_rates`
+  names every rate behind it, in the same six fields `moneybin fx rate`
+  publishes; the terminal prints that rate too, through the same renderer the
+  reports surface uses. `moneybin refresh` now gathers rates for each holding's own
+  `price_date` rather than for today, so a carried-forward foreign position
+  whose close predates the refresh is priced instead of dropping the combined
+  total. Investment positions still do not contribute to net worth — that
+  integration is unbuilt.
 
   Conversion is presentation only. No converted amount is stored, and no
   original-currency column in `raw.*` or `core.*` is touched: the original

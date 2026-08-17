@@ -29,6 +29,7 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    echo_applied_rates,
     output_option,
     quiet_option,
     render_or_json,
@@ -303,6 +304,11 @@ def investments_holdings(
         else:
             total = "market_value=- (no position is priced)"
         typer.echo(f"portfolio {total} max_days_since_observed={stalest}")
+        # The originals above say what was converted; this says what converted
+        # it. Not gated on `quiet`, for the same reason the total is not: it is
+        # part of the disclosure, not a status line. Empty unless a rate was
+        # actually applied, so the single-currency case stays silent.
+        echo_applied_rates(result.applied_rates, result.total_market_value_currency)
     if not quiet:
         for w in result.warnings:
             typer.echo(f"⚠️  {w}", err=True)

@@ -405,23 +405,45 @@ def _decimal_column_type(
     return f"DECIMAL({precision},{scale})"
 
 
-def _restate_networth_total(rows: list[dict[str, Any]], _currency: str) -> None:
-    """Restate ``net_worth`` as the sum of its own converted parts.
+def _sum_money(rows: list[dict[str, Any]], column: str) -> Decimal | None:
+    """Total one money column across rows, or ``None`` if no row carries one."""
+    values = [row[column] for row in rows if isinstance(row[column], Decimal)]
+    return sum(values, Decimal(0)) if values else None
 
-    Each money column converts and rounds independently, so the three can round
-    apart: assets ``1.00`` and liabilities ``-0.01`` at rate ``0.5`` give
-    ``0.50`` and ``-0.01``, while net worth ``0.99`` gives ``0.50`` — a report
-    whose own columns no longer add up. Recomputing from the rounded parts is
-    what keeps the identity the rows already assert.
 
-    Skips the account-breakdown rows, which hold nulls in all three: only a
-    totals row states the identity, so only a totals row can break it.
+def _restate_networth_total(rows: list[dict[str, Any]], currency: str) -> None:
+    """Collapse the converted totals into one headline and restate its identity.
+
+    Pricing a multi-currency snapshot into one currency breaks two things.
+    Conversion relabels every row into the target, so the per-currency split
+    ``_totals_row`` emits becomes several totals rows all claiming the same
+    unit — and a consumer reading "the totals row" gets an arbitrary fraction
+    of the position, which is the blend-by-omission the split exists to
+    prevent. Separately, each money column converts and rounds independently,
+    so the three round apart: assets ``1.00`` and liabilities ``-0.01`` at rate
+    ``0.5`` give ``0.50`` and ``-0.01`` while net worth ``0.99`` gives ``0.50``,
+    a report whose own columns no longer add up.
+
+    Runs only after a conversion, so the rows are known to share a unit before
+    anything is summed. Account-breakdown rows hold nulls in all three headline
+    fields, so only a totals row states the identity and only a totals row is
+    touched; they keep their order after the collapsed headline.
     """
-    for row in rows:
-        assets = row.get("total_assets")
-        liabilities = row.get("total_liabilities")
-        if isinstance(assets, Decimal) and isinstance(liabilities, Decimal):
-            row["net_worth"] = assets + liabilities
+    totals = [row for row in rows if row["account_id"] is None]
+    if not totals:
+        return
+    head = totals[0]
+    if len(totals) > 1:
+        counts = [row["account_count"] for row in totals if row["account_count"]]
+        head["total_assets"] = _sum_money(totals, "total_assets")
+        head["total_liabilities"] = _sum_money(totals, "total_liabilities")
+        head["account_count"] = sum(counts) if counts else None
+        head["currency_code"] = currency
+        rows[:] = [head, *(row for row in rows if row["account_id"] is not None)]
+    assets = head["total_assets"]
+    liabilities = head["total_liabilities"]
+    if isinstance(assets, Decimal) and isinstance(liabilities, Decimal):
+        head["net_worth"] = assets + liabilities
 
 
 NETWORTH_REPORT = ServiceReportSpec(
@@ -429,9 +451,10 @@ NETWORTH_REPORT = ServiceReportSpec(
     name="networth",
     description=(
         "Current or as-of net worth snapshot with per-account breakdown. "
-        "Rows come in two kinds: one per currency carrying that currency's "
-        "totals (account_id null), then one per account carrying only its own "
-        "balance. Amounts are denominated in each row's own currency_code."
+        "Rows come in two kinds: totals rows first (account_id null) — one per "
+        "currency held, or exactly one carrying the summed position when "
+        "display_currency prices the read — then one row per account carrying "
+        "only its own balance. Amounts are in each row's own currency_code."
     ),
     parameters=(
         ParamSpec(

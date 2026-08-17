@@ -647,6 +647,12 @@ class TestHoldingsAndGains:
         assert result.exit_code == 0, result.output
         assert "market_value=2190.00 USD" in result.output
         assert "(converted from USD=1200.00 EUR=900.00)" in result.output
+        # Requirement 10: the originals say what was converted, the rate says
+        # what converted it. Asserted on the split streams because Click 8.2+
+        # interleaves both into `result.output`, so `in result.output` cannot
+        # tell a diagnostic on stderr from one polluting the data on stdout.
+        assert "💱 Converted from EUR at 1.10" in result.stderr
+        assert "💱" not in result.stdout
 
     @pytest.mark.unit
     def test_gains_json_reports_basis_incomplete_warning(

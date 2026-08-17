@@ -134,8 +134,13 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # Grew 116 bytes when display conversion gave the holdings total a currency
     # to be denominated in: `data.total_market_value` is now published across
     # currencies, so the description has to say which unit it is in and when it
-    # is still null. Still -64.0% against the four tools it replaced.
-    "investments": (1_765, 4_908),
+    # is still null. `data.applied_rates` then cost 61 more — a converted total
+    # that cannot be audited back to the rate behind it fails Requirement 10,
+    # and an agent that cannot read the field from the description never asks
+    # for it — paid for by tightening the prose around it, which is why this
+    # lands 4 bytes under the pre-provenance figure. -64.1% against the four
+    # tools it replaced.
+    "investments": (1_761, 4_908),
     "transactions": (1_287, 2_383),
     "transactions_categorize_rules": (564, 318),
     "reviews": (703, 8_687),

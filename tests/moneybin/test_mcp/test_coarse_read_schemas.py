@@ -874,6 +874,14 @@ async def test_investment_coarse_transport_variants(
                 "currency",
                 "record_id",
                 "timestamp_observability",
+                # `data.applied_rates` reuses `FxRatePayload`, whose dates are
+                # TXN_DATE: the reason to ask about one particular day is that
+                # money moved on it. The same close also reaches the rows as
+                # TIMESTAMP_OBSERVABILITY `price_date`, so this declares the
+                # stricter of the two for one date — fail-closed, and the price
+                # of one shape for a rate everywhere rather than a second
+                # holdings-only rate payload beside it.
+                "txn_date",
                 "txn_amount",
                 "txn_type",
             },

@@ -23,6 +23,7 @@ from moneybin.cli.output import (
     CLI_MAX_ROWS,
     OutputFormat,
     display_currency_option,
+    echo_applied_rates,
     output_option,
     quiet_option,
     render_or_json,
@@ -91,35 +92,9 @@ def echo_report_notes(result: CatalogReportResult) -> None:
     file or a downstream parser must not append prose to the data stream.
     """
     # Requirement 10 on the surface that cannot read `summary.applied_rates`.
-    # Summarized rather than enumerated: a twelve-month rollup in three
-    # currencies applies thirty-six rates, and thirty-six lines under a table is
-    # a wall nobody reads. The exact rate prints when there is exactly one —
-    # the common case, and the only one a single line can state without
-    # choosing which rate to favour. The full set rides the JSON envelope.
-    if result.applied_rates:
-        if len(result.applied_rates) == 1:
-            rate = result.applied_rates[0]
-            priced_on = (
-                f"{rate.rate_date}"
-                if rate.rate_date == rate.requested_date
-                # A weekend or holiday prices at the previous published day, and
-                # Requirement 10 wants that visible rather than smoothed over.
-                else f"{rate.rate_date}, for {rate.requested_date}"
-            )
-            typer.echo(
-                f"💱 Converted from {rate.from_currency} at {rate.rate} "
-                f"({priced_on}, {rate.source})",
-                err=True,
-            )
-        else:
-            sources = sorted({rate.from_currency for rate in result.applied_rates})
-            typer.echo(
-                f"💱 Converted from {', '.join(sources)} using "
-                f"{len(result.applied_rates)} stored rates; run "
-                f"'moneybin fx rate <from> {result.display_currency} <date>' "
-                "for one of them, or --output json for all",
-                err=True,
-            )
+    # Shared with the investments portfolio total so one disclosure has one
+    # rendering; the reasoning for its shape lives on the helper.
+    echo_applied_rates(result.applied_rates, result.display_currency)
     # R4's verdict, on the surface that cannot see the envelope. JSON and MCP
     # callers read `summary.degraded_reason`; without this a drifted report
     # printed `*****` and said nothing — the silent masking that teaches a

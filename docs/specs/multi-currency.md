@@ -402,6 +402,12 @@ Numbered, testable. Tagged by phase.
     one priced the report. Deduplicated by (currency, date), because a thousand
     rows on one date were priced by one rate. Absent when nothing was converted,
     which is deliberately distinct from present-but-empty.
+    The investments surface answers the same way: `investments(view="holdings")`
+    publishes `data.applied_rates` beside its converted `total_market_value`,
+    reusing `FxRatePayload` so a rate is shown with the same six fields and the
+    same privacy classes wherever it appears. A converted figure with no trail
+    back to its rate is the failure this requirement names, and a second surface
+    publishing one would have been exactly that.
     `moneybin export report` is the one report surface that never converts, so it
     never needs the trail: an artifact outlives the rate that made it, and the
     original amount stays checkable forever.
@@ -442,7 +448,13 @@ Numbered, testable. Tagged by phase.
     imply: for each currency reachable from `core.fct_transactions`,
     `core.fct_balances_daily`, `core.fct_investment_transactions` or
     `core.dim_holdings`, one provider call covering the earliest date that currency
-    appears through today.
+    appears through today. The date a holding contributes is its own
+    `price_date` — the close its market value was struck at — because that is
+    the date the read prices it on. Planning today's rate instead would fetch
+    one no read asks for, and a carried-forward position whose close predates
+    the refresh would report no combined value right after a successful one. A
+    holding with no `price_date` is skipped by that same read, so it implies no
+    window at all.
 
     The window is derived from what the profile needs, never from what the cache
     appears to hold. `raw.exchange_rates` records the dates a provider published,

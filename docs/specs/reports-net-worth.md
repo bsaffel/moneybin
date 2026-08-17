@@ -249,7 +249,7 @@ historical net worth.
 
   | Row kind | Populated | Null |
   |---|---|---|
-  | Totals — one per currency, always first | `balance_date`, `currency_code`, `net_worth`, `total_assets`, `total_liabilities`, `account_count` | `account_id`, `account_name`, `account_balance`, `observation_source` |
+  | Totals — always first; one per currency held, or exactly one when the read is converted | `balance_date`, `currency_code`, `net_worth`, `total_assets`, `total_liabilities`, `account_count` | `account_id`, `account_name`, `account_balance`, `observation_source` |
   | Account breakdown | `balance_date`, `currency_code`, `account_id`, `account_name`, `account_balance`, `observation_source` | `net_worth`, `total_assets`, `total_liabilities`, `account_count` |
 
   Headline fields do **not** repeat on account rows. They did before display
@@ -262,7 +262,13 @@ historical net worth.
   return something that reads as single-currency.
 - Sum nothing across differing `currency_code` values. One totals row per
   currency is the segmented answer; `display_currency` is what collapses them
-  into one priced figure.
+  into one priced figure — and it collapses the **rows**, not just the labels.
+  A converted read returns exactly one totals row carrying the summed position,
+  because conversion relabels every row into the target currency: leaving one
+  row per original currency would publish several rows all claiming the same
+  unit, and a consumer reading "the totals row" would get an arbitrary
+  fraction of the position. That is blend by omission, the same defect the
+  split exists to prevent.
 - No-data contract: if no position exists on or before the requested date, the
   result contains exactly one totals row with every field null — including
   `account_count`, which is null rather than `0` because no currency was

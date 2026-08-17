@@ -919,6 +919,7 @@ def test_net_worth_is_restated_from_its_own_converted_parts() -> None:
             "total_assets": Decimal("0.50"),
             "total_liabilities": Decimal("-0.01"),
             "net_worth": Decimal("0.50"),
+            "account_id": None,
         }
     ]
 
@@ -934,14 +935,95 @@ def test_restating_the_total_skips_an_account_breakdown_row() -> None:
     breakdown line into a second, wrong headline.
     """
     rows: list[dict[str, Any]] = [
+        _totals("USD", Decimal("1.00"), Decimal("-0.01"), Decimal("0.50"), 1),
         {
             "total_assets": None,
             "total_liabilities": None,
             "net_worth": None,
             "account_balance": Decimal("12.00"),
-        }
+            "account_id": "acct-1",
+        },
     ]
 
     _restate_networth_total(rows, "USD")
 
-    assert rows[0]["net_worth"] is None
+    assert rows[1]["net_worth"] is None
+    assert rows[1]["account_balance"] == Decimal("12.00")
+
+
+def _totals(
+    currency: str,
+    assets: Decimal,
+    liabilities: Decimal,
+    net_worth: Decimal,
+    account_count: int,
+) -> dict[str, Any]:
+    """One ``core:networth`` totals row, shaped as ``_totals_row`` builds it."""
+    return {
+        "balance_date": date(2026, 8, 17),
+        "currency_code": currency,
+        "net_worth": net_worth,
+        "total_assets": assets,
+        "total_liabilities": liabilities,
+        "account_count": account_count,
+        "account_id": None,
+        "account_name": None,
+        "account_balance": None,
+        "observation_source": None,
+    }
+
+
+def test_converted_totals_collapse_into_one_headline() -> None:
+    """Two currencies priced into one leave one position, not two headlines.
+
+    Conversion relabels every row into the display currency, so a two-currency
+    snapshot arrives as two totals rows both claiming USD. Publishing both
+    leaves an MCP consumer reading "the totals row" holding an arbitrary half
+    of the position, which is the blend-by-omission the row split exists to
+    prevent (reports-net-worth.md).
+    """
+    rows: list[dict[str, Any]] = [
+        _totals("USD", Decimal("100.00"), Decimal("-20.00"), Decimal("80.00"), 2),
+        _totals("USD", Decimal("50.00"), Decimal("-5.00"), Decimal("45.00"), 1),
+        {
+            "balance_date": date(2026, 8, 17),
+            "currency_code": "USD",
+            "net_worth": None,
+            "total_assets": None,
+            "total_liabilities": None,
+            "account_count": None,
+            "account_id": "acct-1",
+            "account_name": "Checking",
+            "account_balance": Decimal("12.00"),
+            "observation_source": "ofx",
+        },
+    ]
+
+    _restate_networth_total(rows, "USD")
+
+    totals = [row for row in rows if row["account_id"] is None]
+    assert len(totals) == 1
+    assert totals[0]["total_assets"] == Decimal("150.00")
+    assert totals[0]["total_liabilities"] == Decimal("-25.00")
+    assert totals[0]["net_worth"] == Decimal("125.00")
+    assert totals[0]["account_count"] == 3
+    assert totals[0]["currency_code"] == "USD"
+    assert len(rows) == 2, "the account breakdown row must survive the collapse"
+
+
+def test_a_single_currency_snapshot_keeps_its_one_totals_row() -> None:
+    """Collapsing must not disturb the ordinary single-currency read.
+
+    Most profiles hold one currency, so the collapse has to be a no-op there
+    rather than a rebuild that could drop a field the segment carried.
+    """
+    rows: list[dict[str, Any]] = [
+        _totals("EUR", Decimal("10.00"), Decimal("-4.00"), Decimal("6.00"), 1)
+    ]
+
+    _restate_networth_total(rows, "EUR")
+
+    assert len(rows) == 1
+    assert rows[0]["total_assets"] == Decimal("10.00")
+    assert rows[0]["net_worth"] == Decimal("6.00")
+    assert rows[0]["account_count"] == 1

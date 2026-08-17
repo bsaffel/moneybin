@@ -183,7 +183,9 @@ def investments_holdings(
     are priced into the profile's home currency at each position's own close
     date; both fields are null when the home currency is unset or no stored
     rate covers a pair. `data.market_value_by_currency` always carries the
-    per-currency split in original units.
+    per-currency split in original units, and `data.applied_rates` names every
+    rate that priced the total — pair, rate, source, and the close it was
+    published for — so a converted figure can be audited back to it.
     """
     with get_database(read_only=True) as db:
         result = InvestmentService(db).holdings(account_ref=account)
@@ -1440,6 +1442,7 @@ def investments_coarse(
                 total_market_value=holdings.total_market_value,
                 total_market_value_currency=holdings.total_market_value_currency,
                 market_value_by_currency=holdings.market_value_by_currency,
+                applied_rates=holdings.applied_rates,
             )
         elif view == "lots":
             data = InvestmentsLotsView(
@@ -1481,19 +1484,23 @@ def register_investment_coarse_reads(mcp: FastMCP) -> None:
         mcp,
         investments_coarse,
         "investments",
+        # 895 of the 900-character budget. `data.applied_rates` cost 61 and was
+        # paid for by tightening the prose around it rather than by dropping a
+        # field: an agent that cannot read a field from the description never
+        # asks for it, so a converted total would stay unauditable in practice.
         "Return investment events, holdings, open or full tax-lot history, "
-        "realized gains, or securities through one typed view. Amounts use the "
+        "realized gains, or securities in one typed view. Amounts use the "
         "investment ledger sign convention; currency is summary.display_currency "
         "except holdings rows, which keep their own currency_code. For holdings, "
         "valuation_status marks each row valued, carried_forward, unpriced, or "
-        "withheld; unpriced and withheld report market_value/unrealized_gain null "
-        "(never zero) and data.warnings counts them, and withheld means the share "
-        "count is known wrong. Do not sum market_value across rows: read "
+        "withheld; the last two null market_value/unrealized_gain (never zero) "
+        "and data.warnings counts them, withheld means the share count is known "
+        "wrong. Do not sum market_value across rows: read "
         "data.total_market_value, in data.total_market_value_currency — mixed "
-        "currencies price into the home currency at each position's own close "
-        "date, both null when no stored rate covers a pair; "
-        "data.market_value_by_currency always gives the split in original units. "
-        "data.max_days_since_observed is the stalest close behind any published "
+        "currencies price into home at each position's own close, both null when "
+        "no stored rate covers a pair; data.market_value_by_currency gives the "
+        "split in original units and data.applied_rates names each rate behind "
+        "the total. data.max_days_since_observed is the stalest close behind any "
         "figure.",
         privacy_actor="investments",
     )

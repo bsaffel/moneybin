@@ -48,7 +48,10 @@ from moneybin.protocol.envelope import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from moneybin.exports.models import ExportReceipt
+    from moneybin.services.currency_service import ResolvedRate
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +87,54 @@ def currency_label(value: object) -> str:
     parsing the text surface can take for a denomination.
     """
     return str(value) if value else UNKNOWN_CURRENCY
+
+
+def echo_applied_rates(
+    applied_rates: Sequence[ResolvedRate], target_currency: str | None
+) -> None:
+    """State the rates behind a converted figure, on stderr.
+
+    Requirement 10 on the surfaces that cannot read `applied_rates` off an
+    envelope. Shared by every terminal path that prints a converted number —
+    the registered reports and the investments portfolio total — because two
+    renderings of one disclosure drift apart, and the one that drifts is the
+    one nobody is looking at.
+
+    Summarized rather than enumerated: a twelve-month rollup in three
+    currencies applies thirty-six rates, and thirty-six lines under a table is
+    a wall nobody reads. The exact rate prints when there is exactly one — the
+    common case, and the only one a single line can state without choosing
+    which rate to favour. The full set rides the JSON envelope.
+
+    stderr per `cli.md` "Exit Codes & stderr": this is a diagnostic about the
+    answer, not the answer, and redirecting to a file or a downstream parser
+    must not append prose to the data stream.
+    """
+    if not applied_rates:
+        return
+    if len(applied_rates) == 1:
+        rate = applied_rates[0]
+        priced_on = (
+            f"{rate.rate_date}"
+            if rate.rate_date == rate.requested_date
+            # A weekend or holiday prices at the previous published day, and
+            # Requirement 10 wants that visible rather than smoothed over.
+            else f"{rate.rate_date}, for {rate.requested_date}"
+        )
+        typer.echo(
+            f"💱 Converted from {rate.from_currency} at {rate.rate} "
+            f"({priced_on}, {rate.source})",
+            err=True,
+        )
+        return
+    sources = sorted({rate.from_currency for rate in applied_rates})
+    typer.echo(
+        f"💱 Converted from {', '.join(sources)} using "
+        f"{len(applied_rates)} stored rates; run "
+        f"'moneybin fx rate <from> {currency_label(target_currency)} <date>' "
+        "for one of them, or --output json for all",
+        err=True,
+    )
 
 
 class OutputFormat(StrEnum):

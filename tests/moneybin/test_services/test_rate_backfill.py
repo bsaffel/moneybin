@@ -39,8 +39,8 @@ _TODAY = date(2026, 8, 15)
 
 # db_helpers ships core.dim_holdings as an empty `WHERE FALSE` stub view, which
 # cannot take fixture rows. Same column shape, declared as a table so a position
-# can be inserted; the planner only reads currency_code, so the divergence from
-# the production view is invisible to what these tests assert.
+# can be inserted; the planner reads only currency_code and price_date, so the
+# divergence from the production view is invisible to what these tests assert.
 _DIM_HOLDINGS_TABLE_DDL = """\
 CREATE TABLE IF NOT EXISTS core.dim_holdings (
     account_id VARCHAR,
@@ -211,16 +211,16 @@ def _add_investment_transaction(db: Database, *, on: date, currency: str) -> Non
     )
 
 
-def _add_holding(db: Database, *, currency: str) -> None:
-    """Insert one open position, valued as of the reporting day."""
+def _add_holding(db: Database, *, currency: str, priced_on: date | None = None) -> None:
+    """Insert one open position, priced at the close ``priced_on`` names."""
     db.execute(
         """
         INSERT INTO core.dim_holdings
             (account_id, security_id, quantity, cost_basis, currency_code,
-             market_value, valuation_status)
-        VALUES ('acct-2', 'sec-1', 10, 500.00, ?, 750.00, 'valued')
+             market_value, price_date, valuation_status)
+        VALUES ('acct-2', 'sec-1', 10, 500.00, ?, 750.00, ?, 'valued')
         """,
-        [currency],
+        [currency, priced_on],
     )
 
 
@@ -240,21 +240,17 @@ def test_an_investment_trade_is_covered_from_its_trade_date(db: Database) -> Non
     )
 
 
-def test_a_holding_is_covered_for_the_day_it_is_valued(db: Database) -> None:
-    """A position implies the day it is reported on, not the day it was priced.
+def test_a_holding_is_covered_from_the_close_it_was_priced_at(db: Database) -> None:
+    """A position implies the day its market value was struck, not today.
 
-    ``core.dim_holdings`` does publish a ``price_date`` — the close its market
-    value came from, which on a ``carried_forward`` position can be older than
-    today. It is deliberately not the window: conversion prices the report's own
-    date. A profile that synced positions but no investment ledger would
-    otherwise hold a market value with no rate to convert it, and net worth
-    would silently omit the position.
-
-    Whether display conversion should key off ``price_date`` instead is a real
-    open question, tracked in followups.md; if it changes, this window changes
-    with it.
+    ``InvestmentService`` converts each position at its own ``price_date``, the
+    same rule every other converting read follows — a transaction at its
+    transaction date, a balance at its balance date. Planning today's rate
+    instead would fetch a rate the read never asks for, so a carried-forward
+    foreign position whose close is older than today would report a null
+    combined market value immediately after a successful refresh.
     """
-    _add_holding(db, currency="JPY")
+    _add_holding(db, currency="JPY", priced_on=date(2026, 7, 31))
 
     windows = plan_rate_backfill(db, home_currency="USD", through=_TODAY)
 
@@ -262,10 +258,23 @@ def test_a_holding_is_covered_for_the_day_it_is_valued(db: Database) -> None:
         RateWindow(
             from_currency="JPY",
             to_currency="USD",
-            start=_TODAY,
+            start=date(2026, 7, 31),
             end=_TODAY,
         ),
     )
+
+
+def test_an_unpriced_holding_implies_no_window(db: Database) -> None:
+    """A position with no close has no value to convert, so it needs no rate.
+
+    ``InvestmentService`` skips a row whose ``price_date`` is null, so a window
+    planned for one would buy a provider call per refresh that nothing reads.
+    """
+    _add_holding(db, currency="JPY", priced_on=None)
+
+    windows = plan_rate_backfill(db, home_currency="USD", through=_TODAY)
+
+    assert windows == ()
 
 
 def test_the_home_currency_is_never_fetched(db: Database) -> None:
