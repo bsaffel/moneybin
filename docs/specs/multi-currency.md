@@ -525,16 +525,22 @@ Numbered, testable. Tagged by phase.
     against the answer's bounds — the span model the hole below already calls
     for.
 
-    **Open for the conversion layer — the weekday-holiday hole.** A complete
-    backfill still leaves no row on a weekday the market was closed; verified
-    live 2026-08-15, the EUR/USD series skips Thursday 2026-01-01 entirely. A
-    transaction dated that day therefore misses the cache, and
-    `_last_publication_day` deliberately does not hop a weekday, so
-    `CurrencyService.resolve_rate` falls through to a live fetch **and a cache
-    write** — on a report read that opened the database read-only. The
-    conversion layer must not reach that path.
+    **Closed for the conversion layer — the read path cannot reach the
+    weekday-holiday hole.** A complete backfill still leaves no row on a weekday
+    the market was closed; verified live 2026-08-15, the EUR/USD series skips
+    Thursday 2026-01-01 entirely. A transaction dated that day misses the cache,
+    and `_last_publication_day` deliberately does not hop a weekday, so
+    `CurrencyService.resolve_rate` would fall through to a live fetch **and a
+    cache write** — on a report read that opened the database read-only. It
+    never gets the chance: report execution and the holdings portfolio total
+    both build their service through `build_cache_only_currency_service`, which
+    passes no adapter, and `_fetch` raises `RateUnavailableError` at its
+    `self._adapter is None` check before the adapter is touched. The row
+    degrades instead — a report segments under Requirement 15, and the holdings
+    total reports no combined figure rather than a wrong one.
 
-    The backfill is what makes this fixable. `_last_publication_day`'s docstring
+    **Still open — pricing a holiday-dated row instead of degrading it.** The
+    backfill is what makes this fixable. `_last_publication_day`'s docstring
     rejects a general "nearest earlier stored day" fallback because a missing
     weekday is ambiguous — closed market, or nobody fetched it yet. Coverage
     recorded as a span removes the ambiguity: **inside** `[earliest stored,
