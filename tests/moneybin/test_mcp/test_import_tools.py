@@ -5182,9 +5182,12 @@ class TestEmbeddedRefreshRecoveryActions:
                 matching_error="matcher blew up", rates_written=0
             ),
         )
+
+        def _fake_inbox_service(**_kw: object) -> MagicMock:
+            return service
+
         monkeypatch.setattr(
-            "moneybin.mcp.tools.import_inbox.InboxService",
-            lambda **_kw: service,
+            "moneybin.mcp.tools.import_inbox.InboxService", _fake_inbox_service
         )
         monkeypatch.setattr(
             "moneybin.mcp.tools.import_inbox.get_database", _fake_database
