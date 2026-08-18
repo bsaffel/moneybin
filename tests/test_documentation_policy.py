@@ -91,6 +91,7 @@ def _active_agent_instruction_files() -> list[Path]:
         for root in _ACTIVE_AGENT_INSTRUCTION_ROOTS
         for document in root.rglob("*.md")
     )
+    files.extend((_REPO_ROOT / ".cursor" / "rules").rglob("*.mdc"))
     return sorted({document for document in files if document.exists()})
 
 
@@ -117,9 +118,10 @@ def test_retired_route_guard_covers_any_local_private_destination() -> None:
     )
 
 
-def test_active_agent_instruction_files_include_nested_claude_files() -> None:
-    """Every repository CLAUDE.md instruction surface participates in the guard."""
+def test_active_agent_instruction_files_include_all_harness_surfaces() -> None:
+    """Every repository agent-instruction surface participates in the guard."""
     expected = set(_REPO_ROOT.rglob("CLAUDE.md"))
+    expected.update((_REPO_ROOT / ".cursor" / "rules").rglob("*.mdc"))
     expected.add(_REPO_ROOT / ".github" / "ai-review-protocol.md")
     expected.add(_REPO_ROOT / ".github" / "workflows" / "ai-review.yml")
     assert expected <= set(_active_agent_instruction_files())
