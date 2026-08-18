@@ -889,7 +889,10 @@ Items deliberately deferred to post-launch hardening, captured here to anchor th
 
 ## Cascading edits
 
-This spec implies updates to several other specs and rules to remove now-obsolete references and add cross-references. Tracked separately via `/update-specs`:
+This active spec implies updates to several other specs and rules. Reconcile
+affected active specs during their initial implementation. Preserve an affected
+implemented spec as the shipped record unless this work materially replaces its
+decision boundary, in which case use the supersession lifecycle:
 
 - [`reports-recipe-library.md`](reports-recipe-library.md) — fix `merchant_id` column-table drift on `reports.recurring_subscriptions`; cross-reference this spec for the Report contract
 - [`mcp-architecture.md`](mcp-architecture.md) — reference the entry-points-based registration mechanism for packages

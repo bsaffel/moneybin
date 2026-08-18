@@ -115,15 +115,31 @@ Full schema reference (including `meta`, `seeds`, `synthetic`, prefix convention
 Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** is the single source of truth.
 
 - **Before implementing**, check `INDEX.md` for existing specs.
-- **Verify the spec against the code before building** — specs (especially `draft` ones) can describe a model that was never built or has drifted. Reconcile spec ↔ code at the `draft → ready` promotion, not mid-implementation.
+- **Verify the spec against the code before building** — specs (especially
+  `draft` ones) can describe a model that was never built or has drifted. Keep
+  the spec current as constraints surface during initial planning and
+  implementation.
 - **When starting**, update status to `in-progress` (spec file + `INDEX.md`).
-- **When complete**, update to `implemented`. See `.claude/rules/shipping.md` for README updates.
+- **When complete**, reconcile the spec to the delivered implementation, then
+  update it to `implemented`. An implemented spec records the shipped decision
+  boundary; supersede it only for a material replacement, not ordinary
+  follow-up work. See `.claude/rules/shipping.md` for README updates.
 - **Observability wiring**: Specs touching app code must include metrics. See `docs/specs/observability.md` and `src/moneybin/metrics/registry.py`.
 - Statuses: `draft` → `ready` → `in-progress` → `implemented`.
 
 ## Plans vs Specs
 
-Specs (intent, durable) live in `docs/specs/` and are tracked. Implementation plans (e.g. from `superpowers:writing-plans`) are ephemeral — write them to `private/plans/` (gitignored), never the repo. From a worktree, use the **absolute** repo-root path — a native worktree sits at `.claude/worktrees/<name>`, three levels down, so a relative `../../private/` silently resolves to `.claude/private/`. Before discarding one, lift durable design rationale into a spec or ADR.
+Specs are public, durable design records in `docs/specs/`; revise them through
+the initial implementation and freeze them when it ships. Plans and session
+evidence are execution records, not current truth. Keep disposable plans in the
+harness's scratch space. Store plans or evidence that must survive sessions in
+`bsaffel/moneybin-private` through a pull request, and link them from the
+MoneyBin Linear project. Never write new work to the legacy local `private/` <!-- retired-route-description-ok -->
+tree. If either GitHub or Linear is
+unreachable, complete the step supported by the reachable service, say exactly
+which persistence or navigation step is blocked, and hand the blocked material
+or link to the user; do not invent another tracker. Public delivery status and
+implementation-ready work belong in this repository's issues and pull requests.
 
 ## Configuration
 

@@ -41,11 +41,12 @@ was pure churn.
 When planning, brainstorming, or writing a new spec or plan: attach the work
 to an existing increment, or **append the next free letter (new increment) or
 `.n` (new work item)** — then register it in the canonical reference,
-[`docs/roadmap.md`](../../docs/roadmap.md) (public source of truth), mirrored
-in `private/strategy/milestone-taxonomy.md` (full map + rationale). Don't mint
-a new top-level number for a sub-task, and don't add a per-increment gate. If
-the scheme genuinely can't express the work, raise it — don't invent a second
-one.
+[`docs/roadmap.md`](../../docs/roadmap.md) (public source of truth). Put durable
+private rationale in `bsaffel/moneybin-private`, and coordinate or navigate it
+from the MoneyBin Linear project instead of maintaining a second roadmap. Don't
+mint a new top-level number for a sub-task, and don't add a per-increment gate.
+If the scheme genuinely can't express the work, raise it — don't invent a
+second one.
 
 ## What it does NOT mean
 

@@ -41,8 +41,12 @@ not into public artifacts. Workflow:
 
 1. At the end of any session that touched MoneyBin's MCP server, present the
    report directly in chat using the structure above.
-2. The developer triages each finding. Approved findings get filed as one-line
-   entries in `private/followups.md`; the rest are dropped.
+2. The developer triages each finding. Put it in the MoneyBin Linear project
+   only when it is current, accepted, and has a useful coordination job. Create
+   a public GitHub issue only through `.claude/rules/documentation.md`'s
+   public-issue admission gate. Update canonical private knowledge in
+   `bsaffel/moneybin-private` only when the finding changes what is true now.
+   Drop the rest.
 3. The PR shipping the underlying change describes the change only — **never
    paste the AX report (or a link to it) into the PR body, commit message,
    CHANGELOG, ADR, or any other checked-in artifact**.

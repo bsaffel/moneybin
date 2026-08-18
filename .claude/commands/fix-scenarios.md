@@ -87,8 +87,9 @@ non-zero CI exit and as per-scenario PASS/FAIL lines in the pytest-json-report a
    - Expectation failures: fix the categorize/match logic if the expectation is
      correct; update the fixture YAML if the expectation is stale.
    - Evaluation regressions: investigate the breakdown. Score drops are usually code
-     issues — only adjust thresholds with a clear justification (and note in
-     `docs/followups.md` if appropriate).
+     issues — only adjust thresholds with a clear justification. If a separate fix is
+     genuinely deferred, apply `.claude/rules/documentation.md`'s public-issue
+     admission gate; otherwise report why it was not admitted.
 
 9. **Reproduce locally** before claiming the fix works. The full suite is slow, so
    target the failing scenario:
@@ -114,7 +115,8 @@ non-zero CI exit and as per-scenario PASS/FAIL lines in the pytest-json-report a
     - Root cause and which file owned the fix
     - Whether the fix was code or scenario YAML
     - Any thresholds adjusted, with justification
-    - Any items deferred to `docs/followups.md`
+    - Any deferred items, with either a linked public GitHub issue or an issue draft
+      plus its admission evidence; list non-admitted items with the reason
 
     Ask the user to confirm before committing.
 
