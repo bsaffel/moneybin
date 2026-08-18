@@ -39,6 +39,7 @@ _ACTIVE_AGENT_INSTRUCTION_ROOTS = (
     _REPO_ROOT / ".claude" / "skills",
 )
 _ALLOW_MARKER = "external-products-ok"
+_RETIRED_ROUTE_DESCRIPTION_MARKER = "retired-route-description-ok"
 _COMPETITOR_DERIVATION = re.compile(
     r"\b(?:"
     r"competitor(?:s|'s|’s)?|"
@@ -60,7 +61,7 @@ _PRIVATE_LINK = re.compile(
     r"|href=[\"']/?(?:\.{1,2}/)*private/"
 )
 _RETIRED_AGENT_ROUTE = re.compile(
-    r"(?<!moneybin-)private/(?=\w)"
+    r"(?<!moneybin-)private/"
     r"|docs/followups\.md"
     r"|/update-(?:progress|specs)\b"
 )
@@ -87,6 +88,8 @@ def _active_agent_instruction_files() -> list[Path]:
 
 def test_retired_route_guard_covers_any_local_private_destination() -> None:
     """The blanket local-private ban is not limited to historical folder names."""
+    assert _RETIRED_AGENT_ROUTE.search("save durable evidence in private/")
+    assert _RETIRED_AGENT_ROUTE.search("save durable evidence in `private/`")
     assert _RETIRED_AGENT_ROUTE.search("save durable evidence in private/evidence/")
     assert not _RETIRED_AGENT_ROUTE.search(
         "save durable evidence in bsaffel/moneybin-private/evidence/"
@@ -171,7 +174,10 @@ def test_active_agent_instructions_do_not_route_to_retired_trackers_or_skills() 
     violations: list[str] = []
     for document in documents:
         for line_number, line in enumerate(document.read_text().splitlines(), start=1):
-            if _RETIRED_AGENT_ROUTE.search(line):
+            if (
+                _RETIRED_ROUTE_DESCRIPTION_MARKER not in line
+                and _RETIRED_AGENT_ROUTE.search(line)
+            ):
                 path = document.relative_to(_REPO_ROOT)
                 violations.append(f"{path}:{line_number}: {line.strip()[:120]}")
 
@@ -185,5 +191,7 @@ def test_active_agent_instructions_do_not_route_to_retired_trackers_or_skills() 
         "Active agent instructions must route private knowledge to "
         "bsaffel/moneybin-private, coordination to Linear, public delivery to "
         "GitHub, and disposable plans to session scratch. Remove retired local "
-        "tracker and update-specs routes.\n" + "\n".join(violations)
+        "tracker and update-specs routes. Descriptive mentions of the retired "
+        "path must declare `<!-- retired-route-description-ok -->`.\n"
+        + "\n".join(violations)
     )

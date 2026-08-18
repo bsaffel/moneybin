@@ -43,7 +43,7 @@ not as the starting point.
 - `docs/specs/` — reconcile active specs during initial implementation; preserve
   implemented specs unless a material replacement requires supersession
 - `docs/decisions/` — ADRs are durable, edited by hand only
-- Private strategy, internal coordination, and the legacy local `private/` tree
+- Private strategy, internal coordination, and the legacy local `private/` tree <!-- retired-route-description-ok -->
   are outside this skill. Route private status to the MoneyBin Linear project
   and durable private knowledge to `bsaffel/moneybin-private`.
 
@@ -126,7 +126,7 @@ subagent verbatim. They keep accidentally regrowing:
 
 - **README anti-patterns**: in-README roadmap matrix; text-heavy comparison cells; feature inventories; License essays; "Wave"/"Level" terminology; 9-node pipeline Mermaid in the README. Comparison cells are ✅/❌/🟡 emoji (no prose). How-It-Works Mermaid stays 3–4 nodes (sales-pitch, not architecture).
 - **Comparison table width** — prefer 7-wide for the README teaser and the `docs/comparison.md` table; the goal is scannable density on a phone, not exhaustive completeness. **Break the 7-wide guideline when honesty demands it**: if a major option for the page's primary persona is missing (precedent: Firefly III for the self-hoster persona, added as an 8th column with a one-line note above the table), go 8-wide. Don't break to 9+ without a written exception; if a 9th option is fighting to get in, retire a less-relevant column instead.
-- **No private/ references in public docs.** Never cite `private/...` paths or phrasing like "the strategic review" / "the strategic audit named X" in README, CHANGELOG, CONTRIBUTING, or any `docs/` file. Restate substance directly. If you find existing violations, fix them in-pass.
+- **No private/ references in public docs.** Never cite `private/...` paths or phrasing like "the strategic review" / "the strategic audit named X" in README, CHANGELOG, CONTRIBUTING, or any `docs/` file. Restate substance directly. If you find existing violations, fix them in-pass. <!-- retired-route-description-ok -->
 - **No `Co-Authored-By: Claude` trailers in any commit message produced by this skill.**
 - **Tagline preserved**: `Your finances, understood by AI.` — do not change unless the developer explicitly asks.
 - **No milestone or version codes in user-facing prose — pre-v1.** Milestone codes (`M2A`, `M3B`, etc.) are insider jargon. A new reader who lands on the docs doesn't know what they mean, and shouldn't have to. **They'll care about version numbers once there's a usable v1** — until then, the words "shipped," "planned," and "coming with X" carry every meaning a reader needs. Replace milestone codes with the user-visible thing they describe:
@@ -200,7 +200,7 @@ Use `subagent_type: general-purpose`.
 - Write in the persona voice for that file (see [Per-file voice + length budget](#per-file-voice--length-budget)).
 - Cut content that's no longer accurate.
 - Respect the length budget — if you're adding, find something to remove or compact. Don't grow indefinitely.
-- Apply the anti-patterns rules. If the file currently violates one (e.g., a private/ ref), fix it in-pass.
+- Apply the anti-patterns rules. If the file currently violates one (e.g., a private/ ref), fix it in-pass. <!-- retired-route-description-ok -->
 - For new diagrams, use Mermaid code blocks.
 - **Bump the `<!-- Last reviewed: -->` stamp** to today's date as the final step. Add the stamp if missing.
 
@@ -296,8 +296,8 @@ Per-file summary of edits, plus:
   not the public-doc refresh pass.
 - Touch `docs/decisions/` — ADRs are by hand.
 - Touch private strategy or coordination surfaces, including the legacy local
-  `private/` tree, Linear, or `bsaffel/moneybin-private`.
+  `private/` tree, Linear, or `bsaffel/moneybin-private`. <!-- retired-route-description-ok -->
 - Expand scope beyond what's needed for the in-scope change.
-- Reintroduce stored anti-patterns (in-README roadmap, feature inventories, License essays, Wave/Level terminology, private/ refs).
+- Reintroduce stored anti-patterns (in-README roadmap, feature inventories, License essays, Wave/Level terminology, private/ refs). <!-- retired-route-description-ok -->
 - Change the README tagline `Your finances, understood by AI.` without explicit user direction.
 - Add `Co-Authored-By: Claude` trailers to any commit.

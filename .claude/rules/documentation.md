@@ -21,7 +21,7 @@ implementation plans, agent scratch work, and uncommitted design exploration.
 Promote a private design into public docs only when it becomes a durable public
 contract or materially helps an external user or contributor make a decision.
 
-Never point a reader at `private/` from anything outward-facing — public
+Never point a reader at `private/` from anything outward-facing — public <!-- retired-route-description-ok -->
 documentation, a commit message, or PR text. Replace the reference with a public
 issue, roadmap item, or an honest statement that the work is planned; when the
 substance is what matters, restate it inline instead of pointing at the path.
@@ -29,14 +29,17 @@ substance is what matters, restate it inline instead of pointing at the path.
 **Exempt: internal agent configuration.** `AGENTS.md`, `CLAUDE.md`, and
 `.claude/**` may route authorized agents to `bsaffel/moneybin-private` or the
 MoneyBin Linear project. They must not route new work to the legacy local
-`private/` tree. The public-documentation ban is about not sending an external
+`private/` tree. <!-- retired-route-description-ok --> The public-documentation ban is about not sending an external
 reader somewhere they cannot follow, not about avoiding the word.
 
 **Public-issue admission gate.** Create or draft a public GitHub issue only
 when the work is safe to publish, current, verified, prioritized, bounded,
 actionable, has acceptance criteria, and has no existing owner. Ask before
 creating it. Private strategy stays in Linear or `bsaffel/moneybin-private`;
-non-admitted material is reported to the user rather than filed elsewhere.
+non-admitted material is recorded with the failed admission criteria and
+reported to the user rather than filed elsewhere. That explicit non-admission
+satisfies the deferral check; do not invent a tracker entry merely to close a
+spec.
 
 Treat any information already committed publicly as public history: moving it
 to a private repository prevents future exposure but does not erase it from

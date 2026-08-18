@@ -110,7 +110,7 @@ Before marking a spec as `implemented`, verify the feature has tests at every ap
 
 ## Deferral Check
 
-Before marking a spec as `implemented`, file every item its "Out of scope" / "Deferred" / "resolve in M__" text hands to a future milestone. Trackers hold work; specs hold design, and nothing crosses that boundary — a spec marked `implemented` reads as closed, and no planning sweep re-reads spec bodies. An unfiled handoff goes invisible the moment the status flips. File it while you still know why it was deferred.
+Before marking a spec as `implemented`, evaluate every item its "Out of scope" / "Deferred" / "resolve in M__" text hands to a future milestone. File items that pass the public-issue admission gate in `documentation.md`. For an item that does not pass, record the failed admission criteria and report the non-admission to the user; that explicit disposition completes this check without inventing a tracker entry. Trackers hold admitted work; specs hold design, and nothing crosses that boundary without a visible disposition — a spec marked `implemented` reads as closed, and no planning sweep re-reads spec bodies.
 
 Two traps when checking whether a handoff is already tracked:
 

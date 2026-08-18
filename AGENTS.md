@@ -134,10 +134,11 @@ the initial implementation and freeze them when it ships. Plans and session
 evidence are execution records, not current truth. Keep disposable plans in the
 harness's scratch space. Store plans or evidence that must survive sessions in
 `bsaffel/moneybin-private` through a pull request, and link them from the
-MoneyBin Linear project. Never write new work to the legacy local `private/`
-tree. If neither GitHub nor Linear is reachable, keep the material in session
-scratch, say that durable persistence is blocked, and hand it to the user for
-placement; do not invent another tracker. Public delivery status and
+MoneyBin Linear project. Never write new work to the legacy local `private/` <!-- retired-route-description-ok -->
+tree. If either GitHub or Linear is
+unreachable, complete the step supported by the reachable service, say exactly
+which persistence or navigation step is blocked, and hand the blocked material
+or link to the user; do not invent another tracker. Public delivery status and
 implementation-ready work belong in this repository's issues and pull requests.
 
 ## Configuration
