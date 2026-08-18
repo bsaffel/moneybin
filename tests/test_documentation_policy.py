@@ -21,9 +21,13 @@ matches fail.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess  # noqa: S404 -- the policy test queries local Git metadata
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_GIT = shutil.which("git")
+assert _GIT is not None, "documentation policy check requires Git"
 _AUTHORITY_DOCS = (_REPO_ROOT / "docs" / "specs", _REPO_ROOT / "docs" / "decisions")
 _PUBLIC_DOC_FILES = (
     _REPO_ROOT / "README.md",
@@ -32,12 +36,6 @@ _PUBLIC_DOC_FILES = (
     _REPO_ROOT / "SECURITY.md",
 )
 _PUBLIC_DOC_ROOT = _REPO_ROOT / "docs"
-_ACTIVE_AGENT_INSTRUCTION_ROOTS = (
-    _REPO_ROOT / ".claude" / "commands",
-    _REPO_ROOT / ".claude" / "references",
-    _REPO_ROOT / ".claude" / "rules",
-    _REPO_ROOT / ".claude" / "skills",
-)
 _ALLOW_MARKER = "external-products-ok"
 _RETIRED_ROUTE_DESCRIPTION_MARKER = "retired-route-description-ok"
 _AUTHORIZED_PRIVATE_REPOSITORY_ROUTE = re.compile(
@@ -79,20 +77,33 @@ def _authority_documents() -> list[Path]:
     )
 
 
-def _active_agent_instruction_files() -> list[Path]:
-    files = [
-        _REPO_ROOT / "AGENTS.md",
-        _REPO_ROOT / ".github" / "ai-review-protocol.md",
-        _REPO_ROOT / ".github" / "workflows" / "ai-review.yml",
-        *_REPO_ROOT.rglob("CLAUDE.md"),
-    ]
-    files.extend(
-        document
-        for root in _ACTIVE_AGENT_INSTRUCTION_ROOTS
-        for document in root.rglob("*.md")
-    )
-    files.extend((_REPO_ROOT / ".cursor" / "rules").rglob("*.mdc"))
-    return sorted({document for document in files if document.exists()})
+def _active_agent_instruction_files(repo_root: Path = _REPO_ROOT) -> list[Path]:
+    tracked = subprocess.run(  # noqa: S603 -- fixed Git binary and arguments
+        [_GIT, "ls-files", "-z"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split("\0")
+    files: list[Path] = []
+    for raw_path in tracked:
+        if not raw_path:
+            continue
+        relative = Path(raw_path)
+        posix = relative.as_posix()
+        if (
+            relative.name in {"AGENTS.md", "CLAUDE.md"}
+            or (posix.startswith(".claude/") and relative.suffix == ".md")
+            or (posix.startswith(".cursor/rules/") and relative.suffix == ".mdc")
+            or posix
+            in {
+                ".github/ai-review-protocol.md",
+                ".github/workflows/ai-review.yml",
+            }
+            or relative.name.endswith(".prompt.md")
+        ):
+            files.append(repo_root / relative)
+    return sorted(files)
 
 
 def _has_retired_agent_route(line: str) -> bool:
@@ -120,11 +131,33 @@ def test_retired_route_guard_covers_any_local_private_destination() -> None:
 
 def test_active_agent_instruction_files_include_all_harness_surfaces() -> None:
     """Every repository agent-instruction surface participates in the guard."""
-    expected = set(_REPO_ROOT.rglob("CLAUDE.md"))
+    expected = {_REPO_ROOT / "CLAUDE.md", _REPO_ROOT / "design-system/CLAUDE.md"}
     expected.update((_REPO_ROOT / ".cursor" / "rules").rglob("*.mdc"))
+    expected.update((_REPO_ROOT / "design-system" / "components").rglob("*.prompt.md"))
     expected.add(_REPO_ROOT / ".github" / "ai-review-protocol.md")
     expected.add(_REPO_ROOT / ".github" / "workflows" / "ai-review.yml")
     assert expected <= set(_active_agent_instruction_files())
+
+
+def test_active_agent_instruction_files_ignore_untracked_nested_checkout(
+    tmp_path: Path,
+) -> None:
+    """Ignored worktrees do not contribute stale instructions to this checkout."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(  # noqa: S603 -- isolated test repository
+        [_GIT, "init", "-q"], cwd=repo, check=True
+    )
+    tracked = repo / "CLAUDE.md"
+    tracked.write_text("current\n")
+    stale = repo / ".worktrees" / "stale" / "CLAUDE.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("save work in private/\n")
+    subprocess.run(  # noqa: S603 -- isolated test repository
+        [_GIT, "add", "CLAUDE.md"], cwd=repo, check=True
+    )
+
+    assert _active_agent_instruction_files(repo) == [tracked]
 
 
 def _paragraphs(text: str) -> list[tuple[int, str]]:
