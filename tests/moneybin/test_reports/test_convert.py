@@ -35,6 +35,9 @@ from moneybin.reports._framework.execute import (
 from moneybin.reports.definitions.balance_drift import (
     _rebucket_status,  # pyright: ignore[reportPrivateUsage]  # the repair under test
 )
+from moneybin.reports.definitions.large_transactions import (
+    _blank_original_currency_analytics,  # pyright: ignore[reportPrivateUsage]  # ditto
+)
 from moneybin.reports.service_reports import (
     _restate_networth_total,  # pyright: ignore[reportPrivateUsage]  # ditto
 )
@@ -980,6 +983,39 @@ def test_derived_columns_are_restated_only_when_a_conversion_happened(
     assert seen == ["USD"]
 
 
+def test_rows_already_in_the_target_are_not_treated_as_a_conversion(
+    saved_db: Database,
+) -> None:
+    """The single-currency read is the common case, and nothing is priced in it.
+
+    A home currency is always defaulted in, so every ordinary read arrives here
+    asking to be converted into the currency its rows are already in. Those rows
+    resolve identity rates and come back with ``display_currency`` set, which
+    makes "a target currency exists" the wrong test for whether anything moved.
+    Running the repair on that read would restate — or, for
+    ``core:large_transactions``, blank — columns of a result whose amounts are
+    the ones the caller stored.
+    """
+    seen: list[str] = []
+
+    def _restate(rows: list[dict[str, Any]], currency: str) -> None:
+        seen.append(currency)
+
+    converted = convert_execution(
+        _execution(
+            records=[_row(currency_code="USD")],
+            display_currency="USD",
+            on_converted=_restate,
+        ),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+    )
+
+    assert converted.display_currency == "USD"
+    assert converted.applied_rates == ()
+    assert seen == []
+
+
 def test_drift_status_is_rebucketed_against_the_converted_amount() -> None:
     """A verdict bucketed pre-conversion contradicts the figure beside it.
 
@@ -1275,3 +1311,43 @@ def test_a_converted_read_still_truncates_to_its_row_limit(
     assert len(result.records) == 1
     assert result.truncated is True
     assert result.records[0]["amount"] == Decimal("109.00")
+
+
+def test_a_converted_read_drops_the_original_currency_anomaly_scores() -> None:
+    """The two z-scores and the top-100 flag describe the currency they were cut in.
+
+    Both scores standardize ``ABS(amount)`` against the account's or category's
+    own median and MAD across its full history, computed in SQL before anything
+    is priced. Conversion prices each row at its own ``txn_date`` rate, so two
+    charges that were equal in euros come back unequal in dollars still
+    carrying the one score they earned as equals — and ``currency_code`` now
+    names the target, so nothing left on the row says which currency the score
+    was measured in. Restating them honestly would mean repricing the whole
+    account history at per-date rates, which a read resolving only from stored
+    rates cannot do. Null is the truthful answer, and one these columns already
+    give for an account with too little history to score.
+    """
+    rows: list[dict[str, Any]] = [
+        {
+            "amount": Decimal("100.00"),
+            "amount_zscore_account": 3.1,
+            "amount_zscore_category": 2.7,
+            "is_top_100": True,
+        },
+        {
+            "amount": Decimal("200.00"),
+            "amount_zscore_account": 3.1,
+            "amount_zscore_category": 2.7,
+            "is_top_100": True,
+        },
+    ]
+
+    _blank_original_currency_analytics(rows, "USD")
+
+    assert [row["amount_zscore_account"] for row in rows] == [None, None]
+    assert [row["amount_zscore_category"] for row in rows] == [None, None]
+    assert [row["is_top_100"] for row in rows] == [None, None]
+    # The amounts are left exactly as conversion priced them: one transaction
+    # on one date resolves to one rate, which is the whole reason this report
+    # converts rather than segmenting.
+    assert [row["amount"] for row in rows] == [Decimal("100.00"), Decimal("200.00")]

@@ -192,7 +192,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rows all claiming the same unit would hand a consumer an arbitrary fraction
   of the position; the row `limit` applies to that collapsed result, so asking
   for fewer rows than the profile holds currencies no longer cuts a subtotal
-  out of the sum. `no-data` and `currency-mismatch` are untouched:
+  out of the sum. That headline sums the per-currency totals, each converted
+  and rounded once, so it can sit a cent under the converted account rows it
+  summarizes; summing those rows instead would make the headline follow an
+  `account_ids` filter and report one account as the whole position.
+  `no-data` and `currency-mismatch` are untouched:
   neither describes a magnitude. The `status` *filter* still selects in the
   account's own currency, so filter on `all` and read the returned status when
   converting.
@@ -200,7 +204,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Three of the eight registered reports convert exactly, because each of their
   rows is one event on one date: `core:large_transactions` at its transaction
   date, `core:balance_drift` at its assertion date, and `core:networth` at its
-  balance date. The other five — cash flow, spending trend, merchant activity,
+  balance date. `core:large_transactions` returns
+  `amount_zscore_account`, `amount_zscore_category`, and `is_top_100` as null
+  on a read that was actually priced into another currency: those are cut in
+  SQL against each row's original currency, and rates move between transaction
+  dates, so a converted read is not one scaling of the amounts they scored.
+  Which rows come back is still decided by original-currency magnitude,
+  including the `anomaly` filter. A read whose rows are already in the
+  requested currency prices nothing and keeps its scores, so the
+  single-currency profile is unaffected.
+  The other five — cash flow, spending trend, merchant activity,
   recurring subscriptions, and the net-worth history series — aggregate with
   `currency_code` in the grouping key, so a row is already a per-currency
   subtotal and pricing it would leave several rows sharing one grain key under

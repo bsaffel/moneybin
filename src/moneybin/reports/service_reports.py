@@ -430,6 +430,18 @@ def _restate_networth_total(rows: list[dict[str, Any]], currency: str) -> None:
     anything is summed. Account-breakdown rows hold nulls in all three headline
     fields, so only a totals row states the identity and only a totals row is
     touched; they keep their order after the collapsed headline.
+
+    What it deliberately does not do is make the headline equal the sum of the
+    displayed account rows. It sums the per-currency totals, each converted and
+    rounded once, so two 0.01 EUR accounts at rate 0.5 display 0.01 each while
+    their 0.02 EUR total converts to 0.01 — the headline is a cent under what
+    the visible rows add to. Summing the account rows instead would trade that
+    for two worse things: rounding error that grows with the number of
+    accounts, and a headline that follows an ``account_ids`` filter, so
+    narrowing the breakdown to one dollar account would silently report that
+    account as the whole position. The headline answers "what is this profile
+    worth", which is why it is built from the totals and why filtering narrows
+    only the rows beneath it.
     """
     totals = [row for row in rows if row["account_id"] is None]
     if not totals:

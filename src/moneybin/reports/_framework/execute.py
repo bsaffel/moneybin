@@ -196,8 +196,18 @@ def convert_execution(
     # Only a conversion that happened can leave a derived value stale, and only
     # then is there a target currency to recompute against. A segmented result
     # still holds its original amounts, so its derived values are already right.
+    # `applied_rates` — not `display_currency` — is what says one happened: the
+    # home currency is defaulted in, so the ordinary single-currency read asks
+    # to be priced into the currency it is already in, resolves identity rates,
+    # and comes back with a target set and nothing moved. Reusing the same
+    # non-identity predicate the provenance already publishes keeps one
+    # definition of "converted" rather than a second one beside it.
     removed = 0
-    if outcome.display_currency is not None and execution.on_converted is not None:
+    if (
+        outcome.applied_rates
+        and outcome.display_currency is not None
+        and execution.on_converted is not None
+    ):
         before = len(outcome.records)
         execution.on_converted(outcome.records, outcome.display_currency)
         removed = before - len(outcome.records)

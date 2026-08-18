@@ -273,6 +273,15 @@ historical net worth.
   split exists to prevent. The collapse runs *before* `limit` is applied, so a
   limit smaller than the number of currencies held still returns the whole
   position rather than whichever subtotal happened to fit the page.
+- The converted headline is the sum of the per-currency totals, each converted
+  and rounded once — not the sum of the converted account rows, which it can
+  therefore miss by rounding. Two 0.01 EUR accounts at rate 0.5 display 0.01
+  each while their 0.02 EUR total converts to 0.01. Summing the account rows
+  instead would accumulate rounding error per account and, worse, make the
+  headline follow an `account_ids` filter: narrowing the breakdown to one
+  dollar account would report that account as the whole position. The headline
+  answers what the profile is worth, so a filter narrows only the rows beneath
+  it.
 - No-data contract: if no position exists on or before the requested date, the
   result contains exactly one totals row with every field null — including
   `account_count`, which is null rather than `0` because no currency was

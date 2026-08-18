@@ -192,7 +192,14 @@ Numbered, testable. Tagged by phase.
    `NetworthService` (see Requirement 7). `reports.large_transactions` additionally
    scopes its median/MAD baselines and its top-100 rank per currency — a pooled
    baseline compares unlike units and scores a typical charge in the
-   smaller-denominated currency as an anomaly.
+   smaller-denominated currency as an anomaly. That per-currency scoping is also
+   why those three columns cannot survive a display conversion: the baseline is
+   the row's original currency, each row prices at its own `txn_date` rate, and
+   rates move between dates, so the converted amounts are not one scaling of the
+   population that produced the score. A converted read returns them null rather
+   than attribute them to a currency they were not measured in; the rows
+   themselves are still ranked and anomaly-filtered in SQL, on the original
+   amounts.
    **Ranking and reachability, 2026-07-26.** Segmentation makes each figure
    correct; two follow-on defects left a correct figure unreadable or absent.
    The framework truncates with `records[:max_rows]`, so the *first* sort key
