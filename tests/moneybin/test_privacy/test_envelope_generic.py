@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import Annotated
 
+from moneybin.privacy.payloads.investments import (
+    InvestmentHoldingRow,
+    InvestmentHoldingsPayload,
+)
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
@@ -71,3 +76,41 @@ def test_list_of_dicts_payload_still_works() -> None:
     env = build_envelope(data=[{"a": 1}, {"a": 2}], sensitivity="low")
     assert env.summary.returned_count == 2
     assert env.to_dict()["data"] == [{"a": 1}, {"a": 2}]
+
+
+def _holding(currency: str) -> InvestmentHoldingRow:
+    return InvestmentHoldingRow(
+        account_id="acct-1",
+        security_id="sec-1",
+        quantity=Decimal("1"),
+        cost_basis=Decimal("10.00"),
+        average_cost=Decimal("10.00"),
+        currency_code=currency,
+        market_value=Decimal("12.00"),
+        unrealized_gain=Decimal("2.00"),
+        price_date=date(2026, 3, 5),
+        price_source="tiingo",
+        days_since_observed=1,
+        valuation_status="priced",
+    )
+
+
+def test_rate_provenance_does_not_displace_the_rows_it_describes() -> None:
+    """A provenance list is metadata about the rows, not a second row set.
+
+    ``build_envelope`` finds "the" row collection by looking for a payload's one
+    non-auxiliary list, and falls back to no currency and a count of 1 when it
+    finds several. Holdings gained ``applied_rates`` beside ``rows``, so without
+    an exemption every holdings response — including the overwhelmingly common
+    one where nothing converted and the list is empty — would report an unknown
+    currency and a count of 1 in place of the number of positions returned.
+    """
+    payload = InvestmentHoldingsPayload(
+        rows=[_holding("USD"), _holding("USD"), _holding("USD")],
+        applied_rates=[],
+    )
+
+    env = build_envelope(data=payload, sensitivity="medium")
+
+    assert env.summary.returned_count == 3
+    assert env.summary.display_currency == "USD"

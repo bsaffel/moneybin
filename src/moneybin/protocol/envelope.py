@@ -438,6 +438,12 @@ _AUXILIARY_LIST_FIELDS = frozenset({
     "error_details",
     "unmapped_columns",
     "flagged_fields",
+    # Rate provenance describes the rows; it is not a second set of them. A
+    # payload carrying both (`InvestmentHoldingsPayload`) has two lists, and the
+    # heuristic answers "several, so neither" — reporting an unknown currency
+    # and a count of 1 for a read that returned N priced positions. Empty on
+    # almost every call, so the field's presence alone would break the count.
+    "applied_rates",
 })
 
 
