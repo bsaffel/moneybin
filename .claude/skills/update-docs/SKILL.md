@@ -1,6 +1,6 @@
 ---
 name: update-docs
-description: 'Update the public doc surface — README, CHANGELOG, CONTRIBUTING, docs/ (architecture, audience, comparison, features, roadmap, guides, reference, tech) — to reflect what an in-scope change means for users; persona-aware per docs/audience.md. Excludes specs and ADRs (use /update-specs). Trigger: user-visible work ships, a PR adds capability, a milestone closes, or "update the docs". Suggest it unprompted.'
+description: 'Update the public doc surface — README, CHANGELOG, CONTRIBUTING, docs/ (architecture, audience, comparison, features, roadmap, guides, reference, tech) — to reflect what an in-scope change means for users; persona-aware per docs/audience.md. Excludes specs and ADRs. Trigger: user-visible work ships, a PR adds capability, a milestone closes, or "update the docs". Suggest it unprompted.'
 ---
 
 # /update-docs
@@ -40,7 +40,8 @@ not as the starting point.
 
 **OUT of scope:**
 
-- `docs/specs/` — that's `/update-specs`
+- `docs/specs/` — reconcile active specs during initial implementation; preserve
+  implemented specs unless a material replacement requires supersession
 - `docs/decisions/` — ADRs are durable, edited by hand only
 - Private strategy, internal coordination, and the legacy local `private/` tree
   are outside this skill. Route private status to the MoneyBin Linear project
@@ -291,7 +292,8 @@ Per-file summary of edits, plus:
 
 ## What this skill will NOT do
 
-- Touch `docs/specs/` — that's `/update-specs`.
+- Touch `docs/specs/`; their lifecycle belongs to planning and implementation,
+  not the public-doc refresh pass.
 - Touch `docs/decisions/` — ADRs are by hand.
 - Touch private strategy or coordination surfaces, including the legacy local
   `private/` tree, Linear, or `bsaffel/moneybin-private`.

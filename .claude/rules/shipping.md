@@ -67,36 +67,31 @@ For shipped features that warrant a user-facing how-to, add a guide in `docs/gui
 
 The goal is that someone reading the docs gets an accurate picture of what MoneyBin can do *today*, without digging through specs.
 
-### 6. Milestone address reconciliation
+### 6. Milestone address registration
 
-`docs/roadmap.md` is the canonical list of milestone addresses. Any other copy of that list — a planning tracker, a working note — is a **mirror**, and mirrors drift silently because no other step in this checklist touches them.
+`docs/roadmap.md` is the sole canonical list of milestone addresses. Do not
+maintain a second address list in private plans, working notes, or Linear.
+Private knowledge may explain a roadmap decision, and Linear issues may link to
+the public roadmap row, but neither duplicates the roadmap.
 
-Enumerate the roadmap's addresses and diff them against any mirror you keep:
-
-```bash
-grep -oE 'M[0-3][A-Z](\.[0-9]+)?' docs/roadmap.md | sort -u
-```
-
-When the two lists diverge, the discriminator is **whether real work backs the address** — not which list it happens to sit in:
-
-- **Work exists** (shipped, in progress, or specced) but the roadmap has no row → the roadmap is wrong. Add it here; the roadmap is canonical.
-- **No work backs it** (retired, renamed, or never started) → the mirror is wrong. Drop it there.
-
-Do **not** re-mint a retired address. Before assigning a letter, confirm it is genuinely free — absence from one of the two lists is not evidence that it is.
+Before assigning an address, search `docs/roadmap.md` for the work and the
+candidate address. Reuse the existing address when the work already has one;
+otherwise append the next genuinely free letter or work-item number. Do not
+re-mint a retired address.
 
 ## When a New Spec Is Written
 
 - Give the spec an **address** — the next free increment letter under its milestone (e.g. `M2F`), per `.claude/references/design-principles-depth.md` → "Milestone addressing." Don't invent a new numbering scheme.
 - Add a 📐 entry in the matching milestone row of `docs/roadmap.md`.
 - Add the spec to `docs/specs/INDEX.md` with status `draft` or `ready`.
-- Run the address diff (step 6 above). A newly minted address is exactly the kind that reaches a mirror late or never.
+- Confirm the new address has one canonical registration in `docs/roadmap.md`.
 
 ## When a Feature Is Planned (No Spec Yet)
 
 - Attach it to a milestone/increment per the address scheme (`.claude/references/design-principles-depth.md` → "Milestone addressing") — append the next free increment letter; don't fork a parallel sequence.
 - Add a 🗓️ entry under that milestone in `docs/roadmap.md` (or the Post-launch section if genuinely beyond M3).
 - No `INDEX.md` entry until a spec exists.
-- Run the address diff (step 6 above).
+- Confirm the new address has one canonical registration in `docs/roadmap.md`.
 
 ## When a Milestone Closes
 

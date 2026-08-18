@@ -30,6 +30,12 @@ _PUBLIC_DOC_FILES = (
     _REPO_ROOT / "SECURITY.md",
 )
 _PUBLIC_DOC_ROOT = _REPO_ROOT / "docs"
+_ACTIVE_AGENT_INSTRUCTION_ROOTS = (
+    _REPO_ROOT / ".claude" / "commands",
+    _REPO_ROOT / ".claude" / "references",
+    _REPO_ROOT / ".claude" / "rules",
+    _REPO_ROOT / ".claude" / "skills",
+)
 _ALLOW_MARKER = "external-products-ok"
 _COMPETITOR_DERIVATION = re.compile(
     r"\b(?:"
@@ -51,6 +57,11 @@ _PRIVATE_LINK = re.compile(
     r"|^\s*\[[^\]]+\]:\s*/?(?:\.{1,2}/)*private/"
     r"|href=[\"']/?(?:\.{1,2}/)*private/"
 )
+_RETIRED_AGENT_ROUTE = re.compile(
+    r"private/(?:plans|followups|strategy)(?:/|\b)"
+    r"|docs/followups\.md"
+    r"|/update-(?:progress|specs)\b"
+)
 
 
 def _authority_documents() -> list[Path]:
@@ -60,6 +71,16 @@ def _authority_documents() -> list[Path]:
         for document in root.rglob("*.md")
         if "archived" not in document.parts
     )
+
+
+def _active_agent_instruction_files() -> list[Path]:
+    files = [_REPO_ROOT / "AGENTS.md"]
+    files.extend(
+        document
+        for root in _ACTIVE_AGENT_INSTRUCTION_ROOTS
+        for document in root.rglob("*.md")
+    )
+    return sorted(document for document in files if document.exists())
 
 
 def _paragraphs(text: str) -> list[tuple[int, str]]:
@@ -123,4 +144,30 @@ def test_public_docs_do_not_link_private() -> None:
         "Public documents must not link into private/. Replace the reference "
         "with a public issue, roadmap item, or an honest statement that the "
         "work is planned; see .claude/rules/documentation.md.\n" + "\n".join(violations)
+    )
+
+
+def test_active_agent_instructions_do_not_route_to_retired_trackers_or_skills() -> None:
+    """Active instructions use GitHub, Linear, and session scratch surfaces."""
+    documents = _active_agent_instruction_files()
+    assert documents, "agent routing policy check found no active instructions"
+
+    violations: list[str] = []
+    for document in documents:
+        for line_number, line in enumerate(document.read_text().splitlines(), start=1):
+            if _RETIRED_AGENT_ROUTE.search(line):
+                path = document.relative_to(_REPO_ROOT)
+                violations.append(f"{path}:{line_number}: {line.strip()[:120]}")
+
+    retired_skill = _REPO_ROOT / ".claude" / "skills" / "update-specs" / "SKILL.md"
+    if retired_skill.exists():
+        violations.append(
+            f"{retired_skill.relative_to(_REPO_ROOT)}: retired skill exists"
+        )
+
+    assert not violations, (
+        "Active agent instructions must route private knowledge to "
+        "bsaffel/moneybin-private, coordination to Linear, public delivery to "
+        "GitHub, and disposable plans to session scratch. Remove retired local "
+        "tracker and update-specs routes.\n" + "\n".join(violations)
     )
