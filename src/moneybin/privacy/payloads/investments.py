@@ -43,6 +43,9 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Runtime, not TYPE_CHECKING: Pydantic resolves the annotation when it builds
+# the model. `payloads.currency` pulls in nothing heavy of its own.
+from moneybin.privacy.payloads.currency import FxRatePayload
 from moneybin.privacy.taxonomy import DataClass
 
 # Every payload below classifies its `warnings` field AGGREGATE (Tier.LOW), not
@@ -198,6 +201,11 @@ class InvestmentHoldingsPayload:
     ``total_market_value`` and ``market_value_by_currency`` are BALANCE for the
     same reason: they are sums of the rows' BALANCE ``market_value``, and
     classifying a portfolio total AGGREGATE would under-classify real money.
+    ``total_market_value_currency`` is CURRENCY like every other currency code —
+    a converted total names its unit, and the unit is not the money.
+    ``applied_rates`` reuses ``FxRatePayload``, so the rate behind a converted
+    total is published with the same six fields and the same classes as the
+    ``fx rate`` surface (Requirement 10); it is empty when nothing converted.
     """
 
     rows: list[InvestmentHoldingRow]
@@ -207,9 +215,11 @@ class InvestmentHoldingsPayload:
         int | None, DataClass.TIMESTAMP_OBSERVABILITY
     ] = None
     total_market_value: Annotated[Decimal | None, DataClass.BALANCE] = None
+    total_market_value_currency: Annotated[str | None, DataClass.CURRENCY] = None
     market_value_by_currency: Annotated[dict[str, Decimal], DataClass.BALANCE] = field(
         default_factory=dict
     )
+    applied_rates: list[FxRatePayload] = field(default_factory=list)
 
     @classmethod
     def from_result(cls, result: HoldingsResult) -> InvestmentHoldingsPayload:
@@ -219,7 +229,11 @@ class InvestmentHoldingsPayload:
             warnings=result.warnings,
             max_days_since_observed=result.max_days_since_observed,
             total_market_value=result.total_market_value,
+            total_market_value_currency=result.total_market_value_currency,
             market_value_by_currency=result.market_value_by_currency,
+            applied_rates=[
+                FxRatePayload.from_resolved(rate) for rate in result.applied_rates
+            ],
         )
 
 
@@ -421,9 +435,11 @@ class InvestmentsEventsView(BaseModel):
 class InvestmentsHoldingsView(BaseModel):
     """Paginated current positions with portfolio-level valuation.
 
-    The three portfolio fields mirror ``InvestmentHoldingsPayload``'s (same
+    The five portfolio fields mirror ``InvestmentHoldingsPayload``'s (same
     classifications, same rationale). They are computed over the full position
-    set, so a paginated ``rows`` page does not change them.
+    set, so a paginated ``rows`` page does not change them — including
+    ``applied_rates``, which names the rates behind the whole portfolio's
+    total, not the ones behind the page.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -435,9 +451,11 @@ class InvestmentsHoldingsView(BaseModel):
         int | None, DataClass.TIMESTAMP_OBSERVABILITY
     ] = None
     total_market_value: Annotated[Decimal | None, DataClass.BALANCE] = None
+    total_market_value_currency: Annotated[str | None, DataClass.CURRENCY] = None
     market_value_by_currency: Annotated[dict[str, Decimal], DataClass.BALANCE] = Field(
         default_factory=dict
     )
+    applied_rates: list[FxRatePayload] = Field(default_factory=list)
 
 
 class InvestmentsLotsView(BaseModel):

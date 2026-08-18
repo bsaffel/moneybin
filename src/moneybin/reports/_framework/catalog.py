@@ -36,6 +36,7 @@ from moneybin.reports._framework.contract import (
     USER_NAMESPACE,
     OutputColumn,
     ParamSpec,
+    RecomputeDerived,
     ReportSemantics,
     ReportSpec,
 )
@@ -43,11 +44,62 @@ from moneybin.reports._framework.derive import json_scalar, typed_value
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     CatalogReportResult,
+    convert_execution,
     execute_catalog_report,
     redact_catalog_execution,
+    truncate_execution,
+)
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+from moneybin.services.currency_service import (
+    build_cache_only_currency_service,
+    require_currency,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def profile_home_currency(db: Database) -> str | None:
+    """The currency to price a report in when the caller named none.
+
+    Every report surface resolves the default through this one function, so a
+    new surface inherits Requirement 9 by spelling it the same way. ``None`` is
+    a real answer, not a missing one: a user who has chosen no home currency
+    gets their amounts in the currencies they are actually in, never a guess.
+    """
+    return ProfileSettingsRepo(db).get_home_currency()
+
+
+def _conversion_target(
+    display_currency: str | None, home_currency: str | None
+) -> str | None:
+    """The currency to price into, refusing a request that names none.
+
+    Resolved *before* the rows are read, because the row loop is not a
+    validator: ``convert_records`` reaches ``resolve_rate`` only when there is a
+    row to price, so a report returning nothing would otherwise label itself
+    denominated in whatever string arrived.
+
+    Only the caller's own request is refused. A malformed ``home_currency`` is a
+    standing profile setting rather than this call's ask, and raising on one
+    would fail every money-bearing report the profile owns until it is fixed —
+    including the reads that would show what is wrong. It falls back silently,
+    on the same rule every other defaulted-currency fallback follows.
+    """
+    if display_currency is not None:
+        return require_currency(display_currency)
+    if home_currency is None:
+        return None
+    try:
+        return require_currency(home_currency)
+    except UserError:
+        return None
+
+
+def _merged_reason(*reasons: str | None) -> str | None:
+    """Every stated reason a result is degraded, or ``None`` if it is not."""
+    stated = [reason for reason in reasons if reason]
+    return "; ".join(stated) if stated else None
+
 
 _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 
@@ -70,6 +122,8 @@ class ServiceReportSpec:
         [Database, Mapping[str, JsonValue], int | None], CatalogReportExecution
     ]
     validator: Callable[[Mapping[str, JsonValue]], None] | None = None
+    on_converted: RecomputeDerived | None = None
+    """Same contract as ``ReportSpec.on_converted`` — see the note there."""
 
     def __post_init__(self) -> None:
         if _REPORT_ID.fullmatch(self.report_id) is None:
@@ -204,22 +258,63 @@ class ReportCatalog:
         report_id: str,
         parameters: Mapping[str, JsonValue],
         limit: int,
+        display_currency: str | None = None,
+        home_currency: str | None = None,
     ) -> CatalogReportResult:
-        """Validate parameters, then dispatch through the selected report kind."""
+        """Validate parameters, then dispatch through the selected report kind.
+
+        Both currencies price every money column in one currency (Requirement 9),
+        and a pair that cannot be resolved from stored rates segments instead of
+        failing — see ``convert_execution``. They differ in who asked, and so in
+        what a fallback owes the caller: ``display_currency`` is the caller's own
+        request and its fallback is explained, while ``home_currency`` is the
+        profile's standing default and its fallback is silent. A default that
+        announced itself would put a warning on every read of every report whose
+        rates are not yet cached, and on every user-created report — which
+        deliberately declares neither a currency nor a date column, so it can
+        never convert. Callers resolve ``home_currency`` themselves (see
+        ``profile_home_currency``) rather than having it read here, which keeps
+        this method a pure function of its arguments.
+        """
+        target = _conversion_target(display_currency, home_currency)
         spec, execution = self.execute_raw(
             db,
             report_id=report_id,
             parameters=parameters,
             limit=limit,
+            # A conversion can change the row count — `core:networth` merges its
+            # per-currency totals once they share a unit — so the cap has to
+            # describe what that repair produced, not what fed it.
+            defer_truncation=target is not None,
         )
+        if target is not None:
+            # Between execution and redaction, the only window where the rows
+            # are both final and still numeric.
+            execution = convert_execution(
+                execution,
+                to_currency=target,
+                service=build_cache_only_currency_service(db),
+            )
+            if display_currency is None:
+                execution = replace(execution, degraded_reason=None)
+        execution = truncate_execution(execution)
         result = redact_catalog_execution(spec, execution)
         status = self.status(spec.report_id)
         if not status.degraded:
             return result
         # R4's drift reason belongs on the response, not only on the intermediate
         # object the catalog built the spec from: masked rows with no stated cause
-        # are the failure the whole degraded flag exists to prevent.
-        return replace(result, degraded=True, degraded_reason=status.degraded_reason)
+        # are the failure the whole degraded flag exists to prevent. A conversion
+        # that also degraded keeps its reason beside it rather than losing to it:
+        # they are independent, and a reader told only about drift would think
+        # the currency label was trustworthy.
+        return replace(
+            result,
+            degraded=True,
+            degraded_reason=_merged_reason(
+                status.degraded_reason, result.degraded_reason
+            ),
+        )
 
     def execute_raw(
         self,
@@ -228,8 +323,14 @@ class ReportCatalog:
         report_id: str,
         parameters: Mapping[str, JsonValue],
         limit: int | None,
+        defer_truncation: bool = False,
     ) -> tuple[RegisteredReport, CatalogReportExecution]:
-        """Validate and execute one report without terminal redaction."""
+        """Validate and execute one report without terminal redaction.
+
+        ``defer_truncation`` returns the rows uncut and records the cap on the
+        execution for ``truncate_execution`` to apply later. Callers that do not
+        ask for it get an execution already capped, exactly as before.
+        """
         spec, validated = self.resolve_request(
             report_id=report_id,
             parameters=parameters,
@@ -242,14 +343,22 @@ class ReportCatalog:
                     spec,
                     db,
                     max_rows=limit,
+                    defer_truncation=defer_truncation,
                     **validated,
                 )
             else:
-                execution = spec.executor(db, validated, limit)
+                # A service executor builds every row it has before handing them
+                # over, so withholding the cap costs it nothing and spares the
+                # protocol a flag only one of its two implementations reads.
+                execution = spec.executor(
+                    db, validated, None if defer_truncation else limit
+                )
         except Exception:
             USER_REPORT_RUNS_TOTAL.labels(tier=tier, outcome="error").inc()
             raise
         USER_REPORT_RUNS_TOTAL.labels(tier=tier, outcome="ok").inc()
+        if defer_truncation:
+            execution = replace(execution, pending_limit=limit)
         return spec, execution
 
     def resolve_request(
@@ -646,6 +755,7 @@ def _semantics_to_payload(semantics: ReportSemantics) -> ReportSemanticsPayload:
         kind=semantics.kind,
         valuation_basis=semantics.valuation_basis,
         fx_basis=semantics.fx_basis,
+        fx_date=semantics.fx_date,
         time_basis=semantics.time_basis,
         denominator=semantics.denominator,
         comparison_window=semantics.comparison_window,

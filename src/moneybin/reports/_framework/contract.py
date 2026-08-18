@@ -24,6 +24,22 @@ from moneybin.tables import TableRef
 Runner = Callable[..., "ReportQuery"]
 _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 
+#: Carries what a converted row started in, once the report's currency column
+#: has been relabelled to the target. Requirement 10 wants the exact rate behind
+#: any converted number, and `applied_rates` alone cannot give it: a report
+#: holding two source currencies on one date publishes two rates, and the row
+#: that used to say which one applied now says the target. Named for what it
+#: holds rather than `source_*`, which in this codebase means the system a row
+#: was imported from. Present only on a read that actually priced something — on
+#: a segmented or already-in-target result it would duplicate the currency
+#: column and imply a conversion the caller did not get.
+#:
+#: Beside `RecomputeDerived` rather than in `convert`, because an `on_converted`
+#: callback is its main reader and report definitions are imported to build the
+#: CLI: importing `convert` from one pulls `CurrencyService`, and polars behind
+#: it, into every cold start (`test_cli_main_import_does_not_load_heavy_deps`).
+ORIGINAL_CURRENCY_COLUMN = "original_currency_code"
+
 #: ``report_id`` namespace owned by the user tier — the one tier whose reports
 #: are database rows rather than code. ``mint_user_report_id`` produces it and
 #: ``report_tier`` reads it; defined here beside the id grammar it belongs to.
@@ -152,6 +168,24 @@ class ReportSemantics:
     comparison_window: str | None
     exclusions: tuple[str, ...]
     provenance: tuple[str, ...]
+    fx_date: str | None = None
+    """The column whose value dates each row for display conversion.
+
+    Defaults to ``None`` — no declared date — which segments rather than
+    converting. That is the safe direction: a report that has not said which
+    column dates its rows cannot be converted at a defensible rate, and picking
+    one by guessing (the only ``TXN_DATE`` column, say) would silently price a
+    lifetime total at whichever date happened to be named first.
+    """
+
+
+type RecomputeDerived = Callable[[list[dict[str, Any]], str], None]
+"""Repair a report's derived columns in place after its money columns converted.
+
+Receives the converted rows and the currency they are now in. Mutates rather
+than returns because it repairs a subset of columns on rows the caller already
+owns; rebuilding them would invite a partial copy that silently drops one.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +220,13 @@ class ReportSpec:
     """Column → why it is declared below its derived class. CI requires a reason
     for every downgrade; derivation over-classifies computed columns, and
     over-masking a BI surface is its own failure mode."""
+    on_converted: RecomputeDerived | None = None
+    """Repair for columns derived from this report's money columns, or ``None``.
+
+    Only a report holding a value *computed from* an amount needs one — a label
+    bucketed against thresholds, or a total that must keep equalling its parts.
+    Display conversion prices each money column on its own, so without this the
+    derived value keeps describing the original currency."""
 
     def __post_init__(self) -> None:
         if _REPORT_ID.fullmatch(self.report_id) is None:
@@ -220,6 +261,7 @@ def report(
     semantics: ReportSemantics,
     domain: str | None = None,
     class_downgrades: Mapping[str, str] | None = None,
+    on_converted: RecomputeDerived | None = None,
 ) -> Callable[[Runner], Runner]:
     """Mark a runner as a report and attach its introspected :class:`ReportSpec`.
 
@@ -245,6 +287,9 @@ def report(
         class_downgrades: Column → reason, for every column whose declared
             class sits below its CI-derived floor (``derive_report_classes``).
             Over-declaring never needs a reason; only a genuine downgrade does.
+        on_converted: Repair for columns derived from this report's money
+            columns, run after display conversion prices them. Only a report
+            holding a value computed from an amount needs one.
     """
     # Imported lazily to avoid a contract<->introspect import cycle.
     from moneybin.reports._framework.introspect import build_spec
@@ -261,6 +306,7 @@ def report(
             semantics=semantics,
             domain=domain,
             class_downgrades=class_downgrades,
+            on_converted=on_converted,
         )
         return fn
 

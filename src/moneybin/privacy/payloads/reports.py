@@ -27,6 +27,10 @@ class ReportSemanticsPayload(BaseModel):
     ]
     valuation_basis: Annotated[str | None, DataClass.AGGREGATE]
     fx_basis: Annotated[str | None, DataClass.AGGREGATE]
+    # Defaulted because its ``ReportSemantics`` counterpart is: mirroring the
+    # dataclass field-for-field means mirroring its default too, and a payload
+    # built without one would otherwise disagree with the report it describes.
+    fx_date: Annotated[str | None, DataClass.AGGREGATE] = None
     time_basis: Annotated[str | None, DataClass.AGGREGATE]
     denominator: Annotated[str | None, DataClass.AGGREGATE]
     comparison_window: Annotated[str | None, DataClass.AGGREGATE]

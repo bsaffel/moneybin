@@ -81,14 +81,7 @@ def fx_rate(
             service = build_currency_service(db, actor="fx_rate")
             resolved = service.resolve_rate(from_currency, to_currency, requested)
 
-    payload = FxRatePayload(
-        from_currency=resolved.from_currency,
-        to_currency=resolved.to_currency,
-        requested_date=resolved.requested_date,
-        rate_date=resolved.rate_date,
-        rate=resolved.rate,
-        source=resolved.source,
-    )
+    payload = FxRatePayload.from_resolved(resolved)
     if output == OutputFormat.JSON:
         render_or_json(build_envelope(data=payload), output, cli_actor="fx_rate")
         return

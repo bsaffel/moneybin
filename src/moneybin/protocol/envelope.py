@@ -121,6 +121,13 @@ class SummaryMeta:
     display_currency: str | None = None
     degraded: bool = False
     degraded_reason: str | None = None
+    # The rates behind this response's converted amounts (multi-currency.md
+    # Requirement 10). Set only when a conversion actually happened: amounts
+    # already in their original currency were priced by nothing, and an empty
+    # list would imply a conversion whose rate went unrecorded. Sits beside
+    # display_currency because the two answer one question together — that
+    # names the unit, this says how the unit was reached.
+    applied_rates: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict, omitting a null ``period`` and a false ``degraded``.
@@ -128,6 +135,9 @@ class SummaryMeta:
         ``display_currency`` is emitted unconditionally, null included: null is
         the answer "not one known currency", and a consumer that finds no key
         cannot tell that answer from a tool that never set one.
+        ``applied_rates`` is the opposite case and is omitted when absent —
+        "nothing was converted" and "converted at an unrecorded rate" must not
+        serialize alike, so the key appears only when rates really were applied.
         """
         d: dict[str, Any] = {
             "total_count": self.total_count,
@@ -142,6 +152,8 @@ class SummaryMeta:
             d["degraded"] = True
             if self.degraded_reason:
                 d["degraded_reason"] = self.degraded_reason
+        if self.applied_rates:
+            d["applied_rates"] = self.applied_rates
         return d
 
 
@@ -301,6 +313,7 @@ def build_envelope(
     degraded_reason: str | None = None,
     recovery_actions: list[RecoveryAction] | None = None,
     classes_returned: list[str] | None = None,
+    applied_rates: list[dict[str, Any]] | None = None,
 ) -> ResponseEnvelope[Any]:
     """Build a ResponseEnvelope with computed metadata.
 
@@ -344,6 +357,11 @@ def build_envelope(
             partial-success failure (e.g. a best-effort step that crashed).
             The navigational ``actions`` field stays distinct — it answers
             "what next", not "how to fix what broke".
+        applied_rates: The exchange rates behind this response's converted
+            amounts, one entry per distinct pair and date
+            (multi-currency.md Requirement 10). Pass it only when a conversion
+            actually happened: omitted means nothing was converted, which is a
+            different claim from "converted, rate unrecorded".
         classes_returned: Internal observability only — DataClass value strings
             for dynamic-SQL tools that self-classify per call (``dynamic_classification``
             mode). Read by the ``@mcp_tool`` decorator for privacy audit logging.
@@ -396,6 +414,7 @@ def build_envelope(
         display_currency=resolved_currency,
         degraded=degraded,
         degraded_reason=degraded_reason,
+        applied_rates=applied_rates,
     )
 
     return ResponseEnvelope(
@@ -419,6 +438,12 @@ _AUXILIARY_LIST_FIELDS = frozenset({
     "error_details",
     "unmapped_columns",
     "flagged_fields",
+    # Rate provenance describes the rows; it is not a second set of them. A
+    # payload carrying both (`InvestmentHoldingsPayload`) has two lists, and the
+    # heuristic answers "several, so neither" — reporting an unknown currency
+    # and a count of 1 for a read that returned N priced positions. Empty on
+    # almost every call, so the field's presence alone would break the count.
+    "applied_rates",
 })
 
 

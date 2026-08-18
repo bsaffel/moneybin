@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Protocol, cast
 
@@ -38,11 +38,15 @@ from moneybin.protocol.envelope import (
 )
 from moneybin.reports._framework.classify import classify_columns
 from moneybin.reports._framework.contract import (
+    ORIGINAL_CURRENCY_COLUMN,
     ParamSpec,
+    RecomputeDerived,
     ReportSemantics,
     ReportSpec,
     bound_value,
 )
+from moneybin.reports._framework.convert import convert_records, rates_pricing
+from moneybin.services.currency_service import CurrencyService, ResolvedRate
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +86,10 @@ class ReportResult:
     #: a file in the repo and has no stored map to go stale.
     degraded: bool = False
     degraded_reason: str | None = None
+    #: The rates behind these rows' converted amounts, empty when none were
+    #: converted. Rides the response only — never the durable log, which is why
+    #: ``degraded_reason`` still names no date (see ``convert._missing_reason``).
+    applied_rates: tuple[ResolvedRate, ...] = ()
 
     @property
     def classes_returned(self) -> list[str]:
@@ -107,6 +115,7 @@ class ReportResult:
             display_currency=self.display_currency,
             degraded=self.degraded,
             degraded_reason=self.degraded_reason,
+            applied_rates=[rate.as_provenance() for rate in self.applied_rates] or None,
         )
 
 
@@ -140,6 +149,150 @@ class CatalogReportExecution:
     provenance: tuple[str, ...]
     # Same contract as ReportResult.display_currency — see the note there.
     display_currency: str | None = None
+    #: Why a requested display currency was not applied, when one was requested
+    #: and the rows fell back to per-currency segmentation (Requirement 15).
+    degraded_reason: str | None = None
+    #: Every distinct rate that priced these rows (Requirement 10). Empty until
+    #: ``convert_execution`` runs, and on any result that stayed segmented.
+    applied_rates: tuple[ResolvedRate, ...] = ()
+    #: The row cap this execution still owes, or ``None`` once one has been
+    #: applied. Set only on the converting path, where the cap has to wait for
+    #: ``on_converted`` — see ``truncate_execution``.
+    pending_limit: int | None = None
+    on_converted: RecomputeDerived | None = None
+    """The report's own repair for values *derived* from its money columns.
+
+    Conversion multiplies each declared money column independently, which leaves
+    anything computed from those columns describing the original currency: a
+    ``balance_drift`` row keeps a status bucketed against the pre-conversion
+    amount, and a row carrying both components and their total can round so the
+    parts no longer sum to it.
+
+    A callable rather than a declared relation because the two repairs have no
+    shared shape — one re-buckets a label against thresholds, the other re-adds
+    two columns — and inventing a vocabulary general enough for both would be a
+    larger contract than the two functions it replaces.
+    """
+
+
+def convert_execution(
+    execution: CatalogReportExecution,
+    *,
+    to_currency: str,
+    service: CurrencyService,
+) -> CatalogReportExecution:
+    """Price one execution's rows in ``to_currency``, or leave them segmented.
+
+    Applied to the raw execution rather than the redacted result because masking
+    replaces an amount with a string: a converted ``'*****'`` is not a number,
+    and a partially masked one would be a different number than it claims.
+    """
+    outcome = convert_records(
+        execution.records,
+        classes=execution.output_classes,
+        semantics=execution.semantics,
+        to_currency=to_currency,
+        service=service,
+    )
+    # Only a conversion that happened can leave a derived value stale, and only
+    # then is there a target currency to recompute against. A segmented result
+    # still holds its original amounts, so its derived values are already right.
+    # `applied_rates` — not `display_currency` — is what says one happened: the
+    # home currency is defaulted in, so the ordinary single-currency read asks
+    # to be priced into the currency it is already in, resolves identity rates,
+    # and comes back with a target set and nothing moved. Reusing the same
+    # non-identity predicate the provenance already publishes keeps one
+    # definition of "converted" rather than a second one beside it.
+    removed = 0
+    if (
+        outcome.applied_rates
+        and outcome.display_currency is not None
+        and execution.on_converted is not None
+    ):
+        before = len(outcome.records)
+        execution.on_converted(outcome.records, outcome.display_currency)
+        removed = before - len(outcome.records)
+
+    # `convert_records` attaches the original currency to each row under the
+    # same "a rate was applied" condition. Declaring it here is what makes it
+    # visible: the envelope's column list, the typed CLI table, and redaction
+    # all read `columns`/`output_classes`, and an undeclared key would either
+    # be dropped or reach a caller with no masking policy behind it. Declared
+    # by the framework rather than by each report, because no report's SQL
+    # projects it — it exists only on the converted read this module produces.
+    columns = execution.columns
+    column_types = execution.column_types
+    output_classes = execution.output_classes
+    if outcome.applied_rates:
+        columns = [*columns, ORIGINAL_CURRENCY_COLUMN]
+        column_types = [*column_types, "VARCHAR"]
+        output_classes = {
+            **output_classes,
+            ORIGINAL_CURRENCY_COLUMN: DataClass.CURRENCY,
+        }
+
+    return replace(
+        execution,
+        records=outcome.records,
+        columns=columns,
+        column_types=column_types,
+        output_classes=output_classes,
+        # `total_count` was fixed before conversion ran, so a callback that
+        # collapses rows — `core:networth` merging its per-currency totals —
+        # would leave the envelope deriving `has_more` from rows that no longer
+        # exist, reporting an untruncated result as truncated. Floored at what
+        # is actually being returned, since a total below that is never true.
+        total_count=max(execution.total_count - removed, len(outcome.records)),
+        applied_rates=outcome.applied_rates,
+        # A fallback leaves the rows in their own currencies, so the currency
+        # already derived from those rows is still the true answer. Overwriting
+        # it with the failed conversion's ``None`` would report a mixed result
+        # for rows that all agree — worse than the answer the caller had before
+        # asking. Only a conversion that happened replaces it.
+        display_currency=outcome.display_currency or execution.display_currency,
+        degraded_reason=outcome.degraded_reason,
+    )
+
+
+def truncate_execution(execution: CatalogReportExecution) -> CatalogReportExecution:
+    """Apply the row cap an execution deferred, once conversion has finished.
+
+    The cap describes the answer, not conversion's inputs. ``core:networth``
+    emits one totals row per currency held and merges them only after pricing
+    has put them in one unit, so cutting first hands that merge a subset: a
+    two-currency profile read at ``limit=1`` would publish one currency's
+    subtotal as the whole position. Blend by omission is the same defect as
+    blend by summation, and it is what the per-currency row split exists to
+    prevent.
+
+    A no-op for an execution that already applied its own cap, which is every
+    execution that never converted.
+    """
+    max_rows = execution.pending_limit
+    if max_rows is None:
+        return execution
+    truncated = len(execution.records) > max_rows
+    records = execution.records[:max_rows]
+    return replace(
+        execution,
+        records=records,
+        truncated=truncated,
+        # Provenance describes the rows in the response, so it is cut with them:
+        # the sentinel row conversion priced is gone, and any rate resolved only
+        # for it must go too. Left alone on the untruncated path, where every
+        # rate still belongs to a row that is being returned.
+        applied_rates=rates_pricing(
+            records,
+            execution.applied_rates,
+            date_column=execution.semantics.fx_date,
+        )
+        if truncated
+        else execution.applied_rates,
+        # Same sentinel `build_catalog_execution` uses: one past the cap means
+        # "at least this many", which is all a bounded fetch can honestly claim.
+        total_count=max_rows + 1 if truncated else len(records),
+        pending_limit=None,
+    )
 
 
 def _resolve_display_currency(records: list[dict[str, Any]]) -> str | None:
@@ -168,6 +321,9 @@ class _CatalogSpec(Protocol):
 
     @property
     def parameters(self) -> tuple[ParamSpec, ...]: ...
+
+    @property
+    def on_converted(self) -> RecomputeDerived | None: ...
 
 
 def _redact_and_freeze_parameter(
@@ -243,10 +399,18 @@ def build_catalog_execution(
     max_rows: int | None,
     actions: list[str] | None = None,
     period: str | None = None,
+    defer_truncation: bool = False,
 ) -> CatalogReportExecution:
-    """Build one raw, classified execution from already-fetched rows."""
-    truncated = max_rows is not None and len(records) > max_rows
-    limited = records if max_rows is None else records[:max_rows]
+    """Build one raw, classified execution from already-fetched rows.
+
+    ``defer_truncation`` keeps ``max_rows`` as the fetch bound while leaving the
+    rows uncut, for a caller that must run ``on_converted`` over the whole
+    result before the cap can mean anything — see ``truncate_execution``.
+    """
+    truncated = (
+        not defer_truncation and max_rows is not None and len(records) > max_rows
+    )
+    limited = records if max_rows is None or defer_truncation else records[:max_rows]
 
     # ServiceReportSpec intentionally matches the classification-facing subset
     # of ReportSpec. The cast keeps classify_columns' existing public signature
@@ -270,6 +434,7 @@ def build_catalog_execution(
     # and buy no safety, since the narrower claim was never wrong.
     declares_currency = "currency_code" in columns
     return CatalogReportExecution(
+        on_converted=spec.on_converted,
         report_id=spec.report_id,
         parameters=MappingProxyType(dict(parameters)),
         sql=sql,
@@ -286,10 +451,10 @@ def build_catalog_execution(
         period=period,
         semantics=spec.semantics,
         provenance=spec.semantics.provenance,
-        **(
-            {"display_currency": _resolve_display_currency(records)}
-            if declares_currency
-            else {}
+        # `None` is also the field default, so a report that declares no
+        # currency column lands on the unknown default either way.
+        display_currency=(
+            _resolve_display_currency(records) if declares_currency else None
         ),
     )
 
@@ -355,11 +520,19 @@ def redact_catalog_execution(
         actions=actions,
         period=execution.period,
         display_currency=execution.display_currency,
+        degraded=execution.degraded_reason is not None,
+        degraded_reason=execution.degraded_reason,
+        applied_rates=execution.applied_rates,
     )
 
 
 def execute_catalog_report(
-    spec: ReportSpec, db: Database, *, max_rows: int | None, **params: Any
+    spec: ReportSpec,
+    db: Database,
+    *,
+    max_rows: int | None,
+    defer_truncation: bool = False,
+    **params: Any,
 ) -> CatalogReportExecution:
     """Execute a catalog runner once; do not apply terminal redaction."""
     rq = spec.runner(db, **params)
@@ -409,6 +582,7 @@ def execute_catalog_report(
         actions=list(rq.actions),
         period=rq.period,
         max_rows=max_rows,
+        defer_truncation=defer_truncation,
     )
 
 

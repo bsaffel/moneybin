@@ -20,8 +20,13 @@ from moneybin.reports._framework.cli_register import (
 )
 from moneybin.reports._framework.contract import ReportQuery
 from moneybin.reports._framework.execute import ReportResult, inspection_hint
-from moneybin.reports._framework.introspect import build_spec
+from moneybin.reports._framework.introspect import (
+    _RESERVED_CLI_PARAMS,  # pyright: ignore[reportPrivateUsage]  # the guard's subject
+    build_spec,
+)
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.tables import TableRef
+from tests.database_mocks import no_profile_database
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 _VIEW = TableRef("reports", "test_summary")
@@ -126,12 +131,17 @@ def test_cli_command_accepts_hyphenated_window_flags() -> None:
         report_id: str,
         parameters: dict[str, object],
         limit: int,
+        display_currency: str | None,
+        home_currency: str | None,
     ) -> ReportResult:
         captured.update(parameters)
         return _result()
 
     with (
-        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
         patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
     ):
         mock_catalog.return_value.execute.side_effect = _fake_execute
@@ -159,6 +169,95 @@ def test_build_cli_command_signature_has_params_and_output() -> None:
     assert sig.parameters["output"].annotation is OutputFormat
 
 
+def _paramless_runner(db: Database) -> ReportQuery:
+    """Summary with no parameters.
+
+    Args:
+        db: Open read-only database connection.
+    """
+    return ReportQuery("SELECT 1", [])
+
+
+def test_reserved_cli_params_match_what_the_registrar_injects() -> None:
+    """The two halves of one coupling, held together mechanically.
+
+    ``_cli_signature`` injects shared options beside the runner's own params;
+    ``_RESERVED_CLI_PARAMS`` refuses a runner param that would collide with one.
+    Adding an option to the first without the second does not fail here — it
+    fails at *import* of the reports command group, for whoever next writes a
+    report that happens to use the name, and it takes the whole group down.
+
+    Derived from a paramless spec rather than a literal list so a future shared
+    option is covered the moment it is injected.
+    """
+    spec = build_spec(
+        _paramless_runner,
+        report_id="test:paramless",
+        name="paramless",
+        view=_VIEW,
+        classes=_CLASSES,
+        parameter_classes={},
+        columns=output_columns(_CLASSES),
+        semantics=TEST_SEMANTICS,
+    )
+    injected = set(inspect.signature(build_cli_command(spec)).parameters)
+
+    assert injected == _RESERVED_CLI_PARAMS
+
+
+def test_cli_command_forwards_display_currency_to_the_catalog() -> None:
+    """``--display-currency`` is a framework option, not a per-report parameter.
+
+    It reaches ``ReportCatalog.execute`` as its own argument — never through
+    ``parameters``, which is the runner's own contract and would reject it.
+    """
+    app = _multi_command_app()
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _result()
+        result = _runner_cli.invoke(
+            app, ["balance-drift", "--display-currency", "EUR", "--output", "json"]
+        )
+
+    assert result.exit_code == 0, result.output
+    call = mock_catalog.return_value.execute.call_args
+    assert call.kwargs["display_currency"] == "EUR"
+    assert "display_currency" not in call.kwargs["parameters"]
+
+
+def test_cli_command_hands_the_catalog_the_profile_home_currency(
+    saved_db: Database,
+) -> None:
+    """Requirement 9's default only exists if every surface passes it along.
+
+    Read through the real ``ProfileSettingsRepo`` rather than a patched value:
+    what this guards is a surface that reaches the catalog without the profile's
+    currency, and a stubbed resolver would report success for a surface that
+    never called one.
+    """
+    ProfileSettingsRepo(saved_db).set_home_currency("EUR", actor="test")
+    app = _multi_command_app()
+    context = MagicMock()
+    context.__enter__.return_value = saved_db
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=context,
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _result()
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert mock_catalog.return_value.execute.call_args.kwargs["home_currency"] == "EUR"
+
+
 def test_register_report_cli_adds_named_command() -> None:
     app = typer.Typer()
     register_report_cli(_spec(), app)
@@ -182,7 +281,10 @@ def test_the_text_path_says_why_a_drifted_report_is_masked() -> None:
         degraded_reason="stale_classification: account_id moved upward",
     )
     with (
-        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
         patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
     ):
         mock_catalog.return_value.execute.return_value = drifted
@@ -208,7 +310,10 @@ def test_the_text_path_says_when_rows_were_cut() -> None:
     app = _multi_command_app()
     cut = replace(_result(), truncated=True, total_count=4200)
     with (
-        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
         patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
     ):
         mock_catalog.return_value.execute.return_value = cut
@@ -240,7 +345,10 @@ def test_the_text_path_prints_the_hint_the_masked_output_earned() -> None:
     hint = inspection_hint("test:balance_drift", ("account_id",))
     masked = replace(_result(), actions=[hint])
     with (
-        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
         patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
     ):
         mock_catalog.return_value.execute.return_value = masked
@@ -258,7 +366,10 @@ def test_the_text_path_adds_no_hint_when_the_report_offered_none() -> None:
     """
     app = _multi_command_app()
     with (
-        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
         patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
     ):
         mock_catalog.return_value.execute.return_value = _result()
@@ -266,6 +377,43 @@ def test_the_text_path_adds_no_hint_when_the_report_offered_none() -> None:
 
     assert result.exit_code == 0, result.output
     assert "💡" not in result.output
+
+
+def test_the_text_path_sends_every_note_to_stderr() -> None:
+    """Diagnostics take fd 2 so a redirected report carries only its rows.
+
+    Asserted against ``stdout``/``stderr`` separately because ``result.output``
+    structurally cannot see it: Click 8.2 turned that into a mix of both streams
+    in write order, so an assertion against it passes whichever stream the note
+    took. Every other note test here reads ``.output``, which is why the routing
+    needs its own case rather than a stricter assertion in one of them.
+    """
+    app = _multi_command_app()
+    noted = replace(
+        _result(),
+        truncated=True,
+        actions=["Run moneybin reports explain test:balance_drift"],
+        degraded=True,
+        degraded_reason="no stored EUR->USD rates at all",
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = noted
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "no stored EUR->USD rates at all" in result.stderr
+    assert "more exist" in result.stderr
+    assert "💡" in result.stderr
+    # The other half: routing the notes away must not take the answer with them.
+    assert "****2222" in result.stdout
+    assert "⚠️" not in result.stdout
+    assert "💡" not in result.stdout
 
 
 def test_the_text_path_stays_silent_when_no_drift_occurred() -> None:
@@ -276,7 +424,10 @@ def test_the_text_path_stays_silent_when_no_drift_occurred() -> None:
     """
     app = _multi_command_app()
     with (
-        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
         patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
     ):
         mock_catalog.return_value.execute.return_value = _result()
@@ -289,7 +440,10 @@ def test_the_text_path_stays_silent_when_no_drift_occurred() -> None:
 def test_cli_command_json_output_emits_envelope() -> None:
     app = _multi_command_app()
     with (
-        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
         patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
     ):
         mock_catalog.return_value.execute.return_value = _result()
@@ -308,7 +462,10 @@ def test_cli_command_passes_classes_returned_to_audit() -> None:
     # classes instead of an empty set (the `sql query` contract).
     app = _multi_command_app()
     with (
-        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
         patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
         patch("moneybin.reports._framework.cli_register.render_or_json") as mock_render,
     ):
@@ -330,7 +487,10 @@ def test_cli_command_value_error_emits_json_error_envelope() -> None:
     # bypasses the envelope and exits 2, breaking the JSON contract for agents.
     app = _multi_command_app()
     with (
-        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
         patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
     ):
         mock_catalog.return_value.execute.side_effect = ValueError(
@@ -346,9 +506,8 @@ def test_cli_command_value_error_emits_json_error_envelope() -> None:
 
 def test_cli_command_executes_stable_report_id_through_catalog() -> None:
     app = _multi_command_app()
-    database = MagicMock()
-    database_context = MagicMock()
-    database_context.__enter__.return_value = database
+    database_context = no_profile_database()
+    database = database_context.__enter__.return_value
     with (
         patch(
             "moneybin.reports._framework.cli_register.get_database",
@@ -367,4 +526,6 @@ def test_cli_command_executes_stable_report_id_through_catalog() -> None:
         report_id="test:balance_drift",
         parameters={"top": 5},
         limit=1_000_000,
+        display_currency=None,
+        home_currency=None,
     )

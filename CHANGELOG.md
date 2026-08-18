@@ -132,7 +132,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   accounts in different currencies is now refused outright: the generator moves
   one magnitude to both sides without converting, so it would have paid a 100
   USD outflow as a +100 EUR inflow. Fund each currency from its own income
-  until the conversion layer lands.
+  until M1K.3 gives the generator a conversion of its own — read-time display
+  conversion, below, prices what a report shows and never rewrites a stored
+  amount, so it does not lift this restriction.
 - **Exchange rates, and your own corrections to them (M1K.2).** `moneybin fx
   rate USD EUR 2026-03-13` answers with the rate, the day it was published for,
   and which layer supplied it. Precedence is your own correction, then the
@@ -156,8 +158,115 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `DECIMAL`, never through a float, and only currency codes and dates leave the
   machine — no amount, account, or description is part of a rate request.
 
-  No amount is converted yet: reports still sub-total per currency, and
-  `--display-currency` arrives with the conversion layer.
+- **Read a report in one currency (M1K.2).** `--display-currency EUR` on every
+  report-reading command, and `display_currency` on the `reports` MCP tool,
+  price a report's amounts into one currency at read time. Omit it and the
+  target is the currency you set with `moneybin profile set home_currency EUR`;
+  a report with nothing to price is unaffected either way.
+  `summary.display_currency` names what the numbers are in, and
+  `summary.applied_rates` names the rates that got them there — each distinct
+  pair with its rate, its source, the date asked for, and the date actually
+  priced, which differ whenever a weekend or holiday falls back to the previous
+  published day (Requirement 10). The terminal prints the rate when one priced
+  the whole report and a summary line when several did. Only rates that were
+  actually applied appear: a row already in the target currency resolves to an
+  identity rate that was never stored, and listing it would announce a
+  conversion on a single-currency report where nothing was priced.
+
+  `moneybin export report` deliberately takes no `--display-currency`: an
+  exported file outlives the rate that priced it, so exports carry original
+  currency and conversion stays a read-time act.
+
+  A value *derived* from a converted amount is restated rather than left
+  describing the old currency. `core:balance_drift` restates `drift` itself as
+  the converted asserted balance minus the converted computed one — all three
+  columns are priced independently and round apart, so the published difference
+  would otherwise disagree with the two balances printed beside it — then
+  derives `drift_abs`, `drift_pct`, and the clean/warning/drift verdict from
+  that single figure: a 500 JPY drift shown as 3.40 USD reads `warning`, not
+  the `drift` it was at 500. `core:networth` recomputes `net_worth` from its
+  own converted parts, so independent per-column rounding cannot leave the
+  total disagreeing with assets plus liabilities. A converted `core:networth`
+  read also collapses its per-currency totals into a single headline row,
+  because conversion relabels every row into the target currency and several
+  rows all claiming the same unit would hand a consumer an arbitrary fraction
+  of the position; the row `limit` applies to that collapsed result, so asking
+  for fewer rows than the profile holds currencies no longer cuts a subtotal
+  out of the sum. That headline sums the per-currency totals, each converted
+  and rounded once, so it can sit a cent under the converted account rows it
+  summarizes; summing those rows instead would make the headline follow an
+  `account_ids` filter and report one account as the whole position.
+  `no-data` and `currency-mismatch` are untouched:
+  neither describes a magnitude. The `status` *filter* still selects in the
+  account's own currency, so filter on `all` and read the returned status when
+  converting.
+
+  Three of the eight registered reports convert exactly, because each of their
+  rows is one event on one date: `core:large_transactions` at its transaction
+  date, `core:balance_drift` at its assertion date, and `core:networth` at its
+  balance date. `core:large_transactions` returns
+  `amount_zscore_account`, `amount_zscore_category`, and `is_top_100` as null
+  on each row a read actually repriced: those are cut in
+  SQL against each row's original currency, and rates move between transaction
+  dates, so a converted read is not one scaling of the amounts they scored.
+  Which rows come back is still decided by original-currency magnitude,
+  including the `anomaly` filter. A row already in the requested currency was
+  not repriced and keeps its scores, so a single-currency profile is unaffected
+  and a mixed one loses the lens only where a rate was applied.
+  A priced row also carries `original_currency_code`, naming which
+  `applied_rates` entry converted it — the set is deduplicated by currency and
+  date, so two source currencies on one date would otherwise publish two rates
+  with nothing tying either to a row whose currency label has been rewritten to
+  the target. Added by the framework on a converted read only, and null on
+  `core:networth`'s summed headline, which no single rate priced.
+  `summary.applied_rates` names only rates that priced a row you were sent: a
+  capped read prices one row past the cap to decide `has_more`, and that row's
+  rate is dropped with it rather than published alongside its `requested_date`.
+  Stored rates are gathered into the home currency, so asking for any other
+  display currency generally finds none and falls back to per-currency
+  segmentation with a reason; extending the refresh planner to cover chosen
+  display targets is filed as a followup.
+  The other five — cash flow, spending trend, merchant activity,
+  recurring subscriptions, and the net-worth history series — aggregate with
+  `currency_code` in the grouping key, so a row is already a per-currency
+  subtotal and pricing it would leave several rows sharing one grain key under
+  one currency label. Those stay segmented per currency and say so in
+  `summary.degraded_reason`, which now also reaches the terminal on
+  `moneybin reports networth` and `networth-history`. A pair no stored rate
+  covers falls back the same way, naming `moneybin refresh` as the remedy;
+  requesting a currency code that names no currency is refused outright, before
+  the query runs, so an empty report cannot label itself in a currency that does
+  not exist.
+
+  `moneybin reports networth` prints one position per currency, and one combined
+  position once conversion has priced them into the same one. The
+  `core:networth` rows change shape to match: per-currency totals now lead as
+  rows of their own, and the account-breakdown rows that follow carry null
+  `net_worth`, `total_assets`, `total_liabilities`, and `account_count` rather
+  than repeating the headline figures on every row. A consumer that read every
+  row as a position must now branch on the row kind — the two are distinguished
+  by which half is null, and `docs/specs/reports-net-worth.md` states the
+  contract. Repeating the headline is what conversion makes unsafe: pricing
+  relabels each row's `currency_code`, so a repeated position would arrive as
+  several indistinguishable ones and anything summing them would count it once
+  per account. `moneybin
+  investments holdings` publishes a portfolio total across currencies for the
+  first time, pricing each position at its own close's rate and printing the
+  original per-currency amounts beside the converted figure;
+  `data.total_market_value_currency` names its unit, and `data.applied_rates`
+  names every rate behind it, in the same six fields `moneybin fx rate`
+  publishes; the terminal prints that rate too, through the same renderer the
+  reports surface uses. `moneybin refresh` now gathers rates for each holding's own
+  `price_date` rather than for today, so a carried-forward foreign position
+  whose close predates the refresh is priced instead of dropping the combined
+  total. Investment positions still do not contribute to net worth — that
+  integration is unbuilt.
+
+  Conversion is presentation only. No converted amount is stored, and no
+  original-currency column in `raw.*` or `core.*` is touched: the original
+  amount stays the auditable one, and a converted figure is recomputed on every
+  read. Reads never fetch a rate — `moneybin refresh` gathers them, because a
+  read holds no writer lock.
 - **`sql_schema` can name what it does not curate.** Two sets governed the SQL
   surface and nothing said they were different: `sql_query` reads five schemas
   (`core`, `app`, `reports`, `raw`, `prep`), while the curated catalog describes

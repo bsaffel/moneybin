@@ -31,6 +31,8 @@ from moneybin.reports._framework.execute import (
     build_catalog_execution,
 )
 from moneybin.reports._framework.registry import register_generic_reports_tool
+from moneybin.services.currency_service import ResolvedRate
+from tests.database_mocks import without_a_profile
 from tests.moneybin.db_helpers import create_core_tables_raw
 
 _SEMANTICS = ReportSemantics(
@@ -108,6 +110,16 @@ def _transport_report() -> ServiceReportSpec:
         executor=execute,
     )
     return spec
+
+
+def _mock_database() -> Database:
+    """A mock connection that answers the profile's home-currency read.
+
+    ``reports`` reads it before executing, and a mock answers that read with a
+    child mock the repository cannot unpack — see ``tests/database_mocks.py``.
+    Tests taking the real ``db`` fixture answer the read for themselves.
+    """
+    return cast(Database, without_a_profile(MagicMock(spec=Database)))
 
 
 def _database_context(
@@ -329,10 +341,20 @@ async def test_reports_with_id_opens_one_read_only_database_and_executes() -> No
         actions=["Inspect another registered report."],
         period="2026-06",
         display_currency="CAD",
+        applied_rates=(
+            ResolvedRate(
+                from_currency="USD",
+                to_currency="CAD",
+                requested_date=date(2026, 6, 1),
+                rate_date=date(2026, 5, 29),
+                rate=Decimal("1.37"),
+                source="frankfurter",
+            ),
+        ),
     )
     catalog = MagicMock(spec=ReportCatalog)
     catalog.execute.return_value = result
-    db = cast(Database, MagicMock(spec=Database))
+    db = _mock_database()
     database_context = _database_context(db)
 
     with (
@@ -358,6 +380,8 @@ async def test_reports_with_id_opens_one_read_only_database_and_executes() -> No
         report_id="core:spending",
         parameters={"from_month": "2026-06", "to_month": "2026-06"},
         limit=50,
+        display_currency=None,
+        home_currency=None,
     )
     assert response.data.kind == "result"
     assert response.data.report_id == "core:spending"
@@ -367,6 +391,21 @@ async def test_reports_with_id_opens_one_read_only_database_and_executes() -> No
     assert response.summary.has_more is True
     assert response.summary.period == "2026-06"
     assert response.summary.display_currency == "CAD"
+    # The tool's own registered description promises this field. It builds its
+    # envelope by hand rather than through `ReportResult.to_envelope`, because
+    # it publishes a typed payload rather than raw records — which is exactly
+    # how the field went missing on the one report-reading surface an agent
+    # actually calls.
+    assert response.summary.applied_rates == [
+        {
+            "from_currency": "USD",
+            "to_currency": "CAD",
+            "requested_date": "2026-06-01",
+            "rate_date": "2026-05-29",
+            "rate": Decimal("1.37"),
+            "source": "frankfurter",
+        }
+    ]
     assert response.actions == ["Inspect another registered report."]
     assert response.classes_returned == [
         "account_identifier",
@@ -389,7 +428,7 @@ async def test_reports_caps_positive_limits(
     expected: int,
 ) -> None:
     catalog = ReportCatalog((_transport_report(),))
-    db = cast(Database, MagicMock(spec=Database))
+    db = _mock_database()
 
     with (
         patch(
@@ -417,7 +456,7 @@ async def test_reports_caps_positive_limits(
 @pytest.mark.parametrize("limit", [0, -1])
 async def test_reports_rejects_non_positive_limit(limit: int) -> None:
     catalog = ReportCatalog((_transport_report(),))
-    db = cast(Database, MagicMock(spec=Database))
+    db = _mock_database()
 
     with (
         patch(
@@ -471,8 +510,15 @@ async def test_generic_reports_fastmcp_schema_and_catalog_transport() -> None:
         "report_id",
         "parameters",
         "limit",
+        "display_currency",
     }
     properties = tool.inputSchema["properties"]
+    assert {
+        branch.get("type") for branch in properties["display_currency"]["anyOf"]
+    } == {
+        "string",
+        "null",
+    }
     assert {branch.get("type") for branch in properties["report_id"]["anyOf"]} == {
         "string",
         "null",
@@ -515,7 +561,7 @@ async def test_generic_reports_fastmcp_result_transport_and_dynamic_audit() -> N
     mcp = FastMCP("reports-contract")
     register_generic_reports_tool(mcp)
     catalog = ReportCatalog((_transport_report(),))
-    db = cast(Database, MagicMock(spec=Database))
+    db = _mock_database()
     captured: list[dict[str, Any]] = []
     sensitive_key = "acct_key_11112222"
     sensitive_value = "acct_value_99998888"

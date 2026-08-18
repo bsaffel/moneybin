@@ -18,9 +18,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from moneybin.privacy.taxonomy import DataClass
+
+if TYPE_CHECKING:
+    # Type-only: `currency_service` imports polars, and this module is reached
+    # from the CLI's eager import chain.
+    from moneybin.services.currency_service import ResolvedRate
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +44,23 @@ class FxRatePayload:
     rate_date: Annotated[date, DataClass.TXN_DATE]
     rate: Annotated[Decimal, DataClass.CURRENCY]
     source: Annotated[str, DataClass.TXN_TYPE]
+
+    @classmethod
+    def from_resolved(cls, rate: ResolvedRate) -> FxRatePayload:
+        """Publish one resolved rate as Requirement 10's provenance record.
+
+        Shared so every surface that shows a rate shows the same six fields:
+        ``fx rate`` answering about one pair, and the rates that priced a
+        converted figure elsewhere.
+        """
+        return cls(
+            from_currency=rate.from_currency,
+            to_currency=rate.to_currency,
+            requested_date=rate.requested_date,
+            rate_date=rate.rate_date,
+            rate=rate.rate,
+            source=rate.source,
+        )
 
 
 @dataclass(frozen=True, slots=True)

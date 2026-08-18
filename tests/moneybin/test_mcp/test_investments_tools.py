@@ -1521,6 +1521,14 @@ class TestHoldingsDescription:
         assert tool.description is not None
         # display_currency still applies to the other four views...
         assert "summary.display_currency" in tool.description
-        # ...but holdings is explicitly carved out as per-row currency.
-        assert "except holdings" in tool.description
-        assert "each row's" in tool.description
+        # ...but holdings is explicitly carved out as per-row currency. Assert
+        # the carve-out names the column it redirects to rather than pinning the
+        # prose around it: the rule is "the sentence that excepts holdings says
+        # where the currency lives instead", and a reword that keeps both halves
+        # keeps the contract.
+        carve_out = next(
+            sentence
+            for sentence in tool.description.split(". ")
+            if "except holdings" in sentence
+        )
+        assert "currency_code" in carve_out

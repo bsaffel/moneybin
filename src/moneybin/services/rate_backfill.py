@@ -310,18 +310,28 @@ def plan_rate_backfill(
             SELECT currency_code, trade_date
               FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}
             UNION ALL
-            -- A position is valued as of the day being reported, so that is the
-            -- day it implies. `dim_holdings` does carry a `price_date` — the
-            -- close its market value came from, which for a `carried_forward`
-            -- position can be older than today — but conversion keys off the
-            -- date being reported, not the date the price was struck, so the
-            -- rate this needs is today's. Narrowing to nothing would leave a
-            -- foreign holding unconvertible in a profile that synced positions
-            -- but no investment ledger. Whether display conversion should
-            -- instead price each holding at its own `price_date` is open:
-            -- followups.md, "Rate coverage for a stale holding price_date".
-            SELECT currency_code, ?
+            -- A position is priced at the close its market value came from, so
+            -- that close is the day it implies. `InvestmentService` converts
+            -- each holding at its own `price_date` — the same rule every other
+            -- converting read follows, a transaction at its transaction date
+            -- and a balance at its balance date. Planning today's rate instead
+            -- would fetch one the read never asks for, so a carried-forward
+            -- foreign position whose close is older than today would report no
+            -- combined market value immediately after a successful refresh.
+            -- A null `price_date` is skipped by that same reader, so it implies
+            -- no window rather than a call nothing consumes.
+            --
+            -- This replaces the earlier `through` contribution rather than
+            -- sitting beside it. Filtering the nulls out here is what makes
+            -- that safe: they were the reason to keep `through`, since a null
+            -- reaching `MIN` would aggregate the currency to a null window
+            -- start. Nothing is narrowed by dropping it — the window's upper
+            -- bound is `through` either way, so any currency that still plans
+            -- one spans today, and the only currency that now plans none is
+            -- one whose every position is unpriced, which no rate can convert.
+            SELECT currency_code, price_date
               FROM {DIM_HOLDINGS.full_name}
+             WHERE price_date IS NOT NULL
         ),
         needed AS (
             -- TRIM as well as UPPER so a padded code groups with its bare
@@ -338,7 +348,7 @@ def plan_rate_backfill(
           FROM needed
          ORDER BY from_currency
         """,  # noqa: S608  # TableRef + parameterized values
-        [through, home],
+        [home],
     ).fetchall()
     windows: list[RateWindow] = []
     unusable = 0

@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import typer
 from fastmcp import Client, FastMCP
@@ -44,6 +44,7 @@ from moneybin.reports.definitions import ALL_REPORTS
 from moneybin.repositories.user_reports_repo import UserReportsRepo
 from moneybin.services.user_reports_service import UserReportsService
 from moneybin.tables import TableRef
+from tests.database_mocks import no_profile_database
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 REPORTS_APP = reports_commands.app
@@ -106,6 +107,7 @@ async def test_mcp_surface_matches_expected_set() -> None:
         "report_id",
         "parameters",
         "limit",
+        "display_currency",
     }
 
 
@@ -152,9 +154,8 @@ def test_networth_preserves_flags_and_executes_through_catalog() -> None:
     assert "--account" in help_result.output
     assert "--as-of-date" not in help_result.output
 
-    database = MagicMock()
-    database_context = MagicMock()
-    database_context.__enter__.return_value = database
+    database_context = no_profile_database()
+    database = database_context.__enter__.return_value
     with (
         patch(
             "moneybin.cli.commands.reports.networth.get_database",
@@ -188,6 +189,8 @@ def test_networth_preserves_flags_and_executes_through_catalog() -> None:
             "account_ids": ["acct-a", "acct-b"],
         },
         limit=1_000_000,
+        display_currency=None,
+        home_currency=None,
     )
 
 
@@ -200,9 +203,8 @@ def test_networth_history_preserves_flags_and_executes_through_catalog() -> None
     assert "--from-date" not in help_result.output
     assert "--to-date" not in help_result.output
 
-    database = MagicMock()
-    database_context = MagicMock()
-    database_context.__enter__.return_value = database
+    database_context = no_profile_database()
+    database = database_context.__enter__.return_value
     with (
         patch(
             "moneybin.cli.commands.reports.networth.get_database",
@@ -237,6 +239,8 @@ def test_networth_history_preserves_flags_and_executes_through_catalog() -> None
             "interval": "weekly",
         },
         limit=1_000_000,
+        display_currency=None,
+        home_currency=None,
     )
 
 

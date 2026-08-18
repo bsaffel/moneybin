@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 import polars as pl
 
@@ -102,6 +103,23 @@ class ResolvedRate:
     rate: Decimal
     source: str
 
+    def as_provenance(self) -> dict[str, Any]:
+        """This rate as the response envelope publishes it (Requirement 10).
+
+        ``rate`` stays a ``Decimal`` because the envelope keeps money-shaped
+        values numeric; the two dates become ISO strings, and both are kept
+        because a weekend conversion priced at Friday's rate is only auditable
+        when the reader can see the two differ.
+        """
+        return {
+            "from_currency": self.from_currency,
+            "to_currency": self.to_currency,
+            "requested_date": self.requested_date.isoformat(),
+            "rate_date": self.rate_date.isoformat(),
+            "rate": self.rate,
+            "source": self.source,
+        }
+
 
 class RateUnavailableError(UserError):
     """No override, no cached row, and no fetchable rate for a pair and date.
@@ -152,8 +170,8 @@ class CurrencyService:
 
         Raises ``RateUnavailableError`` rather than returning a substitute.
         """
-        base = self._require_currency(from_currency)
-        quote = self._require_currency(to_currency)
+        base = require_currency(from_currency)
+        quote = require_currency(to_currency)
 
         if base == quote:
             # No layer is consulted, so no outcome is counted: an identity pair
@@ -232,8 +250,8 @@ class CurrencyService:
         ``_stored_rate`` uses, so a date listed here answers exactly what a
         conversion on that date would.
         """
-        base = self._require_currency(from_currency)
-        quote = self._require_currency(to_currency)
+        base = require_currency(from_currency)
+        quote = require_currency(to_currency)
         params: list[object] = [OVERRIDE_SOURCE, base, quote, base, quote]
         bound = ""
         if since is not None:
@@ -283,8 +301,8 @@ class CurrencyService:
         both express themselves as untyped DuckDB errors a surface can only
         render as a traceback.
         """
-        base = self._require_currency(from_currency)
-        quote = self._require_currency(to_currency)
+        base = require_currency(from_currency)
+        quote = require_currency(to_currency)
         if base == quote:
             # `resolve_rate` answers an identity pair from `IDENTITY_SOURCE`
             # without reading this table, so a row stored here would be listed
@@ -316,38 +334,12 @@ class CurrencyService:
         reason.
         """
         event = ExchangeRateOverridesRepo(self._db).delete(
-            self._require_currency(from_currency),
-            self._require_currency(to_currency),
+            require_currency(from_currency),
+            require_currency(to_currency),
             on,
             actor=self._actor,
         )
         return event is not None
-
-    def _require_currency(self, value: str) -> str:
-        """Canonicalize and refuse a code that would match nothing.
-
-        A malformed code is not a rejected input — it is a write that succeeds,
-        reports success, and joins no conversion, forever and without a symptom.
-        Both writers and both readers share this one canonicalization, so an
-        override stored under one spelling cannot become unreachable under
-        another.
-        """
-        candidate = canonical_currency(value)
-        try:
-            validate_currency_code(candidate)
-        except ValueError as exc:
-            # The rejected value rides the `hint`, never the `message`, for the
-            # reason `_fetch`'s docstring gives: text-mode `handle_cli_errors`
-            # sends `message` to `logger.error` on the strength of its being a
-            # fixed MoneyBin string, and the file handler is unfiltered. A
-            # currency argument is free text, so a mis-paste would otherwise
-            # persist verbatim to `cli_YYYY-MM-DD.log`.
-            raise UserError(
-                "A currency must be given as a three-letter ISO-4217 code.",
-                code=error_codes.FX_CURRENCY_INVALID,
-                hint=f"{value!r} is not one. Use a code like 'USD' or 'EUR'.",
-            ) from exc
-        return candidate
 
     # -------------------------------- storage --------------------------------
 
@@ -609,6 +601,21 @@ def build_currency_service(db: Database, *, actor: str = "system") -> CurrencySe
     return CurrencyService(db, adapter=FrankfurterRateAdapter(), actor=actor)
 
 
+def build_cache_only_currency_service(db: Database) -> CurrencyService:
+    """Wire a CurrencyService that resolves from stored rates and never fetches.
+
+    For read paths — report execution above all. Rates are gathered during the
+    refresh cascade, which already holds the exclusive per-profile writer lock; a
+    read opens the database read-only, so fetching here would take that lock
+    behind a read-only-looking command and fail whenever a sync held it.
+
+    Passing no adapter is what enforces that, and this factory exists so the
+    invariant has a name a reader can grep for rather than living in an omitted
+    keyword argument at each call site.
+    """
+    return CurrencyService(db)
+
+
 def canonical_currency(value: str) -> str:
     """Trim and upper a currency code so one spelling reaches every lookup.
 
@@ -617,6 +624,33 @@ def canonical_currency(value: str) -> str:
     the call site is a copy that drifts the moment this one changes.
     """
     return value.strip().upper()
+
+
+def require_currency(value: str) -> str:
+    """Canonicalize and refuse a code that would match nothing.
+
+    A malformed code is not a rejected input — it is a write that succeeds,
+    reports success, and joins no conversion, forever and without a symptom.
+    Both writers, both readers, and the reports layer's display target share
+    this one canonicalization, so an override stored under one spelling cannot
+    become unreachable under another.
+    """
+    candidate = canonical_currency(value)
+    try:
+        validate_currency_code(candidate)
+    except ValueError as exc:
+        # The rejected value rides the `hint`, never the `message`, for the
+        # reason `_fetch`'s docstring gives: text-mode `handle_cli_errors` sends
+        # `message` to `logger.error` on the strength of its being a fixed
+        # MoneyBin string, and the file handler is unfiltered. A currency
+        # argument is free text, so a mis-paste would otherwise persist verbatim
+        # to `cli_YYYY-MM-DD.log`.
+        raise UserError(
+            "A currency must be given as a three-letter ISO-4217 code.",
+            code=error_codes.FX_CURRENCY_INVALID,
+            hint=f"{value!r} is not one. Use a code like 'USD' or 'EUR'.",
+        ) from exc
+    return candidate
 
 
 def _require_storable(rate: Decimal) -> None:

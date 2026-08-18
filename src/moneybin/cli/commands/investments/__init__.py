@@ -29,6 +29,7 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    echo_applied_rates,
     output_option,
     quiet_option,
     render_or_json,
@@ -280,16 +281,34 @@ def investments_holdings(
         )
         by_ccy = result.market_value_by_currency
         if result.total_market_value is not None:
-            currency = next(iter(by_ccy))
-            total = f"market_value={result.total_market_value} {currency}"
+            total = (
+                f"market_value={result.total_market_value} "
+                f"{result.total_market_value_currency}"
+            )
+            if len(by_ccy) > 1:
+                # A converted total is an inference, so it never appears alone:
+                # the originals it was computed from print beside it.
+                split = " ".join(f"{code}={amount}" for code, amount in by_ccy.items())
+                total += f" (converted from {split})"
         elif by_ccy:
             # No single figure exists across currencies: print the split so no
-            # reader can mistake one number for the portfolio's value.
+            # reader can mistake one number for the portfolio's value. Both
+            # causes are named because the remedies differ and the result cannot
+            # tell them apart — an unset home currency wants `moneybin profile
+            # set`, a missing rate wants `moneybin refresh`.
             split = " ".join(f"{code}={amount}" for code, amount in by_ccy.items())
-            total = f"market_value=- (mixed currencies) {split}"
+            total = (
+                "market_value=- (mixed currencies, no home currency or no rate) "
+                f"{split}"
+            )
         else:
             total = "market_value=- (no position is priced)"
         typer.echo(f"portfolio {total} max_days_since_observed={stalest}")
+        # The originals above say what was converted; this says what converted
+        # it. Not gated on `quiet`, for the same reason the total is not: it is
+        # part of the disclosure, not a status line. Empty unless a rate was
+        # actually applied, so the single-currency case stays silent.
+        echo_applied_rates(result.applied_rates, result.total_market_value_currency)
     if not quiet:
         for w in result.warnings:
             typer.echo(f"⚠️  {w}", err=True)

@@ -22,6 +22,7 @@ from moneybin import error_codes
 from moneybin.cli.output import (
     CLI_MAX_ROWS,
     OutputFormat,
+    display_currency_option,
     output_option,
     quiet_option,
     render_or_json,
@@ -139,12 +140,16 @@ def reports_run(
         # how a truncated financial answer comes to read as a complete one.
         help=f"Maximum rows to return. Default: {CLI_MAX_ROWS:,}.",
     ),
+    display_currency: str | None = display_currency_option,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001  # result rows are data, never suppressed
 ) -> None:
     """Run one registered report by ID or name."""
     from moneybin.cli.report_params import parse_report_parameters
-    from moneybin.reports._framework.catalog import get_report_catalog
+    from moneybin.reports._framework.catalog import (
+        get_report_catalog,
+        profile_home_currency,
+    )
     from moneybin.reports._framework.cli_register import render_report_result
 
     # Parity with the `reports` MCP tool, which validates `ge=1`. `--limit 0`
@@ -162,6 +167,8 @@ def reports_run(
                 report_id=handle,
                 parameters=parameters,
                 limit=CLI_MAX_ROWS if limit is None else limit,
+                display_currency=display_currency,
+                home_currency=profile_home_currency(db),
             )
     render_report_result(result, output, cli_actor="reports_run")
 

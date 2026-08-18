@@ -95,7 +95,11 @@ from moneybin.tables import REPORTS_SPENDING_TREND
         sign="spend is positive absolute outflow; deltas are current minus comparison",
         kind="flow",
         valuation_basis="transaction amount",
-        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
+        fx_basis=(
+            "amounts are aggregated per currency_code, so pricing a row into one "
+            "display currency would leave several rows sharing a grain key; rows "
+            "stay segmented per currency_code, never blended"
+        ),
         time_basis=(
             "inclusive eligible-data calendar-month period with zero-filled missing "
             "category-months"

@@ -20,6 +20,7 @@ from moneybin.reports._framework.catalog import (
     catalog_to_payload,
     get_report_catalog,
     open_report_catalog,
+    profile_home_currency,
     result_to_payload,
 )
 
@@ -33,12 +34,13 @@ def reports(
     report_id: str | None = None,
     parameters: dict[str, JsonValue] | None = None,
     limit: Annotated[int, Field(strict=True, ge=1)] | None = None,
+    display_currency: str | None = None,
 ) -> ResponseEnvelope[ReportsPayload]:
     """Browse the report catalog or execute one registered read-only report."""
     if report_id is None:
-        if parameters is not None or limit is not None:
+        if parameters is not None or limit is not None or display_currency is not None:
             raise UserError(
-                "parameters and limit require report_id",
+                "parameters, limit, and display_currency require report_id",
                 code=error_codes.REPORT_ID_REQUIRED,
             )
         # The catalog spans all three tiers and the user tier lives in the
@@ -76,8 +78,16 @@ def reports(
             report_id=report_id,
             parameters=parameters or {},
             limit=max_rows,
+            display_currency=display_currency,
+            home_currency=profile_home_currency(db),
         )
     payload = result_to_payload(result)
+    # Built by hand rather than through `ReportResult.to_envelope`, which sends
+    # raw records where this surface owes a typed payload and its own
+    # `returned_count`. Every other field it carries must therefore be repeated
+    # here — `applied_rates` included, or the one report-reading surface an
+    # agent actually calls silently drops the provenance its own tool
+    # description promises.
     return build_envelope(
         data=payload,
         sensitivity=tier_to_sensitivity(result.tier).value,
@@ -89,6 +99,7 @@ def reports(
         display_currency=result.display_currency,
         degraded=result.degraded,
         degraded_reason=result.degraded_reason,
+        applied_rates=[rate.as_provenance() for rate in result.applied_rates] or None,
     )
 
 

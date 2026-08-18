@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from moneybin.cli.main import app
 from moneybin.cli.output import UNKNOWN_CURRENCY
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.execute import ReportResult
+from tests.database_mocks import no_profile_database
 
 
 @pytest.fixture
@@ -34,33 +36,95 @@ def _result(records: list[dict[str, object]]) -> ReportResult:
     )
 
 
+def _totals_row(
+    *,
+    balance_date: date | None = date(2026, 1, 31),
+    currency_code: str | None = "USD",
+    net_worth: Decimal | None = Decimal("12500.00"),
+    total_assets: Decimal | None = Decimal("15000.00"),
+    total_liabilities: Decimal | None = Decimal("-2500.00"),
+    account_count: int | None = 3,
+) -> dict[str, object]:
+    """One currency's position, carrying no account of its own."""
+    return {
+        "balance_date": balance_date,
+        "currency_code": currency_code,
+        "net_worth": net_worth,
+        "total_assets": total_assets,
+        "total_liabilities": total_liabilities,
+        "account_count": account_count,
+        "account_id": None,
+        "account_name": None,
+        "account_balance": None,
+        "observation_source": None,
+    }
+
+
+def _account_row(
+    *,
+    balance_date: date | None = date(2026, 1, 31),
+    currency_code: str | None = "USD",
+    account_id: str | None = "****acct_a",
+    account_name: str | None = "Checking",
+    account_balance: Decimal | None = Decimal("5000.00"),
+    observation_source: str | None = "ofx",
+) -> dict[str, object]:
+    """One account's balance, carrying none of its currency's totals."""
+    return {
+        "balance_date": balance_date,
+        "currency_code": currency_code,
+        "net_worth": None,
+        "total_assets": None,
+        "total_liabilities": None,
+        "account_count": None,
+        "account_id": account_id,
+        "account_name": account_name,
+        "account_balance": account_balance,
+        "observation_source": observation_source,
+    }
+
+
 def _snapshot_result(
     *,
     balance_date: date | None = date(2026, 1, 31),
     net_worth: Decimal | None = Decimal("12500.00"),
     total_assets: Decimal | None = Decimal("15000.00"),
     total_liabilities: Decimal | None = Decimal("-2500.00"),
-    account_count: int = 3,
+    account_count: int | None = 3,
     currency_code: str | None = "USD",
     account_id: str | None = "****acct_a",
     account_name: str | None = "Checking",
     account_balance: Decimal | None = Decimal("5000.00"),
     observation_source: str | None = "ofx",
 ) -> ReportResult:
-    return _result([
-        {
-            "balance_date": balance_date,
-            "currency_code": currency_code,
-            "net_worth": net_worth,
-            "total_assets": total_assets,
-            "total_liabilities": total_liabilities,
-            "account_count": account_count,
-            "account_id": account_id,
-            "account_name": account_name,
-            "account_balance": account_balance,
-            "observation_source": observation_source,
-        }
-    ])
+    """One currency's totals row, plus its account row when there is one.
+
+    The report emits the two kinds as separate rows — a currency's position
+    never rides an account's row — so a fused fixture would exercise a shape
+    the executor cannot produce.
+    """
+    records = [
+        _totals_row(
+            balance_date=balance_date,
+            currency_code=currency_code,
+            net_worth=net_worth,
+            total_assets=total_assets,
+            total_liabilities=total_liabilities,
+            account_count=account_count,
+        )
+    ]
+    if account_id is not None:
+        records.append(
+            _account_row(
+                balance_date=balance_date,
+                currency_code=currency_code,
+                account_id=account_id,
+                account_name=account_name,
+                account_balance=account_balance,
+                observation_source=observation_source,
+            )
+        )
+    return _result(records)
 
 
 class TestReportsHelp:
@@ -80,7 +144,10 @@ class TestReportsNetworth:
     @pytest.mark.unit
     def test_returns_snapshot(self, runner: CliRunner) -> None:
         with (
-            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
             patch(
                 "moneybin.reports._framework.catalog.get_report_catalog"
             ) as mock_catalog,
@@ -95,7 +162,10 @@ class TestReportsNetworth:
     @pytest.mark.unit
     def test_as_of_date(self, runner: CliRunner) -> None:
         with (
-            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
             patch(
                 "moneybin.reports._framework.catalog.get_report_catalog"
             ) as mock_catalog,
@@ -133,7 +203,10 @@ class TestReportsNetworth:
             observation_source=None,
         )
         with (
-            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
             patch(
                 "moneybin.reports._framework.catalog.get_report_catalog"
             ) as mock_catalog,
@@ -164,33 +237,33 @@ class TestReportsNetworth:
         that looked like the whole position and was one currency's share of it.
         """
         snapshot = _result([
-            {
-                "balance_date": date(2026, 1, 31),
-                "currency_code": "USD",
-                "net_worth": Decimal("12500.00"),
-                "total_assets": Decimal("15000.00"),
-                "total_liabilities": Decimal("-2500.00"),
-                "account_count": 2,
-                "account_id": "****acct_a",
-                "account_name": "Checking",
-                "account_balance": Decimal("5000.00"),
-                "observation_source": "ofx",
-            },
-            {
-                "balance_date": date(2026, 1, 31),
-                "currency_code": "EUR",
-                "net_worth": Decimal("800.00"),
-                "total_assets": Decimal("800.00"),
-                "total_liabilities": Decimal("0.00"),
-                "account_count": 1,
-                "account_id": "****acct_b",
-                "account_name": "Euro Savings",
-                "account_balance": Decimal("800.00"),
-                "observation_source": "ofx",
-            },
+            _totals_row(
+                currency_code="USD",
+                net_worth=Decimal("12500.00"),
+                total_assets=Decimal("15000.00"),
+                total_liabilities=Decimal("-2500.00"),
+                account_count=2,
+            ),
+            _totals_row(
+                currency_code="EUR",
+                net_worth=Decimal("800.00"),
+                total_assets=Decimal("800.00"),
+                total_liabilities=Decimal("0.00"),
+                account_count=1,
+            ),
+            _account_row(currency_code="USD"),
+            _account_row(
+                currency_code="EUR",
+                account_id="****acct_b",
+                account_name="Euro Savings",
+                account_balance=Decimal("800.00"),
+            ),
         ])
         with (
-            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
             patch(
                 "moneybin.reports._framework.catalog.get_report_catalog"
             ) as mock_catalog,
@@ -200,11 +273,106 @@ class TestReportsNetworth:
 
         assert result.exit_code == 0, result.stderr
         out = result.stdout + result.stderr
-        assert "USD" in out and "EUR" in out
-        assert "12500.00" in out and "800.00" in out
+        assert "USD: 12500.00" in out
+        assert "EUR: 800.00" in out
         # 13300.00 is the blend; its absence is the assertion that matters.
         assert "13300" not in out
-        assert "does not convert between currencies" in out
+
+    @pytest.mark.unit
+    def test_text_render_adds_up_segments_priced_in_one_currency(
+        self, runner: CliRunner
+    ) -> None:
+        """Converted segments are one position again (Requirement 16).
+
+        Conversion prices each currency's totals row into the display currency
+        and relabels it, so the result holds several rows sharing one label —
+        one per currency the profile actually holds. Printing the first of them
+        as "the" position is the same defect segmentation was introduced to
+        prevent, one step later: it reports the dollar share of a dollar-and-
+        euro position as the whole of it.
+        """
+        snapshot = _result([
+            _totals_row(
+                currency_code="USD",
+                net_worth=Decimal("12500.00"),
+                total_assets=Decimal("15000.00"),
+                total_liabilities=Decimal("-2500.00"),
+                account_count=2,
+            ),
+            # The euro segment, priced into USD and relabelled by conversion.
+            _totals_row(
+                currency_code="USD",
+                net_worth=Decimal("880.00"),
+                total_assets=Decimal("880.00"),
+                total_liabilities=Decimal("0.00"),
+                account_count=1,
+            ),
+            _account_row(currency_code="USD"),
+            _account_row(
+                currency_code="USD",
+                account_id="****acct_b",
+                account_name="Euro Savings",
+                account_balance=Decimal("880.00"),
+            ),
+        ])
+        with (
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
+            patch(
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
+        ):
+            mock_catalog.return_value.execute.return_value = snapshot
+            result = runner.invoke(app, ["reports", "networth"])
+
+        assert result.exit_code == 0, result.stderr
+        out = result.stdout + result.stderr
+        assert "USD: 13380.00" in out
+        assert "Assets:      15880.00" in out
+        assert "Liabilities: -2500.00" in out
+        assert "Accounts:    3" in out
+        # The dollar share, printed alone, is what this test exists to catch.
+        assert "12500.00" not in out
+
+    @pytest.mark.unit
+    def test_text_render_says_why_a_conversion_fell_back(
+        self, runner: CliRunner
+    ) -> None:
+        """Segmented positions without a reason are the silent-masking defect.
+
+        A caller who asked for one currency and got several is owed the reason;
+        the JSON and MCP paths read it off `summary.degraded_reason`, and the
+        text path renders no envelope at all, so it has to echo it.
+        """
+        snapshot = replace(
+            _result([
+                _totals_row(currency_code="USD", net_worth=Decimal("12500.00")),
+                _totals_row(currency_code="EUR", net_worth=Decimal("800.00")),
+            ]),
+            degraded=True,
+            degraded_reason="no stored rate covers EUR→JPY on 2026-01-31",
+            actions=["Run `moneybin refresh` to gather the missing rate"],
+        )
+        with (
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
+            patch(
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
+        ):
+            mock_catalog.return_value.execute.return_value = snapshot
+            result = runner.invoke(
+                app, ["reports", "networth", "--display-currency", "JPY"]
+            )
+
+        assert result.exit_code == 0, result.stderr
+        out = result.stdout + result.stderr
+        assert "no stored rate covers EUR→JPY on 2026-01-31" in out
+        assert "Run `moneybin refresh` to gather the missing rate" in out
 
     @pytest.mark.unit
     def test_breakdown_renders_unknown_currency_without_the_word_none(
@@ -218,7 +386,10 @@ class TestReportsNetworth:
         """
         snapshot = _snapshot_result(currency_code=None, account_name="Checking")
         with (
-            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
             patch(
                 "moneybin.reports._framework.catalog.get_report_catalog"
             ) as mock_catalog,
@@ -237,7 +408,10 @@ class TestReportsNetworth:
     @pytest.mark.unit
     def test_account_filter(self, runner: CliRunner) -> None:
         with (
-            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
             patch(
                 "moneybin.reports._framework.catalog.get_report_catalog"
             ) as mock_catalog,
@@ -268,6 +442,60 @@ class TestReportsNetworthHistory:
         assert result.exit_code == 2
 
     @pytest.mark.unit
+    def test_text_render_says_why_a_conversion_fell_back(
+        self, runner: CliRunner
+    ) -> None:
+        """The series renderer owes the same reason the snapshot does.
+
+        `core:networth_history` aggregates per currency, so a display currency
+        never prices it — which makes this the surface most likely to be read
+        as "the conversion worked and the answer is two series".
+        """
+        series = replace(
+            _result([
+                {
+                    "period": "2026-01-01",
+                    "currency_code": "USD",
+                    "net_worth": Decimal("1000.00"),
+                    "change_abs": None,
+                    "change_pct": None,
+                }
+            ]),
+            degraded=True,
+            degraded_reason=(
+                "each period's net worth is aggregated per currency_code, so rows "
+                "stay segmented per currency_code, never blended"
+            ),
+        )
+        with (
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
+            patch(
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
+        ):
+            mock_catalog.return_value.execute.return_value = series
+            result = runner.invoke(
+                app,
+                [
+                    "reports",
+                    "networth-history",
+                    "--from",
+                    "2026-01-01",
+                    "--to",
+                    "2026-02-01",
+                    "--display-currency",
+                    "EUR",
+                ],
+            )
+
+        assert result.exit_code == 0, result.stderr
+        out = result.stdout + result.stderr
+        assert "aggregated per currency_code" in out
+
+    @pytest.mark.unit
     def test_returns_series(self, runner: CliRunner) -> None:
         mock_rows: list[dict[str, object]] = [
             {
@@ -286,7 +514,10 @@ class TestReportsNetworthHistory:
             },
         ]
         with (
-            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
             patch(
                 "moneybin.reports._framework.catalog.get_report_catalog"
             ) as mock_catalog,
@@ -329,7 +560,10 @@ class TestReportsNetworthHistory:
             }
         ]
         with (
-            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
             patch(
                 "moneybin.reports._framework.catalog.get_report_catalog"
             ) as mock_catalog,
@@ -356,7 +590,10 @@ class TestReportsNetworthHistory:
     @pytest.mark.unit
     def test_default_interval_monthly(self, runner: CliRunner) -> None:
         with (
-            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
             patch(
                 "moneybin.reports._framework.catalog.get_report_catalog"
             ) as mock_catalog,

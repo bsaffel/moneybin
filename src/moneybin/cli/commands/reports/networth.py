@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import Mapping, Sequence
+from typing import Any, cast
 
 import typer
 from pydantic import JsonValue
@@ -11,12 +12,20 @@ from moneybin.cli.output import (
     CLI_MAX_ROWS,
     OutputFormat,
     currency_label,
+    display_currency_option,
     output_option,
     quiet_option,
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.reports._framework.cli_register import echo_report_notes
+
+
+def _summed(rows: Sequence[Mapping[str, Any]], column: str) -> Any:
+    """``column`` added up across ``rows``, or None when no row states it."""
+    values = [row[column] for row in rows if row[column] is not None]
+    return sum(values) if values else None
 
 
 def reports_networth(
@@ -28,6 +37,7 @@ def reports_networth(
         "--account",
         help="Filter per-account breakdown to specific account_id(s); repeatable",
     ),
+    display_currency: str | None = display_currency_option,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001 — networth prints a snapshot, not informational chatter
 ) -> None:
@@ -35,6 +45,7 @@ def reports_networth(
     with handle_cli_errors():
         from moneybin.reports._framework.catalog import (  # noqa: PLC0415 — defer catalog import
             get_report_catalog,
+            profile_home_currency,
         )
 
         with get_database(read_only=True) as db:
@@ -46,32 +57,33 @@ def reports_networth(
                     "account_ids": cast(JsonValue, account),
                 },
                 limit=CLI_MAX_ROWS,
+                display_currency=display_currency,
+                home_currency=profile_home_currency(db),
             )
 
     def _render_text(_: object) -> None:
         if not result.records or result.records[0]["balance_date"] is None:
             typer.echo("No net worth data available.")
+            echo_report_notes(result)
             return
-        # Rows are one per account, each carrying its own currency's totals, so
-        # printing records[0] as "the" snapshot would show one currency's
-        # subtotal labelled as the whole position. Print one headline per
-        # currency instead; a single-currency profile still gets one block.
+        # One totals row per currency the profile holds. Display conversion
+        # prices each of them and relabels it into the target currency, so
+        # after a successful conversion they share one label and add up to the
+        # whole position (multi-currency.md Requirement 16); without one they
+        # stay apart and each currency keeps its own headline. Printing the
+        # first row of a group would report one currency's share as the whole
+        # in both cases.
         by_currency: dict[object, list[dict[str, JsonValue]]] = {}
         for row in result.records:
-            by_currency.setdefault(row["currency_code"], []).append(row)
+            if row["account_id"] is None:
+                by_currency.setdefault(row["currency_code"], []).append(row)
         balance_date = result.records[0]["balance_date"]
         typer.echo(f"Net worth as of {balance_date}")
         for currency, rows in by_currency.items():
-            headline = rows[0]
-            typer.echo(f"  {currency_label(currency)}: {headline['net_worth']}")
-            typer.echo(f"    Assets:      {headline['total_assets']}")
-            typer.echo(f"    Liabilities: {headline['total_liabilities']}")
-            typer.echo(f"    Accounts:    {headline['account_count']}")
-        if len(by_currency) > 1:
-            typer.echo(
-                "  (no combined total — MoneyBin does not convert between "
-                "currencies yet)"
-            )
+            typer.echo(f"  {currency_label(currency)}: {_summed(rows, 'net_worth')}")
+            typer.echo(f"    Assets:      {_summed(rows, 'total_assets')}")
+            typer.echo(f"    Liabilities: {_summed(rows, 'total_liabilities')}")
+            typer.echo(f"    Accounts:    {_summed(rows, 'account_count')}")
         accounts = [row for row in result.records if row["account_id"] is not None]
         if accounts:
             typer.echo("Per-account breakdown:")
@@ -81,6 +93,7 @@ def reports_networth(
                     f"{currency_label(row['currency_code']):<3} "
                     f"({row['observation_source']})"
                 )
+        echo_report_notes(result)
 
     render_or_json(
         result.to_envelope(),
@@ -97,6 +110,7 @@ def reports_networth_history(
     interval: str = typer.Option(
         "monthly", "--interval", help="daily | weekly | monthly"
     ),
+    display_currency: str | None = display_currency_option,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001 — history prints a series, not informational chatter
 ) -> None:
@@ -104,6 +118,7 @@ def reports_networth_history(
     with handle_cli_errors():
         from moneybin.reports._framework.catalog import (  # noqa: PLC0415 — defer catalog import
             get_report_catalog,
+            profile_home_currency,
         )
 
         with get_database(read_only=True) as db:
@@ -116,6 +131,8 @@ def reports_networth_history(
                     "interval": interval,
                 },
                 limit=CLI_MAX_ROWS,
+                display_currency=display_currency,
+                home_currency=profile_home_currency(db),
             )
 
     def _render_text(_: object) -> None:
@@ -134,6 +151,7 @@ def reports_networth_history(
                 f"{change_abs!s:>13} "
                 f"{change_pct:>10}"
             )
+        echo_report_notes(result)
 
     render_or_json(
         result.to_envelope(),

@@ -197,6 +197,7 @@ def test_prepare_report_executes_once_and_preserves_the_report_receipt(
             "kind": "count",
             "valuation_basis": None,
             "fx_basis": None,
+            "fx_date": None,
             "time_basis": "point-in-time query result",
             "denominator": None,
             "comparison_window": None,

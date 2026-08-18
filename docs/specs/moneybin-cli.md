@@ -667,6 +667,19 @@ Bundle and report delivery default to redacted CSV at `local:exports`.
 format and reject `--format` and `--compress`; ZIP is limited to local CSV and
 Parquet bundles.
 
+**Exports carry original currency, deliberately — there is no
+`--display-currency` here.** `moneybin reports run`, `reports networth`, and
+`reports networth-history` all take one; `export report` does not, and
+`ExportService.prepare_report` reads through `execute_raw` so no conversion can
+reach a written artifact. Display conversion is presentation-time by
+construction: nothing converted is ever stored, because a converted figure is
+only meaningful beside the rate and date that produced it. A file outlives
+both — reopen last year's export and nothing in it says what priced the
+numbers, while the original amount stays checkable against the institution
+forever. Convert at read time, where the rate travels with the answer
+(`multi-currency.md` Requirement 10); export the original and convert
+downstream if you need another currency.
+
 #### Package-contributed subgroups
 
 The hardcoded tree above is the in-tree CLI surface. **Analysis packages contribute their own top-level subgroups** dynamically at startup via `moneybin.packages` entry-points discovery (see [`extension-contracts.md`](extension-contracts.md) §"Registration via entry points"). The launch lineup adds:

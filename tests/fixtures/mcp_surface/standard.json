@@ -1,5 +1,5 @@
 {
-  "sha256": "c738c188acfd7d6d6d388f2ba5a0b8272b3d79046e3f4cc1ebddddd3db15eea7",
+  "sha256": "1f43359806cfd3aafc105dae1fe7dd09bd2b2901318e1f8fac3f60aed8575661",
   "tool_count": 49,
   "tools": [
     {
@@ -1989,7 +1989,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Return investment events, holdings, open or full tax-lot history, realized gains, or securities through one typed view. Amounts use the investment ledger sign convention; currency is summary.display_currency for every view except holdings, whose market_value stays in each row's currency_code. For holdings, valuation_status marks each row valued, carried_forward, unpriced, or withheld; unpriced and withheld report market_value/unrealized_gain null (never zero) and data.warnings counts them, and withheld means the share count is known wrong. Do not sum market_value across rows: read data.total_market_value (null when priced rows span currencies, with data.market_value_by_currency giving the split) and data.max_days_since_observed for the stalest close behind any published figure.",
+        "description": "Return investment events, holdings, open or full tax-lot history, realized gains, or securities in one typed view. Amounts use the investment ledger sign convention; currency is summary.display_currency except holdings rows, which keep their own currency_code. For holdings, valuation_status marks each row valued, carried_forward, unpriced, or withheld; the last two null market_value/unrealized_gain (never zero) and data.warnings counts them, withheld means the share count is known wrong. Do not sum market_value across rows: read data.total_market_value, in data.total_market_value_currency \u2014 mixed currencies price into home at each position's own close, both null when no stored rate covers a pair; data.market_value_by_currency gives the split in original units and data.applied_rates names each rate behind the total. data.max_days_since_observed is the stalest close behind any figure.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2087,12 +2087,12 @@
         },
         "name": "investments"
       },
-      "description_bytes": 788,
+      "description_bytes": 897,
       "input_schema_bytes": 672,
       "name": "investments",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 1649
+      "total_bytes": 1761
     },
     {
       "annotation_bytes": 90,
@@ -2664,10 +2664,21 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Browse registered financial reports or run one by stable report ID. Omit `report_id` to return catalog metadata; supply it to execute a registered read-only report. This tool never accepts SQL; use `sql_query` separately for arbitrary read-only SQL.",
+        "description": "Browse registered financial reports or run one by stable report ID. Omit `report_id` to return catalog metadata; supply it to execute a registered read-only report. Amounts are in the currency named by `summary.display_currency`; set `display_currency` to price a report's rows into one currency, which defaults to the profile's home currency. `summary.applied_rates` names the exact rate, source, and date behind any converted figure. A report that cannot be priced stays segmented per currency and says why in `summary.degraded_reason`. Its `status` filter, where it has one, selects before conversion. This tool never accepts SQL; use `sql_query` separately for arbitrary read-only SQL.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "display_currency": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "limit": {
               "anyOf": [
                 {
@@ -2715,12 +2726,12 @@
         },
         "name": "reports"
       },
-      "description_bytes": 249,
-      "input_schema_bytes": 316,
+      "description_bytes": 689,
+      "input_schema_bytes": 396,
       "name": "reports",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 759
+      "total_bytes": 1279
     },
     {
       "annotation_bytes": 89,
@@ -5023,5 +5034,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 57384
+  "total_bytes": 58016
 }

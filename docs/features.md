@@ -61,7 +61,7 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 
 - **Account management** — `moneybin accounts list / get / resolve / set` with Plaid-parity metadata (subtype, holder category, currency, credit limit, last four). One unified `set` covers display name, include-in-net-worth, and archive state. Reversible account merging via bridge model. -> [CLI reference](guides/cli-reference.md)
 - **Net-worth and balance tracking** — Per-account balance show / history / assert / reconcile and cross-account `moneybin reports networth / networth-history` with period-over-period change. Daily carry-forward of authoritative observations from OFX, Plaid sync balances, tabular running balances, and user assertions. -> [CLI reference](guides/cli-reference.md)
-- **Exchange rates and your own rate corrections** — `moneybin fx rate USD EUR 2026-03-13` answers one pair on one date and names where the number came from: your own correction first, then a rate already cached, then a live call to Frankfurter's ECB reference series (no credential, and only the pair and the date leave your machine). A weekend resolves to the last published business day and reports that day, rather than presenting it as the weekend's own rate. `fx set` records your own rate for one pair and date, outranking every provider rate for that date; `fx delete` returns that date to provider pricing; `fx list` shows the stored series newest first with the source that won each date, reading only what is already on disk. Rates are stored to 8 decimal places, and the first answer for a pair on a date is the one kept — once a date is cached MoneyBin does not ask the provider again, so a later revision to that date never arrives. Use `fx set` to change a rate you already hold. Converting a reported amount into another currency at these rates is planned — see [What's planned](#whats-planned). -> [CLI reference](guides/cli-reference.md)
+- **Exchange rates and your own rate corrections** — `moneybin fx rate USD EUR 2026-03-13` answers one pair on one date and names where the number came from: your own correction first, then a rate already cached, then a live call to Frankfurter's ECB reference series (no credential, and only the pair and the date leave your machine). A weekend resolves to the last published business day and reports that day, rather than presenting it as the weekend's own rate. `fx set` records your own rate for one pair and date, outranking every provider rate for that date; `fx delete` returns that date to provider pricing; `fx list` shows the stored series newest first with the source that won each date, reading only what is already on disk. Rates are stored to 8 decimal places, and the first answer for a pair on a date is the one kept — once a date is cached MoneyBin does not ask the provider again, so a later revision to that date never arrives. Use `fx set` to change a rate you already hold. These are the rates `--display-currency` prices a report with — see [Reports](#reports). -> [CLI reference](guides/cli-reference.md)
 
 ## Investments
 
@@ -86,6 +86,30 @@ The six SQL-runner routes use declarative `@report` definitions; the two service
 - **`reports.merchant_activity`** — Per-merchant spend rollup.
 - **`reports.large_transactions`** — Outlier filter for human review.
 - **`reports.balance_drift`** — Drift between asserted and computed balances.
+
+### Reading a report in one currency
+
+`--display-currency EUR` — and `display_currency` on the `reports` MCP tool —
+prices a report's amounts into one currency at read time, using the rates above.
+Omit it and the target is the profile's home currency.
+`summary.display_currency` names what the numbers are in.
+
+Three reports convert, because each of their rows is one event on one date:
+`large_transactions` at its transaction date, `balance_drift` at its assertion
+date, and `networth` at its balance date. The other five aggregate with the
+currency in their grouping key, so a row is already a per-currency subtotal;
+pricing it would put two currencies behind one figure. Those stay sub-totalled
+per currency, as does any report whose rates are not on disk — `moneybin
+refresh` gathers them, since a read never fetches. Ask for a currency
+explicitly and the reason appears in `summary.degraded_reason`; the
+home-currency default falls back quietly, so a profile that has set one is not
+warned on every report it cannot price.
+
+Nothing converted is stored. The original amount and its currency stay
+untouched in every table, and a converted figure is recomputed on each read —
+so the original reading is always one command away, with the flag omitted.
+`moneybin reports networth` prints one position per currency, and a single
+combined position once conversion has priced them into the same one.
 
 ### Your own reports
 
@@ -190,7 +214,7 @@ These are visible gaps a migrant or agent author will notice. See [Roadmap](road
 
 - **Budgeting** — Monthly budgets, target-vs-actual, rollovers. Planned.
 - **Daily valued-holdings series and net-worth integration** — A dated series of what each position was worth on each day, and folding investment positions into net worth. Independent price feeds and your own price marks shipped alongside the ledger, tax lots, four-method cost basis, realized gain/loss (1099-B surface), and broker-carried market value — see [Investments](#investments) above. Planned (core, not a package).
-- **Multi-currency** — Original currency is captured from OFX and Plaid instead of being silently assumed USD, and every transaction and balance resolves its currency from its own source or its account's setting. Reports that sum money sub-total each currency separately rather than adding dollars to euros; `moneybin profile set home_currency EUR` records which one the profile treats as home; `moneybin system doctor` flags accounts whose currency is unknown. Exchange rates, with your own corrections outranking the provider, ship today — see [Accounts and balances](#accounts-and-balances). Converting between currencies for a single combined figure, and FX gain/loss, are planned.
+- **Multi-currency** — Original currency is captured from OFX and Plaid instead of being silently assumed USD, and every transaction and balance resolves its currency from its own source or its account's setting. Reports that sum money sub-total each currency separately rather than adding dollars to euros; `moneybin profile set home_currency EUR` records which one the profile treats as home, and is the currency `--display-currency` defaults to; `moneybin system doctor` flags accounts whose currency is unknown. Exchange rates, with your own corrections outranking the provider, ship today — see [Accounts and balances](#accounts-and-balances). Three of the eight reports price their rows into one currency at read time; the five that aggregate per currency stay sub-totalled and say why. FX gain/loss is planned.
 - **Web UI dashboard** — Local web UI plus Streamable HTTP MCP transport (so remote clients like ChatGPT web can reach MoneyBin). Planned.
 - **Hosted tier** — Same code, hosted. Planned.
 - **Drop-any-PDF import** — AI-assisted extraction of bank-statement PDFs: native-text statements extract locally and free, harder layouts escalate to the AI agent you're already driving MoneyBin with, and a learned recipe replays for free next time. Transaction-shaped rows route to `core`; everything else lands as queryable JSON seeds. **Phase 2a shipped (PR #233)** — auto-derived recipes persist to `app.pdf_formats` keyed by layout fingerprint, reconcile to within 1¢ of the statement's reported balance delta, and replay deterministically on subsequent imports. **Phase 2b bridge round-trip shipped** — a layout the deterministic rung can't crack escalates to the agent you're driving MoneyBin with (with a plain transparency notice), and your confirmed recipe is re-run, reconciled against the statement balances, and loaded; every hand-off is audit-logged (MCP surface today). A drifted saved recipe now auto-recovers (re-derived and version-bumped on the next import instead of stranding the broken recipe), and a scanned/image-only PDF with no text layer returns an explicit "needs a vision-capable backend" message rather than failing opaquely. See [`smart-import-pdf.md`](specs/smart-import-pdf.md).

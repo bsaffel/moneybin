@@ -55,7 +55,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `system_audit_undo` | `operation_id` | Reverse one undoable operation | Audited recovery / maximum low |
 | `profile` |  | Active profile metadata and managed settings | Read / maximum low |
 | `profile_set` | `home_currency` | Set the profile's home currency | Audited write / maximum low |
-| `reports` | `limit`, `parameters`, `report_id` | Catalog or execute a registered report | Read / dynamic / maximum critical / report-derived |
+| `reports` | `display_currency`, `limit`, `parameters`, `report_id` | Catalog or execute a registered report | Read / dynamic / maximum critical / report-derived |
 | `accounts` | `cursor`, `include_closed`, `limit`, `query`, `reference`, `view` | Account collection | Read / dynamic / maximum critical / view-derived |
 | `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / maximum critical |
 | `accounts_balances` | `as_of`, `cursor`, `end`, `limit`, `reference`, `start`, `threshold`, `view` | Balance projection and reconciliation | Read / dynamic / maximum high / balance-derived |
@@ -148,7 +148,8 @@ and confirmation contracts.
 
 ## Coarse contracts and workflow boundaries
 
-- `reports(report_id=..., parameters=..., limit=...)` first returns the catalog without a
+- `reports(report_id=..., parameters=..., limit=..., display_currency=...)` first
+  returns the catalog without a
   report ID, then executes a selected report. New reports are catalog entries,
   never new tool slots. The catalog listing carries **active** reports only, each
   entry reporting `archived: false`; the CLI's `reports list --include-archived`
@@ -156,6 +157,50 @@ and confirmation contracts.
   tool metadata that ADR-016's carrying-weight evidence pins. An archived report
   still runs, exports, and explains by id, so nothing is unreachable — only
   unlisted.
+
+  `display_currency` prices a report's amounts into one currency at read time
+  and defaults to the profile's home currency; `summary.display_currency` names
+  the result. It is the agent-facing surface for exchange rates — the rate is
+  applied and reported rather than requested, which is why the `fx.*`
+  capabilities need no tool of their own. A report that aggregates with
+  `currency_code` in its grouping key cannot be priced without putting two
+  currencies behind one figure, and a pair with no stored rate cannot be priced
+  at all; both fall back to per-currency segmentation and name the obstacle in
+  `summary.degraded_reason`. `summary.display_currency` then reverts to what the
+  rows themselves say — `null` when they span currencies, and the one currency
+  they share when they agree, which is still the true answer for those rows.
+  Read `summary.degraded_reason`, not a non-null `display_currency`, to learn
+  whether the requested pricing happened. That reason is stated only when the
+  caller named `display_currency`: the home-currency default falls back
+  silently, or every unconverted report on a profile with a home currency would
+  carry a warning. Each report states its own rule in
+  `semantics.fx_basis`, and the ones that price exactly name the column they
+  price on in `semantics.fx_date`. A `display_currency` naming no currency is
+  refused before the query runs, so an empty result cannot claim a currency
+  that does not exist. Reads never fetch a rate: `refresh_run` gathers them,
+  because a read holds no writer lock.
+
+  `summary.applied_rates` carries the provenance behind those figures
+  (`multi-currency.md` Requirement 10): one entry per distinct pair and date,
+  each with `from_currency`, `to_currency`, `rate`, `source`, `requested_date`,
+  and `rate_date`. The two dates differ whenever a weekend or holiday priced
+  against the previous published day, which is the case the field exists to make
+  visible rather than smooth over. `source` names a provider or the `override` /
+  `identity` sentinel, so an agent can tell a user-set rate from a fetched one.
+  The key is present only when a conversion actually happened — absent means
+  nothing was converted, which is a different claim from "converted at an
+  unrecorded rate" — and it is deduplicated, so a thousand rows priced on one
+  date report the single rate that priced them.
+
+  A value **derived** from a converted amount is restated so it cannot describe
+  the old currency: `core:balance_drift` re-buckets its clean/warning/drift
+  verdict against the converted drift, and `core:networth` recomputes
+  `net_worth` from its own converted parts so per-column rounding cannot leave
+  the total disagreeing with assets plus liabilities. `no-data` and
+  `currency-mismatch` are left alone — neither states a magnitude. The
+  `balance_drift` `status` *parameter* still filters in the account's own
+  currency, before any rate is known: filter on `all` and read the returned
+  `status` when converting.
 - `accounts`, `investments`, `transactions`, `reviews`, `taxonomy`, `privacy`,
   and `gsheet` expose typed views or filters under one domain identity. Their
   paired `_set`, `_decide`, or domain verb tools retain material write and

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    ORIGINAL_CURRENCY_COLUMN,
     Binding,
     OutputColumn,
     ReportQuery,
@@ -13,6 +16,56 @@ from moneybin.reports._framework.contract import (
 )
 from moneybin.reports.definitions._shared import LARGE_TXN_ANOMALIES
 from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
+
+#: Cut in SQL against the row's own currency, so a conversion invalidates them.
+_ORIGINAL_CURRENCY_ANALYTICS = (
+    "amount_zscore_account",
+    "amount_zscore_category",
+    "is_top_100",
+)
+
+
+def _blank_original_currency_analytics(
+    rows: list[dict[str, Any]], currency: str
+) -> None:
+    """Drop the anomaly lens on the rows a conversion repriced, and only those.
+
+    Both z-scores standardize ``ABS(amount)`` against the account's or
+    category's own median and MAD over its full history, and ``is_top_100``
+    ranks against that same population — all computed in SQL, in whatever
+    currency each row was recorded in. Conversion prices every row at its own
+    ``txn_date`` rate, so the converted amounts are not one scaling of the
+    originals: two charges equal at 100 EUR come back as 100 and 200 USD if the
+    rate moved between their dates, while carrying the single score they earned
+    as equals.
+
+    Restating them is not something a read can do. The baselines span the
+    account's whole history, not the rows returned, and this path resolves only
+    from stored rates — repricing that history at per-date rates is exactly the
+    provider round trip a report read must never make. So the honest answer is
+    the one these columns already give for an account with too little history
+    to score: null.
+
+    A mixed-currency result reaches here for the sake of its foreign rows, and
+    the rows already in the target ride along untouched: an identity rate moved
+    nothing, so their scores still describe the amounts on screen. Nulling those
+    would make a row read differently depending on what some *other* row needed,
+    which is the opposite of what this repair is for. Rows are told apart by
+    ``ORIGINAL_CURRENCY_COLUMN``, which conversion attaches precisely because
+    ``currency_code`` has been relabelled to the target by now; a row that
+    carries no original currency is nulled, since nothing on it can show the
+    score is still measured in the currency shown.
+
+    The row *set* is still ranked and filtered by original-currency magnitude,
+    because that happens in SQL before anything is priced. That is why the
+    column descriptions and ``fx_basis`` say so rather than leaving the nulls
+    to be read as "no anomalies here".
+    """
+    for row in rows:
+        if row.get(ORIGINAL_CURRENCY_COLUMN) == currency:
+            continue
+        for column in _ORIGINAL_CURRENCY_ANALYTICS:
+            row[column] = None
 
 
 @report(
@@ -67,17 +120,24 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         ),
         OutputColumn(
             "amount_zscore_account",
-            "Modified absolute-amount z-score against the same-currency account baseline.",
+            "Modified absolute-amount z-score against the same-currency account "
+            "baseline. Null on a row this read repriced: the baseline is the "
+            "account's own currency and cannot be restated at per-date rates. A "
+            "row already in the display currency keeps its score.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
             "amount_zscore_category",
-            "Modified absolute-amount z-score against the same-currency category baseline.",
+            "Modified absolute-amount z-score against the same-currency category "
+            "baseline. Null on a row this read repriced, for the same reason as "
+            "the account score.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
             "is_top_100",
-            "Whether the transaction is among its currency's top 100 by absolute amount.",
+            "Whether the transaction is among its currency's top 100 by absolute "
+            "amount. Null on a row this read repriced: the ranking is over the "
+            "original currency's population.",
             DataClass.AGGREGATE,
         ),
     ),
@@ -87,7 +147,20 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         sign="negative expense; positive income; ranking uses absolute amount",
         kind="flow",
         valuation_basis="transaction amount ranked by absolute magnitude",
-        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
+        fx_basis=(
+            "each row is one transaction on one date, so a requested display "
+            "currency prices it at that date's rate; a row that cannot be priced "
+            "leaves the whole report segmented per currency_code, never blended. "
+            "Rates move between those dates, so a converted read is not one "
+            "scaling of the original amounts: the rows are still selected, "
+            "ranked and anomaly-filtered by original-currency magnitude, and on "
+            "any row this read repriced the two z-scores and is_top_100 come "
+            "back null rather than describe a currency they were not measured "
+            "in. A row already in the display currency was not repriced and "
+            "keeps them, with original_currency_code naming the currency they "
+            "were measured in"
+        ),
+        fx_date="txn_date",
         time_basis="inclusive full observed transaction period",
         denominator=(
             "account or category median absolute deviation scaled by 1.4826 "
@@ -122,6 +195,7 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         "the same reason — the standardizing statistics are not columns of "
         "this view, so the ratio does not carry the amount that produced it",
     },
+    on_converted=_blank_original_currency_analytics,
 )
 def large_transactions(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
@@ -138,6 +212,14 @@ def large_transactions(
     result still represents every currency. Compare amounts only between rows
     sharing a currency_code.
 
+    A display currency prices each row that is not already in it at that row's
+    own date's rate, and returns the two z-scores and is_top_100 as null for
+    exactly those rows: they are cut in SQL against each row's original
+    currency and a per-date conversion is not one scaling of them. Rows already
+    in the display currency were not repriced and keep the anomaly lens. Which
+    rows come back is still decided by original-currency magnitude. Read the
+    rows in their own currency to get the lens on all of them.
+
     Args:
         db: Open read-only database connection.
         top: Top N by ABS(amount) **within each currency** (>= 1). Ranking
@@ -146,7 +228,10 @@ def large_transactions(
             the result entirely. A single-currency profile gets the same N rows
             it always did. On MCP the result is additionally capped at the
             session max_rows; the CLI is uncapped.
-        anomaly: account | category | none — filter to z>2.5 in the named scope.
+        anomaly: account | category | none — filter to z>2.5 in the named
+            scope. Applied in SQL against the original-currency scores, so it
+            selects the same rows whether or not a display currency is
+            requested — but a converted read returns those scores as null.
 
     Examples:
         reports(report_id="core:large_transactions", parameters={"top": 50, "anomaly": "account"})

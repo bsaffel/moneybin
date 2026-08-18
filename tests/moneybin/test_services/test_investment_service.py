@@ -15,7 +15,7 @@ strongly-identified security must be referenced by its identifier).
 from __future__ import annotations
 
 import math
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, NamedTuple
 
@@ -27,6 +27,7 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.metrics.registry import PRICE_STALENESS_DAYS
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.services.investment_service import (
     _PIPELINE_EMITTED_SUBTYPES,  # pyright: ignore[reportPrivateUsage]  # tested directly
@@ -1684,6 +1685,44 @@ def _replace_holdings_view(db: Database, rows: list[_Holding]) -> None:
     )
 
 
+def _priced(
+    security_id: str,
+    currency_code: str,
+    market_value: str,
+    *,
+    price_date: str = "2026-07-15",
+    account_id: str = "acct_brokerage",
+) -> _Holding:
+    """A valued position — the shape every currency-total test needs."""
+    return _Holding(
+        account_id=account_id,
+        security_id=security_id,
+        currency_code=currency_code,
+        market_value=market_value,
+        unrealized_gain="0.00",
+        price_date=price_date,
+        price_source="plaid",
+        days_since_observed="0",
+        valuation_status="valued",
+    )
+
+
+def _set_home_currency(db: Database, currency_code: str) -> None:
+    ProfileSettingsRepo(db).set_home_currency(currency_code, actor="test")
+
+
+def _seed_rate(db: Database, base: str, quote: str, on: date, rate: Decimal) -> None:
+    """Put one provider rate in the cache, as a refresh backfill would."""
+    db.execute(
+        """
+        INSERT INTO raw.exchange_rates
+            (from_currency, to_currency, rate_date, rate, source_type, loaded_at)
+        VALUES (?, ?, ?, ?, 'frankfurter', ?)
+        """,
+        [base, quote, on, rate, datetime(2026, 7, 16, 12, 0, 0)],
+    )
+
+
 class TestListEvents:
     """Tests for InvestmentService.list_events()."""
 
@@ -2078,7 +2117,14 @@ class TestHoldings:
         assert result.market_value_by_currency == {"USD": Decimal("2000.50")}
 
     def test_mixed_currency_portfolio_refuses_a_total(self, db: Database) -> None:
-        """Summing EUR into USD would invent a figure; publish the split instead."""
+        """With no home currency, there is no unit to sum into; publish the split.
+
+        Mixing currencies is no longer refused outright — a home currency plus a
+        stored rate produces a combined figure, which
+        ``test_a_mixed_portfolio_totals_in_the_home_currency`` covers. What this
+        profile lacks is the target: nothing names the unit a combined number
+        would be in, so stating one would invent it.
+        """
         _seed_read_fixtures(db)
         _replace_holdings_view(
             db,
@@ -2182,6 +2228,187 @@ class TestHoldings:
         result = db_service(db).holdings()
         assert result.total_market_value is None
         assert result.market_value_by_currency == {}
+        assert result.total_market_value_currency is None
+
+    def test_a_single_currency_total_names_the_currency_it_is_in(
+        self, db: Database
+    ) -> None:
+        """The undisputed case still says which unit the number carries."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(db, [_priced("sec_1", "USD", "1200.00")])
+        result = db_service(db).holdings()
+        assert result.total_market_value == Decimal("1200.00")
+        assert result.total_market_value_currency == "USD"
+
+    def test_a_mixed_portfolio_totals_in_the_home_currency(self, db: Database) -> None:
+        """EUR priced into USD at its own close's rate, then added to the dollars.
+
+        Hand-derived: 900.00 EUR x 1.10 = 990.00 USD, plus the 1200.00 USD
+        position = 2190.00. The per-currency split stays in original units,
+        because an original amount is the canonical one.
+        """
+        _seed_read_fixtures(db)
+        _set_home_currency(db, "USD")
+        _seed_rate(db, "EUR", "USD", date(2026, 7, 15), Decimal("1.10"))
+        _replace_holdings_view(
+            db,
+            [
+                _priced("sec_1", "USD", "1200.00"),
+                _priced("sec_2", "EUR", "900.00"),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value == Decimal("2190.00")
+        assert result.total_market_value_currency == "USD"
+        assert result.market_value_by_currency == {
+            "USD": Decimal("1200.00"),
+            "EUR": Decimal("900.00"),
+        }
+
+    def test_the_converted_total_names_the_rate_behind_it(self, db: Database) -> None:
+        """Requirement 10: a converted figure states what priced it.
+
+        The reports surface answers this with ``summary.applied_rates``. A
+        holdings total is converted by the same rule at the same layer, so
+        publishing the figure without its rate would leave the contract holding
+        on one surface and not the other.
+        """
+        _seed_read_fixtures(db)
+        _set_home_currency(db, "USD")
+        _seed_rate(db, "EUR", "USD", date(2026, 7, 15), Decimal("1.10"))
+        _replace_holdings_view(
+            db,
+            [
+                _priced("sec_1", "USD", "1200.00"),
+                _priced("sec_2", "EUR", "900.00"),
+            ],
+        )
+
+        result = db_service(db).holdings()
+
+        assert [
+            (rate.from_currency, rate.to_currency, rate.rate)
+            for rate in result.applied_rates
+        ] == [("EUR", "USD", Decimal("1.10"))]
+
+    def test_an_unconverted_total_names_no_rate(self, db: Database) -> None:
+        """A single-currency portfolio converts nothing, so it priced nothing.
+
+        "Nothing was converted" and "converted at a rate nobody recorded" must
+        not read alike, so the empty case stays empty rather than inventing an
+        identity rate.
+        """
+        _seed_read_fixtures(db)
+        _replace_holdings_view(db, [_priced("sec_1", "USD", "1200.00")])
+
+        result = db_service(db).holdings()
+
+        assert result.total_market_value == Decimal("1200.00")
+        assert result.applied_rates == ()
+
+    def test_each_position_prices_at_its_own_close_date(self, db: Database) -> None:
+        """Two EUR positions valued on different days use each day's own rate.
+
+        Hand-derived: 100.00 EUR at 1.10 = 110.00, 100.00 EUR at 1.50 = 150.00,
+        plus 1000.00 USD = 1260.00. A single portfolio-wide rate would give
+        1220.00 at the earlier date or 1300.00 at the later one, so this asserts
+        a number neither shortcut can produce.
+        """
+        _seed_read_fixtures(db)
+        _set_home_currency(db, "USD")
+        _seed_rate(db, "EUR", "USD", date(2026, 7, 15), Decimal("1.10"))
+        _seed_rate(db, "EUR", "USD", date(2026, 7, 16), Decimal("1.50"))
+        _replace_holdings_view(
+            db,
+            [
+                _priced("sec_1", "USD", "1000.00"),
+                _priced("sec_2", "EUR", "100.00"),
+                _priced(
+                    "sec_2",
+                    "EUR",
+                    "100.00",
+                    price_date="2026-07-16",
+                    account_id="acct_roth",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value == Decimal("1260.00")
+
+    def test_an_unpriceable_pair_leaves_the_total_unpublished(
+        self, db: Database
+    ) -> None:
+        """No rate on disk is the segmentation fallback, not an error."""
+        _seed_read_fixtures(db)
+        _set_home_currency(db, "USD")
+        _replace_holdings_view(
+            db,
+            [
+                _priced("sec_1", "USD", "1200.00"),
+                _priced("sec_2", "EUR", "900.00"),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value is None
+        assert result.total_market_value_currency is None
+        assert result.market_value_by_currency == {
+            "USD": Decimal("1200.00"),
+            "EUR": Decimal("900.00"),
+        }
+
+    def test_a_non_iso_position_degrades_the_total_not_the_whole_read(
+        self, db: Database
+    ) -> None:
+        """One unconvertible code costs the combined figure and nothing else.
+
+        ``dim_holdings`` stores a lot's ``currency_code`` verbatim and documents
+        that unofficial crypto codes arrive uncased, so a four-letter code is a
+        real row rather than a hypothetical. ``resolve_rate`` refuses it with a
+        plain ``UserError`` — a different exception from the missing-rate case,
+        and one that would otherwise escape ``holdings()`` and fail the entire
+        read for every other position too.
+        """
+        _seed_read_fixtures(db)
+        _set_home_currency(db, "USD")
+        _seed_rate(db, "EUR", "USD", date(2026, 7, 15), Decimal("1.10"))
+        _replace_holdings_view(
+            db,
+            [
+                _priced("sec_1", "USD", "1200.00"),
+                _priced("sec_2", "USDT", "500.00"),
+            ],
+        )
+
+        result = db_service(db).holdings()
+
+        assert result.total_market_value is None
+        assert result.total_market_value_currency is None
+        # The read itself survives: both positions still report their own value.
+        assert result.market_value_by_currency == {
+            "USD": Decimal("1200.00"),
+            "USDT": Decimal("500.00"),
+        }
+
+    def test_a_profile_with_no_home_currency_gets_no_mixed_total(
+        self, db: Database
+    ) -> None:
+        """Nothing names a target, so there is no currency to total into.
+
+        Requirement 9 forbids substituting 'USD' for an unset home currency —
+        that would relabel a foreign-currency profile's portfolio.
+        """
+        _seed_read_fixtures(db)
+        _seed_rate(db, "EUR", "USD", date(2026, 7, 15), Decimal("1.10"))
+        _replace_holdings_view(
+            db,
+            [
+                _priced("sec_1", "USD", "1200.00"),
+                _priced("sec_2", "EUR", "900.00"),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value is None
+        assert result.total_market_value_currency is None
 
     def test_account_ref_resolves_and_filters(self, db: Database) -> None:
         _seed_read_fixtures(db)

@@ -41,9 +41,12 @@ _CORE_REPORT_IDS = {
     "balance_drift": "core:balance_drift",
 }
 _FLOW_REPORTS = frozenset(_CORE_REPORT_IDS) - {"balance_drift"}
-_NO_FX_V1 = (
-    "no FX conversion in v1; rows are segmented per currency_code, never blended"
-)
+#: The one promise every report's `fx_basis` makes, however it converts. What
+#: each report does with a display currency differs — three price their rows,
+#: five aggregate per currency and cannot — and which reports do which is pinned
+#: by set equality in `test_only_reports_whose_rows_price_exactly_declare_an_fx_date`.
+#: What none of them may do is put two currencies behind one figure.
+_NEVER_BLENDED = "segmented per currency_code, never blended"
 _EXPECTED_DESCRIPTIONS = {
     "spending": (
         "Spending amounts are positive absolute outflows; comparison deltas "
@@ -103,7 +106,8 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
         # Rows are segmented, so the per-row column is the authority for
         # which currency an amount is in — not one envelope-level field.
         assert semantics.currency == "currency_code"
-        assert semantics.fx_basis == _NO_FX_V1
+        assert semantics.fx_basis is not None
+        assert _NEVER_BLENDED in semantics.fx_basis
 
         if name in _FLOW_REPORTS:
             assert semantics.kind == "flow"

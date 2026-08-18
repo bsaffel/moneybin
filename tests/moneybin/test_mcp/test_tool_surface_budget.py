@@ -131,7 +131,16 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "system_audit": (746, 1_958),
     "accounts": (823, 2_240),
     "accounts_balances": (1_069, 2_786),
-    "investments": (1_649, 4_908),
+    # Grew 116 bytes when display conversion gave the holdings total a currency
+    # to be denominated in: `data.total_market_value` is now published across
+    # currencies, so the description has to say which unit it is in and when it
+    # is still null. `data.applied_rates` then cost 61 more — a converted total
+    # that cannot be audited back to the rate behind it fails Requirement 10,
+    # and an agent that cannot read the field from the description never asks
+    # for it — paid for by tightening the prose around it, which is why this
+    # lands 4 bytes under the pre-provenance figure. -64.1% against the four
+    # tools it replaced.
+    "investments": (1_761, 4_908),
     "transactions": (1_287, 2_383),
     "transactions_categorize_rules": (564, 318),
     "reviews": (703, 8_687),
@@ -147,7 +156,11 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # tools never owed: accepting a match can reverse a transfer the user
     # accepted, and an agent that cannot read that from the description
     # reports the reversal as a clean accept. Registry-wide the consolidation
-    # still stands at -38.0%.
+    # still stands at -37.0% — 57,196 bytes against the baseline's 90,734, both
+    # readable as `total_bytes` in the two fixtures this test loads. (The figure
+    # was recorded as -38.0% and had already drifted before display conversion
+    # added its 116; it is a comment, so nothing failed. Recompute it from the
+    # fixtures rather than trusting this line.)
     "reviews_decide": (2_727, 2_566),
     # Grew by the same disclosure, for the same reason: accepting an account
     # decision re-runs matching, which can reverse a transfer the user

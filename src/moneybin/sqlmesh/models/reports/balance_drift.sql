@@ -78,5 +78,5 @@ SELECT
     WHEN ABS(drift) < 10.00
     THEN 'warning'
     ELSE 'drift'
-  END AS status /* clean (<1) | warning (<10) | drift (>=10) | no-data (computed_balance NULL) | currency-mismatch (the account's currency and the observation's disagree, so no drift is computable). The clean/warning thresholds are absolute amounts in the row's own currency_code, not converted: 1 and 10 are calibrated for USD-scale units and read as larger drift in a small-unit currency. Per-currency thresholds need conversion, which arrives in M1K.2. */
+  END AS status /* clean (<1) | warning (<10) | drift (>=10) | no-data (computed_balance NULL) | currency-mismatch (the account's currency and the observation's disagree, so no drift is computable). The clean/warning thresholds are absolute amounts in the row's own currency_code. A display-converted read re-buckets them against the converted drift, in `reports/definitions/balance_drift.py::_rebucket_status` — SQL cannot read that module's `_CLEAN_BELOW` / `_WARNING_BELOW`, so changing 1.00 or 10.00 here means changing them there in the same edit. */
 FROM deltas

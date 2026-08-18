@@ -13,10 +13,14 @@ from pydantic import JsonValue
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.privacy.payloads.networth import NetWorthAccountRow
+from moneybin.privacy.payloads.networth import (
+    NetWorthAccountRow,
+    NetWorthCurrencySegment,
+)
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import ServiceReportSpec
 from moneybin.reports._framework.contract import (
+    ORIGINAL_CURRENCY_COLUMN,
     OutputColumn,
     ParamSpec,
     ReportSemantics,
@@ -36,27 +40,28 @@ _SNAPSHOT_COLUMNS = (
     ),
     OutputColumn(
         "net_worth",
-        "Sum of included balances denominated in currency_code.",
+        "Sum of included balances denominated in currency_code; totals rows only.",
         DataClass.BALANCE,
     ),
     OutputColumn(
         "total_assets",
-        "Sum of positive balances in currency_code.",
+        "Sum of positive balances in currency_code; totals rows only.",
         DataClass.BALANCE,
     ),
     OutputColumn(
         "total_liabilities",
-        "Sum of negative balances in currency_code, retained as negative.",
+        "Sum of negative balances in currency_code, retained as negative; "
+        "totals rows only.",
         DataClass.BALANCE,
     ),
     OutputColumn(
         "account_count",
-        "Count of accounts contributing to this currency's totals.",
+        "Count of accounts contributing to this currency's totals; totals rows only.",
         DataClass.AGGREGATE,
     ),
     OutputColumn(
         "account_id",
-        "Canonical account identifier for the breakdown row.",
+        "Canonical account identifier; null on a currency's totals row.",
         DataClass.RECORD_ID,
     ),
     OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
@@ -84,7 +89,13 @@ _SNAPSHOT_SEMANTICS = ReportSemantics(
         "resolved transaction-adjusted daily positions on or before the "
         "resolved balance_date"
     ),
-    fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
+    fx_basis=(
+        "each row states one currency's position or one account's balance on one "
+        "date, so a requested display currency prices it at that date's rate; a "
+        "row that cannot be priced leaves the whole report segmented per "
+        "currency_code, never blended"
+    ),
+    fx_date="balance_date",
     time_basis=(
         "point-in-time position at the latest available balance_date on or before "
         "the requested as_of date; latest available when omitted; balance_date "
@@ -137,7 +148,11 @@ _HISTORY_SEMANTICS = ReportSemantics(
     valuation_basis=(
         "last resolved transaction-adjusted daily position in each selected period"
     ),
-    fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
+    fx_basis=(
+        "each period's net worth is aggregated per currency_code, so pricing a row "
+        "into one display currency would leave several rows sharing a period; rows "
+        "stay segmented per currency_code, never blended"
+    ),
     time_basis=(
         "inclusive from_date/to_date window bucketed daily, weekly, or monthly; "
         "period labels are bucket start dates"
@@ -234,60 +249,58 @@ def _execute_networth(
         else None,
     )
 
-    # Each account row carries the totals for its own currency, never a
-    # cross-currency sum: a mixed-currency profile gets one headline per
-    # currency instead of one blended figure (multi-currency.md Requirement 5).
-    # A single-currency profile sees exactly the figures it always did.
-    segments = {segment.currency_code: segment for segment in snapshot.per_currency}
-
-    def _headline(currency_code: str | None) -> dict[str, object]:
-        segment = segments.get(currency_code)
+    # Two kinds of row, never fused: one per currency carrying that currency's
+    # position, then one per account carrying only its own balance. A
+    # mixed-currency profile therefore gets one headline per currency instead
+    # of one blended figure (multi-currency.md Requirement 5), and a
+    # single-currency profile sees exactly the figures it always did.
+    #
+    # They are separate rows because display conversion prices each row on its
+    # own and relabels it into the target currency. A position repeated across
+    # its accounts' rows would arrive as several indistinguishable positions,
+    # and anything summing them would count it once per account (Decision 7 in
+    # the M1K.2 display-conversion record).
+    def _totals_row(segment: NetWorthCurrencySegment | None) -> dict[str, Any]:
         return {
             "balance_date": snapshot.balance_date,
-            "currency_code": currency_code,
+            "currency_code": segment.currency_code if segment else None,
             "net_worth": segment.net_worth if segment else None,
             "total_assets": segment.total_assets if segment else None,
             "total_liabilities": segment.total_liabilities if segment else None,
-            "account_count": segment.account_count if segment else 0,
+            "account_count": segment.account_count if segment else None,
+            "account_id": None,
+            "account_name": None,
+            "account_balance": None,
+            "observation_source": None,
         }
 
-    def _row(
-        currency_code: str | None, account: NetWorthAccountRow | None
-    ) -> dict[str, Any]:
+    def _account_row(account: NetWorthAccountRow) -> dict[str, Any]:
         return {
-            **_headline(currency_code),
-            "account_id": account.account_id if account else None,
-            "account_name": account.display_name if account else None,
-            "account_balance": account.balance if account else None,
-            "observation_source": account.observation_source if account else None,
+            "balance_date": snapshot.balance_date,
+            "currency_code": account.currency_code,
+            "net_worth": None,
+            "total_assets": None,
+            "total_liabilities": None,
+            "account_count": None,
+            "account_id": account.account_id,
+            "account_name": account.display_name,
+            "account_balance": account.balance,
+            "observation_source": account.observation_source,
         }
 
-    # One row per currency leads, then the remaining account rows. Ordering
-    # matters because build_catalog_execution truncates to max_rows: with all
-    # of a currency's rows adjacent, a profile holding two dollar accounts and
-    # one euro account pushes euro third, and any smaller limit returns a page
-    # that reads as single-currency. Leading with a representative of each
-    # makes every currency survive any limit at least as large as the currency
-    # count — blend by omission is the same defect as blend by summation.
-    first_of_currency: list[dict[str, Any]] = []
-    remaining: list[dict[str, Any]] = []
-    covered: set[str | None] = set()
-    for account in snapshot.per_account:
-        target = remaining if account.currency_code in covered else first_of_currency
-        covered.add(account.currency_code)
-        target.append(_row(account.currency_code, account))
-    # An account_ids filter narrows the breakdown but not the position: without
-    # this, filtering to a USD account would make the profile's EUR total vanish
-    # from a report that shows it when unfiltered. Every currency the profile
-    # holds gets at least one row, breakdown or not.
-    first_of_currency.extend(
-        _row(segment.currency_code, None)
-        for segment in snapshot.per_currency
-        if segment.currency_code not in covered
-    )
-    rows = first_of_currency + remaining
+    # Totals lead because the row cap is applied as a prefix: a profile holding
+    # two dollar accounts and one euro account would otherwise push euro past a
+    # small limit and return a page that reads as single-currency. Blend by
+    # omission is the same defect as blend by summation. This ordering is what
+    # carries the *segmented* read, which merges nothing; a converting one caps
+    # after `_restate_networth_total` has run (`truncate_execution`), so its
+    # totals cannot be cut before they are summed. Taking them from per_currency
+    # narrowing the breakdown without narrowing the position — filtering to a
+    # dollar account still reports the euro the profile holds.
+    rows = [_totals_row(segment) for segment in snapshot.per_currency]
+    rows.extend(_account_row(account) for account in snapshot.per_account)
     if not rows:
-        rows = [_row(None, None)]
+        rows = [_totals_row(None)]
 
     return build_catalog_execution(
         NETWORTH_REPORT,
@@ -395,12 +408,73 @@ def _decimal_column_type(
     return f"DECIMAL({precision},{scale})"
 
 
+def _sum_money(rows: list[dict[str, Any]], column: str) -> Decimal | None:
+    """Total one money column across rows, or ``None`` if no row carries one."""
+    values = [row[column] for row in rows if isinstance(row[column], Decimal)]
+    return sum(values, Decimal(0)) if values else None
+
+
+def _restate_networth_total(rows: list[dict[str, Any]], currency: str) -> None:
+    """Collapse the converted totals into one headline and restate its identity.
+
+    Pricing a multi-currency snapshot into one currency breaks two things.
+    Conversion relabels every row into the target, so the per-currency split
+    ``_totals_row`` emits becomes several totals rows all claiming the same
+    unit — and a consumer reading "the totals row" gets an arbitrary fraction
+    of the position, which is the blend-by-omission the split exists to
+    prevent. Separately, each money column converts and rounds independently,
+    so the three round apart: assets ``1.00`` and liabilities ``-0.01`` at rate
+    ``0.5`` give ``0.50`` and ``-0.01`` while net worth ``0.99`` gives ``0.50``,
+    a report whose own columns no longer add up.
+
+    Runs only after a conversion, so the rows are known to share a unit before
+    anything is summed. Account-breakdown rows hold nulls in all three headline
+    fields, so only a totals row states the identity and only a totals row is
+    touched; they keep their order after the collapsed headline.
+
+    What it deliberately does not do is make the headline equal the sum of the
+    displayed account rows. It sums the per-currency totals, each converted and
+    rounded once, so two 0.01 EUR accounts at rate 0.5 display 0.01 each while
+    their 0.02 EUR total converts to 0.01 — the headline is a cent under what
+    the visible rows add to. Summing the account rows instead would trade that
+    for two worse things: rounding error that grows with the number of
+    accounts, and a headline that follows an ``account_ids`` filter, so
+    narrowing the breakdown to one dollar account would silently report that
+    account as the whole position. The headline answers "what is this profile
+    worth", which is why it is built from the totals and why filtering narrows
+    only the rows beneath it.
+    """
+    totals = [row for row in rows if row["account_id"] is None]
+    if not totals:
+        return
+    head = totals[0]
+    if len(totals) > 1:
+        counts = [row["account_count"] for row in totals if row["account_count"]]
+        head["total_assets"] = _sum_money(totals, "total_assets")
+        head["total_liabilities"] = _sum_money(totals, "total_liabilities")
+        head["account_count"] = sum(counts) if counts else None
+        head["currency_code"] = currency
+        # Several currencies were summed, so no one stored rate priced this
+        # figure and the head row's own original would name whichever currency
+        # happened to sort first. The rates are all still on the envelope; the
+        # per-account rows beneath keep theirs.
+        head[ORIGINAL_CURRENCY_COLUMN] = None
+        rows[:] = [head, *(row for row in rows if row["account_id"] is not None)]
+    assets = head["total_assets"]
+    liabilities = head["total_liabilities"]
+    if isinstance(assets, Decimal) and isinstance(liabilities, Decimal):
+        head["net_worth"] = assets + liabilities
+
+
 NETWORTH_REPORT = ServiceReportSpec(
     report_id="core:networth",
     name="networth",
     description=(
         "Current or as-of net worth snapshot with per-account breakdown. "
-        "Amounts are denominated in each row's own currency_code."
+        "Rows come in two kinds: totals rows first (account_id null) — one per "
+        "currency held, or exactly one carrying the summed position when "
+        "display_currency prices the read — then one row per account carrying "
+        "only its own balance. Amounts are in each row's own currency_code."
     ),
     parameters=(
         ParamSpec(
@@ -429,6 +503,7 @@ NETWORTH_REPORT = ServiceReportSpec(
     ),
     executor=_execute_networth,
     validator=_validate_networth_parameters,
+    on_converted=_restate_networth_total,
 )
 
 NETWORTH_HISTORY_REPORT = ServiceReportSpec(

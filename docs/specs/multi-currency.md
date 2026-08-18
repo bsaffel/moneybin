@@ -192,7 +192,14 @@ Numbered, testable. Tagged by phase.
    `NetworthService` (see Requirement 7). `reports.large_transactions` additionally
    scopes its median/MAD baselines and its top-100 rank per currency — a pooled
    baseline compares unlike units and scores a typical charge in the
-   smaller-denominated currency as an anomaly.
+   smaller-denominated currency as an anomaly. That per-currency scoping is also
+   why those three columns cannot survive a display conversion: the baseline is
+   the row's original currency, each row prices at its own `txn_date` rate, and
+   rates move between dates, so the converted amounts are not one scaling of the
+   population that produced the score. A converted read returns them null rather
+   than attribute them to a currency they were not measured in; the rows
+   themselves are still ranked and anomaly-filtered in SQL, on the original
+   amounts.
    **Ranking and reachability, 2026-07-26.** Segmentation makes each figure
    correct; two follow-on defects left a correct figure unreadable or absent.
    The framework truncates with `records[:max_rows]`, so the *first* sort key
@@ -393,6 +400,43 @@ Numbered, testable. Tagged by phase.
     source, fetched_at)`, unique on `(from_currency, to_currency, rate_date, source)`) or a
     user override in `app.*` (Req 14). A "show me the rate" path exposes the exact rate
     behind any converted number (consistent with the lineage promise).
+    **Implemented in two halves.** The storage half landed with the rate layer
+    (2026-08-15): every rate is stored with its source, and `moneybin fx rate` /
+    `fx list` read it back. The exposure half needed converted figures to exist,
+    so it landed with display conversion (2026-08-16): `summary.applied_rates`
+    carries one entry per distinct pair and date — rate, source, requested date,
+    and the date actually priced — and the terminal prints the rate when a single
+    one priced the report. Deduplicated by (currency, date), because a thousand
+    rows on one date were priced by one rate. Absent when nothing was converted,
+    which is deliberately distinct from present-but-empty.
+    That dedup is also why the set alone is not the whole answer: a report
+    holding two source currencies on one date publishes two entries, while
+    conversion has relabelled every row to the target, leaving no way to say
+    which entry priced which figure. A converted read therefore also carries
+    `original_currency_code` per row — the other half of the (currency, date)
+    key — added by the framework rather than by any report, since no model
+    projects it. Present only on a read that actually priced something: on a
+    segmented or already-in-target result it would restate `currency_code` and
+    imply a conversion that did not happen. The one row it cannot describe is
+    `core:networth`'s collapsed headline, which sums several currencies and so
+    carries null rather than name whichever one sorted first.
+    The published set is also narrowed to the rows that survive a row cap. A
+    capped read prices one row past the cap to decide `has_more`, so a rate
+    resolved only for that row would name no figure the caller received while
+    disclosing its `requested_date` — a transaction date on a per-transaction
+    report. Narrowing is skipped when any surviving row carries no
+    `original_currency_code`, since that row was priced by more than one rate
+    and cannot name them; publishing one rate too many is a smaller error than
+    dropping the rate behind a figure on screen.
+    The investments surface answers the same way: `investments(view="holdings")`
+    publishes `data.applied_rates` beside its converted `total_market_value`,
+    reusing `FxRatePayload` so a rate is shown with the same six fields and the
+    same privacy classes wherever it appears. A converted figure with no trail
+    back to its rate is the failure this requirement names, and a second surface
+    publishing one would have been exactly that.
+    `moneybin export report` is the one report surface that never converts, so it
+    never needs the trail: an artifact outlives the rate that made it, and the
+    original amount stays checkable forever.
 11. **Free reference-rate source.** Rates come from **Frankfurter** (ECB-backed, no
     auth, historical to 1999), cached in `raw.exchange_rates`.
     `ExchangeRate.host`/`open.er-api.com` are documented fallbacks. **Only currency
@@ -430,7 +474,13 @@ Numbered, testable. Tagged by phase.
     imply: for each currency reachable from `core.fct_transactions`,
     `core.fct_balances_daily`, `core.fct_investment_transactions` or
     `core.dim_holdings`, one provider call covering the earliest date that currency
-    appears through today.
+    appears through today. The date a holding contributes is its own
+    `price_date` — the close its market value was struck at — because that is
+    the date the read prices it on. Planning today's rate instead would fetch
+    one no read asks for, and a carried-forward position whose close predates
+    the refresh would report no combined value right after a successful one. A
+    holding with no `price_date` is skipped by that same read, so it implies no
+    window at all.
 
     The window is derived from what the profile needs, never from what the cache
     appears to hold. `raw.exchange_rates` records the dates a provider published,
@@ -525,16 +575,22 @@ Numbered, testable. Tagged by phase.
     against the answer's bounds — the span model the hole below already calls
     for.
 
-    **Open for the conversion layer — the weekday-holiday hole.** A complete
-    backfill still leaves no row on a weekday the market was closed; verified
-    live 2026-08-15, the EUR/USD series skips Thursday 2026-01-01 entirely. A
-    transaction dated that day therefore misses the cache, and
-    `_last_publication_day` deliberately does not hop a weekday, so
-    `CurrencyService.resolve_rate` falls through to a live fetch **and a cache
-    write** — on a report read that opened the database read-only. The
-    conversion layer must not reach that path.
+    **Closed for the conversion layer — the read path cannot reach the
+    weekday-holiday hole.** A complete backfill still leaves no row on a weekday
+    the market was closed; verified live 2026-08-15, the EUR/USD series skips
+    Thursday 2026-01-01 entirely. A transaction dated that day misses the cache,
+    and `_last_publication_day` deliberately does not hop a weekday, so
+    `CurrencyService.resolve_rate` would fall through to a live fetch **and a
+    cache write** — on a report read that opened the database read-only. It
+    never gets the chance: report execution and the holdings portfolio total
+    both build their service through `build_cache_only_currency_service`, which
+    passes no adapter, and `_fetch` raises `RateUnavailableError` at its
+    `self._adapter is None` check before the adapter is touched. The row
+    degrades instead — a report segments under Requirement 15, and the holdings
+    total reports no combined figure rather than a wrong one.
 
-    The backfill is what makes this fixable. `_last_publication_day`'s docstring
+    **Still open — pricing a holiday-dated row instead of degrading it.** The
+    backfill is what makes this fixable. `_last_publication_day`'s docstring
     rejects a general "nearest earlier stored day" fallback because a missing
     weekday is ambiguous — closed market, or nobody fetched it yet. Coverage
     recorded as a span removes the ambiguity: **inside** `[earliest stored,
