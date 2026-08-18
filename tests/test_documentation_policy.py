@@ -26,8 +26,16 @@ import subprocess  # noqa: S404 -- the policy test queries local Git metadata
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_GIT = shutil.which("git")
-assert _GIT is not None, "documentation policy check requires Git"
+
+
+def _git_executable() -> str:
+    executable = shutil.which("git")
+    if executable is None:
+        raise RuntimeError("documentation policy check requires Git")
+    return executable
+
+
+_GIT = _git_executable()
 _AUTHORITY_DOCS = (_REPO_ROOT / "docs" / "specs", _REPO_ROOT / "docs" / "decisions")
 _PUBLIC_DOC_FILES = (
     _REPO_ROOT / "README.md",
