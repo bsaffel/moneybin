@@ -31,7 +31,7 @@ Cite PR numbers. Keep entries to one or two sentences each.
 - Code-style changes (formatting, lint rules)
 - Test-only PRs (unless they unblock something)
 - ADR additions (the ADR itself is the durable artifact)
-- Changes scoped to `private/` docs
+- Private knowledge or internal coordination changes
 
 When in doubt: if a user reading the changelog would benefit from knowing about it, add an entry. If it's purely internal, skip it.
 

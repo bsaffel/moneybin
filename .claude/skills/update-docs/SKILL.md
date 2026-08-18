@@ -1,6 +1,6 @@
 ---
 name: update-docs
-description: Update the public doc surface — README, CHANGELOG, CONTRIBUTING, docs/ (architecture, audience, comparison, features, roadmap, guides, reference, tech) — to reflect what an in-scope change means for users; persona-aware per docs/audience.md. Excludes specs and ADRs (use /update-specs). Trigger: user-visible work ships, a PR adds capability, a milestone closes, or "update the docs". Suggest it unprompted.
+description: 'Update the public doc surface — README, CHANGELOG, CONTRIBUTING, docs/ (architecture, audience, comparison, features, roadmap, guides, reference, tech) — to reflect what an in-scope change means for users; persona-aware per docs/audience.md. Excludes specs and ADRs (use /update-specs). Trigger: user-visible work ships, a PR adds capability, a milestone closes, or "update the docs". Suggest it unprompted.'
 ---
 
 # /update-docs
@@ -42,7 +42,9 @@ not as the starting point.
 
 - `docs/specs/` — that's `/update-specs`
 - `docs/decisions/` — ADRs are durable, edited by hand only
-- `private/` — that's `/update-progress`
+- Private strategy, internal coordination, and the legacy local `private/` tree
+  are outside this skill. Route private status to the MoneyBin Linear project
+  and durable private knowledge to `bsaffel/moneybin-private`.
 
 ## "Last reviewed" datestamp convention
 
@@ -271,7 +273,7 @@ revisions, leave the stamp from step 3.
 
 Per `.claude/rules/shipping.md`:
 
-- **CHANGELOG entry** under `Unreleased` in the correct category (Added / Changed / Deprecated / Removed / Fixed / Security). Cite the PR. Skip if the change is internal-only (refactors, CI tweaks, style, test-only PRs, ADR additions, private/ changes).
+- **CHANGELOG entry** under `Unreleased` in the correct category (Added / Changed / Deprecated / Removed / Fixed / Security). Cite the PR. Skip if the change is internal-only (refactors, CI tweaks, style, test-only PRs, ADR additions, private knowledge changes).
 - **`docs/roadmap.md`** — move the feature row from 📐 designed / 🗓️ planned to ✅ shipped. Update milestone status if a sub-milestone just closed.
 - **`docs/features.md`** — add or update the entry if it's a user-facing capability.
 - **`README.md`** status callout — update only if a milestone closed or a previously-promised feature now exists. Do not re-add an in-README roadmap matrix.
@@ -291,7 +293,8 @@ Per-file summary of edits, plus:
 
 - Touch `docs/specs/` — that's `/update-specs`.
 - Touch `docs/decisions/` — ADRs are by hand.
-- Touch `private/` — that's `/update-progress`.
+- Touch private strategy or coordination surfaces, including the legacy local
+  `private/` tree, Linear, or `bsaffel/moneybin-private`.
 - Expand scope beyond what's needed for the in-scope change.
 - Reintroduce stored anti-patterns (in-README roadmap, feature inventories, License essays, Wave/Level terminology, private/ refs).
 - Change the README tagline `Your finances, understood by AI.` without explicit user direction.

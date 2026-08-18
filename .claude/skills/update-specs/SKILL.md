@@ -1,6 +1,6 @@
 ---
 name: update-specs
-description: Reconcile docs/specs/ with what actually shipped in the current scope — find the affected specs via docs/specs/INDEX.md, auto-edit small drift, surface design-intent changes for review. Trigger: finishing a feature branch, a follow-up PR adds behavior no spec describes, a refactor renames primitives specs cite, or "are the specs accurate?" / "update the specs". Suggest it unprompted when implementation drifted from its spec.
+description: 'Reconcile docs/specs/ with what actually shipped in the current scope — find the affected specs via docs/specs/INDEX.md, auto-edit small drift, surface design-intent changes for review. Trigger: finishing a feature branch, a follow-up PR adds behavior no spec describes, a refactor renames primitives specs cite, or "are the specs accurate?" / "update the specs". Suggest it unprompted when implementation drifted from its spec.'
 ---
 
 # /update-specs
@@ -112,7 +112,8 @@ After all subagents complete, summarize for the developer:
 
 - Write new specs (manual; use `_template.md`).
 - Touch ADRs in `docs/decisions/` — durable design records, edit by hand.
-- Touch `private/` tracking docs — that's `/update-progress`.
+- Touch private strategy or coordination surfaces, including the legacy local
+  `private/` tree, Linear, or `bsaffel/moneybin-private`.
 - Touch public guides, README, CHANGELOG, roadmap — that's `/update-docs`.
 - Expand scope beyond what was detected without explicit user approval.
 - Add new `private/` path references in specs. Existing references should be **removed when encountered** in the pass, matching the stored "no private/ refs in public docs" guidance — do not preserve them just because they were there before.

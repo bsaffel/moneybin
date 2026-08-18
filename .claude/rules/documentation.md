@@ -27,13 +27,14 @@ issue, roadmap item, or an honest statement that the work is planned; when the
 substance is what matters, restate it inline instead of pointing at the path.
 
 **Exempt: internal agent configuration.** `AGENTS.md`, `CLAUDE.md`, and
-`.claude/**` may name `private/` paths, because their job is to route agents
-there — AGENTS.md's "Plans vs Specs" section is required to say plans belong in
-`private/plans/`. The ban is about not sending an *external* reader somewhere
-they cannot follow, not about avoiding the word.
+`.claude/**` may route authorized agents to `bsaffel/moneybin-private` or the
+MoneyBin Linear project. They must not route new work to the legacy local
+`private/` tree. The public-documentation ban is about not sending an external
+reader somewhere they cannot follow, not about avoiding the word.
 
-Treat any information already committed publicly as public history: moving it to
-`private/` prevents future exposure but does not erase it from Git history.
+Treat any information already committed publicly as public history: moving it
+to a private repository prevents future exposure but does not erase it from
+Git history.
 
 ## External product references
 

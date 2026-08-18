@@ -7,7 +7,7 @@ paths: ["src/moneybin/mcp/**", "src/moneybin/cli/**", "src/moneybin/services/**"
 
 Cross-surface pattern for MoneyBin's three agent/user surfaces — MCP tools, CLI commands, and (future) REST endpoints. Invoke whenever adding, renaming, or restructuring an entry on any of those surfaces.
 
-Companion to `.claude/rules/design-principles.md` (durable-path selection) and the surface-specific specs in `docs/specs/moneybin-mcp.md` and `docs/specs/moneybin-cli.md`. Per-item application of this rule lives in `private/plans/2026-05-16-mcp-surface-consolidation-decisions.md`.
+Companion to `.claude/rules/design-principles.md` (durable-path selection) and the surface-specific specs in `docs/specs/moneybin-mcp.md` and `docs/specs/moneybin-cli.md`. Apply the current rule and public specs directly; dated per-tool triage is historical evidence, not current guidance.
 
 ## Primary principle: capability first, then natural shape
 
@@ -375,5 +375,5 @@ until context-budget and host-native-deferral evidence is observed.
 - A consolidation must reduce actual `tools/list` metadata bytes and perform no
   worse in persisted evaluations. Count reduction alone is insufficient.
 
-Per-tool triage of the existing surface against this rule:
-`private/plans/2026-05-16-mcp-surface-consolidation-decisions.md`.
+Re-evaluate per-tool triage from the current registry and persisted evaluation
+evidence. Do not treat a dated implementation plan as current surface status.
