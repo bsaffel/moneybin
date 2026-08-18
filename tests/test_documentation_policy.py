@@ -41,7 +41,7 @@ _ACTIVE_AGENT_INSTRUCTION_ROOTS = (
 _ALLOW_MARKER = "external-products-ok"
 _RETIRED_ROUTE_DESCRIPTION_MARKER = "retired-route-description-ok"
 _AUTHORIZED_PRIVATE_REPOSITORY_ROUTE = re.compile(
-    r"(?<![\w./-])bsaffel/moneybin-private/"
+    r"(?<![\w./-])(?:https://github\.com/)?bsaffel/moneybin-private/"
 )
 _COMPETITOR_DERIVATION = re.compile(
     r"\b(?:"
@@ -83,6 +83,7 @@ def _active_agent_instruction_files() -> list[Path]:
     files = [
         _REPO_ROOT / "AGENTS.md",
         _REPO_ROOT / ".github" / "ai-review-protocol.md",
+        _REPO_ROOT / ".github" / "workflows" / "ai-review.yml",
         *_REPO_ROOT.rglob("CLAUDE.md"),
     ]
     files.extend(
@@ -105,8 +106,14 @@ def test_retired_route_guard_covers_any_local_private_destination() -> None:
     assert _has_retired_agent_route("save durable evidence in private/evidence/")
     assert _has_retired_agent_route("save durable evidence in ./moneybin-private/")
     assert _has_retired_agent_route("save durable evidence in evil-moneybin-private/")
+    assert _has_retired_agent_route(
+        "save evidence in https://evil.example/bsaffel/moneybin-private/"
+    )
     assert not _has_retired_agent_route(
         "save durable evidence in bsaffel/moneybin-private/evidence/"
+    )
+    assert not _has_retired_agent_route(
+        "save evidence in https://github.com/bsaffel/moneybin-private/evidence/"
     )
 
 
@@ -114,6 +121,7 @@ def test_active_agent_instruction_files_include_nested_claude_files() -> None:
     """Every repository CLAUDE.md instruction surface participates in the guard."""
     expected = set(_REPO_ROOT.rglob("CLAUDE.md"))
     expected.add(_REPO_ROOT / ".github" / "ai-review-protocol.md")
+    expected.add(_REPO_ROOT / ".github" / "workflows" / "ai-review.yml")
     assert expected <= set(_active_agent_instruction_files())
 
 
