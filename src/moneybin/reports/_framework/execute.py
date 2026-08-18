@@ -44,7 +44,10 @@ from moneybin.reports._framework.contract import (
     ReportSpec,
     bound_value,
 )
-from moneybin.reports._framework.convert import convert_records
+from moneybin.reports._framework.convert import (
+    ORIGINAL_CURRENCY_COLUMN,
+    convert_records,
+)
 from moneybin.services.currency_service import CurrencyService, ResolvedRate
 
 logger = logging.getLogger(__name__)
@@ -211,9 +214,31 @@ def convert_execution(
         before = len(outcome.records)
         execution.on_converted(outcome.records, outcome.display_currency)
         removed = before - len(outcome.records)
+
+    # `convert_records` attaches the original currency to each row under the
+    # same "a rate was applied" condition. Declaring it here is what makes it
+    # visible: the envelope's column list, the typed CLI table, and redaction
+    # all read `columns`/`output_classes`, and an undeclared key would either
+    # be dropped or reach a caller with no masking policy behind it. Declared
+    # by the framework rather than by each report, because no report's SQL
+    # projects it — it exists only on the converted read this module produces.
+    columns = execution.columns
+    column_types = execution.column_types
+    output_classes = execution.output_classes
+    if outcome.applied_rates:
+        columns = [*columns, ORIGINAL_CURRENCY_COLUMN]
+        column_types = [*column_types, "VARCHAR"]
+        output_classes = {
+            **output_classes,
+            ORIGINAL_CURRENCY_COLUMN: DataClass.CURRENCY,
+        }
+
     return replace(
         execution,
         records=outcome.records,
+        columns=columns,
+        column_types=column_types,
+        output_classes=output_classes,
         # `total_count` was fixed before conversion ran, so a callback that
         # collapses rows — `core:networth` merging its per-currency totals —
         # would leave the envelope deriving `has_more` from rows that no longer

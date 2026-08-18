@@ -409,6 +409,17 @@ Numbered, testable. Tagged by phase.
     one priced the report. Deduplicated by (currency, date), because a thousand
     rows on one date were priced by one rate. Absent when nothing was converted,
     which is deliberately distinct from present-but-empty.
+    That dedup is also why the set alone is not the whole answer: a report
+    holding two source currencies on one date publishes two entries, while
+    conversion has relabelled every row to the target, leaving no way to say
+    which entry priced which figure. A converted read therefore also carries
+    `original_currency_code` per row — the other half of the (currency, date)
+    key — added by the framework rather than by any report, since no model
+    projects it. Present only on a read that actually priced something: on a
+    segmented or already-in-target result it would restate `currency_code` and
+    imply a conversion that did not happen. The one row it cannot describe is
+    `core:networth`'s collapsed headline, which sums several currencies and so
+    carries null rather than name whichever one sorted first.
     The investments surface answers the same way: `investments(view="holdings")`
     publishes `data.applied_rates` beside its converted `total_market_value`,
     reusing `FxRatePayload` so a rate is shown with the same six fields and the

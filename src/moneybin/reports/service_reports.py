@@ -24,6 +24,7 @@ from moneybin.reports._framework.contract import (
     ParamSpec,
     ReportSemantics,
 )
+from moneybin.reports._framework.convert import ORIGINAL_CURRENCY_COLUMN
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     build_catalog_execution,
@@ -453,6 +454,11 @@ def _restate_networth_total(rows: list[dict[str, Any]], currency: str) -> None:
         head["total_liabilities"] = _sum_money(totals, "total_liabilities")
         head["account_count"] = sum(counts) if counts else None
         head["currency_code"] = currency
+        # Several currencies were summed, so no one stored rate priced this
+        # figure and the head row's own original would name whichever currency
+        # happened to sort first. The rates are all still on the envelope; the
+        # per-account rows beneath keep theirs.
+        head[ORIGINAL_CURRENCY_COLUMN] = None
         rows[:] = [head, *(row for row in rows if row["account_id"] is not None)]
     assets = head["total_assets"]
     liabilities = head["total_liabilities"]

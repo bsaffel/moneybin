@@ -213,6 +213,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   including the `anomaly` filter. A read whose rows are already in the
   requested currency prices nothing and keeps its scores, so the
   single-currency profile is unaffected.
+  A priced row also carries `original_currency_code`, naming which
+  `applied_rates` entry converted it — the set is deduplicated by currency and
+  date, so two source currencies on one date would otherwise publish two rates
+  with nothing tying either to a row whose currency label has been rewritten to
+  the target. Added by the framework on a converted read only, and null on
+  `core:networth`'s summed headline, which no single rate priced.
+  Stored rates are gathered into the home currency, so asking for any other
+  display currency generally finds none and falls back to per-currency
+  segmentation with a reason; extending the refresh planner to cover chosen
+  display targets is filed as a followup.
   The other five — cash flow, spending trend, merchant activity,
   recurring subscriptions, and the net-worth history series — aggregate with
   `currency_code` in the grouping key, so a row is already a per-currency

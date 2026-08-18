@@ -27,7 +27,10 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     ReportSpec,
 )
-from moneybin.reports._framework.convert import convert_records
+from moneybin.reports._framework.convert import (
+    ORIGINAL_CURRENCY_COLUMN,
+    convert_records,
+)
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     convert_execution,
@@ -210,6 +213,65 @@ def test_a_row_already_in_the_target_names_no_applied_rate(saved_db: Database) -
 
     assert outcome.display_currency == "USD"
     assert outcome.applied_rates == ()
+
+
+def test_a_converted_row_records_the_currency_it_started_in(
+    saved_db: Database,
+) -> None:
+    """Two source currencies on one date make ``applied_rates`` alone ambiguous.
+
+    Requirement 10 wants the exact rate behind any converted number. Conversion
+    relabels ``currency_code`` to the target, so without this column a caller
+    reading a EUR row and a GBP row both priced on 2026-03-05 sees two rates and
+    no way to tell which produced which figure.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    _seed_rate(saved_db, "GBP", "USD", date(2026, 3, 5), Decimal("1.27"))
+
+    outcome = convert_records(
+        [_row(), _row(currency_code="GBP")],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+    )
+
+    assert [row[ORIGINAL_CURRENCY_COLUMN] for row in outcome.records] == ["EUR", "GBP"]
+    assert [row["currency_code"] for row in outcome.records] == ["USD", "USD"]
+
+
+def test_a_segmented_report_records_no_original_currency(saved_db: Database) -> None:
+    """Nothing was priced, so ``currency_code`` still says what each row holds.
+
+    Adding the column here would publish a second currency field duplicating the
+    first, and imply a conversion the caller did not get.
+    """
+    outcome = convert_records(
+        [_row()],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+    )
+
+    assert outcome.display_currency is None
+    assert ORIGINAL_CURRENCY_COLUMN not in outcome.records[0]
+
+
+def test_rows_already_in_the_target_record_no_original_currency(
+    saved_db: Database,
+) -> None:
+    """The single-currency read prices nothing, so it gains no provenance column."""
+    outcome = convert_records(
+        [_row(currency_code="USD")],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+    )
+
+    assert outcome.applied_rates == ()
+    assert ORIGINAL_CURRENCY_COLUMN not in outcome.records[0]
 
 
 def test_a_mixed_report_names_only_the_rate_it_actually_applied(
@@ -983,6 +1045,40 @@ def test_derived_columns_are_restated_only_when_a_conversion_happened(
     assert seen == ["USD"]
 
 
+def test_a_converted_execution_declares_the_original_currency_column(
+    saved_db: Database,
+) -> None:
+    """A key in the records is invisible unless the execution declares it.
+
+    Everything downstream reads ``columns`` and ``output_classes`` — the
+    envelope's column list, the typed CLI table, and redaction, which masks by
+    declared class and would treat an undeclared column as one it has no policy
+    for.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+
+    converted = convert_execution(
+        _execution(), to_currency="USD", service=CurrencyService(saved_db)
+    )
+
+    assert ORIGINAL_CURRENCY_COLUMN in converted.columns
+    assert converted.output_classes[ORIGINAL_CURRENCY_COLUMN] is DataClass.CURRENCY
+    assert len(converted.column_types) == len(converted.columns)
+
+
+def test_an_unconverted_execution_declares_no_original_currency_column(
+    saved_db: Database,
+) -> None:
+    """A segmented result keeps exactly the columns its report declared."""
+    converted = convert_execution(
+        _execution(), to_currency="USD", service=CurrencyService(saved_db)
+    )
+
+    assert converted.display_currency == "EUR"
+    assert ORIGINAL_CURRENCY_COLUMN not in converted.columns
+    assert ORIGINAL_CURRENCY_COLUMN not in converted.output_classes
+
+
 def test_rows_already_in_the_target_are_not_treated_as_a_conversion(
     saved_db: Database,
 ) -> None:
@@ -1212,6 +1308,30 @@ def test_converted_totals_collapse_into_one_headline() -> None:
     assert totals[0]["account_count"] == 3
     assert totals[0]["currency_code"] == "USD"
     assert len(rows) == 2, "the account breakdown row must survive the collapse"
+
+
+def test_the_collapsed_headline_claims_no_single_original_currency() -> None:
+    """Summing several currencies leaves a figure no one rate priced.
+
+    The headline is built by keeping the first totals row and adding the others
+    into it, so it would otherwise inherit that row's original currency and
+    report a EUR+GBP position as having started in EUR — the misattribution the
+    column was added to prevent, in the one place a row stops mapping to a
+    single rate. Null for the same reason ``currency_code`` is relabelled: the
+    per-account rows beneath it still carry their own.
+    """
+    rows: list[dict[str, Any]] = [
+        _totals("USD", Decimal("100.00"), Decimal("-20.00"), Decimal("80.00"), 2)
+        | {ORIGINAL_CURRENCY_COLUMN: "EUR"},
+        _totals("USD", Decimal("50.00"), Decimal("-5.00"), Decimal("45.00"), 1)
+        | {ORIGINAL_CURRENCY_COLUMN: "GBP"},
+    ]
+
+    _restate_networth_total(rows, "USD")
+
+    assert len(rows) == 1
+    assert rows[0][ORIGINAL_CURRENCY_COLUMN] is None
+    assert rows[0]["net_worth"] == Decimal("125.00")
 
 
 def test_a_single_currency_snapshot_keeps_its_one_totals_row() -> None:

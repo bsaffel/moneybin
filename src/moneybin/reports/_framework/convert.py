@@ -46,6 +46,17 @@ logger = logging.getLogger(__name__)
 
 _MONTH_GRAIN = re.compile(r"\d{4}-\d{2}")
 
+#: Carries what a converted row started in, once `currency_column` has been
+#: relabelled to the target. Requirement 10 wants the exact rate behind any
+#: converted number, and `applied_rates` alone cannot give it: a report holding
+#: two source currencies on one date publishes two rates, and the row that used
+#: to say which one applied now says the target. Named for what it holds rather
+#: than `source_*`, which in this codebase means the system a row was imported
+#: from. Present only on a read that actually priced something — on a segmented
+#: or already-in-target result it would duplicate `currency_column` and imply a
+#: conversion the caller did not get.
+ORIGINAL_CURRENCY_COLUMN = "original_currency_code"
+
 #: Why a report went unpriced when it states no reason of its own.
 _NO_DECLARED_BASIS = (
     "this report does not declare which column names each row's currency and "
@@ -81,8 +92,13 @@ class ConversionOutcome:
 
     Requirement 10 wants "the exact rate behind any converted number", and
     `convert_records` is the only place that still knows it: the rate is applied
-    into the amount and `currency_column` is relabelled to the target, so once
-    this returns, nothing downstream can recover what priced what.
+    into the amount and `currency_column` is relabelled to the target.
+
+    Deduplicating by (currency, date) is what makes this a *set*, so on its own
+    it answers "which rates priced this report", not "which rate priced this
+    row" — two source currencies on one date publish two entries that a
+    relabelled row can no longer be matched against. `ORIGINAL_CURRENCY_COLUMN`
+    carries the missing half of that join key onto each converted row.
 
     Empty whenever no conversion happened — a segmented result priced nothing,
     and an empty tuple says that without a caller having to cross-check
@@ -231,6 +247,15 @@ def convert_records(
             key=lambda r: (r.from_currency, r.requested_date, r.rate_date),
         )
     )
+    if applied:
+        # `plan` holds the canonical source currency per row, in row order, and
+        # is the last place it survives — `priced` overwrote the column it came
+        # from. Attached only when a rate was actually applied, so the ordinary
+        # single-currency read does not grow a column restating what
+        # `currency_column` already says.
+        for priced, (source_currency, _) in zip(converted, plan, strict=True):
+            priced[ORIGINAL_CURRENCY_COLUMN] = source_currency
+
     return ConversionOutcome(converted, target, None, applied)
 
 
