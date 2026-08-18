@@ -71,8 +71,10 @@ _PRIVATE_LINK = re.compile(
 )
 _RETIRED_AGENT_ROUTE = re.compile(
     r"private/"
+    r"|`private`"
+    r"|\bprivate\s+(?:directory|folder|tracker|tree)\b"
     r"|docs/followups\.md"
-    r"|/update-(?:progress|specs)\b"
+    r"|update-(?:progress|specs)\b"
 )
 
 
@@ -123,6 +125,8 @@ def test_retired_route_guard_covers_any_local_private_destination() -> None:
     """The blanket local-private ban is not limited to historical folder names."""
     assert _has_retired_agent_route("save durable evidence in private/")
     assert _has_retired_agent_route("save durable evidence in `private/`")
+    assert _has_retired_agent_route("save the plan in `private`")
+    assert _has_retired_agent_route("save the plan in the private directory")
     assert _has_retired_agent_route("save durable evidence in private/evidence/")
     assert _has_retired_agent_route("save durable evidence in ./moneybin-private/")
     assert _has_retired_agent_route("save durable evidence in evil-moneybin-private/")
@@ -135,16 +139,33 @@ def test_retired_route_guard_covers_any_local_private_destination() -> None:
     assert not _has_retired_agent_route(
         "save evidence in https://github.com/bsaffel/moneybin-private/evidence/"
     )
+    assert not _has_retired_agent_route("keep private strategy in the canonical repo")
+
+
+def test_retired_route_guard_covers_unslashed_skill_names() -> None:
+    assert _has_retired_agent_route("the update-specs skill helps here")
+    assert _has_retired_agent_route("route work to update-progress")
 
 
 def test_active_agent_instruction_files_include_all_harness_surfaces() -> None:
     """Every repository agent-instruction surface participates in the guard."""
-    expected = {_REPO_ROOT / "CLAUDE.md", _REPO_ROOT / "design-system/CLAUDE.md"}
+    expected = {
+        _REPO_ROOT / "AGENTS.md",
+        _REPO_ROOT / "CLAUDE.md",
+        _REPO_ROOT / "design-system/CLAUDE.md",
+    }
+    for root in (
+        _REPO_ROOT / ".claude" / "commands",
+        _REPO_ROOT / ".claude" / "references",
+        _REPO_ROOT / ".claude" / "rules",
+        _REPO_ROOT / ".claude" / "skills",
+    ):
+        expected.update(root.rglob("*.md"))
     expected.update((_REPO_ROOT / ".cursor" / "rules").rglob("*.mdc"))
     expected.update((_REPO_ROOT / "design-system" / "components").rglob("*.prompt.md"))
     expected.add(_REPO_ROOT / ".github" / "ai-review-protocol.md")
     expected.add(_REPO_ROOT / ".github" / "workflows" / "ai-review.yml")
-    assert expected <= set(_active_agent_instruction_files())
+    assert expected == set(_active_agent_instruction_files())
 
 
 def test_active_agent_instruction_files_ignore_untracked_nested_checkout(
