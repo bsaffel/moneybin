@@ -32,7 +32,10 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import ReportSemantics
+from moneybin.reports._framework.contract import (
+    ORIGINAL_CURRENCY_COLUMN,
+    ReportSemantics,
+)
 from moneybin.services._validators import validate_currency_code
 from moneybin.services.currency_service import (
     CurrencyService,
@@ -45,17 +48,6 @@ from moneybin.services.currency_service import (
 logger = logging.getLogger(__name__)
 
 _MONTH_GRAIN = re.compile(r"\d{4}-\d{2}")
-
-#: Carries what a converted row started in, once `currency_column` has been
-#: relabelled to the target. Requirement 10 wants the exact rate behind any
-#: converted number, and `applied_rates` alone cannot give it: a report holding
-#: two source currencies on one date publishes two rates, and the row that used
-#: to say which one applied now says the target. Named for what it holds rather
-#: than `source_*`, which in this codebase means the system a row was imported
-#: from. Present only on a read that actually priced something — on a segmented
-#: or already-in-target result it would duplicate `currency_column` and imply a
-#: conversion the caller did not get.
-ORIGINAL_CURRENCY_COLUMN = "original_currency_code"
 
 #: Why a report went unpriced when it states no reason of its own.
 _NO_DECLARED_BASIS = (
@@ -110,6 +102,44 @@ def money_columns(classes: Mapping[str, DataClass]) -> tuple[str, ...]:
     """The declared columns holding money, in declaration order."""
     return tuple(
         name for name, data_class in classes.items() if data_class in MONEY_CLASSES
+    )
+
+
+def rates_pricing(
+    rows: Sequence[Mapping[str, Any]],
+    rates: tuple[ResolvedRate, ...],
+    *,
+    date_column: str | None,
+) -> tuple[ResolvedRate, ...]:
+    """The subset of ``rates`` that priced a figure in ``rows``.
+
+    Conversion runs before a deferred row cap, so it prices the ``limit + 1``
+    sentinel row too. A rate resolved only for that row would otherwise ride the
+    response having priced nothing the caller received — and ``as_provenance``
+    publishes ``requested_date``, which on a per-transaction report is the date
+    of a row that was withheld.
+
+    Keyed the same way ``convert_records`` resolves — ``(currency, date)`` — with
+    ``ORIGINAL_CURRENCY_COLUMN`` supplying the currency half, since the rows have
+    been relabelled to the target by now.
+
+    Narrows only when every row can name what priced it. A row that names no
+    original currency was priced by more than one rate — the collapsed
+    ``core:networth`` headline — so pruning to what the rows can name would drop
+    real provenance. Provenance is audit evidence: publishing one rate too many
+    is a smaller error than dropping the rate behind a figure on screen.
+    """
+    if not rates or date_column is None:
+        return rates
+    priced: set[tuple[str, date]] = set()
+    for row in rows:
+        source = row.get(ORIGINAL_CURRENCY_COLUMN)
+        on = _rate_date(row.get(date_column))
+        if not isinstance(source, str) or on is None:
+            return rates
+        priced.add((source, on))
+    return tuple(
+        rate for rate in rates if (rate.from_currency, rate.requested_date) in priced
     )
 
 

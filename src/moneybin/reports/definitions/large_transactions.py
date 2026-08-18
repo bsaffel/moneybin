@@ -7,6 +7,7 @@ from typing import Any
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    ORIGINAL_CURRENCY_COLUMN,
     Binding,
     OutputColumn,
     ReportQuery,
@@ -25,9 +26,9 @@ _ORIGINAL_CURRENCY_ANALYTICS = (
 
 
 def _blank_original_currency_analytics(
-    rows: list[dict[str, Any]], _currency: str
+    rows: list[dict[str, Any]], currency: str
 ) -> None:
-    """Drop the anomaly lens on a converted read rather than mislabel it.
+    """Drop the anomaly lens on the rows a conversion repriced, and only those.
 
     Both z-scores standardize ``ABS(amount)`` against the account's or
     category's own median and MAD over its full history, and ``is_top_100``
@@ -36,8 +37,7 @@ def _blank_original_currency_analytics(
     ``txn_date`` rate, so the converted amounts are not one scaling of the
     originals: two charges equal at 100 EUR come back as 100 and 200 USD if the
     rate moved between their dates, while carrying the single score they earned
-    as equals. ``currency_code`` is relabeled to the target at the same time, so
-    the row no longer says which currency its score was measured in.
+    as equals.
 
     Restating them is not something a read can do. The baselines span the
     account's whole history, not the rows returned, and this path resolves only
@@ -46,12 +46,24 @@ def _blank_original_currency_analytics(
     the one these columns already give for an account with too little history
     to score: null.
 
+    A mixed-currency result reaches here for the sake of its foreign rows, and
+    the rows already in the target ride along untouched: an identity rate moved
+    nothing, so their scores still describe the amounts on screen. Nulling those
+    would make a row read differently depending on what some *other* row needed,
+    which is the opposite of what this repair is for. Rows are told apart by
+    ``ORIGINAL_CURRENCY_COLUMN``, which conversion attaches precisely because
+    ``currency_code`` has been relabelled to the target by now; a row that
+    carries no original currency is nulled, since nothing on it can show the
+    score is still measured in the currency shown.
+
     The row *set* is still ranked and filtered by original-currency magnitude,
     because that happens in SQL before anything is priced. That is why the
     column descriptions and ``fx_basis`` say so rather than leaving the nulls
     to be read as "no anomalies here".
     """
     for row in rows:
+        if row.get(ORIGINAL_CURRENCY_COLUMN) == currency:
+            continue
         for column in _ORIGINAL_CURRENCY_ANALYTICS:
             row[column] = None
 
@@ -109,23 +121,23 @@ def _blank_original_currency_analytics(
         OutputColumn(
             "amount_zscore_account",
             "Modified absolute-amount z-score against the same-currency account "
-            "baseline. Null on a read priced into another currency: the "
-            "baseline is the account's own currency and cannot be restated at "
-            "per-date rates.",
+            "baseline. Null on a row this read repriced: the baseline is the "
+            "account's own currency and cannot be restated at per-date rates. A "
+            "row already in the display currency keeps its score.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
             "amount_zscore_category",
             "Modified absolute-amount z-score against the same-currency category "
-            "baseline. Null on a read priced into another currency, for the "
-            "same reason as the account score.",
+            "baseline. Null on a row this read repriced, for the same reason as "
+            "the account score.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
             "is_top_100",
             "Whether the transaction is among its currency's top 100 by absolute "
-            "amount. Null on a read priced into another currency: the ranking "
-            "is over the original currency's population.",
+            "amount. Null on a row this read repriced: the ranking is over the "
+            "original currency's population.",
             DataClass.AGGREGATE,
         ),
     ),
@@ -141,9 +153,12 @@ def _blank_original_currency_analytics(
             "leaves the whole report segmented per currency_code, never blended. "
             "Rates move between those dates, so a converted read is not one "
             "scaling of the original amounts: the rows are still selected, "
-            "ranked and anomaly-filtered by original-currency magnitude, and the "
-            "two z-scores and is_top_100 come back null rather than describe a "
-            "currency they were not measured in"
+            "ranked and anomaly-filtered by original-currency magnitude, and on "
+            "any row this read repriced the two z-scores and is_top_100 come "
+            "back null rather than describe a currency they were not measured "
+            "in. A row already in the display currency was not repriced and "
+            "keeps them, with original_currency_code naming the currency they "
+            "were measured in"
         ),
         fx_date="txn_date",
         time_basis="inclusive full observed transaction period",
@@ -197,12 +212,13 @@ def large_transactions(
     result still represents every currency. Compare amounts only between rows
     sharing a currency_code.
 
-    A display currency your rows are not already in prices each row at its own
-    date's rate and returns the two z-scores and is_top_100 as null: those are
-    cut in SQL against each row's original currency and a per-date conversion
-    is not one scaling of them. Which rows come back is still decided by
-    original-currency magnitude. Read the rows in their own currency to get the
-    anomaly lens.
+    A display currency prices each row that is not already in it at that row's
+    own date's rate, and returns the two z-scores and is_top_100 as null for
+    exactly those rows: they are cut in SQL against each row's original
+    currency and a per-date conversion is not one scaling of them. Rows already
+    in the display currency were not repriced and keep the anomaly lens. Which
+    rows come back is still decided by original-currency magnitude. Read the
+    rows in their own currency to get the lens on all of them.
 
     Args:
         db: Open read-only database connection.

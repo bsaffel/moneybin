@@ -206,19 +206,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   date, `core:balance_drift` at its assertion date, and `core:networth` at its
   balance date. `core:large_transactions` returns
   `amount_zscore_account`, `amount_zscore_category`, and `is_top_100` as null
-  on a read that was actually priced into another currency: those are cut in
+  on each row a read actually repriced: those are cut in
   SQL against each row's original currency, and rates move between transaction
   dates, so a converted read is not one scaling of the amounts they scored.
   Which rows come back is still decided by original-currency magnitude,
-  including the `anomaly` filter. A read whose rows are already in the
-  requested currency prices nothing and keeps its scores, so the
-  single-currency profile is unaffected.
+  including the `anomaly` filter. A row already in the requested currency was
+  not repriced and keeps its scores, so a single-currency profile is unaffected
+  and a mixed one loses the lens only where a rate was applied.
   A priced row also carries `original_currency_code`, naming which
   `applied_rates` entry converted it — the set is deduplicated by currency and
   date, so two source currencies on one date would otherwise publish two rates
   with nothing tying either to a row whose currency label has been rewritten to
   the target. Added by the framework on a converted read only, and null on
   `core:networth`'s summed headline, which no single rate priced.
+  `summary.applied_rates` names only rates that priced a row you were sent: a
+  capped read prices one row past the cap to decide `has_more`, and that row's
+  rate is dropped with it rather than published alongside its `requested_date`.
   Stored rates are gathered into the home currency, so asking for any other
   display currency generally finds none and falls back to per-currency
   segmentation with a reason; extending the refresh planner to cover chosen

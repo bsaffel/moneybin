@@ -38,16 +38,14 @@ from moneybin.protocol.envelope import (
 )
 from moneybin.reports._framework.classify import classify_columns
 from moneybin.reports._framework.contract import (
+    ORIGINAL_CURRENCY_COLUMN,
     ParamSpec,
     RecomputeDerived,
     ReportSemantics,
     ReportSpec,
     bound_value,
 )
-from moneybin.reports._framework.convert import (
-    ORIGINAL_CURRENCY_COLUMN,
-    convert_records,
-)
+from moneybin.reports._framework.convert import convert_records, rates_pricing
 from moneybin.services.currency_service import CurrencyService, ResolvedRate
 
 logger = logging.getLogger(__name__)
@@ -279,6 +277,17 @@ def truncate_execution(execution: CatalogReportExecution) -> CatalogReportExecut
         execution,
         records=records,
         truncated=truncated,
+        # Provenance describes the rows in the response, so it is cut with them:
+        # the sentinel row conversion priced is gone, and any rate resolved only
+        # for it must go too. Left alone on the untruncated path, where every
+        # rate still belongs to a row that is being returned.
+        applied_rates=rates_pricing(
+            records,
+            execution.applied_rates,
+            date_column=execution.semantics.fx_date,
+        )
+        if truncated
+        else execution.applied_rates,
         # Same sentinel `build_catalog_execution` uses: one past the cap means
         # "at least this many", which is all a bounded fetch can honestly claim.
         total_count=max_rows + 1 if truncated else len(records),

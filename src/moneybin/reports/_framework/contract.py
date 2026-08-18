@@ -24,6 +24,22 @@ from moneybin.tables import TableRef
 Runner = Callable[..., "ReportQuery"]
 _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 
+#: Carries what a converted row started in, once the report's currency column
+#: has been relabelled to the target. Requirement 10 wants the exact rate behind
+#: any converted number, and `applied_rates` alone cannot give it: a report
+#: holding two source currencies on one date publishes two rates, and the row
+#: that used to say which one applied now says the target. Named for what it
+#: holds rather than `source_*`, which in this codebase means the system a row
+#: was imported from. Present only on a read that actually priced something — on
+#: a segmented or already-in-target result it would duplicate the currency
+#: column and imply a conversion the caller did not get.
+#:
+#: Beside `RecomputeDerived` rather than in `convert`, because an `on_converted`
+#: callback is its main reader and report definitions are imported to build the
+#: CLI: importing `convert` from one pulls `CurrencyService`, and polars behind
+#: it, into every cold start (`test_cli_main_import_does_not_load_heavy_deps`).
+ORIGINAL_CURRENCY_COLUMN = "original_currency_code"
+
 #: ``report_id`` namespace owned by the user tier — the one tier whose reports
 #: are database rows rather than code. ``mint_user_report_id`` produces it and
 #: ``report_tier`` reads it; defined here beside the id grammar it belongs to.

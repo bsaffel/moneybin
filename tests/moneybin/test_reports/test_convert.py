@@ -22,18 +22,17 @@ from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.catalog import ReportCatalog
 from moneybin.reports._framework.contract import (
+    ORIGINAL_CURRENCY_COLUMN,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
     ReportSpec,
 )
-from moneybin.reports._framework.convert import (
-    ORIGINAL_CURRENCY_COLUMN,
-    convert_records,
-)
+from moneybin.reports._framework.convert import convert_records
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     convert_execution,
+    truncate_execution,
 )
 from moneybin.reports.definitions.balance_drift import (
     _rebucket_status,  # pyright: ignore[reportPrivateUsage]  # the repair under test
@@ -1471,3 +1470,96 @@ def test_a_converted_read_drops_the_original_currency_anomaly_scores() -> None:
     # on one date resolves to one rate, which is the whole reason this report
     # converts rather than segmenting.
     assert [row["amount"] for row in rows] == [Decimal("100.00"), Decimal("200.00")]
+
+
+def test_a_row_already_in_the_target_keeps_its_anomaly_scores() -> None:
+    """An untouched row must read the same as it would on an unconverted read.
+
+    A mixed-currency result priced into USD resolves an identity rate for its
+    USD rows: nothing was repriced, and ``original_currency_code`` still names
+    the currency the score was measured in. Neither reason for nulling holds
+    there, so blanking would cost a caller the anomaly lens on rows that never
+    moved, purely because some other row needed a rate.
+    """
+    rows: list[dict[str, Any]] = [
+        {
+            "amount": Decimal("100.00"),
+            ORIGINAL_CURRENCY_COLUMN: "USD",
+            "amount_zscore_account": 3.1,
+            "amount_zscore_category": 2.7,
+            "is_top_100": True,
+        },
+        {
+            "amount": Decimal("218.00"),
+            ORIGINAL_CURRENCY_COLUMN: "EUR",
+            "amount_zscore_account": 3.1,
+            "amount_zscore_category": 2.7,
+            "is_top_100": True,
+        },
+    ]
+
+    _blank_original_currency_analytics(rows, "USD")
+
+    assert [row["amount_zscore_account"] for row in rows] == [3.1, None]
+    assert [row["amount_zscore_category"] for row in rows] == [2.7, None]
+    assert [row["is_top_100"] for row in rows] == [True, None]
+
+
+# --- truncate_execution: provenance follows the rows that survive the cap -----
+
+
+def test_the_cap_drops_the_rate_that_priced_only_a_discarded_row(
+    saved_db: Database,
+) -> None:
+    """A published rate must name a figure the caller can actually see.
+
+    Every converted read defers its cap so ``on_converted`` sees the whole
+    result, which hands conversion the ``limit + 1`` sentinel row too. That
+    row's rate is resolved like any other, so leaving provenance untouched
+    across the cut publishes a rate that priced nothing in the response — and,
+    because ``as_provenance`` carries ``requested_date``, discloses the date of
+    a transaction the caller was never sent.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    _seed_rate(saved_db, "GBP", "USD", date(2026, 3, 6), Decimal("1.27"))
+    service = CurrencyService(saved_db)
+    execution = _execution(
+        records=[_row(), _row(currency_code="GBP", txn_date=date(2026, 3, 6))],
+        total_count=2,
+        pending_limit=1,
+    )
+
+    converted = convert_execution(execution, to_currency="USD", service=service)
+    assert {rate.from_currency for rate in converted.applied_rates} == {"EUR", "GBP"}
+
+    capped = truncate_execution(converted)
+
+    assert [rate.from_currency for rate in capped.applied_rates] == ["EUR"]
+    assert [rate.requested_date for rate in capped.applied_rates] == [date(2026, 3, 5)]
+
+
+def test_a_row_naming_no_original_currency_keeps_every_rate(
+    saved_db: Database,
+) -> None:
+    """The collapsed net-worth headline was priced by rates it cannot name.
+
+    ``_restate_networth_total`` sums several currencies into one row and nulls
+    its ``original_currency_code`` precisely because no single stored rate
+    priced it. Narrowing provenance to what the surviving rows can name would
+    drop the rates behind that figure, so a row that names none keeps them all.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    _seed_rate(saved_db, "GBP", "USD", date(2026, 3, 6), Decimal("1.27"))
+    service = CurrencyService(saved_db)
+    execution = _execution(
+        records=[_row(), _row(currency_code="GBP", txn_date=date(2026, 3, 6))],
+        total_count=2,
+        pending_limit=1,
+    )
+
+    converted = convert_execution(execution, to_currency="USD", service=service)
+    converted.records[0][ORIGINAL_CURRENCY_COLUMN] = None
+
+    capped = truncate_execution(converted)
+
+    assert {rate.from_currency for rate in capped.applied_rates} == {"EUR", "GBP"}

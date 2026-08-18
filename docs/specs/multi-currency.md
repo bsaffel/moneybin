@@ -420,6 +420,14 @@ Numbered, testable. Tagged by phase.
     imply a conversion that did not happen. The one row it cannot describe is
     `core:networth`'s collapsed headline, which sums several currencies and so
     carries null rather than name whichever one sorted first.
+    The published set is also narrowed to the rows that survive a row cap. A
+    capped read prices one row past the cap to decide `has_more`, so a rate
+    resolved only for that row would name no figure the caller received while
+    disclosing its `requested_date` — a transaction date on a per-transaction
+    report. Narrowing is skipped when any surviving row carries no
+    `original_currency_code`, since that row was priced by more than one rate
+    and cannot name them; publishing one rate too many is a smaller error than
+    dropping the rate behind a figure on screen.
     The investments surface answers the same way: `investments(view="holdings")`
     publishes `data.applied_rates` beside its converted `total_market_value`,
     reusing `FxRatePayload` so a rate is shown with the same six fields and the

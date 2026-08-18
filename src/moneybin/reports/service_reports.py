@@ -20,11 +20,11 @@ from moneybin.privacy.payloads.networth import (
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import ServiceReportSpec
 from moneybin.reports._framework.contract import (
+    ORIGINAL_CURRENCY_COLUMN,
     OutputColumn,
     ParamSpec,
     ReportSemantics,
 )
-from moneybin.reports._framework.convert import ORIGINAL_CURRENCY_COLUMN
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     build_catalog_execution,
