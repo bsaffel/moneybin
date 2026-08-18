@@ -43,10 +43,10 @@ not into public artifacts. Workflow:
    report directly in chat using the structure above.
 2. The developer triages each finding. Put it in the MoneyBin Linear project
    only when it is current, accepted, and has a useful coordination job. Create
-   a public GitHub issue only when it is safe to publish, verified, prioritized,
-   bounded, has acceptance criteria, and has no existing owner. Update canonical
-   private knowledge in `bsaffel/moneybin-private` only when the finding changes
-   what is true now. Drop the rest.
+   a public GitHub issue only through `.claude/rules/documentation.md`'s
+   public-issue admission gate. Update canonical private knowledge in
+   `bsaffel/moneybin-private` only when the finding changes what is true now.
+   Drop the rest.
 3. The PR shipping the underlying change describes the change only — **never
    paste the AX report (or a link to it) into the PR body, commit message,
    CHANGELOG, ADR, or any other checked-in artifact**.

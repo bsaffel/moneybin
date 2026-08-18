@@ -76,8 +76,10 @@ the public roadmap row, but neither duplicates the roadmap.
 
 Before assigning an address, search `docs/roadmap.md` for the work and the
 candidate address. Reuse the existing address when the work already has one;
-otherwise append the next genuinely free letter or work-item number. Do not
-re-mint a retired address.
+if the candidate is absent, also search the file's Git history for that exact
+address. A historical assignment is retired even when its row was later moved
+or removed. Otherwise append the next genuinely free letter or work-item
+number. Do not re-mint a retired address.
 
 ## When a New Spec Is Written
 

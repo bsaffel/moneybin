@@ -135,8 +135,10 @@ evidence are execution records, not current truth. Keep disposable plans in the
 harness's scratch space. Store plans or evidence that must survive sessions in
 `bsaffel/moneybin-private` through a pull request, and link them from the
 MoneyBin Linear project. Never write new work to the legacy local `private/`
-tree. Public delivery status and implementation-ready work belong in this
-repository's issues and pull requests.
+tree. If neither GitHub nor Linear is reachable, keep the material in session
+scratch, say that durable persistence is blocked, and hand it to the user for
+placement; do not invent another tracker. Public delivery status and
+implementation-ready work belong in this repository's issues and pull requests.
 
 ## Configuration
 

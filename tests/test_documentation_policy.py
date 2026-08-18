@@ -60,7 +60,7 @@ _PRIVATE_LINK = re.compile(
     r"|href=[\"']/?(?:\.{1,2}/)*private/"
 )
 _RETIRED_AGENT_ROUTE = re.compile(
-    r"private/(?:plans|followups|strategy)(?:/|\b)"
+    r"(?<!moneybin-)private/(?=\w)"
     r"|docs/followups\.md"
     r"|/update-(?:progress|specs)\b"
 )
@@ -76,13 +76,27 @@ def _authority_documents() -> list[Path]:
 
 
 def _active_agent_instruction_files() -> list[Path]:
-    files = [_REPO_ROOT / "AGENTS.md"]
+    files = [_REPO_ROOT / "AGENTS.md", *_REPO_ROOT.rglob("CLAUDE.md")]
     files.extend(
         document
         for root in _ACTIVE_AGENT_INSTRUCTION_ROOTS
         for document in root.rglob("*.md")
     )
-    return sorted(document for document in files if document.exists())
+    return sorted({document for document in files if document.exists()})
+
+
+def test_retired_route_guard_covers_any_local_private_destination() -> None:
+    """The blanket local-private ban is not limited to historical folder names."""
+    assert _RETIRED_AGENT_ROUTE.search("save durable evidence in private/evidence/")
+    assert not _RETIRED_AGENT_ROUTE.search(
+        "save durable evidence in bsaffel/moneybin-private/evidence/"
+    )
+
+
+def test_active_agent_instruction_files_include_nested_claude_files() -> None:
+    """Every repository CLAUDE.md instruction surface participates in the guard."""
+    expected = set(_REPO_ROOT.rglob("CLAUDE.md"))
+    assert expected <= set(_active_agent_instruction_files())
 
 
 def _paragraphs(text: str) -> list[tuple[int, str]]:

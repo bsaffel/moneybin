@@ -32,6 +32,12 @@ MoneyBin Linear project. They must not route new work to the legacy local
 `private/` tree. The public-documentation ban is about not sending an external
 reader somewhere they cannot follow, not about avoiding the word.
 
+**Public-issue admission gate.** Create or draft a public GitHub issue only
+when the work is safe to publish, current, verified, prioritized, bounded,
+actionable, has acceptance criteria, and has no existing owner. Ask before
+creating it. Private strategy stays in Linear or `bsaffel/moneybin-private`;
+non-admitted material is reported to the user rather than filed elsewhere.
+
 Treat any information already committed publicly as public history: moving it
 to a private repository prevents future exposure but does not erase it from
 Git history.
