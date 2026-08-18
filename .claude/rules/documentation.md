@@ -35,11 +35,12 @@ reader somewhere they cannot follow, not about avoiding the word.
 **Public-issue admission gate.** Create or draft a public GitHub issue only
 when the work is safe to publish, current, verified, prioritized, bounded,
 actionable, has acceptance criteria, and has no existing owner. Ask before
-creating it. Private strategy stays in Linear or `bsaffel/moneybin-private`;
-non-admitted material is recorded with the failed admission criteria and
-reported to the user rather than filed elsewhere. That explicit non-admission
-satisfies the deferral check; do not invent a tracker entry merely to close a
-spec.
+creating it. Durable private strategy goes through a pull request in
+`bsaffel/moneybin-private`; Linear coordinates the work and links to that
+canonical record. Non-admitted material is recorded with the failed admission
+criteria and reported to the user rather than filed elsewhere. That explicit
+non-admission satisfies the deferral check; do not invent a tracker entry merely
+to close a spec.
 
 Treat any information already committed publicly as public history: moving it
 to a private repository prevents future exposure but does not erase it from

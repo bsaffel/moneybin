@@ -79,7 +79,10 @@ candidate address. Reuse the existing address when the work already has one;
 if the candidate is absent, also search the file's Git history for that exact
 address. A historical assignment is retired even when its row was later moved
 or removed. Otherwise append the next genuinely free letter or work-item
-number. Do not re-mint a retired address.
+number. Do not re-mint a retired address. If complete history is unavailable,
+leave the draft unaddressed in session scratch and hand the candidate address to
+the user or a fully fetched checkout for verification; never infer that it is
+free.
 
 ## When a New Spec Is Written
 
