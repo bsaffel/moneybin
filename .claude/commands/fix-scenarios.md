@@ -88,9 +88,10 @@ non-zero CI exit and as per-scenario PASS/FAIL lines in the pytest-json-report a
      correct; update the fixture YAML if the expectation is stale.
    - Evaluation regressions: investigate the breakdown. Score drops are usually code
      issues — only adjust thresholds with a clear justification. If a separate fix is
-     genuinely deferred, draft a public GitHub issue only when it is current,
-     verified, prioritized, bounded, has acceptance criteria, and has no existing
-     owner. Ask before creating the issue; otherwise report why it was not admitted.
+     genuinely deferred, draft a public GitHub issue only when it is safe to
+     publish, current, verified, prioritized, bounded, has acceptance criteria,
+     and has no existing owner. Ask before creating the issue; otherwise report
+     why it was not admitted.
 
 9. **Reproduce locally** before claiming the fix works. The full suite is slow, so
    target the failing scenario:

@@ -1,6 +1,6 @@
 """Regression checks for public documentation policy.
 
-Guards two rules from .claude/rules/documentation.md:
+Guards three documentation and agent-routing rules:
 
 1. Specs and ADRs explain MoneyBin decisions with the project's own
    constraints and evidence, not an external product's behavior. The lexicon
@@ -9,6 +9,8 @@ Guards two rules from .claude/rules/documentation.md:
    markdown line wrap cannot hide, but synonyms outside the lexicon still
    require reviewer judgment.
 2. Public documents never link into ``private/``.
+3. Active agent instructions never route work to retired local trackers or the
+   retired ``update-specs`` skill.
 
 A paragraph that must legitimately name an external product (a compatibility
 matrix, a migration note) declares it inline with
