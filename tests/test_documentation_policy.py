@@ -25,6 +25,8 @@ import shutil
 import subprocess  # noqa: S404 -- the policy test queries local Git metadata
 from pathlib import Path
 
+import yaml
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -282,3 +284,17 @@ def test_active_agent_instructions_do_not_route_to_retired_trackers_or_skills() 
         "path must declare `<!-- retired-route-description-ok -->`.\n"
         + "\n".join(violations)
     )
+
+
+def test_project_tracking_locator_routes_to_canonical_private_declaration() -> None:
+    declaration = yaml.safe_load(
+        (_REPO_ROOT / ".agents/project-tracking.yaml").read_text(encoding="utf-8")
+    )
+
+    assert declaration == {
+        "schema_version": 1,
+        "project_id": "moneybin",
+        "declaration_mode": "locator",
+        "delivery_repository": "bsaffel/moneybin",
+        "canonical_repository": "bsaffel/moneybin-private",
+    }
