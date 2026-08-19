@@ -20,12 +20,11 @@ matches fail.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess  # noqa: S404 -- the policy test queries local Git metadata
 from pathlib import Path
-
-import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -287,8 +286,8 @@ def test_active_agent_instructions_do_not_route_to_retired_trackers_or_skills() 
 
 
 def test_project_tracking_locator_routes_to_canonical_private_declaration() -> None:
-    declaration = yaml.safe_load(
-        (_REPO_ROOT / ".agents/project-tracking.yaml").read_text(encoding="utf-8")
+    declaration = json.loads(
+        (_REPO_ROOT / ".agents/project-tracking.json").read_text(encoding="utf-8")
     )
 
     assert declaration == {
