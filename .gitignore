@@ -29,6 +29,10 @@ venv/
 # MoneyBin runtime state (profiles, config, data, logs) when running in-repo
 /.moneybin/
 
+# Profile state materialized at the repo root by older builds, when MONEYBIN_HOME
+# anchored to <root> instead of <root>/.moneybin. Never shipped.
+/profiles/
+
 # Scratch / local dev artifacts (root-level screenshots, temp dirs, design handoff bundles)
 .tmp/
 /*.png

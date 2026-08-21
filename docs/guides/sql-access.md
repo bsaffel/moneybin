@@ -109,7 +109,7 @@ In a script, capture stdout only: `KEY=$(moneybin db key show -q)`.
 
 ### Get the database path
 
-Default location: `<base>/profiles/<profile>/moneybin.duckdb`. `<base>` resolves to `$MONEYBIN_HOME` if set; in development mode, it is `<repo-root>/.moneybin` inside a MoneyBin checkout or `<cwd>/.moneybin` outside one; otherwise a MoneyBin repo checkout uses `<cwd>/.moneybin`, and the default is `~/.moneybin`. A typical install puts the file at `~/.moneybin/profiles/default/moneybin.duckdb`. See [`database-security.md`](database-security.md) for the full resolution order.
+Default location: `<base>/profiles/<profile>/moneybin.duckdb`. `<base>` resolves to `--home` or `$MONEYBIN_HOME` if either is given; in development mode, it is `<repo-root>/.moneybin` inside a MoneyBin checkout or `<cwd>/.moneybin` outside one; otherwise a MoneyBin repo checkout uses `<cwd>/.moneybin`, and the default is `~/.moneybin`. A typical install puts the file at `~/.moneybin/profiles/default/moneybin.duckdb`. See [`database-security.md`](database-security.md) for the full resolution order.
 
 ### DuckDB version compatibility
 

@@ -505,6 +505,97 @@ def test_legacy_data_tabular_dotenv_lowercase_key_fails_loudly(
         MoneyBinSettings(profile="test")
 
 
+def test_moneybin_home_in_dotenv_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """MONEYBIN_HOME in the active .env can never work, so say so.
+
+    The dotenv lives inside the data directory it would be naming, so the
+    assignment is absorbed and dropped. Silently reading a different database
+    than the one the operator wrote down is the failure worth being loud about.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    (tmp_path / ".env.test").write_text(f"MONEYBIN_HOME={tmp_path / 'elsewhere'}\n")
+
+    with pytest.raises(ValueError, match="has no effect"):
+        MoneyBinSettings(profile="test")
+
+
+def test_moneybin_home_in_dotenv_with_export_prefix_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`export KEY=value` is valid dotenv syntax and must trip the guard too.
+
+    python-dotenv strips a leading ``export``, so a key written that way is
+    loaded — and dropped — exactly like a bare one. A guard that only matched
+    the bare spelling would pass the operator straight through.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    (tmp_path / ".env.test").write_text(
+        f"export MONEYBIN_HOME={tmp_path / 'elsewhere'}\n"
+    )
+
+    with pytest.raises(ValueError, match="has no effect"):
+        MoneyBinSettings(profile="test")
+
+
+def test_moneybin_home_in_dotenv_with_export_tab_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`export<TAB>KEY=value` loads too, so the guard must catch it.
+
+    python-dotenv's grammar accepts any whitespace after ``export``, not just
+    a single space. A scan that only stripped ``"export "`` left this spelling
+    reading as the key ``export<TAB>MONEYBIN_HOME`` — no match, no error, and the
+    operator silently gets a different database. That is precisely the failure
+    this guard exists to prevent, so the near-miss spelling has to trip it.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    (tmp_path / ".env.test").write_text(
+        f"export\tMONEYBIN_HOME={tmp_path / 'elsewhere'}\n"
+    )
+
+    with pytest.raises(ValueError, match="has no effect"):
+        MoneyBinSettings(profile="test")
+
+
+def test_assignment_inside_a_quoted_multiline_value_is_not_a_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Text *inside* a quoted value is a value, not an assignment.
+
+    python-dotenv continues a quoted value across newlines, so only
+    ``MONEYBIN_LOGGING__LEVEL`` is defined here. A line-by-line scan saw the
+    continuation line as its own binding and refused to start over a key the
+    loader never defines — locking the operator out of their data because of
+    a substring in an unrelated value.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    (tmp_path / ".env.test").write_text(
+        'MONEYBIN_LOGGING__LEVEL="DEBUG\nMONEYBIN_HOME=/elsewhere\ntrailing"\n'
+    )
+
+    settings = MoneyBinSettings(profile="test")
+
+    assert settings.profile_dir == tmp_path / "profiles" / "test"
+
+
+def test_moneybin_home_env_var_is_not_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The guard must not fire on the route that actually works.
+
+    MONEYBIN_HOME as a real environment variable is the supported override;
+    a guard that rejected it would lock every operator out of their own data.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    (tmp_path / ".env.test").write_text("MONEYBIN_LOGGING__LEVEL=DEBUG\n")
+
+    settings = MoneyBinSettings(profile="test")
+
+    assert settings.profile_dir == tmp_path / "profiles" / "test"
+
+
 class TestSqlmeshConfigProfileGating:
     """Regression tests for the profile gate in ``src/moneybin/sqlmesh/config.py``.
 

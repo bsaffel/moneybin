@@ -850,10 +850,20 @@ Replaces current logic entirely. Solves the `distribution-roadmap.md` concern.
 
 | Priority | Source | Resolves to | Use case |
 |---|---|---|---|
+| 1 | `--home` global flag | Whatever the user passes | Per-invocation override; exports `MONEYBIN_HOME` so it reaches subprocesses and `mcp install`'s pinned config |
 | 1 | `MONEYBIN_HOME` env var | Whatever the user sets | Explicit override (CI, custom installs) |
 | 2 | `MONEYBIN_ENVIRONMENT=development` | `<repo-root>/.moneybin` inside a MoneyBin checkout; otherwise `<cwd>/.moneybin` | Developer working in repo checkout |
 | 3 | Repo checkout detection (`.git` + `pyproject.toml` with `name = "moneybin"`) | `<cwd>/.moneybin` | Developer who didn't set env var |
 | 4 | Default | `~/.moneybin/` | Installed package user (the common case) |
+
+`--home` and `MONEYBIN_HOME` share priority 1 because the flag is implemented by
+writing the environment variable before any config loads; the flag simply wins
+when both are given. Branches 2 and 3 resolve a linked git worktree to its main
+checkout, so every worktree of one repository shares that repository's data home.
+
+Setting `MONEYBIN_HOME` in a `.env` file does **not** work and is refused at
+startup: the dotenv is looked up inside `<base>` itself, so the home is already
+resolved by the time that file is read.
 
 This inverts the current default (which is `cwd`) to `~/.moneybin/`. Installed users get the right thing with zero config. Developers get the right thing automatically via repo detection.
 

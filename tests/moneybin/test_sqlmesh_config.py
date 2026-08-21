@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from moneybin.sqlmesh.config import (
+    _moneybin_home_or_none,  # pyright: ignore[reportPrivateUsage]  # private resolver under test
     _repo_root_or_none,  # pyright: ignore[reportPrivateUsage]  # private resolver under test
 )
 
@@ -60,3 +61,35 @@ def test_never_resolves_to_the_package_directory(tmp_path: Path) -> None:
     package_dir = config_file.resolve().parent.parent  # <...>/moneybin
     assert resolved != package_dir
     assert resolved == tmp_path
+
+
+def test_data_home_is_the_dot_moneybin_dir(tmp_path: Path) -> None:
+    """MONEYBIN_HOME must name the data dir, not the repo root.
+
+    Anchoring it to the repo root put profile state at ``<root>/profiles/`` —
+    the root-level twin of the ``src/moneybin/profiles/`` scatter this module's
+    docstring already records.
+    """
+    assert _moneybin_home_or_none(tmp_path) == tmp_path / ".moneybin"
+
+
+def test_data_home_outside_a_checkout_is_none() -> None:
+    """A wheel has no repo root, so nothing is anchored and ~/.moneybin wins."""
+    assert _moneybin_home_or_none(None) is None
+
+
+def test_data_home_from_a_worktree_is_the_main_checkouts(tmp_path: Path) -> None:
+    """This file's path resolves to the worktree; the data home must not.
+
+    Without this, a bare `sqlmesh` run from a worktree re-anchors MONEYBIN_HOME
+    and defeats the get_base_dir() fix entirely.
+    """
+    main = tmp_path / "main"
+    (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    (main / "pyproject.toml").write_text('[project]\nname = "moneybin"\n')
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {main / '.git' / 'worktrees' / 'wt'}\n")
+    (worktree / "pyproject.toml").write_text('[project]\nname = "moneybin"\n')
+
+    assert _moneybin_home_or_none(worktree) == main / ".moneybin"

@@ -52,16 +52,34 @@ if _repo_root is not None:
     _src_dir = str(_repo_root / "src")
     if _src_dir not in sys.path:
         sys.path.insert(0, _src_dir)
-    # Anchor MONEYBIN_HOME to the repo root so get_base_dir() resolves the
-    # repo's data dir regardless of CWD. Never override an explicit value.
-    os.environ.setdefault("MONEYBIN_HOME", str(_repo_root))
 
 from moneybin.config import (  # noqa: E402 — must follow sys.path setup above
+    canonical_checkout_root,
     get_current_profile,
     get_database_path,
     get_settings,
     set_current_profile,
 )
+
+
+def _moneybin_home_or_none(repo_root: Path | None) -> Path | None:
+    """The data dir to export as MONEYBIN_HOME, or None outside a checkout.
+
+    ``<root>/.moneybin``, matching every branch of ``get_base_dir()`` — and the
+    *main* checkout's when this file is being read from a linked worktree.
+    """
+    if repo_root is None:
+        return None
+    return canonical_checkout_root(repo_root) / ".moneybin"
+
+
+# Anchor MONEYBIN_HOME to the checkout's data dir so get_base_dir() resolves the
+# repo's data regardless of CWD. Never override an explicit value. Safe to run
+# after the import above: moneybin.config makes no module-level get_base_dir()
+# call, and get_base_dir() reads this var at call time.
+_moneybin_home = _moneybin_home_or_none(_repo_root)
+if _moneybin_home is not None:
+    os.environ.setdefault("MONEYBIN_HOME", str(_moneybin_home))
 
 # Initialize a profile only when none is set in-process. This keeps config.py
 # self-sufficient for non-CLI entry points (SQLMesh VSCode extension, direct
