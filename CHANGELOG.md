@@ -1141,6 +1141,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **A worktree no longer gets its own empty database.** `get_base_dir()` treated
+  any directory with a `.git` and a moneybin `pyproject.toml` as its own data
+  home, and a linked git worktree satisfies both — so `moneybin` commands run
+  from one silently read an empty database and reported zeros, indistinguishable
+  from a clean result. A worktree now resolves the main checkout's `.moneybin`.
+  An explicit `MONEYBIN_HOME` still outranks it, a submodule still resolves to
+  itself, and outside a checkout nothing changes: `~/.moneybin` as before.
+
+- **`sqlmesh` no longer scatters profile state to the repo root.** The startup
+  anchor set `MONEYBIN_HOME` to `<repo-root>` where every other branch of
+  `get_base_dir()` returns `<repo-root>/.moneybin`, so a bare `sqlmesh`
+  invocation wrote profiles to `<repo-root>/profiles/` — the root-level twin of
+  the `src/moneybin/profiles/` scatter already recorded in `.gitignore`. It now
+  anchors at the data dir, and resolves a linked worktree to the main checkout
+  so it cannot re-break the fix above through a second channel. `/profiles/` is
+  gitignored for the residue.
+
 - **`make claude-mcp` no longer switches off your other MCP servers.** The
   launcher passed `--strict-mcp-config`, which tells Claude Code to ignore
   every other configured MCP server for that session — so opting in to
