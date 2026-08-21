@@ -20,6 +20,7 @@ matches fail.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess  # noqa: S404 -- the policy test queries local Git metadata
@@ -282,3 +283,17 @@ def test_active_agent_instructions_do_not_route_to_retired_trackers_or_skills() 
         "path must declare `<!-- retired-route-description-ok -->`.\n"
         + "\n".join(violations)
     )
+
+
+def test_project_tracking_locator_routes_to_canonical_private_declaration() -> None:
+    declaration = json.loads(
+        (_REPO_ROOT / ".agents/project-tracking.json").read_text(encoding="utf-8")
+    )
+
+    assert declaration == {
+        "schema_version": 1,
+        "project_id": "moneybin",
+        "declaration_mode": "locator",
+        "delivery_repository": "bsaffel/moneybin",
+        "canonical_repository": "bsaffel/moneybin-private",
+    }

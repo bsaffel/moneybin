@@ -141,6 +141,11 @@ which persistence or navigation step is blocked, and hand the blocked material
 or link to the user; do not invent another tracker. Public delivery status and
 implementation-ready work belong in this repository's issues and pull requests.
 
+PAO reads `.agents/project-tracking.json`; `declaration_mode: locator` means it
+only locates the canonical declaration in `bsaffel/moneybin-private`, while
+coordination, knowledge, and archive state remain private and are not
+duplicated here.
+
 ## Configuration
 
 All config in `src/moneybin/config.py` — one `MoneyBinSettings` root via Pydantic Settings. Never hardcode paths, credentials, or tunable parameters. Env vars use `MONEYBIN_` prefix with `__` for nesting: `MONEYBIN_DATABASE__PATH`.

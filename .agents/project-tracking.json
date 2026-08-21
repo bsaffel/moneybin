@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "project_id": "moneybin",
+  "declaration_mode": "locator",
+  "delivery_repository": "bsaffel/moneybin",
+  "canonical_repository": "bsaffel/moneybin-private"
+}
