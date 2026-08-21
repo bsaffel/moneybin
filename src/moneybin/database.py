@@ -385,11 +385,66 @@ def check_core_schema_drift(db: "Database") -> dict[str, list[str]]:
     return drift
 
 
-def _attach_encrypted(conn: "duckdb.DuckDBPyConnection", sql: str) -> None:
+# Shortest run of the encryption key treated as a leak when it turns up in a
+# DuckDB error message. DuckDB truncates the statement it echoes back, so the
+# realistic leak is a long fragment rather than the whole 64-hex literal;
+# 8 hex characters is short enough to catch those and long enough that an
+# ordinary diagnostic never collides with a random key by accident.
+_MIN_LEAKED_KEY_RUN = 8
+_REDACTED_KEY = "<redacted>"
+
+
+def _mask_key_runs(text: str, key: str) -> str:
+    """Replace every run of ``key`` at least ``_MIN_LEAKED_KEY_RUN`` long."""
+    for length in range(len(key), _MIN_LEAKED_KEY_RUN - 1, -1):
+        for start in range(len(key) - length + 1):
+            run = key[start : start + length]
+            if run in text:
+                text = text.replace(run, _REDACTED_KEY)
+    return text
+
+
+def scrub_key_material(exc: BaseException, *keys: str) -> None:
+    """Mask any run of ``keys`` that leaked into ``exc``'s message, in place.
+
+    DuckDB echoes the failing statement back in ``ParserException`` messages —
+    a truncated window centred on the error position — so a statement carrying
+    an ENCRYPTION_KEY can surface most of that key in ``str(exc)``. Neither a
+    traceback nor an f-stringed ``{e}`` is a log record the sanitizer can
+    reach, and ``SanitizedLogFormatter`` would not match a hex key anyway: it
+    masks SSNs, dollar amounts and 8+ *digit* runs.
+
+    Mutates ``exc`` in place instead of raising a sanitized replacement. That
+    preserves the exception's type and identity for callers, and avoids the
+    trap where ``raise Sanitized(...) from exc`` prints the unscrubbed
+    original anyway as the chained cause.
+    """
+    usable = [key for key in keys if len(key) >= _MIN_LEAKED_KEY_RUN]
+    if not usable:
+        return
+    scrubbed: list[object] = []
+    for arg in exc.args:
+        if isinstance(arg, str):
+            for key in usable:
+                arg = _mask_key_runs(arg, key)
+        scrubbed.append(arg)
+    if tuple(scrubbed) != exc.args:
+        exc.args = tuple(scrubbed)
+
+
+def _attach_encrypted(
+    conn: "duckdb.DuckDBPyConnection", sql: str, encryption_key: str
+) -> None:
     """Execute an ATTACH statement, mapping lock/config errors to DatabaseLockError.
 
     Closes ``conn`` and raises ``DatabaseLockError`` if DuckDB reports a
-    lock-contention condition. Re-raises other DuckDB exceptions unchanged.
+    lock-contention condition. Re-raises other DuckDB exceptions with their
+    type and identity intact, scrubbed of any key material DuckDB echoed back
+    from the statement (see ``scrub_key_material``).
+
+    ``encryption_key`` is passed rather than recovered from ``sql``: the path
+    is interpolated ahead of the options, so a path containing the option's
+    own text would shadow the real literal and the scrub would mask a decoy.
 
     DuckDB 1.5.3 unified previously-distinct messages (``"Conflicting lock"``
     IO error + ``"different configuration"`` catalog error in 1.5.2) into a
@@ -399,15 +454,22 @@ def _attach_encrypted(conn: "duckdb.DuckDBPyConnection", sql: str) -> None:
     try:
         conn.execute(sql)
     except duckdb.CatalogException as e:
+        scrub_key_material(e, encryption_key)
         conn.close()
         if "different configuration" in str(e):
             raise DatabaseLockError(str(e)) from e
         raise
     except duckdb.IOException as e:
+        scrub_key_material(e, encryption_key)
         conn.close()
         msg = str(e)
         if "Could not set lock on file" in msg or "Conflicting lock" in msg:
             raise DatabaseLockError(msg) from e
+        raise
+    except duckdb.Error as e:
+        # Parser/binder/invalid-input failures never closed the connection
+        # here — the callers' ExitStack owns that. Scrub and re-raise only.
+        scrub_key_material(e, encryption_key)
         raise
 
 
@@ -533,6 +595,7 @@ class Database:
                 _attach_encrypted(
                     self._conn,
                     build_attach_sql(db_path, encryption_key, read_only=True),
+                    encryption_key,
                 )
                 self._conn.execute(f"USE {_DATABASE_ALIAS}")
                 stack.pop_all()
@@ -560,7 +623,11 @@ class Database:
         with ExitStack() as stack:
             stack.callback(self._conn.close)
             _seal_connection(self._conn, writable=True)
-            _attach_encrypted(self._conn, build_attach_sql(db_path, encryption_key))
+            _attach_encrypted(
+                self._conn,
+                build_attach_sql(db_path, encryption_key),
+                encryption_key,
+            )
             self._conn.execute(f"USE {_DATABASE_ALIAS}")
 
             if is_new and sys.platform != "win32":

@@ -768,7 +768,7 @@ def db_key_rotate(
 
     new_key = secrets_mod.token_hex(32)
 
-    from moneybin.database import build_attach_sql
+    from moneybin.database import build_attach_sql, scrub_key_material
 
     rotated_path = db_path.with_suffix(".rotated.duckdb")
     with _load_encryption_key() as old_key:
@@ -781,6 +781,11 @@ def db_key_rotate(
             conn.execute(build_attach_sql(rotated_path, new_key, alias="new_db"))
             conn.execute("COPY FROM DATABASE old_db TO new_db")
         except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on ATTACH/COPY failure
+            # Both ATTACHes carry a plaintext key, and DuckDB echoes the failing
+            # statement back in parser errors. This message goes to logger.error,
+            # which the unfiltered file handler persists to cli_YYYY-MM-DD.log —
+            # and SanitizedLogFormatter masks digit runs, never a hex key.
+            scrub_key_material(e, old_key, new_key)
             logger.error(f"❌ Key rotation failed: {e}")
             rotated_path.unlink(missing_ok=True)
             raise typer.Exit(1) from e

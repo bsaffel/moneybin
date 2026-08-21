@@ -17,6 +17,9 @@ from moneybin.database import (
     _attach_encrypted,  # pyright: ignore[reportPrivateUsage]
 )
 
+# No ENCRYPTION_KEY in these statements; the scrubber has nothing to mask.
+_KEY = "b" * 64
+
 
 def _make_mock_conn(exc: Exception) -> MagicMock:
     conn = MagicMock()
@@ -32,7 +35,7 @@ def test_duckdb_1_5_3_lock_message_classified_as_lock_error() -> None:
     )
     conn = _make_mock_conn(duckdb.IOException(msg))
     with pytest.raises(DatabaseLockError):
-        _attach_encrypted(conn, "ATTACH '/tmp/probe.duckdb' AS m (TYPE DUCKDB)")
+        _attach_encrypted(conn, "ATTACH '/tmp/probe.duckdb' AS m (TYPE DUCKDB)", _KEY)
 
 
 def test_duckdb_1_5_2_lock_message_still_classified() -> None:
@@ -43,7 +46,7 @@ def test_duckdb_1_5_2_lock_message_still_classified() -> None:
     )
     conn = _make_mock_conn(duckdb.IOException(msg))
     with pytest.raises(DatabaseLockError):
-        _attach_encrypted(conn, "ATTACH '/tmp/probe.duckdb' AS m (TYPE DUCKDB)")
+        _attach_encrypted(conn, "ATTACH '/tmp/probe.duckdb' AS m (TYPE DUCKDB)", _KEY)
 
 
 def test_duckdb_1_5_2_catalog_message_still_classified() -> None:
@@ -58,7 +61,7 @@ def test_duckdb_1_5_2_catalog_message_still_classified() -> None:
     )
     conn = _make_mock_conn(duckdb.CatalogException(msg))
     with pytest.raises(DatabaseLockError):
-        _attach_encrypted(conn, "ATTACH '/tmp/probe.duckdb' AS m (TYPE DUCKDB)")
+        _attach_encrypted(conn, "ATTACH '/tmp/probe.duckdb' AS m (TYPE DUCKDB)", _KEY)
 
 
 def test_unrelated_ioexception_reraised_unchanged() -> None:
@@ -71,7 +74,7 @@ def test_unrelated_ioexception_reraised_unchanged() -> None:
     exc = duckdb.IOException(msg)
     conn = _make_mock_conn(exc)
     with pytest.raises(duckdb.IOException) as excinfo:
-        _attach_encrypted(conn, "ATTACH '/tmp/probe.duckdb' AS m (TYPE DUCKDB)")
+        _attach_encrypted(conn, "ATTACH '/tmp/probe.duckdb' AS m (TYPE DUCKDB)", _KEY)
     assert excinfo.value is exc
 
 
@@ -84,5 +87,5 @@ def test_unrelated_catalog_exception_reraised_unchanged() -> None:
     exc = duckdb.CatalogException(msg)
     conn = _make_mock_conn(exc)
     with pytest.raises(duckdb.CatalogException) as excinfo:
-        _attach_encrypted(conn, "ATTACH '/tmp/probe.duckdb' AS m (TYPE DUCKDB)")
+        _attach_encrypted(conn, "ATTACH '/tmp/probe.duckdb' AS m (TYPE DUCKDB)", _KEY)
     assert excinfo.value is exc
