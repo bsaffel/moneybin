@@ -1166,7 +1166,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   only tables that could name it — the record of a merge that *succeeded* was
   the one record that could not say what it merged. Both names are now frozen
   onto the decision when it is made (migration V051). Existing rows are not
-  backfilled; an already-accepted merge has no surviving name to recover.
+  backfilled; an already-accepted merge has no surviving name to recover (#417).
 
 - **Syncing an institution that has removed transactions no longer aborts the
   whole pull.** `moneybin-sync` widened `removed_transactions` from a bare
