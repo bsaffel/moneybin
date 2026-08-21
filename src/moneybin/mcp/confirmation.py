@@ -223,6 +223,40 @@ def _confirmation_required(
     )
 
 
+def _confirmation_unavailable(
+    binding: ConfirmationBinding,
+    *,
+    cli_equivalent: str | None,
+) -> UserError:
+    """Refuse rather than degrade an elicitation-only operation into a token.
+
+    Everywhere else, a client that cannot prompt gets an opaque token instead.
+    For an operation this hard to undo, that fallback IS the hole: the token is
+    returned to the *calling agent*, which can redeem it on its very next call
+    and never put the prompt in front of a person. Send the caller to a surface
+    that can actually ask a human instead.
+    """
+    route = cli_equivalent or "the moneybin CLI"
+    return UserError(
+        "This operation must be confirmed by a person, and this client cannot "
+        "show a confirmation prompt.",
+        code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+        hint=f"Run `{route}`, which prompts on the terminal.",
+        details={
+            "operation_kind": binding.operation_kind,
+            "blast_radius": binding.blast_radius,
+        },
+    )
+
+
+def _token_not_accepted() -> UserError:
+    return UserError(
+        "confirmation_token is not accepted for this operation: it must be "
+        "confirmed through a prompt answered by a person.",
+        code=error_codes.MUTATION_INVALID_INPUT,
+    )
+
+
 confirmation_broker = ConfirmationBroker()
 
 
@@ -231,9 +265,23 @@ async def grant_confirmation_or_raise(
     binding: ConfirmationBinding | None,
     message: str,
     confirmation_token: str | None,
+    elicitation_only: bool = False,
+    cli_equivalent: str | None = None,
     broker: ConfirmationBroker = confirmation_broker,
 ) -> ConfirmationGrant:
-    """Return a digest grant through elicitation or one consumed opaque token."""
+    """Return a digest grant through elicitation or one consumed opaque token.
+
+    ``elicitation_only`` removes the token from the contract entirely for
+    operations whose cost of a wrong silent action is too high to let the
+    caller confirm itself: a supplied token is refused rather than consumed,
+    and a client that cannot prompt is refused rather than handed one. The
+    prompt becomes the only route through. ``cli_equivalent`` names the command
+    that refusal points at, since a refusal with no way forward is a dead end.
+    """
+    if elicitation_only and confirmation_token is not None:
+        # Refuse before consuming: burning the token would also let a caller
+        # destroy a confirmation somebody else was about to redeem.
+        raise _token_not_accepted()
     if confirmation_token is not None:
         return broker.consume(confirmation_token, now=_utcnow())
     if binding is None:
@@ -263,6 +311,9 @@ async def grant_confirmation_or_raise(
         if isinstance(result, AcceptedElicitation) and result.data is True:
             return ConfirmationGrant(expected_digest)
         raise _confirmation_declined()
+
+    if elicitation_only:
+        raise _confirmation_unavailable(binding, cli_equivalent=cli_equivalent)
 
     token = broker.issue(binding, now=_utcnow())
     raise _confirmation_required(

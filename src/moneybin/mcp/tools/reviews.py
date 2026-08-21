@@ -1237,6 +1237,14 @@ async def identity_links_decide_coarse(
                 kinds=preview.kinds,
             ),
             confirmation_token=confirmation_token,
+            # An account merge moves a whole ledger history onto another
+            # account and is the case `design-principles.md` names at the top
+            # of the confirmation bar. The opaque-token fallback hands that
+            # confirmation to the calling agent, so this batch forgoes it and
+            # takes the prompt or nothing. Merchant- and security-only batches
+            # keep the fallback: neither re-keys a transaction.
+            elicitation_only="account_link" in preview.kinds,
+            cli_equivalent="moneybin accounts links set",
         )
     live = await asyncio.to_thread(
         _apply_identity_decisions,
@@ -1314,7 +1322,9 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         "accepted: `rematch_transfers_retired` counts those, and "
         "system_audit_undo() restores them. Any accepted merge or bind confirms "
         "the exact normalized full batch and complete live before-state; "
-        "reject-only batches do not prompt.",
+        "reject-only batches do not prompt. An accepted account link takes the "
+        "prompt only — it refuses confirmation_token, and refuses a client that "
+        "cannot prompt rather than issue one.",
         privacy_actor="identity_links_decide",
     )
 

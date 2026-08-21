@@ -708,9 +708,12 @@ async def accounts_links_set(
     - `action="accept"` + `target_account_id=<the decision's own
       candidate_account_id>` MERGES. This REQUIRES explicit human confirmation:
       the tool prompts the user through an MCP elicitation naming both accounts
-      and the matching signal, and merges only if they agree. A client that
-      cannot prompt receives mutation_confirmation_required with a short-lived,
-      payload-bound token for an exact retry. `target_account_id` is also a
+      and the matching signal, and merges only if they agree. That prompt is
+      the ONLY route: unlike other destructive tools this one has no fallback
+      token, `confirmation_token` is refused with mutation_invalid_input, and a
+      client that cannot prompt is refused with mutation_confirmation_required
+      naming the CLI instead. A token is returned to the caller, so honouring
+      one would let the caller confirm its own merge. `target_account_id` is also a
       confirming safety check: it must equal the decision's own candidate, so a
       mistyped or stale decision_id cannot merge into the wrong account.
       Mismatched, empty, or missing `target_account_id` raises
@@ -778,32 +781,40 @@ async def accounts_links_set(
                 "that.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
-        if confirmation_token is None:
-            proposal = await asyncio.to_thread(
-                _load_pending_account_proposal, decision_id
+        if confirmation_token is not None:
+            # A merge takes the prompt or nothing. The opaque-token fallback
+            # returns the confirmation to the *calling agent*, which can redeem
+            # it on its next call with no person ever seeing this merge — and a
+            # merge moves a whole ledger history onto another account. Refused
+            # ahead of the proposal load: a merge that cannot proceed should not
+            # first cost a database read.
+            raise UserError(
+                "confirmation_token is not accepted for an account merge: it "
+                "must be confirmed through a prompt answered by a person.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                hint="Retry without confirmation_token, or run `moneybin "
+                "accounts links set`, which prompts on the terminal.",
             )
-            if target_account_id != proposal.candidate_account_id:
-                # Refuse BEFORE prompting: a doomed merge must not cost the user a
-                # confirmation. The service re-checks this; this is the boundary copy.
-                raise UserError(
-                    f"'target_account_id' does not match decision '{decision_id}' — "
-                    "it must be the target_id shown by reviews(kind='account_links').",
-                    code=error_codes.MUTATION_INVALID_INPUT,
-                    hint="Re-read the decision with reviews(kind='account_links').",
-                )
-            binding = _account_link_binding(
+        proposal = await asyncio.to_thread(_load_pending_account_proposal, decision_id)
+        if target_account_id != proposal.candidate_account_id:
+            # Refuse BEFORE prompting: a doomed merge must not cost the user a
+            # confirmation. The service re-checks this; this is the boundary copy.
+            raise UserError(
+                f"'target_account_id' does not match decision '{decision_id}' — "
+                "it must be the target_id shown by reviews(kind='account_links').",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                hint="Re-read the decision with reviews(kind='account_links').",
+            )
+        grant = await grant_confirmation_or_raise(
+            binding=_account_link_binding(
                 decision_id=decision_id,
                 target_account_id=target_account_id,
                 impact=proposal.impact,
-            )
-            message = _account_confirm_message(proposal)
-        else:
-            binding = None
-            message = ""
-        grant = await grant_confirmation_or_raise(
-            binding=binding,
-            message=message,
-            confirmation_token=confirmation_token,
+            ),
+            message=_account_confirm_message(proposal),
+            confirmation_token=None,
+            elicitation_only=True,
+            cli_equivalent="moneybin accounts links set",
         )
         rematch = await asyncio.to_thread(
             _apply_account_accept,

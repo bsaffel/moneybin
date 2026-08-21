@@ -1585,6 +1585,62 @@ class TestPendingAccountProposal:
         assert excinfo.value.code == "mutation_nothing_to_do"
 
 
+def _stub_merge_prompt(monkeypatch: pytest.MonkeyPatch, accounts_module: Any) -> None:
+    """Stand in for the merge's confirmation prompt and the read that feeds it.
+
+    These tests are about what the accept envelope reports, not about the gate.
+    They used to reach the merge body by passing a confirmation token, which an
+    account merge no longer accepts — so the prompt itself is stubbed instead.
+    """
+
+    def _proposal(_decision_id: str) -> SimpleNamespace:
+        return SimpleNamespace(candidate_account_id="CAND001", impact=None)
+
+    def _binding(**_kw: object) -> None:
+        return None
+
+    def _message(_proposal: object) -> str:
+        return ""
+
+    monkeypatch.setattr(accounts_module, "_load_pending_account_proposal", _proposal)
+    monkeypatch.setattr(accounts_module, "_account_link_binding", _binding)
+    monkeypatch.setattr(accounts_module, "_account_confirm_message", _message)
+
+
+async def test_links_set_accept_refuses_a_confirmation_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A merge takes the prompt or nothing — a token must not buy its way in.
+
+    The opaque-token fallback exists so a client that cannot prompt can still
+    act, but the token is returned to the *calling agent*. Honouring one for a
+    merge would let that agent confirm its own rewrite of a whole ledger
+    history without a person ever seeing the prompt.
+
+    Refused before any database work: a merge that cannot proceed must not
+    first cost a proposal load.
+    """
+    from moneybin.mcp.tools import accounts as accounts_module
+
+    def _must_not_run(*_args: object, **_kw: object) -> object:
+        raise AssertionError("a token-bearing merge must be refused up front")
+
+    monkeypatch.setattr(accounts_module, "_apply_account_accept", _must_not_run)
+    monkeypatch.setattr(
+        accounts_module, "_load_pending_account_proposal", _must_not_run
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        await accounts_module.accounts_links_set(
+            decision_id="dec001",
+            action="accept",
+            target_account_id="CAND001",
+            confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential
+        )
+
+    assert excinfo.value.code == "mutation_invalid_input"
+
+
 async def test_links_set_accept_reports_what_the_rematch_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1613,12 +1669,12 @@ async def test_links_set_accept_reports_what_the_rematch_found(
 
     monkeypatch.setattr(accounts_module, "_apply_account_accept", _accepted)
     monkeypatch.setattr(accounts_module, "grant_confirmation_or_raise", _granted)
+    _stub_merge_prompt(monkeypatch, accounts_module)
 
     envelope = await accounts_module.accounts_links_set(
         decision_id="dec001",
         action="accept",
         target_account_id="CAND001",
-        confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential; skips the elicitation branch
     )
 
     assert envelope.data.rematch_auto_merged == 2
@@ -1650,12 +1706,12 @@ async def test_links_set_accept_reports_a_retired_transfer_in_data(
 
     monkeypatch.setattr(accounts_module, "_apply_account_accept", _accepted)
     monkeypatch.setattr(accounts_module, "grant_confirmation_or_raise", _granted)
+    _stub_merge_prompt(monkeypatch, accounts_module)
 
     envelope = await accounts_module.accounts_links_set(
         decision_id="dec001",
         action="accept",
         target_account_id="CAND001",
-        confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential; skips the elicitation branch
     )
 
     assert envelope.data.rematch_transfers_retired == 3
@@ -1713,12 +1769,12 @@ async def test_links_set_accept_flags_a_failed_rebuild(
 
     monkeypatch.setattr(accounts_module, "_apply_account_accept", _accepted)
     monkeypatch.setattr(accounts_module, "grant_confirmation_or_raise", _granted)
+    _stub_merge_prompt(monkeypatch, accounts_module)
 
     envelope = await accounts_module.accounts_links_set(
         decision_id="dec001",
         action="accept",
         target_account_id="CAND001",
-        confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential; skips the elicitation branch
     )
 
     assert any("rebuild" in action.lower() for action in envelope.actions), (
@@ -1757,12 +1813,12 @@ async def test_links_set_accept_flags_a_match_pass_that_never_ran(
 
     monkeypatch.setattr(accounts_module, "_apply_account_accept", _accepted)
     monkeypatch.setattr(accounts_module, "grant_confirmation_or_raise", _granted)
+    _stub_merge_prompt(monkeypatch, accounts_module)
 
     envelope = await accounts_module.accounts_links_set(
         decision_id="dec001",
         action="accept",
         target_account_id="CAND001",
-        confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential; skips the elicitation branch
     )
 
     assert any("could not run" in action for action in envelope.actions), (

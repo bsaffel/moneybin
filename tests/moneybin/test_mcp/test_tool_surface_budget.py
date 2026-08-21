@@ -165,7 +165,14 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # Grew by the same disclosure, for the same reason: accepting an account
     # decision re-runs matching, which can reverse a transfer the user
     # accepted. Still less than half the cohort it replaced.
-    "identity_links_decide": (3_333, 5_762),
+    #
+    # Then 148 more to say that an accepted account link takes the prompt only
+    # — no confirmation_token, and no fallback token for a client that cannot
+    # prompt. That is a divergence from every other destructive tool, and the
+    # description is the only place the agent can learn it: one that omitted it
+    # would have the agent retry a merge with a token, read the refusal as a
+    # bug, and route around the confirmation this exists to enforce.
+    "identity_links_decide": (3_481, 5_762),
     "taxonomy_set": (3_480, 3_223),
     "privacy_consent_set": (1_217, 2_188),
 }

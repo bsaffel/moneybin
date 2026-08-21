@@ -580,3 +580,98 @@ async def test_degraded_client_gets_structured_opaque_token(
     assert isinstance(token, str)
     assert token not in error.message
     broker.consume(token, now=NOW).verify(BINDING)
+
+
+@pytest.mark.asyncio
+async def test_elicitation_only_mints_no_token_for_a_degraded_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An account merge must never hand the caller a key to its own merge.
+
+    The ordinary path degrades to an opaque token when the client cannot
+    prompt. For a merge that rewrites ledger history that degradation IS the
+    hole: the token goes back to the calling agent, which can replay it on the
+    next call and never reach a human. Refuse instead, and mint nothing --
+    withholding a token from the response would still leave the entry live for
+    the next call to redeem, which is why this asserts on the broker.
+    """
+    broker = _RecordingBroker(ttl_seconds=300)
+    monkeypatch.setattr("moneybin.mcp.confirmation._utcnow", lambda: NOW)
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation._active_context", lambda: MagicMock()
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation.supports_elicitation",
+        _does_not_support_elicitation,
+    )
+
+    with pytest.raises(UserError) as raised:
+        await grant_confirmation_or_raise(
+            binding=BINDING,
+            message="Merge two accounts?",
+            confirmation_token=None,
+            elicitation_only=True,
+            broker=broker,
+        )
+
+    error = raised.value
+    assert error.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+    assert broker.issued == [], "a token was minted for an elicitation-only merge"
+    assert "confirmation_token" not in (error.details or {})
+    # The refusal is a dead end unless it names a route that actually works.
+    assert "moneybin" in (error.hint or "")
+
+
+@pytest.mark.asyncio
+async def test_elicitation_only_refuses_a_supplied_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A token minted elsewhere must not buy its way past the merge prompt.
+
+    Without this the fix is cosmetic: a caller holding any live token for the
+    same binding could still skip the prompt entirely, which is exactly the
+    replay this closes.
+    """
+    broker = _RecordingBroker(ttl_seconds=300)
+    token = broker.issue(BINDING, now=NOW)
+    monkeypatch.setattr("moneybin.mcp.confirmation._utcnow", lambda: NOW)
+
+    with pytest.raises(UserError) as raised:
+        await grant_confirmation_or_raise(
+            binding=None,
+            message="",
+            confirmation_token=token,
+            elicitation_only=True,
+            broker=broker,
+        )
+
+    assert raised.value.code == error_codes.MUTATION_INVALID_INPUT
+    # The token must survive unconsumed: refusing by burning it would let a
+    # caller destroy a confirmation somebody else was about to use.
+    broker.consume(token, now=NOW).verify(BINDING)
+
+
+@pytest.mark.asyncio
+async def test_elicitation_only_still_grants_on_an_accepted_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stricter path must still let a real human agreement through."""
+    broker = _RecordingBroker(ttl_seconds=300)
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(return_value=AcceptedElicitation(data=True))
+    monkeypatch.setattr("moneybin.mcp.confirmation._utcnow", lambda: NOW)
+    monkeypatch.setattr("moneybin.mcp.confirmation._active_context", lambda: ctx)
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation.supports_elicitation", _supports_elicitation
+    )
+
+    grant = await grant_confirmation_or_raise(
+        binding=BINDING,
+        message="Merge two accounts?",
+        confirmation_token=None,
+        elicitation_only=True,
+        broker=broker,
+    )
+
+    grant.verify(BINDING)
+    assert broker.issued == []

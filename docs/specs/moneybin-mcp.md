@@ -205,6 +205,16 @@ and confirmation contracts.
   and `gsheet` expose typed views or filters under one domain identity. Their
   paired `_set`, `_decide`, or domain verb tools retain material write and
   confirmation boundaries.
+- **An account merge is confirmed by prompt only.** `identity_links_decide`
+  accepting an `account_link`, and `accounts_links_set` with `action="accept"`,
+  are the one exception to the opaque-token fallback: they refuse a supplied
+  `confirmation_token` with `mutation_invalid_input`, and refuse a client that
+  cannot elicit with `mutation_confirmation_required` naming the CLI, rather
+  than issuing a token. The fallback token is returned to the *calling agent*,
+  so honouring it would let that agent satisfy the merge confirmation itself —
+  and a merge re-keys a whole account's transaction history, the case
+  `design-principles.md` places at the top of the confirmation bar. Merchant-
+  and security-link accepts keep the token path: neither re-keys a transaction.
 - `import_files` and `import_preview` establish an import; `import_confirm`
   ratifies system proposals, including an elicited human decision for a PDF
   sign inversion. Clients without elicitation receive an opaque,

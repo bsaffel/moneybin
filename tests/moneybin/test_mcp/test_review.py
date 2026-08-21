@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import duckdb
 import pytest
+from fastmcp.server.elicitation import AcceptedElicitation
 from prometheus_client import REGISTRY
 
 from moneybin import error_codes
@@ -1868,6 +1870,31 @@ async def test_categorization_pending_uses_batch_attempt_projection() -> None:
     assert len(response.data.rows) == 1
 
 
+@contextmanager
+def _human_confirms() -> Generator[None]:
+    """Answer the confirmation prompt the way a person at the client would.
+
+    An account merge no longer accepts a confirmation token, so a test that
+    needs the merge to actually apply has to go through the prompt. Scoped
+    rather than applied for the whole test: a batch loop that also exercises
+    merchant and security links must leave those on the token path, and a
+    patch that outlived its case would silently convert them.
+
+    Tests that are about the token contract itself must NOT use this — they
+    would stop exercising the thing they are named for.
+    """
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(return_value=AcceptedElicitation(data=True))
+
+    def _supports(_ctx: object) -> bool:
+        return True
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("moneybin.mcp.confirmation._active_context", lambda: ctx)
+        mp.setattr("moneybin.mcp.confirmation.supports_elicitation", _supports)
+        yield
+
+
 async def test_identity_standard_boundary_accepts_and_rejects_each_domain() -> None:
     account_accept = _identity_account_setup("accept")
     account_reject = _identity_account_setup("reject")
@@ -1912,9 +1939,14 @@ async def test_identity_standard_boundary_accepts_and_rejects_each_domain() -> N
     ]
 
     for request in cases:
-        required = await identity_links_decide_coarse(decisions=[request])
-        response = required
-        if request.decision == "accept":
+        if request.decision != "accept":
+            response = await identity_links_decide_coarse(decisions=[request])
+        elif request.kind == "account_link":
+            # A merge has no token path at all — the prompt is the only route.
+            with _human_confirms():
+                response = await identity_links_decide_coarse(decisions=[request])
+        else:
+            required = await identity_links_decide_coarse(decisions=[request])
             assert required.error is not None
             assert required.error.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
             assert required.error.details is not None
@@ -1933,7 +1965,19 @@ async def test_identity_standard_boundary_accepts_and_rejects_each_domain() -> N
         )
 
 
-async def test_identity_account_persisted_state_mismatch_consumes_token() -> None:
+async def test_identity_account_merge_rechecks_live_state_after_the_prompt() -> None:
+    """Agreeing to a prompt approves one exact merge, not merges in general.
+
+    Removing the token path must not also remove the recheck that rides on it:
+    the grant is a digest of the batch plus its complete live before-state, and
+    it is re-verified inside the write transaction. If the decision shifts
+    between the prompt and the commit, the merge the person agreed to is not
+    the merge about to run, and it must not proceed.
+
+    The state change here is the same one the token version of this test used
+    (``confidence_score``), so what moved is the confirmation vehicle, not the
+    condition being detected.
+    """
     setup = _identity_account_setup("state-mismatch")
     decisions = [
         AccountLinkDecisionRequest(
@@ -1943,33 +1987,90 @@ async def test_identity_account_persisted_state_mismatch_consumes_token() -> Non
             target_id=setup["candidate"],
         )
     ]
-    required = await identity_links_decide_coarse(decisions=decisions)
-    assert required.error is not None
-    assert required.error.details is not None
-    token = str(required.error.details["confirmation_token"])
-    with get_database(read_only=False) as db:
-        db.execute(
-            """
-            UPDATE app.account_link_decisions
-            SET confidence_score = 0.61
-            WHERE decision_id = ?
-            """,
-            [setup["decision_id"]],
-        )
 
-    mismatched = await identity_links_decide_coarse(
-        decisions=decisions,
-        confirmation_token=token,
-    )
-    replayed = await identity_links_decide_coarse(
-        decisions=decisions,
-        confirmation_token=token,
-    )
+    _real_preview = _preview_identity_decisions
+
+    # Shift the persisted decision out from under the approved digest at the
+    # one moment it matters: after the batch is planned and prompted, before
+    # apply re-plans it inside the write transaction.
+    def _drift_then_preview(requests: list[IdentityDecisionRequest]) -> Any:
+        preview = _real_preview(requests)
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                UPDATE app.account_link_decisions
+                SET confidence_score = 0.61
+                WHERE decision_id = ?
+                """,
+                [setup["decision_id"]],
+            )
+        return preview
+
+    with _human_confirms():
+        with patch.object(
+            reviews_module,
+            "_preview_identity_decisions",
+            side_effect=_drift_then_preview,
+        ):
+            mismatched = await identity_links_decide_coarse(decisions=decisions)
 
     assert mismatched.error is not None
     assert mismatched.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
-    assert replayed.error is not None
-    assert replayed.error.code == error_codes.MUTATION_CONFIRMATION_REPLAYED
+    assert _identity_decision_status("account_link", setup["decision_id"]) == "pending"
+
+
+async def test_identity_account_merge_is_refused_without_a_token_to_redeem() -> None:
+    """A client that cannot prompt gets a refusal, not a key to its own merge.
+
+    Every other destructive operation degrades to an opaque token here. For an
+    account merge that degradation was the whole hole: the token is returned to
+    the calling agent, so the documented "confirm before merging" contract was
+    satisfiable without a person ever seeing it. The refusal must carry no
+    token at all -- withholding it from the message while minting it anyway
+    would leave the entry live for the very next call.
+    """
+    setup = _identity_account_setup("no-token")
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["candidate"],
+        )
+    ]
+
+    refused = await identity_links_decide_coarse(decisions=decisions)
+
+    assert refused.error is not None
+    assert refused.error.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+    assert "confirmation_token" not in (refused.error.details or {})
+    assert _identity_decision_status("account_link", setup["decision_id"]) == "pending"
+
+
+async def test_identity_account_merge_refuses_a_supplied_token() -> None:
+    """A token minted elsewhere must not buy its way past the merge prompt.
+
+    Without this the refusal above is cosmetic: a caller holding any live token
+    -- one issued for a sibling operation, or carried over from before this
+    contract -- could still merge without a prompt.
+    """
+    setup = _identity_account_setup("token-refused")
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["candidate"],
+        )
+    ]
+
+    refused = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token="any-token-at-all",  # noqa: S106  # opaque grant id, not a credential
+    )
+
+    assert refused.error is not None
+    assert refused.error.code == error_codes.MUTATION_INVALID_INPUT
     assert _identity_decision_status("account_link", setup["decision_id"]) == "pending"
 
 
@@ -2474,12 +2575,19 @@ def test_identity_plan_ignores_unchanged_accept_for_destructive_gate() -> None:
 async def test_identity_confirmation_rechecks_live_state_and_consumes_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Pin the full token protocol: binding recheck, mismatch, single use.
+
+    Uses a merchant link rather than an account one because an account merge
+    has no token path left to pin — it takes the prompt or nothing. The
+    account path's own live-state recheck is covered by
+    ``test_identity_account_merge_rechecks_live_state_after_the_prompt``.
+    """
     decisions = [
-        AccountLinkDecisionRequest(
-            kind="account_link",
-            decision_id="account-decision",
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="merchant-decision",
             decision="accept",
-            target_id="account-target",
+            target_id="merchant-target",
         )
     ]
     initial = _identity_plan(decisions)
