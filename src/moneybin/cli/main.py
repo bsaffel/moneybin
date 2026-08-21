@@ -12,6 +12,7 @@ that need them — see `.claude/rules/cli.md` → "Cold-Start Hygiene".
 import importlib.metadata
 import logging
 import os
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -64,6 +65,14 @@ app = typer.Typer(
     add_completion=True,
     rich_markup_mode="rich",
     no_args_is_help=True,
+    # Pinned, not merely inherited: frames on the database-open path hold the
+    # plaintext encryption key and profile passphrases as locals, and a rich
+    # traceback is not a log record, so SanitizedLogFormatter cannot redact it.
+    # Typer defaults this to False today, but the dependency floor is a range
+    # — state it here so the guarantee does not rest on a dependency default.
+    # Sub-apps render through this root app's handler, so setting it once here
+    # covers every command group.
+    pretty_exceptions_show_locals=False,
 )
 
 
@@ -78,9 +87,40 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+def _home_callback(value: Path | None) -> Path | None:
+    """Export ``--home`` as MONEYBIN_HOME before anything resolves the data home.
+
+    ``get_base_dir()`` reads ``os.environ`` directly — it runs during
+    ``MoneyBinSettings.__init__``, before ``get_settings()`` exists — so the
+    flag has to become a real environment variable rather than a stashed
+    parameter. Writing it through also means ``mcp install`` pins this home
+    into the generated client config, since that command distinguishes an
+    explicit home from a derived one by reading the same variable.
+
+    Eager so it lands before ``--profile`` is resolved: profiles live under
+    ``<home>/profiles/``, so the home has to be settled first.
+    """
+    if value is not None:
+        os.environ["MONEYBIN_HOME"] = str(value)
+    return value
+
+
 @app.callback()
 def main_callback(
     ctx: typer.Context,
+    home: Annotated[
+        Path | None,
+        typer.Option(
+            "--home",
+            callback=_home_callback,
+            is_eager=True,
+            envvar="MONEYBIN_HOME",
+            show_envvar=True,
+            help="Data directory holding profiles, config and databases. "
+            "Overrides MONEYBIN_HOME. Defaults to <repo>/.moneybin inside a "
+            "checkout, otherwise ~/.moneybin.",
+        ),
+    ] = None,
     profile_name: Annotated[
         str | None,
         typer.Option(

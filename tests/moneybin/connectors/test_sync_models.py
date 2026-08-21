@@ -197,3 +197,51 @@ def test_connected_institution_minimal() -> None:
 def test_sync_trigger_response_status_literal() -> None:
     with pytest.raises(ValidationError):
         SyncTriggerResponse(job_id="j1", status="weird_status")  # type: ignore[arg-type]
+
+
+def test_removed_transactions_accepts_provider_native_records() -> None:
+    """A removed transaction arrives as a provider-native record, not a bare id.
+
+    moneybin-sync widened this field to a full record; a client still declaring
+    ``list[str]`` raises ValidationError and aborts the whole pull for any
+    institution that has removals.
+    """
+    payload = {
+        "accounts": [],
+        "transactions": [],
+        "balances": [],
+        "removed_transactions": [{"transaction_id": "txn_old"}],
+        "metadata": {
+            "job_id": "job_abc",
+            "synced_at": "2026-04-08T12:00:00Z",
+            "institutions": [],
+        },
+    }
+
+    parsed = SyncDataResponse.model_validate(payload)
+
+    assert parsed.removed_transactions == ["txn_old"]
+
+
+def test_removed_transactions_missing_transaction_id_rejects_the_batch() -> None:
+    """A record with no ``transaction_id`` fails the response, never a silent drop.
+
+    The field is ``str``, not ``str | None``, so the validator's ``None`` fails.
+    Rejecting the whole response matches how every other list on this model
+    already treats a malformed element; pinning it keeps that intentional
+    rather than incidental.
+    """
+    payload = {
+        "accounts": [],
+        "transactions": [],
+        "balances": [],
+        "removed_transactions": [{"account_id": "acc_001"}],
+        "metadata": {
+            "job_id": "job_abc",
+            "synced_at": "2026-04-08T12:00:00Z",
+            "institutions": [],
+        },
+    }
+
+    with pytest.raises(ValidationError):
+        SyncDataResponse.model_validate(payload)

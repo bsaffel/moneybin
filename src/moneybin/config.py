@@ -51,6 +51,45 @@ def _is_moneybin_repo(path: Path) -> bool:
         return False
 
 
+def canonical_checkout_root(path: Path) -> Path:
+    """The main working tree's root when ``path`` is a linked git worktree.
+
+    A worktree is a second checkout of one repository, not a second
+    installation, so it must resolve the repository's one data home. Without
+    this, a command run from a worktree reads an empty database and reports
+    zeros — indistinguishable from a clean result.
+
+    Returns ``path`` unchanged for anything that is not unambiguously a linked
+    worktree of a MoneyBin checkout, so every non-worktree caller keeps its
+    existing behaviour. Reads the ``.git`` file directly rather than shelling
+    out to ``git``, because this runs during settings init on every command.
+
+    Args:
+        path: A directory already believed to be a MoneyBin checkout root.
+
+    Returns:
+        Path: The main working tree's root, or ``path`` unchanged.
+    """
+    git = path / ".git"
+    try:
+        if not git.is_file():
+            return path
+        pointer = git.read_text().strip()
+    except OSError:
+        return path
+    if not pointer.startswith("gitdir:"):
+        return path
+    gitdir = Path(pointer.removeprefix("gitdir:").strip())
+    if not gitdir.is_absolute():
+        gitdir = (path / gitdir).resolve()
+    # <main>/.git/worktrees/<name>. The `worktrees` segment is what separates a
+    # worktree from a submodule, whose pointer ends `.git/modules/<name>`.
+    if gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
+        return path
+    main_root = gitdir.parent.parent.parent
+    return main_root if _is_moneybin_repo(main_root) else path
+
+
 def find_repo_root() -> Path | None:
     """Return the moneybin repo root if CWD *is* the repo root, else None.
 
@@ -82,6 +121,9 @@ def get_base_dir() -> Path:
         3. Repo checkout detection (.git + pyproject.toml name=moneybin): <cwd>/.moneybin
         4. Default: ~/.moneybin/
 
+    Branches 2 and 3 resolve a linked git worktree to its main checkout, so
+    every worktree of one repository shares that repository's single data home.
+
     Returns:
         Path: Absolute base directory for the application.
     """
@@ -94,10 +136,11 @@ def get_base_dir() -> Path:
     environment = os.getenv("MONEYBIN_ENVIRONMENT")
     if environment == "development":
         repo_root = _find_moneybin_repo_ancestor(Path.cwd())
-        return ((repo_root or Path.cwd()) / ".moneybin").resolve()
+        base = canonical_checkout_root(repo_root) if repo_root else Path.cwd()
+        return (base / ".moneybin").resolve()
 
     if _is_moneybin_repo(Path.cwd()):
-        return (Path.cwd() / ".moneybin").resolve()
+        return (canonical_checkout_root(Path.cwd()) / ".moneybin").resolve()
 
     return (Path.home() / ".moneybin").resolve()
 
@@ -860,7 +903,60 @@ class MoneyBinSettings(BaseSettings):
             raise ValueError(f"Invalid profile name: {e}") from e
 
     @staticmethod
-    def _raise_on_deprecated_tabular_keys(profile: str) -> None:
+    def _active_dotenv_keys(profile: str) -> tuple[str | None, list[str]]:
+        """The active dotenv's name and its assignment keys, or (None, []).
+
+        Mirrors ``settings_customise_sources``: ``.env.{profile}`` wins over
+        ``.env``, and only the first existing file is ever read. Read once and
+        handed to every guard below — the file is opened on each settings
+        construction, so re-reading it per guard is pure waste.
+
+        Parsed with python-dotenv itself, the grammar ``DotEnvSettingsSource``
+        delegates to, so the guards see exactly the keys the loader will define.
+        A hand-rolled line scan diverges in both directions and each direction
+        is a real failure: it reads a quoted value's continuation line as its
+        own binding (refusing startup over a key that is only value text), and
+        it misses spellings dotenv accepts — ``export<TAB>KEY=…`` among them —
+        which lets through the silent misconfiguration these guards exist to
+        catch.
+        """
+        from dotenv import dotenv_values
+
+        base = get_base_dir()
+        for env_file in (base / f".env.{profile}", base / ".env"):
+            if not env_file.exists():
+                continue
+            return env_file.name, list(dotenv_values(env_file, encoding="utf-8"))
+        return None, []
+
+    @staticmethod
+    def _raise_on_ineffective_home_key(
+        env_file_name: str | None, dotenv_keys: list[str]
+    ) -> None:
+        """Fail loudly if MONEYBIN_HOME is assigned in the active dotenv file.
+
+        That assignment can never take effect: the dotenv is looked up *inside*
+        the data directory it would be naming, so the home is already resolved
+        by the time the file is read, and pydantic-settings drops the key under
+        ``extra="ignore"``. Quietly using a different database than the one the
+        operator wrote down is worth refusing to start over, so name the two
+        routes that do work.
+        """
+        if env_file_name is None:
+            return
+        if not any(key.upper() == "MONEYBIN_HOME" for key in dotenv_keys):
+            return
+        raise ValueError(
+            f"MONEYBIN_HOME is set in {env_file_name}, where it has no effect: "
+            "MoneyBin looks for that file inside the data directory it would "
+            "name. Set MONEYBIN_HOME as an environment variable, or pass "
+            "`moneybin --home <path>`."
+        )
+
+    @staticmethod
+    def _raise_on_deprecated_tabular_keys(
+        env_file_name: str | None, dotenv_keys: list[str]
+    ) -> None:
         """Fail loudly if retired ``MONEYBIN_DATA__TABULAR__*`` keys are set.
 
         Scans both ``os.environ`` and the active dotenv file (the same
@@ -877,18 +973,12 @@ class MoneyBinSettings(BaseSettings):
             k for k in os.environ if k.upper().startswith(_LEGACY_TABULAR_PREFIX)
         )
 
-        base = get_base_dir()
-        for env_file in (base / f".env.{profile}", base / ".env"):
-            if not env_file.exists():
-                continue
-            for raw_line in env_file.read_text().splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key = line.split("=", 1)[0].strip()
-                if key.upper().startswith(_LEGACY_TABULAR_PREFIX):
-                    offenders.append(f"{env_file.name}:{key}")
-            break  # Match settings_customise_sources: first existing file wins.
+        if env_file_name is not None:
+            offenders.extend(
+                f"{env_file_name}:{key}"
+                for key in dotenv_keys
+                if key.upper().startswith(_LEGACY_TABULAR_PREFIX)
+            )
 
         if offenders:
             raise ValueError(
@@ -919,7 +1009,12 @@ class MoneyBinSettings(BaseSettings):
         # ``os.environ`` and the active ``.env`` file (the same lookup the
         # settings_customise_sources hook uses) to catch operators on either
         # configuration path.
-        self._raise_on_deprecated_tabular_keys(profile=profile)
+        env_file_name, dotenv_keys = self._active_dotenv_keys(profile)
+        self._raise_on_deprecated_tabular_keys(env_file_name, dotenv_keys)
+
+        # Refuse a MONEYBIN_HOME the dotenv can never deliver — see the method
+        # docstring for why that file structurally cannot name its own home.
+        self._raise_on_ineffective_home_key(env_file_name, dotenv_keys)
 
         # Update kwargs with normalized profile name
         kwargs["profile"] = profile

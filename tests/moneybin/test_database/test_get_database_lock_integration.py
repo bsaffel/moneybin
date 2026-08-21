@@ -264,7 +264,7 @@ def test_f10_read_init_failure_rolls_back_conn(
         captured.append(conn)
         return conn
 
-    def boom_attach(conn: object, sql: str) -> None:
+    def boom_attach(conn: object, sql: str, encryption_key: str) -> None:
         raise RuntimeError("attach boom")
 
     monkeypatch.setattr(db_module.duckdb, "connect", capturing_connect)

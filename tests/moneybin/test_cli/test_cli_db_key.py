@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -93,3 +94,72 @@ class TestLoadEncryptionKey:
             with pytest.raises(_SentinelError):
                 with _load_encryption_key():
                     raise _SentinelError("body raised")
+
+
+class TestDbKeyRotateSecrets:
+    """`db key rotate` must not write key material to the durable CLI log.
+
+    Rotation attaches both databases directly rather than through
+    ``_attach_encrypted``, then reports failure with
+    ``logger.error(f"... {e}")``. DuckDB echoes the failing statement back in
+    ``ParserException`` messages, and the file handler has no level filter, so
+    an unscrubbed message persists to ``cli_YYYY-MM-DD.log``.
+    ``SanitizedLogFormatter`` cannot help: it masks SSNs, dollar amounts and
+    8+ *digit* runs, and a 64-hex key is none of those.
+    """
+
+    _OLD_KEY = "8c4b1f70d29e35a6be08d417c5392fda60b7e148a2c93f5d071e6ba4c82d9e17"
+    _NEW_KEY = "1a7e93c05b2d48f6ae310c97d5e824bf0639a1c7e5840b2c96f1a3d70e85b4cf"
+
+    @staticmethod
+    def _leaks(text: str, key: str, run: int = 8) -> bool:
+        return any(key[i : i + run] in text for i in range(len(key) - run + 1))
+
+    @pytest.mark.unit
+    def test_rotation_failure_does_not_log_key_material(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import contextlib
+        import logging
+
+        import duckdb
+
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.write_bytes(b"encrypted-bytes")
+
+        settings = MagicMock()
+        settings.database.path = db_file
+
+        @contextlib.contextmanager
+        def _fake_key() -> Generator[str, None, None]:
+            yield self._OLD_KEY
+
+        def _execute(sql: str, *_a: object, **_k: object) -> object:
+            if "ENCRYPTION_KEY" in sql:
+                # Mirrors DuckDB's LINE 1 excerpt, windowed past the key.
+                raise duckdb.ParserException(
+                    'Parser Error: syntax error at or near "GARBAGE"\n\n'
+                    f"LINE 1: ...{sql[30:]} GARBAGE ;;\n"
+                )
+            return MagicMock()
+
+        conn = MagicMock()
+        conn.execute.side_effect = _execute
+
+        with (
+            patch("moneybin.config.get_settings", return_value=settings),
+            patch("moneybin.secrets.SecretStore", return_value=MagicMock()),
+            patch("moneybin.cli.commands.db._load_encryption_key", _fake_key),
+            patch("secrets.token_hex", return_value=self._NEW_KEY),
+            patch("duckdb.connect", return_value=conn),
+            caplog.at_level(logging.ERROR),
+        ):
+            result = runner.invoke(db_app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 1
+        assert "Key rotation failed" in caplog.text, "expected the failure path to run"
+        assert not self._leaks(caplog.text, self._OLD_KEY), "old key in the CLI log"
+        assert not self._leaks(caplog.text, self._NEW_KEY), "new key in the CLI log"
