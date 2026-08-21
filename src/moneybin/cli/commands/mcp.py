@@ -269,10 +269,11 @@ def mcp_install(
 
     env: dict[str, str] = {}
 
-    # os.getenv used intentionally: get_settings().base_dir cannot distinguish
-    # an explicit MONEYBIN_HOME from the default-derived path; we need to know
-    # whether the user set it so we can pin it in the generated client config
-    # env block.
+    # os.getenv used intentionally: settings expose no resolved-home attribute,
+    # and get_base_dir() cannot distinguish an explicit MONEYBIN_HOME from a
+    # path it derived from the checkout. We need to know whether the user set
+    # it so we can pin it in the generated client config env block. `--home`
+    # writes through to the same variable, so it pins here too.
     moneybin_home = os.getenv("MONEYBIN_HOME")
     repo_root = find_repo_root()
 
@@ -282,7 +283,11 @@ def mcp_install(
 
     if repo_root is not None:
         # Repo checkout (the dev path): anchor uv at the repo root so repo
-        # detection resolves the local .moneybin/ at server-launch time.
+        # detection resolves the checkout's .moneybin/ at server-launch time.
+        # In a linked worktree this is deliberately the worktree — find_repo_root
+        # answers "which code checkout", while get_base_dir() maps a worktree to
+        # the main checkout's data home, so the server runs this worktree's code
+        # against the repository's one database.
         args: list[str] = ["run", "--directory", str(repo_root)]
     else:
         # Installed path: run the PUBLISHED package, pinned. Unpinned would let

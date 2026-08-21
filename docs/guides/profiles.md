@@ -38,12 +38,16 @@ What lives inside a profile:
 
 `<base>` is the MoneyBin home, resolved in this order (first match wins):
 
-1. `MONEYBIN_HOME` env var (explicit override)
+1. `--home <path>` global flag, or the `MONEYBIN_HOME` env var (explicit override — the flag wins when both are given)
 2. `MONEYBIN_ENVIRONMENT=development` → `<repo-root>/.moneybin` inside a MoneyBin checkout; otherwise `<cwd>/.moneybin`
 3. CWD is the MoneyBin repo checkout → `<cwd>/.moneybin`
 4. Default → `~/.moneybin`
 
 So a typical install puts a profile at `~/.moneybin/profiles/<name>/`. See [`database-security.md`](database-security.md) for the full resolution rule and what it means for backups and sync.
+
+A linked git worktree resolves the *main* checkout's home under rules 2 and 3 — a worktree is a second checkout of one repository, not a second install, so it shares that repository's data.
+
+Setting `MONEYBIN_HOME` inside a `.env` file does not work: MoneyBin looks for that file in `<base>`, which it can only know after resolving the home. MoneyBin refuses to start rather than silently using a different directory than the one you wrote down. Use the flag or a real environment variable.
 
 ## Profile lifecycle CLI
 

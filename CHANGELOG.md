@@ -11,6 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`moneybin --home <path>` picks the data directory.** Until now `MONEYBIN_HOME`
+  was the only way to point MoneyBin at a different set of profiles, config and
+  databases, and it appeared in no `--help` output — so the override was easy to
+  own and hard to find. The flag is exported as `MONEYBIN_HOME` before any
+  config loads, which means it reaches subprocesses and composes with
+  `mcp install`: `moneybin --home /srv/finance mcp install` writes a client
+  config pinned to that home. It wins over the environment variable when both
+  are given, and `moneybin --help` now lists both together.
+
 - **Refresh gathers the exchange rates your own data implies (M1K.2).** A new
   `rates` step runs last in the refresh cascade — after gsheet, match,
   transform, categorize and identity — and caches the reference rates needed to
@@ -1141,6 +1150,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **`MONEYBIN_HOME` in a `.env` file no longer fails silently.** That file is
+  looked up inside `<base>` — the very directory the setting would name — so the
+  home is already resolved by the time it is read, and pydantic-settings dropped
+  the key without a word. MoneyBin now refuses to start and names the two routes
+  that work (`--home`, or a real environment variable) rather than quietly using
+  a different database than the one you wrote down. `export KEY=value` form is
+  caught too.
+
 - **A worktree no longer gets its own empty database.** `get_base_dir()` treated
   any directory with a `.git` and a moneybin `pyproject.toml` as its own data
   home, and a linked git worktree satisfies both — so `moneybin` commands run

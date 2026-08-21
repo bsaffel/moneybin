@@ -903,7 +903,60 @@ class MoneyBinSettings(BaseSettings):
             raise ValueError(f"Invalid profile name: {e}") from e
 
     @staticmethod
-    def _raise_on_deprecated_tabular_keys(profile: str) -> None:
+    def _active_dotenv_keys(profile: str) -> tuple[str | None, list[str]]:
+        """The active dotenv's name and its assignment keys, or (None, []).
+
+        Mirrors ``settings_customise_sources``: ``.env.{profile}`` wins over
+        ``.env``, and only the first existing file is ever read. Read once and
+        handed to every guard below — the file is opened on each settings
+        construction, so re-reading it per guard is pure waste.
+
+        A leading ``export`` is stripped: python-dotenv accepts that form, so
+        the loader honours it, and a scan that missed it would wave through the
+        very keys these guards exist to catch.
+        """
+        base = get_base_dir()
+        for env_file in (base / f".env.{profile}", base / ".env"):
+            if not env_file.exists():
+                continue
+            keys: list[str] = []
+            for raw_line in env_file.read_text().splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key = line.split("=", 1)[0].strip()
+                keys.append(key.removeprefix("export ").strip())
+            return env_file.name, keys
+        return None, []
+
+    @staticmethod
+    def _raise_on_ineffective_home_key(
+        env_file_name: str | None, dotenv_keys: list[str]
+    ) -> None:
+        """Fail loudly if MONEYBIN_HOME is assigned in the active dotenv file.
+
+        That assignment can never take effect: the dotenv is looked up *inside*
+        the data directory it would be naming, so the home is already resolved
+        by the time the file is read, and pydantic-settings drops the key under
+        ``extra="ignore"``. Quietly using a different database than the one the
+        operator wrote down is worth refusing to start over, so name the two
+        routes that do work.
+        """
+        if env_file_name is None:
+            return
+        if not any(key.upper() == "MONEYBIN_HOME" for key in dotenv_keys):
+            return
+        raise ValueError(
+            f"MONEYBIN_HOME is set in {env_file_name}, where it has no effect: "
+            "MoneyBin looks for that file inside the data directory it would "
+            "name. Set MONEYBIN_HOME as an environment variable, or pass "
+            "`moneybin --home <path>`."
+        )
+
+    @staticmethod
+    def _raise_on_deprecated_tabular_keys(
+        env_file_name: str | None, dotenv_keys: list[str]
+    ) -> None:
         """Fail loudly if retired ``MONEYBIN_DATA__TABULAR__*`` keys are set.
 
         Scans both ``os.environ`` and the active dotenv file (the same
@@ -920,18 +973,12 @@ class MoneyBinSettings(BaseSettings):
             k for k in os.environ if k.upper().startswith(_LEGACY_TABULAR_PREFIX)
         )
 
-        base = get_base_dir()
-        for env_file in (base / f".env.{profile}", base / ".env"):
-            if not env_file.exists():
-                continue
-            for raw_line in env_file.read_text().splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key = line.split("=", 1)[0].strip()
-                if key.upper().startswith(_LEGACY_TABULAR_PREFIX):
-                    offenders.append(f"{env_file.name}:{key}")
-            break  # Match settings_customise_sources: first existing file wins.
+        if env_file_name is not None:
+            offenders.extend(
+                f"{env_file_name}:{key}"
+                for key in dotenv_keys
+                if key.upper().startswith(_LEGACY_TABULAR_PREFIX)
+            )
 
         if offenders:
             raise ValueError(
@@ -962,7 +1009,12 @@ class MoneyBinSettings(BaseSettings):
         # ``os.environ`` and the active ``.env`` file (the same lookup the
         # settings_customise_sources hook uses) to catch operators on either
         # configuration path.
-        self._raise_on_deprecated_tabular_keys(profile=profile)
+        env_file_name, dotenv_keys = self._active_dotenv_keys(profile)
+        self._raise_on_deprecated_tabular_keys(env_file_name, dotenv_keys)
+
+        # Refuse a MONEYBIN_HOME the dotenv can never deliver — see the method
+        # docstring for why that file structurally cannot name its own home.
+        self._raise_on_ineffective_home_key(env_file_name, dotenv_keys)
 
         # Update kwargs with normalized profile name
         kwargs["profile"] = profile
