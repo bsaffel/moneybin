@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, cast
 
 from pydantic import (
     BaseModel,
@@ -43,6 +43,26 @@ free-text Plaid column in ``NULLIF(TRIM(...), '')`` for that reason, and
 resolver truthy: ``persistent_token`` is a globally-scoped strong ref that
 auto-adopts with no review, so one whitespace token shared by two institutions'
 accounts merges their ledgers silently.
+"""
+
+
+def _removed_transaction_id(value: object) -> object:
+    """A removed transaction arrives as a provider-native record, not an id."""
+    if isinstance(value, dict):
+        return cast(dict[str, object], value).get("transaction_id")
+    return value
+
+
+RemovedTransactionId = Annotated[str, BeforeValidator(_removed_transaction_id)]
+"""One removed transaction's id, read from the provider-native record.
+
+moneybin-sync widened this field from a bare id to a full record while the
+client kept ``list[str]``, so every pull for an institution with removals
+aborted at validation before anything was written — only institutions that
+happened to have no removals still synced. Only the id is needed downstream:
+it goes straight to ``handle_removed_transactions`` as a SQL parameter. A bare
+string still validates, so the client can outlive a server that predates the
+widening.
 """
 
 
@@ -316,7 +336,7 @@ class SyncDataResponse(BaseModel):
     accounts: list[SyncAccount]
     transactions: list[SyncTransaction]
     balances: list[SyncBalance]
-    removed_transactions: list[str]
+    removed_transactions: list[RemovedTransactionId]
     securities: list[SyncSecurity] = Field(default_factory=list)
     investment_transactions: list[SyncInvestmentTransaction] = Field(
         default_factory=list

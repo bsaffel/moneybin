@@ -305,7 +305,7 @@ Begin a link session. The response includes a hosted URL the user opens in a bro
       "available_balance": "1200.00"
     }
   ],
-  "removed_transactions": ["txn_old_001"],
+  "removed_transactions": [{ "transaction_id": "txn_old_001" }],
   "securities": [
     {
       "security_id": "sec_plaid_1",
@@ -414,7 +414,13 @@ Every field after `pending` is optional — a broker predating extended-field ca
 
 #### `removed_transactions[]`
 
-Array of `transaction_id` strings the provider has retracted (reversal, dedup, error correction). The client deletes these rows from `raw.plaid_transactions`.
+Transactions the provider has retracted (reversal, dedup, error correction). The client deletes these rows from `raw.plaid_transactions`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `transaction_id` | string | Provider transaction ID to delete. The only field the client reads; any other field on the record is ignored. |
+
+A bare `transaction_id` string is accepted in place of a record, so a server predating the record shape still validates. A record missing `transaction_id` fails validation for the entire response rather than skipping that element — a retraction the client cannot identify is never silently dropped.
 
 #### `securities[]`
 

@@ -1150,6 +1150,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **Syncing an institution that has removed transactions no longer aborts the
+  whole pull.** `moneybin-sync` widened `removed_transactions` from a bare
+  transaction id to a full provider-native record while the client still
+  declared a list of strings, so response validation failed and every
+  institution with removals synced nothing. Only institutions that happened to
+  have none kept working, which is what made the break easy to miss. The client
+  now reads the id out of the record and still accepts a bare string, so it
+  validates against a server on either side of the change (#412).
+
 - **`MONEYBIN_HOME` in a `.env` file no longer fails silently.** That file is
   looked up inside `<base>` — the very directory the setting would name — so the
   home is already resolved by the time it is read, and pydantic-settings dropped
