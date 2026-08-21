@@ -911,22 +911,22 @@ class MoneyBinSettings(BaseSettings):
         handed to every guard below — the file is opened on each settings
         construction, so re-reading it per guard is pure waste.
 
-        A leading ``export`` is stripped: python-dotenv accepts that form, so
-        the loader honours it, and a scan that missed it would wave through the
-        very keys these guards exist to catch.
+        Parsed with python-dotenv itself, the grammar ``DotEnvSettingsSource``
+        delegates to, so the guards see exactly the keys the loader will define.
+        A hand-rolled line scan diverges in both directions and each direction
+        is a real failure: it reads a quoted value's continuation line as its
+        own binding (refusing startup over a key that is only value text), and
+        it misses spellings dotenv accepts — ``export<TAB>KEY=…`` among them —
+        which lets through the silent misconfiguration these guards exist to
+        catch.
         """
+        from dotenv import dotenv_values
+
         base = get_base_dir()
         for env_file in (base / f".env.{profile}", base / ".env"):
             if not env_file.exists():
                 continue
-            keys: list[str] = []
-            for raw_line in env_file.read_text().splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key = line.split("=", 1)[0].strip()
-                keys.append(key.removeprefix("export ").strip())
-            return env_file.name, keys
+            return env_file.name, list(dotenv_values(env_file, encoding="utf-8"))
         return None, []
 
     @staticmethod
