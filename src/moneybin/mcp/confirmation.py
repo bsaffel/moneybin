@@ -227,6 +227,7 @@ def _confirmation_unavailable(
     binding: ConfirmationBinding,
     *,
     cli_equivalent: str | None,
+    cli_note: str | None = None,
 ) -> UserError:
     """Refuse rather than degrade an elicitation-only operation into a token.
 
@@ -237,11 +238,17 @@ def _confirmation_unavailable(
     that can actually ask a human instead.
     """
     route = cli_equivalent or "the moneybin CLI"
+    hint = f"Run `{route}`, which prompts on the terminal."
+    if cli_note:
+        # That command completes the operation that forced this refusal. When
+        # the caller sent more than that, the rest went down with it, and a
+        # hint that stops here reads as "you are done".
+        hint = f"{hint} {cli_note}"
     return UserError(
         "This operation must be confirmed by a person, and this client cannot "
         "show a confirmation prompt.",
         code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
-        hint=f"Run `{route}`, which prompts on the terminal.",
+        hint=hint,
         details={
             "operation_kind": binding.operation_kind,
             "blast_radius": binding.blast_radius,
@@ -267,6 +274,7 @@ async def grant_confirmation_or_raise(
     confirmation_token: str | None,
     elicitation_only: bool = False,
     cli_equivalent: str | None = None,
+    cli_note: str | None = None,
     broker: ConfirmationBroker = confirmation_broker,
 ) -> ConfirmationGrant:
     """Return a digest grant through elicitation or one consumed opaque token.
@@ -277,6 +285,8 @@ async def grant_confirmation_or_raise(
     and a client that cannot prompt is refused rather than handed one. The
     prompt becomes the only route through. ``cli_equivalent`` names the command
     that refusal points at, since a refusal with no way forward is a dead end.
+    ``cli_note`` adds what that command does not cover — a batch refused whole
+    loses the decisions travelling beside the one that forced the refusal.
     """
     if elicitation_only and confirmation_token is not None:
         # Refuse before consuming: burning the token would also let a caller
@@ -313,7 +323,11 @@ async def grant_confirmation_or_raise(
         raise _confirmation_declined()
 
     if elicitation_only:
-        raise _confirmation_unavailable(binding, cli_equivalent=cli_equivalent)
+        raise _confirmation_unavailable(
+            binding,
+            cli_equivalent=cli_equivalent,
+            cli_note=cli_note,
+        )
 
     token = broker.issue(binding, now=_utcnow())
     raise _confirmation_required(

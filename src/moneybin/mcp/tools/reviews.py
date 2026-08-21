@@ -1157,6 +1157,23 @@ def _preview_identity_decisions(
     return _IdentityPreview(plan=plan, merges=merges, kinds=kinds)
 
 
+def _identity_remainder_note(kinds: tuple[str, ...]) -> str | None:
+    """Name what the CLI merge command will not have finished for this batch.
+
+    The refusal points at `moneybin accounts links set`, which decides one
+    account link. A batch is refused whole, so anything travelling beside the
+    merge was dropped as well and the caller has to send it again — a hint
+    that stops at the merge reads as if the batch were complete.
+    """
+    remainder = [kind for kind in kinds if kind != "account_link"]
+    if not remainder:
+        return None
+    return (
+        "The whole batch was refused and nothing was written, so resubmit the "
+        f"{', '.join(remainder)} decisions here once the merge is confirmed."
+    )
+
+
 def _apply_identity_decisions(
     decisions: list[IdentityDecisionRequest],
     *,
@@ -1245,6 +1262,7 @@ async def identity_links_decide_coarse(
             # keep the fallback: neither re-keys a transaction.
             elicitation_only="account_link" in preview.kinds,
             cli_equivalent="moneybin accounts links set",
+            cli_note=_identity_remainder_note(preview.kinds),
         )
     live = await asyncio.to_thread(
         _apply_identity_decisions,

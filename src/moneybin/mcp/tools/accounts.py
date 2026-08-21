@@ -712,7 +712,7 @@ async def accounts_links_set(
       the ONLY route: unlike other destructive tools this one has no fallback
       token, `confirmation_token` is refused with mutation_invalid_input, and a
       client that cannot prompt is refused with mutation_confirmation_required
-      naming the CLI instead. A token is returned to the caller, so honouring
+      naming the CLI instead. A token is returned to the caller, so honoring
       one would let the caller confirm its own merge. `target_account_id` is also a
       confirming safety check: it must equal the decision's own candidate, so a
       mistyped or stale decision_id cannot merge into the wrong account.
@@ -754,7 +754,7 @@ async def accounts_links_set(
             Invalid with action="reject".
         confirmation_token: Not accepted here. A merge is confirmed only by a
             prompt a person answers, so passing this is refused rather than
-            honoured; it stays on the signature to make that refusal explicit.
+            honored; it stays on the signature to make that refusal explicit.
     """
     if action not in ("accept", "reject"):
         raise UserError(

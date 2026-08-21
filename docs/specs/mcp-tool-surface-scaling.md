@@ -158,7 +158,12 @@ explicit boolean and confirms only an accepted `true`, followed by a fresh
 binding comparison. This avoids FastMCP's deprecated empty-schema elicitation,
 which can render a non-functional form in supported clients. The boolean is
 elicitation response data, not a bare `confirm` tool argument. Degraded clients
-use an opaque confirmation token carrying the same binding. Confirmation
+use an opaque confirmation token carrying the same binding — except where an
+operation forgoes the token entirely. That token is returned to the calling
+agent, so for a mutation whose wrong outcome is both hard to notice and hard to
+undo it confirms nothing about a person: an accepted account link refuses a
+supplied token and refuses a degraded client outright, naming the CLI route
+instead. Confirmation
 prevents the wrong mutation; `system_audit_undo` remains the recovery path when
 intent later changes. Issuance and consumption evict abandoned expired tokens
 from the active registry under the broker lock. A hard-capped tombstone

@@ -1379,6 +1379,12 @@ means a transported-but-undigested field on a primitive every destructive tool
 shares. That blast radius is why this lands as its own change rather than
 half-done on one surface.
 
+An account merge no longer takes that round trip: it is confirmed only by a
+prompt, and a client that cannot prompt is refused rather than issued a token
+(#414). The baseline therefore stays in process for `account_link`, and the
+transport problem above is now merchant- and security-link only. It is still
+the reason the check lands as one change across both surfaces.
+
 **The merge prompt is what makes `identity_links_decide` a medium-tier tool.**
 Its response payload carries record ids, a status, and counts — all `low`. The
 elicitation carries each ledger's first and last transaction dates and the

@@ -2125,6 +2125,50 @@ async def test_identity_mixed_accept_batch_forces_the_whole_batch_to_the_prompt(
     )
 
 
+async def test_identity_mixed_batch_refusal_names_the_decisions_left_to_resubmit() -> (
+    None
+):
+    """A refusal that hides half the work left to do is a dead end.
+
+    The batch is refused whole, so the merchant decision beside the merge is
+    dropped too — but the CLI command the refusal names only completes the
+    account link. A caller following the hint literally would merge and then
+    believe the merchant decision had been applied.
+    """
+    account = _identity_account_setup("mixed-hint")
+    merchant = _identity_merchant_setup("mixed-hint")
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=account["decision_id"],
+            decision="accept",
+            target_id=account["candidate"],
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=merchant["decision_id"],
+            decision="accept",
+            target_id=merchant["merchant_id"],
+        ),
+    ]
+
+    mixed = await identity_links_decide_coarse(decisions=decisions)
+    account_only = await identity_links_decide_coarse(decisions=decisions[:1])
+
+    assert mixed.error is not None
+    assert mixed.error.hint is not None
+    assert "moneybin accounts links set" in mixed.error.hint
+    assert "merchant_link" in mixed.error.hint
+    # An account-only batch has nothing left over, so it must not grow the
+    # sentence -- the note is about the remainder, not decoration.
+    assert account_only.error is not None
+    assert account_only.error.hint is not None
+    assert "merchant_link" not in account_only.error.hint
+    assert _identity_decision_status("merchant_link", merchant["decision_id"]) == (
+        "pending"
+    )
+
+
 async def test_identity_security_persisted_state_mismatch_consumes_token() -> None:
     setup = _identity_security_setup("state-mismatch")
     decisions = [

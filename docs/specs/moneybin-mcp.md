@@ -211,7 +211,7 @@ and confirmation contracts.
   `confirmation_token` with `mutation_invalid_input`, and refuse a client that
   cannot elicit with `mutation_confirmation_required` naming the CLI, rather
   than issuing a token. The fallback token is returned to the *calling agent*,
-  so honouring it would let that agent satisfy the merge confirmation itself —
+  so honoring it would let that agent satisfy the merge confirmation itself —
   and a merge re-keys a whole account's transaction history, the case
   `design-principles.md` places at the top of the confirmation bar. Merchant-
   and security-link accepts keep the token path: neither re-keys a transaction.
