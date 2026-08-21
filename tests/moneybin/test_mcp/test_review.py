@@ -1991,8 +1991,9 @@ async def test_identity_account_merge_rechecks_live_state_after_the_prompt() -> 
     _real_preview = _preview_identity_decisions
 
     # Shift the persisted decision out from under the approved digest at the
-    # one moment it matters: after the batch is planned and prompted, before
-    # apply re-plans it inside the write transaction.
+    # one moment it matters: after the batch is planned — so the binding the
+    # person approves is the pre-drift one — and before apply re-plans it
+    # inside the write transaction.
     def _drift_then_preview(requests: list[IdentityDecisionRequest]) -> Any:
         preview = _real_preview(requests)
         with get_database(read_only=False) as db:
@@ -2072,6 +2073,56 @@ async def test_identity_account_merge_refuses_a_supplied_token() -> None:
     assert refused.error is not None
     assert refused.error.code == error_codes.MUTATION_INVALID_INPUT
     assert _identity_decision_status("account_link", setup["decision_id"]) == "pending"
+
+
+async def test_identity_mixed_accept_batch_forces_the_whole_batch_to_the_prompt() -> (
+    None
+):
+    """One account accept strips the token path from every decision beside it.
+
+    A merchant accept on its own degrades to a token, so a batch carrying both
+    kinds is the boundary where this gate can be drawn wrong: reading "every
+    decision is an account link" instead of "any decision is" would hand the
+    mixed batch a token, and that batch still re-keys a transaction history.
+    The single-kind tests above cannot see that difference.
+    """
+    account = _identity_account_setup("mixed-batch")
+    merchant = _identity_merchant_setup("mixed-batch")
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=account["decision_id"],
+            decision="accept",
+            target_id=account["candidate"],
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=merchant["decision_id"],
+            decision="accept",
+            target_id=merchant["merchant_id"],
+        ),
+    ]
+
+    refused = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token="any-token-at-all",  # noqa: S106  # opaque grant id, not a credential
+    )
+    degraded = await identity_links_decide_coarse(decisions=decisions)
+    with _human_confirms():
+        response = await identity_links_decide_coarse(decisions=decisions)
+
+    assert refused.error is not None
+    assert refused.error.code == error_codes.MUTATION_INVALID_INPUT
+    assert degraded.error is not None
+    assert degraded.error.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+    assert "confirmation_token" not in (degraded.error.details or {})
+    assert response.error is None
+    assert _identity_decision_status("account_link", account["decision_id"]) == (
+        "accepted"
+    )
+    assert _identity_decision_status("merchant_link", merchant["decision_id"]) == (
+        "accepted"
+    )
 
 
 async def test_identity_security_persisted_state_mismatch_consumes_token() -> None:

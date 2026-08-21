@@ -752,8 +752,9 @@ async def accounts_links_set(
         target_account_id: With action="accept", the candidate account_id to
             merge into — must equal the decision's own candidate_account_id.
             Invalid with action="reject".
-        confirmation_token: Opaque payload-bound token returned to clients that
-            cannot elicit. Used only with action="accept".
+        confirmation_token: Not accepted here. A merge is confirmed only by a
+            prompt a person answers, so passing this is refused rather than
+            honoured; it stays on the signature to make that refusal explicit.
     """
     if action not in ("accept", "reject"):
         raise UserError(

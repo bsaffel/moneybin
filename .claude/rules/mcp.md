@@ -235,7 +235,18 @@ and confirm only an accepted `true`, then compare a freshly recomputed binding.
 Do not use FastMCP's deprecated empty-schema elicitation. This elicited boolean
 is not a bare `confirm` tool argument: degraded clients receive an opaque token
 carrying the same binding, and no operation proceeds without exact binding
-verification. Treat approval as an immutable digest grant; verify that grant
+verification.
+
+**Exception — operations that forgo the token entirely.** The fallback token is
+returned to the *calling agent*, so it confirms nothing about a person for an
+operation whose wrong outcome is both hard to notice and hard to undo. Such an
+operation passes `elicitation_only=True` to `grant_confirmation_or_raise`: it
+refuses a supplied `confirmation_token` (without consuming it) and refuses a
+client that cannot prompt, naming the CLI equivalent instead of minting a key to
+its own unconfirmed write. An accepted account link is the current member —
+adding one is a design decision, not a local call-site choice.
+
+Treat approval as an immutable digest grant; verify that grant
 against live state inside the same write transaction, immediately before the
 first mutation. Never verify and then open a separate mutation transaction.
 Compatible same-intent writes may share one conservatively annotated tool;

@@ -1160,20 +1160,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   validates against a server on either side of the change (#412).
 
 - **An account merge can no longer be confirmed by the agent asking for it.**
-  `identity_links_decide` and `accounts_links_set` documented a confirmation
-  before a merge, and one existed — but a caller could take the opaque
-  `confirmation_token` out of the refusal it got on the first call and hand it
-  straight back on the second, merging without the prompt ever reaching a
-  person. One merge collapsing four accounts rewrote 520 transactions, touched
-  198 match decisions and auto-merged 135 duplicate pairs that way. An accepted
-  account link now takes the prompt or nothing: a supplied `confirmation_token`
-  is refused, and a client that cannot prompt is refused and pointed at
-  `moneybin accounts links set` rather than issued a token it could redeem
-  itself. Merchant- and security-link accepts are unchanged — neither re-keys a
-  transaction.
-
-  This does not close the case where an MCP client answers its own elicitation
-  prompt; that remains the caller's contract to honour (#414).
+  `identity_links_decide` and `accounts_links_set` gated a merge behind a
+  confirmation, but a caller could hand the opaque `confirmation_token` from the
+  first call's refusal straight back on the second and merge without the prompt
+  reaching a person. An accepted account link now takes the prompt or nothing —
+  a supplied token is refused, and a client that cannot prompt is pointed at
+  `moneybin accounts links set`; merchant- and security-link accepts keep the
+  token path, since neither re-keys a transaction (#414).
 
 - **`MONEYBIN_HOME` in a `.env` file no longer fails silently.** That file is
   looked up inside `<base>` — the very directory the setting would name — so the
