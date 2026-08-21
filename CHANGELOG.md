@@ -1141,6 +1141,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **Syncing an institution that has removed transactions no longer aborts the
+  whole pull.** `moneybin-sync` widened `removed_transactions` from a bare
+  transaction id to a full provider-native record while the client still
+  declared a list of strings, so response validation failed and every
+  institution with removals synced nothing. Only institutions that happened to
+  have none kept working, which is what made the break easy to miss. The client
+  now reads the id out of the record and still accepts a bare string, so it
+  validates against a server on either side of the change (#412).
 - **A synthetic account's opening balance now means the same thing on both
   import paths, so its reported balance is no longer short by its first day.**
   The generator's OFX writer stamped the opening balance on the first

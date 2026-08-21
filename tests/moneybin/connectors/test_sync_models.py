@@ -221,3 +221,27 @@ def test_removed_transactions_accepts_provider_native_records() -> None:
     parsed = SyncDataResponse.model_validate(payload)
 
     assert parsed.removed_transactions == ["txn_old"]
+
+
+def test_removed_transactions_missing_transaction_id_rejects_the_batch() -> None:
+    """A record with no ``transaction_id`` fails the response, never a silent drop.
+
+    The field is ``str``, not ``str | None``, so the validator's ``None`` fails.
+    Rejecting the whole response matches how every other list on this model
+    already treats a malformed element; pinning it keeps that intentional
+    rather than incidental.
+    """
+    payload = {
+        "accounts": [],
+        "transactions": [],
+        "balances": [],
+        "removed_transactions": [{"account_id": "acc_001"}],
+        "metadata": {
+            "job_id": "job_abc",
+            "synced_at": "2026-04-08T12:00:00Z",
+            "institutions": [],
+        },
+    }
+
+    with pytest.raises(ValidationError):
+        SyncDataResponse.model_validate(payload)
