@@ -40,13 +40,19 @@ class TestGetBaseDir:
         monkeypatch.delenv("MONEYBIN_ENVIRONMENT", raising=False)
         assert get_base_dir() == (Path.home() / "custom-moneybin").resolve()
 
-    def test_development_env_uses_dot_moneybin(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_development_env_outside_a_checkout_uses_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Priority 2: MONEYBIN_ENVIRONMENT=development uses <cwd>/.moneybin."""
+        """Priority 2 with no checkout above CWD falls back to <cwd>/.moneybin.
+
+        Must chdir somewhere that is provably not a checkout: reading the
+        ambient CWD conflates this branch with the repo-root one below, and
+        they only agree when the suite happens to run from a checkout root.
+        """
         monkeypatch.delenv("MONEYBIN_HOME", raising=False)
         monkeypatch.setenv("MONEYBIN_ENVIRONMENT", "development")
-        assert get_base_dir() == (Path.cwd() / ".moneybin").resolve()
+        monkeypatch.chdir(tmp_path)
+        assert get_base_dir() == (tmp_path / ".moneybin").resolve()
 
     def test_development_env_uses_repo_root_from_subdirectory(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -100,6 +106,58 @@ class TestGetBaseDir:
         """Priority 4: Default is ~/.moneybin/."""
         monkeypatch.delenv("MONEYBIN_HOME", raising=False)
         monkeypatch.delenv("MONEYBIN_ENVIRONMENT", raising=False)
+        monkeypatch.chdir(tmp_path)
+        assert get_base_dir() == (Path.home() / ".moneybin").resolve()
+
+    def test_worktree_uses_the_main_checkouts_data_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Priority 3 in a worktree resolves the main checkout, not the worktree."""
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+        monkeypatch.delenv("MONEYBIN_ENVIRONMENT", raising=False)
+        main, worktree = _make_worktree(tmp_path)
+        monkeypatch.chdir(worktree)
+        assert get_base_dir() == (main / ".moneybin").resolve()
+
+    def test_development_env_in_a_worktree_uses_the_main_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Priority 2 has its own ancestor walk and needs the same mapping.
+
+        Fixing only priority 3 would leave every development-mode invocation —
+        which is how the repo is normally driven — still on the empty home.
+        """
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+        monkeypatch.setenv("MONEYBIN_ENVIRONMENT", "development")
+        main, worktree = _make_worktree(tmp_path)
+        subdirectory = worktree / "src" / "moneybin"
+        subdirectory.mkdir(parents=True)
+        monkeypatch.chdir(subdirectory)
+        assert get_base_dir() == (main / ".moneybin").resolve()
+
+    def test_moneybin_home_still_wins_inside_a_worktree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit MONEYBIN_HOME outranks the worktree mapping."""
+        _, worktree = _make_worktree(tmp_path)
+        override = tmp_path / "explicit"
+        monkeypatch.setenv("MONEYBIN_HOME", str(override))
+        monkeypatch.delenv("MONEYBIN_ENVIRONMENT", raising=False)
+        monkeypatch.chdir(worktree)
+        assert get_base_dir() == override.resolve()
+
+    def test_git_file_that_is_not_a_worktree_falls_through_to_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The production shape: no checkout anywhere means ~/.moneybin.
+
+        Guards the case this change newly touches — a `.git` file that is not a
+        worktree pointer must not invent a root.
+        """
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+        monkeypatch.delenv("MONEYBIN_ENVIRONMENT", raising=False)
+        (tmp_path / ".git").write_text("not a gitdir pointer\n")
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "other"\n')
         monkeypatch.chdir(tmp_path)
         assert get_base_dir() == (Path.home() / ".moneybin").resolve()
 

@@ -121,6 +121,9 @@ def get_base_dir() -> Path:
         3. Repo checkout detection (.git + pyproject.toml name=moneybin): <cwd>/.moneybin
         4. Default: ~/.moneybin/
 
+    Branches 2 and 3 resolve a linked git worktree to its main checkout, so
+    every worktree of one repository shares that repository's single data home.
+
     Returns:
         Path: Absolute base directory for the application.
     """
@@ -133,10 +136,11 @@ def get_base_dir() -> Path:
     environment = os.getenv("MONEYBIN_ENVIRONMENT")
     if environment == "development":
         repo_root = _find_moneybin_repo_ancestor(Path.cwd())
-        return ((repo_root or Path.cwd()) / ".moneybin").resolve()
+        base = canonical_checkout_root(repo_root) if repo_root else Path.cwd()
+        return (base / ".moneybin").resolve()
 
     if _is_moneybin_repo(Path.cwd()):
-        return (Path.cwd() / ".moneybin").resolve()
+        return (canonical_checkout_root(Path.cwd()) / ".moneybin").resolve()
 
     return (Path.home() / ".moneybin").resolve()
 
