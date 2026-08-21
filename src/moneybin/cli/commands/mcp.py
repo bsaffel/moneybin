@@ -27,7 +27,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import _flags  # pyright: ignore[reportPrivateUsage]
-from moneybin.config import find_repo_root, get_base_dir
+from moneybin.config import canonical_checkout_root, find_repo_root, get_base_dir
 from moneybin.protocol.envelope import build_envelope
 from moneybin.utils.user_config import get_default_profile
 
@@ -140,6 +140,7 @@ def mcp_config_path(
     `$(...)` command substitution that captures stdout.
     """
     from moneybin.config import get_current_profile
+    from moneybin.utils.user_config import get_default_profile
 
     if client not in _SUPPORTED_CLIENTS:
         supported = ", ".join(_SUPPORTED_CLIENTS)
@@ -156,11 +157,17 @@ def mcp_config_path(
         try:
             resolved_profile = get_current_profile(auto_resolve=False)
         except RuntimeError as e:
-            logger.error(
-                "❌ No active profile and --profile not supplied. "
-                "Run `moneybin profile create <name>` or pass `--profile <name>`."
-            )
-            raise typer.Exit(1) from e
+            # Nothing sets the in-process profile unless one is named explicitly,
+            # so fall back to the persisted active profile — that is what
+            # `make claude-mcp` with no PROFILE= means by "the active profile".
+            # Reading it is non-interactive, unlike the wizard this path skips.
+            resolved_profile = get_default_profile() or ""
+            if not resolved_profile:
+                logger.error(
+                    "❌ No active profile and --profile not supplied. "
+                    "Run `moneybin profile create <name>` or pass `--profile <name>`."
+                )
+                raise typer.Exit(1) from e
     else:
         resolved_profile = ""  # unused for non-profile-scoped clients
 
@@ -262,10 +269,11 @@ def mcp_install(
 
     env: dict[str, str] = {}
 
-    # os.getenv used intentionally: get_settings().base_dir cannot distinguish
-    # an explicit MONEYBIN_HOME from the default-derived path; we need to know
-    # whether the user set it so we can pin it in the generated client config
-    # env block.
+    # os.getenv used intentionally: settings expose no resolved-home attribute,
+    # and get_base_dir() cannot distinguish an explicit MONEYBIN_HOME from a
+    # path it derived from the checkout. We need to know whether the user set
+    # it so we can pin it in the generated client config env block. `--home`
+    # writes through to the same variable, so it pins here too.
     moneybin_home = os.getenv("MONEYBIN_HOME")
     repo_root = find_repo_root()
 
@@ -275,8 +283,23 @@ def mcp_install(
 
     if repo_root is not None:
         # Repo checkout (the dev path): anchor uv at the repo root so repo
-        # detection resolves the local .moneybin/ at server-launch time.
-        args: list[str] = ["run", "--directory", str(repo_root)]
+        # detection resolves the checkout's .moneybin/ at server-launch time.
+        #
+        # A linked worktree anchors at its MAIN checkout, not itself. The
+        # destination file already resolves that way (via get_base_dir), so a
+        # worktree install writes the *shared* per-profile config; anchoring at
+        # the worktree would leave `uv run --directory <pruned worktree>` in it
+        # and break the main checkout's launch with nothing naming the cause.
+        # An installed client config has to outlive the worktree it was
+        # generated from.
+        canonical_root = canonical_checkout_root(repo_root)
+        if canonical_root != repo_root:
+            logger.info(
+                f"ℹ️  Installing from a linked worktree. Anchoring the config at "
+                f"the main checkout ({canonical_root}) so it stays valid after "
+                f"this worktree is removed."
+            )
+        args: list[str] = ["run", "--directory", str(canonical_root)]
     else:
         # Installed path: run the PUBLISHED package, pinned. Unpinned would let
         # a new release auto-install on the client's next restart and migrate
@@ -349,7 +372,9 @@ def _client_install_path(client: str, profile: str) -> Path | None:
     Claude Code is the only client with per-launch MCP override support, so we
     keep its config in a per-profile file (`<base>/profiles/<profile>/...`) and
     leave it un-auto-loaded; `make claude-mcp` opts in via
-    `claude --strict-mcp-config --mcp-config <path>`. The other clients all
+    `claude --mcp-config <path>`. That placement is the whole opt-in, so the
+    launcher does not need `--strict-mcp-config` and must not use it — it would
+    drop the user's other MCP servers for the session. The other clients all
     auto-load their canonical config — see docs/guides/mcp-clients.md for the
     concurrency model. VS Code uses a workspace-local `.vscode/mcp.json`
     resolved from the current repo root; returns None when not in a repo.
@@ -544,9 +569,9 @@ def _print_claude_code_launch_hint(config_path: Path) -> None:
     import shlex
 
     typer.echo("", err=True)
-    typer.echo("Launch Claude Code with this MCP server only:", err=True)
+    typer.echo("Launch Claude Code with the MoneyBin MCP server attached:", err=True)
     typer.echo(
-        f"  claude --strict-mcp-config --mcp-config {shlex.quote(str(config_path))}",
+        f"  claude --mcp-config {shlex.quote(str(config_path))}",
         err=True,
     )
     typer.echo("", err=True)

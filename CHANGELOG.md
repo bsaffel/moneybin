@@ -11,6 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`moneybin --home <path>` picks the data directory.** Until now `MONEYBIN_HOME`
+  was the only way to point MoneyBin at a different set of profiles, config and
+  databases, and it appeared in no `--help` output — so the override was easy to
+  own and hard to find. The flag is exported as `MONEYBIN_HOME` before any
+  config loads, which means it reaches subprocesses and composes with
+  `mcp install`: `moneybin --home /srv/finance mcp install` writes a client
+  config pinned to that home. It wins over the environment variable when both
+  are given, and `moneybin --help` now lists both together.
+
 - **Refresh gathers the exchange rates your own data implies (M1K.2).** A new
   `rates` step runs last in the refresh cascade — after gsheet, match,
   transform, categorize and identity — and caches the reference rates needed to
@@ -1141,6 +1150,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **`MONEYBIN_HOME` in a `.env` file no longer fails silently.** That file is
+  looked up inside `<base>` — the very directory the setting would name — so the
+  home is already resolved by the time it is read, and pydantic-settings dropped
+  the key without a word. MoneyBin now refuses to start and names the two routes
+  that work (`--home`, or a real environment variable) rather than quietly using
+  a different database than the one you wrote down. `export KEY=value` form is
+  caught too.
+
+- **A worktree no longer gets its own empty database.** `get_base_dir()` treated
+  any directory with a `.git` and a moneybin `pyproject.toml` as its own data
+  home, and a linked git worktree satisfies both — so `moneybin` commands run
+  from one silently read an empty database and reported zeros, indistinguishable
+  from a clean result. A worktree now resolves the main checkout's `.moneybin`.
+  An explicit `MONEYBIN_HOME` still outranks it, a submodule still resolves to
+  itself, and outside a checkout nothing changes: `~/.moneybin` as before.
+
+- **`sqlmesh` no longer scatters profile state to the repo root.** The startup
+  anchor set `MONEYBIN_HOME` to `<repo-root>` where every other branch of
+  `get_base_dir()` returns `<repo-root>/.moneybin`, so a bare `sqlmesh`
+  invocation wrote profiles to `<repo-root>/profiles/` — the root-level twin of
+  the `src/moneybin/profiles/` scatter already recorded in `.gitignore`. It now
+  anchors at the data dir, and resolves a linked worktree to the main checkout
+  so it cannot re-break the fix above through a second channel. `/profiles/` is
+  gitignored for the residue.
+
+- **`make claude-mcp` no longer switches off your other MCP servers.** The
+  launcher passed `--strict-mcp-config`, which tells Claude Code to ignore
+  every other configured MCP server for that session — so opting in to
+  MoneyBin silently cost you Linear, Playwright, and any project `.mcp.json`
+  for as long as the session lived. It now passes `--mcp-config` alone.
+  Nothing about the opt-in changes: MoneyBin's config still lives in the
+  profile directory rather than Claude Code's own config sources, so a plain
+  `claude` in the repo still doesn't load MoneyBin and still doesn't take the
+  database lock. A test now asserts the launcher script and the launch hint
+  `mcp install --print` prints carry the same flags, so the two hand-maintained
+  copies of that command line can't drift apart again.
+
+- **`make claude-mcp` with no `PROFILE=` now uses the active profile, as
+  documented.** `mcp config path --client claude-code` read only the profile
+  set in-process, which nothing sets on that path unless `--profile` or
+  `MONEYBIN_PROFILE` names one — so the bare form always failed with "No
+  active profile and --profile not supplied", even with a profile recorded in
+  `<base>/config.yaml`. It now falls back to that recorded profile, matching
+  what `profile show` and `profile switch` already do. The error still fires,
+  non-interactively, when no profile is active anywhere.
+
 - **A synthetic account's opening balance now means the same thing on both
   import paths, so its reported balance is no longer short by its first day.**
   The generator's OFX writer stamped the opening balance on the first

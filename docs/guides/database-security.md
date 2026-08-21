@@ -14,8 +14,8 @@ If you only read one other doc on this topic, read the [Threat Model](threat-mod
 - **Per-profile keys.** Each profile has its own encryption key, stored under its own keychain service name (`moneybin-<profile>`). Switching profiles re-attaches the active database with a different key — there is no global "MoneyBin key".
 - **DuckDB temp / spill files.** Automatically encrypted with the same key whenever DuckDB writes them. You cannot accidentally leak a spill file in plaintext.
 - **File location.** `<base>/profiles/<profile>/moneybin.duckdb`. `<base>` resolves in this order:
-  1. `MONEYBIN_HOME` env var (explicit override)
-  2. In development mode, `<repo-root>/.moneybin` inside a MoneyBin checkout or `<cwd>/.moneybin` outside one; otherwise `<cwd>/.moneybin` when the CWD is the MoneyBin repo checkout
+  1. `--home <path>` global flag, or the `MONEYBIN_HOME` env var (explicit override — the flag wins when both are given)
+  2. In development mode, `<repo-root>/.moneybin` inside a MoneyBin checkout or `<cwd>/.moneybin` outside one; otherwise `<cwd>/.moneybin` when the CWD is the MoneyBin repo checkout — a linked git worktree resolves the main checkout's home
   3. `~/.moneybin/` (the normal user install)
 
   So a typical install puts the database at `~/.moneybin/profiles/default/moneybin.duckdb`.

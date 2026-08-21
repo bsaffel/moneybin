@@ -2,9 +2,10 @@
 # Launch Claude Code with the MoneyBin MCP server for a single session.
 #
 # Resolves the per-profile claude-code-mcp.json path, verifies prerequisites,
-# then execs `claude --strict-mcp-config --mcp-config <path>` so the user's
-# shell becomes the controlling process of the TUI. This must run from a
-# real shell (not as a Make recipe) so claude can grab the TTY directly.
+# then execs `claude --mcp-config <path>` so the user's shell becomes the
+# controlling process of the TUI. This must run from a real shell (not as a
+# Make recipe) so claude can grab the TTY directly. No --strict-mcp-config:
+# MoneyBin attaches alongside your other MCP servers, it does not replace them.
 #
 # Usage:
 #   scripts/claude-mcp.sh                  # uses active MoneyBin profile
@@ -57,4 +58,4 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
 fi
 
 echo "🚀 Launching Claude Code with MoneyBin MCP ($config_path)"
-exec claude --strict-mcp-config --mcp-config "$config_path"
+exec claude --mcp-config "$config_path"
