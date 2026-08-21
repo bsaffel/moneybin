@@ -64,6 +64,14 @@ app = typer.Typer(
     add_completion=True,
     rich_markup_mode="rich",
     no_args_is_help=True,
+    # Pinned, not merely inherited: frames on the database-open path hold the
+    # plaintext encryption key and profile passphrases as locals, and a rich
+    # traceback is not a log record, so SanitizedLogFormatter cannot redact it.
+    # Typer defaults this to False today, but the dependency floor is a range
+    # — state it here so the guarantee does not rest on a dependency default.
+    # Sub-apps render through this root app's handler, so setting it once here
+    # covers every command group.
+    pretty_exceptions_show_locals=False,
 )
 
 

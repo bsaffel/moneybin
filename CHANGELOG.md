@@ -1882,6 +1882,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   update.
 
 ### Security
+- **CLI tracebacks no longer render local variables, and database attach
+  errors are sanitized.** DuckDB cannot parameterize `ENCRYPTION_KEY`, so the
+  database key is written inline into the `ATTACH` statement — which puts it in
+  frame locals, and in some failure modes into the error text DuckDB hands
+  back. Neither is a log record, so the log sanitizer never applied to either.
+  The root CLI app now pins locals off instead of inheriting the dependency's
+  default, and attach failures are stripped of key material before they
+  surface, keeping their exception type and lock-contention classification
+  intact.
 - **A rejected currency code no longer reaches the durable CLI log (#393).**
   `moneybin fx` and `moneybin investments prices set` / `delete` take the
   currency as free text, and both services interpolated whatever was typed into
