@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -84,36 +84,98 @@ def refresh_account_link_pending_gauge(db: Database) -> None:
 
 
 def fetch_display_name(db: Database, account_id: str) -> str:
-    """Return a core display name, falling back to an unrefreshed raw account.
+    """Return one account's display name, or ``""`` when nothing names it.
 
-    Shared by the resolver's candidate decode and the account-link review queue.
-    Guards ``duckdb.CatalogException`` so callers work before the core layer is
-    materialized (e.g. during initial import before a SQLMesh run).
+    Convenience wrapper over :func:`fetch_display_names`, which holds the
+    implementation. Kept as a distinct entry point because most callers hold one
+    id and a dict result would only be unpacked again.
     """
+    return fetch_display_names(db, [account_id]).get(account_id, "")
+
+
+def fetch_core_display_names(
+    db: Database, account_ids: Iterable[str]
+) -> dict[str, str]:
+    """Display names from ``core.dim_accounts`` only — the constructed ones.
+
+    Split out from :func:`fetch_display_names` because only this half is safe to
+    *persist*. ``dim_accounts.display_name`` is built from institution + subtype
+    + masked last four, which is why the taxonomy classes it ``USER_NOTE``; the
+    raw fallback reads ``raw.tabular_accounts.account_name``, a file-supplied
+    label classed ``ACCOUNT_IDENTIFIER`` (CRITICAL) because it can hold a bare
+    account number. Storing that under a MEDIUM column would launder the class,
+    and masking cannot close the gap — a 7-digit number is under the digit run
+    the content net looks for, and a separator-formatted one has no run at all.
+
+    So: display it live if you must, never freeze it.
+    """
+    ids = sorted({account_id for account_id in account_ids if account_id})
+    if not ids:
+        return {}
+    placeholders = ", ".join("?" * len(ids))
     try:
-        row = db.execute(
-            f"SELECT display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant + parameterized value
-            "WHERE account_id = ? LIMIT 1",
-            [account_id],
-        ).fetchone()
+        rows = db.execute(
+            f"SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant + parameterized values
+            f"WHERE account_id IN ({placeholders})",
+            ids,
+        ).fetchall()
     except duckdb.CatalogException:
-        row = None
-    if row and row[0] is not None:
-        return str(row[0])
+        return {}
+    return {str(r[0]): str(r[1]) for r in rows if r[1] is not None}
+
+
+def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, str]:
+    """Resolve display names for many accounts: ``core`` first, then unrefreshed raw.
+
+    One implementation, deliberately. Two readers of "what is this account
+    called" is how the review queue named an imported account that the decision
+    log rendered as a bare id — the queue carried the raw fallback and the log
+    queried ``core`` alone. Batched because the decision log asks about every
+    account it has ever seen, which a per-id lookup turns into an unbounded N+1
+    on a read an agent runs just to browse.
+
+    Both queries guard ``CatalogException`` so callers work before the core
+    layer is materialized (a profile has decisions before its first SQLMesh
+    run). Ids that resolve to nothing are absent from the result rather than
+    mapped to ``""``, so a caller can tell an unnamed account from one it never
+    asked about.
+    """
+    names = fetch_core_display_names(db, account_ids)
+    ids = sorted({account_id for account_id in account_ids if account_id})
+    missing = [account_id for account_id in ids if account_id not in names]
+    if not missing:
+        return names
+    placeholders = ", ".join("?" * len(missing))
     try:
-        raw_row = db.execute(
-            f"SELECT raw.account_name FROM {TABULAR_ACCOUNTS.full_name} AS raw "  # noqa: S608  # TableRef constants + parameterized account id
-            f"JOIN {ACCOUNT_LINKS.full_name} AS link "
-            "ON link.status = 'accepted' AND link.ref_kind = 'source_native' "
-            "AND link.source_type = raw.source_type "
-            "AND link.source_origin = raw.source_origin "
-            "AND link.ref_value = raw.account_id "
-            "WHERE link.account_id = ? ORDER BY raw.extracted_at DESC LIMIT 1",
-            [account_id],
-        ).fetchone()
+        # ROW_NUMBER rather than ARG_MAX: it reproduces the single-id query's
+        # "newest row wins, then null-check it" exactly, including when
+        # extracted_at is NULL — ARG_MAX would skip such a row and silently
+        # answer from an older import instead.
+        raw_rows = db.execute(
+            f"""
+            SELECT account_id, account_name FROM (
+                SELECT
+                    link.account_id AS account_id,
+                    raw.account_name AS account_name,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY link.account_id
+                        ORDER BY raw.extracted_at DESC
+                    ) AS rn
+                FROM {TABULAR_ACCOUNTS.full_name} AS raw
+                JOIN {ACCOUNT_LINKS.full_name} AS link
+                  ON link.status = 'accepted' AND link.ref_kind = 'source_native'
+                 AND link.source_type = raw.source_type
+                 AND link.source_origin = raw.source_origin
+                 AND link.ref_value = raw.account_id
+                WHERE link.account_id IN ({placeholders})
+            ) WHERE rn = 1
+            """,  # noqa: S608  # TableRef constants + parameterized values
+            missing,
+        ).fetchall()
     except duckdb.CatalogException:
-        return ""
-    return str(raw_row[0]) if raw_row and raw_row[0] is not None else ""
+        return names
+    names.update({str(r[0]): str(r[1]) for r in raw_rows if r[1] is not None})
+    return names
 
 
 def _institution_key(institution: str | None) -> str | None:

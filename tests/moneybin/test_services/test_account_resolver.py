@@ -14,6 +14,7 @@ from moneybin.services.account_resolver import (
     _FALLBACK_CANDIDATE_CAP,  # pyright: ignore[reportPrivateUsage]
     AccountResolver,
     fetch_display_name,
+    fetch_display_names,
 )
 from tests.moneybin.db_helpers import create_core_tables
 
@@ -536,6 +537,23 @@ def test_fetch_display_name_joins_unmaterialized_raw_pdf_account(
     _seed_raw_pdf_account(db)
 
     assert fetch_display_name(db, "acct_pending_pdf") == "Prior PDF account"
+
+
+def test_fetch_display_names_batches_without_losing_the_raw_fallback(
+    db: Database,
+) -> None:
+    """The batched resolver answers exactly as the single-id one, raw included.
+
+    The one-at-a-time lookup falls back to ``raw.tabular_accounts`` for accounts
+    that have not reached ``core`` yet. A batched reader that queried only
+    ``core`` was a second, weaker answer to the same question, so the review
+    queue named an imported account that the decision log rendered as an id.
+    """
+    _seed_raw_pdf_account(db)
+
+    batched = fetch_display_names(db, ["acct_pending_pdf", "acct_unknown"])
+
+    assert batched == {"acct_pending_pdf": fetch_display_name(db, "acct_pending_pdf")}
 
 
 def test_no_candidate_mints_standalone(db: Database) -> None:

@@ -364,6 +364,11 @@ class LinkHistoryRow:
     decision_id: Annotated[str, DataClass.RECORD_ID]
     provisional_account_id: Annotated[str, DataClass.RECORD_ID]
     candidate_account_id: Annotated[str, DataClass.RECORD_ID]
+    # USER_NOTE (MEDIUM) — see LinkCandidateRow.candidate_display_name. A
+    # history row that carried only ids made the record of an irreversible
+    # merge unreadable to the person who approved it.
+    provisional_display_name: Annotated[str, DataClass.USER_NOTE]
+    candidate_display_name: Annotated[str, DataClass.USER_NOTE]
     status: Annotated[str, DataClass.TXN_TYPE]
     decided_by: Annotated[str, DataClass.TXN_TYPE]
     decided_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
@@ -376,6 +381,10 @@ class LinkHistoryRow:
             decision_id=r["decision_id"],
             provisional_account_id=r["provisional_account_id"],
             candidate_account_id=r["candidate_account_id"],
+            # .get, not [] — a caller holding rows from somewhere other than
+            # AccountLinksService.history() still builds a valid row.
+            provisional_display_name=r.get("provisional_display_name", ""),
+            candidate_display_name=r.get("candidate_display_name", ""),
             status=r["status"],
             decided_by=r["decided_by"],
             decided_at=(

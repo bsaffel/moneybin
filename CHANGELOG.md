@@ -1141,6 +1141,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **Account-merge prompts and the decision log now name the accounts instead of
+  showing their ids.** The confirm prompt derived each side's label from what
+  made the two *differ*, discarding a shared display name outright — so the case
+  the institution + last-four signal fires on, two accounts that look alike, was
+  exactly the case that asked "merge the account (a1b2c3d4e5f6) into the account
+  (f7e8d9c0b1a2)?". Each side now leads with its name, and the last four is shown
+  as evidence in its own right: it is why the proposal exists when both sides
+  agree, and an argument against the merge when they differ. Where MoneyBin
+  genuinely holds nothing to tell two accounts apart, the prompt says so rather
+  than rendering two identical descriptions.
+
+  `accounts links history` was worse: accepting a merge re-points every accepted
+  link off the provisional account, so the next transform removed it from the
+  only tables that could name it — the record of a merge that *succeeded* was
+  the one record that could not say what it merged. Both names are now frozen
+  onto the decision when it is made (migration V051). Existing rows are not
+  backfilled; an already-accepted merge has no surviving name to recover.
 - **A synthetic account's opening balance now means the same thing on both
   import paths, so its reported balance is no longer short by its first day.**
   The generator's OFX writer stamped the opening balance on the first

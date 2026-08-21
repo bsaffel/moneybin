@@ -266,6 +266,50 @@ class TestLinksPending:
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.pending")
     @patch("moneybin.services.account_links_service.AccountLinksService.count_pending")
+    def test_pending_leads_each_candidate_with_its_name_not_its_id(
+        self,
+        mock_count: MagicMock,
+        mock_pending: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """This table is where a reviewer decides which proposal to open.
+
+        Two truncated hashes led each row and the name trailed four columns
+        later, so the scan that picks a decision to act on was a scan of ids.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_pending.return_value = [_make_pending_group()]
+        mock_count.return_value = 1
+
+        result = runner.invoke(app, ["pending"])
+
+        assert result.exit_code == 0
+        row = next(ln for ln in result.output.splitlines() if "CAND001" in ln)
+        assert row.index("Candidate Account") < row.index("CAND001"), row
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.pending")
+    @patch("moneybin.services.account_links_service.AccountLinksService.count_pending")
+    def test_pending_leads_each_group_with_the_provisional_name_not_its_id(
+        self,
+        mock_count: MagicMock,
+        mock_pending: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """The group header names the account whose history is about to move."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_pending.return_value = [_make_pending_group()]
+        mock_count.return_value = 1
+
+        result = runner.invoke(app, ["pending"])
+
+        assert result.exit_code == 0
+        header = next(ln for ln in result.output.splitlines() if "PROV1" in ln)
+        assert header.index("Provisional Account") < header.index("PROV1"), header
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.pending")
+    @patch("moneybin.services.account_links_service.AccountLinksService.count_pending")
     def test_pending_states_the_evidence_and_the_magnitude(
         self,
         mock_count: MagicMock,
@@ -1130,6 +1174,76 @@ class TestLinksRun:
 
 class TestLinksHistory:
     """Tests for `accounts links history`."""
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.history")
+    def test_history_names_the_accounts_rather_than_only_their_ids(
+        self, mock_history: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """Reading back what a merge did should not require an id lookup.
+
+        The table rendered `Provisional` and `Candidate` as two truncated
+        hashes, so the record of an irreversible decision was unreadable to the
+        person who made it.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_history.return_value = [
+            {
+                "decision_id": "dh001",
+                "provisional_account_id": "PROV_H",
+                "candidate_account_id": "CAND_H",
+                "provisional_display_name": "Provisional One",
+                "candidate_display_name": "Candidate Alpha",
+                "status": "accepted",
+                "decided_by": "user",
+                "decided_at": "2025-06-01T10:00:00",
+                "confidence_score": 0.85,
+                "match_signals": {"signal": "name"},
+            }
+        ]
+
+        result = runner.invoke(app, ["history"])
+
+        assert result.exit_code == 0
+        assert "Provisional One" in result.output
+        assert "Candidate Alpha" in result.output
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.history")
+    def test_history_columns_stay_aligned_for_real_display_names(
+        self, mock_history: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """Two resolved names plus an arrow must still fit the Merged column.
+
+        ``dim_accounts`` builds a display name as institution + subtype + the
+        masked last four, so a merge of two of them runs past a column sized for
+        one. Overflowing pushes every later column out of line on the rows that
+        have names at all — leaving the table aligned only where it fell back
+        to ids.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_history.return_value = [
+            {
+                "decision_id": "dh002",
+                "provisional_account_id": "PROV_W",
+                "candidate_account_id": "CAND_W",
+                "provisional_display_name": "Example Bank checking \u20260000",
+                "candidate_display_name": "Example Bank savings \u20261111",
+                "status": "accepted",
+                "decided_by": "user",
+                "decided_at": "2025-06-01T10:00:00",
+                "confidence_score": 0.85,
+                "match_signals": {"signal": "name"},
+            }
+        ]
+
+        result = runner.invoke(app, ["history"])
+
+        assert result.exit_code == 0
+        lines = result.output.splitlines()
+        header = next(line for line in lines if "Merged" in line)
+        row = next(line for line in lines if "Example Bank checking" in line)
+        assert row.index("accepted") == header.index("Status")
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.history")

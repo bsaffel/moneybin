@@ -130,6 +130,11 @@ class AccountLedgerFacts:
     transactions: int = 0
     first_date: date | None = None
     last_date: date | None = None
+    #: Masked-form last four, carried as evidence rather than as a label. It
+    #: cannot tell the two sides apart — the institution+last-four signal fires
+    #: because they agree — but agreement is why the proposal exists and
+    #: disagreement is evidence against it, and the prompt showed neither.
+    last_four: str | None = None
 
 
 @dataclass(frozen=True)
@@ -166,17 +171,28 @@ def _source_label(facts: AccountLedgerFacts) -> str | None:
     return "+".join(labels) or None
 
 
-def _side_label(side: AccountLedgerFacts, other: AccountLedgerFacts) -> str:
-    """Name one side of the merge by the first thing that tells it from the other.
+def _account_label(side: AccountLedgerFacts) -> str:
+    """Name one account for a human, never as a bare id.
 
-    Falls through to a bare "the account" rather than reaching for the last
-    four: the ids in the parenthetical already make the two descriptions
-    distinguishable, and a shared last four would make them identical again.
+    Takes one side, not a pair. Deriving the label from the *difference*
+    between two accounts is what made it collapse: a shared display name was
+    discarded outright, so the case the institution+last-four signal fires on —
+    two accounts that look alike — is exactly the case that rendered as "the
+    account (a1b2c3d4e5f6)". A shared name is still the most useful text on the
+    line; what separates the two sides is the traits printed beside it.
+
+    Confined to this prompt. The list surfaces answer the same question from a
+    resolved name string rather than ``AccountLedgerFacts``, so they carry their
+    own fallbacks; sharing this would mean giving it a second signature, which
+    buys less than it costs while there are exactly two shapes.
     """
-    if side.display_name and side.display_name != other.display_name:
-        return side.display_name
+    name = (side.display_name or "").strip()
     source = _source_label(side)
-    if source and source != _source_label(other):
+    if name and source:
+        return f"{name}, {source}-derived"
+    if name:
+        return name
+    if source:
         return f"the {source}-derived account"
     return "the account"
 
@@ -194,9 +210,10 @@ def _side_traits(side: AccountLedgerFacts, other: AccountLedgerFacts) -> list[st
 
 
 def _side_phrase(side: AccountLedgerFacts, other: AccountLedgerFacts) -> str:
+    """One side as name, then traits, then id — the id a reference, not the identity."""
     return (
-        f"{_side_label(side, other)} "
-        f"({side.account_id}; {', '.join(_side_traits(side, other))})"
+        f"{_account_label(side)}, {', '.join(_side_traits(side, other))} "
+        f"[{side.account_id}]"
     )
 
 
@@ -225,6 +242,91 @@ def _evidence_line(overlap: LedgerOverlap) -> str:
     )
 
 
+#: Every fact the prompt holds about an account except its id. Set-compared in
+#: ``test_the_compared_facts_cover_every_ledger_fact_but_the_id`` so a field added to
+#: ``AccountLedgerFacts`` cannot silently drop out of the indistinguishable
+#: check — which would let a pair the prompt calls distinguishable render as two
+#: identical descriptions again.
+COMPARED_LEDGER_FACTS = (
+    "display_name",
+    "source_types",
+    "subtype",
+    "currency_code",
+    "transactions",
+    "first_date",
+    "last_date",
+    "last_four",
+)
+
+
+#: How each compared fact is named in the sentence that reports a tie, in
+#: reading order. The sentence is built from this map instead of retyping the
+#: list, because ``COMPARED_LEDGER_FACTS`` is only set-compared: a ninth field
+#: would satisfy that guard while the hand-written prose beside it silently
+#: became a list that omits one. Two fields share a phrase — a date range is one
+#: idea to a reader and two columns to the comparison.
+FACT_PHRASES = {
+    "display_name": "name",
+    "source_types": "source",
+    "subtype": "subtype",
+    "currency_code": "currency",
+    "first_date": "date range",
+    "last_date": "date range",
+    "transactions": "transaction count",
+    "last_four": "last four",
+}
+
+
+def _fact_list(*, joiner: str) -> str:
+    """The compared facts as prose, de-duplicated, in reading order."""
+    phrases = list(dict.fromkeys(FACT_PHRASES.values()))
+    return f"{', '.join(phrases[:-1])}, {joiner} {phrases[-1]}"
+
+
+def _holds_any_fact(side: AccountLedgerFacts) -> bool:
+    """Whether MoneyBin knows anything at all about this account beyond its id."""
+    return any(getattr(side, field) for field in COMPARED_LEDGER_FACTS)
+
+
+def _last_four_line(merge: AccountMergeFacts) -> str:
+    """State the last-four evidence, in whichever of its four forms applies.
+
+    Always rendered. The last four cannot tell the two sides apart — the signal
+    fires because they agree — but that is an argument against using it as a
+    *label*, not against showing it as *evidence*. The prompt named ledger
+    overlap as its only evidence while the field the proposal actually turned on
+    appeared nowhere, so a reviewer could not weigh the reason it was asked.
+    """
+    absorbed, survivor = merge.absorbed.last_four, merge.survivor.last_four
+    if absorbed and survivor and absorbed == survivor:
+        return (
+            f"Both accounts state the same last four (…{absorbed}) — the signal "
+            "this proposal fired on."
+        )
+    if absorbed and survivor:
+        return (
+            f"⚠️  These accounts state different last fours (…{absorbed} vs "
+            f"…{survivor}), which is evidence against the merge."
+        )
+    if absorbed or survivor:
+        side = "absorbed" if absorbed else "surviving"
+        return (
+            f"Only the {side} account states a last four "
+            f"(…{absorbed or survivor}); the other states none."
+        )
+    return "Neither account states a last four, so it is no evidence either way."
+
+
+def _indistinguishable(
+    absorbed: AccountLedgerFacts, survivor: AccountLedgerFacts
+) -> bool:
+    """Whether the two sides agree on every fact the prompt holds but the id."""
+    return all(
+        getattr(absorbed, field) == getattr(survivor, field)
+        for field in COMPARED_LEDGER_FACTS
+    )
+
+
 def _account_merge_block(merge: AccountMergeFacts, undo_command: str) -> str:
     """The question, the evidence, and what the answer does — in that order."""
     absorbed, survivor = merge.absorbed, merge.survivor
@@ -232,12 +334,36 @@ def _account_merge_block(merge: AccountMergeFacts, undo_command: str) -> str:
         f"Merge {_side_phrase(absorbed, survivor)} "
         f"into {_side_phrase(survivor, absorbed)}?",
         "",
+        _last_four_line(merge),
+        "",
         _evidence_line(merge.overlap),
         "",
-        f"The absorbed account {absorbed.account_id} is folded into "
-        f"{survivor.account_id}: its transactions move onto that account's "
+        f"The absorbed account [{absorbed.account_id}] is folded into "
+        f"[{survivor.account_id}]: its transactions move onto that account's "
         f"history and nothing is deleted. Reverse with {undo_command}.",
     ]
+    if _indistinguishable(absorbed, survivor):
+        # Naming the tie is the difference between a prompt that reads as a
+        # rendering failure and one that reads as the finding it is. The merge
+        # stays available: the reviewer may know something the ledger does not.
+        #
+        # Two sides agree trivially when nothing is known about either — a
+        # profile with decisions but no materialized core describes both as
+        # empty, and every field then matches. Calling that "identical on every
+        # fact" tells the reviewer the evidence is overwhelming at the moment
+        # there is none, which is the one reading an irreversible confirm must
+        # never invite.
+        if _holds_any_fact(absorbed):
+            lines.append(
+                "These two accounts are identical on every fact MoneyBin holds "
+                f"— {_fact_list(joiner='and')}. Only the ids tell them apart."
+            )
+        else:
+            lines.append(
+                "MoneyBin holds no facts about either account — no "
+                f"{_fact_list(joiner='or')} — so there is nothing here to "
+                "support the merge or to tell the two apart."
+            )
     if survivor.transactions == 0:
         # The reversed proposal is the expensive failure on this path: the live
         # queue offered a malformed placeholder as the survivor, where accepting

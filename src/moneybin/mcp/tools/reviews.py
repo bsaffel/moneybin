@@ -494,13 +494,18 @@ def _pending_account_link_rows(
         if not payload.candidates:
             continue
         decision_id = payload.candidates[0].decision_id
-        label = payload.provisional_display_name or payload.provisional_account_id
+        # Both, not either. The name is what an agent chooses by and the id is
+        # what it acts on, so "name or id" left every row missing one of them.
+        label = payload.provisional_display_name or "unnamed provisional account"
         result.append(
             AccountLinkReviewRow(
                 decision_id=decision_id,
                 status="pending",
                 created_at=timestamp_by_id.get(decision_id),
-                summary=f"{label}: {len(payload.candidates)} account candidate(s)",
+                summary=(
+                    f"{label} [{payload.provisional_account_id}]: "
+                    f"{len(payload.candidates)} account candidate(s)"
+                ),
                 details=AccountLinkPendingDetails(group=payload),
             )
         )
@@ -520,8 +525,10 @@ def _account_link_history_rows(
                 status=decision.status,
                 created_at=decision.decided_at,
                 summary=(
-                    f"Account {decision.provisional_account_id} to "
-                    f"{decision.candidate_account_id}: {decision.status}"
+                    f"{decision.provisional_display_name or 'unnamed account'} "
+                    f"[{decision.provisional_account_id}] to "
+                    f"{decision.candidate_display_name or 'unnamed account'} "
+                    f"[{decision.candidate_account_id}]: {decision.status}"
                 ),
                 details=AccountLinkHistoryDetails(decision=decision),
             )

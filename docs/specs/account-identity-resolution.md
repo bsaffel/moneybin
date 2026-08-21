@@ -248,10 +248,21 @@ match_signals          TEXT,               -- JSON-encoded (per match_decisions 
 status                 TEXT  NOT NULL,     -- pending | accepted | rejected | reversed
 decided_by             TEXT  NOT NULL,     -- auto | user
 match_reason           TEXT,
+provisional_display_name TEXT,             -- both names as they stood when the decision was made;
+candidate_display_name   TEXT,             --   NULL while pending, when they resolve live
 decided_at             TIMESTAMP NOT NULL,
 reversed_at            TIMESTAMP,
 reversed_by            TEXT
 ```
+
+- **Both display names are frozen onto the row when the decision is made**
+  (V051). Accepting re-points *every* accepted link off the provisional account
+  onto the candidate, so the next transform drops the provisional from the
+  `core.dim_accounts` grain — and the raw fallback joins through an accepted
+  link too, so both live lookups go dark in the same stroke. Without the frozen
+  pair, the record of a merge that *succeeded* was the one record that could not
+  name its own accounts. A pending row stores NULL and resolves live; there is
+  nothing to freeze until it is decided, and the live answer is the fresher one.
 
 - **Candidate signals are not stored on `account_links`.** `institution_last4`
   (OFX `RIGHT(number,4)`, Plaid `mask`, tabular `account_number_masked`),

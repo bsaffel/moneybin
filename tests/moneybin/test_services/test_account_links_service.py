@@ -537,6 +537,25 @@ def test_ledger_facts_on_an_account_with_no_ledger_is_empty_not_absent(
     assert facts.first_date is None
 
 
+def test_ledger_facts_carries_the_last_four_as_evidence(
+    seeded_ledgers: AccountLinksService, db: Database
+) -> None:
+    """A field the query never selects renders as a confident negative.
+
+    ``AccountLedgerFacts.last_four`` defaults to None, and the confirm prompt
+    turns None on both sides into "Neither account states a last four, so it is
+    no evidence either way." That sentence is indistinguishable from the truth,
+    so a merge proposal fired *by* the last-four signal would tell the reviewer
+    the signal's own field was absent.
+    """
+    db.execute(
+        "UPDATE core.dim_accounts SET last_four = ? WHERE account_id = ?",
+        ["0000", _PROV1],
+    )
+
+    assert seeded_ledgers.ledger_facts(_PROV1).last_four == "0000"
+
+
 def test_merge_facts_measures_the_overlap_in_the_direction_it_was_asked(
     seeded_ledgers: AccountLinksService,
 ) -> None:
@@ -1813,3 +1832,133 @@ def test_the_rematch_attributes_its_decisions_to_the_accepting_surface(
     AccountLinksService(db, actor="mcp").rematch_after_merge()
 
     assert rematch.call_args.kwargs["actor"] == "mcp"
+
+
+# ---------------------------------------------------------------------------
+# history — names that survive the merge they describe
+# ---------------------------------------------------------------------------
+
+
+def _seed_raw_only_account(
+    db: Database,
+    *,
+    account_id: str,
+    account_name: str,
+    source_account_key: str,
+) -> None:
+    """Seed an accepted account whose only name lives in raw, not core."""
+    AccountLinksRepo(db).insert(
+        link_id=f"link_{account_id}",
+        account_id=account_id,
+        ref_kind="source_native",
+        ref_value=source_account_key,
+        source_type="pdf",
+        source_origin="document",
+        decided_by="auto",
+        actor="system",
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "
+        "(account_id, account_name, institution_name, source_file, "
+        "source_type, source_origin, import_id) "
+        "VALUES (?, ?, 'Example Bank', '/statement.pdf', 'pdf', "
+        "'document', 'import_0')",
+        [source_account_key, account_name],
+    )
+
+
+def test_history_names_an_accepted_merge_after_the_provisional_leaves_core(
+    seeded: AccountLinksService, db: Database
+) -> None:
+    """An accepted merge stays readable once its provisional leaves ``dim_accounts``.
+
+    Accepting repoints *every* accepted link off the provisional, so the next
+    transform drops it from the ``dim_accounts`` grain — and the raw fallback
+    keys on an accepted link too, so it goes dark in the same moment. Both live
+    lookups fail for the one decision class that cannot be undone by re-running
+    anything, which is why the names are frozen when the decision is made.
+    """
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+    # What the next transform does: with no accepted link left pointing at it,
+    # the provisional has no grain of its own in core.
+    db.execute("DELETE FROM core.dim_accounts WHERE account_id = ?", [_PROV1])
+
+    row = next(r for r in seeded.history() if r["decision_id"] == _DEC1)
+
+    assert row["status"] == "accepted"
+    assert row["provisional_display_name"] == "Provisional One"
+    assert row["candidate_display_name"] == "Candidate Alpha"
+
+
+def test_history_resolves_a_pending_name_that_only_raw_holds(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """A pending row reads the same resolver ``pending()`` does, raw fallback included.
+
+    ``pending`` resolved through ``fetch_display_name`` (core, then raw) while
+    ``history`` queried core alone, so one imported-but-untransformed account
+    was named on one surface and a truncated id on the other.
+    """
+    _seed_raw_only_account(
+        db,
+        account_id=_PROV1,
+        account_name="Household Checking",
+        source_account_key="pdf_doc_prov1",
+    )
+    _insert_dim_account(db, _CAND_A, "Candidate Alpha")
+    _insert_decision(
+        db,
+        decision_id=_DEC1,
+        provisional_account_id=_PROV1,
+        candidate_account_id=_CAND_A,
+    )
+
+    pending_name = svc.pending()[0].provisional_display_name
+    history_name = svc.history()[0]["provisional_display_name"]
+
+    assert pending_name == "Household Checking"
+    assert history_name == pending_name
+
+
+def test_a_decision_never_freezes_a_name_that_only_raw_holds(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """The frozen pair is stored under a MEDIUM class, so it reads core alone.
+
+    ``raw.tabular_accounts.account_name`` is a file-supplied label classed
+    ``ACCOUNT_IDENTIFIER``: it can carry a bare account number, and the content
+    masker misses exactly the shapes that matter (a 7-digit number is under the
+    digit run it looks for). Freezing one would put a CRITICAL value in a MEDIUM
+    column and copy it into the audit log for good. The provisional keeps
+    resolving live instead — the exposure the review queue already has, and no
+    new stored one.
+
+    Probed on the *reject* path on purpose. Accepting re-points the provisional's
+    link before the freeze runs, so the raw fallback's ``status = 'accepted'``
+    join already finds nothing and the accept path cannot show the difference.
+    Rejecting leaves the link intact, so it is the one path where a resolver that
+    reached into raw would actually write the value down.
+    """
+    _seed_raw_only_account(
+        db,
+        account_id=_PROV1,
+        account_name="Household Checking",
+        source_account_key="pdf_doc_prov1",
+    )
+    _insert_dim_account(db, _CAND_A, "Candidate Alpha")
+    _insert_decision(
+        db,
+        decision_id=_DEC1,
+        provisional_account_id=_PROV1,
+        candidate_account_id=_CAND_A,
+    )
+
+    svc.set(_DEC1, target_account_id=None)  # reject: no repoint precedes the freeze
+
+    stored = db.execute(
+        "SELECT status, provisional_display_name, candidate_display_name "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
+        [_DEC1],
+    ).fetchone()
+
+    assert stored == ("rejected", "", "Candidate Alpha")
