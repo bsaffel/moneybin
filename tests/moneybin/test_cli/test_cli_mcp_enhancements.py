@@ -234,9 +234,44 @@ class TestMCPInstall:
         result = runner.invoke(app, ["install", "--client", "claude-code", "--print"])
         assert result.exit_code == 0
         assert "mcpServers" in result.output
-        assert "--strict-mcp-config" in result.output
         assert "--mcp-config" in result.output
         assert "claude-code-mcp.json" in result.output
+
+    def test_install_claude_code_launch_hint_keeps_other_mcp_servers(self) -> None:
+        """The hint must not pass --strict-mcp-config.
+
+        That flag suppresses every other configured MCP server (Linear,
+        Playwright, a project `.mcp.json`) for the whole session. Opting in to
+        MoneyBin comes from keeping its config out of Claude Code's own config
+        sources, not from silencing the others.
+        """
+        result = runner.invoke(app, ["install", "--client", "claude-code", "--print"])
+        assert result.exit_code == 0
+        assert "--strict-mcp-config" not in result.output
+
+    def test_launcher_script_flags_match_printed_launch_hint(self) -> None:
+        """The launcher script and the printed hint carry the same `claude` flags.
+
+        They are two hand-maintained copies of one command line, so neither can
+        drift without the other.
+        """
+        repo_root = Path(__file__).resolve().parents[3]
+        script = (repo_root / "scripts" / "claude-mcp.sh").read_text()
+        exec_line = next(
+            line for line in script.splitlines() if line.startswith("exec claude ")
+        )
+        script_flags = {tok for tok in exec_line.split() if tok.startswith("--")}
+
+        result = runner.invoke(app, ["install", "--client", "claude-code", "--print"])
+        assert result.exit_code == 0
+        hint_line = next(
+            line
+            for line in result.output.splitlines()
+            if line.strip().startswith("claude --")
+        )
+        hint_flags = {tok for tok in hint_line.split() if tok.startswith("--")}
+
+        assert script_flags == hint_flags
 
     def test_install_claude_code_writes_to_profile_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -494,6 +529,44 @@ class TestMCPConfigPath:
             str(tmp_path / "profiles" / "alice" / "claude-code-mcp.json")
             in result.output
         )
+
+    def test_path_claude_code_falls_back_to_persisted_active_profile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No `--profile` must resolve the profile recorded in <base>/config.yaml.
+
+        `make claude-mcp` (no PROFILE=) is documented as launching with the active
+        profile, and the launcher captures this command's stdout. Reading only the
+        in-process profile — which nothing sets on this path — made the documented
+        no-arg launch fail every time with "No active profile".
+        """
+        (tmp_path / "config.yaml").write_text("active_profile: brandon\n")
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.setattr("moneybin.config._current_profile", None)
+
+        result = runner.invoke(app, ["config", "path", "--client", "claude-code"])
+
+        assert result.exit_code == 0
+        assert (
+            str(tmp_path / "profiles" / "brandon" / "claude-code-mcp.json")
+            in result.output
+        )
+
+    def test_path_claude_code_errors_when_no_profile_is_active(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With nothing active anywhere, still exit non-zero instead of hanging.
+
+        The launcher captures stdout under `$(...)`, so the first-run wizard's
+        stdin prompts must never be reachable from here.
+        """
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.setattr("moneybin.config._current_profile", None)
+
+        result = runner.invoke(app, ["config", "path", "--client", "claude-code"])
+
+        assert result.exit_code == 1
+        assert result.stdout.strip() == ""
 
     def test_path_chatgpt_desktop_is_the_codex_config(self) -> None:
         """chatgpt-desktop shares the Codex host's config file, so it resolves a path."""

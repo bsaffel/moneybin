@@ -140,6 +140,7 @@ def mcp_config_path(
     `$(...)` command substitution that captures stdout.
     """
     from moneybin.config import get_current_profile
+    from moneybin.utils.user_config import get_default_profile
 
     if client not in _SUPPORTED_CLIENTS:
         supported = ", ".join(_SUPPORTED_CLIENTS)
@@ -156,11 +157,17 @@ def mcp_config_path(
         try:
             resolved_profile = get_current_profile(auto_resolve=False)
         except RuntimeError as e:
-            logger.error(
-                "❌ No active profile and --profile not supplied. "
-                "Run `moneybin profile create <name>` or pass `--profile <name>`."
-            )
-            raise typer.Exit(1) from e
+            # Nothing sets the in-process profile unless one is named explicitly,
+            # so fall back to the persisted active profile — that is what
+            # `make claude-mcp` with no PROFILE= means by "the active profile".
+            # Reading it is non-interactive, unlike the wizard this path skips.
+            resolved_profile = get_default_profile() or ""
+            if not resolved_profile:
+                logger.error(
+                    "❌ No active profile and --profile not supplied. "
+                    "Run `moneybin profile create <name>` or pass `--profile <name>`."
+                )
+                raise typer.Exit(1) from e
     else:
         resolved_profile = ""  # unused for non-profile-scoped clients
 
@@ -349,7 +356,9 @@ def _client_install_path(client: str, profile: str) -> Path | None:
     Claude Code is the only client with per-launch MCP override support, so we
     keep its config in a per-profile file (`<base>/profiles/<profile>/...`) and
     leave it un-auto-loaded; `make claude-mcp` opts in via
-    `claude --strict-mcp-config --mcp-config <path>`. The other clients all
+    `claude --mcp-config <path>`. That placement is the whole opt-in, so the
+    launcher does not need `--strict-mcp-config` and must not use it — it would
+    drop the user's other MCP servers for the session. The other clients all
     auto-load their canonical config — see docs/guides/mcp-clients.md for the
     concurrency model. VS Code uses a workspace-local `.vscode/mcp.json`
     resolved from the current repo root; returns None when not in a repo.
@@ -544,9 +553,9 @@ def _print_claude_code_launch_hint(config_path: Path) -> None:
     import shlex
 
     typer.echo("", err=True)
-    typer.echo("Launch Claude Code with this MCP server only:", err=True)
+    typer.echo("Launch Claude Code with the MoneyBin MCP server attached:", err=True)
     typer.echo(
-        f"  claude --strict-mcp-config --mcp-config {shlex.quote(str(config_path))}",
+        f"  claude --mcp-config {shlex.quote(str(config_path))}",
         err=True,
     )
     typer.echo("", err=True)

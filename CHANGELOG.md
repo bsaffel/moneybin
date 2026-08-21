@@ -1141,6 +1141,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **`make claude-mcp` no longer switches off your other MCP servers.** The
+  launcher passed `--strict-mcp-config`, which tells Claude Code to ignore
+  every other configured MCP server for that session — so opting in to
+  MoneyBin silently cost you Linear, Playwright, and any project `.mcp.json`
+  for as long as the session lived. It now passes `--mcp-config` alone.
+  Nothing about the opt-in changes: MoneyBin's config still lives in the
+  profile directory rather than Claude Code's own config sources, so a plain
+  `claude` in the repo still doesn't load MoneyBin and still doesn't take the
+  database lock. A test now asserts the launcher script and the launch hint
+  `mcp install --print` prints carry the same flags, so the two hand-maintained
+  copies of that command line can't drift apart again.
+
+- **`make claude-mcp` with no `PROFILE=` now uses the active profile, as
+  documented.** `mcp config path --client claude-code` read only the profile
+  set in-process, which nothing sets on that path unless `--profile` or
+  `MONEYBIN_PROFILE` names one — so the bare form always failed with "No
+  active profile and --profile not supplied", even with a profile recorded in
+  `<base>/config.yaml`. It now falls back to that recorded profile, matching
+  what `profile show` and `profile switch` already do. The error still fires,
+  non-interactively, when no profile is active anywhere.
+
 - **A synthetic account's opening balance now means the same thing on both
   import paths, so its reported balance is no longer short by its first day.**
   The generator's OFX writer stamped the opening balance on the first

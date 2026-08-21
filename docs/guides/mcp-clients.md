@@ -127,7 +127,7 @@ make claude-mcp PROFILE=<name>        # explicit profile
 ./scripts/claude-mcp.sh <name>        # equivalent without Make
 ```
 
-These resolve to `claude --strict-mcp-config --mcp-config <profile-config-path>`, telling Claude Code to ignore every other configured MCP server and load only MoneyBin for that one session.
+These resolve to `claude --mcp-config <profile-config-path>`, attaching MoneyBin to that one session **alongside** whatever MCP servers you normally have configured. The opt-in comes from where the config lives — outside Claude Code's own config sources — not from suppressing your other servers.
 
 - **Config file:** `~/.moneybin/profiles/<profile>/claude-code-mcp.json`.
 - **Format:** JSON, under the `mcpServers` key.
@@ -366,7 +366,7 @@ What does not work today: running `moneybin mcp serve` as a systemd unit or Dock
 
 **Slow first call after launch.** Cold start imports the MCP runtime and loads settings. Subsequent calls in the same session reuse the connection.
 
-**`make claude-mcp` reports "No active profile and --profile not supplied".** Either run `moneybin profile create <name>` first, or pass `PROFILE=<name>` to the make target.
+**`make claude-mcp` reports "No active profile and --profile not supplied".** No profile is active and none was named. Run `moneybin profile create <name>` if you have none, `moneybin profile switch <name>` to activate an existing one, or pass `PROFILE=<name>` to the make target. Once a profile is active, the bare `make claude-mcp` resolves it on its own.
 
 ## Stability and licensing
 
