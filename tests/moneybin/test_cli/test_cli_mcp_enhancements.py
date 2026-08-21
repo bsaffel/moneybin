@@ -237,6 +237,38 @@ class TestMCPInstall:
         assert "--mcp-config" in result.output
         assert "claude-code-mcp.json" in result.output
 
+    def test_install_from_a_worktree_anchors_at_the_main_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A generated config must not point `uv --directory` at a worktree.
+
+        The install destination resolves through ``get_base_dir()``, which maps
+        a linked worktree to the main checkout — so installing from a worktree
+        writes the *shared* per-profile config. If the anchor stayed the
+        worktree, pruning that worktree would leave the main checkout's
+        `make claude-mcp` launching `uv run --directory <deleted>`, with nothing
+        pointing at where the bad path came from.
+        """
+        main = tmp_path / "main"
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        (main / "pyproject.toml").write_text('[project]\nname = "moneybin"\n')
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / ".git").write_text(
+            f"gitdir: {main / '.git' / 'worktrees' / 'wt'}\n"
+        )
+        (worktree / "pyproject.toml").write_text('[project]\nname = "moneybin"\n')
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(worktree)
+
+        result = runner.invoke(
+            app, ["install", "--client", "claude-code", "--profile", "p", "--print"]
+        )
+
+        assert result.exit_code == 0
+        assert str(main) in result.output
+        assert str(worktree) not in result.output
+
     def test_install_claude_code_launch_hint_keeps_other_mcp_servers(self) -> None:
         """The hint must not pass --strict-mcp-config.
 

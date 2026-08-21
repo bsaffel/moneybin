@@ -109,7 +109,8 @@ def main_callback(
             envvar="MONEYBIN_HOME",
             show_envvar=True,
             help="Data directory holding profiles, config and databases. "
-            "Overrides MONEYBIN_HOME; defaults to ~/.moneybin.",
+            "Overrides MONEYBIN_HOME. Defaults to <repo>/.moneybin inside a "
+            "checkout, otherwise ~/.moneybin.",
         ),
     ] = None,
     profile_name: Annotated[

@@ -27,7 +27,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import _flags  # pyright: ignore[reportPrivateUsage]
-from moneybin.config import find_repo_root, get_base_dir
+from moneybin.config import canonical_checkout_root, find_repo_root, get_base_dir
 from moneybin.protocol.envelope import build_envelope
 from moneybin.utils.user_config import get_default_profile
 
@@ -284,11 +284,22 @@ def mcp_install(
     if repo_root is not None:
         # Repo checkout (the dev path): anchor uv at the repo root so repo
         # detection resolves the checkout's .moneybin/ at server-launch time.
-        # In a linked worktree this is deliberately the worktree — find_repo_root
-        # answers "which code checkout", while get_base_dir() maps a worktree to
-        # the main checkout's data home, so the server runs this worktree's code
-        # against the repository's one database.
-        args: list[str] = ["run", "--directory", str(repo_root)]
+        #
+        # A linked worktree anchors at its MAIN checkout, not itself. The
+        # destination file already resolves that way (via get_base_dir), so a
+        # worktree install writes the *shared* per-profile config; anchoring at
+        # the worktree would leave `uv run --directory <pruned worktree>` in it
+        # and break the main checkout's launch with nothing naming the cause.
+        # An installed client config has to outlive the worktree it was
+        # generated from.
+        canonical_root = canonical_checkout_root(repo_root)
+        if canonical_root != repo_root:
+            logger.info(
+                f"ℹ️  Installing from a linked worktree. Anchoring the config at "
+                f"the main checkout ({canonical_root}) so it stays valid after "
+                f"this worktree is removed."
+            )
+        args: list[str] = ["run", "--directory", str(canonical_root)]
     else:
         # Installed path: run the PUBLISHED package, pinned. Unpinned would let
         # a new release auto-install on the client's next restart and migrate

@@ -106,3 +106,7 @@ def test_home_flag_is_documented_in_help() -> None:
     assert result.exit_code == 0
     assert "--home" in result.output
     assert "MONEYBIN_HOME" in result.output
+    # Both defaults, not just the installed-user one: a flag whose reason for
+    # existing is discoverability must not misstate what it defaults to.
+    assert ".moneybin" in result.output
+    assert "checkout" in result.output
