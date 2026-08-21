@@ -51,6 +51,45 @@ def _is_moneybin_repo(path: Path) -> bool:
         return False
 
 
+def canonical_checkout_root(path: Path) -> Path:
+    """The main working tree's root when ``path`` is a linked git worktree.
+
+    A worktree is a second checkout of one repository, not a second
+    installation, so it must resolve the repository's one data home. Without
+    this, a command run from a worktree reads an empty database and reports
+    zeros — indistinguishable from a clean result.
+
+    Returns ``path`` unchanged for anything that is not unambiguously a linked
+    worktree of a MoneyBin checkout, so every non-worktree caller keeps its
+    existing behaviour. Reads the ``.git`` file directly rather than shelling
+    out to ``git``, because this runs during settings init on every command.
+
+    Args:
+        path: A directory already believed to be a MoneyBin checkout root.
+
+    Returns:
+        Path: The main working tree's root, or ``path`` unchanged.
+    """
+    git = path / ".git"
+    try:
+        if not git.is_file():
+            return path
+        pointer = git.read_text().strip()
+    except OSError:
+        return path
+    if not pointer.startswith("gitdir:"):
+        return path
+    gitdir = Path(pointer.removeprefix("gitdir:").strip())
+    if not gitdir.is_absolute():
+        gitdir = (path / gitdir).resolve()
+    # <main>/.git/worktrees/<name>. The `worktrees` segment is what separates a
+    # worktree from a submodule, whose pointer ends `.git/modules/<name>`.
+    if gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
+        return path
+    main_root = gitdir.parent.parent.parent
+    return main_root if _is_moneybin_repo(main_root) else path
+
+
 def find_repo_root() -> Path | None:
     """Return the moneybin repo root if CWD *is* the repo root, else None.
 
