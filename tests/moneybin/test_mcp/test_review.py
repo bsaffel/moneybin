@@ -2169,6 +2169,75 @@ async def test_identity_mixed_batch_refusal_names_the_decisions_left_to_resubmit
     )
 
 
+async def test_identity_refusal_counts_a_second_merge_the_cli_will_not_reach() -> None:
+    """`accounts links set` decides one link, so a second merge stays pending.
+
+    Both decisions are `account_link`, so a remainder derived from the batch's
+    deduplicated kinds collapses them into the one excluded entry and reports
+    nothing left over — the refusal then reads as if a single CLI call
+    finishes the batch.
+    """
+    first = _identity_account_setup("two-merges-a")
+    second = _identity_account_setup("two-merges-b")
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=first["decision_id"],
+            decision="accept",
+            target_id=first["candidate"],
+        ),
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=second["decision_id"],
+            decision="accept",
+            target_id=second["candidate"],
+        ),
+    ]
+
+    refused = await identity_links_decide_coarse(decisions=decisions)
+
+    assert refused.error is not None
+    assert refused.error.hint is not None
+    assert "1 decision" in refused.error.hint
+    assert "account_link" in refused.error.hint
+    assert _identity_decision_status("account_link", first["decision_id"]) == "pending"
+    assert _identity_decision_status("account_link", second["decision_id"]) == "pending"
+
+
+async def test_identity_refusal_counts_a_reject_dropped_with_the_batch() -> None:
+    """A reject is refused with the batch even though it is not an accept.
+
+    Only accepts reach the batch's kind set, so a reject travelling beside a
+    merge left no trace in the remainder — yet nothing was written and it has
+    to be sent again like everything else.
+    """
+    account = _identity_account_setup("merge-plus-reject")
+    merchant = _identity_merchant_setup("merge-plus-reject")
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=account["decision_id"],
+            decision="accept",
+            target_id=account["candidate"],
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=merchant["decision_id"],
+            decision="reject",
+        ),
+    ]
+
+    refused = await identity_links_decide_coarse(decisions=decisions)
+
+    assert refused.error is not None
+    assert refused.error.hint is not None
+    assert "1 decision" in refused.error.hint
+    assert "merchant_link" in refused.error.hint
+    assert _identity_decision_status("merchant_link", merchant["decision_id"]) == (
+        "pending"
+    )
+
+
 async def test_identity_security_persisted_state_mismatch_consumes_token() -> None:
     setup = _identity_security_setup("state-mismatch")
     decisions = [

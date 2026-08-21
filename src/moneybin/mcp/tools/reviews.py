@@ -1157,20 +1157,33 @@ def _preview_identity_decisions(
     return _IdentityPreview(plan=plan, merges=merges, kinds=kinds)
 
 
-def _identity_remainder_note(kinds: tuple[str, ...]) -> str | None:
+def _identity_remainder_note(plan: IdentityDecisionPlan) -> str | None:
     """Name what the CLI merge command will not have finished for this batch.
 
-    The refusal points at `moneybin accounts links set`, which decides one
-    account link. A batch is refused whole, so anything travelling beside the
-    merge was dropped as well and the caller has to send it again — a hint
-    that stops at the merge reads as if the batch were complete.
+    Counted over the planned items rather than the batch's kinds, because the
+    kind set answers a different question. It is deduplicated and accept-only,
+    so a second merge collapses into the first and a reject never appears at
+    all — both then read as nothing left over, when in fact the batch was
+    refused whole and every one of them still has to be sent again.
     """
-    remainder = [kind for kind in kinds if kind != "account_link"]
+    pending = [item for item in plan.items if item.changed]
+    handled = next(
+        (
+            item
+            for item in pending
+            if item.request.kind == "account_link" and item.request.decision == "accept"
+        ),
+        None,
+    )
+    remainder = [item for item in pending if item is not handled]
     if not remainder:
         return None
+    kinds = ", ".join(sorted({item.request.kind for item in remainder}))
+    noun = "decision" if len(remainder) == 1 else "decisions"
     return (
-        "The whole batch was refused and nothing was written, so resubmit the "
-        f"{', '.join(remainder)} decisions here once the merge is confirmed."
+        "The whole batch was refused and nothing was written. That command "
+        f"decides one account link; the other {len(remainder)} {noun} "
+        f"({kinds}) must be sent here again once the merge is confirmed."
     )
 
 
@@ -1262,7 +1275,7 @@ async def identity_links_decide_coarse(
             # keep the fallback: neither re-keys a transaction.
             elicitation_only="account_link" in preview.kinds,
             cli_equivalent="moneybin accounts links set",
-            cli_note=_identity_remainder_note(preview.kinds),
+            cli_note=_identity_remainder_note(preview.plan),
         )
     live = await asyncio.to_thread(
         _apply_identity_decisions,
