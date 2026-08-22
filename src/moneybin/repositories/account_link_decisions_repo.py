@@ -45,6 +45,16 @@ _JSON_COLUMNS = frozenset({"match_signals"})
 # Pre-quoted column list for multi-row SELECT (security.md: identifiers quoted).
 _COLS = ", ".join(f'"{c}"' for c in _ACCOUNT_LINK_DECISIONS_COLUMNS)
 
+# The frozen display names arrived in V051, and `get_database(read_only=True)`
+# skips migrations — so the first read after an upgrade can land on a table that
+# never got them. The same list with literal NULLs in their place, positions
+# preserved so `_decode_row`'s strict zip still lines up.
+_V051_COLUMNS = frozenset({"provisional_display_name", "candidate_display_name"})
+_PRE_V051_COLS = ", ".join(
+    f'NULL AS "{c}"' if c in _V051_COLUMNS else f'"{c}"'
+    for c in _ACCOUNT_LINK_DECISIONS_COLUMNS
+)
+
 
 def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
     """Map a fetched row to a column → value dict, decoding JSON columns."""
@@ -73,14 +83,40 @@ class AccountLinkDecisionsRepo(BaseRepo):
 
         refresh_account_link_pending_gauge(self._db)
 
+    # Resolved on first read, then cached for the connection's lifetime.
+    _has_v051_columns: bool | None = None
+
+    def _cols_sql(self) -> str:
+        """SELECT column list, degrading to NULLs on a pre-V051 table.
+
+        A read-only open skips migrations, so an upgraded database whose first
+        operation is a read still has the old shape. NULL is the honest answer
+        and the one callers already handle: it means "never frozen", which
+        sends them back to resolving the name live. The sibling
+        ``CatalogException`` guards cannot cover this — DuckDB raises
+        ``BinderException`` for a missing column and reserves
+        ``CatalogException`` for a missing table. Mirrors
+        ``AuditService._undo_columns_sql``.
+        """
+        if self._has_v051_columns is None:
+            row = self._db.conn.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'app' "
+                "AND table_name = 'account_link_decisions' "
+                "AND column_name = 'provisional_display_name'"
+            ).fetchone()
+            self._has_v051_columns = row is not None
+        return _COLS if self._has_v051_columns else _PRE_V051_COLS
+
     def _fetch_row(self, decision_id: str) -> dict[str, Any] | None:
-        return self._fetch_one(
-            ACCOUNT_LINK_DECISIONS,
-            _ACCOUNT_LINK_DECISIONS_COLUMNS,
-            "decision_id",
-            decision_id,
-            decode=_decode_row,
-        )
+        # Not BaseRepo._fetch_one: it quotes every column as an identifier, and
+        # the pre-V051 projection carries `NULL AS ...` expressions instead.
+        row = self._db.execute(
+            f"SELECT {self._cols_sql()} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
+            'WHERE "decision_id" = ?',
+            [decision_id],
+        ).fetchone()
+        return None if row is None else _decode_row(row)
 
     def fetch_by_id(self, decision_id: str) -> dict[str, Any] | None:
         """Read one decoded decision row by id, or None when absent. Read-only.
@@ -258,7 +294,7 @@ class AccountLinkDecisionsRepo(BaseRepo):
         """
         try:
             rows = self._db.execute(
-                f"SELECT {_COLS} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
+                f"SELECT {self._cols_sql()} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
                 "WHERE status = 'pending' AND reversed_at IS NULL "
                 "ORDER BY provisional_account_id, decision_id",
             ).fetchall()
@@ -279,7 +315,7 @@ class AccountLinkDecisionsRepo(BaseRepo):
         params = [limit] if limit is not None else []
         try:
             rows = self._db.execute(
-                f"SELECT {_COLS} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef + parameterized limit
+                f"SELECT {self._cols_sql()} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef + parameterized limit
                 f"ORDER BY decided_at DESC NULLS LAST, decision_id DESC {limit_clause}",
                 params,
             ).fetchall()
