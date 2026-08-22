@@ -291,17 +291,23 @@ def _holds_any_fact(side: AccountLedgerFacts) -> bool:
 def _last_four_line(merge: AccountMergeFacts) -> str:
     """State the last-four evidence, in whichever of its four forms applies.
 
-    Always rendered. The last four cannot tell the two sides apart — the signal
-    fires because they agree — but that is an argument against using it as a
-    *label*, not against showing it as *evidence*. The prompt named ledger
-    overlap as its only evidence while the field the proposal actually turned on
-    appeared nowhere, so a reviewer could not weigh the reason it was asked.
+    Always rendered. Agreement cannot tell the two sides apart, which is an
+    argument against using the last four as a *label*, not against showing it as
+    *evidence*. The prompt named ledger overlap as its only evidence while the
+    field most likely to have drawn the two together appeared nowhere, so a
+    reviewer could not weigh it.
+
+    Stated as evidence, never as cause. ``AccountMergeFacts`` carries no record
+    of which signal produced the proposal, and ``account_name`` matching can
+    pair two accounts whose last fours agree by coincidence -- so "the signal
+    this fired on" was a claim this function has no way to check, in the one
+    place an irreversible confirm must not overstate what it knows.
     """
     absorbed, survivor = merge.absorbed.last_four, merge.survivor.last_four
     if absorbed and survivor and absorbed == survivor:
         return (
-            f"Both accounts state the same last four (…{absorbed}) — the signal "
-            "this proposal fired on."
+            f"Both accounts state the same last four (…{absorbed}), which is "
+            "evidence for the merge."
         )
     if absorbed and survivor:
         return (

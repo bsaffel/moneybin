@@ -304,11 +304,14 @@ class AccountLinksService:
         still resolves: accepting re-points its links onto the candidate, and
         the next transform then drops it from every name lookup MoneyBin has.
 
-        Core only, deliberately — the raw fallback reads a file-supplied label
-        classed CRITICAL, and this value is persisted under a MEDIUM column and
-        copied into the audit log. An account whose name lives only in raw
-        freezes as ``""`` and keeps resolving live, which is the same exposure
-        the review queue already has and no new stored one.
+        Core only, deliberately. This value is persisted under a MEDIUM column
+        and copied into the audit log, and the raw fallback builds its label
+        from ``account_number`` / ``account_number_masked``, both classed
+        CRITICAL. What it emits is already masked to the last four, so showing
+        it is safe; storing it would put a CRITICAL-derived value under a MEDIUM
+        declaration on the strength of a per-value judgement. An account whose
+        name lives only in raw freezes as ``""`` and keeps resolving live, which
+        is the same exposure the review queue already has and no new stored one.
         """
         names = _resolve_core_display_names(
             self._db,
@@ -333,26 +336,35 @@ class AccountLinksService:
         pair frozen onto it when the decision was made — the only names that
         survive an accepted merge, which removes the provisional account from
         ``core.dim_accounts`` and from the raw fallback's join in the same
-        stroke. Rows with no frozen pair resolve live: a pending decision has
-        not reached its freezing point, and rows written before the columns
-        existed have nothing stored. Live resolution goes through the same
-        resolver ``pending()`` uses, so the two surfaces cannot disagree about
-        what one account is called.
+        stroke. Rows that were never frozen resolve live -- a pending decision
+        has not reached its freezing point, and rows written before the columns
+        existed have nothing stored -- through the same resolver ``pending()``
+        uses, so the two surfaces cannot disagree about what one account is
+        called. A row frozen as ``""`` is not one of those: the freeze looked
+        and deliberately declined to record a raw-only name, so it renders
+        unnamed rather than reaching back into raw to undo its own decision.
         """
         rows = self._decisions.history(limit=limit)
+        # NULL and "" are different answers, and only NULL may be re-resolved.
+        # NULL means the row never reached a freezing point (pending, or written
+        # before V051), so the live resolver is the only thing that can name it.
+        # "" is a decision: `_frozen_names` looked, found the name only in raw,
+        # and declined to record a CRITICAL-classed value. Treating both as
+        # falsy sent the second one back through the raw-including resolver and
+        # recovered precisely the value the freeze had just refused.
         unfrozen = [
             row[f"{key}_account_id"]
             for row in rows
             for key in ("provisional", "candidate")
-            if not row.get(f"{key}_display_name") and row.get(f"{key}_account_id")
+            if row.get(f"{key}_display_name") is None and row.get(f"{key}_account_id")
         ]
         live = _resolve_display_names(self._db, unfrozen) if unfrozen else {}
         for row in rows:
             for key in ("provisional", "candidate"):
-                frozen = row.get(f"{key}_display_name") or ""
-                row[f"{key}_display_name"] = frozen or live.get(
-                    row.get(f"{key}_account_id", ""), ""
-                )
+                if row.get(f"{key}_display_name") is None:
+                    row[f"{key}_display_name"] = live.get(
+                        row.get(f"{key}_account_id", ""), ""
+                    )
         return rows
 
     def decision_by_id(self, decision_id: str) -> dict[str, Any] | None:

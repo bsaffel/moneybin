@@ -496,7 +496,7 @@ def _pending_account_link_rows(
         decision_id = payload.candidates[0].decision_id
         # Both, not either. The name is what an agent chooses by and the id is
         # what it acts on, so "name or id" left every row missing one of them.
-        label = payload.provisional_display_name or "unnamed provisional account"
+        label = payload.provisional_display_name or "unnamed account"
         result.append(
             AccountLinkReviewRow(
                 decision_id=decision_id,
@@ -1196,6 +1196,24 @@ def _apply_identity_decisions(
     # ledger's first and last transaction dates and the user's own account
     # labels. Only the payload is walked, so without this the audit event would
     # record `low` for a call that put MEDIUM data in front of the caller.
+    #
+    # MEDIUM, not CRITICAL, and reviewers have asked twice, so: the one
+    # genuinely CRITICAL value this prompt could once render was
+    # `raw.tabular_accounts.account_name` -- a file-supplied free-text label
+    # that can be a bare account number. `fetch_display_names` no longer
+    # returns it on any path, so every label the prompt can now show is either
+    # `core.dim_accounts.display_name` or the resolver's constructed
+    # institution + masked last four.
+    #
+    # What remains is the last-four evidence line, from
+    # `dim_accounts.last_four` (INSTITUTION_ACCOUNT_NUMBER, CRITICAL). It stays,
+    # and MEDIUM stays with it. `identifiers.md` forbids narrowing a mask by
+    # arguing a *particular* value is safe; this is the per-field, worst-case
+    # claim it asks for instead. That class masks PARTIAL (`redaction.py`:
+    # `"****" + value[-4:]`), so for every value the column can hold, masking
+    # leaves the same four digits the prompt prints as `…4521`. Tier and mask
+    # strength are independent here by design, and disclosing a field's own
+    # masked form does not raise the disclosure floor.
     discloses=Tier.MEDIUM,
 )
 async def identity_links_decide_coarse(

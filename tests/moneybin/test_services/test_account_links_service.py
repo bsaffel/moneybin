@@ -1845,6 +1845,7 @@ def _seed_raw_only_account(
     account_id: str,
     account_name: str,
     source_account_key: str,
+    account_number_masked: str | None = None,
 ) -> None:
     """Seed an accepted account whose only name lives in raw, not core."""
     AccountLinksRepo(db).insert(
@@ -1859,11 +1860,11 @@ def _seed_raw_only_account(
     )
     db.execute(
         "INSERT INTO raw.tabular_accounts "
-        "(account_id, account_name, institution_name, source_file, "
-        "source_type, source_origin, import_id) "
-        "VALUES (?, ?, 'Example Bank', '/statement.pdf', 'pdf', "
+        "(account_id, account_name, account_number_masked, institution_name, "
+        "source_file, source_type, source_origin, import_id) "
+        "VALUES (?, ?, ?, 'Example Bank', '/statement.pdf', 'pdf', "
         "'document', 'import_0')",
-        [source_account_key, account_name],
+        [source_account_key, account_name, account_number_masked],
     )
 
 
@@ -1898,12 +1899,20 @@ def test_history_resolves_a_pending_name_that_only_raw_holds(
     ``pending`` resolved through ``fetch_display_name`` (core, then raw) while
     ``history`` queried core alone, so one imported-but-untransformed account
     was named on one surface and a truncated id on the other.
+
+    The name both surfaces agree on is built, not copied: institution plus the
+    masked last four. ``account_name`` is the file's own free-text label, classed
+    ``ACCOUNT_IDENTIFIER`` because it can be a bare account number, so the raw
+    fallback never returns it — see ``fetch_display_names``. This asserts the
+    agreement *and* the safe shape; a regression that reinstated the free-text
+    label would keep the two surfaces agreeing and still be the bug.
     """
     _seed_raw_only_account(
         db,
         account_id=_PROV1,
         account_name="Household Checking",
         source_account_key="pdf_doc_prov1",
+        account_number_masked="...4521",
     )
     _insert_dim_account(db, _CAND_A, "Candidate Alpha")
     _insert_decision(
@@ -1916,7 +1925,7 @@ def test_history_resolves_a_pending_name_that_only_raw_holds(
     pending_name = svc.pending()[0].provisional_display_name
     history_name = svc.history()[0]["provisional_display_name"]
 
-    assert pending_name == "Household Checking"
+    assert pending_name == "Example Bank ****4521"
     assert history_name == pending_name
 
 
@@ -1925,11 +1934,12 @@ def test_a_decision_never_freezes_a_name_that_only_raw_holds(
 ) -> None:
     """The frozen pair is stored under a MEDIUM class, so it reads core alone.
 
-    ``raw.tabular_accounts.account_name`` is a file-supplied label classed
-    ``ACCOUNT_IDENTIFIER``: it can carry a bare account number, and the content
-    masker misses exactly the shapes that matter (a 7-digit number is under the
-    digit run it looks for). Freezing one would put a CRITICAL value in a MEDIUM
-    column and copy it into the audit log for good. The provisional keeps
+    The raw fallback builds its label from ``account_number`` /
+    ``account_number_masked``, both classed ``INSTITUTION_ACCOUNT_NUMBER``
+    (CRITICAL). Showing that label is safe — it is already at the class's mask
+    floor — but freezing it would put a CRITICAL-derived value in a MEDIUM
+    column and copy it into the audit log for good, on the strength of a
+    per-value judgement rather than a declaration. The provisional keeps
     resolving live instead — the exposure the review queue already has, and no
     new stored one.
 
@@ -1962,3 +1972,37 @@ def test_a_decision_never_freezes_a_name_that_only_raw_holds(
     ).fetchone()
 
     assert stored == ("rejected", "", "Candidate Alpha")
+
+
+def test_a_deliberately_empty_frozen_name_is_not_recovered_from_raw(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """``""`` is a decision, not a gap, so history must not reopen the raw lookup.
+
+    ``_frozen_names`` stores ``""`` rather than the raw file-supplied label on
+    purpose. Reading it back with a falsy test made it indistinguishable from a
+    pre-V051 row that was never frozen at all, so a decided row fell through to
+    the raw-including resolver and recovered the exact CRITICAL-classed value
+    the freeze had just declined to record. A NULL still resolves live: that row
+    never reached a freezing point, so there is no decision to contradict.
+    """
+    _seed_raw_only_account(
+        db,
+        account_id=_PROV1,
+        account_name="Household Checking",
+        source_account_key="pdf_doc_prov1",
+    )
+    _insert_dim_account(db, _CAND_A, "Candidate Alpha")
+    _insert_decision(
+        db,
+        decision_id=_DEC1,
+        provisional_account_id=_PROV1,
+        candidate_account_id=_CAND_A,
+    )
+
+    svc.set(_DEC1, target_account_id=None)  # reject: freezes "" for the provisional
+
+    row = svc.history()[0]
+
+    assert row["provisional_display_name"] == ""
+    assert row["candidate_display_name"] == "Candidate Alpha"

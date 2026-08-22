@@ -734,3 +734,25 @@ def test_every_compared_fact_has_a_phrase_in_the_indistinguishable_sentence() ->
     list that omits one.
     """
     assert set(FACT_PHRASES) == set(COMPARED_LEDGER_FACTS)
+
+
+def test_the_prompt_does_not_claim_the_last_four_is_why_the_proposal_fired() -> None:
+    """Agreement is evidence; which signal fired is not something merge facts know.
+
+    ``AccountMergeFacts`` carries no record of the signal, and ``account_name``
+    matching can produce a pair whose last fours agree by coincidence — the
+    causal sentence would then assert something the code cannot check, in the
+    one place this change argues an irreversible confirm must never overstate
+    its evidence.
+    """
+    absorbed, survivor = _twins()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 2688},
+        surface="mcp",
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert "same last four" in message
+    assert "the signal this proposal fired on" not in message

@@ -99,15 +99,22 @@ def fetch_core_display_names(
     """Display names from ``core.dim_accounts`` only — the constructed ones.
 
     Split out from :func:`fetch_display_names` because only this half is safe to
-    *persist*. ``dim_accounts.display_name`` is built from institution + subtype
-    + masked last four, which is why the taxonomy classes it ``USER_NOTE``; the
-    raw fallback reads ``raw.tabular_accounts.account_name``, a file-supplied
-    label classed ``ACCOUNT_IDENTIFIER`` (CRITICAL) because it can hold a bare
-    account number. Storing that under a MEDIUM column would launder the class,
-    and masking cannot close the gap — a 7-digit number is under the digit run
-    the content net looks for, and a separator-formatted one has no run at all.
+    *persist*. ``dim_accounts.display_name`` is a constructed label — institution
+    + subtype + masked last four — which is why the taxonomy classes it
+    ``USER_NOTE``, the same class the frozen decision columns declare.
 
-    So: display it live if you must, never freeze it.
+    The raw fallback derives its label from ``account_number`` /
+    ``account_number_masked``, both classed ``INSTITUTION_ACCOUNT_NUMBER``
+    (CRITICAL). The string it emits is already at that class's mask floor
+    (PARTIAL leaves ``"****" + last four``), so *showing* it discloses nothing
+    the masker would have hidden. Persisting it is a different question: the
+    frozen column would then hold a CRITICAL-derived value under a MEDIUM
+    declaration, and "this particular derived string happens to be safe" is
+    exactly the per-value inference the declaration exists to replace.
+
+    So: display it live if you must, never freeze it. A decision whose
+    provisional was named only by raw freezes ``""`` rather than a class it
+    cannot declare.
     """
     ids = sorted({account_id for account_id in account_ids if account_id})
     if not ids:
@@ -134,32 +141,76 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
     account it has ever seen, which a per-id lookup turns into an unbounded N+1
     on a read an agent runs just to browse.
 
+    The raw half never answers with ``account_name``. That is the file's own
+    free-text label, classed ``ACCOUNT_IDENTIFIER`` because it can be a bare
+    account number, and nothing downstream can tell a name from a number -- so
+    returning it put a potentially unmasked account number into surfaces that
+    declare far less. What it answers with instead is *constructed*, the same
+    shape ``core.dim_accounts`` builds: institution name, then the last four
+    digits of ``account_number`` (or ``account_number_masked``) behind a
+    ``****``. Either half may be missing; an account with neither stays absent
+    rather than being named by its file. So an account whose only name lived in
+    that free-text label now reads as "Example Bank ****4521" -- worse prose
+    than the label it replaced, and a great deal safer.
+
     Both queries guard ``CatalogException`` so callers work before the core
     layer is materialized (a profile has decisions before its first SQLMesh
     run). Ids that resolve to nothing are absent from the result rather than
     mapped to ``""``, so a caller can tell an unnamed account from one it never
     asked about.
     """
-    names = fetch_core_display_names(db, account_ids)
+    # Materialize before the first read: the parameter is an Iterable, and this
+    # body reads it twice. A one-shot generator would be drained by the core
+    # lookup, leaving `missing` empty and skipping the raw fallback for every
+    # id -- a partial answer with no error, which is the exact failure this
+    # resolver exists to prevent.
     ids = sorted({account_id for account_id in account_ids if account_id})
+    names = fetch_core_display_names(db, ids)
     missing = [account_id for account_id in ids if account_id not in names]
     if not missing:
         return names
     placeholders = ", ".join("?" * len(missing))
     try:
-        # ROW_NUMBER rather than ARG_MAX: it reproduces the single-id query's
-        # "newest row wins, then null-check it" exactly, including when
-        # extracted_at is NULL — ARG_MAX would skip such a row and silently
-        # answer from an older import instead.
+        # ROW_NUMBER rather than ARG_MAX: ARG_MAX skips a row whose
+        # extracted_at is NULL and silently answers from an older import.
+        # Newest *nameable* row wins -- the label can now be NULL (an import
+        # carrying neither an institution nor four digits), and ordering on
+        # recency alone would let such a row hide an older one that does name
+        # the account, which is the bare-id rendering this resolver exists to
+        # prevent.
         raw_rows = db.execute(
             f"""
-            SELECT account_id, account_name FROM (
+            SELECT account_id, account_label FROM (
                 SELECT
                     link.account_id AS account_id,
-                    raw.account_name AS account_name,
+                    -- Same derivation core.dim_accounts uses for last_four_raw:
+                    -- strip to digits, and only speak if four survive. That is
+                    -- what keeps an alphanumeric PDF identifier ("ACCT-9Z", one
+                    -- digit) from ever reaching a caller -- the column is named
+                    -- "masked" but the PDF path stores a whole identifier in it.
+                    NULLIF(TRIM(
+                      COALESCE(raw.institution_name, '') ||
+                      CASE
+                        WHEN LENGTH(
+                          REGEXP_REPLACE(
+                            COALESCE(raw.account_number, raw.account_number_masked),
+                            '[^0-9]', '', 'g'
+                          )
+                        ) >= 4
+                        THEN ' ****' || RIGHT(
+                          REGEXP_REPLACE(
+                            COALESCE(raw.account_number, raw.account_number_masked),
+                            '[^0-9]', '', 'g'
+                          ),
+                          4
+                        )
+                        ELSE ''
+                      END
+                    ), '') AS account_label,
                     ROW_NUMBER() OVER (
                         PARTITION BY link.account_id
-                        ORDER BY raw.extracted_at DESC
+                        ORDER BY account_label IS NOT NULL DESC,
+                                 raw.extracted_at DESC
                     ) AS rn
                 FROM {TABULAR_ACCOUNTS.full_name} AS raw
                 JOIN {ACCOUNT_LINKS.full_name} AS link

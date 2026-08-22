@@ -88,7 +88,7 @@ def links_pending(
 
     for group in groups:
         typer.echo(
-            f"\n── {group.provisional_display_name or 'unnamed provisional account'} "
+            f"\n── {group.provisional_display_name or 'unnamed account'} "
             f"[{group.provisional_account_id}] "
             f"— {group.transactions:,} transactions move "
             f"— {len(group.candidates)} candidate(s) ──"
