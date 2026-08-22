@@ -304,7 +304,10 @@ class AccountLinksService:
         still resolves: accepting re-points its links onto the candidate, and
         the next transform then drops it from every name lookup MoneyBin has.
 
-        Core only, deliberately. This value is persisted under a MEDIUM column
+        Core only, and not even all of core: :func:`fetch_core_display_names`
+        also refuses the dim's terminal ``'Account ' || account_id`` label,
+        which embeds the source-native key of an unlinked account. This value
+        is persisted under a MEDIUM column
         and copied into the audit log, and the raw fallback builds its label
         from ``account_number`` / ``account_number_masked``, both classed
         CRITICAL. What it emits is already masked to the last four, so showing

@@ -103,6 +103,16 @@ def fetch_core_display_names(
     + subtype + masked last four — which is why the taxonomy classes it
     ``USER_NOTE``, the same class the frozen decision columns declare.
 
+    With one exception, which the query below refuses: the model's label ends in
+    a terminal ``'Account ' || w.account_id`` branch so the column is never
+    NULL, and that id is the source-native key for any account carrying no
+    accepted link -- for OFX, the institution's own ``<ACCTID>``, classed
+    ``INSTITUTION_ACCOUNT_NUMBER``. The ``USER_NOTE`` declaration is true of
+    every other branch and false of that one, so this reader declines to trust
+    the declaration where the model contradicts it. Making the declaration true
+    means fixing the model, which every other reader of ``display_name`` needs
+    too; this only stops the value being frozen.
+
     The raw fallback derives its label from ``account_number`` /
     ``account_number_masked``, both classed ``INSTITUTION_ACCOUNT_NUMBER``
     (CRITICAL). The string it emits is already at that class's mask floor
@@ -122,7 +132,19 @@ def fetch_core_display_names(
     placeholders = ", ".join("?" * len(ids))
     try:
         rows = db.execute(
-            f"SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant + parameterized values
+            # Refuse the model's terminal label in SQL, so the id it embeds
+            # never reaches Python. `dim_accounts.display_name` ends in
+            # `'Account ' || w.account_id`, and for an account with no accepted
+            # link that id is the source-native key -- for OFX, the
+            # institution's own <ACCTID>. Equality against that exact
+            # expression is a structural test, not a guess at what an account
+            # number looks like: such a label carries nothing the id does not,
+            # so the masked last four answers instead and an account without
+            # one drops out.
+            "SELECT account_id, CASE "
+            "WHEN display_name = 'Account ' || account_id "
+            "THEN '…' || NULLIF(TRIM(last_four), '') "
+            f"ELSE display_name END FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant + parameterized values
             f"WHERE account_id IN ({placeholders})",
             ids,
         ).fetchall()

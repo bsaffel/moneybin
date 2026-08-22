@@ -1168,6 +1168,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   onto the decision when it is made (migration V051). Existing rows are not
   backfilled; an already-accepted merge has no surviving name to recover (#417).
 
+  One label is refused outright. `core.dim_accounts` ends its display-name chain
+  with `Account <account_id>` so the column is never empty, and for an account
+  that predates the identity resolver that id is the institution's own account
+  number — so the label read as an account number wearing the word "Account",
+  out of a column declared to hold user notes. Prompts and the decision log now
+  show the masked last four in its place, or report the account as unnamed when
+  nothing safe is left to show (#417).
+
 - **Syncing an institution that has removed transactions no longer aborts the
   whole pull.** `moneybin-sync` widened `removed_transactions` from a bare
   transaction id to a full provider-native record while the client still

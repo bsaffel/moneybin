@@ -715,6 +715,46 @@ def test_set_accept_auto_rejects_sibling(
     assert _decision_status(db, _DEC2) == "rejected"
 
 
+def test_each_auto_rejected_sibling_freezes_its_own_candidate_name(
+    seeded: AccountLinksService, db: Database
+) -> None:
+    """Every row in a multi-decision freeze keeps its own names.
+
+    The sibling auto-reject is the only path that freezes more than one
+    decision at once. ``_frozen_names`` returns a single dict keyed by
+    ``decision_id``, so a keying slip hands one row's candidate to another and
+    stores a merge decision against an account it was never about. Asserting
+    status alone cannot see that.
+
+    Two siblings, not one: the seeded pair leaves exactly one row to reject, and
+    a one-row batch cannot tell correct keying apart from any mix-up that
+    resolves to the only row present. A third decision on the same provisional
+    is what makes the batching observable.
+    """
+    _insert_dim_account(db, "cand_c_acct00", "Candidate Gamma")
+    _insert_decision(
+        db,
+        decision_id="dec1_id000004",
+        provisional_account_id=_PROV1,
+        candidate_account_id="cand_c_acct00",
+        signal="name",
+    )
+
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    stored = db.execute(
+        "SELECT decision_id, provisional_display_name, candidate_display_name "
+        "FROM app.account_link_decisions "
+        "WHERE decision_id IN (?, ?) ORDER BY decision_id",
+        [_DEC2, "dec1_id000004"],
+    ).fetchall()
+
+    assert stored == [
+        (_DEC2, "Provisional One", "Candidate Beta"),
+        ("dec1_id000004", "Provisional One", "Candidate Gamma"),
+    ]
+
+
 def test_set_accept_does_not_affect_other_provisional(
     seeded: AccountLinksService, db: Database
 ) -> None:

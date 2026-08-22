@@ -13,6 +13,7 @@ from moneybin.services.account_resolution_types import AccountProposal, SourceAc
 from moneybin.services.account_resolver import (
     _FALLBACK_CANDIDATE_CAP,  # pyright: ignore[reportPrivateUsage]
     AccountResolver,
+    fetch_core_display_names,
     fetch_display_name,
     fetch_display_names,
 )
@@ -2244,3 +2245,53 @@ def test_a_newer_unnameable_import_does_not_hide_an_older_nameable_one(
     resolved = fetch_display_names(db, ["acct_reimport"])
 
     assert resolved == {"acct_reimport": "Chase ****4521"}
+
+
+def test_core_never_answers_with_the_bare_id_terminal_label(db: Database) -> None:
+    """``'Account ' || account_id`` is refused, because that id can be a real one.
+
+    ``dim_accounts.display_name`` ends in a terminal COALESCE branch,
+    ``'Account ' || w.account_id``, so the column is never NULL. For an account
+    that has never been re-imported through ``AccountResolver`` there is no
+    accepted link, so ``grain_key`` falls back to ``source_account_key`` -- for
+    OFX, the institution's own ``<ACCTID>``, which the taxonomy classes
+    ``INSTITUTION_ACCOUNT_NUMBER`` (CRITICAL). The label is then a full account
+    number wearing the word "Account", read out of a column declared
+    ``USER_NOTE`` and frozen into decision columns that declare the same.
+
+    The equality test is against the model's own terminal expression, not a
+    guess at what an account number looks like: a label equal to
+    ``'Account ' || account_id`` carries nothing the id does not, so nothing of
+    value is lost by refusing it. The masked last four answers instead, and an
+    account without even that stays absent.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="4738291056473829",
+        last_four="3829",
+        display_name="Account 4738291056473829",
+    )
+
+    resolved = fetch_core_display_names(db, ["4738291056473829"])
+
+    assert resolved == {"4738291056473829": "…3829"}
+
+
+def test_core_omits_an_account_the_terminal_label_cannot_name(db: Database) -> None:
+    """No institution, no last four: absent rather than named by its own number.
+
+    Callers distinguish absent from ``""``, and every one of them renders an
+    absent account as "unnamed account". That is a worse label than the id and
+    a great deal safer than one that spells the account number out.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="4738291056473829",
+        display_name="Account 4738291056473829",
+    )
+
+    resolved = fetch_core_display_names(db, ["4738291056473829"])
+
+    assert resolved == {}
