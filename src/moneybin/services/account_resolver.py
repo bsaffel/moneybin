@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -84,36 +84,171 @@ def refresh_account_link_pending_gauge(db: Database) -> None:
 
 
 def fetch_display_name(db: Database, account_id: str) -> str:
-    """Return a core display name, falling back to an unrefreshed raw account.
+    """Return one account's display name, or ``""`` when nothing names it.
 
-    Shared by the resolver's candidate decode and the account-link review queue.
-    Guards ``duckdb.CatalogException`` so callers work before the core layer is
-    materialized (e.g. during initial import before a SQLMesh run).
+    Convenience wrapper over :func:`fetch_display_names`, which holds the
+    implementation. Kept as a distinct entry point because most callers hold one
+    id and a dict result would only be unpacked again.
     """
+    return fetch_display_names(db, [account_id]).get(account_id, "")
+
+
+def fetch_core_display_names(
+    db: Database, account_ids: Iterable[str]
+) -> dict[str, str]:
+    """Display names from ``core.dim_accounts`` only — the constructed ones.
+
+    Split out from :func:`fetch_display_names` because only this half is safe to
+    *persist*. ``dim_accounts.display_name`` is a constructed label — institution
+    + subtype + masked last four — which is why the taxonomy classes it
+    ``USER_NOTE``, the same class the frozen decision columns declare.
+
+    With one exception, which the query below refuses: the model's label ends in
+    a terminal ``'Account ' || w.account_id`` branch so the column is never
+    NULL, and that id is the source-native key for any account carrying no
+    accepted link -- for OFX, the institution's own ``<ACCTID>``, classed
+    ``INSTITUTION_ACCOUNT_NUMBER``. The ``USER_NOTE`` declaration is true of
+    every other branch and false of that one, so this reader declines to trust
+    the declaration where the model contradicts it. Making the declaration true
+    means fixing the model, which every other reader of ``display_name`` needs
+    too; this only stops the value being frozen.
+
+    The raw fallback derives its label from ``account_number`` /
+    ``account_number_masked``, both classed ``INSTITUTION_ACCOUNT_NUMBER``
+    (CRITICAL). The string it emits is already at that class's mask floor
+    (PARTIAL leaves ``"****" + last four``), so *showing* it discloses nothing
+    the masker would have hidden. Persisting it is a different question: the
+    frozen column would then hold a CRITICAL-derived value under a MEDIUM
+    declaration, and "this particular derived string happens to be safe" is
+    exactly the per-value inference the declaration exists to replace.
+
+    So: display it live if you must, never freeze it. A decision whose
+    provisional was named only by raw freezes ``""`` rather than a class it
+    cannot declare.
+    """
+    ids = sorted({account_id for account_id in account_ids if account_id})
+    if not ids:
+        return {}
+    placeholders = ", ".join("?" * len(ids))
     try:
-        row = db.execute(
-            f"SELECT display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant + parameterized value
-            "WHERE account_id = ? LIMIT 1",
-            [account_id],
-        ).fetchone()
+        rows = db.execute(
+            # Refuse the model's terminal label in SQL, so the id it embeds
+            # never reaches Python. `dim_accounts.display_name` ends in
+            # `'Account ' || w.account_id`, and for an account with no accepted
+            # link that id is the source-native key -- for OFX, the
+            # institution's own <ACCTID>. Equality against that exact
+            # expression is a structural test, not a guess at what an account
+            # number looks like: such a label carries nothing the id does not,
+            # so the masked last four answers instead and an account without
+            # one drops out.
+            "SELECT account_id, CASE "
+            "WHEN display_name = 'Account ' || account_id "
+            "THEN '…' || NULLIF(TRIM(last_four), '') "
+            f"ELSE display_name END FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant + parameterized values
+            f"WHERE account_id IN ({placeholders})",
+            ids,
+        ).fetchall()
     except duckdb.CatalogException:
-        row = None
-    if row and row[0] is not None:
-        return str(row[0])
+        return {}
+    return {str(r[0]): str(r[1]) for r in rows if r[1] is not None}
+
+
+def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, str]:
+    """Resolve display names for many accounts: ``core`` first, then unrefreshed raw.
+
+    One implementation, deliberately. Two readers of "what is this account
+    called" is how the review queue named an imported account that the decision
+    log rendered as a bare id — the queue carried the raw fallback and the log
+    queried ``core`` alone. Batched because the decision log asks about every
+    account it has ever seen, which a per-id lookup turns into an unbounded N+1
+    on a read an agent runs just to browse.
+
+    The raw half never answers with ``account_name``. That is the file's own
+    free-text label, classed ``ACCOUNT_IDENTIFIER`` because it can be a bare
+    account number, and nothing downstream can tell a name from a number -- so
+    returning it put a potentially unmasked account number into surfaces that
+    declare far less. What it answers with instead is *constructed*, the same
+    shape ``core.dim_accounts`` builds: institution name, then the last four
+    digits of ``account_number`` (or ``account_number_masked``) behind a
+    ``****``. Either half may be missing; an account with neither stays absent
+    rather than being named by its file. So an account whose only name lived in
+    that free-text label now reads as "Example Bank ****4521" -- worse prose
+    than the label it replaced, and a great deal safer.
+
+    Both queries guard ``CatalogException`` so callers work before the core
+    layer is materialized (a profile has decisions before its first SQLMesh
+    run). Ids that resolve to nothing are absent from the result rather than
+    mapped to ``""``, so a caller can tell an unnamed account from one it never
+    asked about.
+    """
+    # Materialize before the first read: the parameter is an Iterable, and this
+    # body reads it twice. A one-shot generator would be drained by the core
+    # lookup, leaving `missing` empty and skipping the raw fallback for every
+    # id -- a partial answer with no error, which is the exact failure this
+    # resolver exists to prevent.
+    ids = sorted({account_id for account_id in account_ids if account_id})
+    names = fetch_core_display_names(db, ids)
+    missing = [account_id for account_id in ids if account_id not in names]
+    if not missing:
+        return names
+    placeholders = ", ".join("?" * len(missing))
     try:
-        raw_row = db.execute(
-            f"SELECT raw.account_name FROM {TABULAR_ACCOUNTS.full_name} AS raw "  # noqa: S608  # TableRef constants + parameterized account id
-            f"JOIN {ACCOUNT_LINKS.full_name} AS link "
-            "ON link.status = 'accepted' AND link.ref_kind = 'source_native' "
-            "AND link.source_type = raw.source_type "
-            "AND link.source_origin = raw.source_origin "
-            "AND link.ref_value = raw.account_id "
-            "WHERE link.account_id = ? ORDER BY raw.extracted_at DESC LIMIT 1",
-            [account_id],
-        ).fetchone()
+        # ROW_NUMBER rather than ARG_MAX: ARG_MAX skips a row whose
+        # extracted_at is NULL and silently answers from an older import.
+        # Newest *nameable* row wins -- the label can now be NULL (an import
+        # carrying neither an institution nor four digits), and ordering on
+        # recency alone would let such a row hide an older one that does name
+        # the account, which is the bare-id rendering this resolver exists to
+        # prevent.
+        raw_rows = db.execute(
+            f"""
+            SELECT account_id, account_label FROM (
+                SELECT
+                    link.account_id AS account_id,
+                    -- Same derivation core.dim_accounts uses for last_four_raw:
+                    -- strip to digits, and only speak if four survive. That is
+                    -- what keeps an alphanumeric PDF identifier ("ACCT-9Z", one
+                    -- digit) from ever reaching a caller -- the column is named
+                    -- "masked" but the PDF path stores a whole identifier in it.
+                    NULLIF(TRIM(
+                      COALESCE(raw.institution_name, '') ||
+                      CASE
+                        WHEN LENGTH(
+                          REGEXP_REPLACE(
+                            COALESCE(raw.account_number, raw.account_number_masked),
+                            '[^0-9]', '', 'g'
+                          )
+                        ) >= 4
+                        THEN ' ****' || RIGHT(
+                          REGEXP_REPLACE(
+                            COALESCE(raw.account_number, raw.account_number_masked),
+                            '[^0-9]', '', 'g'
+                          ),
+                          4
+                        )
+                        ELSE ''
+                      END
+                    ), '') AS account_label,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY link.account_id
+                        ORDER BY account_label IS NOT NULL DESC,
+                                 raw.extracted_at DESC
+                    ) AS rn
+                FROM {TABULAR_ACCOUNTS.full_name} AS raw
+                JOIN {ACCOUNT_LINKS.full_name} AS link
+                  ON link.status = 'accepted' AND link.ref_kind = 'source_native'
+                 AND link.source_type = raw.source_type
+                 AND link.source_origin = raw.source_origin
+                 AND link.ref_value = raw.account_id
+                WHERE link.account_id IN ({placeholders})
+            ) WHERE rn = 1
+            """,  # noqa: S608  # TableRef constants + parameterized values
+            missing,
+        ).fetchall()
     except duckdb.CatalogException:
-        return ""
-    return str(raw_row[0]) if raw_row and raw_row[0] is not None else ""
+        return names
+    names.update({str(r[0]): str(r[1]) for r in raw_rows if r[1] is not None})
+    return names
 
 
 def _institution_key(institution: str | None) -> str | None:

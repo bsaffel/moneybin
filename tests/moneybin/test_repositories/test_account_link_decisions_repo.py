@@ -134,15 +134,24 @@ def test_update_status_captures_before_and_after(db: Database) -> None:
     _insert(repo, status="pending")
 
     event = repo.update_status(
-        "dec00000001", status="accepted", decided_by="user", actor="cli"
+        "dec00000001",
+        status="accepted",
+        decided_by="user",
+        actor="cli",
+        provisional_display_name="Provisional One",
+        candidate_display_name="Candidate Alpha",
     )
     assert event.target_id == "dec00000001"
 
     row = db.conn.execute(
-        "SELECT status, decided_by FROM app.account_link_decisions WHERE decision_id = ?",
+        "SELECT status, decided_by, provisional_display_name, candidate_display_name "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
         ["dec00000001"],
     ).fetchone()
-    assert row == ("accepted", "user")
+    # The names are frozen by the same statement that decides the row: after an
+    # accept there is no live lookup left that can answer what the provisional
+    # was called.
+    assert row == ("accepted", "user", "Provisional One", "Candidate Alpha")
 
     upd = next(
         r
@@ -157,7 +166,14 @@ def test_update_status_captures_before_and_after(db: Database) -> None:
 def test_update_status_raises_for_missing_decision(db: Database) -> None:
     repo = AccountLinkDecisionsRepo(db)
     with pytest.raises(ValueError, match="not found"):
-        repo.update_status("nope", status="accepted", decided_by="user", actor="cli")
+        repo.update_status(
+            "nope",
+            status="accepted",
+            decided_by="user",
+            actor="cli",
+            provisional_display_name="",
+            candidate_display_name="",
+        )
 
 
 # -- reverse --

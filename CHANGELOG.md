@@ -1150,6 +1150,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **Account-merge prompts and the decision log now name the accounts instead of
+  showing their ids.** Each side leads with its name and shows the masked last
+  four as evidence; where MoneyBin holds nothing to tell two accounts apart the
+  prompt says so, and a `core.dim_accounts` label that is only
+  `Account <account_id>` is refused, showing the masked last four in its place.
+  Both names are frozen onto the decision when it is made (migration V051) so
+  `accounts links history` can still name an accepted merge, though existing
+  rows are not backfilled (#417).
+
 - **Syncing an institution that has removed transactions no longer aborts the
   whole pull.** `moneybin-sync` widened `removed_transactions` from a bare
   transaction id to a full provider-native record while the client still

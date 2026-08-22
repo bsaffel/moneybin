@@ -30,6 +30,8 @@ _ACCOUNT_LINK_DECISIONS_COLUMNS = (
     "status",
     "decided_by",
     "match_reason",
+    "provisional_display_name",
+    "candidate_display_name",
     "decided_at",
     "reversed_at",
     "reversed_by",
@@ -149,6 +151,8 @@ class AccountLinkDecisionsRepo(BaseRepo):
         status: str,
         decided_by: str,
         actor: str,
+        provisional_display_name: str,
+        candidate_display_name: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> AuditEvent:
@@ -156,6 +160,15 @@ class AccountLinkDecisionsRepo(BaseRepo):
 
         Re-stamps ``decided_at``/``decided_by``; captures full before/after.
         Raises ``ValueError`` when no decision with this id exists.
+
+        Both display names are required rather than optional because this is the
+        last moment either one can be read. Accepting re-points every accepted
+        link off the provisional account, so the next transform drops it from
+        ``core.dim_accounts`` and the raw fallback loses its join — a caller that
+        forgot to pass them would leave the record of an irreversible merge as
+        two opaque ids, and nothing would fail at the time. An empty string is a
+        legitimate value (nothing named the account); omission is not a choice
+        the signature offers.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._require(
@@ -164,10 +177,17 @@ class AccountLinkDecisionsRepo(BaseRepo):
             self._db.execute(
                 f"""
                 UPDATE {ACCOUNT_LINK_DECISIONS.full_name}
-                SET status = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP
+                SET status = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP,
+                    provisional_display_name = ?, candidate_display_name = ?
                 WHERE decision_id = ?
                 """,  # noqa: S608  # TableRef + parameterized values
-                [status, decided_by, decision_id],
+                [
+                    status,
+                    decided_by,
+                    provisional_display_name,
+                    candidate_display_name,
+                    decision_id,
+                ],
             )
             after = self._fetch_row(decision_id)
             return self._emit_audit(

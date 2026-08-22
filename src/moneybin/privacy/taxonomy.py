@@ -117,6 +117,17 @@ _TIER_BY_CLASS: dict[DataClass, Tier] = {
 CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("app", "account_link_decisions"): {
         "candidate_account_id": DataClass.RECORD_ID,
+        # Both names as they stood when the decision was made, frozen because an
+        # accepted merge removes the provisional from every live lookup. USER_NOTE
+        # matches display_name everywhere else — and holds because the freeze
+        # reads core.dim_accounts alone (a constructed institution + subtype +
+        # last4 label) *and* refuses that model's terminal 'Account ' ||
+        # account_id branch, which for an unlinked account embeds the
+        # source-native key. Core alone is not sufficient; see
+        # fetch_core_display_names. The raw fallback derives its label from
+        # INSTITUTION_ACCOUNT_NUMBER columns, so it is deliberately never written
+        # here; see AccountLinksService._frozen_names.
+        "candidate_display_name": DataClass.USER_NOTE,
         "confidence_score": DataClass.AGGREGATE,
         "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "decided_by": DataClass.TXN_TYPE,
@@ -128,6 +139,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # accounts_links surface (M1S.5) presents signals with structured masking.
         "match_signals": DataClass.ACCOUNT_IDENTIFIER,
         "provisional_account_id": DataClass.RECORD_ID,
+        # Frozen alongside candidate_display_name above; same reasoning.
+        "provisional_display_name": DataClass.USER_NOTE,
         "reversed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "reversed_by": DataClass.TXN_TYPE,
         "status": DataClass.TXN_TYPE,
