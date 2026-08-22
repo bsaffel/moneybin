@@ -1535,6 +1535,33 @@ def test_set_standalone_rejects_all_pending_decisions(
     assert _decision_status(db, _DEC2) == "rejected"
 
 
+def test_each_standalone_rejected_decision_freezes_its_own_candidate_name(
+    seeded: AccountLinksService, db: Database
+) -> None:
+    """A standalone reject freezes each decision against its own names.
+
+    Same batching hazard as the sibling auto-reject, reached through the other
+    caller: this path selects by provisional alone and hands the whole pending
+    set to ``_frozen_names`` at once. The seeded pair is already two pending
+    decisions on one provisional, so the keying is observable here without
+    further seeding — a slip stores one candidate's name on the other's
+    decision, and asserting status cannot see that.
+    """
+    seeded.set(_DEC1, target_account_id=None)
+
+    stored = db.execute(
+        "SELECT decision_id, provisional_display_name, candidate_display_name "
+        "FROM app.account_link_decisions "
+        "WHERE decision_id IN (?, ?) ORDER BY decision_id",
+        [_DEC1, _DEC2],
+    ).fetchall()
+
+    assert stored == [
+        (_DEC1, "Provisional One", "Candidate Alpha"),
+        (_DEC2, "Provisional One", "Candidate Beta"),
+    ]
+
+
 def test_set_standalone_does_not_repoint_link(
     seeded: AccountLinksService, db: Database
 ) -> None:
