@@ -1157,6 +1157,36 @@ def _preview_identity_decisions(
     return _IdentityPreview(plan=plan, merges=merges, kinds=kinds)
 
 
+def _identity_remainder_note(plan: IdentityDecisionPlan) -> str | None:
+    """Name what the CLI merge command will not have finished for this batch.
+
+    Counted over the planned items rather than the batch's kinds, because the
+    kind set answers a different question. It is deduplicated and accept-only,
+    so a second merge collapses into the first and a reject never appears at
+    all — both then read as nothing left over, when in fact the batch was
+    refused whole and every one of them still has to be sent again.
+    """
+    pending = [item for item in plan.items if item.changed]
+    handled = next(
+        (
+            item
+            for item in pending
+            if item.request.kind == "account_link" and item.request.decision == "accept"
+        ),
+        None,
+    )
+    remainder = [item for item in pending if item is not handled]
+    if not remainder:
+        return None
+    kinds = ", ".join(sorted({item.request.kind for item in remainder}))
+    noun = "decision" if len(remainder) == 1 else "decisions"
+    return (
+        "The whole batch was refused and nothing was written. That command "
+        f"decides one account link; the other {len(remainder)} {noun} "
+        f"({kinds}) must be sent here again once the merge is confirmed."
+    )
+
+
 def _apply_identity_decisions(
     decisions: list[IdentityDecisionRequest],
     *,
@@ -1237,6 +1267,15 @@ async def identity_links_decide_coarse(
                 kinds=preview.kinds,
             ),
             confirmation_token=confirmation_token,
+            # An account merge moves a whole ledger history onto another
+            # account and is the case `design-principles.md` names at the top
+            # of the confirmation bar. The opaque-token fallback hands that
+            # confirmation to the calling agent, so this batch forgoes it and
+            # takes the prompt or nothing. Merchant- and security-only batches
+            # keep the fallback: neither re-keys a transaction.
+            elicitation_only="account_link" in preview.kinds,
+            cli_equivalent="moneybin accounts links set",
+            cli_note=_identity_remainder_note(preview.plan),
         )
     live = await asyncio.to_thread(
         _apply_identity_decisions,
@@ -1314,7 +1353,9 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         "accepted: `rematch_transfers_retired` counts those, and "
         "system_audit_undo() restores them. Any accepted merge or bind confirms "
         "the exact normalized full batch and complete live before-state; "
-        "reject-only batches do not prompt.",
+        "reject-only batches do not prompt. An accepted account link takes the "
+        "prompt only — it refuses confirmation_token, and refuses a client that "
+        "cannot prompt rather than issue one.",
         privacy_actor="identity_links_decide",
     )
 

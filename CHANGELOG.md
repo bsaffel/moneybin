@@ -1159,6 +1159,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now reads the id out of the record and still accepts a bare string, so it
   validates against a server on either side of the change (#412).
 
+- **An account merge can no longer be confirmed by the agent asking for it.**
+  `identity_links_decide` and `accounts_links_set` gated a merge behind a
+  confirmation, but a caller could hand the opaque `confirmation_token` from the
+  first call's refusal straight back on the second and merge without the prompt
+  reaching a person. An accepted account link now takes the prompt or nothing —
+  a supplied token is refused, and a client that cannot prompt is pointed at
+  `moneybin accounts links set`; merchant- and security-link accepts keep the
+  token path, since neither re-keys a transaction (#414).
+
 - **`MONEYBIN_HOME` in a `.env` file no longer fails silently.** That file is
   looked up inside `<base>` — the very directory the setting would name — so the
   home is already resolved by the time it is read, and pydantic-settings dropped
