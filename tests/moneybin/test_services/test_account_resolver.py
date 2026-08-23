@@ -9,10 +9,15 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.repositories.account_links_repo import AccountLinksRepo
-from moneybin.services.account_resolution_types import AccountProposal, SourceAccount
+from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
+    AccountProposal,
+    SourceAccount,
+)
 from moneybin.services.account_resolver import (
     _FALLBACK_CANDIDATE_CAP,  # pyright: ignore[reportPrivateUsage]
     AccountResolver,
+    _retyped_reissue_candidates,  # pyright: ignore[reportPrivateUsage]
     fetch_core_display_names,
     fetch_display_name,
     fetch_display_names,
@@ -1314,6 +1319,64 @@ def test_propose_existing_does_not_flood_with_fallback(db: Database) -> None:
     assert resolver.propose_existing("acct_a") is None
 
 
+def test_two_unnameable_accounts_do_not_propose_against_each_other(
+    db: Database,
+) -> None:
+    """Sharing "we cannot name this" is not evidence of being the same account.
+
+    ``UNNAMED_ACCOUNT_LABEL`` is one string, so the moment two accounts both
+    reach the dim's terminal arm they carry an identical ``display_name``.
+    Reaching that arm means institution, subtype and type are all absent (a
+    NULL institution alone empties every branch above it), so the
+    institution+last4 rung -- which needs an institution -- is skipped by
+    construction and the name rung is the one that fires. ``match_account``
+    slug-matches the two sentinels exactly and ``accounts links run`` files a
+    merge proposal whose whole evidence is that neither could be named.
+
+    The old ``'Account ' || account_id`` terminal hid this: two such labels
+    differ in their ids, so they neither slug-match nor clear the 0.6 fuzzy
+    threshold. Collapsing them onto one honest sentinel is still right --
+    printing the id was the defect -- but the matcher has to read the sentinel
+    as the absence of a name rather than as a name two accounts share.
+    """
+    create_core_tables(db)
+    _seed_dim_account(db, account_id="nameless_a", display_name=UNNAMED_ACCOUNT_LABEL)
+    _seed_dim_account(db, account_id="nameless_b", display_name=UNNAMED_ACCOUNT_LABEL)
+
+    resolver = AccountResolver(db, actor="system")
+
+    assert resolver.propose_existing("nameless_a") is None
+
+
+def test_the_reissue_rung_also_refuses_to_match_on_the_sentinel() -> None:
+    """The second call site of the same predicate, exercised directly.
+
+    ``_retyped_reissue_candidates`` feeds ``display_name`` to ``match_account``
+    just as the name rung does, so it inherits the same defect: two sentinels
+    slug-match, and it would relabel that non-evidence as an
+    ``institution_reissue`` pair.
+
+    Reached here by constructing the row shape rather than through the model.
+    It needs an institution to get past its first guard, and an account only
+    reaches the sentinel with ``institution_name`` NULL -- but the dim resolves
+    ``institution_slug`` from sources ``institution_name`` does not have (see
+    its own "not interchangeable" comment), and ``propose_existing`` reads the
+    slug. Whether the real model can produce that pair is unproven either way;
+    the guard costs one boolean and this pins it against a future reader who
+    removes it as dead.
+    """
+    src = _src(
+        account_name=UNNAMED_ACCOUNT_LABEL,
+        last_four="1234",
+        institution="chase",
+    )
+    # (account_id, display_name, last_four, institution_slug): same institution
+    # and a contradicting last four, which is exactly what this rung collects.
+    name_rows = [("other_nameless", UNNAMED_ACCOUNT_LABEL, "5678", "chase")]
+
+    assert _retyped_reissue_candidates(src, name_rows) == []
+
+
 def test_propose_existing_does_not_emit_reissue_candidates(db: Database) -> None:
     """Backfill stays quiet on the reissue signal — an established book is known-distinct.
 
@@ -2249,14 +2312,20 @@ def test_a_newer_unnameable_import_does_not_hide_an_older_nameable_one(
 def test_core_never_answers_with_the_bare_id_terminal_label(db: Database) -> None:
     """``'Account ' || account_id`` is refused, because that id can be a real one.
 
-    ``dim_accounts.display_name`` ends in a terminal COALESCE branch,
-    ``'Account ' || w.account_id``, so the column is never NULL. For an account
-    that has never been re-imported through ``AccountResolver`` there is no
-    accepted link, so ``grain_key`` falls back to ``source_account_key`` -- for
-    OFX, the institution's own ``<ACCTID>``, which the taxonomy classes
-    ``INSTITUTION_ACCOUNT_NUMBER`` (CRITICAL). The label is then a full account
+    ``dim_accounts.display_name`` used to end in a terminal COALESCE branch,
+    ``'Account ' || w.account_id``. For an account that has never been
+    re-imported through ``AccountResolver`` there is no accepted link, so
+    ``grain_key`` falls back to ``source_account_key`` -- for OFX, the
+    institution's own ``<ACCTID>``, which the taxonomy classes
+    ``INSTITUTION_ACCOUNT_NUMBER`` (CRITICAL). The label was then a full account
     number wearing the word "Account", read out of a column declared
     ``USER_NOTE`` and frozen into decision columns that declare the same.
+
+    The model's terminal arm is now the literal ``'Unnamed account'``, so it can
+    no longer produce such a label and this test seeds one directly. It is a
+    characterization test of a second line of defence, not of live model
+    behaviour: the guard has to keep working for the model to stay free to
+    change. ``test_dim_accounts_merge.py`` covers the model end of it.
 
     The equality test is against the model's own terminal expression, not a
     guess at what an account number looks like: a label equal to
@@ -2280,9 +2349,9 @@ def test_core_never_answers_with_the_bare_id_terminal_label(db: Database) -> Non
 def test_core_omits_an_account_the_terminal_label_cannot_name(db: Database) -> None:
     """No institution, no last four: absent rather than named by its own number.
 
-    Callers distinguish absent from ``""``, and every one of them renders an
-    absent account as "unnamed account". That is a worse label than the id and
-    a great deal safer than one that spells the account number out.
+    Callers distinguish absent from ``""``, and every one of them substitutes
+    ``UNNAMED_ACCOUNT_LABEL``. That is a worse label than the id and a great
+    deal safer than one that spells the account number out.
     """
     create_core_tables(db)
     _seed_dim_account(
@@ -2294,3 +2363,33 @@ def test_core_omits_an_account_the_terminal_label_cannot_name(db: Database) -> N
     resolved = fetch_core_display_names(db, ["4738291056473829"])
 
     assert resolved == {}
+
+
+def test_core_passes_the_unnamed_terminal_label_through_untouched(
+    db: Database,
+) -> None:
+    """The new terminal arm is answered with, not refused. Deliberate.
+
+    ``fetch_core_display_names`` refuses ``'Account ' || account_id`` because
+    that label *embeds an identifier* — for an account with no accepted link,
+    the institution's own account number under a ``USER_NOTE`` declaration.
+    ``UNNAMED_ACCOUNT_LABEL`` embeds nothing, so the same refusal would be
+    miscalibrated: it would drop the row, and the caller would render the very
+    same phrase from its own fallback one branch later.
+
+    Letting it through is also what makes the freeze honest. A decision row
+    records the name the user saw when they decided; if they saw "Unnamed
+    account", that is the true answer and ``""`` is not. Pinned because the
+    refusal above sits four lines away, and widening it to match this literal
+    is the obvious wrong fix for a reader who sees only that one CASE.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_nameless",
+        display_name=UNNAMED_ACCOUNT_LABEL,
+    )
+
+    resolved = fetch_core_display_names(db, ["acct_nameless"])
+
+    assert resolved == {"acct_nameless": UNNAMED_ACCOUNT_LABEL}

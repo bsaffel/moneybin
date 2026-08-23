@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import string
 from dataclasses import dataclass
-from typing import NotRequired, TypedDict
+from typing import NotRequired, TypedDict, TypeGuard
 
 from moneybin.services.ledger_overlap import LedgerOverlap
 
@@ -18,6 +18,78 @@ def normalize_account_identifier(value: str) -> str:
         for character in value
         if character in _ACCOUNT_IDENTIFIER_CHARACTERS
     )
+
+
+UNNAMED_ACCOUNT_LABEL = "Unnamed account"
+"""What every surface calls an account nothing can name.
+
+Duplicated as a literal in the terminal COALESCE arm of
+``core.dim_accounts.display_name``, because SQL cannot import it. The two are
+pinned together by ``test_dim_accounts_merge.py``, which asserts the model's
+output against this constant after a real SQLMesh run -- so a drift in either
+copy fails there rather than in front of a user.
+
+One constant rather than a per-call-site literal because both spellings render
+in the same table: ``core`` supplies this string for a row it could not name,
+while the CLI and MCP substitute it for a name that is absent or was frozen as
+``""``. Those are different states with one honest answer, and rendering them
+as ``Unnamed account`` beside ``unnamed account`` reads as a bug.
+
+Lives here rather than beside either consumer because both the merge matcher
+and the free-text resolver must agree on it, and they import nothing from each
+other.
+"""
+
+
+def is_a_name(display_name: str | None) -> TypeGuard[str]:
+    """Whether a dim label identifies an account, or only says nothing names it.
+
+    ``UNNAMED_ACCOUNT_LABEL`` is one fixed string, so every account that reaches
+    the dim's terminal arm carries a byte-identical label while agreeing with
+    the others on nothing at all. Any code that treats ``display_name`` as an
+    identifying string has to ask this first, because on that label a string
+    comparison reports a perfect match between two unrelated accounts:
+
+    - ``AccountResolver`` would file a merge proposal whose entire evidence is
+      that neither account could be named.
+    - ``AccountService.resolve`` would return both at confidence ``1.0`` to a
+      user or agent who typed back the label MoneyBin itself displayed.
+
+    Empty is refused for the same reason: it too compares equal to itself. The
+    dim cannot currently emit one -- the COALESCE terminates on the sentinel --
+    but a predicate that is right about the sentinel and wrong about its
+    neighbour is not worth writing.
+
+    This is deliberately not a check for "looks unhelpful". A real name that
+    happens to be vague is still the user's name for the account.
+    """
+    return bool(display_name) and display_name != UNNAMED_ACCOUNT_LABEL
+
+
+def matchable_account_name(display_name: str | None) -> str:
+    """The name a reference may match an account by, or ``""`` when it has none.
+
+    Four candidate builders project accounts into the shared
+    ``resolve_entity_reference`` contract, which matches a reference against a
+    candidate's name. An account MoneyBin could not name has no name to offer,
+    and both spellings of that state -- the sentinel and empty -- compare equal
+    to themselves across unrelated accounts, so neither may sit in the slot.
+
+    **Never substitute the ``account_id``.** It is the obvious filler and it is
+    wrong twice over. ``EntityCandidate`` matches ids off ``entity_id``, so the
+    name slot buys no id resolution; and an account with no resolver link
+    carries its source-native key as its ``account_id`` -- on OFX a real
+    ``<ACCTID>``. ``AccountNotFoundError`` renders every candidate name into a
+    message that ``handle_cli_errors`` logs, whose safety rests on that message
+    being a fixed MoneyBin string, so an id here becomes an account number in
+    ``cli_YYYY-MM-DD.log``. Dropping the id from the dim's terminal name is the
+    whole point of the change this helper serves; putting it back one layer
+    down would undo it.
+
+    The candidate itself stays: ``entity_id`` still carries the id, so such an
+    account remains addressable exactly as before.
+    """
+    return display_name if is_a_name(display_name) else ""
 
 
 class AccountCandidateDict(TypedDict):

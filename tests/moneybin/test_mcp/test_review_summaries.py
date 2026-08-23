@@ -21,6 +21,7 @@ from moneybin.mcp.tools.reviews import (
 )
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from tests.moneybin.db_helpers import create_core_tables
 
 _PROV = "prov1_acct000"
@@ -49,6 +50,44 @@ def reviewed(db: Database) -> AccountLinksService:
         status="pending",
     )
     return AccountLinksService(db, actor="mcp")
+
+
+@pytest.fixture()
+def unnamed_provisional(db: Database) -> AccountLinksService:
+    """Same decision, but nothing in core names the provisional account."""
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, source_type) "
+        "VALUES (?, ?, ?)",
+        [_CAND, "Candidate Alpha", "csv"],
+    )
+    AccountLinkDecisionsRepo(db).insert(
+        decision_id=_DEC,
+        provisional_account_id=_PROV,
+        candidate_account_id=_CAND,
+        confidence_score=0.9,
+        match_signals={"signal": "institution_last4", "value": "***"},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+    return AccountLinksService(db, actor="mcp")
+
+
+def test_an_unnamed_account_reads_the_same_here_as_it_does_in_core(
+    unnamed_provisional: AccountLinksService,
+) -> None:
+    """The MCP twin of the CLI history row, and it must not spell it differently.
+
+    ``core.dim_accounts`` supplies ``UNNAMED_ACCOUNT_LABEL`` for a row it could
+    not name; this projection substitutes the same string when no name comes
+    back at all. Both can appear in one ``reviews`` result, so two spellings of
+    one answer would read to an agent as two different states.
+    """
+    (row,) = _pending_account_link_rows(unnamed_provisional)
+
+    assert UNNAMED_ACCOUNT_LABEL in row.summary
+    assert _PROV in row.summary
 
 
 def test_a_pending_summary_carries_the_name_and_the_id(

@@ -23,6 +23,7 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp.tools.accounts import (
+    _account_candidates,  # pyright: ignore[reportPrivateUsage]
     _load_pending_account_proposal,  # pyright: ignore[reportPrivateUsage]  # the untested wiring is the subject
     accounts_balance_assert,
     accounts_balance_assert_coarse,
@@ -34,8 +35,11 @@ from moneybin.mcp.tools.accounts import (
     register_accounts_coarse_writes,
     register_accounts_tools,
 )
+from moneybin.privacy.payloads.accounts import AccountListPayload, AccountSummary
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
+from moneybin.services.entity_reference import ResolvedEntity, resolve_entity_reference
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -1824,3 +1828,55 @@ async def test_links_set_accept_flags_a_match_pass_that_never_ran(
     assert any("could not run" in action for action in envelope.actions), (
         f"no action says the pass never examined the rows: {envelope.actions}"
     )
+
+
+def _summary(account_id: str, display_name: str | None) -> AccountSummary:
+    """Minimal account row for exercising the reference-candidate projection."""
+    return AccountSummary(
+        account_id=account_id,
+        display_name=display_name,
+        institution_name=None,
+        account_type=None,
+        account_subtype=None,
+        holder_category=None,
+        currency_code="USD",
+        archived=False,
+        include_in_net_worth=True,
+        last_four=None,
+        credit_limit=None,
+    )
+
+
+def test_the_unnamed_sentinel_is_not_offered_as_a_resolvable_name() -> None:
+    """The placeholder must not become the name a caller can resolve against.
+
+    ``resolve_entity_reference`` matches a reference against a candidate's name
+    and returns a single hit as resolved, so leaving the sentinel there lets the
+    label MoneyBin printed select an account nobody chose -- including on the
+    write path behind ``accounts_balances_assertion_set``.
+    """
+    payload = AccountListPayload(
+        rows=[_summary("acct_nameless", UNNAMED_ACCOUNT_LABEL)]
+    )
+
+    candidate = _account_candidates(payload)[0]
+
+    assert candidate.entity_id == "acct_nameless"
+    assert UNNAMED_ACCOUNT_LABEL not in (candidate.display_name, *candidate.aliases)
+    # ...and not by trading the label for the id. An account with no resolver
+    # link carries its source-native key here -- on OFX a real <ACCTID> -- and
+    # AccountNotFoundError renders every candidate name into a message the CLI
+    # writes to its durable log.
+    assert "acct_nameless" not in (candidate.display_name, *candidate.aliases)
+
+
+def test_an_unnameable_account_is_still_resolvable_by_its_id() -> None:
+    """Refusing the label must not strand the row: the id still resolves."""
+    payload = AccountListPayload(
+        rows=[_summary("acct_nameless", UNNAMED_ACCOUNT_LABEL)]
+    )
+
+    resolution = resolve_entity_reference("acct_nameless", _account_candidates(payload))
+
+    assert isinstance(resolution, ResolvedEntity)
+    assert resolution.entity_id == "acct_nameless"

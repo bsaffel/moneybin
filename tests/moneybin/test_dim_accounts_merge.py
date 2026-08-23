@@ -20,6 +20,7 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 
 pytestmark = pytest.mark.integration
 
@@ -83,18 +84,19 @@ def _insert_tabular_account(
     *,
     native_key: str,
     account_name: str,
-    institution_name: str,
-    account_type: str,
+    institution_name: str | None,
+    account_type: str | None,
     extracted_at: str,
     source_origin: str = "test_bank_tab",
+    account_number: str | None = None,
 ) -> None:
     db.execute(
         """
         INSERT INTO raw.tabular_accounts
             (account_id, account_name, account_type, institution_name,
-             source_file, source_type, source_origin, import_id,
-             extracted_at, loaded_at)
-        VALUES (?, ?, ?, ?, '/tmp/test.csv', 'csv', ?, 'imp-tab-001',
+             account_number, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES (?, ?, ?, ?, ?, '/tmp/test.csv', 'csv', ?, 'imp-tab-001',
                 ?::TIMESTAMP, ?::TIMESTAMP)
         """,  # noqa: S608  # test fixture
         [
@@ -102,6 +104,7 @@ def _insert_tabular_account(
             account_name,
             account_type,
             institution_name,
+            account_number,
             source_origin,
             extracted_at,
             extracted_at,
@@ -208,7 +211,9 @@ def test_dim_accounts_unlinked_account_keyed_by_source_native(db: Database) -> N
         account_type="checking",
         extracted_at="2024-02-01 00:00:00",
     )
-    # Deliberately NO app.account_links row → stg projects account_id = NULL.
+    # Deliberately NO app.account_links row. stg does NOT project a NULL
+    # account_id — it COALESCEs the source-native key in itself — so the row
+    # reaches the dim keyed by native_key and grain_key passes it through.
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
@@ -345,3 +350,172 @@ def test_last_four_derived_for_ofx_without_account_settings(db: Database) -> Non
     assert row is not None, "derived-last4 canonical row missing from core.dim_accounts"
     assert row[0] == "4267", f"expected derived last_four 4267, got {row[0]!r}"
     assert "4267" in row[1], f"display_name should include last4: {row[1]!r}"
+
+
+@pytest.mark.slow
+def test_an_unnameable_unlinked_account_is_not_named_by_its_source_key(
+    db: Database,
+) -> None:
+    """The terminal display_name branch never emits a source-native key.
+
+    An account with no institution, subtype, type or last four falls through
+    every naming arm to the terminal one. For an account with no accepted link
+    the grain key IS the source-native key -- for a bank file, the institution's
+    own account number -- so a terminal label built from it would put an account
+    number in a column the taxonomy declares USER_NOTE, and from there into
+    reports.* as account_name. The label degrades instead.
+    """
+    native_key = "471166339912"  # digits, as a real ACCTID would be
+    _insert_tabular_account(
+        db,
+        native_key=native_key,
+        # account_name is NOT NULL in raw and the dim's tabular CTE never
+        # selects it, so it cannot reach display_name either way.
+        account_name="Row With No Bank Fields",
+        institution_name=None,
+        account_type=None,
+        extracted_at="2024-03-01 00:00:00",
+    )
+    # Deliberately NO app.account_links row. stg COALESCEs the source-native
+    # key into account_id itself, so the row reaches the dim keyed by
+    # native_key -- which is exactly what the terminal label must not print.
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        [native_key],
+    ).fetchone()
+    assert row is not None, "unlinked account missing from core.dim_accounts"
+    assert native_key not in row[0], (
+        f"display_name leaked the source-native key: {row[0]!r}"
+    )
+    # Against the constant, not a literal: this is the only place the SQL
+    # terminal arm and the Python fallback every surface uses are compared
+    # after a real plan, so a drift in either copy has to fail here.
+    assert row[0] == UNNAMED_ACCOUNT_LABEL
+
+
+@pytest.mark.slow
+def test_the_terminal_label_omits_the_id_even_when_the_id_is_safe(
+    db: Database,
+) -> None:
+    """A linked account with nothing to name it is unnamed too, not id-labelled.
+
+    The terminal arm could have kept ``'Account ' || account_id`` for a linked
+    account, whose grain key IS the canonical opaque id and safe to print. It
+    does not, because telling the two cases apart needs a fact the dim does not
+    hold: all three stg_*__accounts models COALESCE the source-native key into
+    ``account_id`` before the dim sees it, so a NULL test finds nothing and a
+    ``account_id <> source_account_key`` test is a proxy a fourth source could
+    silently break. Dropping the id outright is fail-closed by construction.
+    The label it costs applied to no account.
+    """
+    canonical_id = "canonnameless01"
+    native_key = "tab-nameless-001"
+    _insert_tabular_account(
+        db,
+        native_key=native_key,
+        account_name="Row With No Bank Fields",
+        institution_name=None,
+        account_type=None,
+        extracted_at="2024-03-01 00:00:00",
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-tab-nameless",
+        account_id=canonical_id,
+        ref_value=native_key,
+        source_type="csv",
+        source_origin="test_bank_tab",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        [canonical_id],
+    ).fetchone()
+    assert row is not None, "linked account missing from core.dim_accounts"
+    assert canonical_id not in row[0], (
+        f"terminal label should carry no id at all: {row[0]!r}"
+    )
+    # Against the constant, not a literal: this is the only place the SQL
+    # terminal arm and the Python fallback every surface uses are compared
+    # after a real plan, so a drift in either copy has to fail here.
+    assert row[0] == UNNAMED_ACCOUNT_LABEL
+
+
+@pytest.mark.slow
+def test_a_last_four_alone_names_an_account_the_sentinel_would_have_taken(
+    db: Database,
+) -> None:
+    """A last four outranks the sentinel: it is the discriminator, and it is safe.
+
+    Every naming arm above the terminal needs an institution or a subtype, so an
+    account carrying only a last four -- a real tabular-import shape -- fell all
+    the way through and was labelled ``Unnamed account`` while the adjacent
+    ``last_four`` column still held the digits. Two such accounts then rendered
+    identically everywhere the name is all the user sees.
+
+    The last four is not the id the terminal arm exists to withhold. It is a
+    masked fragment the confirm flow already prints as evidence and the dim
+    already publishes in its own column, so naming by it discloses nothing new.
+    """
+    _insert_tabular_account(
+        db,
+        native_key="tab-lastfour-only",
+        account_name="Row With No Bank Fields",
+        institution_name=None,
+        account_type=None,
+        account_number="9876554521",
+        extracted_at="2024-03-01 00:00:00",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        ["tab-lastfour-only"],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "…4521"
+    assert "9876554521" not in row[0], (
+        f"only the last four may appear, never the number: {row[0]!r}"
+    )
+
+
+@pytest.mark.slow
+def test_a_subtype_with_no_institution_still_keeps_its_last_four(
+    db: Database,
+) -> None:
+    """The subtype arm gained a last four for the same reason the top arm has one.
+
+    ``checking`` is a category, not an identity -- every checking account at
+    every institution shares it. Before, an account with no institution stopped
+    at the bare subtype and dropped a last four it had, so the arm that was
+    supposed to name the account instead guaranteed a collision. This mirrors
+    the institution arms, where the with-last-four variant precedes the without.
+    """
+    _insert_tabular_account(
+        db,
+        native_key="tab-subtype-lastfour",
+        account_name="Row With No Bank Fields",
+        institution_name=None,
+        account_type="CHECKING",
+        account_number="9876554521",
+        extracted_at="2024-03-01 00:00:00",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        ["tab-subtype-lastfour"],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "checking …4521"

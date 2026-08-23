@@ -14,6 +14,8 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.accounts import AccountListPayload
 from moneybin.protocol.envelope import build_envelope
+from moneybin.repositories.account_settings_repo import AccountSettingsRepo
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.account_service import (
     CLEAR,
     PLAID_CANONICAL_HOLDER_CATEGORIES,
@@ -489,6 +491,95 @@ class TestSettingsUpdateExtended:
         with pytest.raises(UserError, match="Account not found"):
             svc.settings_update("ACCTO1_typo", actor="cli")
 
+    @pytest.mark.unit
+    def test_the_unnamed_label_is_refused_as_a_display_name(
+        self, test_db: Database
+    ) -> None:
+        """The label core uses to mean "no name" may not be set as one.
+
+        `is_a_name` treats this exact string as the absence of a name, so an
+        account wearing it drops out of fuzzy resolution, `resolve_strict` and
+        merge-name matching. Accepting it here would let a user name an account
+        something MoneyBin then refuses to look up, with nothing said.
+        """
+        svc = AccountService(test_db)
+        with pytest.raises(UserError, match="reserved"):
+            svc.settings_update(
+                "acct_a", actor="cli", display_name=UNNAMED_ACCOUNT_LABEL
+            )
+        # Refused before the DB write, like the cost-basis vocabulary above.
+        assert svc._load_settings("acct_a") is None
+
+    @pytest.mark.unit
+    def test_a_case_variant_of_the_unnamed_label_is_refused_too(
+        self, test_db: Database
+    ) -> None:
+        """A case variant resolves other accounts' labels to this one.
+
+        `resolve_strict` compares `LOWER(display_name) = LOWER(?)`, so with a
+        generated-sentinel account present, asking for the exact label that
+        account displays matches both rows; the sentinel row is then filtered
+        as nameless and the *user's* account is returned as a unique hit. The
+        reservation is case-insensitive because the collision it prevents is.
+        """
+        svc = AccountService(test_db)
+        with pytest.raises(UserError, match="reserved"):
+            svc.settings_update(
+                "acct_a", actor="cli", display_name=UNNAMED_ACCOUNT_LABEL.lower()
+            )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "variant",
+        [" Unnamed account ", "Unnamed  account", "Unnamed\taccount"],
+        ids=["padded", "doubled-space", "tab"],
+    )
+    def test_a_whitespace_variant_of_the_unnamed_label_is_refused(
+        self, test_db: Database, variant: str
+    ) -> None:
+        """The reservation must use the normalization the matcher uses.
+
+        `resolve_entity_reference`'s third rung compares `_normalize` forms,
+        which NFKC-fold and collapse whitespace. Guarding on `casefold()` alone
+        let these through, and because generated placeholders are filtered out
+        of the candidate-name slot, a request for the exact label MoneyBin
+        displays for some *other* account then resolved uniquely to this one --
+        the collision the reservation exists to prevent, reached by whitespace
+        instead of case.
+        """
+        svc = AccountService(test_db)
+        with pytest.raises(UserError, match="reserved"):
+            svc.settings_update("acct_a", actor="cli", display_name=variant)
+
+    @pytest.mark.unit
+    def test_a_row_already_holding_the_label_stays_readable(
+        self, test_db: Database
+    ) -> None:
+        """Reserving the label must not strand a row that already carries it.
+
+        `_load_settings` builds an `AccountSettings`, so any rule enforced in
+        `__post_init__` runs on reads too and would make such a row raise
+        instead of load. The reservation belongs on the write path for that
+        reason; this pins it there.
+        """
+        AccountSettingsRepo(test_db).set(
+            account_id="acct_a",
+            display_name=UNNAMED_ACCOUNT_LABEL,
+            official_name=None,
+            last_four=None,
+            account_subtype=None,
+            holder_category=None,
+            currency_code=None,
+            credit_limit=None,
+            archived=False,
+            include_in_net_worth=True,
+            default_cost_basis_method=None,
+            actor="test",
+        )
+        loaded = AccountService(test_db)._load_settings("acct_a")
+        assert loaded is not None
+        assert loaded.display_name == UNNAMED_ACCOUNT_LABEL
+
 
 # ---------------------------------------------------------------------------
 # Helpers for new extended-read tests
@@ -499,7 +590,7 @@ def _insert_dim_account(
     db: Database,
     account_id: str,
     account_type: str = "CHECKING",
-    institution_name: str = "Test Bank",
+    institution_name: str | None = "Test Bank",
     source_type: str = "ofx",
     display_name: str | None = None,
     last_four: str | None = None,
@@ -982,6 +1073,60 @@ class TestAccountServiceResolve:
         assert AccountService(extended_db).resolve("").matches == []
         assert AccountService(extended_db).resolve("   ").matches == []
 
+    @pytest.mark.unit
+    def test_the_unnamed_sentinel_resolves_to_nothing(
+        self, extended_db: Database
+    ) -> None:
+        """Typing back the sentinel MoneyBin displayed must not pick an account.
+
+        Every account the dim cannot name carries the same label, so a string
+        comparison scores each of them 1.0 against it and the tiebreak hands
+        back whichever account id sorts first -- a maximally-confident answer
+        built on the one fact that distinguishes nothing. Returning no match is
+        the honest reply: the sentinel says an account exists, never which one.
+        """
+        for account_id in ("nameless_a", "nameless_b"):
+            _insert_dim_account(
+                extended_db,
+                account_id,
+                display_name=UNNAMED_ACCOUNT_LABEL,
+                institution_name=None,
+                account_subtype=None,
+            )
+
+        payload = AccountService(extended_db).resolve(UNNAMED_ACCOUNT_LABEL)
+
+        assert payload.matches == []
+
+    @pytest.mark.unit
+    def test_a_real_name_still_resolves_when_a_sentinel_row_exists(
+        self, extended_db: Database
+    ) -> None:
+        """The refusal is scoped to the sentinel, not to unnameable accounts.
+
+        Guards the obvious over-correction: dropping every row whose label the
+        dim generated, rather than only the one label that identifies nothing.
+        """
+        _insert_dim_account(
+            extended_db,
+            "nameless",
+            display_name=UNNAMED_ACCOUNT_LABEL,
+            institution_name=None,
+            account_subtype=None,
+        )
+        _insert_dim_account(
+            extended_db,
+            "named",
+            display_name="Chase Checking",
+            account_subtype="checking",
+            institution_name="Chase",
+        )
+
+        payload = AccountService(extended_db).resolve("Chase Checking")
+
+        assert [m.account_id for m in payload.matches] == ["named"]
+        assert payload.matches[0].confidence == 1.0
+
 
 class TestAccountServiceResolveStrict:
     """Tests for AccountService.resolve_strict() — strict id-or-name lookup."""
@@ -1104,6 +1249,63 @@ class TestAccountServiceResolveStrict:
         )
         with pytest.raises(AccountNotFoundError):
             AccountService(extended_db).resolve_strict("acct_old")
+
+    @pytest.mark.unit
+    def test_the_unnamed_sentinel_is_not_a_strict_reference(
+        self, extended_db: Database
+    ) -> None:
+        """A lone unnameable account must not answer to the label it displays.
+
+        The ambiguity guard only fires from two sentinel rows up; one is the
+        ordinary case, and there the label reads as a unique exact match. This
+        resolver feeds investment mutations, transaction categorization and
+        sheet bindings, so a silent hit writes to an account nobody picked.
+        """
+        from moneybin.services.account_service import AccountNotFoundError
+
+        _insert_dim_account(
+            extended_db,
+            "nameless",
+            display_name=UNNAMED_ACCOUNT_LABEL,
+            institution_name=None,
+        )
+        with pytest.raises(AccountNotFoundError):
+            AccountService(extended_db).resolve_strict(UNNAMED_ACCOUNT_LABEL)
+
+    @pytest.mark.unit
+    def test_an_unnameable_account_still_resolves_by_its_id(
+        self, extended_db: Database
+    ) -> None:
+        """Refusing the label must not stop the account being addressable.
+
+        The id is the caller's remaining handle on an account core could not
+        name; taking that away would make the row unusable rather than safe.
+        """
+        _insert_dim_account(
+            extended_db,
+            "nameless",
+            display_name=UNNAMED_ACCOUNT_LABEL,
+            institution_name=None,
+        )
+        assert AccountService(extended_db).resolve_strict("nameless") == "nameless"
+
+    @pytest.mark.unit
+    def test_a_candidate_with_no_name_is_listed_as_the_placeholder(self) -> None:
+        """A nameless candidate must never be listed by its id instead.
+
+        The candidate builders behind the `accounts`, `transactions` and
+        `investments` tools hand this error a name per row, and an account
+        nothing can name hands it an empty one. `handle_cli_errors` logs this
+        message to the durable `cli_YYYY-MM-DD.log` on the strength of it being
+        a fixed MoneyBin string -- and an account with no resolver link carries
+        its source-native key as its id, on OFX a real `<ACCTID>`.
+        """
+        from moneybin.services.account_service import AccountNotFoundError
+
+        error = AccountNotFoundError("typo", [("acct_secret", "")])
+
+        assert "acct_secret" not in error.message
+        assert UNNAMED_ACCOUNT_LABEL in error.message
 
 
 class TestNullAccountType:

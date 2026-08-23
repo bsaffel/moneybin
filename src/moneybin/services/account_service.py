@@ -27,7 +27,12 @@ from moneybin.privacy.payloads.accounts import (
     AccountSummaryStats,
 )
 from moneybin.services._validators import validate_currency_code
+from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
+    is_a_name,
+)
 from moneybin.services.audit_service import AuditService
+from moneybin.services.entity_reference import normalize_reference
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     DIM_ACCOUNTS,
@@ -245,7 +250,12 @@ class AccountNotFoundError(UserError):
     def __init__(self, query: str, candidates: list[tuple[str, str]]) -> None:
         """Store the failed query and the (capped) candidate list."""
         shown = candidates[:_RESOLVE_STRICT_CANDIDATE_CAP]
-        names = ", ".join(name for _, name in shown)
+        # Name the placeholder rather than the id for an account that has no
+        # name. This message reaches the durable CLI log, and an account with no
+        # resolver link carries its source-native key as its id -- on OFX a real
+        # <ACCTID>. The listing this error's hint points at prints the id, which
+        # is where a caller who needs one should get it.
+        names = ", ".join(name or UNNAMED_ACCOUNT_LABEL for _, name in shown)
         # The fetch caps at _RESOLVE_STRICT_CANDIDATE_CAP + 1 to detect
         # truncation; surface that to the user as a generic "more
         # available" pointer rather than a count it can't track at scale.
@@ -708,6 +718,29 @@ class AccountService:
                 hint=f"Valid methods: {valid}.",
             )
 
+        # Reserved vocabulary: core shows this exact label for an account it
+        # could not name, and `is_a_name` reads it that way everywhere. Taking
+        # it as a user's name would drop that account out of fuzzy resolution,
+        # `resolve_strict` and merge-name matching with nothing said.
+        #
+        # Folded with the resolver's own `normalize_reference`, not a weaker
+        # comparison. Its third rung matches on that fold, so anything it
+        # collapses onto the label -- a case variant, padding, a doubled space,
+        # an NFKC-equivalent character -- would otherwise be accepted here and
+        # then answer a request for the label another account displays: with
+        # generated placeholders filtered out of the candidate-name slot, such
+        # a row is the unique hit. Reserving on a narrower fold than the
+        # matcher uses leaves exactly that difference as a hole.
+        name = diff.get("display_name")
+        reserved_name = normalize_reference(UNNAMED_ACCOUNT_LABEL)
+        if isinstance(name, str) and normalize_reference(name) == reserved_name:
+            raise UserError(
+                f"{UNNAMED_ACCOUNT_LABEL!r} is reserved: MoneyBin shows it for "
+                "an account it could not name, so it cannot also be one.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                hint="Pick a different display name.",
+            )
+
         # No fields to change → no write. Under Invariant 10 a repo call would
         # bump updated_at and emit an `account_settings.set` audit row for a
         # mutation that changed nothing — misleading forensic evidence. Return
@@ -759,7 +792,16 @@ class AccountService:
         scored: list[AccountResolutionItem] = []
         for account_id, display_name, account_subtype, institution_name in rows:
             best = 0.0
-            for field_value in (display_name, account_subtype, institution_name):
+            # The sentinel is the one label every unnameable account shares, so
+            # scoring it reports a perfect match between accounts that have
+            # nothing in common. Only display_name is filtered: a subtype or
+            # institution is a real attribute even when the name is absent.
+            scorable = (
+                display_name if is_a_name(display_name) else None,
+                account_subtype,
+                institution_name,
+            )
+            for field_value in scorable:
                 if field_value:
                     ratio = SequenceMatcher(
                         None, query_clean, field_value.lower()
@@ -791,7 +833,9 @@ class AccountService:
         Lookup order:
 
         1. Exact ``account_id`` match (case-sensitive — ids are slugs).
-        2. Case-insensitive exact ``display_name`` match.
+        2. Case-insensitive exact ``display_name`` match, excluding the
+           ``UNNAMED_ACCOUNT_LABEL`` sentinel — it names no account, so
+           it must not resolve to the one that happens to wear it.
 
         Raises ``AmbiguousAccountError`` when step 2 returns more than
         one row. Raises ``AccountNotFoundError`` when neither step
@@ -825,6 +869,13 @@ class AccountService:
             """,  # noqa: S608  # TableRef constant
             [account_ref],
         ).fetchall()
+        # Every account core could not name carries the same label, so the
+        # ambiguity guard below only catches the case of two or more. One is
+        # the ordinary case, and there the sentinel reads as a unique exact
+        # match -- binding a categorization, investment write or sheet to an
+        # account the caller never chose. Filter the row's label rather than
+        # the query so any casing of the reference is refused.
+        matches = [match for match in matches if is_a_name(str(match[1]))]
         if len(matches) == 1:
             return str(matches[0][0])
         if len(matches) > 1:

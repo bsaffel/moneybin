@@ -34,6 +34,7 @@ from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
     AccountLinksService,
 )
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.identity_confirmation import identity_confirm_message
 from moneybin.services.ledger_overlap import LedgerOverlap
 
@@ -88,7 +89,7 @@ def links_pending(
 
     for group in groups:
         typer.echo(
-            f"\n── {group.provisional_display_name or 'unnamed account'} "
+            f"\n── {group.provisional_display_name or UNNAMED_ACCOUNT_LABEL} "
             f"[{group.provisional_account_id}] "
             f"— {group.transactions:,} transactions move "
             f"— {len(group.candidates)} candidate(s) ──"
@@ -547,9 +548,15 @@ def links_history(
     )
     typer.echo("-" * 116)
     for d in payload.decisions:
+        # A frozen "" means the freeze looked and declined to record a raw-only
+        # name. Falling back to a truncated id puts an id where a name goes —
+        # the defect this whole surface exists to fix — and a 12-char prefix is
+        # not even usable as a handle. The shared constant is the same string
+        # core.dim_accounts puts in this column for a row it could not name, so
+        # the two cannot render as two spellings in one table.
         merged = (
-            f"{d.provisional_display_name or d.provisional_account_id[:12]} → "
-            f"{d.candidate_display_name or d.candidate_account_id[:12]}"
+            f"{d.provisional_display_name or UNNAMED_ACCOUNT_LABEL} → "
+            f"{d.candidate_display_name or UNNAMED_ACCOUNT_LABEL}"
         )
         typer.echo(
             f"{merged:<60} "

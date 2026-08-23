@@ -59,6 +59,7 @@ from moneybin.protocol.pagination import (
     build_keyset_page,
     decode_keyset_cursor,
 )
+from moneybin.services.account_resolution_types import matchable_account_name
 from moneybin.services.account_service import AccountService
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.entity_reference import (
@@ -227,7 +228,7 @@ def _resolve_transaction_account(reference: str, service: AccountService) -> str
     candidates = [
         EntityCandidate(
             entity_id=row.account_id,
-            display_name=row.display_name or row.account_id,
+            display_name=matchable_account_name(row.display_name),
             aliases=tuple(
                 value
                 for value in (

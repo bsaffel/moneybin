@@ -34,6 +34,10 @@ from moneybin.privacy.payloads.accounts import (
     AccountSummaryStats,
 )
 from moneybin.protocol.envelope import build_envelope
+from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
+    is_a_name,
+)
 from moneybin.services.account_service import (
     CLEAR,
     AccountService,
@@ -90,7 +94,14 @@ def accounts_list(
         )
         return
     for acct in result.rows:
-        display = acct.display_name or acct.account_id
+        # Print the id beside the label nothing-can-name rows share. `set` takes
+        # an id and the resolvers refuse that label, so a row carrying only the
+        # label names an account the reader is then unable to act on.
+        display = (
+            acct.display_name
+            if is_a_name(acct.display_name)
+            else f"{UNNAMED_ACCOUNT_LABEL} ({acct.account_id})"
+        )
         institution = acct.institution_name or ""
         acct_type = acct.account_type or ""
         typer.echo(f"  {display}  [{institution}]  {acct_type}")

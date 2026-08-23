@@ -1164,6 +1164,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **An account with nothing to identify it now reads `Unnamed account`, not
+  `Account <id>`.** `core.dim_accounts.display_name` ended its fallback chain
+  with the account's grain key, which for an account imported before the
+  identity resolver is the institution's own account number — so a column
+  declared to hold user notes could surface one, including through the
+  `reports.*` models that project it as `account_name`. The id is dropped from
+  that fallback entirely rather than shown only where it is safe, because the
+  staging layer resolves the key before `dim_accounts` sees it and the model
+  cannot tell the two cases apart. `accounts links pending`, `accounts links
+  history` and the MCP `reviews` summaries render the same phrase for an
+  account whose name is absent, so one state no longer reads two ways in one
+  table. An account that has only a last four is now named by it — `…4521`, or
+  `checking …4521` — rather than falling to the placeholder, so accounts that
+  differ still read differently in account lists and reports. Because that
+  placeholder is one shared string, matching on it is refused everywhere a name
+  identifies an account: it no longer proposes a merge between two unnameable
+  accounts, `accounts` resolve no longer returns them at full confidence to
+  anyone who types it back, and neither the strict resolver behind `--account`
+  nor the account-reference matching in the `accounts`, `transactions` and
+  `investments` tools binds it to whichever account happens to wear it — which
+  had let a categorization, an investment write, a balance assertion or a sheet
+  connection land on an account the caller never chose. Such an account offers
+  no name to match rather than offering its id: an account with no resolver
+  link carries the institution's own account number as its id, and the
+  not-found error lists every candidate's name into a message the CLI writes to
+  its durable log. It is still addressable by that id, which `moneybin accounts
+  list` now prints beside the placeholder — the listing had been the one place
+  the id was legible, and `accounts set` takes nothing else. Setting that
+  placeholder as an account's *own* name is now refused, which nothing had
+  stopped: once set, an account MoneyBin could perfectly well name dropped out
+  of the same lookups the generated placeholder is filtered from, silently. The
+  refusal folds the name with the same `normalize_reference` the resolver's
+  third rung matches on, so a case variant, padding, a doubled space or an
+  NFKC-equivalent character is refused too: anything that fold collapses onto
+  the label would otherwise answer a request for the label *another* account
+  displays, and with generated placeholders filtered out of the candidate-name
+  slot such a row is the unique hit. Reserving on a narrower fold than the
+  matcher uses would leave exactly that difference as a hole. The check sits on
+  the write path, not in `AccountSettings.__post_init__`, so a row that already
+  carries the label still loads rather than raising on read (#435).
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last
   four as evidence; where MoneyBin holds nothing to tell two accounts apart the

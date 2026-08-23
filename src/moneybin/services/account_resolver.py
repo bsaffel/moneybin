@@ -19,7 +19,7 @@ import duckdb
 
 from moneybin.database import Database
 from moneybin.extractors.institution_resolution import slug_for_institution_name
-from moneybin.extractors.tabular.account_matching import match_account
+from moneybin.extractors.tabular.account_matching import AccountMatch, match_account
 from moneybin.metrics.observations import MetricObservations, record_observation
 from moneybin.metrics.registry import (
     ACCOUNT_LINK_CONFIDENCE,
@@ -32,6 +32,7 @@ from moneybin.services.account_resolution_types import (
     AccountProposal,
     ResolvedAccount,
     SourceAccount,
+    is_a_name,
     normalize_account_identifier,
 )
 from moneybin.services.pdf_account_identity import legacy_pdf_identifier_key
@@ -103,15 +104,15 @@ def fetch_core_display_names(
     + subtype + masked last four — which is why the taxonomy classes it
     ``USER_NOTE``, the same class the frozen decision columns declare.
 
-    With one exception, which the query below refuses: the model's label ends in
-    a terminal ``'Account ' || w.account_id`` branch so the column is never
-    NULL, and that id is the source-native key for any account carrying no
-    accepted link -- for OFX, the institution's own ``<ACCTID>``, classed
-    ``INSTITUTION_ACCOUNT_NUMBER``. The ``USER_NOTE`` declaration is true of
-    every other branch and false of that one, so this reader declines to trust
-    the declaration where the model contradicts it. Making the declaration true
-    means fixing the model, which every other reader of ``display_name`` needs
-    too; this only stops the value being frozen.
+    The model used to contradict that declaration: its label ended in a terminal
+    ``'Account ' || w.account_id`` branch, and that id is the source-native key
+    for any account carrying no accepted link -- for OFX, the institution's own
+    ``<ACCTID>``, classed ``INSTITUTION_ACCOUNT_NUMBER``. The model now ends in
+    the literal ``'Unnamed account'`` instead, so the ``USER_NOTE`` declaration
+    is true of every branch and the query below refuses a label the model can no
+    longer produce. It is kept as a second line of defence: the model is one
+    edit away from reintroducing an id-bearing label, and this reader is the
+    only thing standing between that and a frozen decision column.
 
     The raw fallback derives its label from ``account_number`` /
     ``account_number_masked``, both classed ``INSTITUTION_ACCOUNT_NUMBER``
@@ -132,15 +133,17 @@ def fetch_core_display_names(
     placeholders = ", ".join("?" * len(ids))
     try:
         rows = db.execute(
-            # Refuse the model's terminal label in SQL, so the id it embeds
-            # never reaches Python. `dim_accounts.display_name` ends in
-            # `'Account ' || w.account_id`, and for an account with no accepted
-            # link that id is the source-native key -- for OFX, the
-            # institution's own <ACCTID>. Equality against that exact
-            # expression is a structural test, not a guess at what an account
-            # number looks like: such a label carries nothing the id does not,
-            # so the masked last four answers instead and an account without
-            # one drops out.
+            # Second line of defence. `dim_accounts` no longer ends its
+            # display-name chain in `'Account ' || w.account_id` -- the terminal
+            # arm is now the literal 'Unnamed account', so this CASE matches
+            # nothing the current model can produce. It is kept deliberately:
+            # the model is one edit away from reintroducing an id-bearing label,
+            # and for an account with no accepted link that id is the
+            # source-native key -- for OFX, the institution's own <ACCTID>.
+            # Equality against that exact expression is a structural test, not a
+            # guess at what an account number looks like: such a label carries
+            # nothing the id does not, so the masked last four answers instead
+            # and an account without one drops out.
             "SELECT account_id, CASE "
             "WHEN display_name = 'Account ' || account_id "
             "THEN '…' || NULLIF(TRIM(last_four), '') "
@@ -349,7 +352,7 @@ def _retyped_reissue_candidates(
     reintroduce the evidence-free merge proposal the veto exists to prevent.
     """
     target_inst = _institution_key(src.institution) if src.institution else None
-    if not target_inst:
+    if not target_inst or not is_a_name(src.account_name):
         return []
     vetoed = [
         {"account_id": str(row[0]), "account_name": str(row[1] or "")}
@@ -357,6 +360,7 @@ def _retyped_reissue_candidates(
         if _last_fours_disagree(src.last_four, row[2])
         and row[3]
         and _institution_key(str(row[3])) == target_inst
+        and is_a_name(row[1])
     ]
     if not vetoed:
         return []
@@ -1037,9 +1041,13 @@ class AccountResolver:
             existing = [
                 {"account_id": str(r[0]), "account_name": str(r[1] or "")}
                 for r in name_rows
-                if not _last_fours_disagree(src.last_four, r[2])
+                if not _last_fours_disagree(src.last_four, r[2]) and is_a_name(r[1])
             ]
-            result = match_account(src.account_name, existing_accounts=existing)
+            result = (
+                match_account(src.account_name, existing_accounts=existing)
+                if is_a_name(src.account_name)
+                else AccountMatch(matched=False)
+            )
             if result.matched and result.account_id:
                 # Exact slug match: still a weak signal — proposed for review,
                 # never auto-merged (match_account returns it via account_id, not

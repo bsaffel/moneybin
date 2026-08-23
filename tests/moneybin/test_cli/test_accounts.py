@@ -16,6 +16,7 @@ from moneybin.privacy.payloads.accounts import (
     AccountSummary,
     AccountSummaryStats,
 )
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.account_service import CLEAR
 
 
@@ -193,6 +194,53 @@ class TestAccountsList:
         svc.list_accounts.assert_called_once_with(
             include_archived=False, type_filter="CHECKING"
         )
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.commands.accounts.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_list_shows_the_id_of_an_account_nothing_can_name(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """The sentinel is not a selector, and `accounts set` takes only an id."""
+        mock_get_db.return_value = MagicMock()
+        svc = mock_svc_cls.return_value
+        svc.list_accounts.return_value = AccountListPayload(
+            rows=[
+                _as_account_summary(
+                    _make_account("acct_nameless", UNNAMED_ACCOUNT_LABEL)
+                )
+            ]
+        )
+
+        result = runner.invoke(app, ["accounts", "list"])
+
+        assert result.exit_code == 0, result.stderr
+        assert "acct_nameless" in result.stdout
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.commands.accounts.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_list_leaves_a_named_account_row_alone(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """Only the rows that lost their selector get one back."""
+        mock_get_db.return_value = MagicMock()
+        svc = mock_svc_cls.return_value
+        svc.list_accounts.return_value = AccountListPayload(
+            rows=[_as_account_summary(_ACCOUNT_A)]
+        )
+
+        result = runner.invoke(app, ["accounts", "list"])
+
+        assert result.exit_code == 0, result.stderr
+        assert "Chase Checking" in result.stdout
+        assert "acct_a" not in result.stdout
 
 
 class TestAccountsSummary:

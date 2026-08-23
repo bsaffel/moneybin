@@ -99,6 +99,7 @@ from moneybin.protocol.pagination import (
     encode_keyset_cursor,
 )
 from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.identity_confirmation import (
@@ -496,7 +497,7 @@ def _pending_account_link_rows(
         decision_id = payload.candidates[0].decision_id
         # Both, not either. The name is what an agent chooses by and the id is
         # what it acts on, so "name or id" left every row missing one of them.
-        label = payload.provisional_display_name or "unnamed account"
+        label = payload.provisional_display_name or UNNAMED_ACCOUNT_LABEL
         result.append(
             AccountLinkReviewRow(
                 decision_id=decision_id,
@@ -525,9 +526,9 @@ def _account_link_history_rows(
                 status=decision.status,
                 created_at=decision.decided_at,
                 summary=(
-                    f"{decision.provisional_display_name or 'unnamed account'} "
+                    f"{decision.provisional_display_name or UNNAMED_ACCOUNT_LABEL} "
                     f"[{decision.provisional_account_id}] to "
-                    f"{decision.candidate_display_name or 'unnamed account'} "
+                    f"{decision.candidate_display_name or UNNAMED_ACCOUNT_LABEL} "
                     f"[{decision.candidate_account_id}]: {decision.status}"
                 ),
                 details=AccountLinkHistoryDetails(decision=decision),

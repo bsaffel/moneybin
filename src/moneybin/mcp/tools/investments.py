@@ -80,6 +80,7 @@ from moneybin.protocol.pagination import (
     decode_keyset_cursor,
     encode_keyset_cursor,
 )
+from moneybin.services.account_resolution_types import matchable_account_name
 from moneybin.services.account_service import AccountService
 from moneybin.services.entity_reference import (
     AmbiguousEntity,
@@ -1085,7 +1086,7 @@ def _coarse_account_candidates(service: AccountService) -> list[EntityCandidate]
     return [
         EntityCandidate(
             entity_id=row.account_id,
-            display_name=row.display_name or row.account_id,
+            display_name=matchable_account_name(row.display_name),
             aliases=tuple(
                 value
                 for value in (

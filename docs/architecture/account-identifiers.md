@@ -114,7 +114,7 @@ Same real-world account, loaded twice:
 
 User-controlled fields (`display_name`, `archived`, `include_in_net_worth`, `last_four`, `account_subtype`, `holder_category`, `currency_code`, `credit_limit`, `official_name`) live in `app.account_settings`, keyed by `account_id`. `core.dim_accounts` `LEFT JOIN`s this table at refresh time so consumers see one resolved view. No consumer joins `app.account_settings` directly — the dim is the single source of truth. See [`docs/reference/data-model.md`](../reference/data-model.md#coredim_accounts) for the column list.
 
-`display_name` resolution falls back in order: user override → derived default (`institution_name + ' ' + account_type + ' …' + RIGHT(account_id, 4)`) → bare `account_id`. Renaming an account through `moneybin accounts set --display-name "..."` only writes to `app.account_settings`; `account_id` does not change.
+`display_name` resolution falls back in order: user override → derived default (`institution_name + ' ' + account_subtype + ' …' + last_four`) → progressively shorter combinations of institution, subtype and last four → the literal `Unnamed account`. The last four comes from `app.account_settings.last_four` or the per-source derivation, never from the `account_id`, and the terminal is the literal rather than the id: for an account with no accepted link the id is the institution's own account number. Renaming an account through `moneybin accounts set --display-name "..."` only writes to `app.account_settings`; `account_id` does not change.
 
 ## Identifier stability
 

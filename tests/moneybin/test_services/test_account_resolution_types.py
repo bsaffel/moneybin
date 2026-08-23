@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from moneybin.services.account_resolution_types import AccountCandidate, AccountProposal
+from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
+    AccountCandidate,
+    AccountProposal,
+    matchable_account_name,
+)
 
 
 def test_account_proposal_round_trips_to_dict() -> None:
@@ -112,3 +117,34 @@ def test_a_mint_with_a_candidate_still_requires_confirm() -> None:
         adopted_via=None,
     )
     assert proposal.requires_confirm is True
+
+
+def test_the_sentinel_is_not_a_matchable_account_name() -> None:
+    """Every unnameable account wears the identical label, so it matches nothing.
+
+    A string comparison against it reports a perfect match between two accounts
+    that agree on nothing at all.
+    """
+    assert matchable_account_name(UNNAMED_ACCOUNT_LABEL) == ""
+
+
+def test_an_absent_name_is_not_a_matchable_account_name() -> None:
+    """Empty compares equal to itself, so it is refused for the same reason."""
+    assert matchable_account_name(None) == ""
+    assert matchable_account_name("") == ""
+
+
+def test_a_real_name_is_left_alone() -> None:
+    """A name the user or the dim actually produced stays the matchable name."""
+    assert matchable_account_name("Chase Checking") == "Chase Checking"
+
+
+def test_no_account_id_reaches_the_matchable_name() -> None:
+    """The name slot is rendered into error text that persists to the CLI log.
+
+    An account with no resolver link carries its source-native key as its
+    ``account_id`` -- on OFX a real ``<ACCTID>``. Substituting the id for an
+    absent name puts an account number in the one field this contract prints.
+    """
+    for absent in (UNNAMED_ACCOUNT_LABEL, None, ""):
+        assert "acct_secret" not in matchable_account_name(absent)
