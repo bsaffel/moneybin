@@ -1160,6 +1160,56 @@ class TestAccountServiceResolveStrict:
         with pytest.raises(AccountNotFoundError):
             AccountService(extended_db).resolve_strict("acct_old")
 
+    @pytest.mark.unit
+    def test_the_unnamed_sentinel_is_not_a_strict_reference(
+        self, extended_db: Database
+    ) -> None:
+        """A lone unnameable account must not answer to the label it displays.
+
+        The ambiguity guard only fires from two sentinel rows up; one is the
+        ordinary case, and there the label reads as a unique exact match. This
+        resolver feeds investment mutations, transaction categorization and
+        sheet bindings, so a silent hit writes to an account nobody picked.
+        """
+        from moneybin.services.account_resolution_types import (
+            UNNAMED_ACCOUNT_LABEL,
+        )
+        from moneybin.services.account_service import (
+            AccountNotFoundError,
+            AccountService,
+        )
+
+        _insert_dim_account(
+            extended_db,
+            "nameless",
+            display_name=UNNAMED_ACCOUNT_LABEL,
+            institution_name=None,
+        )
+        with pytest.raises(AccountNotFoundError):
+            AccountService(extended_db).resolve_strict(UNNAMED_ACCOUNT_LABEL)
+
+    @pytest.mark.unit
+    def test_an_unnameable_account_still_resolves_by_its_id(
+        self, extended_db: Database
+    ) -> None:
+        """Refusing the label must not stop the account being addressable.
+
+        The id is the caller's remaining handle on an account core could not
+        name; taking that away would make the row unusable rather than safe.
+        """
+        from moneybin.services.account_resolution_types import (
+            UNNAMED_ACCOUNT_LABEL,
+        )
+        from moneybin.services.account_service import AccountService
+
+        _insert_dim_account(
+            extended_db,
+            "nameless",
+            display_name=UNNAMED_ACCOUNT_LABEL,
+            institution_name=None,
+        )
+        assert AccountService(extended_db).resolve_strict("nameless") == "nameless"
+
 
 class TestNullAccountType:
     """A NULL account_type must not surface as the string "None".

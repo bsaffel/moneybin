@@ -801,7 +801,9 @@ class AccountService:
         Lookup order:
 
         1. Exact ``account_id`` match (case-sensitive — ids are slugs).
-        2. Case-insensitive exact ``display_name`` match.
+        2. Case-insensitive exact ``display_name`` match, excluding the
+           ``UNNAMED_ACCOUNT_LABEL`` sentinel — it names no account, so
+           it must not resolve to the one that happens to wear it.
 
         Raises ``AmbiguousAccountError`` when step 2 returns more than
         one row. Raises ``AccountNotFoundError`` when neither step
@@ -835,6 +837,13 @@ class AccountService:
             """,  # noqa: S608  # TableRef constant
             [account_ref],
         ).fetchall()
+        # Every account core could not name carries the same label, so the
+        # ambiguity guard below only catches the case of two or more. One is
+        # the ordinary case, and there the sentinel reads as a unique exact
+        # match -- binding a categorization, investment write or sheet to an
+        # account the caller never chose. Filter the row's label rather than
+        # the query so any casing of the reference is refused.
+        matches = [match for match in matches if is_a_name(str(match[1]))]
         if len(matches) == 1:
             return str(matches[0][0])
         if len(matches) > 1:

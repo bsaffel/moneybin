@@ -1164,9 +1164,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   table. An account that has only a last four is now named by it — `…4521`, or
   `checking …4521` — rather than falling to the placeholder, so accounts that
   differ still read differently in account lists and reports. Because that
-  placeholder is one shared string, matching on it is refused: it no longer
-  proposes a merge between two unnameable accounts, and `accounts` resolve no
-  longer returns them at full confidence to anyone who types it back (#435).
+  placeholder is one shared string, matching on it is refused everywhere a name
+  identifies an account: it no longer proposes a merge between two unnameable
+  accounts, `accounts` resolve no longer returns them at full confidence to
+  anyone who types it back, and the strict resolver behind `--account` no
+  longer binds it to whichever account happens to wear it — which had let a
+  categorization, an investment write or a sheet connection land on an account
+  the caller never chose. Such an account is still addressable by its id
+  (#435).
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last
   four as evidence; where MoneyBin holds nothing to tell two accounts apart the
