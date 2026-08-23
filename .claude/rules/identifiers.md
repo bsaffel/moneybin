@@ -39,6 +39,8 @@ value depends on the channel and on what the caller pinned:
 | PDF, unpinned | `pdf_doc_<digest>` — MoneyBin-synthesized from the exact document bytes; account anchors are separate match evidence (`import_service.py:_pdf_source_account`) |
 | PDF pinned with `--account-id` | `pdf_doc_<digest>` — the same key as unpinned. A pin says WHICH account the document belongs to; it never renames the document, and travels in `explicit_account_id` alone |
 | Bare tabular (no account column) | `_bare_account_key(file_path, source_bytes)` — MoneyBin-synthesized from filename + content |
+| Tabular pinned with `--account-id` **and** `--account-name` | `slugify(account_name)` — the same key the named unpinned path derives |
+| Tabular pinned with `--account-id`, no `--account-name` | The key this account is already accepted under for this `source_type`/`source_origin`; `_bare_account_key` only on the first such import, which every later one then reuses. A content key alone would rotate each time a recurring export grows a row, and `account_id` folds into `transaction_id`, so the overlap would double-count. Refuses rather than guess when the account holds several keys for one source (`_pinned_native_key`) |
 | Other supported channel with `--account-id` pinned | The key that channel derives unpinned — a pin never replaces it. `source_account_key` is ALWAYS the source's own key; a canonical `account_id` there is pre-fix residue |
 
 **`account_id` is not unconditionally MoneyBin's either.** Nine staging models

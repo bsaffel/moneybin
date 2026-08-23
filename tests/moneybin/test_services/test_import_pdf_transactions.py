@@ -3115,3 +3115,56 @@ def test_account_id_pin_refuses_a_document_already_bound_elsewhere(
     [document_key] = list(linked)
     assert document_key.startswith("pdf_doc_")
     assert linked[document_key] == "acct_other01"
+
+
+def test_pdf_supersede_rolls_back_when_the_replacement_load_fails(
+    db: Database, tmp_path: Path
+) -> None:
+    """The PDF channel's supersede needs the same rollback as the tabular one.
+
+    Its ``except`` handler deletes by the NEW import's ``import_id``, but the
+    superseded rows carry the OLD one, so that cleanup can never restore them.
+    Only rolling the transaction back can.
+    """
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_type, institution_name, source_type) "
+        "VALUES ('acct_legacy01', 'CHECKING', 'Bank', 'pdf')"
+    )
+    doc = _make_doc(text_lines=_standard_text_lines(), tables=[_standard_table()])
+    svc = ImportService(db)
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    source_file = str(pdf.resolve())
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, source_file, "
+        "source_type, source_origin, import_id) VALUES "
+        "('acct_legacy01:legacy-1', 'acct_legacy01', DATE '2026-01-05', -1.00, "
+        "?, 'pdf', 'unknown', 'imp_legacy')",
+        [source_file],
+    )
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        patch.object(
+            Database,
+            "ingest_dataframe",
+            side_effect=RuntimeError("simulated write failure"),
+        ),
+        pytest.raises(RuntimeError, match="simulated write failure"),
+    ):
+        import_answering_gate(svc, pdf, refresh=False, account_id="acct_legacy01")
+
+    surviving = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND account_id = 'acct_legacy01'",
+        [source_file],
+    ).fetchone()
+    assert surviving is not None and surviving[0] == 1, (
+        "a failed load committed the supersede and destroyed the legacy rows"
+    )

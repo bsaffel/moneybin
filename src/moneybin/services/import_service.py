@@ -2263,6 +2263,52 @@ class ImportService:
             )
         )
 
+    def _pinned_native_key(
+        self,
+        *,
+        resolver: AccountResolver,
+        account_id: str,
+        file_path: Path,
+        source_bytes: bytes | None,
+        source_type: str,
+        source_origin: str,
+    ) -> str:
+        """The native key a pinned import with no ``--account-name`` should use.
+
+        ``_bare_account_key`` hashes the file's bytes, which identifies a
+        *document*: stable for an unchanged file, different the moment a
+        recurring export grows by a row. ``account_id`` is folded into
+        ``transaction_id``, so a rotated key re-keys every row already imported
+        and both copies clear the ``(transaction_id, account_id)`` dedup —
+        double-counting the overlap, which is the very thing the pin exists to
+        prevent. No file-derived key escapes this: a content hash breaks when
+        the file grows, a filename breaks when it is renamed.
+
+        So the pin itself carries the identity. Reuse the key this account
+        already resolved to for this source; the first import has none and
+        falls back to the content hash, which every later pinned import then
+        finds. Nothing canonical enters the key-space — the key stays the one
+        the document itself produced.
+
+        Refuses rather than guesses when the account holds several keys for one
+        source: picking one would silently bind this file to whichever sorted
+        first, and ``--account-name`` states the answer explicitly.
+        """
+        keys = resolver.accepted_native_keys_for_account(
+            account_id=account_id,
+            source_type=source_type,
+            source_origin=source_origin,
+        )
+        if len(keys) == 1:
+            return keys[0]
+        if len(keys) > 1:
+            raise ValueError(
+                f"--account-id {account_id} already has {len(keys)} source keys "
+                f"for {source_type}/{source_origin}; pass --account-name to say "
+                "which account in this file the pin refers to"
+            )
+        return _bare_account_key(file_path, source_bytes=source_bytes)
+
     def _supersede_legacy_pinned_raw_rows(self, source_file: str) -> None:
         """Drop raw rows a pre-fix ``--account-id`` pin wrote under the canonical id.
 
@@ -2296,7 +2342,11 @@ class ImportService:
                     f"(SELECT account_id FROM {DIM_ACCOUNTS.full_name})",
                     [source_file],
                 )
-            except Exception as e:  # noqa: BLE001 — core.dim_accounts may not exist yet
+            except duckdb.CatalogException as e:
+                # core.dim_accounts is absent until the first transform runs, and
+                # a database with no transform has no residue to supersede. Any
+                # other error is a real failure and must reach the caller's
+                # rollback rather than leave the delete half-applied.
                 logger.debug(
                     f"legacy pinned-row supersede skipped for {table.name}: {e}"
                 )
@@ -3118,7 +3168,14 @@ class ImportService:
             native_key = (
                 slugify(account_name)
                 if account_name
-                else _bare_account_key(file_path, source_bytes=source_bytes)
+                else self._pinned_native_key(
+                    resolver=resolver,
+                    account_id=account_id,
+                    file_path=file_path,
+                    source_bytes=source_bytes,
+                    source_type=source_type,
+                    source_origin=source_origin,
+                )
             )
             account_ids: str | list[str] = native_key
             # Parse only a real display label, never a derived key: both a
@@ -3429,9 +3486,26 @@ class ImportService:
             "import_id": [import_id] * len(unique_ids),
         })
 
-        self._supersede_legacy_pinned_raw_rows(str(file_path))
-        rows_imported = extractor.load_transactions(transform_result.transactions)
-        extractor.load_accounts(account_df)
+        # One transaction: the supersede deletes exactly the rows this load
+        # replaces, so a load that fails must take the delete with it. Letting
+        # the delete stand alone destroys transactions the user may hold no
+        # other copy of — worse than the double-count it prevents.
+        # in_outer_txn means the caller already owns one (the MCP confirm flow
+        # wraps a whole import); opening a second here raises, and committing
+        # would end their transaction early.
+        owns_txn = not in_outer_txn
+        if owns_txn:
+            self._db.begin()
+        try:
+            self._supersede_legacy_pinned_raw_rows(str(file_path))
+            rows_imported = extractor.load_transactions(transform_result.transactions)
+            extractor.load_accounts(account_df)
+        except BaseException:
+            if owns_txn:
+                self._db.rollback()
+            raise
+        if owns_txn:
+            self._db.commit()
 
         extractor.finalize_import_batch(
             import_id=import_id,
@@ -5004,6 +5078,7 @@ class ImportService:
 
         transactions_extracted = len(rows_list)
 
+        owns_txn = not in_outer_txn
         try:
             # The account-identity upgrade changed the account token inside PDF
             # transaction hashes. If the exact legacy hash already exists, keep
@@ -5059,6 +5134,15 @@ class ImportService:
             # `WHERE transaction_id IN () AND ...`, which DuckDB rejects, and
             # the failure would land AFTER raw rows had already been ingested
             # — leaving import_log stuck in 'importing' status.
+            # One transaction through the account ingest below: the supersede
+            # deletes exactly the rows this import replaces, and those rows
+            # carry the OLD import_id, so the import_id-scoped cleanup in the
+            # handler below cannot put them back. Only a rollback can.
+            # in_outer_txn means the caller already owns one and will roll the
+            # whole import back itself — opening a second here would commit
+            # their transaction out from under them.
+            if owns_txn:
+                self._db.begin()
             self._supersede_legacy_pinned_raw_rows(str(canonical))
             tx_ids = [r["transaction_id"] for r in rows_list]
             src_file = str(canonical)
@@ -5141,8 +5225,13 @@ class ImportService:
             self._db.ingest_dataframe(
                 TABULAR_ACCOUNTS.full_name, account_df, on_conflict="ignore"
             )
+            if owns_txn:
+                self._db.commit()
 
         except Exception:
+            # Restores the superseded rows; the import_id cleanup below cannot.
+            if owns_txn:
+                self._db.rollback()
             for table_ref in (TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS):
                 try:
                     self._db.execute(

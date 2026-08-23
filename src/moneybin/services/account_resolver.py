@@ -707,6 +707,28 @@ class AccountResolver:
         ).fetchone()
         return row[0] if row is not None else None
 
+    def accepted_native_keys_for_account(
+        self, *, account_id: str, source_type: str, source_origin: str
+    ) -> list[str]:
+        """Native keys this canonical account is already accepted under, for one source.
+
+        The reverse of :meth:`accepted_native_account_id`, and scoped the same
+        way: one account legitimately holds several native keys (two exports of
+        the same account, each with its own key), so the answer is a list and
+        the caller decides what a non-singleton means.
+
+        Ordered by ``ref_value`` purely so a caller that refuses on ambiguity
+        reports the same pair every run.
+        """
+        rows = self._db.execute(
+            f"SELECT ref_value FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            "WHERE status = 'accepted' AND ref_kind = 'source_native' "
+            "AND account_id = ? AND source_type = ? AND source_origin = ? "
+            "ORDER BY ref_value",
+            [account_id, source_type, source_origin],
+        ).fetchall()
+        return [str(r[0]) for r in rows]
+
     def knows_account_id(self, account_id: str) -> bool:
         """Whether this database already has an account under this canonical id.
 

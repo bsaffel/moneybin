@@ -1739,3 +1739,126 @@ class TestTabularConfirmationFlow:
 
         assert first.import_id is not None
         assert replay.import_id is not None
+
+
+def test_supersede_rolls_back_when_the_replacement_load_fails(db: Database) -> None:
+    """A failed load must not leave the superseded rows deleted.
+
+    The supersede deletes a pre-fix pin's rows so this import can write the ones
+    that replace them. Committing that delete on its own, when the replacement
+    never lands, destroys transactions the user may hold no other copy of --
+    strictly worse than the double-count the supersede exists to prevent.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_type, institution_name, source_type) "
+        "VALUES ('acct_legacy01', 'CHECKING', 'Bank', 'csv')"
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, source_file, "
+        "source_type, source_origin, import_id) VALUES "
+        "('acct_legacy01:legacy-1', 'acct_legacy01', DATE '2026-01-05', -52.30, "
+        "?, 'csv', 'unknown', 'imp_legacy')",
+        [str(_STANDARD_CSV)],
+    )
+
+    with (
+        patch(
+            "moneybin.extractors.tabular.extractor.TabularExtractor.load_transactions",
+            side_effect=RuntimeError("simulated write failure"),
+        ),
+        pytest.raises(RuntimeError, match="simulated write failure"),
+    ):
+        import_answering_gate(
+            ImportService(db),
+            _STANDARD_CSV,
+            account_name="Primary Checking",
+            account_id="acct_legacy01",
+            refresh=False,
+            confirm=True,
+            auto_accept=True,
+        )
+
+    surviving = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND account_id = 'acct_legacy01'",
+        [str(_STANDARD_CSV)],
+    ).fetchone()
+    assert surviving is not None and surviving[0] == 1, (
+        "a failed load committed the supersede and destroyed the legacy rows"
+    )
+
+
+def test_pinned_reimport_without_a_name_keeps_the_same_native_key(
+    db: Database, tmp_path: Path
+) -> None:
+    """A pinned account's native key must survive the export growing by a row.
+
+    ``--account-id`` and ``--account-name`` are independent flags, so a pin with
+    no name is a documented invocation. Deriving that import's native key from
+    the file's bytes rotates it every time a recurring export grows, and
+    ``account_id`` is folded into ``transaction_id``, so every already-imported
+    row re-keys and survives the ``(transaction_id, account_id)`` dedup a second
+    time. The pin already names the account -- reuse the key it resolved to.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_type, institution_name, source_type) "
+        "VALUES ('acct_pinned01', 'CHECKING', 'Bank', 'csv')"
+    )
+
+    header = "Date,Description,Amount,Balance\n"
+    first = "2026-01-05,GROCERY STORE PURCHASE,-52.30,3947.70\n"
+    export = tmp_path / "export.csv"
+    export.write_text(header + first)
+    import_answering_gate(
+        ImportService(db),
+        export,
+        account_id="acct_pinned01",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+    keys_first = db.execute(
+        "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ?",
+        [str(export)],
+    ).fetchall()
+
+    # The same recurring export, one new row appended.
+    export.write_text(
+        header + first + "2026-01-06,DIRECT DEPOSIT PAYROLL,2500.00,6447.70\n"
+    )
+    import_answering_gate(
+        ImportService(db),
+        export,
+        account_id="acct_pinned01",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+        force=True,
+    )
+
+    keys_second = db.execute(
+        "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ?",
+        [str(export)],
+    ).fetchall()
+    assert keys_second == keys_first, (
+        f"the grown export re-keyed the account: {keys_first} -> {keys_second}"
+    )
+    repeated = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND amount = -52.30",
+        [str(export)],
+    ).fetchone()
+    assert repeated is not None and repeated[0] == 1, (
+        "the row present in both exports was stored twice"
+    )

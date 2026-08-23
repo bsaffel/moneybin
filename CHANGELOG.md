@@ -1236,8 +1236,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   folded into `transaction_id` and into the raw primary key, the corrected rows
   could not otherwise collide with the old ones and the upsert would insert a
   second copy beside them, so the import now deletes the pre-fix rows for that
-  file first and writes the ones that supersede them. No revert step is needed
-  (#438, #418).
+  file first and writes the ones that supersede them, both in one transaction
+  so a failed load restores what the delete removed. No revert step is needed.
+
+  A pin with no `--account-name` reuses the key its account is already accepted
+  under for that source rather than deriving a fresh one from the file's bytes:
+  a content key rotates every time a recurring export grows by a row, and since
+  `account_id` folds into `transaction_id`, the rows the two exports share
+  would each land twice. When the account already holds several keys for one
+  source the import refuses and asks for `--account-name` instead of picking
+  one (#438, #418).
 
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last
