@@ -19,7 +19,7 @@ import duckdb
 
 from moneybin.database import Database
 from moneybin.extractors.institution_resolution import slug_for_institution_name
-from moneybin.extractors.tabular.account_matching import match_account
+from moneybin.extractors.tabular.account_matching import AccountMatch, match_account
 from moneybin.metrics.observations import MetricObservations, record_observation
 from moneybin.metrics.registry import (
     ACCOUNT_LINK_CONFIDENCE,
@@ -340,6 +340,28 @@ def _dedupe_candidates(*groups: list[_Candidate]) -> list[_Candidate]:
     return combined
 
 
+def _is_a_name(display_name: str | None) -> bool:
+    """Whether a dim label can be matched on, or only says nothing names this.
+
+    Both rungs that feed ``core.dim_accounts.display_name`` to ``match_account``
+    ask this first, on the source name and on every candidate name.
+    ``UNNAMED_ACCOUNT_LABEL`` is one fixed string, so two accounts that reach
+    the dim's terminal arm carry byte-identical labels while agreeing on
+    nothing else -- and the terminal arm is reached precisely when institution,
+    subtype and type are all absent, which is the shape that skips the
+    institution+last4 rung and arrives at the name rung. Matched on, it files a
+    merge proposal whose entire evidence is that neither account could be
+    named.
+
+    Empty is refused for the same reason and by the same test: ``slugify("")``
+    equals itself, so a blank label would match every other blank one. The dim
+    cannot currently emit one -- the COALESCE terminates on the sentinel -- but
+    a predicate that is right about the sentinel and wrong about its neighbour
+    is not worth writing.
+    """
+    return bool(display_name) and display_name != UNNAMED_ACCOUNT_LABEL
+
+
 def _retyped_reissue_candidates(
     src: SourceAccount, name_rows: Sequence[Any]
 ) -> list[_Candidate]:
@@ -367,7 +389,7 @@ def _retyped_reissue_candidates(
     reintroduce the evidence-free merge proposal the veto exists to prevent.
     """
     target_inst = _institution_key(src.institution) if src.institution else None
-    if not target_inst:
+    if not target_inst or not _is_a_name(src.account_name):
         return []
     vetoed = [
         {"account_id": str(row[0]), "account_name": str(row[1] or "")}
@@ -375,6 +397,7 @@ def _retyped_reissue_candidates(
         if _last_fours_disagree(src.last_four, row[2])
         and row[3]
         and _institution_key(str(row[3])) == target_inst
+        and _is_a_name(row[1])
     ]
     if not vetoed:
         return []
@@ -1055,9 +1078,13 @@ class AccountResolver:
             existing = [
                 {"account_id": str(r[0]), "account_name": str(r[1] or "")}
                 for r in name_rows
-                if not _last_fours_disagree(src.last_four, r[2])
+                if not _last_fours_disagree(src.last_four, r[2]) and _is_a_name(r[1])
             ]
-            result = match_account(src.account_name, existing_accounts=existing)
+            result = (
+                match_account(src.account_name, existing_accounts=existing)
+                if _is_a_name(src.account_name)
+                else AccountMatch(matched=False)
+            )
             if result.matched and result.account_id:
                 # Exact slug match: still a weak signal — proposed for review,
                 # never auto-merged (match_account returns it via account_id, not

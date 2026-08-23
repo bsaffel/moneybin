@@ -14,6 +14,7 @@ from moneybin.services.account_resolver import (
     _FALLBACK_CANDIDATE_CAP,  # pyright: ignore[reportPrivateUsage]
     UNNAMED_ACCOUNT_LABEL,
     AccountResolver,
+    _retyped_reissue_candidates,  # pyright: ignore[reportPrivateUsage]
     fetch_core_display_names,
     fetch_display_name,
     fetch_display_names,
@@ -1314,6 +1315,64 @@ def test_propose_existing_does_not_flood_with_fallback(db: Database) -> None:
     )
     resolver = AccountResolver(db, actor="system")
     assert resolver.propose_existing("acct_a") is None
+
+
+def test_two_unnameable_accounts_do_not_propose_against_each_other(
+    db: Database,
+) -> None:
+    """Sharing "we cannot name this" is not evidence of being the same account.
+
+    ``UNNAMED_ACCOUNT_LABEL`` is one string, so the moment two accounts both
+    reach the dim's terminal arm they carry an identical ``display_name``.
+    Reaching that arm means institution, subtype and type are all absent (a
+    NULL institution alone empties every branch above it), so the
+    institution+last4 rung -- which needs an institution -- is skipped by
+    construction and the name rung is the one that fires. ``match_account``
+    slug-matches the two sentinels exactly and ``accounts links run`` files a
+    merge proposal whose whole evidence is that neither could be named.
+
+    The old ``'Account ' || account_id`` terminal hid this: two such labels
+    differ in their ids, so they neither slug-match nor clear the 0.6 fuzzy
+    threshold. Collapsing them onto one honest sentinel is still right --
+    printing the id was the defect -- but the matcher has to read the sentinel
+    as the absence of a name rather than as a name two accounts share.
+    """
+    create_core_tables(db)
+    _seed_dim_account(db, account_id="nameless_a", display_name=UNNAMED_ACCOUNT_LABEL)
+    _seed_dim_account(db, account_id="nameless_b", display_name=UNNAMED_ACCOUNT_LABEL)
+
+    resolver = AccountResolver(db, actor="system")
+
+    assert resolver.propose_existing("nameless_a") is None
+
+
+def test_the_reissue_rung_also_refuses_to_match_on_the_sentinel() -> None:
+    """The second call site of the same predicate, exercised directly.
+
+    ``_retyped_reissue_candidates`` feeds ``display_name`` to ``match_account``
+    just as the name rung does, so it inherits the same defect: two sentinels
+    slug-match, and it would relabel that non-evidence as an
+    ``institution_reissue`` pair.
+
+    Reached here by constructing the row shape rather than through the model.
+    It needs an institution to get past its first guard, and an account only
+    reaches the sentinel with ``institution_name`` NULL -- but the dim resolves
+    ``institution_slug`` from sources ``institution_name`` does not have (see
+    its own "not interchangeable" comment), and ``propose_existing`` reads the
+    slug. Whether the real model can produce that pair is unproven either way;
+    the guard costs one boolean and this pins it against a future reader who
+    removes it as dead.
+    """
+    src = _src(
+        account_name=UNNAMED_ACCOUNT_LABEL,
+        last_four="1234",
+        institution="chase",
+    )
+    # (account_id, display_name, last_four, institution_slug): same institution
+    # and a contradicting last four, which is exactly what this rung collects.
+    name_rows = [("other_nameless", UNNAMED_ACCOUNT_LABEL, "5678", "chase")]
+
+    assert _retyped_reissue_candidates(src, name_rows) == []
 
 
 def test_propose_existing_does_not_emit_reissue_candidates(db: Database) -> None:
