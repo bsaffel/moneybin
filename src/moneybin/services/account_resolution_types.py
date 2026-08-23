@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import string
 from dataclasses import dataclass
-from typing import NotRequired, TypedDict
+from typing import NotRequired, TypedDict, TypeGuard
 
 from moneybin.services.ledger_overlap import LedgerOverlap
 
@@ -41,7 +41,7 @@ other.
 """
 
 
-def is_a_name(display_name: str | None) -> bool:
+def is_a_name(display_name: str | None) -> TypeGuard[str]:
     """Whether a dim label identifies an account, or only says nothing names it.
 
     ``UNNAMED_ACCOUNT_LABEL`` is one fixed string, so every account that reaches
@@ -64,6 +64,24 @@ def is_a_name(display_name: str | None) -> bool:
     happens to be vague is still the user's name for the account.
     """
     return bool(display_name) and display_name != UNNAMED_ACCOUNT_LABEL
+
+
+def resolvable_account_name(display_name: str | None, account_id: str) -> str:
+    """The name an account answers to when a reference is resolved against it.
+
+    Four candidate builders project accounts into the shared
+    ``resolve_entity_reference`` contract, which matches a reference against a
+    candidate's name before falling back to nothing. They already substituted
+    the id for an absent name; the sentinel needs the same treatment for a
+    sharper reason. It is one fixed string worn by every account MoneyBin
+    could not name, so left in the name slot it reports an exact match on a
+    label that distinguishes nothing -- and two of these builders feed writes.
+
+    Substituting the id rather than dropping the candidate is deliberate: the
+    resolver checks ids before names, so removing the row would take away the
+    one handle such an account still has.
+    """
+    return display_name if is_a_name(display_name) else account_id
 
 
 class AccountCandidateDict(TypedDict):

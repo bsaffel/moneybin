@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from moneybin.services.account_resolution_types import AccountCandidate, AccountProposal
+from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
+    AccountCandidate,
+    AccountProposal,
+    resolvable_account_name,
+)
 
 
 def test_account_proposal_round_trips_to_dict() -> None:
@@ -112,3 +117,24 @@ def test_a_mint_with_a_candidate_still_requires_confirm() -> None:
         adopted_via=None,
     )
     assert proposal.requires_confirm is True
+
+
+def test_the_sentinel_is_not_a_resolvable_account_name() -> None:
+    """An account nothing could name answers to its id, never to the placeholder.
+
+    Every unnameable account carries the identical label, so leaving it in the
+    candidate's name slot reports an exact match on a string that tells two
+    accounts apart not at all.
+    """
+    assert resolvable_account_name(UNNAMED_ACCOUNT_LABEL, "acct_x") == "acct_x"
+
+
+def test_an_absent_name_still_falls_back_to_the_id() -> None:
+    """The pre-existing ``display_name or account_id`` fallback is preserved."""
+    assert resolvable_account_name(None, "acct_x") == "acct_x"
+    assert resolvable_account_name("", "acct_x") == "acct_x"
+
+
+def test_a_real_name_is_left_alone() -> None:
+    """A name the user or the dim actually produced stays the resolvable name."""
+    assert resolvable_account_name("Chase Checking", "acct_x") == "Chase Checking"

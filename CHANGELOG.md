@@ -1167,11 +1167,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   placeholder is one shared string, matching on it is refused everywhere a name
   identifies an account: it no longer proposes a merge between two unnameable
   accounts, `accounts` resolve no longer returns them at full confidence to
-  anyone who types it back, and the strict resolver behind `--account` no
-  longer binds it to whichever account happens to wear it — which had let a
-  categorization, an investment write or a sheet connection land on an account
-  the caller never chose. Such an account is still addressable by its id
-  (#435).
+  anyone who types it back, and neither the strict resolver behind `--account`
+  nor the account-reference matching in the `accounts`, `transactions` and
+  `investments` tools binds it to whichever account happens to wear it — which
+  had let a categorization, an investment write, a balance assertion or a sheet
+  connection land on an account the caller never chose. Such an account is
+  still addressable by its id (#435).
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last
   four as evidence; where MoneyBin holds nothing to tell two accounts apart the

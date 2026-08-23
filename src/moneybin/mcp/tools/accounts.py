@@ -98,6 +98,7 @@ from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
     AccountLinksService,
 )
+from moneybin.services.account_resolution_types import resolvable_account_name
 from moneybin.services.account_service import CLEAR, AccountService
 from moneybin.services.balance_service import (
     BalanceAssertionSnapshot,
@@ -1044,7 +1045,7 @@ def _account_candidates(payload: AccountListPayload) -> list[EntityCandidate]:
     """Project account rows into the shared deterministic resolver contract."""
     candidates: list[EntityCandidate] = []
     for account in payload.rows:
-        display_name = account.display_name or account.account_id
+        display_name = resolvable_account_name(account.display_name, account.account_id)
         aliases = tuple(
             dict.fromkeys(
                 value
