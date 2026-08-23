@@ -1109,7 +1109,8 @@ with nothing to pick. So `AccountResolver.propose()` (the **preview** that fills
 the gate envelope, not `resolve()`) supplies a **fallback** candidate list when
 the real matchers return nothing — the institution-scoped accounts if any match
 the source's institution, else *all* accounts (capped at `_FALLBACK_CANDIDATE_CAP`),
-tagged `signal="institution"` / `signal="fallback"` at low confidence (0.2 / 0.1).
+tagged `signal="institution"` / `signal="fallback"` — the ladder's two weakest
+rungs, and, like every candidate, surfaced with no confidence number.
 These are gate-only decision support: they widen what the confirmer can pick, and
 are **never eligible for silent auto-adopt** (only `explicit` / strong-ref signals
 are). `resolve()` is untouched — confirming "new" still mints with zero candidates.
