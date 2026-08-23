@@ -276,13 +276,15 @@ SELECT
     w.institution_name || ' …' || COALESCE(s.last_four, w.last_four_derived),
     w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type),
     w.institution_name,
+    COALESCE(s.account_subtype, w.account_subtype, w.account_type) || ' …' || COALESCE(s.last_four, w.last_four_derived),
     COALESCE(s.account_subtype, w.account_subtype, w.account_type),
+    '…' || COALESCE(s.last_four, w.last_four_derived),
     'Unnamed account' /* Nothing left to name it by: no institution, subtype, type or last four.
        The id is not a fallback name — for an account with no accepted link it
        IS the institution's own account number, and the dim cannot tell that
        case apart (see grain_key above). Naming no account at all beats naming
        one with a number, and this column feeds reports.* as account_name. */
-  ) AS display_name, /* Resolved display label: user override → derived (institution+subtype-or-type[+last4]; the subtype is preferred because 'checking' reads to a human where the canonical 'depository' does not) → institution+last4 → institution or type alone → the literal 'Unnamed account' terminal so it is never NULL and never an id. The institution+last4 branch is what keeps two typeless accounts at one institution distinguishable; without it both collapse to the bare institution name. */
+  ) AS display_name, /* Resolved display label: user override → institution+subtype-or-type+last4 → institution+last4 → institution+subtype-or-type → institution → subtype-or-type+last4 → subtype-or-type → last4 alone → the literal 'Unnamed account' terminal, so it is never NULL and never an id. The subtype is preferred over the type because 'checking' reads to a human where the canonical 'depository' does not. A last four outranks the category it sits beside at every level: 'checking' is shared by every checking account, while the last four is what tells two of them apart, and it is already published in its own column and printed as confirm evidence. */
   COALESCE(s.official_name, w.official_name) AS official_name, /* Institution's formal account name: user override (app.account_settings) else Plaid official_name */
   COALESCE(s.last_four, w.last_four_derived) AS last_four, /* Last 4 of account number: user-set app.account_settings.last_four, else derived per source (OFX source_account_key digits, Plaid mask, tabular account_number/masked). Never the full number. */
   COALESCE(s.account_subtype, w.account_subtype) AS account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...): user override else Plaid subtype */

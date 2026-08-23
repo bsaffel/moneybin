@@ -1161,7 +1161,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cannot tell the two cases apart. `accounts links pending`, `accounts links
   history` and the MCP `reviews` summaries render the same phrase for an
   account whose name is absent, so one state no longer reads two ways in one
-  table (#435).
+  table. An account that has only a last four is now named by it — `…4521`, or
+  `checking …4521` — rather than falling to the placeholder, so accounts that
+  differ still read differently in account lists and reports. Because that
+  placeholder is one shared string, matching on it is refused: it no longer
+  proposes a merge between two unnameable accounts, and `accounts` resolve no
+  longer returns them at full confidence to anyone who types it back (#435).
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last
   four as evidence; where MoneyBin holds nothing to tell two accounts apart the

@@ -88,14 +88,15 @@ def _insert_tabular_account(
     account_type: str | None,
     extracted_at: str,
     source_origin: str = "test_bank_tab",
+    account_number: str | None = None,
 ) -> None:
     db.execute(
         """
         INSERT INTO raw.tabular_accounts
             (account_id, account_name, account_type, institution_name,
-             source_file, source_type, source_origin, import_id,
-             extracted_at, loaded_at)
-        VALUES (?, ?, ?, ?, '/tmp/test.csv', 'csv', ?, 'imp-tab-001',
+             account_number, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES (?, ?, ?, ?, ?, '/tmp/test.csv', 'csv', ?, 'imp-tab-001',
                 ?::TIMESTAMP, ?::TIMESTAMP)
         """,  # noqa: S608  # test fixture
         [
@@ -103,6 +104,7 @@ def _insert_tabular_account(
             account_name,
             account_type,
             institution_name,
+            account_number,
             source_origin,
             extracted_at,
             extracted_at,
@@ -444,3 +446,76 @@ def test_the_terminal_label_omits_the_id_even_when_the_id_is_safe(
     # terminal arm and the Python fallback every surface uses are compared
     # after a real plan, so a drift in either copy has to fail here.
     assert row[0] == UNNAMED_ACCOUNT_LABEL
+
+
+@pytest.mark.slow
+def test_a_last_four_alone_names_an_account_the_sentinel_would_have_taken(
+    db: Database,
+) -> None:
+    """A last four outranks the sentinel: it is the discriminator, and it is safe.
+
+    Every naming arm above the terminal needs an institution or a subtype, so an
+    account carrying only a last four -- a real tabular-import shape -- fell all
+    the way through and was labelled ``Unnamed account`` while the adjacent
+    ``last_four`` column still held the digits. Two such accounts then rendered
+    identically everywhere the name is all the user sees.
+
+    The last four is not the id the terminal arm exists to withhold. It is a
+    masked fragment the confirm flow already prints as evidence and the dim
+    already publishes in its own column, so naming by it discloses nothing new.
+    """
+    _insert_tabular_account(
+        db,
+        native_key="tab-lastfour-only",
+        account_name="Row With No Bank Fields",
+        institution_name=None,
+        account_type=None,
+        account_number="9876554521",
+        extracted_at="2024-03-01 00:00:00",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        ["tab-lastfour-only"],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "…4521"
+    assert "9876554521" not in row[0], (
+        f"only the last four may appear, never the number: {row[0]!r}"
+    )
+
+
+@pytest.mark.slow
+def test_a_subtype_with_no_institution_still_keeps_its_last_four(
+    db: Database,
+) -> None:
+    """The subtype arm gained a last four for the same reason the top arm has one.
+
+    ``checking`` is a category, not an identity -- every checking account at
+    every institution shares it. Before, an account with no institution stopped
+    at the bare subtype and dropped a last four it had, so the arm that was
+    supposed to name the account instead guaranteed a collision. This mirrors
+    the institution arms, where the with-last-four variant precedes the without.
+    """
+    _insert_tabular_account(
+        db,
+        native_key="tab-subtype-lastfour",
+        account_name="Row With No Bank Fields",
+        institution_name=None,
+        account_type="CHECKING",
+        account_number="9876554521",
+        extracted_at="2024-03-01 00:00:00",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        ["tab-subtype-lastfour"],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "checking …4521"
