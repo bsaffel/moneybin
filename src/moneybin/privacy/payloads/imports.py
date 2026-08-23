@@ -81,11 +81,16 @@ class ImportConfirmationSignSample(TypedDict, total=False):
 
 
 class ImportConfirmationAccountCandidate(TypedDict, total=False):
-    """One existing-account candidate inside an import proposal."""
+    """One existing-account candidate inside an import proposal.
+
+    No confidence field, for the same reason as ``LinkCandidateRow``: the
+    resolver's number was a per-signal constant no input could move, and a
+    reader treating it as this candidate's score was reading a label.
+    ``overlap_matched`` / ``overlap_comparable`` are the measurement.
+    """
 
     account_id: Annotated[str, DataClass.RECORD_ID]
     display_name: Annotated[str, DataClass.USER_NOTE]
-    confidence: Annotated[float, DataClass.AGGREGATE]
     signal: Annotated[str, DataClass.TXN_TYPE]
     overlap_matched: Annotated[int, DataClass.AGGREGATE]
     overlap_comparable: Annotated[int, DataClass.AGGREGATE]

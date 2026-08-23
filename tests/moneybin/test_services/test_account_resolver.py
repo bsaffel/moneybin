@@ -489,7 +489,6 @@ def test_alphanumeric_pdf_proposal_is_review_only_and_does_not_surface_identifie
             # Institution alone: the identifier carries no four digits to mask,
             # and the file's own account_name is no longer eligible to name it.
             "display_name": "Chase",
-            "confidence": 0.5,
             "signal": "legacy_pdf_identity",
         }
     ]

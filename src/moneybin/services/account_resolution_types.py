@@ -25,7 +25,6 @@ class AccountCandidateDict(TypedDict):
 
     account_id: str
     display_name: str
-    confidence: float
     signal: str
     overlap_matched: NotRequired[int]
     overlap_comparable: NotRequired[int]
@@ -47,7 +46,19 @@ class AccountProposalDict(TypedDict):
 
 @dataclass(frozen=True)
 class AccountCandidate:
-    """One weak-signal merge candidate surfaced for confirmation."""
+    """One weak-signal merge candidate surfaced for confirmation.
+
+    ``confidence`` is a literal per rung that no input can move, so candidates
+    found on one rung tie at one number however differently their ledgers
+    overlap. It survives here for one job only: it is what gets written to
+    ``app.account_link_decisions.confidence_score``, whose stored meaning is
+    'the constant the resolver stamped'. ``to_dict`` deliberately drops it, for
+    the same reason ``PendingLinkCandidate`` and ``LinkCandidateRow`` have no
+    such field: a number named confidence invites whoever answers the gate — a
+    human skimming, or an agent choosing a binding — to read a tie as a
+    judgement about these two accounts. ``overlap`` is what the surface
+    carries instead, because it varies with them.
+    """
 
     account_id: str
     display_name: str
@@ -112,7 +123,7 @@ class AccountProposal:
     def to_dict(self, *, proposal_ref: str) -> AccountProposalDict:
         """Serialise to a typed dict for surface display.
 
-        Includes opaque ids, display_name, confidence, signal, and optional
+        Includes opaque ids, display_name, signal, and optional
         aggregate/date-window ledger-overlap evidence.
         Never exposes ref_value or other PII-bearing fields.
 
@@ -125,7 +136,6 @@ class AccountProposal:
             serialized: AccountCandidateDict = {
                 "account_id": candidate.account_id,
                 "display_name": candidate.display_name,
-                "confidence": candidate.confidence,
                 "signal": candidate.signal,
             }
             if candidate.overlap is not None:

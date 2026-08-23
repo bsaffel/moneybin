@@ -711,20 +711,20 @@ def test_resolve_emits_account_link_metrics(
     assert gauge == 1.0
 
 
-def test_account_gate_observes_the_confidence_of_every_candidate_it_surfaces(
+def test_the_gate_surfaces_ledger_evidence_without_a_constant_confidence_score(
     db: Database,
 ) -> None:
-    """The gate carries the confidence signal the pending queue used to emit.
+    """A surfaced candidate carries measured overlap, never a per-signal constant.
 
-    ``resolve()`` observed candidate confidence as it queued. The inversion put
-    a gate in front of that, so imports now surface the same candidates and
-    never queue — the histogram has to be fed where the decision is made or the
-    interactive path goes dark.
+    ``confidence`` was a literal per rung that no input could move, so two
+    candidates found on the same rung tied at the same number however differently
+    their ledgers overlapped — and the field's name invited whoever answered the
+    gate to read that tie as a judgement. The review queue
+    (``LinkCandidateRow``) and the decision history (``LinkHistoryRow``) each
+    dropped it for exactly that reason; this pins the import gate to the same
+    shape, leaving ``signal`` plus the overlap measurement as the evidence.
     """
-    from prometheus_client import REGISTRY
-
     _seed_existing_account(db, account_id="wf_existing01", display_name="WF Checking")
-    before = REGISTRY.get_sample_value("moneybin_account_link_confidence_count") or 0.0
     with pytest.raises(ImportConfirmationRequiredError) as exc:
         ImportService(db).import_file(
             _STANDARD_CSV,
@@ -733,14 +733,15 @@ def test_account_gate_observes_the_confidence_of_every_candidate_it_surfaces(
             confirm=True,
             actor_kind="human",
         )
-    surfaced = sum(len(p["candidates"]) for p in exc.value.outcome.account_proposals)
-    assert surfaced > 0
-    after = REGISTRY.get_sample_value("moneybin_account_link_confidence_count") or 0.0
-    assert after == before + surfaced
-    # Nothing was queued, so the review gauge stays where it was.
-    assert db.execute("SELECT COUNT(*) FROM app.account_link_decisions").fetchone() == (
-        0,
-    )
+    candidates = [
+        candidate
+        for proposal in exc.value.outcome.account_proposals
+        for candidate in proposal["candidates"]
+    ]
+    assert candidates, "the gate must surface a candidate for this to say anything"
+    for candidate in candidates:
+        assert "confidence" not in candidate
+        assert "signal" in candidate
 
 
 @pytest.mark.parametrize(

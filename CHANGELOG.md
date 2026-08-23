@@ -762,6 +762,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **Account-merge candidates carry measured ledger overlap instead of a
+  constant `confidence`.** An import that offers to merge a file into an
+  account you already have returned a `confidence` on every candidate — a
+  literal stamped per resolution rung that no input could move. Two candidates
+  found on the same rung tied at the same number however differently their
+  ledgers overlapped, so a caller ranking on it could not tell an account
+  sharing every transaction from one sharing none, and the field's name invited
+  reading that tie as a judgement. `import_files` and `import_confirm` no longer
+  return the field; rank on `overlap_matched` / `overlap_comparable`, which the
+  candidate already carried. The review queue and decision history had dropped
+  it for the same reason, so all three surfaces now agree. Agents parsing
+  `account_proposals[].candidates[].confidence` must switch to the overlap
+  pair; an absent pair means the two ledgers share no comparable period, which
+  is absence of evidence rather than a zero (#416).
 - **A merge whose rebuild failed, or an accept the reconciliation refused, now
   exits non-zero.** `accounts links set`, `transactions matches set`, and
   `transactions review --confirm/--confirm-all` printed a warning and exited

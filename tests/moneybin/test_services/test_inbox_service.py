@@ -864,7 +864,6 @@ class TestSyncFailure:
                 {
                     "account_id": "acct_a",
                     "display_name": "WF CHECKING …4267",
-                    "confidence": 0.1,
                     "signal": "fallback",
                 }
             ],

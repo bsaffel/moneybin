@@ -2581,6 +2581,64 @@ def test_partial_pdf_confirmation_reports_ledger_overlap(
     assert candidate.get("overlap_window_end") == "2024-01-20"
 
 
+def test_pdf_gate_observes_the_measured_overlap_of_the_candidate_it_surfaces(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """The gate feeds the histogram that varies with the accounts in front of it.
+
+    Confidence was a per-signal constant, so a histogram of it reported which
+    rungs fired and never whether a proposal was any good. The overlap ratio is
+    fed instead, at the one point overlap is measured. Same fixture as
+    ``test_partial_pdf_confirmation_reports_ledger_overlap``: two of the
+    statement's rows are already held by the twin and both match, so one
+    candidate is surfaced and observed at a ratio of 2/2.
+    """
+    from prometheus_client import REGISTRY
+
+    _seed_chase_twin(db)
+    for transaction_id, transaction_date, amount in (
+        ("existing-coffee", "2024-01-15", "-50.00"),
+        ("existing-paycheck", "2024-01-21", "150.00"),
+    ):
+        db.execute(
+            "INSERT INTO core.fct_transactions "  # noqa: S608  # test fixture
+            "(transaction_id, account_id, transaction_date, amount, currency_code) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [transaction_id, "acct_existing01", transaction_date, amount, None],
+        )
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    before_count = (
+        REGISTRY.get_sample_value("moneybin_account_link_overlap_ratio_count") or 0.0
+    )
+    before_sum = (
+        REGISTRY.get_sample_value("moneybin_account_link_overlap_ratio_sum") or 0.0
+    )
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(fake_pdf, refresh=False)
+
+    [candidate] = exc.value.outcome.account_proposals[0]["candidates"]
+    assert "confidence" not in candidate
+    after_count = (
+        REGISTRY.get_sample_value("moneybin_account_link_overlap_ratio_count") or 0.0
+    )
+    after_sum = (
+        REGISTRY.get_sample_value("moneybin_account_link_overlap_ratio_sum") or 0.0
+    )
+    assert after_count == before_count + 1
+    # Exact, not approximate: the ratio is 2/2, and adding 1.0 to the running
+    # sum here is the same float operation the histogram just performed.
+    assert after_sum == before_sum + 1.0
+
+
 @pytest.mark.integration
 def test_pdf_account_metadata_populates_the_raw_account(
     db: Database,
