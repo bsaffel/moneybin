@@ -555,6 +555,10 @@ ACCOUNT_LINK_OVERLAP_RATIO = Histogram(
     "spending a confirmation on pairs the evidence already separates. Candidates "
     "with no comparable period are absent rather than 0 — that is absence of "
     "evidence, and ACCOUNT_LINK_OVERLAP_PROBES_TOTAL counts it.",
+    # Both tails carry the signal, so neither collapses: 0.0 is its own bucket
+    # because a measurable pair sharing nothing is a wasted confirmation, not a
+    # rounding of 0.03, and 0.9/0.99 separate a near-twin from an exact one.
+    buckets=(0.0, 0.05, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0),
 )
 
 ACCOUNT_LINK_OVERLAP_PROBES_TOTAL = Counter(

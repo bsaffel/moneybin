@@ -2581,6 +2581,7 @@ def test_partial_pdf_confirmation_reports_ledger_overlap(
     assert candidate.get("overlap_window_end") == "2024-01-20"
 
 
+@pytest.mark.integration
 def test_pdf_gate_observes_the_measured_overlap_of_the_candidate_it_surfaces(
     db: Database,
     tmp_path: Path,
