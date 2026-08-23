@@ -14,6 +14,7 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.accounts import AccountListPayload
 from moneybin.protocol.envelope import build_envelope
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.account_service import (
     CLEAR,
     PLAID_CANONICAL_HOLDER_CATEGORIES,
@@ -499,7 +500,7 @@ def _insert_dim_account(
     db: Database,
     account_id: str,
     account_type: str = "CHECKING",
-    institution_name: str = "Test Bank",
+    institution_name: str | None = "Test Bank",
     source_type: str = "ofx",
     display_name: str | None = None,
     last_four: str | None = None,
@@ -981,6 +982,60 @@ class TestAccountServiceResolve:
         _insert_dim_account(extended_db, "a1", display_name="Anything")
         assert AccountService(extended_db).resolve("").matches == []
         assert AccountService(extended_db).resolve("   ").matches == []
+
+    @pytest.mark.unit
+    def test_the_unnamed_sentinel_resolves_to_nothing(
+        self, extended_db: Database
+    ) -> None:
+        """Typing back the sentinel MoneyBin displayed must not pick an account.
+
+        Every account the dim cannot name carries the same label, so a string
+        comparison scores each of them 1.0 against it and the tiebreak hands
+        back whichever account id sorts first -- a maximally-confident answer
+        built on the one fact that distinguishes nothing. Returning no match is
+        the honest reply: the sentinel says an account exists, never which one.
+        """
+        for account_id in ("nameless_a", "nameless_b"):
+            _insert_dim_account(
+                extended_db,
+                account_id,
+                display_name=UNNAMED_ACCOUNT_LABEL,
+                institution_name=None,
+                account_subtype=None,
+            )
+
+        payload = AccountService(extended_db).resolve(UNNAMED_ACCOUNT_LABEL)
+
+        assert payload.matches == []
+
+    @pytest.mark.unit
+    def test_a_real_name_still_resolves_when_a_sentinel_row_exists(
+        self, extended_db: Database
+    ) -> None:
+        """The refusal is scoped to the sentinel, not to unnameable accounts.
+
+        Guards the obvious over-correction: dropping every row whose label the
+        dim generated, rather than only the one label that identifies nothing.
+        """
+        _insert_dim_account(
+            extended_db,
+            "nameless",
+            display_name=UNNAMED_ACCOUNT_LABEL,
+            institution_name=None,
+            account_subtype=None,
+        )
+        _insert_dim_account(
+            extended_db,
+            "named",
+            display_name="Chase Checking",
+            account_subtype="checking",
+            institution_name="Chase",
+        )
+
+        payload = AccountService(extended_db).resolve("Chase Checking")
+
+        assert [m.account_id for m in payload.matches] == ["named"]
+        assert payload.matches[0].confidence == 1.0
 
 
 class TestAccountServiceResolveStrict:

@@ -9,10 +9,13 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.repositories.account_links_repo import AccountLinksRepo
-from moneybin.services.account_resolution_types import AccountProposal, SourceAccount
+from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
+    AccountProposal,
+    SourceAccount,
+)
 from moneybin.services.account_resolver import (
     _FALLBACK_CANDIDATE_CAP,  # pyright: ignore[reportPrivateUsage]
-    UNNAMED_ACCOUNT_LABEL,
     AccountResolver,
     _retyped_reissue_candidates,  # pyright: ignore[reportPrivateUsage]
     fetch_core_display_names,

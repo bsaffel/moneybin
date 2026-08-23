@@ -20,7 +20,7 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
-from moneybin.services.account_resolver import UNNAMED_ACCOUNT_LABEL
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 
 pytestmark = pytest.mark.integration
 

@@ -20,6 +20,52 @@ def normalize_account_identifier(value: str) -> str:
     )
 
 
+UNNAMED_ACCOUNT_LABEL = "Unnamed account"
+"""What every surface calls an account nothing can name.
+
+Duplicated as a literal in the terminal COALESCE arm of
+``core.dim_accounts.display_name``, because SQL cannot import it. The two are
+pinned together by ``test_dim_accounts_merge.py``, which asserts the model's
+output against this constant after a real SQLMesh run -- so a drift in either
+copy fails there rather than in front of a user.
+
+One constant rather than a per-call-site literal because both spellings render
+in the same table: ``core`` supplies this string for a row it could not name,
+while the CLI and MCP substitute it for a name that is absent or was frozen as
+``""``. Those are different states with one honest answer, and rendering them
+as ``Unnamed account`` beside ``unnamed account`` reads as a bug.
+
+Lives here rather than beside either consumer because both the merge matcher
+and the free-text resolver must agree on it, and they import nothing from each
+other.
+"""
+
+
+def is_a_name(display_name: str | None) -> bool:
+    """Whether a dim label identifies an account, or only says nothing names it.
+
+    ``UNNAMED_ACCOUNT_LABEL`` is one fixed string, so every account that reaches
+    the dim's terminal arm carries a byte-identical label while agreeing with
+    the others on nothing at all. Any code that treats ``display_name`` as an
+    identifying string has to ask this first, because on that label a string
+    comparison reports a perfect match between two unrelated accounts:
+
+    - ``AccountResolver`` would file a merge proposal whose entire evidence is
+      that neither account could be named.
+    - ``AccountService.resolve`` would return both at confidence ``1.0`` to a
+      user or agent who typed back the label MoneyBin itself displayed.
+
+    Empty is refused for the same reason: it too compares equal to itself. The
+    dim cannot currently emit one -- the COALESCE terminates on the sentinel --
+    but a predicate that is right about the sentinel and wrong about its
+    neighbour is not worth writing.
+
+    This is deliberately not a check for "looks unhelpful". A real name that
+    happens to be vague is still the user's name for the account.
+    """
+    return bool(display_name) and display_name != UNNAMED_ACCOUNT_LABEL
+
+
 class AccountCandidateDict(TypedDict):
     """Serialized shape of one ``AccountCandidate`` carried across the envelope."""
 

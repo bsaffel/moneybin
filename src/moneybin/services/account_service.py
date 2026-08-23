@@ -27,6 +27,7 @@ from moneybin.privacy.payloads.accounts import (
     AccountSummaryStats,
 )
 from moneybin.services._validators import validate_currency_code
+from moneybin.services.account_resolution_types import is_a_name
 from moneybin.services.audit_service import AuditService
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
@@ -759,7 +760,16 @@ class AccountService:
         scored: list[AccountResolutionItem] = []
         for account_id, display_name, account_subtype, institution_name in rows:
             best = 0.0
-            for field_value in (display_name, account_subtype, institution_name):
+            # The sentinel is the one label every unnameable account shares, so
+            # scoring it reports a perfect match between accounts that have
+            # nothing in common. Only display_name is filtered: a subtype or
+            # institution is a real attribute even when the name is absent.
+            scorable = (
+                display_name if is_a_name(display_name) else None,
+                account_subtype,
+                institution_name,
+            )
+            for field_value in scorable:
                 if field_value:
                     ratio = SequenceMatcher(
                         None, query_clean, field_value.lower()

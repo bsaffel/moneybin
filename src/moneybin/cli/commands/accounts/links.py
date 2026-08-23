@@ -34,7 +34,7 @@ from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
     AccountLinksService,
 )
-from moneybin.services.account_resolver import UNNAMED_ACCOUNT_LABEL
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.identity_confirmation import identity_confirm_message
 from moneybin.services.ledger_overlap import LedgerOverlap
 

@@ -99,7 +99,7 @@ from moneybin.protocol.pagination import (
     encode_keyset_cursor,
 )
 from moneybin.services.account_links_service import AccountLinksService
-from moneybin.services.account_resolver import UNNAMED_ACCOUNT_LABEL
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.identity_confirmation import (
