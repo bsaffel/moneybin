@@ -18,7 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding the document under an id no source could ever derive. The new
   `app_account_links_canonical_native_key` invariant `warn`s on those links:
   they still resolve to the right account, so the invariant is broken but no
-  row is wrong, and re-importing the file normalizes it. Now that pinned
+  row is wrong. Re-importing writes the document's own key alongside the old
+  link rather than retiring it — there is no automatic cleanup for these links
+  yet, and the warning says so instead of promising one. Now that pinned
   imports keep the source's own key, nothing can derive a canonical-shaped
   native key, so this is a regression guard on that contract.
 

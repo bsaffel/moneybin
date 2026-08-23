@@ -1207,7 +1207,7 @@ def _insert_account(db: Database, account_id: str) -> None:
     db.execute(
         "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
         "(account_id, account_type, institution_name, source_type) "
-        f"VALUES ('{account_id}', 'CHECKING', 'Bank', 'pdf')"  # noqa: S608
+        f"VALUES ('{account_id}', 'CHECKING', 'Bank', 'pdf')"  # noqa: S608  # test input, not executing user SQL
     )
 
 
@@ -1305,3 +1305,36 @@ def test_canonical_native_key_passes_on_a_multi_account_file(db: Database) -> No
     result = DoctorService(db)._run_account_links_canonical_native_key()
     assert result.status == "pass"
     assert result.affected_ids == []
+
+
+def test_canonical_native_key_ignores_an_unresolved_accounts_fallback_id(
+    db: Database,
+) -> None:
+    """A ``dim_accounts.account_id`` is not proof the value is a canonical id.
+
+    ``core/dim_accounts.sql`` derives its grain as
+    ``COALESCE(account_id, source_account_key)``, so an account the resolver has
+    never linked surfaces its raw SOURCE-NATIVE key through ``account_id``.
+    Matching ``ref_value`` against that column therefore reads an ordinary key
+    as canonical residue whenever an unrelated, still-unresolved account happens
+    to derive the same string — a false positive on ordinary data. Only ids the
+    resolver actually minted count.
+    """
+    create_core_tables(db)
+    # An account that never went through AccountResolver: its grain falls back
+    # to the source-native key, so that key is what sits in account_id.
+    _insert_account(db, "checking")
+    # A different, correctly-resolved account whose document calls itself
+    # "checking" too — an ordinary slug collision, not pin residue.
+    _insert_account(db, "b11111111111")
+    _link(
+        db,
+        link_id="lnk_ok",
+        account_id="b11111111111",
+        ref_value="checking",
+        origin="statement.pdf",
+    )
+    result = DoctorService(db)._run_account_links_canonical_native_key()
+    assert result.status == "pass", (
+        f"an unresolved account's fallback id was read as canonical: {result.detail}"
+    )

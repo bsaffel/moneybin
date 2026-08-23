@@ -1821,32 +1821,33 @@ class DoctorService:
         whether a document was imported twice — only the raw key-spaces can.
         Do not add a fork condition here on the strength of the link table.
 
+        "Is this a canonical id?" is asked of ``app.account_links`` alone, never
+        of ``core.dim_accounts``: that model's grain is
+        ``COALESCE(account_id, source_account_key)``, so an account the resolver
+        has never linked surfaces its raw source-native key through
+        ``account_id``. Matching against it reads an ordinary slug as residue
+        the moment some unresolved account derives the same string. A value the
+        resolver actually minted always appears as an ``account_links``
+        ``account_id``, which is what the ``EXISTS`` below asks.
+
         Reports ``account_id`` (a minted internal id), never ``ref_value`` or
         ``source_origin`` — those can carry a real account number, or a filename
         built from one (``.claude/rules/security.md``).
         """
         name = "app_account_links_canonical_native_key"
-        try:
-            rows = self._db.execute(
-                f"""
-                SELECT DISTINCT l.account_id
-                FROM {ACCOUNT_LINKS.full_name} l
-                WHERE l.status = 'accepted'
-                  AND l.ref_kind = 'source_native'
-                  AND EXISTS (
-                      SELECT 1 FROM {DIM_ACCOUNTS.full_name} a
-                      WHERE a.account_id = l.ref_value
-                  )
-                ORDER BY l.account_id
-                """  # noqa: S608  # TableRef constants, no user input
-            ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core.dim_accounts may not exist yet
-            return InvariantResult(
-                name=name,
-                status="skipped",
-                detail=f"canonical-native-key check unavailable: {e}",
-                affected_ids=[],
-            )
+        rows = self._db.execute(
+            f"""
+            SELECT DISTINCT l.account_id
+            FROM {ACCOUNT_LINKS.full_name} l
+            WHERE l.status = 'accepted'
+              AND l.ref_kind = 'source_native'
+              AND EXISTS (
+                  SELECT 1 FROM {ACCOUNT_LINKS.full_name} m
+                  WHERE m.account_id = l.ref_value
+              )
+            ORDER BY l.account_id
+            """  # noqa: S608  # TableRef constants, no user input
+        ).fetchall()
         if not rows:
             return InvariantResult(
                 name=name, status="pass", detail=None, affected_ids=[]
@@ -1858,8 +1859,9 @@ class DoctorService:
             detail=(
                 f"{len(affected)} account(s) store a canonical account id as a "
                 "source-native key (a legacy --account-id pin). Bindings still "
-                "resolve correctly; re-import those files to normalize — the "
-                "import supersedes the rows the old pin wrote."
+                "resolve correctly and no rows are wrong. Re-importing writes "
+                "the document's own key alongside this one but does not retire "
+                "it — no automatic cleanup for the old link exists yet."
             ),
             affected_ids=affected,
         )
