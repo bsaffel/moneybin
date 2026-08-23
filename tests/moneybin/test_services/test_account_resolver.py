@@ -2250,14 +2250,20 @@ def test_a_newer_unnameable_import_does_not_hide_an_older_nameable_one(
 def test_core_never_answers_with_the_bare_id_terminal_label(db: Database) -> None:
     """``'Account ' || account_id`` is refused, because that id can be a real one.
 
-    ``dim_accounts.display_name`` ends in a terminal COALESCE branch,
-    ``'Account ' || w.account_id``, so the column is never NULL. For an account
-    that has never been re-imported through ``AccountResolver`` there is no
-    accepted link, so ``grain_key`` falls back to ``source_account_key`` -- for
-    OFX, the institution's own ``<ACCTID>``, which the taxonomy classes
-    ``INSTITUTION_ACCOUNT_NUMBER`` (CRITICAL). The label is then a full account
+    ``dim_accounts.display_name`` used to end in a terminal COALESCE branch,
+    ``'Account ' || w.account_id``. For an account that has never been
+    re-imported through ``AccountResolver`` there is no accepted link, so
+    ``grain_key`` falls back to ``source_account_key`` -- for OFX, the
+    institution's own ``<ACCTID>``, which the taxonomy classes
+    ``INSTITUTION_ACCOUNT_NUMBER`` (CRITICAL). The label was then a full account
     number wearing the word "Account", read out of a column declared
     ``USER_NOTE`` and frozen into decision columns that declare the same.
+
+    The model's terminal arm is now the literal ``'Unnamed account'``, so it can
+    no longer produce such a label and this test seeds one directly. It is a
+    characterization test of a second line of defence, not of live model
+    behaviour: the guard has to keep working for the model to stay free to
+    change. ``test_dim_accounts_merge.py`` covers the model end of it.
 
     The equality test is against the model's own terminal expression, not a
     guess at what an account number looks like: a label equal to

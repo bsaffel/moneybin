@@ -547,9 +547,14 @@ def links_history(
     )
     typer.echo("-" * 116)
     for d in payload.decisions:
+        # A frozen "" means the freeze looked and declined to record a raw-only
+        # name. Falling back to a truncated id puts an id where a name goes —
+        # the defect this whole surface exists to fix — and a 12-char prefix is
+        # not even usable as a handle. Same phrase the MCP history rows and
+        # core.dim_accounts both use.
         merged = (
-            f"{d.provisional_display_name or d.provisional_account_id[:12]} → "
-            f"{d.candidate_display_name or d.candidate_account_id[:12]}"
+            f"{d.provisional_display_name or 'unnamed account'} → "
+            f"{d.candidate_display_name or 'unnamed account'}"
         )
         typer.echo(
             f"{merged:<60} "

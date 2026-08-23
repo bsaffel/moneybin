@@ -1247,6 +1247,43 @@ class TestLinksHistory:
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.history")
+    def test_history_says_unnamed_rather_than_printing_an_id(
+        self, mock_history: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """A frozen "" is a decision, not a gap — it must not become an id.
+
+        The freeze writes "" when the only name it could find was raw-derived
+        and it declined to record it. Falling back to a truncated account_id
+        put an id back in the name column, which is the defect this surface
+        exists to fix, and a 12-character prefix cannot even be used as a
+        handle. The MCP history rows and core.dim_accounts both say "unnamed
+        account" for this; the table now says the same thing.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_history.return_value = [
+            {
+                "decision_id": "dh003",
+                "provisional_account_id": "471166339912",
+                "candidate_account_id": "CAND_U",
+                "provisional_display_name": "",
+                "candidate_display_name": "Candidate Alpha",
+                "status": "rejected",
+                "decided_by": "user",
+                "decided_at": "2025-06-01T10:00:00",
+                "confidence_score": 0.85,
+                "match_signals": {"signal": "name"},
+            }
+        ]
+
+        result = runner.invoke(app, ["history"])
+
+        assert result.exit_code == 0
+        assert "471166339912" not in result.output
+        assert "unnamed account" in result.output
+        assert "Candidate Alpha" in result.output
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.history")
     def test_history_empty(
         self, mock_history: MagicMock, mock_get_db: MagicMock
     ) -> None:

@@ -121,9 +121,11 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # accepted merge removes the provisional from every live lookup. USER_NOTE
         # matches display_name everywhere else — and holds because the freeze
         # reads core.dim_accounts alone (a constructed institution + subtype +
-        # last4 label) *and* refuses that model's terminal 'Account ' ||
-        # account_id branch, which for an unlinked account embeds the
-        # source-native key. Core alone is not sufficient; see
+        # last4 label) *and* refuses an 'Account ' || account_id label, which
+        # for an unlinked account embeds the source-native key. The model no
+        # longer emits one -- its terminal arm is the literal 'Unnamed account'
+        # -- so that refusal is now defence in depth. Core alone is not
+        # sufficient either way; see
         # fetch_core_display_names. The raw fallback derives its label from
         # INSTITUTION_ACCOUNT_NUMBER columns, so it is deliberately never written
         # here; see AccountLinksService._frozen_names.

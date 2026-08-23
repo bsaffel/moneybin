@@ -1150,6 +1150,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **An account with nothing to identify it now reads `Unnamed account`, not
+  `Account <id>`.** `core.dim_accounts.display_name` ended its fallback chain
+  with the account's grain key, which for an account imported before the
+  identity resolver is the institution's own account number — so a column
+  declared to hold user notes could surface one, including through the
+  `reports.*` models that project it as `account_name`. The id is dropped from
+  that fallback entirely rather than shown only where it is safe, because the
+  staging layer resolves the key before `dim_accounts` sees it and the model
+  cannot tell the two cases apart.
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last
   four as evidence; where MoneyBin holds nothing to tell two accounts apart the

@@ -183,12 +183,14 @@ WITH ofx_balance_currency AS (
   FROM plaid_accounts
 ), ranked AS (
   /* grain_key: account_id is the CANONICAL opaque id when the account has an
-     accepted app.account_links row; it is NULL for accounts not yet re-imported
-     through AccountResolver (pre-M1S.3 raw data). COALESCE falls back to the
-     source-native key so those unlinked accounts stay DISTINCT instead of every
-     NULL collapsing into one bad row. Safety net: the durable path is re-import,
-     not a migration — once all data is re-imported every account is linked, so
-     the COALESCE always takes the canonical id and this fallback is inert.
+     accepted app.account_links row, and the source-native key when it does not.
+     The COALESCE here never fires: all three stg_*__accounts models already
+     project COALESCE(links.account_id, a.account_id), so account_id arrives
+     non-null either way. It is kept as a second line of defence — were a
+     staging model to stop falling back, every NULL would collapse into one bad
+     row — but nothing downstream can read it as "was this account resolved?",
+     because that fact is spent in prep and never projected. See the terminal
+     arm of display_name, which is fail-closed for exactly this reason.
      source_rank: bank-field authority ordering for the golden-record merge
      (ofx > plaid > tabular, lower rank wins); manual/gsheet contribute no
      structured bank fields. */
@@ -275,8 +277,12 @@ SELECT
     w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type),
     w.institution_name,
     COALESCE(s.account_subtype, w.account_subtype, w.account_type),
-    'Account ' || w.account_id
-  ) AS display_name, /* Resolved display label: user override → derived (institution+subtype-or-type[+last4]; the subtype is preferred because 'checking' reads to a human where the canonical 'depository' does not) → institution+last4 → institution or type alone → 'Account <id>' terminal so it is never NULL. The institution+last4 branch is what keeps two typeless accounts at one institution distinguishable; without it both collapse to the bare institution name. */
+    'Unnamed account' /* Nothing left to name it by: no institution, subtype, type or last four.
+       The id is not a fallback name — for an account with no accepted link it
+       IS the institution's own account number, and the dim cannot tell that
+       case apart (see grain_key above). Naming no account at all beats naming
+       one with a number, and this column feeds reports.* as account_name. */
+  ) AS display_name, /* Resolved display label: user override → derived (institution+subtype-or-type[+last4]; the subtype is preferred because 'checking' reads to a human where the canonical 'depository' does not) → institution+last4 → institution or type alone → the literal 'Unnamed account' terminal so it is never NULL and never an id. The institution+last4 branch is what keeps two typeless accounts at one institution distinguishable; without it both collapse to the bare institution name. */
   COALESCE(s.official_name, w.official_name) AS official_name, /* Institution's formal account name: user override (app.account_settings) else Plaid official_name */
   COALESCE(s.last_four, w.last_four_derived) AS last_four, /* Last 4 of account number: user-set app.account_settings.last_four, else derived per source (OFX source_account_key digits, Plaid mask, tabular account_number/masked). Never the full number. */
   COALESCE(s.account_subtype, w.account_subtype) AS account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...): user override else Plaid subtype */
