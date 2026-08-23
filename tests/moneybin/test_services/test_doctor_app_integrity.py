@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
+from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.repositories.balance_assertions_repo import BalanceAssertionsRepo
 from moneybin.repositories.budgets_repo import BudgetsRepo
@@ -1200,3 +1201,107 @@ def test_every_repo_table_has_audit_coverage_or_a_named_exemption(
     }
     uncovered = {c.table_ref.name for c in concrete_repo_classes()} - covered
     assert uncovered == _AUDIT_COVERAGE_GAPS
+
+
+def _insert_account(db: Database, account_id: str) -> None:
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_type, institution_name, source_type) "
+        f"VALUES ('{account_id}', 'CHECKING', 'Bank', 'pdf')"  # noqa: S608
+    )
+
+
+def _link(
+    db: Database, *, link_id: str, account_id: str, ref_value: str, origin: str
+) -> None:
+    AccountLinksRepo(db).insert(
+        link_id=link_id,
+        account_id=account_id,
+        ref_kind="source_native",
+        ref_value=ref_value,
+        source_type="pdf",
+        source_origin=origin,
+        decided_by="user",
+        actor="cli",
+    )
+
+
+def test_canonical_native_key_warns_on_a_legacy_pinned_link(db: Database) -> None:
+    """A native key that IS a canonical id, with no sibling key, is residue only.
+
+    The document still resolves to the right account — nothing is double
+    counted — so this is a broken invariant, not broken data.
+    """
+    create_core_tables(db)
+    _insert_account(db, "e82e3c313704")
+    _link(
+        db,
+        link_id="lnk_pin",
+        account_id="e82e3c313704",
+        ref_value="e82e3c313704",
+        origin="statement.pdf",
+    )
+    result = DoctorService(db)._run_account_links_canonical_native_key()
+    assert result.status == "warn"
+    assert result.affected_ids == ["e82e3c313704"]
+
+
+def test_canonical_native_key_does_not_escalate_on_a_sibling_key(
+    db: Database,
+) -> None:
+    """A second native key on the same origin is not evidence of duplication.
+
+    It is the ordinary shape twice over: ``source_origin`` is the exporter
+    format for tabular sources, so every account in one export shares it, and a
+    pin used to teach the document's own key alongside the canonical one. Link
+    rows cannot distinguish either from a genuine double import, so the check
+    must stay at ``warn`` rather than claim rows were counted twice.
+    """
+    create_core_tables(db)
+    _insert_account(db, "e82e3c313704")
+    _link(
+        db,
+        link_id="lnk_pin",
+        account_id="e82e3c313704",
+        ref_value="e82e3c313704",
+        origin="statement.pdf",
+    )
+    _link(
+        db,
+        link_id="lnk_derived",
+        account_id="e82e3c313704",
+        ref_value="pdf_doc_932d2676c1e4",
+        origin="statement.pdf",
+    )
+    result = DoctorService(db)._run_account_links_canonical_native_key()
+    assert result.status == "warn"
+    assert result.affected_ids == ["e82e3c313704"]
+
+
+def test_canonical_native_key_passes_on_a_multi_account_file(db: Database) -> None:
+    """One file, several derived keys, several accounts — the ordinary case.
+
+    A multi-account CSV binds one ``source_origin`` to one key per account. Any
+    check keyed on "this origin has more than one native key" flags every such
+    file; only the canonical-id shape separates the defect from the normal case.
+    """
+    create_core_tables(db)
+    _insert_account(db, "aaaaaaaaaaaa")
+    _insert_account(db, "bbbbbbbbbbbb")
+    _link(
+        db,
+        link_id="lnk_a",
+        account_id="aaaaaaaaaaaa",
+        ref_value="primary-checking",
+        origin="export.csv",
+    )
+    _link(
+        db,
+        link_id="lnk_b",
+        account_id="bbbbbbbbbbbb",
+        ref_value="joint-savings",
+        origin="export.csv",
+    )
+    result = DoctorService(db)._run_account_links_canonical_native_key()
+    assert result.status == "pass"
+    assert result.affected_ids == []

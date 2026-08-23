@@ -488,6 +488,7 @@ class DoctorService:
             self._run_proposed_rules_rule_fk(),
             self._run_transaction_categories_fk(),
             self._run_account_settings_account_fk(),
+            self._run_account_links_canonical_native_key(),
             self._run_balance_assertions_account_fk(),
             self._run_budgets_category_fk(),
             self._run_match_decisions_account_fk(),
@@ -1789,6 +1790,79 @@ class DoctorService:
                 affected_ids=affected,
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_account_links_canonical_native_key(self) -> InvariantResult:
+        """Flag a ``source_native`` key that is really a canonical account id.
+
+        A native key is what the SOURCE calls an account — a slugified label, a
+        ``pdf_doc_*`` digest, a ``stem-digest`` content key. A canonical
+        ``dim_accounts.account_id`` is what MoneyBin calls it. Before pinned
+        imports kept the source's own key, ``--account-id`` overwrote the former
+        with the latter, binding the document under an id no source could ever
+        derive. Nothing derives a canonical id now, so this cannot fire on a
+        current import: it is a regression guard on that contract, and the
+        residue of older pins is what it finds today.
+
+        ``warn``, not ``fail``: such a link still resolves the document to the
+        right account. The invariant is broken; no row is wrong.
+
+        Deliberately does NOT escalate when the same ``source_origin`` carries
+        other native keys. That looks like "the document got bound twice", and it
+        is not:
+
+        - ``source_origin`` is the EXPORTER/format identity for tabular sources
+          (``matched_format.name`` — "monarch", "tiller"), not a document. Every
+          account in one export shares it, so a multi-account CSV always has
+          several keys under one origin.
+        - A pin used to *teach* the resolver the document's own key alongside
+          the canonical one. Two links, one import, nothing duplicated.
+
+        Neither shape means duplicated rows, and link rows cannot tell you
+        whether a document was imported twice — only the raw key-spaces can.
+        Do not add a fork condition here on the strength of the link table.
+
+        Reports ``account_id`` (a minted internal id), never ``ref_value`` or
+        ``source_origin`` — those can carry a real account number, or a filename
+        built from one (``.claude/rules/security.md``).
+        """
+        name = "app_account_links_canonical_native_key"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT DISTINCT l.account_id
+                FROM {ACCOUNT_LINKS.full_name} l
+                WHERE l.status = 'accepted'
+                  AND l.ref_kind = 'source_native'
+                  AND EXISTS (
+                      SELECT 1 FROM {DIM_ACCOUNTS.full_name} a
+                      WHERE a.account_id = l.ref_value
+                  )
+                ORDER BY l.account_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core.dim_accounts may not exist yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"canonical-native-key check unavailable: {e}",
+                affected_ids=[],
+            )
+        if not rows:
+            return InvariantResult(
+                name=name, status="pass", detail=None, affected_ids=[]
+            )
+        affected = [str(r[0]) for r in rows]
+        return InvariantResult(
+            name=name,
+            status="warn",
+            detail=(
+                f"{len(affected)} account(s) store a canonical account id as a "
+                "source-native key (a legacy --account-id pin). Bindings still "
+                "resolve correctly; re-import those files to normalize — the "
+                "import supersedes the rows the old pin wrote."
+            ),
+            affected_ids=affected,
+        )
 
     def _run_balance_assertions_account_fk(self) -> InvariantResult:
         """Flag ``balance_assertions.account_id`` with no ``core.dim_accounts`` row.

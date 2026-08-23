@@ -777,8 +777,10 @@ def test_run_all_returns_expected_invariants(
     # under two identities — invisible to the matcher, which blocks candidate
     # pairs on account_id) + unproposed_cross_source_duplicates (the same two
     # sources *after* the link is accepted, which is where the overlap check
-    # stops applying and dedup_reconciliation never applied).
-    assert len(report.invariants) == 58
+    # stops applying and dedup_reconciliation never applied)
+    # + app_account_links_canonical_native_key (a source-native key that is
+    # really a canonical account id — the pre-#438 --account-id pin).
+    assert len(report.invariants) == 59
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -804,6 +806,7 @@ def test_run_all_returns_expected_invariants(
     assert "app_audit_coverage_user_reports" in names
     assert "app_user_categories_uniqueness" in names
     assert "app_account_settings_account_fk" in names
+    assert "app_account_links_canonical_native_key" in names
     assert "app_balance_assertions_account_fk" in names
     assert "app_budgets_category_fk" in names
     assert "app_match_decisions_account_fk" in names

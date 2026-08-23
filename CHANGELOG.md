@@ -11,6 +11,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`doctor` catches a source key that is really a MoneyBin account id.** A
+  source-native key is what a *file* calls an account — a slugified label, a
+  `pdf_doc_*` digest, a content key. A canonical `account_id` is what MoneyBin
+  calls it. An `--account-id` pin used to overwrite the first with the second,
+  binding the document under an id no source could ever derive. The new
+  `app_account_links_canonical_native_key` invariant `warn`s on those links:
+  they still resolve to the right account, so the invariant is broken but no
+  row is wrong, and re-importing the file normalizes it. Now that pinned
+  imports keep the source's own key, nothing can derive a canonical-shaped
+  native key, so this is a regression guard on that contract.
+
 - **`moneybin --home <path>` picks the data directory.** Until now `MONEYBIN_HOME`
   was the only way to point MoneyBin at a different set of profiles, config and
   databases, and it appeared in no `--help` output — so the override was easy to
