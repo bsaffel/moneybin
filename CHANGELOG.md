@@ -1978,6 +1978,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   update.
 
 ### Security
+- **Six CVEs cleared, and the audit that missed two of them now sees every
+  dependency group.** `cryptography` 49.0.0 → 50.0.0 (PYSEC-2026-3552), `pip`
+  26.1.2 → 26.2.1 (PYSEC-2026-3721), and `pymdown-extensions` 10.21.3 → 11.0.2
+  (PYSEC-2026-3609, PYSEC-2026-3654). `sqlparse` carried four more
+  (PYSEC-2026-3696/3697/3698/3699) and was dropped rather than pinned: it was
+  stranded when `sqlfluff` was removed in favour of `sqlmesh format`, and
+  nothing has referenced it since — no source import, no Makefile or
+  pre-commit invocation, and no reverse dependency in the resolved tree. A
+  security floor for a package nothing uses only defers the next advisory.
+
+  The `pymdown-extensions` pair was invisible to CI. `make audit` ran
+  `uv run pip-audit`, which resolves only the default dependency groups, so
+  the `docs` and `server` groups went unaudited by both the Security workflow
+  and the Release pipeline — they call that one target precisely so the
+  accepted-vuln list cannot drift. It now runs `uv run --all-groups
+  pip-audit`, which covers the whole dependency surface and needed no change
+  to either workflow.
 - **CLI tracebacks no longer render local variables, and database attach
   errors are sanitized.** DuckDB cannot parameterize `ENCRYPTION_KEY`, so the
   database key is written inline into the `ATTACH` statement — which puts it in
