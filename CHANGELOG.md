@@ -1172,7 +1172,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `investments` tools binds it to whichever account happens to wear it — which
   had let a categorization, an investment write, a balance assertion or a sheet
   connection land on an account the caller never chose. Such an account is
-  still addressable by its id (#435).
+  still addressable by its id, which `moneybin accounts list` now prints beside
+  the placeholder — the listing had been the one place the id was legible, and
+  `accounts set` takes nothing else (#435).
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last
   four as evidence; where MoneyBin holds nothing to tell two accounts apart the
