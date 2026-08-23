@@ -165,7 +165,7 @@ projection of the existing `import_status` tool.
           "is_new": true, "requires_confirm": true,
           "candidates": [
             {"account_id": "9f8e7d6c5b4a", "display_name": "Wells Fargo Checking ••9940",
-             "confidence": 0.2, "signal": "institution"}
+             "signal": "institution"}
           ]}
        ]}
     ],
@@ -178,9 +178,16 @@ projection of the existing `import_status` tool.
   pending entry carries the resolver's `account_proposals[]` **in the response
   envelope itself** (mirrored in the `.pending.yml` sidecar). A proposal has
   `{source_account_key, proposed_account_id, is_new, requires_confirm,
-  candidates[]}`; each candidate is `{account_id, display_name, confidence,
-  signal}`. This lets a REST/MCP/CLI-JSON caller render the pick-list and bind
-  an account without reading the sidecar off disk. When the source carries no
+  candidates[]}`; each candidate is `{account_id, display_name, signal}`, plus
+  `{overlap_matched, overlap_comparable, overlap_window_start,
+  overlap_window_end}` when the channel supplied the incoming ledger to measure
+  against. There is no `confidence` field — it was a per-signal constant, so
+  ranking on it tied a candidate sharing every transaction with one sharing
+  none. Rank on the overlap pair, and read an absent pair as absence of
+  evidence rather than a zero
+  ([`account-identity-resolution.md`](account-identity-resolution.md)). This
+  lets a REST/MCP/CLI-JSON caller render the pick-list and bind an account
+  without reading the sidecar off disk. When the source carries no
   account number and no institution match (a bare single-account CSV), the
   resolver supplies a **fallback** candidate list — the institution-scoped
   accounts if any match, else all accounts (capped) — so the gate is never a

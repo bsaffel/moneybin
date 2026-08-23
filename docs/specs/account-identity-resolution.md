@@ -887,7 +887,9 @@ Guard-2 free-text resolution):
     signal (0.5 `institution_last4`, 0.4 `name`, 0.3 `institution_reissue`), so
     it restates `signal` in a less legible form; no input moves it. The column
     remains as the audit record of what was written when the proposal was
-    created, and is no longer projected onto either surface.
+    created, and is no longer projected onto any surface — the review queue,
+    the decision history, and the import gate's `account_proposals` all carry
+    `signal` plus the measured overlap instead.
 - **Status lifecycle.** `account_links`: `accepted` (live) / `reversed` (undone).
   `account_link_decisions`: `pending` (awaiting review) → `accepted` (merged onto
   the named candidate) / `rejected` (declined pairing — not re-proposed) /
@@ -1014,10 +1016,14 @@ remembered, so re-imports are silent.
 
 **AX (agent).** The same envelope is the agent's structured contract: per detected
 account an `account_proposal` (`{proposal_ref, proposed_account_id, is_new,
-candidates:[{account_id, display_name, confidence, signal, overlap_matched?,
+candidates:[{account_id, display_name, signal, overlap_matched?,
 overlap_comparable?, overlap_window_start?, overlap_window_end?}]}`) plus
 `actions[]`. `legacy_pdf_identity` is a review-only signal; overlap fields are
 aggregate/date-window evidence and never change the confirmation requirement.
+There is no `confidence` field: it was a per-signal constant, so ranking on it
+tied a candidate sharing every transaction with one sharing none. Rank on
+`overlap_matched` / `overlap_comparable`, and treat an absent pair as absence of
+evidence rather than a zero.
 The agent (a) returns an `account_bindings` map to `import_files` or
 `import_confirm` to bind deterministically — preferred, keyed by `proposal_ref`;
 or (b) self-accepts **only a strong-confirmer adoption** when `self_accept` is
@@ -1103,7 +1109,8 @@ with nothing to pick. So `AccountResolver.propose()` (the **preview** that fills
 the gate envelope, not `resolve()`) supplies a **fallback** candidate list when
 the real matchers return nothing — the institution-scoped accounts if any match
 the source's institution, else *all* accounts (capped at `_FALLBACK_CANDIDATE_CAP`),
-tagged `signal="institution"` / `signal="fallback"` at low confidence (0.2 / 0.1).
+tagged `signal="institution"` / `signal="fallback"` — the ladder's two weakest
+rungs, and, like every candidate, surfaced with no confidence number.
 These are gate-only decision support: they widen what the confirmer can pick, and
 are **never eligible for silent auto-adopt** (only `explicit` / strong-ref signals
 are). `resolve()` is untouched — confirming "new" still mints with zero candidates.
@@ -1348,7 +1355,17 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
 - `ACCOUNT_LINK_REVIEW_PENDING` — Gauge, current pending-decision count.
 - `ACCOUNT_LINK_CONFIDENCE` — Histogram of resolution confidence. Records the
   score written with a proposal, which is where that number is still meaningful;
-  it is deliberately not the review surfaces' evidence (Decision 5).
+  it is deliberately not the review surfaces' evidence (Decision 5). Because the
+  score is a per-signal constant, this describes which rungs fire rather than how
+  strong any one proposal is.
+- `ACCOUNT_LINK_OVERLAP_RATIO` — Histogram of `overlap_matched /
+  overlap_comparable` for every candidate an import gate surfaces with a
+  comparable period. The counterpart to the constant above: it varies with the
+  two accounts in front of the reviewer, so it is the one that says whether the
+  gate is asking real questions — mass near 1.0 is genuine twins found, mass near
+  0.0 is a confirmation spent on pairs the evidence already separates. Candidates
+  with no comparable period are absent rather than recorded as 0.0, since that is
+  absence of evidence; `ACCOUNT_LINK_OVERLAP_PROBES_TOTAL` counts those.
 
 - `ACCOUNT_LINK_OVERLAP_PROBES_TOTAL` — Counter,
   `result ∈ {measurable, unmeasurable}`, incremented inside

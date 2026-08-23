@@ -2214,15 +2214,27 @@ class ImportService:
             return source_accounts
         from moneybin.extractors.confidence import Confidence
         from moneybin.metrics.registry import (
-            ACCOUNT_LINK_CONFIDENCE,
+            ACCOUNT_LINK_OVERLAP_RATIO,
             IMPORT_CONFIRMATIONS_TOTAL,
         )
 
+        # Observe the measured overlap, not the resolver's per-signal constant:
+        # the constant is the same for every candidate on a rung, so a histogram
+        # of it reported which rungs fired and never whether a proposal was any
+        # good. A candidate with no comparable period is skipped rather than
+        # recorded as 0.0 — no shared period is absence of evidence, and folding
+        # it in as a zero would read as evidence against every such pair.
         for surfaced in proposals:
             for candidate in surfaced["candidates"]:
+                comparable = candidate.get("overlap_comparable")
+                matched = candidate.get("overlap_matched")
+                if type(comparable) is not int or type(matched) is not int:
+                    continue
+                if comparable == 0:
+                    continue
                 record_observation(
-                    ACCOUNT_LINK_CONFIDENCE,
-                    candidate["confidence"],
+                    ACCOUNT_LINK_OVERLAP_RATIO,
+                    matched / comparable,
                     labels={},
                     emit_metrics=emit_metrics,
                     observations=observations,

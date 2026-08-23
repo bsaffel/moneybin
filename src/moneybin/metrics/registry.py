@@ -538,7 +538,27 @@ ACCOUNT_LINK_REVIEW_PENDING = Gauge(
 
 ACCOUNT_LINK_CONFIDENCE = Histogram(
     "moneybin_account_link_confidence",
-    "Resolution confidence for account-link candidate proposals.",
+    "Resolution confidence stamped onto a queued account-link decision. A "
+    "per-signal constant, so this describes which rungs fire rather than how "
+    "strong any one proposal is — it is the distribution of what gets "
+    "persisted to account_link_decisions.confidence_score, nothing more. For "
+    "evidence about a specific pair, see ACCOUNT_LINK_OVERLAP_RATIO.",
+)
+
+ACCOUNT_LINK_OVERLAP_RATIO = Histogram(
+    "moneybin_account_link_overlap_ratio",
+    "Share of an incoming ledger that a candidate account already holds, over "
+    "the period both cover, for every candidate an import gate surfaced. Unlike "
+    "ACCOUNT_LINK_CONFIDENCE this varies with the two accounts in front of the "
+    "reviewer, so it is the one that says whether the gate is asking real "
+    "questions: mass near 1.0 is genuine twins found, mass near 0.0 is the gate "
+    "spending a confirmation on pairs the evidence already separates. Candidates "
+    "with no comparable period are absent rather than 0 — that is absence of "
+    "evidence, and ACCOUNT_LINK_OVERLAP_PROBES_TOTAL counts it.",
+    # Both tails carry the signal, so neither collapses: 0.0 is its own bucket
+    # because a measurable pair sharing nothing is a wasted confirmation, not a
+    # rounding of 0.03, and 0.9/0.99 separate a near-twin from an exact one.
+    buckets=(0.0, 0.05, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0),
 )
 
 ACCOUNT_LINK_OVERLAP_PROBES_TOTAL = Counter(
