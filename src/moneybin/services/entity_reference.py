@@ -65,11 +65,14 @@ def resolve_entity_reference(
     if exact_matches:
         return _resolution(reference, exact_matches, "exact")
 
-    normalized_reference = _normalize(reference)
+    normalized_reference = normalize_reference(reference)
     normalized_matches = {
         candidate.entity_id
         for candidate in candidate_list
-        if any(_normalize(value) == normalized_reference for value in _names(candidate))
+        if any(
+            normalize_reference(value) == normalized_reference
+            for value in _names(candidate)
+        )
     }
     if normalized_matches:
         return _resolution(reference, normalized_matches, "normalized")
@@ -90,7 +93,14 @@ def _names(candidate: EntityCandidate) -> tuple[str, ...]:
     )
 
 
-def _normalize(value: str) -> str:
+def normalize_reference(value: str) -> str:
+    """Fold a reference to the form the third resolution rung compares.
+
+    Public because a caller that *reserves* a name has to fold it exactly the
+    way the matcher does. Guarding on a weaker fold leaves the difference as a
+    hole: a stored name that this collapses onto a reserved one still matches a
+    request for it.
+    """
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 

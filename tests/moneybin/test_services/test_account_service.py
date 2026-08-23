@@ -529,6 +529,29 @@ class TestSettingsUpdateExtended:
             )
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "variant",
+        [" Unnamed account ", "Unnamed  account", "Unnamed\taccount"],
+        ids=["padded", "doubled-space", "tab"],
+    )
+    def test_a_whitespace_variant_of_the_unnamed_label_is_refused(
+        self, test_db: Database, variant: str
+    ) -> None:
+        """The reservation must use the normalization the matcher uses.
+
+        `resolve_entity_reference`'s third rung compares `_normalize` forms,
+        which NFKC-fold and collapse whitespace. Guarding on `casefold()` alone
+        let these through, and because generated placeholders are filtered out
+        of the candidate-name slot, a request for the exact label MoneyBin
+        displays for some *other* account then resolved uniquely to this one --
+        the collision the reservation exists to prevent, reached by whitespace
+        instead of case.
+        """
+        svc = AccountService(test_db)
+        with pytest.raises(UserError, match="reserved"):
+            svc.settings_update("acct_a", actor="cli", display_name=variant)
+
+    @pytest.mark.unit
     def test_a_row_already_holding_the_label_stays_readable(
         self, test_db: Database
     ) -> None:
