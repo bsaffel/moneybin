@@ -1177,7 +1177,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not-found error lists every candidate's name into a message the CLI writes to
   its durable log. It is still addressable by that id, which `moneybin accounts
   list` now prints beside the placeholder — the listing had been the one place
-  the id was legible, and `accounts set` takes nothing else (#435).
+  the id was legible, and `accounts set` takes nothing else. Setting that
+  placeholder as an account's *own* name is now refused, which nothing had
+  stopped: once set, an account MoneyBin could perfectly well name dropped out
+  of the same lookups the generated placeholder is filtered from, silently. The
+  refusal is case-insensitive because the strict resolver compares names with
+  `LOWER()` — a case variant lets a request for the label another account
+  displays filter that account out as nameless and land on this one instead —
+  and it sits on the write path, not in `AccountSettings.__post_init__`, so a
+  row that already carries the label still loads rather than raising on read
+  (#435).
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last
   four as evidence; where MoneyBin holds nothing to tell two accounts apart the

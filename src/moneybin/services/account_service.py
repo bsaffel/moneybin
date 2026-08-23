@@ -717,6 +717,23 @@ class AccountService:
                 hint=f"Valid methods: {valid}.",
             )
 
+        # Reserved vocabulary: core shows this exact label for an account it
+        # could not name, and `is_a_name` reads it that way everywhere. Taking
+        # it as a user's name would drop that account out of fuzzy resolution,
+        # `resolve_strict` and merge-name matching with nothing said. Matched
+        # case-insensitively because `resolve_strict` compares `LOWER(name)`:
+        # a case variant lets a request for the label another account displays
+        # filter that account out as nameless and land on this one instead.
+        name = diff.get("display_name")
+        reserved_name = UNNAMED_ACCOUNT_LABEL.casefold()
+        if isinstance(name, str) and name.casefold() == reserved_name:
+            raise UserError(
+                f"{UNNAMED_ACCOUNT_LABEL!r} is reserved: MoneyBin shows it for "
+                "an account it could not name, so it cannot also be one.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                hint="Pick a different display name.",
+            )
+
         # No fields to change → no write. Under Invariant 10 a repo call would
         # bump updated_at and emit an `account_settings.set` audit row for a
         # mutation that changed nothing — misleading forensic evidence. Return

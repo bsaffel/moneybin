@@ -14,6 +14,7 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.accounts import AccountListPayload
 from moneybin.protocol.envelope import build_envelope
+from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.account_service import (
     CLEAR,
@@ -489,6 +490,72 @@ class TestSettingsUpdateExtended:
         svc = AccountService(test_db)
         with pytest.raises(UserError, match="Account not found"):
             svc.settings_update("ACCTO1_typo", actor="cli")
+
+    @pytest.mark.unit
+    def test_the_unnamed_label_is_refused_as_a_display_name(
+        self, test_db: Database
+    ) -> None:
+        """The label core uses to mean "no name" may not be set as one.
+
+        `is_a_name` treats this exact string as the absence of a name, so an
+        account wearing it drops out of fuzzy resolution, `resolve_strict` and
+        merge-name matching. Accepting it here would let a user name an account
+        something MoneyBin then refuses to look up, with nothing said.
+        """
+        svc = AccountService(test_db)
+        with pytest.raises(UserError, match="reserved"):
+            svc.settings_update(
+                "acct_a", actor="cli", display_name=UNNAMED_ACCOUNT_LABEL
+            )
+        # Refused before the DB write, like the cost-basis vocabulary above.
+        assert svc._load_settings("acct_a") is None
+
+    @pytest.mark.unit
+    def test_a_case_variant_of_the_unnamed_label_is_refused_too(
+        self, test_db: Database
+    ) -> None:
+        """A case variant resolves other accounts' labels to this one.
+
+        `resolve_strict` compares `LOWER(display_name) = LOWER(?)`, so with a
+        generated-sentinel account present, asking for the exact label that
+        account displays matches both rows; the sentinel row is then filtered
+        as nameless and the *user's* account is returned as a unique hit. The
+        reservation is case-insensitive because the collision it prevents is.
+        """
+        svc = AccountService(test_db)
+        with pytest.raises(UserError, match="reserved"):
+            svc.settings_update(
+                "acct_a", actor="cli", display_name=UNNAMED_ACCOUNT_LABEL.lower()
+            )
+
+    @pytest.mark.unit
+    def test_a_row_already_holding_the_label_stays_readable(
+        self, test_db: Database
+    ) -> None:
+        """Reserving the label must not strand a row that already carries it.
+
+        `_load_settings` builds an `AccountSettings`, so any rule enforced in
+        `__post_init__` runs on reads too and would make such a row raise
+        instead of load. The reservation belongs on the write path for that
+        reason; this pins it there.
+        """
+        AccountSettingsRepo(test_db).set(
+            account_id="acct_a",
+            display_name=UNNAMED_ACCOUNT_LABEL,
+            official_name=None,
+            last_four=None,
+            account_subtype=None,
+            holder_category=None,
+            currency_code=None,
+            credit_limit=None,
+            archived=False,
+            include_in_net_worth=True,
+            default_cost_basis_method=None,
+            actor="test",
+        )
+        loaded = AccountService(test_db)._load_settings("acct_a")
+        assert loaded is not None
+        assert loaded.display_name == UNNAMED_ACCOUNT_LABEL
 
 
 # ---------------------------------------------------------------------------
