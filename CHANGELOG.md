@@ -1232,8 +1232,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   effect. **This is a behaviour change:** a pinned import that contradicts an
   existing binding used to succeed and silently double-count; it now errors.
   Rows already written under the old scheme keep the canonical id in the source
-  key column — re-import to correct them, and revert the affected batch first if
-  the statement was double-counted.
+  key column. Re-importing such a file corrects them: because `account_id` is
+  folded into `transaction_id` and into the raw primary key, the corrected rows
+  could not otherwise collide with the old ones and the upsert would insert a
+  second copy beside them, so the import now deletes the pre-fix rows for that
+  file first and writes the ones that supersede them. No revert step is needed
+  (#438, #418).
 
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last

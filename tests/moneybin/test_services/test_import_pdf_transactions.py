@@ -1490,6 +1490,60 @@ def test_distinct_full_pdf_account_numbers_with_same_last_four_do_not_collide(
 
 
 @pytest.mark.integration
+def test_pdf_reimport_supersedes_rows_a_pre_fix_pin_wrote_under_the_canonical_id(
+    db: Database, tmp_path: Path
+) -> None:
+    """The PDF channel needs the same supersede as the tabular one.
+
+    Both write ``raw.tabular_*``, and both moved ``account_id`` off the pinned
+    canonical id onto the document's own key. The primary key changes with it,
+    so a re-import would land beside the pre-fix rows rather than replace them.
+    """
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_type, institution_name, source_type) "
+        "VALUES ('acct_legacy01', 'CHECKING', 'Bank', 'pdf')"
+    )
+    doc = _make_doc(text_lines=_standard_text_lines(), tables=[_standard_table()])
+    svc = ImportService(db)
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    source_file = str(pdf.resolve())
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, source_file, "
+        "source_type, source_origin, import_id) VALUES "
+        "('acct_legacy01:legacy-1', 'acct_legacy01', DATE '2026-01-05', -1.00, "
+        "?, 'pdf', 'unknown', 'imp_legacy')",
+        [source_file],
+    )
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        import_answering_gate(svc, pdf, refresh=False, account_id="acct_legacy01")
+
+    leftover = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND account_id = 'acct_legacy01'",
+        [source_file],
+    ).fetchone()
+    assert leftover is not None and leftover[0] == 0, (
+        "pre-fix PDF rows survived the re-import and will double-count"
+    )
+    keys = [
+        str(r[0])
+        for r in db.execute(
+            "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+            "WHERE source_file = ?",
+            [source_file],
+        ).fetchall()
+    ]
+    assert keys and all(k.startswith("pdf_doc_") for k in keys), keys
+
+
 def test_account_id_override_pins_identity_through_the_resolver(
     db: Database, tmp_path: Path
 ) -> None:

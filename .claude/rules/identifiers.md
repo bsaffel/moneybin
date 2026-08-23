@@ -37,9 +37,9 @@ value depends on the channel and on what the caller pinned:
 |---|---|
 | OFX | `<ACCTID>` — the institution's |
 | PDF, unpinned | `pdf_doc_<digest>` — MoneyBin-synthesized from the exact document bytes; account anchors are separate match evidence (`import_service.py:_pdf_source_account`) |
-| PDF pinned with `--account-id` | MoneyBin's canonical `account_id`; the unpinned document digest is retained as a separate accepted link after resolution |
+| PDF pinned with `--account-id` | `pdf_doc_<digest>` — the same key as unpinned. A pin says WHICH account the document belongs to; it never renames the document, and travels in `explicit_account_id` alone |
 | Bare tabular (no account column) | `_bare_account_key(file_path, source_bytes)` — MoneyBin-synthesized from filename + content |
-| Other supported channel with `--account-id` pinned | MoneyBin's own `account_id`, copied straight in (for example tabular `source_account_key=account_id`) |
+| Other supported channel with `--account-id` pinned | The key that channel derives unpinned — a pin never replaces it. `source_account_key` is ALWAYS the source's own key; a canonical `account_id` there is pre-fix residue |
 
 **`account_id` is not unconditionally MoneyBin's either.** Nine staging models
 project it as `COALESCE(links.account_id, a.account_id)`, each annotated

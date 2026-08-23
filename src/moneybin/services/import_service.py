@@ -2263,6 +2263,45 @@ class ImportService:
             )
         )
 
+    def _supersede_legacy_pinned_raw_rows(self, source_file: str) -> None:
+        """Drop raw rows a pre-fix ``--account-id`` pin wrote under the canonical id.
+
+        ``--account-id`` used to overwrite the source-native key with the
+        canonical ``dim_accounts.account_id``, so a pinned import stamped that
+        id straight into ``raw.tabular_*.account_id``. That column now carries
+        the source's own key, and ``raw.tabular_transactions`` keys on
+        ``(transaction_id, account_id, source_file)`` with ``account_id`` folded
+        into ``transaction_id`` as well. Re-importing such a file therefore
+        produces rows whose primary key CANNOT collide with the old ones, and
+        the upsert inserts a second copy beside them — one statement, counted
+        twice, for anyone who re-imports after upgrading.
+
+        Nothing derives a canonical-shaped native key any more, so a raw row for
+        this file whose ``account_id`` is a ``dim_accounts`` id can only be
+        pre-fix residue: delete it and let this import write the row that
+        supersedes it. Scoped to this ``source_file`` so a re-import never
+        reaches another file's rows.
+
+        Skipped when ``core.dim_accounts`` has not been built — there is then no
+        canonical id to recognize, and a database with no transform run has no
+        residue to carry.
+        """
+        from moneybin.tables import DIM_ACCOUNTS, TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
+
+        for table in (TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS):
+            try:
+                self._db.execute(
+                    f"DELETE FROM {table.full_name} "  # noqa: S608  # TableRef constants, value parameterized
+                    "WHERE source_file = ? AND account_id IN "
+                    f"(SELECT account_id FROM {DIM_ACCOUNTS.full_name})",
+                    [source_file],
+                )
+            except Exception as e:  # noqa: BLE001 — core.dim_accounts may not exist yet
+                logger.debug(
+                    f"legacy pinned-row supersede skipped for {table.name}: {e}"
+                )
+                return
+
     def _import_tabular(
         self,
         file_path: Path,
@@ -3390,6 +3429,7 @@ class ImportService:
             "import_id": [import_id] * len(unique_ids),
         })
 
+        self._supersede_legacy_pinned_raw_rows(str(file_path))
         rows_imported = extractor.load_transactions(transform_result.transactions)
         extractor.load_accounts(account_df)
 
@@ -5019,6 +5059,7 @@ class ImportService:
             # `WHERE transaction_id IN () AND ...`, which DuckDB rejects, and
             # the failure would land AFTER raw rows had already been ingested
             # — leaving import_log stuck in 'importing' status.
+            self._supersede_legacy_pinned_raw_rows(str(canonical))
             tx_ids = [r["transaction_id"] for r in rows_list]
             src_file = str(canonical)
             if tx_ids:

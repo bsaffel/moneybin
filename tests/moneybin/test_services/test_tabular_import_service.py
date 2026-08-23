@@ -11,6 +11,7 @@ from moneybin.services.import_service import (
     _detect_file_type,  # type: ignore[reportPrivateUsage]  # testing private function
 )
 from tests.import_helpers import import_answering_gate
+from tests.moneybin.db_helpers import create_core_tables
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -480,6 +481,80 @@ def test_pinned_csv_import_keeps_the_files_own_key_on_the_raw_row(
         [f"%{_CHASE_CSV.name}"],
     ).fetchall()
     assert [r[0] for r in rows] == ["chase-statement"], rows
+
+
+def test_reimport_supersedes_rows_a_pre_fix_pin_wrote_under_the_canonical_id(
+    db: Database,
+) -> None:
+    """Re-importing a previously pinned file must replace its rows, not duplicate them.
+
+    ``raw.tabular_transactions`` keys on
+    ``(transaction_id, account_id, source_file)`` and loads with an upsert, and
+    ``account_id`` is folded into ``transaction_id`` itself. Moving that column
+    off the canonical id onto the source-native key therefore changes BOTH
+    halves of the primary key, so the new rows never collide with the pre-fix
+    ones: without a supersede the upsert inserts a second copy beside them and
+    the statement is counted twice for anyone who re-imports after upgrading.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_type, institution_name, source_type) "
+        "VALUES ('acct_legacy01', 'CHECKING', 'Bank', 'csv')"
+    )
+    # Stand in for a pre-fix pinned import of this same file: --account-id used
+    # to stamp the canonical id straight into the raw source-key column.
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, source_file, "
+        "source_type, source_origin, import_id) VALUES "
+        "('acct_legacy01:legacy-1', 'acct_legacy01', DATE '2026-01-05', -52.30, "
+        "?, 'csv', 'unknown', 'imp_legacy')",
+        [str(_STANDARD_CSV)],
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_name, source_file, source_type, source_origin, "
+        "import_id) VALUES ('acct_legacy01', 'Legacy', ?, 'csv', 'unknown', "
+        "'imp_legacy')",
+        [str(_STANDARD_CSV)],
+    )
+
+    import_answering_gate(
+        ImportService(db),
+        _STANDARD_CSV,
+        account_name="Primary Checking",
+        account_id="acct_legacy01",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+
+    leftover_txns = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND account_id = 'acct_legacy01'",
+        [str(_STANDARD_CSV)],
+    ).fetchone()
+    assert leftover_txns is not None and leftover_txns[0] == 0, (
+        "pre-fix transaction rows survived the re-import and will double-count"
+    )
+    leftover_accts = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_accounts "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND account_id = 'acct_legacy01'",
+        [str(_STANDARD_CSV)],
+    ).fetchone()
+    assert leftover_accts is not None and leftover_accts[0] == 0, (
+        "pre-fix account row survived the re-import"
+    )
+    # The file's own rows are present exactly once, under its native key.
+    native = db.execute(
+        "SELECT account_id, COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? GROUP BY account_id",
+        [str(_STANDARD_CSV)],
+    ).fetchall()
+    assert native == [("primary-checking", 7)], native
 
 
 # ---------------------------------------------------------------------------
