@@ -1863,6 +1863,11 @@ def test_the_unnamed_sentinel_is_not_offered_as_a_resolvable_name() -> None:
 
     assert candidate.entity_id == "acct_nameless"
     assert UNNAMED_ACCOUNT_LABEL not in (candidate.display_name, *candidate.aliases)
+    # ...and not by trading the label for the id. An account with no resolver
+    # link carries its source-native key here -- on OFX a real <ACCTID> -- and
+    # AccountNotFoundError renders every candidate name into a message the CLI
+    # writes to its durable log.
+    assert "acct_nameless" not in (candidate.display_name, *candidate.aliases)
 
 
 def test_an_unnameable_account_is_still_resolvable_by_its_id() -> None:

@@ -6,7 +6,7 @@ from moneybin.services.account_resolution_types import (
     UNNAMED_ACCOUNT_LABEL,
     AccountCandidate,
     AccountProposal,
-    resolvable_account_name,
+    matchable_account_name,
 )
 
 
@@ -119,22 +119,32 @@ def test_a_mint_with_a_candidate_still_requires_confirm() -> None:
     assert proposal.requires_confirm is True
 
 
-def test_the_sentinel_is_not_a_resolvable_account_name() -> None:
-    """An account nothing could name answers to its id, never to the placeholder.
+def test_the_sentinel_is_not_a_matchable_account_name() -> None:
+    """Every unnameable account wears the identical label, so it matches nothing.
 
-    Every unnameable account carries the identical label, so leaving it in the
-    candidate's name slot reports an exact match on a string that tells two
-    accounts apart not at all.
+    A string comparison against it reports a perfect match between two accounts
+    that agree on nothing at all.
     """
-    assert resolvable_account_name(UNNAMED_ACCOUNT_LABEL, "acct_x") == "acct_x"
+    assert matchable_account_name(UNNAMED_ACCOUNT_LABEL) == ""
 
 
-def test_an_absent_name_still_falls_back_to_the_id() -> None:
-    """The pre-existing ``display_name or account_id`` fallback is preserved."""
-    assert resolvable_account_name(None, "acct_x") == "acct_x"
-    assert resolvable_account_name("", "acct_x") == "acct_x"
+def test_an_absent_name_is_not_a_matchable_account_name() -> None:
+    """Empty compares equal to itself, so it is refused for the same reason."""
+    assert matchable_account_name(None) == ""
+    assert matchable_account_name("") == ""
 
 
 def test_a_real_name_is_left_alone() -> None:
-    """A name the user or the dim actually produced stays the resolvable name."""
-    assert resolvable_account_name("Chase Checking", "acct_x") == "Chase Checking"
+    """A name the user or the dim actually produced stays the matchable name."""
+    assert matchable_account_name("Chase Checking") == "Chase Checking"
+
+
+def test_no_account_id_reaches_the_matchable_name() -> None:
+    """The name slot is rendered into error text that persists to the CLI log.
+
+    An account with no resolver link carries its source-native key as its
+    ``account_id`` -- on OFX a real ``<ACCTID>``. Substituting the id for an
+    absent name puts an account number in the one field this contract prints.
+    """
+    for absent in (UNNAMED_ACCOUNT_LABEL, None, ""):
+        assert "acct_secret" not in matchable_account_name(absent)

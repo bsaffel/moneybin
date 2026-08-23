@@ -27,7 +27,10 @@ from moneybin.privacy.payloads.accounts import (
     AccountSummaryStats,
 )
 from moneybin.services._validators import validate_currency_code
-from moneybin.services.account_resolution_types import is_a_name
+from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
+    is_a_name,
+)
 from moneybin.services.audit_service import AuditService
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
@@ -246,7 +249,12 @@ class AccountNotFoundError(UserError):
     def __init__(self, query: str, candidates: list[tuple[str, str]]) -> None:
         """Store the failed query and the (capped) candidate list."""
         shown = candidates[:_RESOLVE_STRICT_CANDIDATE_CAP]
-        names = ", ".join(name for _, name in shown)
+        # Name the placeholder rather than the id for an account that has no
+        # name. This message reaches the durable CLI log, and an account with no
+        # resolver link carries its source-native key as its id -- on OFX a real
+        # <ACCTID>. The listing this error's hint points at prints the id, which
+        # is where a caller who needs one should get it.
+        names = ", ".join(name or UNNAMED_ACCOUNT_LABEL for _, name in shown)
         # The fetch caps at _RESOLVE_STRICT_CANDIDATE_CAP + 1 to detect
         # truncation; surface that to the user as a generic "more
         # available" pointer rather than a count it can't track at scale.

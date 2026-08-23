@@ -66,22 +66,30 @@ def is_a_name(display_name: str | None) -> TypeGuard[str]:
     return bool(display_name) and display_name != UNNAMED_ACCOUNT_LABEL
 
 
-def resolvable_account_name(display_name: str | None, account_id: str) -> str:
-    """The name an account answers to when a reference is resolved against it.
+def matchable_account_name(display_name: str | None) -> str:
+    """The name a reference may match an account by, or ``""`` when it has none.
 
     Four candidate builders project accounts into the shared
     ``resolve_entity_reference`` contract, which matches a reference against a
-    candidate's name before falling back to nothing. They already substituted
-    the id for an absent name; the sentinel needs the same treatment for a
-    sharper reason. It is one fixed string worn by every account MoneyBin
-    could not name, so left in the name slot it reports an exact match on a
-    label that distinguishes nothing -- and two of these builders feed writes.
+    candidate's name. An account MoneyBin could not name has no name to offer,
+    and both spellings of that state -- the sentinel and empty -- compare equal
+    to themselves across unrelated accounts, so neither may sit in the slot.
 
-    Substituting the id rather than dropping the candidate is deliberate: the
-    resolver checks ids before names, so removing the row would take away the
-    one handle such an account still has.
+    **Never substitute the ``account_id``.** It is the obvious filler and it is
+    wrong twice over. ``EntityCandidate`` matches ids off ``entity_id``, so the
+    name slot buys no id resolution; and an account with no resolver link
+    carries its source-native key as its ``account_id`` -- on OFX a real
+    ``<ACCTID>``. ``AccountNotFoundError`` renders every candidate name into a
+    message that ``handle_cli_errors`` logs, whose safety rests on that message
+    being a fixed MoneyBin string, so an id here becomes an account number in
+    ``cli_YYYY-MM-DD.log``. Dropping the id from the dim's terminal name is the
+    whole point of the change this helper serves; putting it back one layer
+    down would undo it.
+
+    The candidate itself stays: ``entity_id`` still carries the id, so such an
+    account remains addressable exactly as before.
     """
-    return display_name if is_a_name(display_name) else account_id
+    return display_name if is_a_name(display_name) else ""
 
 
 class AccountCandidateDict(TypedDict):

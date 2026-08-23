@@ -78,7 +78,16 @@ def resolve_entity_reference(
 
 
 def _names(candidate: EntityCandidate) -> tuple[str, ...]:
-    return (candidate.display_name, *candidate.aliases)
+    """Every name this candidate answers to, skipping the ones that say nothing.
+
+    An empty name compares equal to itself, so an entity that has none would
+    otherwise match an empty reference -- and match it against every other
+    nameless entity at the same time. Filtering here rather than at each builder
+    keeps that true for every entity type the contract serves.
+    """
+    return tuple(
+        value for value in (candidate.display_name, *candidate.aliases) if value
+    )
 
 
 def _normalize(value: str) -> str:

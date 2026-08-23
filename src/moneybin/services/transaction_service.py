@@ -44,7 +44,7 @@ from moneybin.services._validators import (
     validate_note_text,
     validate_slug,
 )
-from moneybin.services.account_resolution_types import resolvable_account_name
+from moneybin.services.account_resolution_types import matchable_account_name
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.services.mutation_context import operation
@@ -746,7 +746,7 @@ class TransactionService:
         candidates = [
             EntityCandidate(
                 entity_id=row.account_id,
-                display_name=resolvable_account_name(row.display_name, row.account_id),
+                display_name=matchable_account_name(row.display_name),
                 aliases=tuple(
                     value
                     for value in (

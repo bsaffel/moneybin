@@ -1171,10 +1171,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   nor the account-reference matching in the `accounts`, `transactions` and
   `investments` tools binds it to whichever account happens to wear it — which
   had let a categorization, an investment write, a balance assertion or a sheet
-  connection land on an account the caller never chose. Such an account is
-  still addressable by its id, which `moneybin accounts list` now prints beside
-  the placeholder — the listing had been the one place the id was legible, and
-  `accounts set` takes nothing else (#435).
+  connection land on an account the caller never chose. Such an account offers
+  no name to match rather than offering its id: an account with no resolver
+  link carries the institution's own account number as its id, and the
+  not-found error lists every candidate's name into a message the CLI writes to
+  its durable log. It is still addressable by that id, which `moneybin accounts
+  list` now prints beside the placeholder — the listing had been the one place
+  the id was legible, and `accounts set` takes nothing else (#435).
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last
   four as evidence; where MoneyBin holds nothing to tell two accounts apart the

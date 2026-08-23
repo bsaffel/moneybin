@@ -1171,13 +1171,7 @@ class TestAccountServiceResolveStrict:
         resolver feeds investment mutations, transaction categorization and
         sheet bindings, so a silent hit writes to an account nobody picked.
         """
-        from moneybin.services.account_resolution_types import (
-            UNNAMED_ACCOUNT_LABEL,
-        )
-        from moneybin.services.account_service import (
-            AccountNotFoundError,
-            AccountService,
-        )
+        from moneybin.services.account_service import AccountNotFoundError
 
         _insert_dim_account(
             extended_db,
@@ -1197,11 +1191,6 @@ class TestAccountServiceResolveStrict:
         The id is the caller's remaining handle on an account core could not
         name; taking that away would make the row unusable rather than safe.
         """
-        from moneybin.services.account_resolution_types import (
-            UNNAMED_ACCOUNT_LABEL,
-        )
-        from moneybin.services.account_service import AccountService
-
         _insert_dim_account(
             extended_db,
             "nameless",
@@ -1209,6 +1198,24 @@ class TestAccountServiceResolveStrict:
             institution_name=None,
         )
         assert AccountService(extended_db).resolve_strict("nameless") == "nameless"
+
+    @pytest.mark.unit
+    def test_a_candidate_with_no_name_is_listed_as_the_placeholder(self) -> None:
+        """A nameless candidate must never be listed by its id instead.
+
+        The candidate builders behind the `accounts`, `transactions` and
+        `investments` tools hand this error a name per row, and an account
+        nothing can name hands it an empty one. `handle_cli_errors` logs this
+        message to the durable `cli_YYYY-MM-DD.log` on the strength of it being
+        a fixed MoneyBin string -- and an account with no resolver link carries
+        its source-native key as its id, on OFX a real `<ACCTID>`.
+        """
+        from moneybin.services.account_service import AccountNotFoundError
+
+        error = AccountNotFoundError("typo", [("acct_secret", "")])
+
+        assert "acct_secret" not in error.message
+        assert UNNAMED_ACCOUNT_LABEL in error.message
 
 
 class TestNullAccountType:
