@@ -437,7 +437,6 @@ class AccountResolver:
             self._write_native_mapping(
                 src, account_id=src.explicit_account_id, decided_by="user"
             )
-            self._teach_unpinned_key(src, account_id=src.explicit_account_id)
             self._write_strong_ref(
                 src, account_id=src.explicit_account_id, decided_by="user"
             )
@@ -790,51 +789,6 @@ class AccountResolver:
             source_type=src.source_type,
             source_origin=src.source_origin,
             decided_by=decided_by,
-            actor=self._actor,
-            in_outer_txn=True,  # joins resolve()'s per-account transaction
-        )
-
-    def _teach_unpinned_key(self, src: SourceAccount, *, account_id: str) -> None:
-        """Also link the key this source derives without the pin, if it has one.
-
-        A pin replaces ``source_account_key`` with the canonical id, so Step 0's
-        mapping is a self-map (``<id> -> <id>``) that the staging JOIN needs but
-        that teaches the resolver nothing about the document. Without this, the
-        next import of the same source WITHOUT the pin derives its own key, finds
-        no link, and mints a second account for the same thing.
-
-        Skips — never raises, never re-points — when the derived key is already
-        accepted onto a different account. Re-pointing is an explicit, surfaced
-        operation (M1S.5); doing it as a side effect of an unrelated pin is
-        exactly the invisible action "magic stays visible" forbids. The pin the
-        caller asked for still applies; only the extra teaching link is dropped.
-        """
-        key = src.unpinned_account_key
-        if not key or key == src.source_account_key:
-            return
-        existing = self._db.execute(
-            f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
-            "WHERE status = 'accepted' AND ref_kind = 'source_native' "
-            "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
-            [src.source_type, src.source_origin, key],
-        ).fetchone()
-        if existing is not None:
-            if existing[0] != account_id:
-                logger.warning(
-                    f"account_links: not teaching source_native key for "
-                    f"{src.source_type}/{src.source_origin} — already accepted "
-                    f"onto account {existing[0]}, pin targeted {account_id}. "
-                    "Re-point explicitly if that is intended."
-                )
-            return
-        self._links.insert(
-            link_id=uuid.uuid4().hex[:12],
-            account_id=account_id,
-            ref_kind="source_native",
-            ref_value=key,
-            source_type=src.source_type,
-            source_origin=src.source_origin,
-            decided_by="user",
             actor=self._actor,
             in_outer_txn=True,  # joins resolve()'s per-account transaction
         )

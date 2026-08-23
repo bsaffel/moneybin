@@ -430,6 +430,58 @@ def test_single_account_csv_captures_last4_from_label(
     assert masked is not None and masked[0] == "****4267", masked
 
 
+def test_pinned_csv_import_keeps_the_files_own_key_on_the_raw_row(
+    db: Database,
+) -> None:
+    """``--account-id`` states which account a file belongs to, not what it is called.
+
+    ``raw.tabular_accounts.account_id`` is contract-defined as the source's own
+    key — the ``source_native`` ref ``prep.stg_tabular__accounts`` joins on.
+    Overwriting it with the pinned canonical id makes one column mean two things
+    by import flag, self-maps the link the pin writes, and blinds the
+    contradicting-binding gate, which looks the key up by that same field.
+    """
+    from moneybin.services.import_service import ImportService
+
+    svc = ImportService(db)
+    # A first, unpinned import mints a real account to pin the second one to.
+    import_answering_gate(
+        svc,
+        _STANDARD_CSV,
+        account_name="Primary Checking",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+    minted = db.execute(
+        """
+        SELECT account_id FROM app.account_links
+        WHERE status = 'accepted' AND ref_kind = 'source_native'
+          AND ref_value = ?
+        """,
+        ["primary-checking"],
+    ).fetchone()
+    assert minted is not None, "first import wrote no source_native link"
+    canonical_id = minted[0]
+
+    # A second, different file pinned onto that same account.
+    import_answering_gate(
+        svc,
+        _CHASE_CSV,
+        account_name="Chase Statement",
+        account_id=canonical_id,
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+
+    rows = db.execute(
+        "SELECT account_id FROM raw.tabular_accounts WHERE source_file LIKE ?",
+        [f"%{_CHASE_CSV.name}"],
+    ).fetchall()
+    assert [r[0] for r in rows] == ["chase-statement"], rows
+
+
 # ---------------------------------------------------------------------------
 # TestTabularConfirmationFlow
 # ---------------------------------------------------------------------------

@@ -1514,7 +1514,8 @@ def test_account_id_override_pins_identity_through_the_resolver(
         )
 
     assert result.transactions == 2
-    # The rows carry the pinned id, not an issuer+mask key derived from the PDF.
+    # The rows carry the document's OWN key. A pin says which account the
+    # statement belongs to; it does not rename the statement.
     raw_ids = [
         str(r[0])
         for r in db.execute(
@@ -1522,20 +1523,19 @@ def test_account_id_override_pins_identity_through_the_resolver(
             "WHERE source_type = 'pdf'"
         ).fetchall()
     ]
-    assert raw_ids == ["my_pinned_account"]
-    # And the explicit binding is registered, so a later statement of the same
-    # card adopts it instead of minting beside it.
+    [raw_id] = raw_ids
+    assert raw_id.startswith("pdf_doc_"), raw_id
+    # And the explicit binding is registered against that key, so a later
+    # statement of the same card adopts it instead of minting beside it.
     link = db.execute(
         "SELECT account_id FROM app.account_links "
         "WHERE status = 'accepted' AND ref_kind = 'source_native' "
         "AND source_type = 'pdf' AND ref_value = ?",
-        ["my_pinned_account"],
+        [raw_id],
     ).fetchone()
     assert link is not None
     # The explicit binding is honoured rather than minting a fresh canonical id
-    # beside it. This also pins the self-referential shape of the override link
-    # (ref_value == account_id): the pinned value is both the source-native key
-    # and the canonical account, because the caller supplied a canonical id.
+    # beside it -- one link, from the document's key to the pinned account.
     assert str(link[0]) == "my_pinned_account"
 
 
@@ -2809,8 +2809,10 @@ def test_pinning_an_anchorless_pdf_teaches_exact_document_identity(
         "WHERE ref_kind = 'source_native' AND status = 'accepted' "
         "ORDER BY ref_value"
     ).fetchall()
+    # One link only: the document's own key. The pin no longer also writes a
+    # self-map (acct_existing01 -> acct_existing01), which existed solely
+    # because the pin used to overwrite the source-native key.
     assert [row[0] for row in taught] == [
-        "acct_existing01",
         f"pdf_doc_{hashlib.sha256(b'%PDF-1.4 fake').hexdigest()[:16]}",
     ]
 
@@ -2923,17 +2925,20 @@ def test_partial_pdf_second_statement_requires_review_again(
 
 
 @pytest.mark.integration
-def test_account_id_pin_teaches_the_statements_own_key(
+def test_account_id_pin_keeps_the_statements_own_key(
     db: Database,
     tmp_path: Path,
 ) -> None:
-    """Pinning with --account-id must teach the key the statement derives on its own.
+    """Pinning with --account-id says which account, not what the document is called.
 
-    ``account_id_override`` replaces the source-native key with the canonical id,
-    so the ladder writes both the self-map and this exact document's opaque key.
+    The pin belongs in ``explicit_account_id`` alone. ``source_account_key``
+    stays the document's own opaque key, so one accepted link points that key at
+    the pinned account and ``raw.tabular_accounts.account_id`` carries the key
+    rather than the canonical id.
 
-    The pin must write both links: the canonical self-map the staging JOIN needs,
-    and the statement's own derived key pointing at the same account.
+    There is no self-map (``<id> -> <id>``) any more: that row only ever existed
+    because the pin overwrote the native key, and it is what let a second pin of
+    the same document fork the key and double-count the statement.
     """
     create_core_tables(db)
     db.conn.execute(
@@ -2960,21 +2965,36 @@ def test_account_id_pin_teaches_the_statements_own_key(
             "WHERE ref_kind='source_native' AND status='accepted'"
         ).fetchall()
     )
-    assert linked["acct_pinned01"] == "acct_pinned01"
-    document_keys = [key for key in linked if key.startswith("pdf_doc_")]
-    assert len(document_keys) == 1
-    assert linked[document_keys[0]] == "acct_pinned01"
+    assert list(linked) == [key for key in linked if key.startswith("pdf_doc_")], (
+        f"pin wrote a non-document source_native key: {linked}"
+    )
+    [document_key] = list(linked)
+    assert linked[document_key] == "acct_pinned01"
+
+    # The raw row is keyed by the document, not by the account it was pinned to.
+    raw_keys = db.execute(
+        "SELECT account_id FROM raw.tabular_accounts WHERE source_type = 'pdf'"
+    ).fetchall()
+    assert [r[0] for r in raw_keys] == [document_key], raw_keys
 
 
 @pytest.mark.integration
-def test_account_id_pin_does_not_repoint_an_existing_key(
+def test_account_id_pin_refuses_a_document_already_bound_elsewhere(
     db: Database,
     tmp_path: Path,
 ) -> None:
-    """The forward-teaching link never steals a key already bound elsewhere.
+    """A pin contradicting this document's accepted binding is refused before load.
 
-    If an exact document key is already accepted onto another account, pinning
-    that document to a different account must not re-point the remembered key.
+    The pin used to be honoured by forking the key: the statement's own
+    ``pdf_doc_`` key stayed on the first account while the rows landed under the
+    canonical id, so ONE statement produced two accounts' worth of transactions
+    and no per-account view could show the duplicate. Keying the raw row
+    natively is what lets the gate see the conflict at all.
+
+    Re-pointing the remembered key instead is not the alternative: that is a
+    silent import-time re-point, which M1S.5 and "magic stays visible" both
+    forbid. So the import refuses, names the account the document is already
+    bound to, and writes nothing.
     """
     create_core_tables(db)
     for account_id, name in (
@@ -3000,28 +3020,44 @@ def test_account_id_pin_does_not_repoint_an_existing_key(
             account_bindings={"@0": "acct_other01"},
         )
 
+    rows_before = _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions")
+
     # Now pin a statement of the same card to a DIFFERENT account.
     other_pdf = tmp_path / "statement_pinned.pdf"
     other_pdf.write_bytes(fake_pdf.read_bytes())
-    with patch(
-        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+        ),
+        pytest.raises(ValueError, match="already accepted onto 'acct_other01'"),
     ):
-        result = svc.import_file(
+        svc.import_file(
             other_pdf,
             refresh=False,
             confirm=True,
             actor_kind="human",
             account_id="acct_pinned01",
         )
-    assert result.transactions == 2
 
+    # Refused before load: no second copy of the statement, under either account.
+    assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == rows_before
+    assert (
+        _count(
+            db,
+            "SELECT COUNT(*) FROM raw.tabular_accounts WHERE source_file LIKE "
+            "'%statement_pinned.pdf'",
+        )
+        == 0
+    )
+
+    # The remembered key is untouched, and no self-map was written for the pin.
     linked = dict(
         db.execute(
             "SELECT ref_value, account_id FROM app.account_links "
             "WHERE ref_kind='source_native' AND status='accepted'"
         ).fetchall()
     )
-    assert linked["acct_pinned01"] == "acct_pinned01"
-    document_keys = [key for key in linked if key.startswith("pdf_doc_")]
-    assert len(document_keys) == 1
-    assert linked[document_keys[0]] == "acct_other01"
+    assert "acct_pinned01" not in linked, linked
+    [document_key] = list(linked)
+    assert document_key.startswith("pdf_doc_")
+    assert linked[document_key] == "acct_other01"

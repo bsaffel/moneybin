@@ -1564,14 +1564,11 @@ def _pdf_source_account(
     # Whether the document named an account, independent of its idempotency key.
     anchored = derived.has_usable_identifier
     derived_key = derived.source_account_key
-    if account_id_override:
-        # Explicit override — agents/users can pin a statement whose text omits
-        # an account anchor to an existing dim_accounts row. The document key
-        # rides along as unpinned_account_key so the pin also teaches the
-        # resolver what this exact file yields on its own.
-        native_key = account_id_override
-    else:
-        native_key = derived_key
+    # A pin (agents/users pointing a statement whose text omits an account
+    # anchor at an existing dim_accounts row) says WHICH account this document
+    # belongs to. It does not change what the document's own key is, so it
+    # travels in explicit_account_id alone and native_key stays derived.
+    native_key = derived_key
     return PdfAccountIdentity(
         source=SourceAccount(
             source_type="pdf",
@@ -1603,10 +1600,6 @@ def _pdf_source_account(
             # inventing a strong match.
             last_four=derived.last_four,
             explicit_account_id=account_id_override,
-            # The unpinned PDF key is always an opaque document digest. Teach it
-            # after an explicit pin so exact bytes re-adopt silently; the
-            # resolver's conflict guard refuses any attempted re-point.
-            unpinned_account_key=(derived_key if account_id_override else None),
         ),
         identity_unknown=not anchored,
     )
@@ -3079,24 +3072,37 @@ class ImportService:
         # Source keys whose gate offers a fallback pick-list (see the bare branch).
         fallback_keys: set[str] = set()
         if account_id:
-            account_ids: str | list[str] = account_id
-            acct_id_to_name[account_id] = account_name or account_id
-            # Parse only a real display label, never the canonical --account-id
-            # itself: an opaque id ending in 4 digits ("acct-1234") would
-            # otherwise fabricate a "****1234" bank mask in dim_accounts. No
-            # label supplied → no derived last4.
-            label_parsed_by_key[account_id] = (
-                parse_account_label(account_name)
+            # A pin says which account this file belongs to; it does not rename
+            # what the file calls that account. Derive the same native key the
+            # unpinned branches below would, and carry the pin in
+            # explicit_account_id alone.
+            native_key = (
+                slugify(account_name)
                 if account_name
-                else (account_id, None)
+                else _bare_account_key(file_path, source_bytes=source_bytes)
             )
+            account_ids: str | list[str] = native_key
+            # Parse only a real display label, never a derived key: both a
+            # canonical id and a bare content key can end in 4 digits
+            # ("acct-1234", "statement-9f2c1234"), and parsing one would
+            # fabricate a "****1234" bank mask in dim_accounts. No label
+            # supplied → no derived last4.
+            if account_name:
+                display_name = account_name
+                clean_name, label_last4 = parse_account_label(account_name)
+            else:
+                display_name = file_path.stem or native_key
+                clean_name, label_last4 = display_name, None
+            acct_id_to_name[native_key] = display_name
+            label_parsed_by_key[native_key] = (clean_name, label_last4)
             source_accounts.append(
                 SourceAccount(
                     source_type=source_type,
                     source_origin=source_origin,
-                    source_account_key=account_id,
-                    account_name=account_name or account_id,
+                    source_account_key=native_key,
+                    account_name=clean_name,
                     institution=institution,
+                    last_four=label_last4,
                     explicit_account_id=account_id,
                 )
             )

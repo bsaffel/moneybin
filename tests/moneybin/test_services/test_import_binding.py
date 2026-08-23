@@ -1486,24 +1486,34 @@ def test_the_contradiction_refusal_names_the_parameter_the_caller_used(
     change ``account_id``.
     """
     _seed_existing_account(db, account_id="acct_other01", display_name="Other")
-    # The id is "pinned" so that it collides with the source key the first
-    # import accepts: on the `account_id` path the pin *is* the source key, and
-    # that collision is what makes the second import contradictory.
-    _seed_existing_account(db, account_id="pinned", display_name="Pinned")
+    _seed_existing_account(db, account_id="acct_pinned01", display_name="Pinned")
     svc = ImportService(db)
 
-    named = tmp_path / "named.csv"
-    named.write_text(
-        "Date,Description,Amount,Account Name\n2026-01-15,Coffee,-12.50,pinned\n"
-    )
+    # Two statements of the same account derive the same native key
+    # (slugify("Shared Label")), and the first one accepts it onto
+    # acct_other01. That is what makes the second, pinned elsewhere,
+    # contradictory — a real collision between two files, not an artifact of
+    # the pin having once overwritten the source key with the canonical id.
+    january = tmp_path / "january.csv"
+    january.write_text("Date,Description,Amount\n2026-01-15,Coffee,-12.50\n")
     svc.import_file(
-        named, refresh=False, confirm=True, account_bindings={"@0": "acct_other01"}
+        january,
+        refresh=False,
+        confirm=True,
+        account_name="Shared Label",
+        account_bindings={"@0": "acct_other01"},
     )
 
-    plain = tmp_path / "plain.csv"
-    plain.write_text("Date,Description,Amount\n2026-01-16,Groceries,-20.00\n")
+    february = tmp_path / "february.csv"
+    february.write_text("Date,Description,Amount\n2026-02-16,Groceries,-20.00\n")
     with pytest.raises(ValueError, match="account_id pins") as exc:
-        svc.import_file(plain, refresh=False, confirm=True, account_id="pinned")
+        svc.import_file(
+            february,
+            refresh=False,
+            confirm=True,
+            account_name="Shared Label",
+            account_id="acct_pinned01",
+        )
 
     # The refusal still says what to do; only the misattribution is gone.
     assert "account_bindings" not in str(exc.value), str(exc.value)

@@ -1204,6 +1204,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   matcher uses would leave exactly that difference as a hole. The check sits on
   the write path, not in `AccountSettings.__post_init__`, so a row that already
   carries the label still loads rather than raising on read (#435).
+
+- **Pinning an import no longer renames the account the file describes.**
+  `raw.tabular_accounts.account_id` is the key the *source* uses — the file's
+  own account column, a slugified `--account-name`, a PDF document digest, or a
+  content key for an unnamed single-account file. Passing `--account-id`
+  overwrote it with MoneyBin's own canonical id, so one column meant two
+  different things depending on which flag the import was run with, and
+  anything reasoning over the raw layer could draw a confident wrong inference
+  about whether a binding had applied. The pin now travels only as the pin;
+  the raw row keeps the source's key on every path.
+
+  Three consequences went with it. A pinned import used to write a circular
+  `<id> -> <id>` link that taught the resolver nothing about the file, so the
+  same file imported later without the pin could not recognise itself — the PDF
+  path carried a second field to compensate, the tabular path never set it, and
+  neither is needed now. The gate that refuses a binding contradicting a file's
+  accepted account looked the key up by the same overwritten field, so it was a
+  no-op on exactly the case it was written for. And because a pin forked the
+  key, pinning a statement already bound elsewhere wrote a *second* copy of it
+  under the pinned account: one statement, two accounts, no per-account view
+  able to show the duplicate.
+
+  That last case is now refused before anything loads, naming the account the
+  document is already bound to and what to send instead. Re-pointing a
+  remembered key stays an explicit operation rather than an import-time side
+  effect. **This is a behaviour change:** a pinned import that contradicts an
+  existing binding used to succeed and silently double-count; it now errors.
+  Rows already written under the old scheme keep the canonical id in the source
+  key column — re-import to correct them, and revert the affected batch first if
+  the statement was double-counted.
+
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last
   four as evidence; where MoneyBin holds nothing to tell two accounts apart the
