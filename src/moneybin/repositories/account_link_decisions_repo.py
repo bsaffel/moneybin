@@ -30,6 +30,8 @@ _ACCOUNT_LINK_DECISIONS_COLUMNS = (
     "status",
     "decided_by",
     "match_reason",
+    "provisional_display_name",
+    "candidate_display_name",
     "decided_at",
     "reversed_at",
     "reversed_by",
@@ -42,6 +44,16 @@ _JSON_COLUMNS = frozenset({"match_signals"})
 
 # Pre-quoted column list for multi-row SELECT (security.md: identifiers quoted).
 _COLS = ", ".join(f'"{c}"' for c in _ACCOUNT_LINK_DECISIONS_COLUMNS)
+
+# The frozen display names arrived in V051, and `get_database(read_only=True)`
+# skips migrations — so the first read after an upgrade can land on a table that
+# never got them. The same list with literal NULLs in their place, positions
+# preserved so `_decode_row`'s strict zip still lines up.
+_V051_COLUMNS = frozenset({"provisional_display_name", "candidate_display_name"})
+_PRE_V051_COLS = ", ".join(
+    f'NULL AS "{c}"' if c in _V051_COLUMNS else f'"{c}"'
+    for c in _ACCOUNT_LINK_DECISIONS_COLUMNS
+)
 
 
 def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -71,14 +83,40 @@ class AccountLinkDecisionsRepo(BaseRepo):
 
         refresh_account_link_pending_gauge(self._db)
 
+    # Resolved on first read, then cached for the connection's lifetime.
+    _has_v051_columns: bool | None = None
+
+    def _cols_sql(self) -> str:
+        """SELECT column list, degrading to NULLs on a pre-V051 table.
+
+        A read-only open skips migrations, so an upgraded database whose first
+        operation is a read still has the old shape. NULL is the honest answer
+        and the one callers already handle: it means "never frozen", which
+        sends them back to resolving the name live. The sibling
+        ``CatalogException`` guards cannot cover this — DuckDB raises
+        ``BinderException`` for a missing column and reserves
+        ``CatalogException`` for a missing table. Mirrors
+        ``AuditService._undo_columns_sql``.
+        """
+        if self._has_v051_columns is None:
+            row = self._db.conn.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'app' "
+                "AND table_name = 'account_link_decisions' "
+                "AND column_name = 'provisional_display_name'"
+            ).fetchone()
+            self._has_v051_columns = row is not None
+        return _COLS if self._has_v051_columns else _PRE_V051_COLS
+
     def _fetch_row(self, decision_id: str) -> dict[str, Any] | None:
-        return self._fetch_one(
-            ACCOUNT_LINK_DECISIONS,
-            _ACCOUNT_LINK_DECISIONS_COLUMNS,
-            "decision_id",
-            decision_id,
-            decode=_decode_row,
-        )
+        # Not BaseRepo._fetch_one: it quotes every column as an identifier, and
+        # the pre-V051 projection carries `NULL AS ...` expressions instead.
+        row = self._db.execute(
+            f"SELECT {self._cols_sql()} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
+            'WHERE "decision_id" = ?',
+            [decision_id],
+        ).fetchone()
+        return None if row is None else _decode_row(row)
 
     def fetch_by_id(self, decision_id: str) -> dict[str, Any] | None:
         """Read one decoded decision row by id, or None when absent. Read-only.
@@ -149,6 +187,8 @@ class AccountLinkDecisionsRepo(BaseRepo):
         status: str,
         decided_by: str,
         actor: str,
+        provisional_display_name: str,
+        candidate_display_name: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> AuditEvent:
@@ -156,6 +196,15 @@ class AccountLinkDecisionsRepo(BaseRepo):
 
         Re-stamps ``decided_at``/``decided_by``; captures full before/after.
         Raises ``ValueError`` when no decision with this id exists.
+
+        Both display names are required rather than optional because this is the
+        last moment either one can be read. Accepting re-points every accepted
+        link off the provisional account, so the next transform drops it from
+        ``core.dim_accounts`` and the raw fallback loses its join — a caller that
+        forgot to pass them would leave the record of an irreversible merge as
+        two opaque ids, and nothing would fail at the time. An empty string is a
+        legitimate value (nothing named the account); omission is not a choice
+        the signature offers.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._require(
@@ -164,10 +213,17 @@ class AccountLinkDecisionsRepo(BaseRepo):
             self._db.execute(
                 f"""
                 UPDATE {ACCOUNT_LINK_DECISIONS.full_name}
-                SET status = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP
+                SET status = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP,
+                    provisional_display_name = ?, candidate_display_name = ?
                 WHERE decision_id = ?
                 """,  # noqa: S608  # TableRef + parameterized values
-                [status, decided_by, decision_id],
+                [
+                    status,
+                    decided_by,
+                    provisional_display_name,
+                    candidate_display_name,
+                    decision_id,
+                ],
             )
             after = self._fetch_row(decision_id)
             return self._emit_audit(
@@ -238,7 +294,7 @@ class AccountLinkDecisionsRepo(BaseRepo):
         """
         try:
             rows = self._db.execute(
-                f"SELECT {_COLS} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
+                f"SELECT {self._cols_sql()} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
                 "WHERE status = 'pending' AND reversed_at IS NULL "
                 "ORDER BY provisional_account_id, decision_id",
             ).fetchall()
@@ -259,7 +315,7 @@ class AccountLinkDecisionsRepo(BaseRepo):
         params = [limit] if limit is not None else []
         try:
             rows = self._db.execute(
-                f"SELECT {_COLS} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef + parameterized limit
+                f"SELECT {self._cols_sql()} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef + parameterized limit
                 f"ORDER BY decided_at DESC NULLS LAST, decision_id DESC {limit_clause}",
                 params,
             ).fetchall()

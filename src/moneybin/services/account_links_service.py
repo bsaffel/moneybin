@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -82,6 +82,26 @@ def _resolve_display_name(db: Database, account_id: str) -> str:
     )
 
     return fetch_display_name(db, account_id)
+
+
+def _resolve_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, str]:
+    """Batched twin of ``_resolve_display_name`` — same resolver, same fallbacks."""
+    from moneybin.services.account_resolver import (  # noqa: PLC0415 — circular-import avoidance
+        fetch_display_names,
+    )
+
+    return fetch_display_names(db, account_ids)
+
+
+def _resolve_core_display_names(
+    db: Database, account_ids: Iterable[str]
+) -> dict[str, str]:
+    """Constructed names only — the half that is safe to write down."""
+    from moneybin.services.account_resolver import (  # noqa: PLC0415 — circular-import avoidance
+        fetch_core_display_names,
+    )
+
+    return fetch_core_display_names(db, account_ids)
 
 
 class AccountLinksService:
@@ -198,16 +218,20 @@ class AccountLinksService:
     def ledger_facts(self, account_id: str) -> AccountLedgerFacts:
         """Describe one account in the terms that tell it apart from its twin.
 
-        Never the masked last four: the institution+last-four signal fires
-        *because* the two sides carry the same one, so a description keyed to it
-        renders both halves of a split account identically.
+        The masked last four is carried but never *labels* a side: the
+        institution+last-four signal fires because both sides state the same
+        one, so a description keyed to it renders both halves of a split account
+        identically. It travels as evidence instead — agreement is the reason
+        the proposal exists and disagreement argues against it, and the prompt
+        used to show neither.
         """
         subtype: str | None = None
         currency: str | None = None
+        last_four: str | None = None
         try:
             row = self._db.execute(
                 f"""
-                SELECT account_subtype, account_type, currency_code
+                SELECT account_subtype, account_type, currency_code, last_four
                 FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?
                 """,  # noqa: S608  # TableRef constant + parameterized value
                 [account_id],
@@ -220,6 +244,7 @@ class AccountLinksService:
             # "depository" does not.
             subtype = str(row[0]) if row[0] else (str(row[1]) if row[1] else None)
             currency = str(row[2]) if row[2] else None
+            last_four = str(row[3]) if row[3] else None
         try:
             ledger = self._db.execute(
                 f"""
@@ -247,6 +272,7 @@ class AccountLinksService:
             transactions=int(count),
             first_date=first_date,
             last_date=last_date,
+            last_four=last_four,
         )
 
     def merge_facts(
@@ -269,13 +295,80 @@ class AccountLinksService:
             ),
         )
 
+    def _frozen_names(
+        self, rows: Sequence[tuple[str, str, str]]
+    ) -> dict[str, tuple[str, str]]:
+        """Read both account names for each ``(decision, provisional, candidate)``.
+
+        Called while deciding, because that is the last moment the provisional
+        still resolves: accepting re-points its links onto the candidate, and
+        the next transform then drops it from every name lookup MoneyBin has.
+
+        Core only, and not even all of core: :func:`fetch_core_display_names`
+        also refuses the dim's terminal ``'Account ' || account_id`` label,
+        which embeds the source-native key of an unlinked account. This value
+        is persisted under a MEDIUM column
+        and copied into the audit log, and the raw fallback builds its label
+        from ``account_number`` / ``account_number_masked``, both classed
+        CRITICAL. What it emits is already masked to the last four, so showing
+        it is safe; storing it would put a CRITICAL-derived value under a MEDIUM
+        declaration on the strength of a per-value judgement. An account whose
+        name lives only in raw freezes as ``""`` and keeps resolving live, which
+        is the same exposure the review queue already has and no new stored one.
+        """
+        names = _resolve_core_display_names(
+            self._db,
+            [
+                account_id
+                for _, provisional, candidate in rows
+                for account_id in (provisional, candidate)
+            ],
+        )
+        return {
+            decision_id: (names.get(provisional, ""), names.get(candidate, ""))
+            for decision_id, provisional, candidate in rows
+        }
+
     def history(self, *, limit: int | None = 50) -> list[dict[str, Any]]:
         """All decisions (any status) newest-first by ``decided_at``. Read-only.
 
         Mirrors ``MatchingService.get_log``. Delegates to the repo (raw SQL +
         decode live in the repo layer); empty list when the table is absent.
+
+        Each row carries both accounts' display names. A decided row reads the
+        pair frozen onto it when the decision was made — the only names that
+        survive an accepted merge, which removes the provisional account from
+        ``core.dim_accounts`` and from the raw fallback's join in the same
+        stroke. Rows that were never frozen resolve live -- a pending decision
+        has not reached its freezing point, and rows written before the columns
+        existed have nothing stored -- through the same resolver ``pending()``
+        uses, so the two surfaces cannot disagree about what one account is
+        called. A row frozen as ``""`` is not one of those: the freeze looked
+        and deliberately declined to record a raw-only name, so it renders
+        unnamed rather than reaching back into raw to undo its own decision.
         """
-        return self._decisions.history(limit=limit)
+        rows = self._decisions.history(limit=limit)
+        # NULL and "" are different answers, and only NULL may be re-resolved.
+        # NULL means the row never reached a freezing point (pending, or written
+        # before V051), so the live resolver is the only thing that can name it.
+        # "" is a decision: `_frozen_names` looked, found the name only in raw,
+        # and declined to record a CRITICAL-classed value. Treating both as
+        # falsy sent the second one back through the raw-including resolver and
+        # recovered precisely the value the freeze had just refused.
+        unfrozen = [
+            row[f"{key}_account_id"]
+            for row in rows
+            for key in ("provisional", "candidate")
+            if row.get(f"{key}_display_name") is None and row.get(f"{key}_account_id")
+        ]
+        live = _resolve_display_names(self._db, unfrozen) if unfrozen else {}
+        for row in rows:
+            for key in ("provisional", "candidate"):
+                if row.get(f"{key}_display_name") is None:
+                    row[f"{key}_display_name"] = live.get(
+                        row.get(f"{key}_account_id", ""), ""
+                    )
+        return rows
 
     def decision_by_id(self, decision_id: str) -> dict[str, Any] | None:
         """Return one exact decision row by ID."""
@@ -602,11 +695,16 @@ class AccountLinksService:
                 # until the writes below have all survived; see the fold-in.
                 collapsed = repointed.accepted_transfers_retired
                 # Accept the named decision.
+                accepted_names = self._frozen_names([
+                    (decision_id, provisional_id, target_account_id)
+                ])[decision_id]
                 self._decisions.update_status(
                     decision_id,
                     status="accepted",
                     decided_by=decided_by,
                     actor=self._actor,
+                    provisional_display_name=accepted_names[0],
+                    candidate_display_name=accepted_names[1],
                     in_outer_txn=True,
                 )
                 # Auto-reject every other pending decision that touches the
@@ -617,7 +715,8 @@ class AccountLinksService:
                 # run() re-proposes Q→C if Q really is the same account.
                 sibling_rows = self._db.execute(
                     f"""
-                    SELECT decision_id FROM {ACCOUNT_LINK_DECISIONS.full_name}
+                    SELECT decision_id, provisional_account_id, candidate_account_id
+                    FROM {ACCOUNT_LINK_DECISIONS.full_name}
                     WHERE (provisional_account_id = ? OR candidate_account_id = ?)
                       AND decision_id != ?
                       AND status = 'pending'
@@ -625,31 +724,38 @@ class AccountLinksService:
                     """,  # noqa: S608  # TableRef constant + parameterized values
                     [provisional_id, provisional_id, decision_id],
                 ).fetchall()
-                for (sid,) in sibling_rows:
+                sibling_names = self._frozen_names(sibling_rows)
+                for sid, _, _ in sibling_rows:
                     self._decisions.update_status(
                         sid,
                         status="rejected",
                         decided_by=decided_by,
                         actor=self._actor,
+                        provisional_display_name=sibling_names[sid][0],
+                        candidate_display_name=sibling_names[sid][1],
                         in_outer_txn=True,
                     )
             else:
                 # Standalone path: reject every pending decision for this provisional.
                 pending_rows = self._db.execute(
                     f"""
-                    SELECT decision_id FROM {ACCOUNT_LINK_DECISIONS.full_name}
+                    SELECT decision_id, provisional_account_id, candidate_account_id
+                    FROM {ACCOUNT_LINK_DECISIONS.full_name}
                     WHERE provisional_account_id = ?
                       AND status = 'pending'
                       AND reversed_at IS NULL
                     """,  # noqa: S608  # TableRef constant + parameterized values
                     [provisional_id],
                 ).fetchall()
-                for (did,) in pending_rows:
+                rejected_names = self._frozen_names(pending_rows)
+                for did, _, _ in pending_rows:
                     self._decisions.update_status(
                         did,
                         status="rejected",
                         decided_by=decided_by,
                         actor=self._actor,
+                        provisional_display_name=rejected_names[did][0],
+                        candidate_display_name=rejected_names[did][1],
                         in_outer_txn=True,
                     )
 

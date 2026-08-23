@@ -59,8 +59,9 @@ def links_pending(
     """List pending account-link decisions, grouped by provisional account.
 
     Shows provisional accounts with candidate merge proposals. Each group
-    lists the candidate decision_id, account_id, display name, ledger overlap,
-    and match signal. Use `accounts links set` to decide each group.
+    leads with the account's name and lists, per candidate, its name, match
+    signal, ledger overlap, and the ids to act on. Use `accounts links set` to
+    decide each group.
     """
     with handle_cli_errors():
         with get_database(read_only=True) as db:
@@ -87,22 +88,27 @@ def links_pending(
 
     for group in groups:
         typer.echo(
-            f"\n── provisional {group.provisional_account_id} "
-            f"({group.provisional_display_name or '-'}) "
+            f"\n── {group.provisional_display_name or 'unnamed account'} "
+            f"[{group.provisional_account_id}] "
             f"— {group.transactions:,} transactions move "
             f"— {len(group.candidates)} candidate(s) ──"
         )
         typer.echo(
-            f"  {'Decision ID':<14} {'Candidate ID':<14} {'Signal':<20} "
-            f"{'Ledger overlap':>16}  {'Display Name'}"
+            f"  {'Candidate':<32} {'Signal':<20} "
+            f"{'Ledger overlap':>16}  {'Decision ID':<14} {'Candidate ID'}"
         )
         for c in group.candidates:
+            # Padded, never truncated. A resolved display name ends in the
+            # masked last four, so clipping it to the column width would cut off
+            # the digits that tell two candidates at one institution apart —
+            # the exact confusion this ordering exists to remove. A long name
+            # pushing the row ragged is the cheaper failure.
             typer.echo(
-                f"  {c.decision_id[:12]:<14} "
-                f"{c.candidate_account_id[:12]:<14} "
+                f"  {c.candidate_display_name or '-':<32} "
                 f"{c.signal:<20} "
                 f"{_overlap_cell(c.overlap):>16}  "
-                f"{c.candidate_display_name or '-'}"
+                f"{c.decision_id[:12]:<14} "
+                f"{c.candidate_account_id[:12]}"
             )
     typer.echo()
 
@@ -530,19 +536,27 @@ def links_history(
             logger.info("No account-link decisions found")
         return
 
+    # Wide enough for two resolved names and the arrow between them.
+    # dim_accounts builds a name as institution + subtype + masked last four, so
+    # a merge of two runs about 55 characters — a column sized for one left every
+    # named row ragged and aligned only the rows that had fallen back to ids.
+    # Padded, never truncated, for the same reason as the pending table above.
     typer.echo(
-        f"\n{'Decision ID':<14} {'Provisional':<14} {'Candidate':<14} "
-        f"{'Status':<10} {'Decided By':<10} {'Signal':<20}"
+        f"\n{'Merged':<60} {'Status':<10} {'Decided By':<10} "
+        f"{'Signal':<20} {'Decision ID'}"
     )
-    typer.echo("-" * 84)
+    typer.echo("-" * 116)
     for d in payload.decisions:
+        merged = (
+            f"{d.provisional_display_name or d.provisional_account_id[:12]} → "
+            f"{d.candidate_display_name or d.candidate_account_id[:12]}"
+        )
         typer.echo(
-            f"{d.decision_id[:12]:<14} "
-            f"{d.provisional_account_id[:12]:<14} "
-            f"{d.candidate_account_id[:12]:<14} "
+            f"{merged:<60} "
             f"{d.status:<10} "
             f"{d.decided_by:<10} "
-            f"{d.signal:<20}"
+            f"{d.signal:<20} "
+            f"{d.decision_id[:12]}"
         )
     typer.echo()
 

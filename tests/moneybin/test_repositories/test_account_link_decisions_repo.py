@@ -134,15 +134,24 @@ def test_update_status_captures_before_and_after(db: Database) -> None:
     _insert(repo, status="pending")
 
     event = repo.update_status(
-        "dec00000001", status="accepted", decided_by="user", actor="cli"
+        "dec00000001",
+        status="accepted",
+        decided_by="user",
+        actor="cli",
+        provisional_display_name="Provisional One",
+        candidate_display_name="Candidate Alpha",
     )
     assert event.target_id == "dec00000001"
 
     row = db.conn.execute(
-        "SELECT status, decided_by FROM app.account_link_decisions WHERE decision_id = ?",
+        "SELECT status, decided_by, provisional_display_name, candidate_display_name "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
         ["dec00000001"],
     ).fetchone()
-    assert row == ("accepted", "user")
+    # The names are frozen by the same statement that decides the row: after an
+    # accept there is no live lookup left that can answer what the provisional
+    # was called.
+    assert row == ("accepted", "user", "Provisional One", "Candidate Alpha")
 
     upd = next(
         r
@@ -157,7 +166,14 @@ def test_update_status_captures_before_and_after(db: Database) -> None:
 def test_update_status_raises_for_missing_decision(db: Database) -> None:
     repo = AccountLinkDecisionsRepo(db)
     with pytest.raises(ValueError, match="not found"):
-        repo.update_status("nope", status="accepted", decided_by="user", actor="cli")
+        repo.update_status(
+            "nope",
+            status="accepted",
+            decided_by="user",
+            actor="cli",
+            provisional_display_name="",
+            candidate_display_name="",
+        )
 
 
 # -- reverse --
@@ -372,3 +388,74 @@ def test_fetch_by_id_returns_none_when_table_absent(db: Database) -> None:
     repo = AccountLinkDecisionsRepo(db)
 
     assert repo.fetch_by_id("dec00000001") is None
+
+
+# -- pre-V051 resilience (read-only opens skip migrations) --
+
+
+def _drop_display_name_columns(db: Database) -> None:
+    """Reduce the table to its pre-V051 shape: no frozen display-name columns.
+
+    DuckDB refuses DROP COLUMN while indexes depend on the table, so the
+    indexes go first — same order test_audit_service.py uses to reach a
+    pre-V024 audit_log.
+    """
+    idx = db.conn.execute(
+        "SELECT index_name FROM duckdb_indexes() "
+        "WHERE schema_name = 'app' AND table_name = 'account_link_decisions'"
+    ).fetchall()
+    for (name,) in idx:
+        db.execute(f"DROP INDEX app.{name}")  # noqa: S608  # catalog name, test-only
+    db.execute(
+        "ALTER TABLE app.account_link_decisions DROP COLUMN candidate_display_name"
+    )
+    db.execute(
+        "ALTER TABLE app.account_link_decisions DROP COLUMN provisional_display_name"
+    )
+
+
+def test_list_pending_reads_a_pre_v051_table(db: Database) -> None:
+    """A pre-V051 table still lists pending rows, with the names unset.
+
+    ``get_database(read_only=True)`` skips migrations, so the first read after
+    an upgrade can hit a table that never got V051. NULL is the honest answer
+    and the one the service already handles: it means "never frozen", which
+    sends the caller back to resolving the name live.
+    """
+    _insert(AccountLinkDecisionsRepo(db))
+    _drop_display_name_columns(db)
+
+    rows = AccountLinkDecisionsRepo(db).list_pending()
+
+    assert len(rows) == 1
+    assert rows[0]["provisional_display_name"] is None
+    assert rows[0]["candidate_display_name"] is None
+
+
+def test_history_reads_a_pre_v051_table(db: Database) -> None:
+    """History degrades on a pre-V051 table the same way list_pending does."""
+    _insert(AccountLinkDecisionsRepo(db))
+    _drop_display_name_columns(db)
+
+    rows = AccountLinkDecisionsRepo(db).history()
+
+    assert len(rows) == 1
+    assert rows[0]["provisional_display_name"] is None
+    assert rows[0]["candidate_display_name"] is None
+
+
+def test_fetch_by_id_reads_a_pre_v051_table(db: Database) -> None:
+    """fetch_by_id degrades too — reached read-only via plan_identity.
+
+    ``moneybin_identity_links_decide``'s planning step opens read-only and
+    resolves each decision through this method, so it is a third pre-V051
+    reader alongside list_pending and history, not a write-only path.
+    """
+    _insert(AccountLinkDecisionsRepo(db))
+    _drop_display_name_columns(db)
+
+    row = AccountLinkDecisionsRepo(db).fetch_by_id("dec00000001")
+
+    assert row is not None
+    assert row["provisional_display_name"] is None
+    assert row["candidate_display_name"] is None

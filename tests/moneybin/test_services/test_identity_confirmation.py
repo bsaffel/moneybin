@@ -9,6 +9,8 @@ from typer.testing import CliRunner
 
 from moneybin.cli.main import app as cli_app
 from moneybin.services.identity_confirmation import (
+    COMPARED_LEDGER_FACTS,
+    FACT_PHRASES,
     IDENTITY_BLAST_RADIUS_CATEGORIES,
     IDENTITY_BLAST_RADIUS_LABELS,
     UNDO_COMMANDS,
@@ -96,6 +98,7 @@ def _facts(
     transactions: int = 0,
     first_date: date | None = None,
     last_date: date | None = None,
+    last_four: str | None = None,
 ) -> AccountLedgerFacts:
     return AccountLedgerFacts(
         account_id=account_id,
@@ -106,6 +109,7 @@ def _facts(
         transactions=transactions,
         first_date=first_date,
         last_date=last_date,
+        last_four=last_four,
     )
 
 
@@ -206,8 +210,8 @@ def test_an_account_fed_by_two_sources_names_both() -> None:
     )
 
     sentence = message.splitlines()[0]
-    assert "the PDF-derived account" in sentence.split(" into ")[0], sentence
-    assert "the PDF+OFX-derived account" in sentence.split(" into ")[1], sentence
+    assert "PDF-derived" in sentence.split(" into ")[0], sentence
+    assert "PDF+OFX-derived" in sentence.split(" into ")[1], sentence
 
 
 def test_a_synced_account_is_named_by_its_channel_not_its_provider() -> None:
@@ -232,7 +236,7 @@ def test_a_synced_account_is_named_by_its_channel_not_its_provider() -> None:
         kinds=["account_link"],
     )
 
-    assert "the SYNC-derived account" in message
+    assert "SYNC-derived" in message
     assert "PLAID" not in message.upper()
 
 
@@ -256,7 +260,7 @@ def test_two_synced_sources_collapse_to_one_channel_label() -> None:
         kinds=["account_link"],
     )
 
-    assert "the SYNC-derived account" in message
+    assert "SYNC-derived" in message
     assert "SYNC+SYNC" not in message
 
 
@@ -509,3 +513,246 @@ def test_a_security_batch_still_names_what_a_security_link_moves() -> None:
 
     assert "price marks you set by hand" in message
     assert "merchant" not in message
+
+
+# ---------------------------------------------------------------------------
+# Legibility of the merge sentence: a reviewer must be able to tell the two
+# accounts apart without consulting an id. See identity_confirmation._account_label.
+# ---------------------------------------------------------------------------
+
+
+def _twins(
+    *,
+    absorbed_last_four: str | None = "0000",
+    survivor_last_four: str | None = "0000",
+) -> tuple[AccountLedgerFacts, AccountLedgerFacts]:
+    """Two accounts alike in name AND source — the case that renders as ids today.
+
+    ``_colliding_pair`` differs in source origin, so its two sides stayed
+    distinguishable by source alone. Matching the source too is what dropped
+    the old label all the way to a bare "the account".
+    """
+    shared = "Example Bank credit …0000"
+    absorbed = _facts(
+        "aaaaaaaaaaaa",
+        display_name=shared,
+        source_types=("ofx",),
+        subtype="credit card",
+        currency_code="USD",
+        transactions=346,
+        first_date=date(2024, 5, 1),
+        last_date=date(2026, 8, 2),
+        last_four=absorbed_last_four,
+    )
+    survivor = _facts(
+        "ssssssssssss",
+        display_name=shared,
+        source_types=("ofx",),
+        subtype="credit card",
+        currency_code="USD",
+        transactions=2342,
+        first_date=date(2019, 1, 4),
+        last_date=date(2026, 8, 2),
+        last_four=survivor_last_four,
+    )
+    return absorbed, survivor
+
+
+def test_a_shared_display_name_survives_into_both_labels() -> None:
+    """The name is dropped exactly when it is the most useful thing on the line.
+
+    ``_side_label`` discarded ``display_name`` whenever both sides carried the
+    same one — which is the case the institution+last-four signal fires on, so
+    the name vanished from every prompt that most needed it. "Example Bank
+    credit" tells a reviewer more than "the account" even when both sides say it.
+    """
+    absorbed, survivor = _twins()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 2688},
+        surface="mcp",
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert message.count("Example Bank credit …0000") == 2
+
+
+def test_no_side_is_described_as_the_account_when_it_has_a_name() -> None:
+    """The bare fallback leaves the id as the only distinguishing text.
+
+    A reviewer reading "Merge the account (aaaa…) into the account (ssss…)?" is
+    being asked to ratify an irreversible merge from two opaque strings.
+    """
+    absorbed, survivor = _twins()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 2688},
+        surface="mcp",
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert "the account" not in message
+
+
+def test_the_name_leads_the_side_phrase_and_the_id_trails_it() -> None:
+    """Name first, id last: the id is a reference, not the identity."""
+    absorbed, survivor = _twins()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 2688},
+        surface="mcp",
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    question = message.splitlines()[0]
+    assert question.index("Example Bank credit") < question.index("aaaaaaaaaaaa")
+
+
+def test_the_prompt_offers_matching_last_fours_as_evidence() -> None:
+    """The signal that fired is never shown, so the reviewer cannot weigh it.
+
+    ``institution_last4`` is named for the last four, the prompt renders ledger
+    overlap as its only evidence, and the field the proposal turned on appears
+    nowhere. Agreement is the positive half of that evidence.
+    """
+    absorbed, survivor = _twins()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 2688},
+        surface="mcp",
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert "same last four" in message
+    assert "…0000" in message
+
+
+def test_the_prompt_flags_last_fours_that_disagree() -> None:
+    """Disagreement is evidence against the merge and has to be loud.
+
+    ``account_resolver._last_fours_disagree`` already treats a positive
+    contradiction as a veto at resolution time; a proposal that reaches review
+    anyway must not hide it behind a silent omission.
+    """
+    absorbed, survivor = _twins(survivor_last_four="4432")
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 2688},
+        surface="mcp",
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert "different last fours" in message
+
+
+def test_two_accounts_alike_in_every_held_fact_say_so() -> None:
+    """When only the ids differ, say that rather than let the ids imply meaning.
+
+    The reviewer still has to decide, so the merge stays available — but a
+    prompt that silently falls back to hashes reads as a rendering failure
+    where this reads as the finding it is.
+    """
+    absorbed, survivor = (
+        _facts(
+            account_id,
+            display_name="Example Bank credit …0000",
+            source_types=("ofx",),
+            subtype="credit card",
+            currency_code="USD",
+            transactions=346,
+            first_date=date(2024, 5, 1),
+            last_date=date(2026, 8, 2),
+            last_four="0000",
+        )
+        for account_id in ("aaaaaaaaaaaa", "ssssssssssss")
+    )
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 692},
+        surface="mcp",
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert "identical on every fact" in message
+
+
+def test_the_compared_facts_cover_every_ledger_fact_but_the_id() -> None:
+    """Set equality, because a fact left out of the comparison fails silently.
+
+    ``_indistinguishable`` decides whether the prompt admits that only the ids
+    separate two accounts. A field added to ``AccountLedgerFacts`` and forgotten
+    here would be excluded from that judgement, so a genuinely distinguishable
+    pair could still be declared identical — the prompt asserting a tie that its
+    own rendered traits contradict.
+    """
+    from dataclasses import fields
+
+    ledger_fields = {f.name for f in fields(AccountLedgerFacts)} - {"account_id"}
+    assert set(COMPARED_LEDGER_FACTS) == ledger_fields
+
+
+# ---------------------------------------------------------------------------
+# The indistinguishable claim — only when there are facts to be identical on
+# ---------------------------------------------------------------------------
+
+
+def test_two_accounts_with_no_facts_are_not_called_identical_on_every_fact() -> None:
+    """Holding nothing about either side is not the same as their facts matching.
+
+    ``ledger_facts`` swallows ``CatalogException`` on both of its queries, so a
+    profile with decisions but no materialized ``core`` describes both sides as
+    empty — and every compared field then trivially agrees. Telling a reviewer
+    the two accounts "are identical on every fact MoneyBin holds" at the moment
+    MoneyBin holds none inverts the evidence in an irreversible confirm.
+    """
+    blank = (_facts("aaaaaaaaaaaa"), _facts("ssssssssssss"))
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 0},
+        surface="mcp",
+        merges=[_merge(*blank)],
+        kinds=["account_link"],
+    )
+
+    assert "identical on every fact" not in message
+    assert "holds no facts about either account" in message
+
+
+def test_every_compared_fact_has_a_phrase_in_the_indistinguishable_sentence() -> None:
+    """The sentence's field list is derived from the compared set, not retyped.
+
+    ``COMPARED_LEDGER_FACTS`` is set-compared elsewhere so a new field cannot
+    drop out of the check. That guard says nothing about the prose beside it: a
+    ninth field would satisfy it while the hand-written "name, source, subtype,
+    currency, date range, transaction count, and last four" silently became a
+    list that omits one.
+    """
+    assert set(FACT_PHRASES) == set(COMPARED_LEDGER_FACTS)
+
+
+def test_the_prompt_does_not_claim_the_last_four_is_why_the_proposal_fired() -> None:
+    """Agreement is evidence; which signal fired is not something merge facts know.
+
+    ``AccountMergeFacts`` carries no record of the signal, and ``account_name``
+    matching can produce a pair whose last fours agree by coincidence — the
+    causal sentence would then assert something the code cannot check, in the
+    one place this change argues an irreversible confirm must never overstate
+    its evidence.
+    """
+    absorbed, survivor = _twins()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 2688},
+        surface="mcp",
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert "same last four" in message
+    assert "the signal this proposal fired on" not in message

@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS app.account_link_decisions (
     decided_by VARCHAR NOT NULL                -- domain actor: auto or user (human OR agent ratification)
         CHECK (decided_by IN ('auto', 'user')),
     match_reason VARCHAR,                      -- human-readable explanation of why this pairing was proposed
+    provisional_display_name VARCHAR,          -- both accounts' names as they stood when the decision was made; NULL while pending, when they resolve live
+    candidate_display_name VARCHAR,            -- frozen because accepting removes the provisional from core.dim_accounts, leaving the record of the merge unreadable
     decided_at TIMESTAMP NOT NULL,             -- when the decision was made (or the proposal created)
     reversed_at TIMESTAMP,                     -- when a prior decision was undone; NULL otherwise
     reversed_by VARCHAR                        -- domain actor who reversed; NULL otherwise

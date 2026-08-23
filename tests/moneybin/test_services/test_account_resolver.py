@@ -13,7 +13,9 @@ from moneybin.services.account_resolution_types import AccountProposal, SourceAc
 from moneybin.services.account_resolver import (
     _FALLBACK_CANDIDATE_CAP,  # pyright: ignore[reportPrivateUsage]
     AccountResolver,
+    fetch_core_display_names,
     fetch_display_name,
+    fetch_display_names,
 )
 from tests.moneybin.db_helpers import create_core_tables
 
@@ -484,7 +486,9 @@ def test_alphanumeric_pdf_proposal_is_review_only_and_does_not_surface_identifie
     assert payload["candidates"] == [
         {
             "account_id": "acct_pending_pdf",
-            "display_name": "Prior PDF account",
+            # Institution alone: the identifier carries no four digits to mask,
+            # and the file's own account_name is no longer eligible to name it.
+            "display_name": "Chase",
             "confidence": 0.5,
             "signal": "legacy_pdf_identity",
         }
@@ -533,9 +537,35 @@ def test_pending_pdf_excludes_account_already_materialized_in_core(
 def test_fetch_display_name_joins_unmaterialized_raw_pdf_account(
     db: Database,
 ) -> None:
+    """Names an account still absent from core -- from the institution, not the file's label.
+
+    This asserted ``"Prior PDF account"`` until the file's own ``account_name``
+    was ruled out as a display name: it is classed ``ACCOUNT_IDENTIFIER``
+    because it can be a bare account number, and no reader can tell the two
+    apart. What is left is built the way ``dim_accounts`` builds its own label
+    -- institution plus a masked last four -- so this seed, whose identifier
+    ("ACCT-9Z") holds no four digits, names the institution alone.
+    """
     _seed_raw_pdf_account(db)
 
-    assert fetch_display_name(db, "acct_pending_pdf") == "Prior PDF account"
+    assert fetch_display_name(db, "acct_pending_pdf") == "Chase"
+
+
+def test_fetch_display_names_batches_without_losing_the_raw_fallback(
+    db: Database,
+) -> None:
+    """The batched resolver answers exactly as the single-id one, raw included.
+
+    The one-at-a-time lookup falls back to ``raw.tabular_accounts`` for accounts
+    that have not reached ``core`` yet. A batched reader that queried only
+    ``core`` was a second, weaker answer to the same question, so the review
+    queue named an imported account that the decision log rendered as an id.
+    """
+    _seed_raw_pdf_account(db)
+
+    batched = fetch_display_names(db, ["acct_pending_pdf", "acct_unknown"])
+
+    assert batched == {"acct_pending_pdf": fetch_display_name(db, "acct_pending_pdf")}
 
 
 def test_no_candidate_mints_standalone(db: Database) -> None:
@@ -2131,3 +2161,137 @@ def test_a_vetoed_name_match_resurfaces_as_the_reissue_signal(db: Database) -> N
     assert [(c.signal, c.account_id) for c in candidates] == [
         ("institution_reissue", "acct_other")
     ], candidates
+
+
+def test_fetch_display_names_accepts_a_one_shot_iterator(db: Database) -> None:
+    """A generator argument must not silently lose the raw fallback.
+
+    The signature promises ``Iterable`` and the body read it twice: the core
+    lookup consumed it, then the raw-fallback pass saw an exhausted iterator,
+    found nothing missing, and returned a partial answer with no error — the
+    same "two surfaces disagree about what an account is called" failure this
+    resolver exists to prevent.
+    """
+    _seed_raw_pdf_account(db)
+
+    batched = fetch_display_names(
+        db, (account_id for account_id in ["acct_pending_pdf"])
+    )
+
+    assert batched == {"acct_pending_pdf": fetch_display_name(db, "acct_pending_pdf")}
+
+
+def test_the_raw_fallback_never_surfaces_the_files_own_account_label(
+    db: Database,
+) -> None:
+    """A file-supplied ``account_name`` is CRITICAL free text, not a display name.
+
+    ``raw.tabular_accounts.account_name`` is whatever the source file happened to
+    call the account, classed ``ACCOUNT_IDENTIFIER`` because it can be a bare
+    account number — and nothing downstream can tell a name from a number, which
+    is why a content masker was never the answer. Surfacing it as a display name
+    put a potentially unmasked account number into a merge prompt declared
+    ``Tier.MEDIUM``. ``account_number_masked`` stands in: the raw schema already
+    designates that column "for display", and a masked identity is the form
+    AGENTS.md permits in user-facing text.
+    """
+    _seed_raw_pdf_account(db, identifier="****4521")
+
+    resolved = fetch_display_names(db, ["acct_pending_pdf"])
+
+    assert resolved == {"acct_pending_pdf": "Chase ****4521"}
+    assert "Prior PDF account" not in repr(resolved)
+
+
+def test_a_newer_unnameable_import_does_not_hide_an_older_nameable_one(
+    db: Database,
+) -> None:
+    """Newest *nameable* raw row wins, not simply the newest row.
+
+    The label is constructed now, so it can come out NULL — a re-import whose
+    parser found neither an institution nor four digits produces one. Ordering
+    on recency alone let that row win and the account rendered as a bare id,
+    even though the earlier import of the same account still named it. That is
+    the exact degradation this resolver exists to prevent, so the ordering puts
+    a non-NULL label ahead of a newer NULL one.
+    """
+    AccountLinksRepo(db).insert(
+        link_id="link_acct_reimport",
+        account_id="acct_reimport",
+        ref_kind="source_native",
+        ref_value="pdf_doc_reimport000",
+        source_type="pdf",
+        source_origin="document",
+        decided_by="auto",
+        actor="system",
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "
+        "(account_id, account_name, account_number_masked, institution_name, "
+        "source_file, source_type, source_origin, import_id, extracted_at) "
+        "VALUES ('pdf_doc_reimport000', 'Prior PDF account', '...4521', "
+        "'Chase', '/older.pdf', 'pdf', 'document', 'import_old', "
+        "TIMESTAMP '2024-01-01 00:00:00')"
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "
+        "(account_id, account_name, account_number_masked, institution_name, "
+        "source_file, source_type, source_origin, import_id, extracted_at) "
+        "VALUES ('pdf_doc_reimport000', 'Prior PDF account', NULL, "
+        "NULL, '/newer.pdf', 'pdf', 'document', 'import_new', "
+        "TIMESTAMP '2025-01-01 00:00:00')"
+    )
+
+    resolved = fetch_display_names(db, ["acct_reimport"])
+
+    assert resolved == {"acct_reimport": "Chase ****4521"}
+
+
+def test_core_never_answers_with_the_bare_id_terminal_label(db: Database) -> None:
+    """``'Account ' || account_id`` is refused, because that id can be a real one.
+
+    ``dim_accounts.display_name`` ends in a terminal COALESCE branch,
+    ``'Account ' || w.account_id``, so the column is never NULL. For an account
+    that has never been re-imported through ``AccountResolver`` there is no
+    accepted link, so ``grain_key`` falls back to ``source_account_key`` -- for
+    OFX, the institution's own ``<ACCTID>``, which the taxonomy classes
+    ``INSTITUTION_ACCOUNT_NUMBER`` (CRITICAL). The label is then a full account
+    number wearing the word "Account", read out of a column declared
+    ``USER_NOTE`` and frozen into decision columns that declare the same.
+
+    The equality test is against the model's own terminal expression, not a
+    guess at what an account number looks like: a label equal to
+    ``'Account ' || account_id`` carries nothing the id does not, so nothing of
+    value is lost by refusing it. The masked last four answers instead, and an
+    account without even that stays absent.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="4738291056473829",
+        last_four="3829",
+        display_name="Account 4738291056473829",
+    )
+
+    resolved = fetch_core_display_names(db, ["4738291056473829"])
+
+    assert resolved == {"4738291056473829": "…3829"}
+
+
+def test_core_omits_an_account_the_terminal_label_cannot_name(db: Database) -> None:
+    """No institution, no last four: absent rather than named by its own number.
+
+    Callers distinguish absent from ``""``, and every one of them renders an
+    absent account as "unnamed account". That is a worse label than the id and
+    a great deal safer than one that spells the account number out.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="4738291056473829",
+        display_name="Account 4738291056473829",
+    )
+
+    resolved = fetch_core_display_names(db, ["4738291056473829"])
+
+    assert resolved == {}
