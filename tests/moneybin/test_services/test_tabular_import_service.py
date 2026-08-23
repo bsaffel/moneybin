@@ -1862,3 +1862,63 @@ def test_pinned_reimport_without_a_name_keeps_the_same_native_key(
     assert repeated is not None and repeated[0] == 1, (
         "the row present in both exports was stored twice"
     )
+
+
+def test_supersede_finds_residue_core_never_materialized(db: Database) -> None:
+    """Residue is recognized from the link the pin wrote, not from ``core``.
+
+    ``core.dim_accounts`` is the wrong authority twice over: a pinned import run
+    with ``--no-refresh`` never materialized its account there, and a merged-away
+    account is removed from it, so residue keyed on either is invisible. Its
+    grain is also ``COALESCE(account_id, source_account_key)``, so an unlinked
+    account surfaces an ordinary source key through ``account_id`` and would be
+    read back as canonical. What actually makes an id canonical is that the
+    resolver minted it — and every such id is an ``app.account_links``
+    ``account_id`` from the moment it exists.
+    """
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    # The link a pre-fix pin wrote: it stamped the canonical id into the source
+    # key column, so ref_value and account_id are the same value.
+    AccountLinksRepo(db).insert(
+        link_id="lnk_legacy",
+        account_id="acct_legacy01",
+        ref_kind="source_native",
+        ref_value="acct_legacy01",
+        source_type="csv",
+        source_origin="legacy-origin",
+        decided_by="user",
+        actor="cli",
+    )
+    # Raw rows that pin left behind. core.dim_accounts stays EMPTY: this
+    # profile never refreshed after the pinned import.
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, source_file, "
+        "source_type, source_origin, import_id) VALUES "
+        "('acct_legacy01:legacy-1', 'acct_legacy01', DATE '2026-01-05', -52.30, "
+        "?, 'csv', 'unknown', 'imp_legacy')",
+        [str(_STANDARD_CSV)],
+    )
+
+    import_answering_gate(
+        ImportService(db),
+        _STANDARD_CSV,
+        account_name="Primary Checking",
+        account_id="acct_legacy01",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+
+    leftover = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND account_id = 'acct_legacy01'",
+        [str(_STANDARD_CSV)],
+    ).fetchone()
+    assert leftover is not None and leftover[0] == 0, (
+        "residue survived because the check asked core.dim_accounts, which "
+        "this profile never materialized"
+    )

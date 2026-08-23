@@ -2328,29 +2328,29 @@ class ImportService:
         supersedes it. Scoped to this ``source_file`` so a re-import never
         reaches another file's rows.
 
-        Skipped when ``core.dim_accounts`` has not been built — there is then no
-        canonical id to recognize, and a database with no transform run has no
-        residue to carry.
+        "Is this a canonical id?" is asked of ``app.account_links``, never of
+        ``core.dim_accounts``. That model is wrong here three ways: a pin run
+        with ``--no-refresh`` never materialized its account into it, a
+        merged-away account is removed from it, and its grain is
+        ``COALESCE(account_id, source_account_key)`` — so an unlinked account
+        surfaces an ordinary source key through ``account_id`` and would be read
+        back as canonical. A minted id is an ``account_links`` ``account_id``
+        from the moment it exists and stays one, which is also what the
+        ``app_account_links_canonical_native_key`` doctor invariant asks.
         """
-        from moneybin.tables import DIM_ACCOUNTS, TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
+        from moneybin.tables import (
+            ACCOUNT_LINKS,
+            TABULAR_ACCOUNTS,
+            TABULAR_TRANSACTIONS,
+        )
 
         for table in (TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS):
-            try:
-                self._db.execute(
-                    f"DELETE FROM {table.full_name} "  # noqa: S608  # TableRef constants, value parameterized
-                    "WHERE source_file = ? AND account_id IN "
-                    f"(SELECT account_id FROM {DIM_ACCOUNTS.full_name})",
-                    [source_file],
-                )
-            except duckdb.CatalogException as e:
-                # core.dim_accounts is absent until the first transform runs, and
-                # a database with no transform has no residue to supersede. Any
-                # other error is a real failure and must reach the caller's
-                # rollback rather than leave the delete half-applied.
-                logger.debug(
-                    f"legacy pinned-row supersede skipped for {table.name}: {e}"
-                )
-                return
+            self._db.execute(
+                f"DELETE FROM {table.full_name} "  # noqa: S608  # TableRef constants, value parameterized
+                "WHERE source_file = ? AND account_id IN "
+                f"(SELECT account_id FROM {ACCOUNT_LINKS.full_name})",
+                [source_file],
+            )
 
     def _import_tabular(
         self,
