@@ -88,13 +88,14 @@ dependencies = [
     # force safe versions that uv would otherwise resolve from transitive constraints.
     # Review and remove each pin once the pulling package updates its own lower bound.
     #   cryptography: CVE-2026-34073 (via mcp[crypto], pdfminer-six) — fixed in 46.0.6;
-    #                 GHSA-537c-gmf6-5ccf (via same)                 — fixed in 48.0.1
+    #                 GHSA-537c-gmf6-5ccf (via same)                 — fixed in 48.0.1;
+    #                 PYSEC-2026-3552 (via same)                     — fixed in 50.0.0
     #   pygments:     CVE-2026-4539  (via rich → sqlmesh/mcp, ipython) — fixed in 2.20.0
     #   pyjwt:        CVE-2026-32597 (via mcp[crypto])                 — fixed in 2.12.0
     #   joserfc:      CVE-2026-48990 (via authlib → fastmcp)           — fixed in 1.6.7
     #   pillow:       PYSEC-2026-2253/2254/2255/2256/2257, 3451/3452/3453
     #                 (via pdfplumber)                                 — fixed in 12.3.0
-    "cryptography>=48.0.1",
+    "cryptography>=50.0.0",
     "pygments>=2.20.0",
     "pyjwt>=2.12.0",
     "joserfc>=1.6.7",
@@ -195,13 +196,13 @@ dev = [
     "pyright>=1.1.408",
     "pre-commit>=4.4.0",
     "sqlmesh[lsp]>=0.200.0",
-    "sqlparse>=0.5.3",
     # Security auditing
     "pip-audit>=2.10.0",
     # Security floor for pip (transitive via pip-audit → pip-api): bump as new
     # CVEs land. CVE-2026-6357 (pip 26.0.1) fixed in 26.1; CVE-2026-8643 /
-    # PYSEC-2026-196 (entry points installed outside the install dir) fixed in 26.1.2.
-    "pip>=26.1.2",
+    # PYSEC-2026-196 (entry points installed outside the install dir) fixed in 26.1.2;
+    # PYSEC-2026-3721 fixed in 26.2.
+    "pip>=26.2",
     # Security floor for msgpack (transitive via pip-audit → cachecontrol):
     # GHSA-6v7p-g79w-8964 — fixed in 1.2.1.
     "msgpack>=1.2.1",
@@ -225,6 +226,10 @@ docs = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.6.18",
     "mkdocstrings[python]>=0.30.0",
+    # Security floor for pymdown-extensions (transitive via mkdocs-material,
+    # which pins only >=10.2): PYSEC-2026-3609 — fixed in 11.0.0;
+    # PYSEC-2026-3654 — fixed in 11.0.1.
+    "pymdown-extensions>=11.0.1",
 ]
 
 server = [
