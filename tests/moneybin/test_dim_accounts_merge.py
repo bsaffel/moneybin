@@ -20,6 +20,7 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
+from moneybin.services.account_resolver import UNNAMED_ACCOUNT_LABEL
 
 pytestmark = pytest.mark.integration
 
@@ -388,7 +389,10 @@ def test_an_unnameable_unlinked_account_is_not_named_by_its_source_key(
     assert native_key not in row[0], (
         f"display_name leaked the source-native key: {row[0]!r}"
     )
-    assert row[0] == "Unnamed account"
+    # Against the constant, not a literal: this is the only place the SQL
+    # terminal arm and the Python fallback every surface uses are compared
+    # after a real plan, so a drift in either copy has to fail here.
+    assert row[0] == UNNAMED_ACCOUNT_LABEL
 
 
 @pytest.mark.slow
@@ -436,4 +440,7 @@ def test_the_terminal_label_omits_the_id_even_when_the_id_is_safe(
     assert canonical_id not in row[0], (
         f"terminal label should carry no id at all: {row[0]!r}"
     )
-    assert row[0] == "Unnamed account"
+    # Against the constant, not a literal: this is the only place the SQL
+    # terminal arm and the Python fallback every surface uses are compared
+    # after a real plan, so a drift in either copy has to fail here.
+    assert row[0] == UNNAMED_ACCOUNT_LABEL

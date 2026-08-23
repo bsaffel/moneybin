@@ -1158,7 +1158,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `reports.*` models that project it as `account_name`. The id is dropped from
   that fallback entirely rather than shown only where it is safe, because the
   staging layer resolves the key before `dim_accounts` sees it and the model
-  cannot tell the two cases apart (#435).
+  cannot tell the two cases apart. `accounts links pending`, `accounts links
+  history` and the MCP `reviews` summaries render the same phrase for an
+  account whose name is absent, so one state no longer reads two ways in one
+  table (#435).
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last
   four as evidence; where MoneyBin holds nothing to tell two accounts apart the

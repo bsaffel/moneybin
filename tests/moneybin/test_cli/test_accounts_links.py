@@ -28,6 +28,7 @@ from moneybin.cli.commands.accounts.links import (
 from moneybin.errors import UserError
 from moneybin.mcp.write_contracts import AccountLinkDecisionRequest
 from moneybin.services.account_links_service import AccountLinkAcceptImpact
+from moneybin.services.account_resolver import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.identity_confirmation import identity_confirm_message
 from moneybin.services.ledger_overlap import LedgerOverlap
 from moneybin.services.refresh import RefreshResult
@@ -1256,8 +1257,11 @@ class TestLinksHistory:
         and it declined to record it. Falling back to a truncated account_id
         put an id back in the name column, which is the defect this surface
         exists to fix, and a 12-character prefix cannot even be used as a
-        handle. The MCP history rows and core.dim_accounts both say "unnamed
-        account" for this; the table now says the same thing.
+        handle.
+
+        Asserted against ``UNNAMED_ACCOUNT_LABEL`` rather than a literal so
+        this row and the one ``core.dim_accounts`` produces for an account it
+        could not name cannot drift into two spellings of the same answer.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_history.return_value = [
@@ -1279,7 +1283,7 @@ class TestLinksHistory:
 
         assert result.exit_code == 0
         assert "471166339912" not in result.output
-        assert "unnamed account" in result.output
+        assert UNNAMED_ACCOUNT_LABEL in result.output
         assert "Candidate Alpha" in result.output
 
     @patch("moneybin.cli.commands.accounts.links.get_database")

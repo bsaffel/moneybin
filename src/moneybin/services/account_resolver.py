@@ -46,6 +46,22 @@ from moneybin.utils import slugify
 
 logger = logging.getLogger(__name__)
 
+UNNAMED_ACCOUNT_LABEL = "Unnamed account"
+"""What every surface calls an account nothing can name.
+
+Duplicated as a literal in the terminal COALESCE arm of
+``core.dim_accounts.display_name``, because SQL cannot import it. The two are
+pinned together by ``test_dim_accounts_merge.py``, which asserts the model's
+output against this constant after a real SQLMesh run -- so a drift in either
+copy fails there rather than in front of a user.
+
+One constant rather than a per-call-site literal because both spellings render
+in the same table: ``core`` supplies this string for a row it could not name,
+while the CLI and MCP substitute it for a name that is absent or was frozen as
+``""``. Those are different states with one honest answer, and rendering them
+as ``Unnamed account`` beside ``unnamed account`` reads as a bug.
+"""
+
 
 def refresh_account_link_pending_gauge(db: Database) -> None:
     """Set ACCOUNT_LINK_REVIEW_PENDING from the live review-queue depth.

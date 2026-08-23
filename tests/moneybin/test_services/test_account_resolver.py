@@ -12,6 +12,7 @@ from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.account_resolution_types import AccountProposal, SourceAccount
 from moneybin.services.account_resolver import (
     _FALLBACK_CANDIDATE_CAP,  # pyright: ignore[reportPrivateUsage]
+    UNNAMED_ACCOUNT_LABEL,
     AccountResolver,
     fetch_core_display_names,
     fetch_display_name,
@@ -2287,9 +2288,9 @@ def test_core_never_answers_with_the_bare_id_terminal_label(db: Database) -> Non
 def test_core_omits_an_account_the_terminal_label_cannot_name(db: Database) -> None:
     """No institution, no last four: absent rather than named by its own number.
 
-    Callers distinguish absent from ``""``, and every one of them renders an
-    absent account as "unnamed account". That is a worse label than the id and
-    a great deal safer than one that spells the account number out.
+    Callers distinguish absent from ``""``, and every one of them substitutes
+    ``UNNAMED_ACCOUNT_LABEL``. That is a worse label than the id and a great
+    deal safer than one that spells the account number out.
     """
     create_core_tables(db)
     _seed_dim_account(
@@ -2301,3 +2302,33 @@ def test_core_omits_an_account_the_terminal_label_cannot_name(db: Database) -> N
     resolved = fetch_core_display_names(db, ["4738291056473829"])
 
     assert resolved == {}
+
+
+def test_core_passes_the_unnamed_terminal_label_through_untouched(
+    db: Database,
+) -> None:
+    """The new terminal arm is answered with, not refused. Deliberate.
+
+    ``fetch_core_display_names`` refuses ``'Account ' || account_id`` because
+    that label *embeds an identifier* — for an account with no accepted link,
+    the institution's own account number under a ``USER_NOTE`` declaration.
+    ``UNNAMED_ACCOUNT_LABEL`` embeds nothing, so the same refusal would be
+    miscalibrated: it would drop the row, and the caller would render the very
+    same phrase from its own fallback one branch later.
+
+    Letting it through is also what makes the freeze honest. A decision row
+    records the name the user saw when they decided; if they saw "Unnamed
+    account", that is the true answer and ``""`` is not. Pinned because the
+    refusal above sits four lines away, and widening it to match this literal
+    is the obvious wrong fix for a reader who sees only that one CASE.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_nameless",
+        display_name=UNNAMED_ACCOUNT_LABEL,
+    )
+
+    resolved = fetch_core_display_names(db, ["acct_nameless"])
+
+    assert resolved == {"acct_nameless": UNNAMED_ACCOUNT_LABEL}
