@@ -1804,6 +1804,25 @@ def test_pinned_native_key_falls_back_on_the_first_import(
     assert key.startswith("export-"), key
 
 
+def test_pinned_native_key_keeps_a_key_that_collides_with_another_account_id(
+    db: Database, tmp_path: Path
+) -> None:
+    """Residue is a self-map, not "this string is an id somewhere".
+
+    A membership test over the whole ``account_id`` column classifies an
+    account's legitimate native key as residue the moment some unrelated
+    account happens to be minted under that same string. Dropping it sends the
+    pin back to the content key, which rotates the next time the export grows
+    a row — re-keying every transaction already imported and double-counting
+    the overlap, the exact failure this key-reuse exists to prevent.
+    """
+    _pin_link(db, link_id="lnk_owner", account_id="acct_x", ref_value="acct_zzz")
+    # An unrelated account minted as acct_zzz, holding a native key of its own.
+    _pin_link(db, link_id="lnk_other", account_id="acct_zzz", ref_value="statement-1")
+
+    assert _pinned_key(db, tmp_path, "acct_x") == "acct_zzz"
+
+
 def test_pinned_native_key_ignores_a_self_map_carried_over_by_a_merge(
     db: Database, tmp_path: Path
 ) -> None:

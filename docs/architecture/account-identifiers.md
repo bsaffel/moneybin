@@ -30,7 +30,7 @@ Consumers (CLI, MCP, `reports.*` views, ad-hoc SQL) need a single canonical join
 
 ## The identifier scheme
 
-`account_id` follows the source-provided-ID rule in [`.claude/rules/identifiers.md`](../../.claude/rules/identifiers.md): when an upstream system supplies a stable identifier, MoneyBin stores it as-is. It is not hashed, salted, or rewritten. The same value appears at every layer.
+The table below describes the **source-native key** each importer stamps on its raw row, which follows the source-provided-ID rule in [`.claude/rules/identifiers.md`](../../.claude/rules/identifiers.md): when an upstream system supplies a stable identifier, MoneyBin stores it as-is. It is not hashed, salted, or rewritten, and the same value appears at every layer that carries it. The canonical `core.dim_accounts.account_id` is a separate, MoneyBin-minted id — see below the table.
 
 | Source | Field stored as `account_id` | Where it comes from |
 |---|---|---|

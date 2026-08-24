@@ -729,21 +729,28 @@ class AccountResolver:
         ).fetchall()
         return [str(r[0]) for r in rows]
 
-    def account_ids_ever_minted(self, candidates: Sequence[str]) -> set[str]:
-        """Which of these strings have ever served as an ``account_links`` account.
+    def account_ids_ever_self_mapped(self, candidates: Sequence[str]) -> set[str]:
+        """Which of these strings a link has ever carried as BOTH account and ref.
+
+        That pairing is what a pre-fix ``--account-id`` pin left behind, and it
+        is the whole signature. "This string appears somewhere in the
+        ``account_id`` column" is not: a legitimate native key is only ever a
+        ``ref_value``, so the wider test would call it residue as soon as any
+        unrelated account happened to be minted under that same string, and the
+        pin would fall back to a content key that rotates when the export grows.
 
         Deliberately ignores ``status``. A reversed row is still evidence the
         value was once a canonical account id: ``AccountLinksRepo.repoint`` — the
         merge primitive — reverses the losing row in place and re-accepts its ref
         under the winner, so after a merge the only trace that the old id was an
-        id at all is a row that is no longer accepted.
+        id at all is the loser's own self-map, no longer accepted.
         """
         if not candidates:
             return set()
         placeholders = ",".join(["?"] * len(candidates))
         rows = self._db.execute(
             f"SELECT DISTINCT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # placeholders are code-owned; values parameterized
-            f"WHERE account_id IN ({placeholders})",
+            f"WHERE account_id = ref_value AND account_id IN ({placeholders})",
             list(candidates),
         ).fetchall()
         return {str(r[0]) for r in rows}

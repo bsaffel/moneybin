@@ -2299,17 +2299,17 @@ class ImportService:
         # import — the exact defect this change removes — so it is residue to be
         # ignored, never a key to adopt.
         #
-        # Tested against every id the resolver has ever used, not just the one
-        # being pinned: a merge re-points the losing account's self-map onto the
-        # winner, leaving ref_value equal to the LOSER's old canonical id under
-        # the winner's account. That is still a canonical id in the key column,
-        # and comparing only against the pinned id would wave it through.
+        # Tested against every id the resolver has ever self-mapped, not just the
+        # one being pinned: a merge re-points the losing account's self-map onto
+        # the winner, leaving ref_value equal to the LOSER's old canonical id
+        # under the winner's account. That is still a canonical id in the key
+        # column, and comparing only against the pinned id would wave it through.
         candidates = resolver.accepted_native_keys_for_account(
             account_id=account_id,
             source_type=source_type,
             source_origin=source_origin,
         )
-        residue = resolver.account_ids_ever_minted(candidates)
+        residue = resolver.account_ids_ever_self_mapped(candidates)
         keys = [k for k in candidates if k not in residue]
         if len(keys) == 1:
             return keys[0]
