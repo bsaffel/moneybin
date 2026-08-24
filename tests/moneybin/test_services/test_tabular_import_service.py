@@ -1922,3 +1922,79 @@ def test_supersede_finds_residue_core_never_materialized(db: Database) -> None:
         "residue survived because the check asked core.dim_accounts, which "
         "this profile never materialized"
     )
+
+
+def _pin_link(db: Database, *, link_id: str, account_id: str, ref_value: str) -> None:
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    AccountLinksRepo(db).insert(
+        link_id=link_id,
+        account_id=account_id,
+        ref_kind="source_native",
+        ref_value=ref_value,
+        source_type="csv",
+        source_origin="monarch",
+        decided_by="user",
+        actor="cli",
+    )
+
+
+def _pinned_key(db: Database, tmp_path: Path, account_id: str) -> str:
+    from moneybin.services.account_resolver import AccountResolver
+    from moneybin.services.import_service import ImportService
+
+    export = tmp_path / "export.csv"
+    export.write_text("Date,Description,Amount\n2026-01-05,COFFEE,-4.75\n")
+    return ImportService(db)._pinned_native_key(  # pyright: ignore[reportPrivateUsage]  # drives the helper under test directly
+        resolver=AccountResolver(db, actor="test"),
+        account_id=account_id,
+        file_path=export,
+        source_bytes=None,
+        source_type="csv",
+        source_origin="monarch",
+    )
+
+
+def test_pinned_native_key_reuses_the_accounts_existing_key(
+    db: Database, tmp_path: Path
+) -> None:
+    """The whole point: a later pinned import lands on the same key as the first."""
+    _pin_link(db, link_id="lnk_a", account_id="acct_x", ref_value="statement-9f2c1234")
+    assert _pinned_key(db, tmp_path, "acct_x") == "statement-9f2c1234"
+
+
+def test_pinned_native_key_ignores_a_pre_fix_self_map(
+    db: Database, tmp_path: Path
+) -> None:
+    """A ``ref_value == account_id`` link is residue, not a key to adopt.
+
+    That row IS the defect this change removes — the canonical id sitting in the
+    source-key column. Reusing it would write the canonical id straight back
+    into ``raw`` for this import, on exactly the call shape being fixed.
+    """
+    _pin_link(db, link_id="lnk_self", account_id="acct_x", ref_value="acct_x")
+    key = _pinned_key(db, tmp_path, "acct_x")
+    assert key != "acct_x", "reused a pre-fix self-map and rewrote the canonical id"
+    assert key.startswith("export-"), key
+
+
+def test_pinned_native_key_refuses_when_the_account_has_several_keys(
+    db: Database, tmp_path: Path
+) -> None:
+    """Two keys for one source is ambiguous; picking one would bind silently.
+
+    Reachable after a merge, which can leave an account holding both sides'
+    native keys for the same source.
+    """
+    _pin_link(db, link_id="lnk_a", account_id="acct_x", ref_value="statement-aaa")
+    _pin_link(db, link_id="lnk_b", account_id="acct_x", ref_value="statement-bbb")
+    with pytest.raises(ValueError, match="--account-name"):
+        _pinned_key(db, tmp_path, "acct_x")
+
+
+def test_pinned_native_key_falls_back_on_the_first_import(
+    db: Database, tmp_path: Path
+) -> None:
+    """No key yet — derive one from content; every later pinned import finds it."""
+    key = _pinned_key(db, tmp_path, "acct_never_seen")
+    assert key.startswith("export-"), key

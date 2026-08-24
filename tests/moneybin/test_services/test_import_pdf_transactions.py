@@ -3168,3 +3168,57 @@ def test_pdf_supersede_rolls_back_when_the_replacement_load_fails(
     assert surviving is not None and surviving[0] == 1, (
         "a failed load committed the supersede and destroyed the legacy rows"
     )
+
+
+def test_pdf_supersede_runs_before_the_historical_hash_pass(
+    db: Database, tmp_path: Path
+) -> None:
+    """Order matters: the supersede must clear residue before anything reads it.
+
+    The historical-hash pass drops a row from this import when it finds the
+    legacy copy already present, deferring to that copy as authoritative. If the
+    supersede then deletes the copy it deferred to, the transaction is gone from
+    both sides — a silent loss on re-import, worse than the double-count the
+    supersede exists to prevent.
+    """
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_type, institution_name, source_type) "
+        "VALUES ('acct_legacy01', 'CHECKING', 'Bank', 'pdf')"
+    )
+    doc = _make_doc(text_lines=_standard_text_lines(), tables=[_standard_table()])
+    svc = ImportService(db)
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+
+    order: list[str] = []
+    real_execute = Database.execute
+    real_supersede = ImportService._supersede_legacy_pinned_raw_rows  # pyright: ignore[reportPrivateUsage]  # spying on call order is the point
+
+    def spy_execute(self: Database, query: str, *a: object, **k: object) -> object:
+        if "source_type = 'pdf' AND source_origin = ?" in query:
+            order.append("historical_read")
+        return real_execute(self, query, *a, **k)  # type: ignore[arg-type]
+
+    def spy_supersede(self: ImportService, source_file: str) -> None:
+        order.append("supersede")
+        real_supersede(self, source_file)
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        patch.object(Database, "execute", spy_execute),
+        patch.object(ImportService, "_supersede_legacy_pinned_raw_rows", spy_supersede),
+    ):
+        import_answering_gate(svc, pdf, refresh=False, account_id="acct_legacy01")
+
+    assert "supersede" in order, "the supersede never ran"
+    assert "historical_read" in order, (
+        "the historical-hash pass never ran, so this fixture cannot prove ordering"
+    )
+    assert order.index("supersede") < order.index("historical_read"), (
+        f"supersede ran after the pass that reads those rows: {order}"
+    )

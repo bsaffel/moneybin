@@ -2294,11 +2294,19 @@ class ImportService:
         source: picking one would silently bind this file to whichever sorted
         first, and ``--account-name`` states the answer explicitly.
         """
-        keys = resolver.accepted_native_keys_for_account(
-            account_id=account_id,
-            source_type=source_type,
-            source_origin=source_origin,
-        )
+        # A pre-fix pin left a self-map (ref_value == account_id): the canonical
+        # id sitting in the source-key column. Reusing THAT would write it back
+        # into raw for this import — the exact defect this change removes — so
+        # it is residue to be ignored, never a key to adopt.
+        keys = [
+            k
+            for k in resolver.accepted_native_keys_for_account(
+                account_id=account_id,
+                source_type=source_type,
+                source_origin=source_origin,
+            )
+            if k != account_id
+        ]
         if len(keys) == 1:
             return keys[0]
         if len(keys) > 1:
@@ -5080,6 +5088,20 @@ class ImportService:
 
         owns_txn = not in_outer_txn
         try:
+            # One transaction through the account ingest below: the supersede
+            # deletes exactly the rows this import replaces, and those rows
+            # carry the OLD import_id, so the import_id-scoped cleanup in the
+            # handler below cannot put them back. Only a rollback can.
+            # in_outer_txn means the caller already owns one and will roll the
+            # whole import back itself — opening a second here would commit
+            # their transaction out from under them.
+            if owns_txn:
+                self._db.begin()
+            # BEFORE the historical-hash pass below, which reads the same rows.
+            # That pass drops a row from this insert when it finds the legacy
+            # copy already present; superseding afterwards would then delete the
+            # copy it deferred to, losing the transaction from both sides.
+            self._supersede_legacy_pinned_raw_rows(str(canonical))
             # The account-identity upgrade changed the account token inside PDF
             # transaction hashes. If the exact legacy hash already exists, keep
             # that raw row authoritative instead of inserting its replacement
@@ -5134,16 +5156,6 @@ class ImportService:
             # `WHERE transaction_id IN () AND ...`, which DuckDB rejects, and
             # the failure would land AFTER raw rows had already been ingested
             # — leaving import_log stuck in 'importing' status.
-            # One transaction through the account ingest below: the supersede
-            # deletes exactly the rows this import replaces, and those rows
-            # carry the OLD import_id, so the import_id-scoped cleanup in the
-            # handler below cannot put them back. Only a rollback can.
-            # in_outer_txn means the caller already owns one and will roll the
-            # whole import back itself — opening a second here would commit
-            # their transaction out from under them.
-            if owns_txn:
-                self._db.begin()
-            self._supersede_legacy_pinned_raw_rows(str(canonical))
             tx_ids = [r["transaction_id"] for r in rows_list]
             src_file = str(canonical)
             if tx_ids:
@@ -5260,6 +5272,15 @@ class ImportService:
                 observations=observations,
                 disposition="rollback",
             )
+            raise
+        except BaseException:
+            # KeyboardInterrupt / SystemExit. The tabular twin rolls back on
+            # BaseException too: without this the supersede's DELETE would be
+            # left standing on an open transaction with nothing to replace it.
+            # Only the rollback runs — the best-effort bookkeeping above is not
+            # worth attempting while the process is being torn down.
+            if owns_txn:
+                self._db.rollback()
             raise
 
         # Format save + record_use happen AFTER the data-write try/except so a
