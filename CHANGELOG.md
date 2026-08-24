@@ -1208,7 +1208,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Pinning an import with `--account-id` no longer renames the account the
   file describes** — the raw row keeps the source's own key on every path, and
   pinning a statement already bound to another account now errors instead of
-  silently double-counting it. If a file was imported under the old scheme,
+  silently double-counting it. A pin also reuses the key its account already
+  answers to, so re-downloading a statement your bank regenerated does not
+  import it a second time. If a file was imported under the old scheme,
   delete its previous import batch before re-importing it or it will be counted
   twice ([`account-identifiers.md`](docs/architecture/account-identifiers.md),
   #438, #418).

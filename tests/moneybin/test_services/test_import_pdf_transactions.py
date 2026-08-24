@@ -3060,3 +3060,57 @@ def test_account_id_pin_refuses_a_document_already_bound_elsewhere(
     [document_key] = list(linked)
     assert document_key.startswith("pdf_doc_")
     assert linked[document_key] == "acct_other01"
+
+
+@pytest.mark.integration
+def test_a_regenerated_pinned_statement_does_not_double_count(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Re-downloading the same statement must not import it twice.
+
+    The pin fixes the canonical account, and ``transaction_id`` folds that
+    canonical id — so the ids regenerate identically. Only the raw
+    ``account_id`` moves, because a byte-different re-download yields a
+    different ``pdf_doc_`` key, and staging dedups on
+    ``(transaction_id, account_id)``. Both copies then clear it.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_pinned01", "Chase Card"],
+    )
+    doc = _standard_doc()
+    svc = ImportService(db)
+
+    for name, body in (
+        ("jan.pdf", b"%PDF-1.4 fake"),
+        ("jan-again.pdf", b"%PDF-1.4 fake regenerated"),
+    ):
+        pdf = tmp_path / name
+        pdf.write_bytes(body)
+        with patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+        ):
+            import_answering_gate(
+                svc,
+                pdf,
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+                account_id="acct_pinned01",
+            )
+
+    # Raw keeps a row per import batch; that is fine, because staging dedups on
+    # (transaction_id, account_id) and collapses them. What must not happen is
+    # the pair FORKING: a second source key for the same transaction_id clears
+    # that dedup, and core.fct_transactions counts the statement twice.
+    forked = db.execute(
+        "SELECT transaction_id, COUNT(DISTINCT account_id) AS keys "
+        "FROM raw.tabular_transactions WHERE source_type = 'pdf' "
+        "GROUP BY transaction_id HAVING COUNT(DISTINCT account_id) > 1 "
+        "ORDER BY transaction_id"
+    ).fetchall()
+    assert not forked, (
+        f"the re-download forked the source key, so staging cannot dedup: {forked}"
+    )

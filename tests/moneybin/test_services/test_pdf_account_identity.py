@@ -1,7 +1,9 @@
 """Tests for PDF account identity derivation."""
 
+from moneybin.database import Database
 from moneybin.extractors.pdf.metadata import StatementMetadata
 from moneybin.extractors.pdf.routing import RouteDecision
+from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.import_service import (
     _pdf_source_account,  # pyright: ignore[reportPrivateUsage]
 )
@@ -201,15 +203,20 @@ def test_document_origin_is_independent_of_heuristic_issuer() -> None:
     assert known_issuer.source_account_key == unknown_issuer.source_account_key
 
 
-def test_pdf_source_native_tuple_survives_issuer_detector_changes() -> None:
+def test_pdf_source_native_tuple_survives_issuer_detector_changes(
+    db: Database,
+) -> None:
+    resolver = AccountResolver(db, actor="test")
     unknown_issuer = _pdf_source_account(
         _decision(issuer="unknown"),
+        resolver=resolver,
         resolved_alias="statement",
         account_id_override=None,
         document_sha256="8" * 64,
     ).source
     known_issuer = _pdf_source_account(
         _decision(issuer="Chase Bank"),
+        resolver=resolver,
         resolved_alias="statement",
         account_id_override=None,
         document_sha256="8" * 64,

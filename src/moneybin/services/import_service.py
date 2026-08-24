@@ -875,6 +875,34 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
+def _reusable_pinned_keys(
+    resolver: AccountResolver,
+    *,
+    account_id: str,
+    source_type: str,
+    source_origin: str,
+) -> list[str]:
+    """Native keys a pinned import may reuse for this account and source.
+
+    The lookup behind both pinned channels, so tabular and PDF answer "what does
+    this account already call itself here?" identically and only their policy on
+    a non-singleton answer differs.
+
+    Residue is filtered out: a pre-fix pin left the canonical id sitting in the
+    source-key column, and reusing THAT would write it straight back into raw —
+    the defect this rule exists to remove, not a key to adopt.
+    """
+    candidates = resolver.accepted_native_keys_for_account(
+        account_id=account_id,
+        source_type=source_type,
+        source_origin=source_origin,
+    )
+    residue = resolver.account_ids_ever_self_mapped(
+        candidates, source_type=source_type, source_origin=source_origin
+    )
+    return [key for key in candidates if key not in residue]
+
+
 def _bare_account_key(
     file_path: Path,
     *,
@@ -1524,6 +1552,7 @@ class PdfAccountIdentity(NamedTuple):
 def _pdf_source_account(
     decision: "RouteDecision",
     *,
+    resolver: AccountResolver,
     resolved_alias: str,
     account_id_override: str | None,
     document_sha256: str,
@@ -1568,7 +1597,39 @@ def _pdf_source_account(
     # anchor at an existing dim_accounts row) says WHICH account this document
     # belongs to. It does not change what the document's own key is, so it
     # travels in explicit_account_id alone and native_key stays derived.
+    #
+    # Except that an anchorless key is the document's BYTES, and a bank hands
+    # out a byte-different PDF for the same statement (fresh internal
+    # timestamps). transaction_id folds the canonical account, which the pin
+    # holds still, so a re-download that moves only the source key forks
+    # staging's (transaction_id, account_id) dedup and counts the statement
+    # twice. So a pin reuses the key this account already answers to here — the
+    # same rule the tabular channel applies, and the reason both call it
+    # through _reusable_pinned_keys.
+    #
+    # Applies whether or not the document names an account, because
+    # derive_pdf_account_identity keys EVERY statement by its bytes — an
+    # anchored one included — so being anchored buys no stability here. The
+    # collision that document key prevents (two same-issuer/same-last-four
+    # accounts sharing a key) is a question about inferred identity, and a pin
+    # states the account outright, so there is nothing left to disambiguate.
+    #
+    # A non-singleton answer falls back rather than refusing, unlike tabular:
+    # an account that accumulated several document keys under the old behaviour
+    # is a live state a user already has, PDF has no --account-name to
+    # disambiguate with, and refusing would hard-fail their next import. The
+    # fallback is exactly today's behaviour, so it fixes what it can and breaks
+    # nothing it cannot.
     native_key = derived_key
+    if account_id_override:
+        reusable = _reusable_pinned_keys(
+            resolver,
+            account_id=account_id_override,
+            source_type="pdf",
+            source_origin=derived.source_origin,
+        )
+        if len(reusable) == 1:
+            native_key = reusable[0]
     return PdfAccountIdentity(
         source=SourceAccount(
             source_type="pdf",
@@ -2299,20 +2360,12 @@ class ImportService:
         # import — the exact defect this change removes — so it is residue to be
         # ignored, never a key to adopt.
         #
-        # Tested against every id self-mapped on THIS source, not just the one
-        # being pinned: a merge re-points the losing account's self-map onto the
-        # winner, leaving ref_value equal to the LOSER's old canonical id under
-        # the winner's account. That is still a canonical id in the key column,
-        # and comparing only against the pinned id would wave it through.
-        candidates = resolver.accepted_native_keys_for_account(
+        keys = _reusable_pinned_keys(
+            resolver,
             account_id=account_id,
             source_type=source_type,
             source_origin=source_origin,
         )
-        residue = resolver.account_ids_ever_self_mapped(
-            candidates, source_type=source_type, source_origin=source_origin
-        )
-        keys = [k for k in candidates if k not in residue]
         if len(keys) == 1:
             return keys[0]
         if len(keys) > 1:
@@ -3945,15 +3998,20 @@ class ImportService:
         # routing settles, before begin_import. A bridge recipe is agent-authored,
         # so the account identity it implies is no more ratified than a
         # deterministic one — and an agent must never self-pick an identity.
+        # One resolver for the identity and the gate: the key reuse inside
+        # _pdf_source_account reads the same accepted links the gate does, and
+        # the identity the user ratifies has to be the one that gets bound.
+        pdf_resolver = AccountResolver(self._db, actor="system")
         identity = _pdf_source_account(
             decision,
+            resolver=pdf_resolver,
             resolved_alias=resolved_alias,
             account_id_override=account_id,
             document_sha256=file_sha256,
             source_file=str(canonical),
         )
         gated = self._gate_account_proposals(
-            AccountResolver(self._db, actor="system"),
+            pdf_resolver,
             [identity.source],
             account_bindings,
             channel="pdf",
@@ -4605,21 +4663,23 @@ class ImportService:
         # is exactly the coupling that let the load re-derive its own copy.
         pdf_bound: SourceAccount | None = None
         if decision.outcome == "transactions":
+            pdf_resolver = AccountResolver(
+                self._db,
+                actor="system",
+                include_unmaterialized_candidates=(
+                    include_unmaterialized_account_candidates
+                ),
+            )
             identity = _pdf_source_account(
                 decision,
+                resolver=pdf_resolver,
                 resolved_alias=resolved_alias,
                 account_id_override=account_id,
                 document_sha256=file_sha256,
                 source_file=str(canonical),
             )
             gated = self._gate_account_proposals(
-                AccountResolver(
-                    self._db,
-                    actor="system",
-                    include_unmaterialized_candidates=(
-                        include_unmaterialized_account_candidates
-                    ),
-                ),
+                pdf_resolver,
                 [identity.source],
                 account_bindings,
                 channel="pdf",
