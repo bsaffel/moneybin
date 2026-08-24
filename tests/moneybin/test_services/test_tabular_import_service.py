@@ -2071,3 +2071,57 @@ def test_a_label_with_no_ascii_alphanumerics_still_produces_its_own_key(
     keys = sorted(_pinned_keys_for(db, export))
     assert "" not in keys, f"an empty slug became the source key: {keys}"
     assert len(keys) == 2, f"the two labels collided onto one key: {keys}"
+
+
+def test_a_third_pinned_reimport_of_a_growing_export_still_reuses_the_key(
+    db: Database, tmp_path: Path
+) -> None:
+    """Reuse has to survive an arbitrary number of imports, not exactly two.
+
+    Teaching the file's own content key alongside a borrowed one hands the
+    account a second accepted key on the second import — and the third then
+    sees two keys, no ``--account-name`` to choose between them, and refuses a
+    file that was never ambiguous. The refusal exists for a genuinely forked
+    account (a merge), not for one this import path forked itself.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_type, institution_name, source_type) "
+        "VALUES ('acct_pinned01', 'CHECKING', 'Bank', 'csv')"
+    )
+
+    header = "Date,Description,Amount,Balance\n"
+    rows = [
+        "2026-01-05,GROCERY STORE PURCHASE,-52.30,3947.70\n",
+        "2026-01-06,DIRECT DEPOSIT PAYROLL,2500.00,6447.70\n",
+        "2026-01-07,COFFEE SHOP,-4.75,6442.95\n",
+    ]
+    export = tmp_path / "export.csv"
+    keys_by_round: list[list[str]] = []
+    for count in (1, 2, 3):
+        export.write_text(header + "".join(rows[:count]))
+        import_answering_gate(
+            ImportService(db),
+            export,
+            account_id="acct_pinned01",
+            refresh=False,
+            confirm=True,
+            auto_accept=True,
+            force=count > 1,
+        )
+        keys_by_round.append(sorted(_pinned_keys_for(db, export)))
+
+    assert keys_by_round[2] == keys_by_round[0], (
+        f"the export re-keyed across three imports: {keys_by_round}"
+    )
+    repeated = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND amount = -52.30",
+        [str(export)],
+    ).fetchone()
+    assert repeated is not None and repeated[0] == 1, (
+        "the row present in all three exports was stored more than once"
+    )

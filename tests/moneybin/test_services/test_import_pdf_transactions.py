@@ -3384,3 +3384,56 @@ def test_a_pinned_import_still_records_the_documents_own_digest(
         [str(pdf)],
     ).fetchall()
     assert [r[0] for r in raw] == [f"pdf_doc_{'z' * 16}"], raw
+
+
+@pytest.mark.integration
+def test_a_borrowed_pin_key_survives_reimporting_the_same_regenerated_statement(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Teaching the borrowed document's own key makes the NEXT import stop borrowing.
+
+    The reuse branch only fires while this document's key is still unknown. So
+    teaching that key as an accepted link answers the branch's own gate: the
+    third import of one regenerated statement finds its digest accepted, skips
+    the substitution, and stores the rows under a key the second import did not
+    use. ``transaction_id`` folds the canonical account, which the pin holds
+    still, so the two copies share ids across two raw keys and staging's
+    ``(transaction_id, account_id)`` dedup keeps both.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_pinned01", "Chase Card"],
+    )
+    doc = _standard_doc()
+    svc = ImportService(db)
+
+    original = b"%PDF-1.4 fake"
+    regenerated = b"%PDF-1.4 fake regenerated"
+    for name, body in (
+        ("feb.pdf", original),
+        ("feb-again.pdf", regenerated),
+        ("feb-again-copy.pdf", regenerated),
+    ):
+        pdf = tmp_path / name
+        pdf.write_bytes(body)
+        with patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+        ):
+            import_answering_gate(
+                svc,
+                pdf,
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+                account_id="acct_pinned01",
+            )
+
+    forked = db.execute(
+        "SELECT transaction_id, COUNT(DISTINCT account_id) AS keys "
+        "FROM raw.tabular_transactions WHERE source_type = 'pdf' "
+        "GROUP BY transaction_id HAVING COUNT(DISTINCT account_id) > 1 "
+        "ORDER BY transaction_id"
+    ).fetchall()
+    assert not forked, f"the statement landed under two source keys: {forked}"

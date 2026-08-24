@@ -1690,9 +1690,17 @@ def _pdf_source_account(
     # _refuse_contradicted_bindings asks whether the key on THIS SourceAccount
     # is accepted elsewhere. Substituting the target's key first answers that
     # trivially and loads another account's statement here; a document that
-    # already named its account keeps saying so, and reusing buys nothing
-    # anyway — its rows already carry that key, so they dedup as they are.
-    if account_id_override and resolver.accepted_native_account_id(source) is None:
+    # already named its account keeps saying so.
+    #
+    # "Elsewhere" means another account, not this one. A key the pin target
+    # already owns contradicts nothing — and it is the ordinary state here,
+    # because the borrowed import below teaches this document's own key to the
+    # target. Reading that back as a reason to stop borrowing would send the
+    # NEXT import of the same regenerated statement to its own digest while the
+    # previous one sits under the borrowed key, splitting one statement across
+    # two keys — the exact double count the borrowing exists to prevent.
+    document_owner = resolver.accepted_native_account_id(source)
+    if account_id_override and document_owner in (None, account_id_override):
         reusable = _reusable_pinned_keys(
             resolver,
             account_id=account_id_override,
@@ -3304,12 +3312,19 @@ class ImportService:
                     institution=institution,
                     last_four=label_last4,
                     explicit_account_id=account_id,
-                    # Teaches what this file yields unpinned, so a later import
-                    # without --account-id still recognises the account. Ignored
-                    # when it already equals native_key.
-                    unpinned_account_key=_bare_account_key(
-                        file_path, source_bytes=source_bytes
-                    ),
+                    # Deliberately does NOT teach this file's own content key the
+                    # way the PDF channel teaches a borrowed document's digest.
+                    # There, transaction_id folds the canonical account, so an
+                    # extra accepted key is a harmless alias. Here it is derived
+                    # FROM the raw key, so an extra key is a second dedup
+                    # namespace — and _pinned_native_key reads two keys back as
+                    # ambiguity and refuses a file that was never ambiguous. It
+                    # would also buy little: this key is the file's bytes, and a
+                    # recurring export's bytes change every period, so the key
+                    # taught is not the one the next unpinned import derives.
+                    # Cost: an unpinned re-import of a CHANGED file stops at the
+                    # confirm gate instead of self-recognising. Visible and
+                    # safe, and tracked with the rest of the key-identity work.
                 )
             )
         elif account_name:
