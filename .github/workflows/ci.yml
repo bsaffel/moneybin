@@ -98,7 +98,7 @@ jobs:
 
       - name: Install DuckDB CLI
         run: |
-          curl -fsSL https://install.duckdb.org | sh
+          curl -fsSL https://install.duckdb.org | bash
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       # pytest-split shards the unit suite across the matrix so wall-clock
@@ -212,7 +212,7 @@ jobs:
 
       - name: Install DuckDB CLI
         run: |
-          curl -fsSL https://install.duckdb.org | sh
+          curl -fsSL https://install.duckdb.org | bash
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       # Shard the integration suite with pytest-split, same pattern as test-unit
@@ -258,7 +258,7 @@ jobs:
 
       - name: Install DuckDB CLI
         run: |
-          curl -fsSL https://install.duckdb.org | sh
+          curl -fsSL https://install.duckdb.org | bash
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       # Shard the e2e suite with pytest-split, same pattern as test-unit.
