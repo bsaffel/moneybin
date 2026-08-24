@@ -2029,3 +2029,45 @@ def test_two_accounts_pinned_from_one_file_still_get_their_own_keys(
 
     keys = sorted(_pinned_keys_for(db, export))
     assert keys == ["checking", "savings"], keys
+
+
+def test_a_label_with_no_ascii_alphanumerics_still_produces_its_own_key(
+    db: Database, tmp_path: Path
+) -> None:
+    """``slugify`` keeps only ``[a-z0-9]``, so some real names slug to nothing.
+
+    A name written in a non-Latin script — or in punctuation alone — leaves an
+    empty slug, and an empty string is not a key: every such account lands on
+    the same ``source_native`` coordinates, so the second one is refused as a
+    contradicting binding and its statement never imports. The fallback is
+    derived from the label rather than the file, so one name keeps one key
+    across files and across pinned and unpinned imports.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    for account_id in ("acct_savings01", "acct_checking1"):
+        db.execute(
+            "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+            "(account_id, account_type, institution_name, source_type) "
+            f"VALUES ('{account_id}', 'CHECKING', 'Bank', 'csv')"
+        )
+    export = tmp_path / "joint.csv"
+    export.write_text(
+        "Date,Description,Amount,Balance\n2026-01-05,GROCERY,-52.30,3947.70\n"
+    )
+    for account_id, label in (("acct_savings01", "储蓄"), ("acct_checking1", "支票")):
+        import_answering_gate(
+            ImportService(db),
+            export,
+            account_id=account_id,
+            account_name=label,
+            refresh=False,
+            confirm=True,
+            auto_accept=True,
+            force=True,
+        )
+
+    keys = sorted(_pinned_keys_for(db, export))
+    assert "" not in keys, f"an empty slug became the source key: {keys}"
+    assert len(keys) == 2, f"the two labels collided onto one key: {keys}"

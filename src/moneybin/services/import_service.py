@@ -875,6 +875,28 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
+def _label_account_key(account_name: str) -> str:
+    """A native key for an account label, guaranteed non-empty.
+
+    ``slugify`` keeps only ``[a-z0-9]``, so a name written in a non-Latin
+    script — or in punctuation alone — slugifies to ``""``. An empty string is
+    not a key: every such account lands on the same ``source_native``
+    coordinates, so the second one is refused as a contradicting binding and
+    its statement never imports at all.
+
+    The fallback digests the label rather than the file, so one name keeps one
+    key across files and across pinned and unpinned imports — the property the
+    slug already had for names the slug survives.
+    """
+    from moneybin.utils import slugify  # noqa: PLC0415 — matches the call sites
+
+    slug = slugify(account_name)
+    if slug:
+        return slug
+    digest = hashlib.sha256(account_name.encode("utf-8")).hexdigest()
+    return f"label-{digest[:12]}"
+
+
 def _reusable_pinned_keys(
     resolver: AccountResolver,
     *,
@@ -2386,14 +2408,12 @@ class ImportService:
         # source-key column. Reusing THAT would write it back into raw for this
         # import — the exact defect this change removes — so it is residue to be
         # ignored, never a key to adopt.
-        from moneybin.utils import slugify  # noqa: PLC0415 — matches the call site
-
         # What this file calls its account with no history to consult. A label
         # is the caller naming which account in the file the pin means, so it
         # seeds the key exactly as an unpinned import with the same label would;
         # otherwise the file's own content key does.
         own_key = (
-            slugify(account_name)
+            _label_account_key(account_name)
             if account_name
             else _bare_account_key(file_path, source_bytes=source_bytes)
         )
@@ -3293,7 +3313,7 @@ class ImportService:
                 )
             )
         elif account_name:
-            native_key = slugify(account_name)
+            native_key = _label_account_key(account_name)
             account_ids = native_key
             acct_id_to_name[native_key] = account_name
             clean_name, label_last4 = parse_account_label(account_name)
