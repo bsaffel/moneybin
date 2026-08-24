@@ -3117,6 +3117,7 @@ def test_account_id_pin_refuses_a_document_already_bound_elsewhere(
     assert linked[document_key] == "acct_other01"
 
 
+@pytest.mark.integration
 def test_pdf_supersede_rolls_back_when_the_replacement_load_fails(
     db: Database, tmp_path: Path
 ) -> None:
@@ -3170,6 +3171,7 @@ def test_pdf_supersede_rolls_back_when_the_replacement_load_fails(
     )
 
 
+@pytest.mark.integration
 def test_pdf_supersede_runs_before_the_historical_hash_pass(
     db: Database, tmp_path: Path
 ) -> None:

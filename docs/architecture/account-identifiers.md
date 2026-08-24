@@ -152,7 +152,10 @@ are deliberate, and each trades a narrower cleanup for never destroying data:
   description)` — the tuple the content hash encodes, minus the account token,
   which differs by construction between a legacy row and its replacement.
   Repeated content is matched by count, not existence, so a duplicate group is
-  never removed wholesale because the new file carried one member of it.
+  never removed wholesale because the new file carried one member of it. That
+  count is taken per legacy account: the pre-fix pin honoured whatever id it
+  was handed, so one path pinned twice left residue under two canonical ids,
+  and a single shared count would sweep only one of them.
 - **Unmatched rows stay.** A legacy row the incoming file no longer carries —
   a shorter re-export saved over the same path — keeps its old key rather than
   being deleted with no replacement coming. It stays wrongly keyed but counted

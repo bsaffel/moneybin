@@ -1207,13 +1207,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Pinning an import no longer renames the account the file describes.**
   `--account-id` used to overwrite the source's own key in
-  `raw.tabular_accounts.account_id` with MoneyBin's canonical id; the pin now
-  travels as the pin alone and the raw row keeps the source's key on every path.
-  **Behaviour change:** pinning a statement already bound to another account now
-  errors instead of silently double-counting it, and rows written under the old
-  scheme are superseded the next time that same path is imported — see
-  [`account-identifiers.md`](docs/architecture/account-identifiers.md) for the
-  key semantics and the limits of that cleanup (#438, #418).
+  `raw.tabular_accounts.account_id` with MoneyBin's canonical id; the raw row
+  now keeps the source's key on every path, pinning a statement already bound
+  to another account errors instead of silently double-counting it, and rows
+  written under the old scheme are superseded on the next import of that path
+  — see [`account-identifiers.md`](docs/architecture/account-identifiers.md)
+  for the key semantics and the limits of that cleanup (#438, #418).
 
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last

@@ -2378,6 +2378,13 @@ class ImportService:
         # the incoming file carried a single member of it, and only that one
         # would come back. Rank the legacy rows within each identity group and
         # take as many as the incoming file actually replaces.
+        #
+        # That count is per legacy ACCOUNT, which is why account_id partitions
+        # too. The pre-fix pin honoured whatever id it was handed, so one path
+        # could be pinned twice and leave residue under two canonical ids —
+        # exactly the double-count this sweep exists to close. Pooling both sets
+        # in one group would size the cap to the incoming file and sweep only
+        # one of them, leaving the other still counted.
         with self._db.registered_frame("_superseding_rows", replacing):
             self._db.execute(
                 f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constants, value parameterized
@@ -2388,8 +2395,8 @@ class ImportService:
                 "           legacy.amount AS a,"
                 "           legacy.description AS s,"
                 "           ROW_NUMBER() OVER ("
-                "             PARTITION BY legacy.transaction_date, legacy.amount,"
-                "                          legacy.description"
+                "             PARTITION BY legacy.account_id, legacy.transaction_date,"
+                "                          legacy.amount, legacy.description"
                 "             ORDER BY legacy.transaction_id"
                 "           ) AS rn"
                 f"    FROM {TABULAR_TRANSACTIONS.full_name} AS legacy"

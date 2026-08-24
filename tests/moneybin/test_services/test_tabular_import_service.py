@@ -2133,6 +2133,67 @@ def test_supersede_replaces_duplicate_content_one_for_one(db: Database) -> None:
     assert total_coffee is not None and total_coffee[0] == 2, total_coffee
 
 
+def test_supersede_sweeps_residue_under_two_different_legacy_accounts(
+    db: Database,
+) -> None:
+    """One document pinned twice pre-fix left residue under two canonical ids.
+
+    The pre-fix pin honoured whatever ``--account-id`` it was handed, so the
+    same path could be pinned to two different accounts and land twice — the
+    double-count this change exists to stop. Ranking those rows in one identity
+    group pools both residue sets, and a count cap sized to the incoming file
+    then sweeps only as many as the file carries, leaving the other stale row
+    counted a second time. Rank within each legacy account instead.
+    """
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    _legacy_link(db)
+    AccountLinksRepo(db).insert(
+        link_id="lnk_legacy2",
+        account_id="acct_legacy02",
+        ref_kind="source_native",
+        ref_value="acct_legacy02",
+        source_type="csv",
+        source_origin="legacy-origin",
+        decided_by="user",
+        actor="cli",
+    )
+    # ONE 2026-01-08 COFFEE SHOP -4.75 in standard.csv, written twice pre-fix:
+    # once under each account the file was pinned to.
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_file, source_type, source_origin, import_id) VALUES "
+        "('acct_legacy01:coffee', 'acct_legacy01', DATE '2026-01-08', -4.75, "
+        "'COFFEE SHOP', ?, 'csv', 'unknown', 'imp_legacy'), "
+        "('acct_legacy02:coffee', 'acct_legacy02', DATE '2026-01-08', -4.75, "
+        "'COFFEE SHOP', ?, 'csv', 'unknown', 'imp_legacy')",
+        [str(_STANDARD_CSV), str(_STANDARD_CSV)],
+    )
+
+    import_answering_gate(
+        ImportService(db),
+        _STANDARD_CSV,
+        account_name="Primary Checking",
+        account_id="acct_legacy01",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+
+    coffee = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND amount = -4.75",
+        [str(_STANDARD_CSV)],
+    ).fetchone()
+    assert coffee is not None and coffee[0] == 1, (
+        "residue under a second legacy account survived the supersede and still "
+        f"double-counts the transaction — {coffee[0] if coffee else 0} rows"
+    )
+
+
 def test_supersede_keeps_the_account_row_when_a_transaction_survives(
     db: Database,
 ) -> None:
