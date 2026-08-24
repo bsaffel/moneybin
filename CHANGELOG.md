@@ -1205,14 +1205,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the write path, not in `AccountSettings.__post_init__`, so a row that already
   carries the label still loads rather than raising on read (#435).
 
-- **Pinning an import no longer renames the account the file describes.**
-  `--account-id` used to overwrite the source's own key in
-  `raw.tabular_accounts.account_id` with MoneyBin's canonical id; the raw row
-  now keeps the source's key on every path, pinning a statement already bound
-  to another account errors instead of silently double-counting it, and rows
-  written under the old scheme are superseded on the next import of that path
-  — see [`account-identifiers.md`](docs/architecture/account-identifiers.md)
-  for the key semantics and the limits of that cleanup (#438, #418).
+- **Pinning an import with `--account-id` no longer renames the account the
+  file describes** — the raw row keeps the source's own key on every path, and
+  pinning a statement already bound to another account now errors instead of
+  silently double-counting it. If a file was imported under the old scheme,
+  delete its previous import batch before re-importing it or it will be counted
+  twice ([`account-identifiers.md`](docs/architecture/account-identifiers.md),
+  #438, #418).
 
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last

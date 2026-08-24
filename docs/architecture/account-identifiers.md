@@ -134,38 +134,39 @@ Stability guarantees depend on the source's own behavior:
 
 When stranding happens today, the operational answer is to re-attach state by hand (re-run `accounts balance assert`, copy `display_name`, etc.) until a merge tool ships.
 
-## Superseding rows a pre-fix pin wrote
+## Re-importing a file pinned before this rule
 
 Before the source-native key rule above, `--account-id` overwrote
 `raw.tabular_*.account_id` with the canonical id. `account_id` is folded into
 `transaction_id` and into the raw primary key, so rows written that way can
-never collide with their corrected replacements — re-importing would insert a
-second copy beside them and the statement would be counted twice.
+never collide with their corrected replacements: re-importing that same file
+inserts a second copy beside them and the statement is counted twice.
 
-The import therefore supersedes them: before loading, it deletes the pre-fix
-rows this import replaces and writes the corrected ones in the same
-transaction, so a failed load restores what the delete removed. Three limits
-are deliberate, and each trades a narrower cleanup for never destroying data:
+**Delete the old import batch before re-importing.** `moneybin import history`
+lists the batches; removing the pre-fix one leaves nothing for the corrected
+rows to duplicate.
 
-- **Matched by content, one for one.** A legacy row is replaced only when the
-  incoming file carries a row with the same `(transaction_date, amount,
-  description)` — the tuple the content hash encodes, minus the account token,
-  which differs by construction between a legacy row and its replacement.
-  Repeated content is matched by count, not existence, so a duplicate group is
-  never removed wholesale because the new file carried one member of it. That
-  count is taken per legacy account: the pre-fix pin honoured whatever id it
-  was handed, so one path pinned twice left residue under two canonical ids,
-  and a single shared count would sweep only one of them.
-- **Unmatched rows stay.** A legacy row the incoming file no longer carries —
-  a shorter re-export saved over the same path — keeps its old key rather than
-  being deleted with no replacement coming. It stays wrongly keyed but counted
-  once. Its `raw.tabular_accounts` row is kept too: `core.dim_accounts` is built
-  from those, and reports inner-join it, so removing the backing row would make
-  the retained transaction invisible instead of merely mis-keyed.
-- **Scoped to the same path.** Residue is found by exact `source_file` match. A
-  copy of the same statement re-downloaded under a different name is not
-  recognised and keeps the old key until that copy is itself re-imported. Full
-  retroactive migration is not attempted.
+MoneyBin does not clean these up automatically, and that is deliberate. An
+automatic sweep has to decide which existing rows a re-import replaces, and it
+cannot: the corrected row and its pre-fix twin share no key, so the only
+available match is `(transaction_date, amount, description)` at the same path.
+That match cannot tell one document pinned twice from two different documents
+that reached the same path, and it silently deletes the wrong account's
+transaction when it guesses wrong. Rotating the key is also not free even when
+the match is right — `core.fct_transactions.transaction_id` is derived from
+`source_account_key`, which is why
+[`int_transactions__matched`](../../src/moneybin/sqlmesh/models/prep/int_transactions__matched.sql)
+deliberately keeps the mutable `account_id` out of that derivation. Rewriting
+the source key moves the gold id, and every note, tag, split and
+categorization keyed to it detaches with no forwarding record. Counting a
+statement twice is visible in any report and reversible; silently deleting one
+transaction or orphaning a year of curation is neither.
+
+This is a deliberate deviation from `.claude/rules/identifiers.md`'s "changing
+an id leaves the old one behind — retire it in the same change": a retroactive
+cleanup needs either an old-to-new transaction-id forwarding table or a
+staging-layer suppression like the one `prep.stg_ofx__transactions` already
+uses for superseded FITIDs, and both are their own piece of work.
 
 ## Common pitfalls
 

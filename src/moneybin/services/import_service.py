@@ -22,8 +22,6 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
 import duckdb
 
 if TYPE_CHECKING:
-    import polars as pl
-
     from moneybin.extractors.pdf.ir import PdfDocument
     from moneybin.extractors.pdf.routing import RouteDecision
     from moneybin.extractors.tabular.formats import TabularFormat
@@ -2323,113 +2321,6 @@ class ImportService:
             )
         return _bare_account_key(file_path, source_bytes=source_bytes)
 
-    def _supersede_legacy_pinned_raw_rows(
-        self, source_file: str, *, replacing: "pl.DataFrame"
-    ) -> None:
-        """Drop raw rows a pre-fix ``--account-id`` pin wrote under the canonical id.
-
-        ``--account-id`` used to overwrite the source-native key with the
-        canonical ``dim_accounts.account_id``, so a pinned import stamped that
-        id straight into ``raw.tabular_*.account_id``. That column now carries
-        the source's own key, and ``raw.tabular_transactions`` keys on
-        ``(transaction_id, account_id, source_file)`` with ``account_id`` folded
-        into ``transaction_id`` as well. Re-importing such a file therefore
-        produces rows whose primary key CANNOT collide with the old ones, and
-        the upsert inserts a second copy beside them — one statement, counted
-        twice, for anyone who re-imports after upgrading.
-
-        Nothing derives a canonical-shaped native key any more, so a raw row for
-        this file whose ``account_id`` is a ``dim_accounts`` id can only be
-        pre-fix residue: delete it and let this import write the row that
-        supersedes it. Scoped to this ``source_file`` so a re-import never
-        reaches another file's rows.
-
-        "Is this a canonical id?" is asked of ``app.account_links``, never of
-        ``core.dim_accounts``. That model is wrong here three ways: a pin run
-        with ``--no-refresh`` never materialized its account into it, a
-        merged-away account is removed from it, and its grain is
-        ``COALESCE(account_id, source_account_key)`` — so an unlinked account
-        surfaces an ordinary source key through ``account_id`` and would be read
-        back as canonical. A minted id is an ``account_links`` ``account_id``
-        from the moment it exists and stays one, which is also what the
-        ``app_account_links_canonical_native_key`` doctor invariant asks.
-        """
-        from moneybin.tables import (
-            ACCOUNT_LINKS,
-            TABULAR_ACCOUNTS,
-            TABULAR_TRANSACTIONS,
-        )
-
-        # Only the transactions this import actually rewrites. A legacy row the
-        # incoming file no longer carries is NOT residue to discard: deleting it
-        # would destroy a transaction with nothing to replace it, which is how a
-        # shorter re-export saved over the same path would silently lose the
-        # difference. Left alone it stays wrongly keyed but counted once, which
-        # is strictly better than gone.
-        #
-        # Identity is (date, amount, description) — the tuple the content hash
-        # encodes, minus the account token, which differs by construction
-        # between a legacy row and its replacement and so cannot be matched on.
-        #
-        # ONE legacy row per incoming row, not "any legacy row that matches
-        # something". Repeated content is legitimate (two identical coffees on
-        # one day — what the occurrence suffix in identifiers.md exists for), so
-        # an existential match would delete a whole duplicate group the moment
-        # the incoming file carried a single member of it, and only that one
-        # would come back. Rank the legacy rows within each identity group and
-        # take as many as the incoming file actually replaces.
-        #
-        # That count is per legacy ACCOUNT, which is why account_id partitions
-        # too. The pre-fix pin honoured whatever id it was handed, so one path
-        # could be pinned twice and leave residue under two canonical ids —
-        # exactly the double-count this sweep exists to close. Pooling both sets
-        # in one group would size the cap to the incoming file and sweep only
-        # one of them, leaving the other still counted.
-        with self._db.registered_frame("_superseding_rows", replacing):
-            self._db.execute(
-                f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constants, value parameterized
-                "WHERE source_file = ? AND transaction_id IN ("
-                "  SELECT ranked.transaction_id FROM ("
-                "    SELECT legacy.transaction_id,"
-                "           legacy.transaction_date AS d,"
-                "           legacy.amount AS a,"
-                "           legacy.description AS s,"
-                "           ROW_NUMBER() OVER ("
-                "             PARTITION BY legacy.account_id, legacy.transaction_date,"
-                "                          legacy.amount, legacy.description"
-                "             ORDER BY legacy.transaction_id"
-                "           ) AS rn"
-                f"    FROM {TABULAR_TRANSACTIONS.full_name} AS legacy"
-                "    WHERE legacy.source_file = ? AND legacy.account_id IN"
-                f"      (SELECT account_id FROM {ACCOUNT_LINKS.full_name})"
-                "  ) AS ranked"
-                "  JOIN ("
-                "    SELECT transaction_date AS d, amount AS a, description AS s,"
-                "           COUNT(*) AS n"
-                "    FROM _superseding_rows GROUP BY 1, 2, 3"
-                "  ) AS fresh"
-                "    ON fresh.d = ranked.d AND fresh.a = ranked.a"
-                "   AND fresh.s IS NOT DISTINCT FROM ranked.s"
-                "  WHERE ranked.rn <= fresh.n"
-                ")",
-                [source_file, source_file],
-            )
-        # The account row goes only once nothing is left pointing at it. A legacy
-        # transaction the incoming file no longer carries legitimately survives
-        # above, and core.dim_accounts is built from these rows — deleting the
-        # only one backing that id would orphan the transaction, and every report
-        # that inner-joins dim_accounts would silently stop showing it. Being
-        # invisible is no better than being deleted.
-        self._db.execute(
-            f"DELETE FROM {TABULAR_ACCOUNTS.full_name} AS acct "  # noqa: S608  # TableRef constants, value parameterized
-            "WHERE acct.source_file = ? AND acct.account_id IN "
-            f"(SELECT account_id FROM {ACCOUNT_LINKS.full_name}) "
-            f"AND NOT EXISTS (SELECT 1 FROM {TABULAR_TRANSACTIONS.full_name} AS t "
-            "WHERE t.source_file = acct.source_file "
-            "AND t.account_id = acct.account_id)",
-            [source_file],
-        )
-
     def _import_tabular(
         self,
         file_path: Path,
@@ -3564,28 +3455,8 @@ class ImportService:
             "import_id": [import_id] * len(unique_ids),
         })
 
-        # One transaction: the supersede deletes exactly the rows this load
-        # replaces, so a load that fails must take the delete with it. Letting
-        # the delete stand alone destroys transactions the user may hold no
-        # other copy of — worse than the double-count it prevents.
-        # in_outer_txn means the caller already owns one (the MCP confirm flow
-        # wraps a whole import); opening a second here raises, and committing
-        # would end their transaction early.
-        owns_txn = not in_outer_txn
-        if owns_txn:
-            self._db.begin()
-        try:
-            self._supersede_legacy_pinned_raw_rows(
-                str(file_path), replacing=transform_result.transactions
-            )
-            rows_imported = extractor.load_transactions(transform_result.transactions)
-            extractor.load_accounts(account_df)
-        except BaseException:
-            if owns_txn:
-                self._db.rollback()
-            raise
-        if owns_txn:
-            self._db.commit()
+        rows_imported = extractor.load_transactions(transform_result.transactions)
+        extractor.load_accounts(account_df)
 
         extractor.finalize_import_batch(
             import_id=import_id,
@@ -5158,24 +5029,7 @@ class ImportService:
 
         transactions_extracted = len(rows_list)
 
-        owns_txn = not in_outer_txn
         try:
-            # One transaction through the account ingest below: the supersede
-            # deletes exactly the rows this import replaces, and those rows
-            # carry the OLD import_id, so the import_id-scoped cleanup in the
-            # handler below cannot put them back. Only a rollback can.
-            # in_outer_txn means the caller already owns one and will roll the
-            # whole import back itself — opening a second here would commit
-            # their transaction out from under them.
-            if owns_txn:
-                self._db.begin()
-            # BEFORE the historical-hash pass below, which reads the same rows.
-            # That pass drops a row from this insert when it finds the legacy
-            # copy already present; superseding afterwards would then delete the
-            # copy it deferred to, losing the transaction from both sides.
-            self._supersede_legacy_pinned_raw_rows(
-                str(canonical), replacing=pl.DataFrame(rows_list)
-            )
             # The account-identity upgrade changed the account token inside PDF
             # transaction hashes. If the exact legacy hash already exists, keep
             # that raw row authoritative instead of inserting its replacement
@@ -5311,13 +5165,8 @@ class ImportService:
             self._db.ingest_dataframe(
                 TABULAR_ACCOUNTS.full_name, account_df, on_conflict="ignore"
             )
-            if owns_txn:
-                self._db.commit()
 
         except Exception:
-            # Restores the superseded rows; the import_id cleanup below cannot.
-            if owns_txn:
-                self._db.rollback()
             for table_ref in (TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS):
                 try:
                     self._db.execute(
@@ -5346,15 +5195,6 @@ class ImportService:
                 observations=observations,
                 disposition="rollback",
             )
-            raise
-        except BaseException:
-            # KeyboardInterrupt / SystemExit. The tabular twin rolls back on
-            # BaseException too: without this the supersede's DELETE would be
-            # left standing on an open transaction with nothing to replace it.
-            # Only the rollback runs — the best-effort bookkeeping above is not
-            # worth attempting while the process is being torn down.
-            if owns_txn:
-                self._db.rollback()
             raise
 
         # Format save + record_use happen AFTER the data-write try/except so a
