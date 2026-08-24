@@ -436,3 +436,50 @@ def test_unknown_account_metadata_key_does_not_list_the_real_keys(
     message, _code, _hint, _details = per_file_failure(raised.value)
     assert ACCTID not in message, f"account number reached the wire: {message}"
     assert "mistyped-key" in message
+
+
+def test_the_pinned_key_ambiguity_refusal_does_not_echo_the_pinned_account_id(
+    db: Any, tmp_path: Path
+) -> None:
+    """``--account-id`` is caller input, and caller input is not automatically safe.
+
+    The value arrives verbatim from the command line, and ``account_id`` is not
+    always a minted surrogate: ``stg_tabular__transactions`` falls back to the
+    source-native key when no link resolves, so the id a caller reads back out
+    of a report and re-pins can be the institution's own ``<ACCTID>``.
+    ``.claude/rules/identifiers.md`` decides masking per field, once, on the
+    worst case the field can hold — never per value.
+    """
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+    from moneybin.services.account_resolver import AccountResolver
+
+    repo = AccountLinksRepo(db)
+    for link_id, ref_value in (("lnk_a", "statement-aaa"), ("lnk_b", "statement-bbb")):
+        repo.insert(
+            link_id=link_id,
+            account_id=MISTYPED_ACCTID,
+            ref_kind="source_native",
+            ref_value=ref_value,
+            source_type="csv",
+            source_origin="monarch",
+            decided_by="user",
+            actor="cli",
+        )
+    export = tmp_path / "export.csv"
+    export.write_text("Date,Description,Amount\n2026-01-05,COFFEE,-4.75\n")
+
+    with pytest.raises(ValueError) as raised:
+        ImportService(db)._pinned_native_key(  # pyright: ignore[reportPrivateUsage]  # the refusal under test has no other entry point
+            resolver=AccountResolver(db, actor="test"),
+            account_id=MISTYPED_ACCTID,
+            file_path=export,
+            source_bytes=None,
+            source_type="csv",
+            source_origin="monarch",
+        )
+
+    message = _refusal_message(raised.value)
+    assert MISTYPED_ACCTID not in message, f"pinned id reached the wire: {message}"
+    # Still answerable: the masked tail says which pin, the flag says what to send.
+    assert "****1099" in message, message
+    assert "--account-name" in message, message

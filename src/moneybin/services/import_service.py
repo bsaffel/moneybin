@@ -2299,25 +2299,34 @@ class ImportService:
         # import — the exact defect this change removes — so it is residue to be
         # ignored, never a key to adopt.
         #
-        # Tested against every id the resolver has ever self-mapped, not just the
-        # one being pinned: a merge re-points the losing account's self-map onto
-        # the winner, leaving ref_value equal to the LOSER's old canonical id
-        # under the winner's account. That is still a canonical id in the key
-        # column, and comparing only against the pinned id would wave it through.
+        # Tested against every id self-mapped on THIS source, not just the one
+        # being pinned: a merge re-points the losing account's self-map onto the
+        # winner, leaving ref_value equal to the LOSER's old canonical id under
+        # the winner's account. That is still a canonical id in the key column,
+        # and comparing only against the pinned id would wave it through.
         candidates = resolver.accepted_native_keys_for_account(
             account_id=account_id,
             source_type=source_type,
             source_origin=source_origin,
         )
-        residue = resolver.account_ids_ever_self_mapped(candidates)
+        residue = resolver.account_ids_ever_self_mapped(
+            candidates, source_type=source_type, source_origin=source_origin
+        )
         keys = [k for k in candidates if k not in residue]
         if len(keys) == 1:
             return keys[0]
         if len(keys) > 1:
+            # Masked like every other refusal that quotes a caller's key: the pin
+            # arrives from the command line, and account_id is not always a minted
+            # surrogate — stg_tabular__transactions falls back to the source-native
+            # key when nothing resolves, so the id a caller reads back can be the
+            # institution's own. source_origin is left out rather than masked; on
+            # this branch it is a registered format name, and naming the file's own
+            # coordinates tells the caller nothing they did not just type.
             raise ValueError(
-                f"--account-id {account_id} already has {len(keys)} source keys "
-                f"for {source_type}/{source_origin}; pass --account-name to say "
-                "which account in this file the pin refers to"
+                f"--account-id {_mask_caller_keys([account_id])} already has "
+                f"{len(keys)} source keys for this {source_type} source; pass "
+                "--account-name to say which account in this file the pin refers to"
             )
         return _bare_account_key(file_path, source_bytes=source_bytes)
 

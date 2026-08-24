@@ -1728,7 +1728,15 @@ def test_pinned_reimport_without_a_name_keeps_the_same_native_key(
     )
 
 
-def _pin_link(db: Database, *, link_id: str, account_id: str, ref_value: str) -> None:
+def _pin_link(
+    db: Database,
+    *,
+    link_id: str,
+    account_id: str,
+    ref_value: str,
+    source_type: str = "csv",
+    source_origin: str = "monarch",
+) -> None:
     from moneybin.repositories.account_links_repo import AccountLinksRepo
 
     AccountLinksRepo(db).insert(
@@ -1736,8 +1744,8 @@ def _pin_link(db: Database, *, link_id: str, account_id: str, ref_value: str) ->
         account_id=account_id,
         ref_kind="source_native",
         ref_value=ref_value,
-        source_type="csv",
-        source_origin="monarch",
+        source_type=source_type,
+        source_origin=source_origin,
         decided_by="user",
         actor="cli",
     )
@@ -1851,3 +1859,30 @@ def test_pinned_native_key_ignores_a_self_map_carried_over_by_a_merge(
         "adopted the merged-away account's canonical id as a native key"
     )
     assert key.startswith("export-"), key
+
+
+def test_pinned_native_key_keeps_a_key_whose_twin_self_mapped_under_another_source(
+    db: Database, tmp_path: Path
+) -> None:
+    """Residue is scoped to the source the candidate key belongs to.
+
+    Both shapes that leave a self-map — a pre-fix pin, and the merge that
+    re-points one onto the winner — write it under the SAME ``source_type`` /
+    ``source_origin`` as the key they sit beside, because ``repoint`` re-accepts
+    the ref on its original coordinates. So a self-map filed under a different
+    source is some other account's history, and reading it as residue here drops
+    this account's real key for a content key that rotates when the export grows
+    — re-keying every row already imported and double-counting the overlap.
+    """
+    _pin_link(db, link_id="lnk_owner", account_id="acct_x", ref_value="acct_zzz")
+    # acct_zzz's own pre-fix pin, left behind on a different source entirely.
+    _pin_link(
+        db,
+        link_id="lnk_elsewhere",
+        account_id="acct_zzz",
+        ref_value="acct_zzz",
+        source_type="ofx",
+        source_origin="some-institution",
+    )
+
+    assert _pinned_key(db, tmp_path, "acct_x") == "acct_zzz"

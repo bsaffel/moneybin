@@ -729,8 +729,10 @@ class AccountResolver:
         ).fetchall()
         return [str(r[0]) for r in rows]
 
-    def account_ids_ever_self_mapped(self, candidates: Sequence[str]) -> set[str]:
-        """Which of these strings a link has ever carried as BOTH account and ref.
+    def account_ids_ever_self_mapped(
+        self, candidates: Sequence[str], *, source_type: str, source_origin: str
+    ) -> set[str]:
+        """Which of these strings a link on THIS source carried as both account and ref.
 
         That pairing is what a pre-fix ``--account-id`` pin left behind, and it
         is the whole signature. "This string appears somewhere in the
@@ -739,19 +741,28 @@ class AccountResolver:
         unrelated account happened to be minted under that same string, and the
         pin would fall back to a content key that rotates when the export grows.
 
+        Scoped to one source for the same reason, and it costs nothing: both
+        shapes that leave a self-map put it on the coordinates of the key it sits
+        beside. A pre-fix pin wrote it while importing that source, and
+        ``AccountLinksRepo.repoint`` re-accepts the ref "with the same ref
+        coordinates". A self-map under a *different* source is therefore some
+        other account's history, and reading it here would discard a real key.
+
         Deliberately ignores ``status``. A reversed row is still evidence the
-        value was once a canonical account id: ``AccountLinksRepo.repoint`` — the
-        merge primitive — reverses the losing row in place and re-accepts its ref
-        under the winner, so after a merge the only trace that the old id was an
-        id at all is the loser's own self-map, no longer accepted.
+        value was once a canonical account id: ``repoint`` — the merge primitive
+        — reverses the losing row in place and re-accepts its ref under the
+        winner, so after a merge the only trace that the old id was an id at all
+        is the loser's own self-map, no longer accepted.
         """
         if not candidates:
             return set()
         placeholders = ",".join(["?"] * len(candidates))
         rows = self._db.execute(
             f"SELECT DISTINCT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # placeholders are code-owned; values parameterized
-            f"WHERE account_id = ref_value AND account_id IN ({placeholders})",
-            list(candidates),
+            "WHERE account_id = ref_value "
+            "AND source_type = ? AND source_origin = ? "
+            f"AND account_id IN ({placeholders})",
+            [source_type, source_origin, *candidates],
         ).fetchall()
         return {str(r[0]) for r in rows}
 
