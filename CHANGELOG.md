@@ -1206,18 +1206,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   carries the label still loads rather than raising on read (#435).
 
 - **Pinning an import no longer renames the account the file describes.**
-  `--account-id` used to overwrite `raw.tabular_accounts.account_id` — the key
-  the *source* uses — with MoneyBin's own canonical id; the pin now travels as
-  the pin alone and the raw row keeps the source's key on every path.
-  **Behaviour change:** pinning a statement already bound to another account
-  used to succeed and silently double-count it, and now errors instead, naming
-  the account it is bound to. Rows written under the old scheme are superseded
-  the next time that same path is imported — only the ones the incoming file
-  actually replaces, so a shorter re-export cannot delete the difference — which
-  needs no revert step; a copy re-downloaded under a new name is not matched and
-  keeps the old key until it too is re-imported. A pin with no `--account-name` reuses the key its
-  account is already bound under rather than re-deriving one from the file's
-  bytes, which would rotate whenever a recurring export grew (#438, #418).
+  `--account-id` used to overwrite the source's own key in
+  `raw.tabular_accounts.account_id` with MoneyBin's canonical id; the pin now
+  travels as the pin alone and the raw row keeps the source's key on every path.
+  **Behaviour change:** pinning a statement already bound to another account now
+  errors instead of silently double-counting it, and rows written under the old
+  scheme are superseded the next time that same path is imported — see
+  [`account-identifiers.md`](docs/architecture/account-identifiers.md) for the
+  key semantics and the limits of that cleanup (#438, #418).
 
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last

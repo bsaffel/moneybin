@@ -2296,19 +2296,23 @@ class ImportService:
         source: picking one would silently bind this file to whichever sorted
         first, and ``--account-name`` states the answer explicitly.
         """
-        # A pre-fix pin left a self-map (ref_value == account_id): the canonical
-        # id sitting in the source-key column. Reusing THAT would write it back
-        # into raw for this import — the exact defect this change removes — so
-        # it is residue to be ignored, never a key to adopt.
-        keys = [
-            k
-            for k in resolver.accepted_native_keys_for_account(
-                account_id=account_id,
-                source_type=source_type,
-                source_origin=source_origin,
-            )
-            if k != account_id
-        ]
+        # A pre-fix pin left a self-map: the canonical id sitting in the
+        # source-key column. Reusing THAT would write it back into raw for this
+        # import — the exact defect this change removes — so it is residue to be
+        # ignored, never a key to adopt.
+        #
+        # Tested against every id the resolver has ever used, not just the one
+        # being pinned: a merge re-points the losing account's self-map onto the
+        # winner, leaving ref_value equal to the LOSER's old canonical id under
+        # the winner's account. That is still a canonical id in the key column,
+        # and comparing only against the pinned id would wave it through.
+        candidates = resolver.accepted_native_keys_for_account(
+            account_id=account_id,
+            source_type=source_type,
+            source_origin=source_origin,
+        )
+        residue = resolver.account_ids_ever_minted(candidates)
+        keys = [k for k in candidates if k not in residue]
         if len(keys) == 1:
             return keys[0]
         if len(keys) > 1:
@@ -2366,23 +2370,56 @@ class ImportService:
         # Identity is (date, amount, description) — the tuple the content hash
         # encodes, minus the account token, which differs by construction
         # between a legacy row and its replacement and so cannot be matched on.
+        #
+        # ONE legacy row per incoming row, not "any legacy row that matches
+        # something". Repeated content is legitimate (two identical coffees on
+        # one day — what the occurrence suffix in identifiers.md exists for), so
+        # an existential match would delete a whole duplicate group the moment
+        # the incoming file carried a single member of it, and only that one
+        # would come back. Rank the legacy rows within each identity group and
+        # take as many as the incoming file actually replaces.
         with self._db.registered_frame("_superseding_rows", replacing):
             self._db.execute(
-                f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} AS legacy "  # noqa: S608  # TableRef constants, value parameterized
-                "WHERE legacy.source_file = ? AND legacy.account_id IN "
-                f"(SELECT account_id FROM {ACCOUNT_LINKS.full_name}) "
-                "AND EXISTS (SELECT 1 FROM _superseding_rows AS fresh "
-                "WHERE fresh.transaction_date = legacy.transaction_date "
-                "AND fresh.amount = legacy.amount "
-                "AND fresh.description IS NOT DISTINCT FROM legacy.description)",
-                [source_file],
+                f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constants, value parameterized
+                "WHERE source_file = ? AND transaction_id IN ("
+                "  SELECT ranked.transaction_id FROM ("
+                "    SELECT legacy.transaction_id,"
+                "           legacy.transaction_date AS d,"
+                "           legacy.amount AS a,"
+                "           legacy.description AS s,"
+                "           ROW_NUMBER() OVER ("
+                "             PARTITION BY legacy.transaction_date, legacy.amount,"
+                "                          legacy.description"
+                "             ORDER BY legacy.transaction_id"
+                "           ) AS rn"
+                f"    FROM {TABULAR_TRANSACTIONS.full_name} AS legacy"
+                "    WHERE legacy.source_file = ? AND legacy.account_id IN"
+                f"      (SELECT account_id FROM {ACCOUNT_LINKS.full_name})"
+                "  ) AS ranked"
+                "  JOIN ("
+                "    SELECT transaction_date AS d, amount AS a, description AS s,"
+                "           COUNT(*) AS n"
+                "    FROM _superseding_rows GROUP BY 1, 2, 3"
+                "  ) AS fresh"
+                "    ON fresh.d = ranked.d AND fresh.a = ranked.a"
+                "   AND fresh.s IS NOT DISTINCT FROM ranked.s"
+                "  WHERE ranked.rn <= fresh.n"
+                ")",
+                [source_file, source_file],
             )
-        # The account row carries no history to lose and this import regenerates
-        # it, so the legacy one goes unconditionally.
+        # The account row goes only once nothing is left pointing at it. A legacy
+        # transaction the incoming file no longer carries legitimately survives
+        # above, and core.dim_accounts is built from these rows — deleting the
+        # only one backing that id would orphan the transaction, and every report
+        # that inner-joins dim_accounts would silently stop showing it. Being
+        # invisible is no better than being deleted.
         self._db.execute(
-            f"DELETE FROM {TABULAR_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constants, value parameterized
-            "WHERE source_file = ? AND account_id IN "
-            f"(SELECT account_id FROM {ACCOUNT_LINKS.full_name})",
+            f"DELETE FROM {TABULAR_ACCOUNTS.full_name} AS acct "  # noqa: S608  # TableRef constants, value parameterized
+            "WHERE acct.source_file = ? AND acct.account_id IN "
+            f"(SELECT account_id FROM {ACCOUNT_LINKS.full_name}) "
+            f"AND NOT EXISTS (SELECT 1 FROM {TABULAR_TRANSACTIONS.full_name} AS t "
+            "WHERE t.source_file = acct.source_file "
+            "AND t.account_id = acct.account_id)",
             [source_file],
         )
 

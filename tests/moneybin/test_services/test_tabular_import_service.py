@@ -2063,3 +2063,158 @@ def test_supersede_keeps_legacy_rows_the_new_file_no_longer_carries(
         [str(_STANDARD_CSV)],
     ).fetchone()
     assert grocery is not None and grocery[0] == 1, grocery
+
+
+def _legacy_link(db: Database) -> None:
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    AccountLinksRepo(db).insert(
+        link_id="lnk_legacy",
+        account_id="acct_legacy01",
+        ref_kind="source_native",
+        ref_value="acct_legacy01",
+        source_type="csv",
+        source_origin="legacy-origin",
+        decided_by="user",
+        actor="cli",
+    )
+
+
+def test_supersede_replaces_duplicate_content_one_for_one(db: Database) -> None:
+    """Matching must be count-aware, not existential.
+
+    Legitimately repeated content — two identical coffees on one day, the case
+    the occurrence-suffix rule in ``identifiers.md`` exists for — means several
+    legacy rows share one identity tuple. An existential match deletes ALL of
+    them when the incoming file carries even one, while only that one comes
+    back: the rest are lost outright. Replace one legacy row per incoming row.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    _legacy_link(db)
+    # standard.csv carries exactly ONE 2026-01-08 COFFEE SHOP -4.75. The pre-fix
+    # import wrote TWO (the statement really had two).
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_file, source_type, source_origin, import_id) VALUES "
+        "('acct_legacy01:coffee-1', 'acct_legacy01', DATE '2026-01-08', -4.75, "
+        "'COFFEE SHOP', ?, 'csv', 'unknown', 'imp_legacy'), "
+        "('acct_legacy01:coffee-2', 'acct_legacy01', DATE '2026-01-08', -4.75, "
+        "'COFFEE SHOP', ?, 'csv', 'unknown', 'imp_legacy')",
+        [str(_STANDARD_CSV), str(_STANDARD_CSV)],
+    )
+
+    import_answering_gate(
+        ImportService(db),
+        _STANDARD_CSV,
+        account_name="Primary Checking",
+        account_id="acct_legacy01",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+
+    leftover = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND account_id = 'acct_legacy01'",
+        [str(_STANDARD_CSV)],
+    ).fetchone()
+    assert leftover is not None and leftover[0] == 1, (
+        "both duplicate legacy rows were deleted but only one was replaced — "
+        f"{2 - (leftover[0] if leftover else 0)} transaction(s) lost"
+    )
+    total_coffee = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND amount = -4.75",
+        [str(_STANDARD_CSV)],
+    ).fetchone()
+    assert total_coffee is not None and total_coffee[0] == 2, total_coffee
+
+
+def test_supersede_keeps_the_account_row_when_a_transaction_survives(
+    db: Database,
+) -> None:
+    """An orphaned transaction is invisible, which is as bad as deleting it.
+
+    ``core.dim_accounts`` is built from ``raw.tabular_accounts``, and reports
+    inner-join it. Dropping the only account row backing a legacy id while one
+    of its transactions legitimately survives the supersede makes that
+    transaction vanish from every report after the next refresh.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    _legacy_link(db)
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_file, source_type, source_origin, import_id) VALUES "
+        "('acct_legacy01:kept', 'acct_legacy01', DATE '2025-12-20', -99.99, "
+        "'ONLY IN THE OLDER EXPORT', ?, 'csv', 'unknown', 'imp_legacy')",
+        [str(_STANDARD_CSV)],
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_name, source_file, source_type, source_origin, "
+        "import_id) VALUES ('acct_legacy01', 'Legacy', ?, 'csv', 'unknown', "
+        "'imp_legacy')",
+        [str(_STANDARD_CSV)],
+    )
+
+    import_answering_gate(
+        ImportService(db),
+        _STANDARD_CSV,
+        account_name="Primary Checking",
+        account_id="acct_legacy01",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+
+    kept_txn = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND account_id = 'acct_legacy01'",
+        [str(_STANDARD_CSV)],
+    ).fetchone()
+    assert kept_txn is not None and kept_txn[0] == 1, kept_txn
+    backing = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_accounts "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND account_id = 'acct_legacy01'",
+        [str(_STANDARD_CSV)],
+    ).fetchone()
+    assert backing is not None and backing[0] == 1, (
+        "the surviving legacy transaction was orphaned — its account row was "
+        "deleted, so dim_accounts will drop it and reports will not show it"
+    )
+
+
+def test_pinned_native_key_ignores_a_self_map_carried_over_by_a_merge(
+    db: Database, tmp_path: Path
+) -> None:
+    """A merge moves a self-map onto the winner, where it no longer looks like one.
+
+    ``repoint`` keeps ``ref_value`` and changes ``account_id``, so the losing
+    account's own pre-fix canonical id ends up filed under the winner. Compared
+    only against the id being pinned it reads as an ordinary native key — and
+    adopting it writes a canonical id straight back into the source-key column.
+    """
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    repo = AccountLinksRepo(db)
+    # The losing account's pre-fix self-map.
+    _pin_link(db, link_id="lnk_merged", account_id="acct_aaa", ref_value="acct_aaa")
+    # The merge: same ref, now owned by the winner.
+    repo.repoint(
+        link_id="lnk_merged",
+        new_account_id="acct_bbb",
+        decided_by="user",
+        actor="cli",
+    )
+
+    key = _pinned_key(db, tmp_path, "acct_bbb")
+    assert key != "acct_aaa", (
+        "adopted the merged-away account's canonical id as a native key"
+    )
+    assert key.startswith("export-"), key

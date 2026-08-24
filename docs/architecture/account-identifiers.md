@@ -134,6 +134,36 @@ Stability guarantees depend on the source's own behavior:
 
 When stranding happens today, the operational answer is to re-attach state by hand (re-run `accounts balance assert`, copy `display_name`, etc.) until a merge tool ships.
 
+## Superseding rows a pre-fix pin wrote
+
+Before the source-native key rule above, `--account-id` overwrote
+`raw.tabular_*.account_id` with the canonical id. `account_id` is folded into
+`transaction_id` and into the raw primary key, so rows written that way can
+never collide with their corrected replacements — re-importing would insert a
+second copy beside them and the statement would be counted twice.
+
+The import therefore supersedes them: before loading, it deletes the pre-fix
+rows this import replaces and writes the corrected ones in the same
+transaction, so a failed load restores what the delete removed. Three limits
+are deliberate, and each trades a narrower cleanup for never destroying data:
+
+- **Matched by content, one for one.** A legacy row is replaced only when the
+  incoming file carries a row with the same `(transaction_date, amount,
+  description)` — the tuple the content hash encodes, minus the account token,
+  which differs by construction between a legacy row and its replacement.
+  Repeated content is matched by count, not existence, so a duplicate group is
+  never removed wholesale because the new file carried one member of it.
+- **Unmatched rows stay.** A legacy row the incoming file no longer carries —
+  a shorter re-export saved over the same path — keeps its old key rather than
+  being deleted with no replacement coming. It stays wrongly keyed but counted
+  once. Its `raw.tabular_accounts` row is kept too: `core.dim_accounts` is built
+  from those, and reports inner-join it, so removing the backing row would make
+  the retained transaction invisible instead of merely mis-keyed.
+- **Scoped to the same path.** Residue is found by exact `source_file` match. A
+  copy of the same statement re-downloaded under a different name is not
+  recognised and keeps the old key until that copy is itself re-imported. Full
+  retroactive migration is not attempted.
+
 ## Common pitfalls
 
 - **Do not use `display_name` as a join key.** It is user-mutable, not unique by construction, and falls back to a derived string. Always join on `account_id`.

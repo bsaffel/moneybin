@@ -729,6 +729,25 @@ class AccountResolver:
         ).fetchall()
         return [str(r[0]) for r in rows]
 
+    def account_ids_ever_minted(self, candidates: Sequence[str]) -> set[str]:
+        """Which of these strings have ever served as an ``account_links`` account.
+
+        Deliberately ignores ``status``. A reversed row is still evidence the
+        value was once a canonical account id: ``AccountLinksRepo.repoint`` — the
+        merge primitive — reverses the losing row in place and re-accepts its ref
+        under the winner, so after a merge the only trace that the old id was an
+        id at all is a row that is no longer accepted.
+        """
+        if not candidates:
+            return set()
+        placeholders = ",".join(["?"] * len(candidates))
+        rows = self._db.execute(
+            f"SELECT DISTINCT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # placeholders are code-owned; values parameterized
+            f"WHERE account_id IN ({placeholders})",
+            list(candidates),
+        ).fetchall()
+        return {str(r[0]) for r in rows}
+
     def knows_account_id(self, account_id: str) -> bool:
         """Whether this database already has an account under this canonical id.
 
