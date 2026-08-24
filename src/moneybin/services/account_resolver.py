@@ -717,8 +717,10 @@ class AccountResolver:
         the same account, each with its own key), so the answer is a list and
         the caller decides what a non-singleton means.
 
-        Ordered by ``ref_value`` purely so a caller that refuses on ambiguity
-        reports the same pair every run.
+        Ordered by ``ref_value``, and that order is load-bearing: the PDF pin
+        reuses the first entry, so two imports of one statement have to land on
+        the same key or staging cannot dedup them. Do not make the order
+        incidental (``decided_at`` moves when a link is re-accepted).
         """
         rows = self._db.execute(
             f"SELECT ref_value FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values

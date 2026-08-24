@@ -3114,3 +3114,144 @@ def test_a_regenerated_pinned_statement_does_not_double_count(
     assert not forked, (
         f"the re-download forked the source key, so staging cannot dedup: {forked}"
     )
+
+
+def _accept_pdf_link(db: Database, *, link_id: str, account_id: str, key: str) -> None:
+    """Accept one ``pdf``/``document`` native key onto an account.
+
+    Stands in for a statement this account already adopted, which is how a real
+    card ends up holding several document keys: every statement carries its own
+    digest, and each adoption accepts another one.
+    """
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    AccountLinksRepo(db).insert(
+        link_id=link_id,
+        account_id=account_id,
+        ref_kind="source_native",
+        ref_value=key,
+        source_type="pdf",
+        source_origin="document",
+        decided_by="user",
+        actor="cli",
+    )
+
+
+@pytest.mark.integration
+def test_a_regenerated_pinned_statement_dedups_when_the_account_holds_many_keys(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Several prior statements must not send the pin back to minting per document.
+
+    An account holds one document key per statement it has adopted, so "more
+    than one" is the ordinary state of any card with a history — not an edge
+    case. Minting there would re-open the double count for exactly the accounts
+    with the longest history, so the pin picks one remembered key by a stable
+    order instead. Which one it picks does not matter for dedup; that both
+    imports of the same statement pick the SAME one is the whole property.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_pinned01", "Chase Card"],
+    )
+    for link_id, key in (
+        ("lnk_prior_a", f"pdf_doc_{'a' * 16}"),
+        ("lnk_prior_b", f"pdf_doc_{'b' * 16}"),
+    ):
+        _accept_pdf_link(db, link_id=link_id, account_id="acct_pinned01", key=key)
+    doc = _standard_doc()
+    svc = ImportService(db)
+
+    for name, body in (
+        ("feb.pdf", b"%PDF-1.4 fake"),
+        ("feb-again.pdf", b"%PDF-1.4 fake regenerated"),
+    ):
+        pdf = tmp_path / name
+        pdf.write_bytes(body)
+        with patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+        ):
+            import_answering_gate(
+                svc,
+                pdf,
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+                account_id="acct_pinned01",
+            )
+
+    forked = db.execute(
+        "SELECT transaction_id, COUNT(DISTINCT account_id) AS keys "
+        "FROM raw.tabular_transactions WHERE source_type = 'pdf' "
+        "GROUP BY transaction_id HAVING COUNT(DISTINCT account_id) > 1 "
+        "ORDER BY transaction_id"
+    ).fetchall()
+    assert not forked, f"the pin minted a fresh key instead of reusing one: {forked}"
+
+
+@pytest.mark.integration
+def test_account_id_pin_refuses_a_bound_document_even_when_the_target_has_a_key(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Reusing the target's key must not swallow the conflict the document carries.
+
+    ``_refuse_contradicted_bindings`` asks whether the key on the incoming
+    ``SourceAccount`` is already accepted elsewhere. Substituting the pinned
+    account's own remembered key before that question is asked answers it
+    trivially — the key belongs to the pin target, so nothing contradicts — and
+    another account's statement loads under this one. So the pin only reuses a
+    key when the document's own key is still unknown; a document that already
+    named its account keeps saying so, and the refusal fires as it did before.
+    """
+    create_core_tables(db)
+    for account_id, name in (
+        ("acct_pinned01", "Chase Card"),
+        ("acct_other01", "Other"),
+    ):
+        db.conn.execute(
+            "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+            [account_id, name],
+        )
+    # The pin target already answers to a document key, so reuse is live.
+    _accept_pdf_link(
+        db,
+        link_id="lnk_prior_a",
+        account_id="acct_pinned01",
+        key=f"pdf_doc_{'a' * 16}",
+    )
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        svc.import_file(
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={"@0": "acct_other01"},
+        )
+
+    rows_before = _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions")
+
+    other_pdf = tmp_path / "statement_pinned.pdf"
+    other_pdf.write_bytes(fake_pdf.read_bytes())
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+        ),
+        pytest.raises(ValueError, match="already accepted onto 'acct_other01'"),
+    ):
+        svc.import_file(
+            other_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_pinned01",
+        )
+
+    assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == rows_before

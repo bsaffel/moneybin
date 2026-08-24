@@ -1206,11 +1206,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   carries the label still loads rather than raising on read (#435).
 
 - **Pinning an import with `--account-id` no longer renames the account the
-  file describes** — the raw row keeps the source's own key on every path, and
-  pinning a statement already bound to another account now errors instead of
-  silently double-counting it. A pin also reuses the key its account already
-  answers to, so re-downloading a statement your bank regenerated does not
-  import it a second time. If a file was imported under the old scheme,
+  file describes** — the raw row keeps the source's own key on every path, a
+  pin reuses the key its account already answers to so a statement your bank
+  regenerated is not imported twice, and pinning a statement already bound to
+  another account now errors. If a file was imported under the old scheme,
   delete its previous import batch before re-importing it or it will be counted
   twice ([`account-identifiers.md`](docs/architecture/account-identifiers.md),
   #438, #418).

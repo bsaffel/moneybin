@@ -1593,19 +1593,48 @@ def _pdf_source_account(
     # Whether the document named an account, independent of its idempotency key.
     anchored = derived.has_usable_identifier
     derived_key = derived.source_account_key
-    # A pin (agents/users pointing a statement whose text omits an account
-    # anchor at an existing dim_accounts row) says WHICH account this document
-    # belongs to. It does not change what the document's own key is, so it
-    # travels in explicit_account_id alone and native_key stays derived.
+    source = SourceAccount(
+        source_type="pdf",
+        source_origin=derived.source_origin,
+        source_account_key=derived_key,
+        account_name=(
+            decision.metadata.account_label
+            or decision.metadata.product_name
+            or resolved_alias
+        ),
+        account_number=derived.scoped_full_number,
+        institution=issuer or None,
+        # Before document keys, an anchorless PDF used its filename alias.
+        # Preserve that accepted binding as review-only migration evidence.
+        legacy_source_account_key=(
+            derived.legacy_source_account_key
+            or (resolved_alias if not anchored else None)
+        ),
+        legacy_source_origin=(
+            derived.legacy_source_origin or (slugify(issuer) if not anchored else None)
+        ),
+        legacy_source_account_key_is_filename_alias=(
+            derived.legacy_source_account_key is None and not anchored
+        ),
+        source_file=source_file,
+        # None for a digits-free token ("xxxx"), which correctly denies the
+        # institution+last4 signal and routes to name review rather than
+        # inventing a strong match.
+        last_four=derived.last_four,
+        explicit_account_id=account_id_override,
+    )
+    # A pin (agents/users pointing a statement at an existing dim_accounts row)
+    # says WHICH account this document belongs to. It does not change what the
+    # document's own key is, so it normally travels in explicit_account_id
+    # alone and the native key stays derived.
     #
-    # Except that an anchorless key is the document's BYTES, and a bank hands
-    # out a byte-different PDF for the same statement (fresh internal
-    # timestamps). transaction_id folds the canonical account, which the pin
-    # holds still, so a re-download that moves only the source key forks
-    # staging's (transaction_id, account_id) dedup and counts the statement
-    # twice. So a pin reuses the key this account already answers to here — the
-    # same rule the tabular channel applies, and the reason both call it
-    # through _reusable_pinned_keys.
+    # Except that the derived key is the document's BYTES, and a bank hands out
+    # a byte-different PDF for the same statement (fresh internal timestamps).
+    # transaction_id folds the canonical account, which the pin holds still, so
+    # a re-download that moves only the source key forks staging's
+    # (transaction_id, account_id) dedup and counts the statement twice. So a
+    # pin reuses the key this account already answers to — the same rule the
+    # tabular channel applies, and the reason both call _reusable_pinned_keys.
     #
     # Applies whether or not the document names an account, because
     # derive_pdf_account_identity keys EVERY statement by its bytes — an
@@ -1614,56 +1643,31 @@ def _pdf_source_account(
     # accounts sharing a key) is a question about inferred identity, and a pin
     # states the account outright, so there is nothing left to disambiguate.
     #
-    # A non-singleton answer falls back rather than refusing, unlike tabular:
-    # an account that accumulated several document keys under the old behaviour
-    # is a live state a user already has, PDF has no --account-name to
-    # disambiguate with, and refusing would hard-fail their next import. The
-    # fallback is exactly today's behaviour, so it fixes what it can and breaks
-    # nothing it cannot.
-    native_key = derived_key
-    if account_id_override:
+    # Several remembered keys take the first in the lookup's stable order
+    # rather than refusing or minting. One key per adopted statement is the
+    # ordinary state of any card with a history, so minting there would re-open
+    # the double count for the accounts holding the most; refusing would
+    # hard-fail an import the user has no --account-name to disambiguate with.
+    # Which key it lands on does not matter — transaction_id already separates
+    # the statements — only that both imports of one statement land on the same
+    # one.
+    #
+    # Gated on the document's own key being unknown, because
+    # _refuse_contradicted_bindings asks whether the key on THIS SourceAccount
+    # is accepted elsewhere. Substituting the target's key first answers that
+    # trivially and loads another account's statement here; a document that
+    # already named its account keeps saying so, and reusing buys nothing
+    # anyway — its rows already carry that key, so they dedup as they are.
+    if account_id_override and resolver.accepted_native_account_id(source) is None:
         reusable = _reusable_pinned_keys(
             resolver,
             account_id=account_id_override,
             source_type="pdf",
             source_origin=derived.source_origin,
         )
-        if len(reusable) == 1:
-            native_key = reusable[0]
-    return PdfAccountIdentity(
-        source=SourceAccount(
-            source_type="pdf",
-            source_origin=derived.source_origin,
-            source_account_key=native_key,
-            account_name=(
-                decision.metadata.account_label
-                or decision.metadata.product_name
-                or resolved_alias
-            ),
-            account_number=derived.scoped_full_number,
-            institution=issuer or None,
-            # Before document keys, an anchorless PDF used its filename alias.
-            # Preserve that accepted binding as review-only migration evidence.
-            legacy_source_account_key=(
-                derived.legacy_source_account_key
-                or (resolved_alias if not anchored else None)
-            ),
-            legacy_source_origin=(
-                derived.legacy_source_origin
-                or (slugify(issuer) if not anchored else None)
-            ),
-            legacy_source_account_key_is_filename_alias=(
-                derived.legacy_source_account_key is None and not anchored
-            ),
-            source_file=source_file,
-            # None for a digits-free token ("xxxx"), which correctly denies the
-            # institution+last4 signal and routes to name review rather than
-            # inventing a strong match.
-            last_four=derived.last_four,
-            explicit_account_id=account_id_override,
-        ),
-        identity_unknown=not anchored,
-    )
+        if reusable:
+            source = dataclasses.replace(source, source_account_key=reusable[0])
+    return PdfAccountIdentity(source=source, identity_unknown=not anchored)
 
 
 def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAccount]:
