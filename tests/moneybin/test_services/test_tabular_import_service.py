@@ -1911,3 +1911,121 @@ def test_pinned_native_key_keeps_this_files_key_when_another_account_holds_it(
     assert _pinned_key(db, tmp_path, "acct_x") == bare, (
         "reused the pin target's key and hid this file's accepted owner"
     )
+
+
+def _pinned_keys_for(db: Database, export: Path) -> list[str]:
+    return [
+        r[0]
+        for r in db.execute(
+            "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+            "WHERE source_file = ?",
+            [str(export)],
+        ).fetchall()
+    ]
+
+
+def test_supplying_account_name_later_does_not_re_key_a_pinned_import(
+    db: Database, tmp_path: Path
+) -> None:
+    """``--account-name`` labels the account; the pin already said which one.
+
+    Letting the label pick the native key means adding or dropping the flag
+    between two imports of one recurring export re-keys it — and on tabular the
+    ``transaction_id`` is derived FROM that key, so every row in the overlap
+    gets a new id and staging's ``(transaction_id, account_id)`` dedup lets both
+    copies through. So a pinned import asks the same question either way: what
+    does this account already call itself here? The label is only the seed for a
+    first import that has nothing to reuse.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_type, institution_name, source_type) "
+        "VALUES ('acct_pinned01', 'CHECKING', 'Bank', 'csv')"
+    )
+    header = "Date,Description,Amount,Balance\n"
+    first = "2026-01-05,GROCERY STORE PURCHASE,-52.30,3947.70\n"
+    export = tmp_path / "export.csv"
+    export.write_text(header + first)
+    import_answering_gate(
+        ImportService(db),
+        export,
+        account_id="acct_pinned01",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+    keys_first = _pinned_keys_for(db, export)
+
+    # Same recurring export, one row appended — and this time a label is given.
+    export.write_text(
+        header + first + "2026-01-06,DIRECT DEPOSIT PAYROLL,2500.00,6447.70\n"
+    )
+    import_answering_gate(
+        ImportService(db),
+        export,
+        account_id="acct_pinned01",
+        account_name="Checking",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+        force=True,
+    )
+
+    assert _pinned_keys_for(db, export) == keys_first, (
+        f"adding --account-name re-keyed the pinned account: {keys_first} -> "
+        f"{_pinned_keys_for(db, export)}"
+    )
+    repeated = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND amount = -52.30",
+        [str(export)],
+    ).fetchone()
+    assert repeated is not None and repeated[0] == 1, (
+        "the row present in both exports was stored twice"
+    )
+
+
+def test_two_accounts_pinned_from_one_file_still_get_their_own_keys(
+    db: Database, tmp_path: Path
+) -> None:
+    """The label still seeds the key when the account has nothing to reuse.
+
+    The guard on the test above: making a pin ignore ``--account-name`` outright
+    would collapse two accounts exported to one file onto a single key — the
+    file's own — and the second pin would then be refused as a contradiction.
+    Both accounts are new here, so neither has a remembered key and each keeps
+    the name it was given.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    for account_id in ("acct_checking1", "acct_savings01"):
+        db.execute(
+            "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+            "(account_id, account_type, institution_name, source_type) "
+            f"VALUES ('{account_id}', 'CHECKING', 'Bank', 'csv')"
+        )
+    export = tmp_path / "joint.csv"
+    export.write_text(
+        "Date,Description,Amount,Balance\n2026-01-05,GROCERY,-52.30,3947.70\n"
+    )
+    for account_id, label in (
+        ("acct_checking1", "Checking"),
+        ("acct_savings01", "Savings"),
+    ):
+        import_answering_gate(
+            ImportService(db),
+            export,
+            account_id=account_id,
+            account_name=label,
+            refresh=False,
+            confirm=True,
+            auto_accept=True,
+            force=True,
+        )
+
+    keys = sorted(_pinned_keys_for(db, export))
+    assert keys == ["checking", "savings"], keys

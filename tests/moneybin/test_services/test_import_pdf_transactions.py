@@ -3255,3 +3255,132 @@ def test_account_id_pin_refuses_a_bound_document_even_when_the_target_has_a_key(
         )
 
     assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == rows_before
+
+
+def _stamp_link(db: Database, *, link_id: str, decided_at: str) -> None:
+    """Force one link's decision time, so ordering is not a race on the clock."""
+    db.conn.execute(
+        "UPDATE app.account_links SET decided_at = ? WHERE link_id = ?",  # noqa: S608  # test fixture
+        [decided_at, link_id],
+    )
+
+
+@pytest.mark.integration
+def test_the_pinned_key_pick_does_not_move_when_a_newer_key_is_added(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """The reused key must be the one the account has answered to longest.
+
+    A pick by sort order alone is only stable while the key set is; a merge, or
+    a second document pinned to this account in between, inserts a key that can
+    sort ahead of the one the account's existing rows already use — and the next
+    import of a statement then lands somewhere new and double-counts. Ordering
+    by decision time makes every later arrival lose: ``AccountLinksRepo.repoint``
+    inserts a *new* accepted row for a merged ref, so even a merged-in key is
+    younger than what the winner already held.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_pinned01", "Chase Card"],
+    )
+    # Sort order and decision order disagree, so only one of the two rules can
+    # produce `pdf_doc_zzz…` — which is the key the account has held longest.
+    _accept_pdf_link(
+        db, link_id="lnk_held", account_id="acct_pinned01", key=f"pdf_doc_{'z' * 16}"
+    )
+    _stamp_link(db, link_id="lnk_held", decided_at="2020-01-01 00:00:00")
+    _accept_pdf_link(
+        db, link_id="lnk_later", account_id="acct_pinned01", key=f"pdf_doc_{'a' * 16}"
+    )
+    _stamp_link(db, link_id="lnk_later", decided_at="2026-01-01 00:00:00")
+
+    doc = _standard_doc()
+    svc = ImportService(db)
+    pdf = tmp_path / "mar.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake march")
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        import_answering_gate(
+            svc,
+            pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_pinned01",
+        )
+
+    keys = [
+        r[0]
+        for r in db.execute(
+            "SELECT DISTINCT account_id FROM raw.tabular_accounts "
+            "WHERE source_type = 'pdf' AND source_file = ?",
+            [str(pdf)],
+        ).fetchall()
+    ]
+    assert keys == [f"pdf_doc_{'z' * 16}"], (
+        f"picked by sort order, not by how long the account has held the key: {keys}"
+    )
+
+
+@pytest.mark.integration
+def test_a_pinned_import_still_records_the_documents_own_digest(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Reusing a key must not erase what this exact file yields on its own.
+
+    The raw row carries the reused key so the statement dedups, but the document
+    digest is the only thing that identifies this file when it arrives WITHOUT a
+    pin — dropped into an inbox drain, or re-imported by an agent that does not
+    know to re-supply ``--account-id``. Without the digest on record that import
+    finds no link, so it stops to ask or mints a second account for a statement
+    already filed. So the pin teaches the digest alongside the key it borrowed.
+    """
+    import hashlib
+
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_pinned01", "Chase Card"],
+    )
+    _accept_pdf_link(
+        db, link_id="lnk_held", account_id="acct_pinned01", key=f"pdf_doc_{'z' * 16}"
+    )
+
+    body = b"%PDF-1.4 fake april"
+    digest_key = f"pdf_doc_{hashlib.sha256(body).hexdigest()[:16]}"
+    doc = _standard_doc()
+    svc = ImportService(db)
+    pdf = tmp_path / "apr.pdf"
+    pdf.write_bytes(body)
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        import_answering_gate(
+            svc,
+            pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_pinned01",
+        )
+
+    owner = db.execute(
+        "SELECT account_id FROM app.account_links WHERE status = 'accepted' "
+        "AND ref_kind = 'source_native' AND source_type = 'pdf' AND ref_value = ?",
+        [digest_key],
+    ).fetchone()
+    assert owner is not None, (
+        "the document's own digest was never recorded, so an unpinned re-import "
+        "of this exact file cannot recognise the account"
+    )
+    assert owner[0] == "acct_pinned01", owner
+    # The raw row still carries the borrowed key, or the statement stops dedupping.
+    raw = db.execute(
+        "SELECT DISTINCT account_id FROM raw.tabular_accounts WHERE source_file = ?",
+        [str(pdf)],
+    ).fetchall()
+    assert [r[0] for r in raw] == [f"pdf_doc_{'z' * 16}"], raw

@@ -437,6 +437,7 @@ class AccountResolver:
             self._write_native_mapping(
                 src, account_id=src.explicit_account_id, decided_by="user"
             )
+            self._teach_unpinned_key(src, account_id=src.explicit_account_id)
             self._write_strong_ref(
                 src, account_id=src.explicit_account_id, decided_by="user"
             )
@@ -722,6 +723,62 @@ class AccountResolver:
         ).fetchone()
         return row[0] if row is not None else None
 
+    def _teach_unpinned_key(self, src: SourceAccount, *, account_id: str) -> None:
+        """Also link the key this source derives without the pin, if it has one.
+
+        A pin makes the row carry the key its account already answers to, so the
+        mapping written above says nothing about THIS file. Without this, the
+        next import of the same source WITHOUT the pin derives its own key,
+        finds no link, and stops to ask — or mints a second account for a
+        statement already filed.
+
+        Skips — never raises, never re-points — when the derived key is already
+        accepted onto a different account. Re-pointing is an explicit, surfaced
+        operation (M1S.5); doing it as a side effect of an unrelated pin is
+        exactly the invisible action "magic stays visible" forbids. The pin the
+        caller asked for still applies; only the extra teaching link is dropped.
+
+        Taught keys never destabilise the reuse pick:
+        :meth:`accepted_native_keys_for_account` orders by decision time, so one
+        added now sorts behind whatever the account already held.
+        """
+        key = src.unpinned_account_key
+        if not key or key == src.source_account_key:
+            return
+        existing = self.accepted_native_owner(
+            source_type=src.source_type, source_origin=src.source_origin, key=key
+        )
+        if existing is not None:
+            if existing != account_id:
+                # Imported here, not at module scope: import_service imports this
+                # module, so a top-level import closes the cycle.
+                from moneybin.services.import_service import (  # noqa: PLC0415
+                    mask_embedded_account_number,
+                )
+
+                # Masked for the reason the contradicted-binding refusal is: an
+                # account id is not always a minted surrogate, and this one
+                # reaches a log file, which outlives the session.
+                logger.warning(
+                    f"account_links: not teaching source_native key for "
+                    f"{src.source_type}/{src.source_origin} — already accepted "
+                    f"onto account {mask_embedded_account_number(existing)}, pin "
+                    f"targeted {mask_embedded_account_number(account_id)}. "
+                    "Re-point explicitly if that is intended."
+                )
+            return
+        self._links.insert(
+            link_id=uuid.uuid4().hex[:12],
+            account_id=account_id,
+            ref_kind="source_native",
+            ref_value=key,
+            source_type=src.source_type,
+            source_origin=src.source_origin,
+            decided_by="user",
+            actor=self._actor,
+            in_outer_txn=True,  # joins resolve()'s per-account transaction
+        )
+
     def accepted_native_keys_for_account(
         self, *, account_id: str, source_type: str, source_origin: str
     ) -> list[str]:
@@ -732,16 +789,21 @@ class AccountResolver:
         the same account, each with its own key), so the answer is a list and
         the caller decides what a non-singleton means.
 
-        Ordered by ``ref_value``, and that order is load-bearing: the PDF pin
-        reuses the first entry, so two imports of one statement have to land on
-        the same key or staging cannot dedup them. Do not make the order
-        incidental (``decided_at`` moves when a link is re-accepted).
+        Ordered oldest decision first, and that order is load-bearing: a pinned
+        import reuses the first entry, so two imports of one statement have to
+        land on the same key or staging cannot dedup them. Sort order alone is
+        not enough — it is only stable while the key set is, and a merge or a
+        second document pinned to this account inserts a key that can sort ahead
+        of the one the existing rows already use. Decision time makes every
+        later arrival lose, including a merged-in ref: ``AccountLinksRepo.repoint``
+        reverses the old row and inserts a *new* accepted one, stamped now.
+        ``ref_value`` only breaks ties, so the answer is still total.
         """
         rows = self._db.execute(
             f"SELECT ref_value FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
             "WHERE status = 'accepted' AND ref_kind = 'source_native' "
             "AND account_id = ? AND source_type = ? AND source_origin = ? "
-            "ORDER BY ref_value",
+            "ORDER BY decided_at, ref_value",
             [account_id, source_type, source_origin],
         ).fetchall()
         return [str(r[0]) for r in rows]

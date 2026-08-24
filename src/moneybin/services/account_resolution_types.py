@@ -263,6 +263,13 @@ class SourceAccount:
     """Whether the legacy key came from an anchorless PDF filename alias."""
     source_file: str | None = None
     """Canonical source path used only to recover a proven historical PDF tuple."""
+    unpinned_account_key: str | None = None
+    """The key this source derives on its own, when a pin made it use another.
+
+    A pinned import borrows the key its account already answers to so the rows
+    dedup, which leaves nothing on record identifying THIS file. Carried here so
+    the resolver can also link the derived key, and an unpinned re-import of the
+    same file still recognises the account instead of asking or minting."""
 
     explicit_account_id: str | None = None
     force_standalone: bool = False

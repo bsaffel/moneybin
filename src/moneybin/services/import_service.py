@@ -1631,6 +1631,9 @@ def _pdf_source_account(
         # inventing a strong match.
         last_four=derived.last_four,
         explicit_account_id=account_id_override,
+        # Set even when no key is borrowed below; _teach_unpinned_key ignores it
+        # once it equals source_account_key.
+        unpinned_account_key=derived_key if account_id_override else None,
     )
     # A pin (agents/users pointing a statement at an existing dim_accounts row)
     # says WHICH account this document belongs to. It does not change what the
@@ -2346,6 +2349,7 @@ class ImportService:
         source_bytes: bytes | None,
         source_type: str,
         source_origin: str,
+        account_name: str | None = None,
     ) -> str:
         """The native key a pinned import with no ``--account-name`` should use.
 
@@ -2382,14 +2386,24 @@ class ImportService:
         # source-key column. Reusing THAT would write it back into raw for this
         # import — the exact defect this change removes — so it is residue to be
         # ignored, never a key to adopt.
-        bare = _bare_account_key(file_path, source_bytes=source_bytes)
+        from moneybin.utils import slugify  # noqa: PLC0415 — matches the call site
+
+        # What this file calls its account with no history to consult. A label
+        # is the caller naming which account in the file the pin means, so it
+        # seeds the key exactly as an unpinned import with the same label would;
+        # otherwise the file's own content key does.
+        own_key = (
+            slugify(account_name)
+            if account_name
+            else _bare_account_key(file_path, source_bytes=source_bytes)
+        )
         if (
             resolver.accepted_native_owner(
-                source_type=source_type, source_origin=source_origin, key=bare
+                source_type=source_type, source_origin=source_origin, key=own_key
             )
             is not None
         ):
-            return bare
+            return own_key
         keys = _reusable_pinned_keys(
             resolver,
             account_id=account_id,
@@ -2398,6 +2412,10 @@ class ImportService:
         )
         if len(keys) == 1:
             return keys[0]
+        if len(keys) > 1 and account_name:
+            # The refusal below asks for exactly this flag, so honour it rather
+            # than refusing a caller who already answered.
+            return own_key
         if len(keys) > 1:
             # Masked like every other refusal that quotes a caller's key: the pin
             # arrives from the command line, and account_id is not always a minted
@@ -2411,7 +2429,7 @@ class ImportService:
                 f"{len(keys)} source keys for this {source_type} source; pass "
                 "--account-name to say which account in this file the pin refers to"
             )
-        return bare
+        return own_key
 
     def _import_tabular(
         self,
@@ -3226,17 +3244,22 @@ class ImportService:
             # what the file calls that account. Derive the same native key the
             # unpinned branches below would, and carry the pin in
             # explicit_account_id alone.
-            native_key = (
-                slugify(account_name)
-                if account_name
-                else self._pinned_native_key(
-                    resolver=resolver,
-                    account_id=account_id,
-                    file_path=file_path,
-                    source_bytes=source_bytes,
-                    source_type=source_type,
-                    source_origin=source_origin,
-                )
+            # --account-name does not pick the key here. It labels the account,
+            # and the pin already said which account this is; letting the label
+            # key the row means adding or dropping the flag between two imports
+            # of one recurring export re-keys it — and tabular derives
+            # transaction_id FROM this key, so every row in the overlap changes
+            # id and both copies clear staging's dedup. It still seeds a first
+            # import that has nothing to reuse, which is what keeps two accounts
+            # exported to one file on separate keys.
+            native_key = self._pinned_native_key(
+                resolver=resolver,
+                account_id=account_id,
+                file_path=file_path,
+                source_bytes=source_bytes,
+                source_type=source_type,
+                source_origin=source_origin,
+                account_name=account_name,
             )
             account_ids: str | list[str] = native_key
             # Parse only a real display label, never a derived key: both a
@@ -3261,6 +3284,12 @@ class ImportService:
                     institution=institution,
                     last_four=label_last4,
                     explicit_account_id=account_id,
+                    # Teaches what this file yields unpinned, so a later import
+                    # without --account-id still recognises the account. Ignored
+                    # when it already equals native_key.
+                    unpinned_account_key=_bare_account_key(
+                        file_path, source_bytes=source_bytes
+                    ),
                 )
             )
         elif account_name:
