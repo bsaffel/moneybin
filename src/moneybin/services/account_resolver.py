@@ -699,11 +699,26 @@ class AccountResolver:
         before anything loads, and ``_write_native_mapping`` below stays the
         backstop for every path that does not run the gate.
         """
+        return self.accepted_native_owner(
+            source_type=src.source_type,
+            source_origin=src.source_origin,
+            key=src.source_account_key,
+        )
+
+    def accepted_native_owner(
+        self, *, source_type: str, source_origin: str, key: str
+    ) -> str | None:
+        """The same question as :meth:`accepted_native_account_id`, by coordinates.
+
+        Exists because the pinned channels have to ask it about a key they have
+        not built a ``SourceAccount`` around yet — that is the whole point, since
+        the answer decides which key the ``SourceAccount`` gets.
+        """
         row = self._db.execute(
             f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
             "WHERE status = 'accepted' AND ref_kind = 'source_native' "
             "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
-            [src.source_type, src.source_origin, src.source_account_key],
+            [source_type, source_origin, key],
         ).fetchone()
         return row[0] if row is not None else None
 

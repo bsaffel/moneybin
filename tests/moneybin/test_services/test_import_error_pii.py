@@ -483,3 +483,51 @@ def test_the_pinned_key_ambiguity_refusal_does_not_echo_the_pinned_account_id(
     # Still answerable: the masked tail says which pin, the flag says what to send.
     assert "****1099" in message, message
     assert "--account-name" in message, message
+
+
+def test_the_contradicted_binding_refusal_masks_both_account_ids(
+    db: Any, tmp_path: Path
+) -> None:
+    """The other half of the pin refusal pair, decided per field on the worst case.
+
+    ``_refuse_contradicted_bindings`` names two ids — the one the caller pinned
+    and the one the file's key is already accepted onto — and neither is
+    guaranteed to be a minted surrogate, for the reason the ambiguity refusal
+    above documents. The remembered owner is worse than caller input: the caller
+    never typed it, so echoing it verbatim discloses an id they had not seen.
+    """
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+    from moneybin.services import import_service
+    from moneybin.services.account_resolution_types import SourceAccount
+    from moneybin.services.account_resolver import AccountResolver
+
+    owner_acctid = "123456789012"
+    AccountLinksRepo(db).insert(
+        link_id="lnk_owner",
+        account_id=owner_acctid,
+        ref_kind="source_native",
+        ref_value="statement-aaa",
+        source_type="csv",
+        source_origin="monarch",
+        decided_by="user",
+        actor="cli",
+    )
+    pinned = SourceAccount(
+        source_type="csv",
+        source_origin="monarch",
+        source_account_key="statement-aaa",
+        account_name="Checking",
+        explicit_account_id=MISTYPED_ACCTID,
+    )
+
+    with pytest.raises(ValueError) as raised:
+        import_service._refuse_contradicted_bindings(  # pyright: ignore[reportPrivateUsage]  # the refusal under test has no other entry point
+            AccountResolver(db, actor="test"), [pinned], [None]
+        )
+
+    message = _refusal_message(raised.value)
+    assert MISTYPED_ACCTID not in message, f"pinned id reached the wire: {message}"
+    assert owner_acctid not in message, f"remembered owner reached the wire: {message}"
+    # Still answerable: each masked tail says which account the refusal means.
+    assert "****1099" in message, message
+    assert "****9012" in message, message

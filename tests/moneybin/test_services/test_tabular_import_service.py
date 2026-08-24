@@ -1886,3 +1886,28 @@ def test_pinned_native_key_keeps_a_key_whose_twin_self_mapped_under_another_sour
     )
 
     assert _pinned_key(db, tmp_path, "acct_x") == "acct_zzz"
+
+
+def test_pinned_native_key_keeps_this_files_key_when_another_account_holds_it(
+    db: Database, tmp_path: Path
+) -> None:
+    """Reuse must not answer the contradiction question before the gate asks it.
+
+    ``_refuse_contradicted_bindings`` looks up whatever key the SourceAccount
+    carries. Handing it the pin target's own remembered key makes the lookup
+    resolve to the target and find nothing to contradict, so a file whose key
+    already belongs to another account loads here instead — the same file's
+    transactions on two accounts, with no per-account view able to show it.
+
+    So reuse only fires while this file's own key is unclaimed. The PDF sibling
+    is gated the identical way in ``_pdf_source_account``; a channel that skips
+    the check is the fork this pair exists to prevent.
+    """
+    # With no links at all the helper returns the file's own natural key.
+    bare = _pinned_key(db, tmp_path, "acct_never_seen")
+    _pin_link(db, link_id="lnk_other", account_id="acct_other", ref_value=bare)
+    _pin_link(db, link_id="lnk_x", account_id="acct_x", ref_value="statement-9f2c1234")
+
+    assert _pinned_key(db, tmp_path, "acct_x") == bare, (
+        "reused the pin target's key and hid this file's accepted owner"
+    )

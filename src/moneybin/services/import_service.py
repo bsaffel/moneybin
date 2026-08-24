@@ -1524,10 +1524,19 @@ def _refuse_contradicted_bindings(
             if binding_targets[index] is not None
             else f"account_id pins {proposal_ref(index)}"
         )
+        # Masked for the reason _pinned_native_key's refusal is, and one more:
+        # `existing` is not even caller input. The caller never typed it, so
+        # echoing it verbatim discloses an id they had not seen — and neither id
+        # is guaranteed to be a minted surrogate, because
+        # stg_tabular__transactions falls back to the source-native key when
+        # nothing resolves. Masked, not dropped: the caller still has to learn
+        # which account to bind to instead.
+        masked_existing = _mask_caller_keys([existing])
         raise ValueError(
-            f"{supplied_by} to {src.explicit_account_id!r}, but this file's "
-            f"account is already accepted onto {existing!r}. Bind it to "
-            f"{existing!r}, or re-point the existing link first."
+            f"{supplied_by} to {_mask_caller_keys([src.explicit_account_id])}, "
+            f"but this file's account is already accepted onto "
+            f"{masked_existing}. Bind it to {masked_existing}, or re-point the "
+            "existing link first."
         )
 
 
@@ -2358,12 +2367,29 @@ class ImportService:
         Refuses rather than guesses when the account holds several keys for one
         source: picking one would silently bind this file to whichever sorted
         first, and ``--account-name`` states the answer explicitly.
+
+        Reuse only fires while this file's own key is unclaimed.
+        ``_refuse_contradicted_bindings`` looks up whatever key the
+        ``SourceAccount`` ends up carrying, so handing it the pin target's
+        remembered key makes that lookup resolve to the target and find nothing
+        to contradict — and a file already accepted onto another account loads
+        here as well, putting one file's transactions on two accounts with no
+        per-account view able to show it. ``_pdf_source_account`` is gated the
+        identical way; a channel that skips the check is the fork the shared
+        ``_reusable_pinned_keys`` exists to prevent.
         """
         # A pre-fix pin left a self-map: the canonical id sitting in the
         # source-key column. Reusing THAT would write it back into raw for this
         # import — the exact defect this change removes — so it is residue to be
         # ignored, never a key to adopt.
-        #
+        bare = _bare_account_key(file_path, source_bytes=source_bytes)
+        if (
+            resolver.accepted_native_owner(
+                source_type=source_type, source_origin=source_origin, key=bare
+            )
+            is not None
+        ):
+            return bare
         keys = _reusable_pinned_keys(
             resolver,
             account_id=account_id,
@@ -2385,7 +2411,7 @@ class ImportService:
                 f"{len(keys)} source keys for this {source_type} source; pass "
                 "--account-name to say which account in this file the pin refers to"
             )
-        return _bare_account_key(file_path, source_bytes=source_bytes)
+        return bare
 
     def _import_tabular(
         self,
