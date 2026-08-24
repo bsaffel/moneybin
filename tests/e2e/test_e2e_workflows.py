@@ -594,6 +594,13 @@ class TestAutoRulePipeline:
             str(fixture),
             "--account-id",
             "wf-autorule-acct-a",
+            # The two imports share one fixture but stand for two different
+            # accounts, so each must state its own account name: the native key
+            # is derived from the file, and a pin no longer replaces it. Without
+            # distinct names both imports derive the same key and the second is
+            # correctly refused as a contradicted binding.
+            "--account-name",
+            "Autorule A",
             "--no-refresh",
             "--confirm",
             env=env,
@@ -661,6 +668,8 @@ class TestAutoRulePipeline:
             str(fixture),
             "--account-id",
             "wf-autorule-acct-b",
+            "--account-name",
+            "Autorule B",
             "--no-refresh",
             "--confirm",
             env=env,

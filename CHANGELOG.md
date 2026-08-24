@@ -1204,6 +1204,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   matcher uses would leave exactly that difference as a hole. The check sits on
   the write path, not in `AccountSettings.__post_init__`, so a row that already
   carries the label still loads rather than raising on read (#435).
+
+- **Pinning an import with `--account-id` no longer renames the account the
+  file describes** — the raw row keeps the source's own key on every path, a
+  pin reuses the key its account already answers to so a statement your bank
+  regenerated is not imported twice, and pinning a statement already bound to
+  another account now errors. If a file was imported under the old scheme,
+  delete its previous import batch before re-importing it or it will be counted
+  twice ([`account-identifiers.md`](docs/architecture/account-identifiers.md),
+  #438, #418).
+
 - **Account-merge prompts and the decision log now name the accounts instead of
   showing their ids.** Each side leads with its name and shows the masked last
   four as evidence; where MoneyBin holds nothing to tell two accounts apart the

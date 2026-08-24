@@ -1489,7 +1489,6 @@ def test_distinct_full_pdf_account_numbers_with_same_last_four_do_not_collide(
     assert len({row[1] for row in full_number_links}) == 2
 
 
-@pytest.mark.integration
 def test_account_id_override_pins_identity_through_the_resolver(
     db: Database, tmp_path: Path
 ) -> None:
@@ -1514,7 +1513,8 @@ def test_account_id_override_pins_identity_through_the_resolver(
         )
 
     assert result.transactions == 2
-    # The rows carry the pinned id, not an issuer+mask key derived from the PDF.
+    # The rows carry the document's OWN key. A pin says which account the
+    # statement belongs to; it does not rename the statement.
     raw_ids = [
         str(r[0])
         for r in db.execute(
@@ -1522,20 +1522,19 @@ def test_account_id_override_pins_identity_through_the_resolver(
             "WHERE source_type = 'pdf'"
         ).fetchall()
     ]
-    assert raw_ids == ["my_pinned_account"]
-    # And the explicit binding is registered, so a later statement of the same
-    # card adopts it instead of minting beside it.
+    [raw_id] = raw_ids
+    assert raw_id.startswith("pdf_doc_"), raw_id
+    # And the explicit binding is registered against that key, so a later
+    # statement of the same card adopts it instead of minting beside it.
     link = db.execute(
         "SELECT account_id FROM app.account_links "
         "WHERE status = 'accepted' AND ref_kind = 'source_native' "
         "AND source_type = 'pdf' AND ref_value = ?",
-        ["my_pinned_account"],
+        [raw_id],
     ).fetchone()
     assert link is not None
     # The explicit binding is honoured rather than minting a fresh canonical id
-    # beside it. This also pins the self-referential shape of the override link
-    # (ref_value == account_id): the pinned value is both the source-native key
-    # and the canonical account, because the caller supplied a canonical id.
+    # beside it -- one link, from the document's key to the pinned account.
     assert str(link[0]) == "my_pinned_account"
 
 
@@ -2809,8 +2808,10 @@ def test_pinning_an_anchorless_pdf_teaches_exact_document_identity(
         "WHERE ref_kind = 'source_native' AND status = 'accepted' "
         "ORDER BY ref_value"
     ).fetchall()
+    # One link only: the document's own key. The pin no longer also writes a
+    # self-map (acct_existing01 -> acct_existing01), which existed solely
+    # because the pin used to overwrite the source-native key.
     assert [row[0] for row in taught] == [
-        "acct_existing01",
         f"pdf_doc_{hashlib.sha256(b'%PDF-1.4 fake').hexdigest()[:16]}",
     ]
 
@@ -2923,17 +2924,20 @@ def test_partial_pdf_second_statement_requires_review_again(
 
 
 @pytest.mark.integration
-def test_account_id_pin_teaches_the_statements_own_key(
+def test_account_id_pin_keeps_the_statements_own_key(
     db: Database,
     tmp_path: Path,
 ) -> None:
-    """Pinning with --account-id must teach the key the statement derives on its own.
+    """Pinning with --account-id says which account, not what the document is called.
 
-    ``account_id_override`` replaces the source-native key with the canonical id,
-    so the ladder writes both the self-map and this exact document's opaque key.
+    The pin belongs in ``explicit_account_id`` alone. ``source_account_key``
+    stays the document's own opaque key, so one accepted link points that key at
+    the pinned account and ``raw.tabular_accounts.account_id`` carries the key
+    rather than the canonical id.
 
-    The pin must write both links: the canonical self-map the staging JOIN needs,
-    and the statement's own derived key pointing at the same account.
+    There is no self-map (``<id> -> <id>``) any more: that row only ever existed
+    because the pin overwrote the native key, and it is what let a second pin of
+    the same document fork the key and double-count the statement.
     """
     create_core_tables(db)
     db.conn.execute(
@@ -2960,21 +2964,36 @@ def test_account_id_pin_teaches_the_statements_own_key(
             "WHERE ref_kind='source_native' AND status='accepted'"
         ).fetchall()
     )
-    assert linked["acct_pinned01"] == "acct_pinned01"
-    document_keys = [key for key in linked if key.startswith("pdf_doc_")]
-    assert len(document_keys) == 1
-    assert linked[document_keys[0]] == "acct_pinned01"
+    assert list(linked) == [key for key in linked if key.startswith("pdf_doc_")], (
+        f"pin wrote a non-document source_native key: {linked}"
+    )
+    [document_key] = list(linked)
+    assert linked[document_key] == "acct_pinned01"
+
+    # The raw row is keyed by the document, not by the account it was pinned to.
+    raw_keys = db.execute(
+        "SELECT account_id FROM raw.tabular_accounts WHERE source_type = 'pdf'"
+    ).fetchall()
+    assert [r[0] for r in raw_keys] == [document_key], raw_keys
 
 
 @pytest.mark.integration
-def test_account_id_pin_does_not_repoint_an_existing_key(
+def test_account_id_pin_refuses_a_document_already_bound_elsewhere(
     db: Database,
     tmp_path: Path,
 ) -> None:
-    """The forward-teaching link never steals a key already bound elsewhere.
+    """A pin contradicting this document's accepted binding is refused before load.
 
-    If an exact document key is already accepted onto another account, pinning
-    that document to a different account must not re-point the remembered key.
+    The pin used to be honoured by forking the key: the statement's own
+    ``pdf_doc_`` key stayed on the first account while the rows landed under the
+    canonical id, so ONE statement produced two accounts' worth of transactions
+    and no per-account view could show the duplicate. Keying the raw row
+    natively is what lets the gate see the conflict at all.
+
+    Re-pointing the remembered key instead is not the alternative: that is a
+    silent import-time re-point, which M1S.5 and "magic stays visible" both
+    forbid. So the import refuses, names the account the document is already
+    bound to, and writes nothing.
     """
     create_core_tables(db)
     for account_id, name in (
@@ -3000,28 +3019,421 @@ def test_account_id_pin_does_not_repoint_an_existing_key(
             account_bindings={"@0": "acct_other01"},
         )
 
+    rows_before = _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions")
+
     # Now pin a statement of the same card to a DIFFERENT account.
     other_pdf = tmp_path / "statement_pinned.pdf"
     other_pdf.write_bytes(fake_pdf.read_bytes())
-    with patch(
-        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+        ),
+        pytest.raises(ValueError, match="already accepted onto 'acct_other01'"),
     ):
-        result = svc.import_file(
+        svc.import_file(
             other_pdf,
             refresh=False,
             confirm=True,
             actor_kind="human",
             account_id="acct_pinned01",
         )
-    assert result.transactions == 2
 
+    # Refused before load: no second copy of the statement, under either account.
+    assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == rows_before
+    assert (
+        _count(
+            db,
+            "SELECT COUNT(*) FROM raw.tabular_accounts WHERE source_file LIKE "
+            "'%statement_pinned.pdf'",
+        )
+        == 0
+    )
+
+    # The remembered key is untouched, and no self-map was written for the pin.
     linked = dict(
         db.execute(
             "SELECT ref_value, account_id FROM app.account_links "
             "WHERE ref_kind='source_native' AND status='accepted'"
         ).fetchall()
     )
-    assert linked["acct_pinned01"] == "acct_pinned01"
-    document_keys = [key for key in linked if key.startswith("pdf_doc_")]
-    assert len(document_keys) == 1
-    assert linked[document_keys[0]] == "acct_other01"
+    assert "acct_pinned01" not in linked, linked
+    [document_key] = list(linked)
+    assert document_key.startswith("pdf_doc_")
+    assert linked[document_key] == "acct_other01"
+
+
+@pytest.mark.integration
+def test_a_regenerated_pinned_statement_does_not_double_count(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Re-downloading the same statement must not import it twice.
+
+    The pin fixes the canonical account, and ``transaction_id`` folds that
+    canonical id — so the ids regenerate identically. Only the raw
+    ``account_id`` moves, because a byte-different re-download yields a
+    different ``pdf_doc_`` key, and staging dedups on
+    ``(transaction_id, account_id)``. Both copies then clear it.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_pinned01", "Chase Card"],
+    )
+    doc = _standard_doc()
+    svc = ImportService(db)
+
+    for name, body in (
+        ("jan.pdf", b"%PDF-1.4 fake"),
+        ("jan-again.pdf", b"%PDF-1.4 fake regenerated"),
+    ):
+        pdf = tmp_path / name
+        pdf.write_bytes(body)
+        with patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+        ):
+            import_answering_gate(
+                svc,
+                pdf,
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+                account_id="acct_pinned01",
+            )
+
+    # Raw keeps a row per import batch; that is fine, because staging dedups on
+    # (transaction_id, account_id) and collapses them. What must not happen is
+    # the pair FORKING: a second source key for the same transaction_id clears
+    # that dedup, and core.fct_transactions counts the statement twice.
+    forked = db.execute(
+        "SELECT transaction_id, COUNT(DISTINCT account_id) AS keys "
+        "FROM raw.tabular_transactions WHERE source_type = 'pdf' "
+        "GROUP BY transaction_id HAVING COUNT(DISTINCT account_id) > 1 "
+        "ORDER BY transaction_id"
+    ).fetchall()
+    assert not forked, (
+        f"the re-download forked the source key, so staging cannot dedup: {forked}"
+    )
+
+
+def _accept_pdf_link(db: Database, *, link_id: str, account_id: str, key: str) -> None:
+    """Accept one ``pdf``/``document`` native key onto an account.
+
+    Stands in for a statement this account already adopted, which is how a real
+    card ends up holding several document keys: every statement carries its own
+    digest, and each adoption accepts another one.
+    """
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    AccountLinksRepo(db).insert(
+        link_id=link_id,
+        account_id=account_id,
+        ref_kind="source_native",
+        ref_value=key,
+        source_type="pdf",
+        source_origin="document",
+        decided_by="user",
+        actor="cli",
+    )
+
+
+@pytest.mark.integration
+def test_a_regenerated_pinned_statement_dedups_when_the_account_holds_many_keys(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Several prior statements must not send the pin back to minting per document.
+
+    An account holds one document key per statement it has adopted, so "more
+    than one" is the ordinary state of any card with a history — not an edge
+    case. Minting there would re-open the double count for exactly the accounts
+    with the longest history, so the pin picks one remembered key by a stable
+    order instead. Which one it picks does not matter for dedup; that both
+    imports of the same statement pick the SAME one is the whole property.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_pinned01", "Chase Card"],
+    )
+    for link_id, key in (
+        ("lnk_prior_a", f"pdf_doc_{'a' * 16}"),
+        ("lnk_prior_b", f"pdf_doc_{'b' * 16}"),
+    ):
+        _accept_pdf_link(db, link_id=link_id, account_id="acct_pinned01", key=key)
+    doc = _standard_doc()
+    svc = ImportService(db)
+
+    for name, body in (
+        ("feb.pdf", b"%PDF-1.4 fake"),
+        ("feb-again.pdf", b"%PDF-1.4 fake regenerated"),
+    ):
+        pdf = tmp_path / name
+        pdf.write_bytes(body)
+        with patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+        ):
+            import_answering_gate(
+                svc,
+                pdf,
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+                account_id="acct_pinned01",
+            )
+
+    forked = db.execute(
+        "SELECT transaction_id, COUNT(DISTINCT account_id) AS keys "
+        "FROM raw.tabular_transactions WHERE source_type = 'pdf' "
+        "GROUP BY transaction_id HAVING COUNT(DISTINCT account_id) > 1 "
+        "ORDER BY transaction_id"
+    ).fetchall()
+    assert not forked, f"the pin minted a fresh key instead of reusing one: {forked}"
+
+
+@pytest.mark.integration
+def test_account_id_pin_refuses_a_bound_document_even_when_the_target_has_a_key(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Reusing the target's key must not swallow the conflict the document carries.
+
+    ``_refuse_contradicted_bindings`` asks whether the key on the incoming
+    ``SourceAccount`` is already accepted elsewhere. Substituting the pinned
+    account's own remembered key before that question is asked answers it
+    trivially — the key belongs to the pin target, so nothing contradicts — and
+    another account's statement loads under this one. So the pin only reuses a
+    key when the document's own key is still unknown; a document that already
+    named its account keeps saying so, and the refusal fires as it did before.
+    """
+    create_core_tables(db)
+    for account_id, name in (
+        ("acct_pinned01", "Chase Card"),
+        ("acct_other01", "Other"),
+    ):
+        db.conn.execute(
+            "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+            [account_id, name],
+        )
+    # The pin target already answers to a document key, so reuse is live.
+    _accept_pdf_link(
+        db,
+        link_id="lnk_prior_a",
+        account_id="acct_pinned01",
+        key=f"pdf_doc_{'a' * 16}",
+    )
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        svc.import_file(
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={"@0": "acct_other01"},
+        )
+
+    rows_before = _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions")
+
+    other_pdf = tmp_path / "statement_pinned.pdf"
+    other_pdf.write_bytes(fake_pdf.read_bytes())
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+        ),
+        pytest.raises(ValueError, match="already accepted onto 'acct_other01'"),
+    ):
+        svc.import_file(
+            other_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_pinned01",
+        )
+
+    assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == rows_before
+
+
+def _stamp_link(db: Database, *, link_id: str, decided_at: str) -> None:
+    """Force one link's decision time, so ordering is not a race on the clock."""
+    db.conn.execute(
+        "UPDATE app.account_links SET decided_at = ? WHERE link_id = ?",  # noqa: S608  # test fixture
+        [decided_at, link_id],
+    )
+
+
+@pytest.mark.integration
+def test_the_pinned_key_pick_does_not_move_when_a_newer_key_is_added(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """The reused key must be the one the account has answered to longest.
+
+    A pick by sort order alone is only stable while the key set is; a merge, or
+    a second document pinned to this account in between, inserts a key that can
+    sort ahead of the one the account's existing rows already use — and the next
+    import of a statement then lands somewhere new and double-counts. Ordering
+    by decision time makes every later arrival lose: ``AccountLinksRepo.repoint``
+    inserts a *new* accepted row for a merged ref, so even a merged-in key is
+    younger than what the winner already held.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_pinned01", "Chase Card"],
+    )
+    # Sort order and decision order disagree, so only one of the two rules can
+    # produce `pdf_doc_zzz…` — which is the key the account has held longest.
+    _accept_pdf_link(
+        db, link_id="lnk_held", account_id="acct_pinned01", key=f"pdf_doc_{'z' * 16}"
+    )
+    _stamp_link(db, link_id="lnk_held", decided_at="2020-01-01 00:00:00")
+    _accept_pdf_link(
+        db, link_id="lnk_later", account_id="acct_pinned01", key=f"pdf_doc_{'a' * 16}"
+    )
+    _stamp_link(db, link_id="lnk_later", decided_at="2026-01-01 00:00:00")
+
+    doc = _standard_doc()
+    svc = ImportService(db)
+    pdf = tmp_path / "mar.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake march")
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        import_answering_gate(
+            svc,
+            pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_pinned01",
+        )
+
+    keys = [
+        r[0]
+        for r in db.execute(
+            "SELECT DISTINCT account_id FROM raw.tabular_accounts "
+            "WHERE source_type = 'pdf' AND source_file = ?",
+            [str(pdf)],
+        ).fetchall()
+    ]
+    assert keys == [f"pdf_doc_{'z' * 16}"], (
+        f"picked by sort order, not by how long the account has held the key: {keys}"
+    )
+
+
+@pytest.mark.integration
+def test_a_pinned_import_still_records_the_documents_own_digest(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Reusing a key must not erase what this exact file yields on its own.
+
+    The raw row carries the reused key so the statement dedups, but the document
+    digest is the only thing that identifies this file when it arrives WITHOUT a
+    pin — dropped into an inbox drain, or re-imported by an agent that does not
+    know to re-supply ``--account-id``. Without the digest on record that import
+    finds no link, so it stops to ask or mints a second account for a statement
+    already filed. So the pin teaches the digest alongside the key it borrowed.
+    """
+    import hashlib
+
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_pinned01", "Chase Card"],
+    )
+    _accept_pdf_link(
+        db, link_id="lnk_held", account_id="acct_pinned01", key=f"pdf_doc_{'z' * 16}"
+    )
+
+    body = b"%PDF-1.4 fake april"
+    digest_key = f"pdf_doc_{hashlib.sha256(body).hexdigest()[:16]}"
+    doc = _standard_doc()
+    svc = ImportService(db)
+    pdf = tmp_path / "apr.pdf"
+    pdf.write_bytes(body)
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        import_answering_gate(
+            svc,
+            pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_pinned01",
+        )
+
+    owner = db.execute(
+        "SELECT account_id FROM app.account_links WHERE status = 'accepted' "
+        "AND ref_kind = 'source_native' AND source_type = 'pdf' AND ref_value = ?",
+        [digest_key],
+    ).fetchone()
+    assert owner is not None, (
+        "the document's own digest was never recorded, so an unpinned re-import "
+        "of this exact file cannot recognise the account"
+    )
+    assert owner[0] == "acct_pinned01", owner
+    # The raw row still carries the borrowed key, or the statement stops dedupping.
+    raw = db.execute(
+        "SELECT DISTINCT account_id FROM raw.tabular_accounts WHERE source_file = ?",
+        [str(pdf)],
+    ).fetchall()
+    assert [r[0] for r in raw] == [f"pdf_doc_{'z' * 16}"], raw
+
+
+@pytest.mark.integration
+def test_a_borrowed_pin_key_survives_reimporting_the_same_regenerated_statement(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Teaching the borrowed document's own key makes the NEXT import stop borrowing.
+
+    The reuse branch only fires while this document's key is still unknown. So
+    teaching that key as an accepted link answers the branch's own gate: the
+    third import of one regenerated statement finds its digest accepted, skips
+    the substitution, and stores the rows under a key the second import did not
+    use. ``transaction_id`` folds the canonical account, which the pin holds
+    still, so the two copies share ids across two raw keys and staging's
+    ``(transaction_id, account_id)`` dedup keeps both.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_pinned01", "Chase Card"],
+    )
+    doc = _standard_doc()
+    svc = ImportService(db)
+
+    original = b"%PDF-1.4 fake"
+    regenerated = b"%PDF-1.4 fake regenerated"
+    for name, body in (
+        ("feb.pdf", original),
+        ("feb-again.pdf", regenerated),
+        ("feb-again-copy.pdf", regenerated),
+    ):
+        pdf = tmp_path / name
+        pdf.write_bytes(body)
+        with patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+        ):
+            import_answering_gate(
+                svc,
+                pdf,
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+                account_id="acct_pinned01",
+            )
+
+    forked = db.execute(
+        "SELECT transaction_id, COUNT(DISTINCT account_id) AS keys "
+        "FROM raw.tabular_transactions WHERE source_type = 'pdf' "
+        "GROUP BY transaction_id HAVING COUNT(DISTINCT account_id) > 1 "
+        "ORDER BY transaction_id"
+    ).fetchall()
+    assert not forked, f"the statement landed under two source keys: {forked}"

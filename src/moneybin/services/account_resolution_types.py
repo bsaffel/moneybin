@@ -263,6 +263,13 @@ class SourceAccount:
     """Whether the legacy key came from an anchorless PDF filename alias."""
     source_file: str | None = None
     """Canonical source path used only to recover a proven historical PDF tuple."""
+    unpinned_account_key: str | None = None
+    """The key this source derives on its own, when a pin made it use another.
+
+    A pinned import borrows the key its account already answers to so the rows
+    dedup, which leaves nothing on record identifying THIS file. Carried here so
+    the resolver can also link the derived key, and an unpinned re-import of the
+    same file still recognises the account instead of asking or minting."""
 
     explicit_account_id: str | None = None
     force_standalone: bool = False
@@ -270,17 +277,6 @@ class SourceAccount:
     weak-candidate merge pass. Set by an import-time ``account_bindings`` entry
     of ``"new"``. Still idempotent on re-import (adopts an existing
     source_native above)."""
-
-    unpinned_account_key: str | None = None
-    """The key this source would derive on its own, when ``explicit_account_id``
-    has replaced ``source_account_key`` with the canonical id.
-
-    A pin that links only the canonical id teaches the resolver nothing about the
-    document: the next import of the same source, without the pin, derives this
-    key, finds no link, and mints a second account for the same thing. Recording
-    it alongside the pin is what makes the pin stick. Never re-points a key
-    already bound elsewhere — see ``AccountResolver._teach_unpinned_key``, which
-    holds that guard; ``_run_ladder`` only calls it."""
 
     def __post_init__(self) -> None:
         """Canonicalize a blank last four to None — they mean the same thing.

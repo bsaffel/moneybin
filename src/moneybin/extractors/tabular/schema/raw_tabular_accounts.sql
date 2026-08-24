@@ -3,7 +3,7 @@
    Mint), one record per unique account found in the data. Account numbers are stored
    here (not per-transaction) and masked at the application layer for display. */
 CREATE TABLE IF NOT EXISTS raw.tabular_accounts (
-    account_id VARCHAR NOT NULL,                -- Source-system account identifier
+    account_id VARCHAR NOT NULL,                -- Source-native account key, NEVER a canonical MoneyBin account id; app.account_links maps it to the canonical id
     account_name VARCHAR NOT NULL,              -- Human-readable account label provided by user or extracted from multi-account file
     account_number VARCHAR,                     -- Full account number if available in source; stored encrypted at rest, masked at application layer for all output
     account_number_masked VARCHAR,              -- Last 4 digits for display (e.g. "...4521"); derived from account_number or extracted directly if source only provides masked

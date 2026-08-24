@@ -11,6 +11,7 @@ from moneybin.services.import_service import (
     _detect_file_type,  # type: ignore[reportPrivateUsage]  # testing private function
 )
 from tests.import_helpers import import_answering_gate
+from tests.moneybin.db_helpers import create_core_tables
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -430,16 +431,58 @@ def test_single_account_csv_captures_last4_from_label(
     assert masked is not None and masked[0] == "****4267", masked
 
 
-# ---------------------------------------------------------------------------
-# TestTabularConfirmationFlow
-# ---------------------------------------------------------------------------
+def test_pinned_csv_import_keeps_the_files_own_key_on_the_raw_row(
+    db: Database,
+) -> None:
+    """``--account-id`` states which account a file belongs to, not what it is called.
+
+    ``raw.tabular_accounts.account_id`` is contract-defined as the source's own
+    key — the ``source_native`` ref ``prep.stg_tabular__accounts`` joins on.
+    Overwriting it with the pinned canonical id makes one column mean two things
+    by import flag, self-maps the link the pin writes, and blinds the
+    contradicting-binding gate, which looks the key up by that same field.
+    """
+    from moneybin.services.import_service import ImportService
+
+    svc = ImportService(db)
+    # A first, unpinned import mints a real account to pin the second one to.
+    import_answering_gate(
+        svc,
+        _STANDARD_CSV,
+        account_name="Primary Checking",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+    minted = db.execute(
+        """
+        SELECT account_id FROM app.account_links
+        WHERE status = 'accepted' AND ref_kind = 'source_native'
+          AND ref_value = ?
+        """,
+        ["primary-checking"],
+    ).fetchone()
+    assert minted is not None, "first import wrote no source_native link"
+    canonical_id = minted[0]
+
+    # A second, different file pinned onto that same account.
+    import_answering_gate(
+        svc,
+        _CHASE_CSV,
+        account_name="Chase Statement",
+        account_id=canonical_id,
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+
+    rows = db.execute(
+        "SELECT account_id FROM raw.tabular_accounts WHERE source_file LIKE ?",
+        [f"%{_CHASE_CSV.name}"],
+    ).fetchall()
+    assert [r[0] for r in rows] == ["chase-statement"], rows
 
 
-# Every test below imports _STANDARD_CSV as account_name="test", so the account
-# gate proposes that one never-seen key. Account identity is incidental here —
-# the mapping and sign gates are what's under test — so the calls expected to
-# load answer it up front rather than re-import to answer, which would double
-# every detection metric these tests count.
 _BIND_TEST_ACCOUNT = {"test": "new"}
 
 
@@ -1612,3 +1655,473 @@ class TestTabularConfirmationFlow:
 
         assert first.import_id is not None
         assert replay.import_id is not None
+
+
+def test_pinned_reimport_without_a_name_keeps_the_same_native_key(
+    db: Database, tmp_path: Path
+) -> None:
+    """A pinned account's native key must survive the export growing by a row.
+
+    ``--account-id`` and ``--account-name`` are independent flags, so a pin with
+    no name is a documented invocation. Deriving that import's native key from
+    the file's bytes rotates it every time a recurring export grows, and
+    ``account_id`` is folded into ``transaction_id``, so every already-imported
+    row re-keys and survives the ``(transaction_id, account_id)`` dedup a second
+    time. The pin already names the account -- reuse the key it resolved to.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_type, institution_name, source_type) "
+        "VALUES ('acct_pinned01', 'CHECKING', 'Bank', 'csv')"
+    )
+
+    header = "Date,Description,Amount,Balance\n"
+    first = "2026-01-05,GROCERY STORE PURCHASE,-52.30,3947.70\n"
+    export = tmp_path / "export.csv"
+    export.write_text(header + first)
+    import_answering_gate(
+        ImportService(db),
+        export,
+        account_id="acct_pinned01",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+    keys_first = db.execute(
+        "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ?",
+        [str(export)],
+    ).fetchall()
+
+    # The same recurring export, one new row appended.
+    export.write_text(
+        header + first + "2026-01-06,DIRECT DEPOSIT PAYROLL,2500.00,6447.70\n"
+    )
+    import_answering_gate(
+        ImportService(db),
+        export,
+        account_id="acct_pinned01",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+        force=True,
+    )
+
+    keys_second = db.execute(
+        "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ?",
+        [str(export)],
+    ).fetchall()
+    assert keys_second == keys_first, (
+        f"the grown export re-keyed the account: {keys_first} -> {keys_second}"
+    )
+    repeated = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND amount = -52.30",
+        [str(export)],
+    ).fetchone()
+    assert repeated is not None and repeated[0] == 1, (
+        "the row present in both exports was stored twice"
+    )
+
+
+def _pin_link(
+    db: Database,
+    *,
+    link_id: str,
+    account_id: str,
+    ref_value: str,
+    source_type: str = "csv",
+    source_origin: str = "monarch",
+) -> None:
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    AccountLinksRepo(db).insert(
+        link_id=link_id,
+        account_id=account_id,
+        ref_kind="source_native",
+        ref_value=ref_value,
+        source_type=source_type,
+        source_origin=source_origin,
+        decided_by="user",
+        actor="cli",
+    )
+
+
+def _pinned_key(db: Database, tmp_path: Path, account_id: str) -> str:
+    from moneybin.services.account_resolver import AccountResolver
+    from moneybin.services.import_service import ImportService
+
+    export = tmp_path / "export.csv"
+    export.write_text("Date,Description,Amount\n2026-01-05,COFFEE,-4.75\n")
+    return ImportService(db)._pinned_native_key(  # pyright: ignore[reportPrivateUsage]  # drives the helper under test directly
+        resolver=AccountResolver(db, actor="test"),
+        account_id=account_id,
+        file_path=export,
+        source_bytes=None,
+        source_type="csv",
+        source_origin="monarch",
+    )
+
+
+def test_pinned_native_key_reuses_the_accounts_existing_key(
+    db: Database, tmp_path: Path
+) -> None:
+    """The whole point: a later pinned import lands on the same key as the first."""
+    _pin_link(db, link_id="lnk_a", account_id="acct_x", ref_value="statement-9f2c1234")
+    assert _pinned_key(db, tmp_path, "acct_x") == "statement-9f2c1234"
+
+
+def test_pinned_native_key_ignores_a_pre_fix_self_map(
+    db: Database, tmp_path: Path
+) -> None:
+    """A ``ref_value == account_id`` link is residue, not a key to adopt.
+
+    That row IS the defect this change removes — the canonical id sitting in the
+    source-key column. Reusing it would write the canonical id straight back
+    into ``raw`` for this import, on exactly the call shape being fixed.
+    """
+    _pin_link(db, link_id="lnk_self", account_id="acct_x", ref_value="acct_x")
+    key = _pinned_key(db, tmp_path, "acct_x")
+    assert key != "acct_x", "reused a pre-fix self-map and rewrote the canonical id"
+    assert key.startswith("export-"), key
+
+
+def test_pinned_native_key_refuses_when_the_account_has_several_keys(
+    db: Database, tmp_path: Path
+) -> None:
+    """Two keys for one source is ambiguous; picking one would bind silently.
+
+    Reachable after a merge, which can leave an account holding both sides'
+    native keys for the same source.
+    """
+    _pin_link(db, link_id="lnk_a", account_id="acct_x", ref_value="statement-aaa")
+    _pin_link(db, link_id="lnk_b", account_id="acct_x", ref_value="statement-bbb")
+    with pytest.raises(ValueError, match="--account-name"):
+        _pinned_key(db, tmp_path, "acct_x")
+
+
+def test_pinned_native_key_falls_back_on_the_first_import(
+    db: Database, tmp_path: Path
+) -> None:
+    """No key yet — derive one from content; every later pinned import finds it."""
+    key = _pinned_key(db, tmp_path, "acct_never_seen")
+    assert key.startswith("export-"), key
+
+
+def test_pinned_native_key_keeps_a_key_that_collides_with_another_account_id(
+    db: Database, tmp_path: Path
+) -> None:
+    """Residue is a self-map, not "this string is an id somewhere".
+
+    A membership test over the whole ``account_id`` column classifies an
+    account's legitimate native key as residue the moment some unrelated
+    account happens to be minted under that same string. Dropping it sends the
+    pin back to the content key, which rotates the next time the export grows
+    a row — re-keying every transaction already imported and double-counting
+    the overlap, the exact failure this key-reuse exists to prevent.
+    """
+    _pin_link(db, link_id="lnk_owner", account_id="acct_x", ref_value="acct_zzz")
+    # An unrelated account minted as acct_zzz, holding a native key of its own.
+    _pin_link(db, link_id="lnk_other", account_id="acct_zzz", ref_value="statement-1")
+
+    assert _pinned_key(db, tmp_path, "acct_x") == "acct_zzz"
+
+
+def test_pinned_native_key_ignores_a_self_map_carried_over_by_a_merge(
+    db: Database, tmp_path: Path
+) -> None:
+    """A merge moves a self-map onto the winner, where it no longer looks like one.
+
+    ``repoint`` keeps ``ref_value`` and changes ``account_id``, so the losing
+    account's own pre-fix canonical id ends up filed under the winner. Compared
+    only against the id being pinned it reads as an ordinary native key — and
+    adopting it writes a canonical id straight back into the source-key column.
+    """
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    repo = AccountLinksRepo(db)
+    # The losing account's pre-fix self-map.
+    _pin_link(db, link_id="lnk_merged", account_id="acct_aaa", ref_value="acct_aaa")
+    # The merge: same ref, now owned by the winner.
+    repo.repoint(
+        link_id="lnk_merged",
+        new_account_id="acct_bbb",
+        decided_by="user",
+        actor="cli",
+    )
+
+    key = _pinned_key(db, tmp_path, "acct_bbb")
+    assert key != "acct_aaa", (
+        "adopted the merged-away account's canonical id as a native key"
+    )
+    assert key.startswith("export-"), key
+
+
+def test_pinned_native_key_keeps_a_key_whose_twin_self_mapped_under_another_source(
+    db: Database, tmp_path: Path
+) -> None:
+    """Residue is scoped to the source the candidate key belongs to.
+
+    Both shapes that leave a self-map — a pre-fix pin, and the merge that
+    re-points one onto the winner — write it under the SAME ``source_type`` /
+    ``source_origin`` as the key they sit beside, because ``repoint`` re-accepts
+    the ref on its original coordinates. So a self-map filed under a different
+    source is some other account's history, and reading it as residue here drops
+    this account's real key for a content key that rotates when the export grows
+    — re-keying every row already imported and double-counting the overlap.
+    """
+    _pin_link(db, link_id="lnk_owner", account_id="acct_x", ref_value="acct_zzz")
+    # acct_zzz's own pre-fix pin, left behind on a different source entirely.
+    _pin_link(
+        db,
+        link_id="lnk_elsewhere",
+        account_id="acct_zzz",
+        ref_value="acct_zzz",
+        source_type="ofx",
+        source_origin="some-institution",
+    )
+
+    assert _pinned_key(db, tmp_path, "acct_x") == "acct_zzz"
+
+
+def test_pinned_native_key_keeps_this_files_key_when_another_account_holds_it(
+    db: Database, tmp_path: Path
+) -> None:
+    """Reuse must not answer the contradiction question before the gate asks it.
+
+    ``_refuse_contradicted_bindings`` looks up whatever key the SourceAccount
+    carries. Handing it the pin target's own remembered key makes the lookup
+    resolve to the target and find nothing to contradict, so a file whose key
+    already belongs to another account loads here instead — the same file's
+    transactions on two accounts, with no per-account view able to show it.
+
+    So reuse only fires while this file's own key is unclaimed. The PDF sibling
+    is gated the identical way in ``_pdf_source_account``; a channel that skips
+    the check is the fork this pair exists to prevent.
+    """
+    # With no links at all the helper returns the file's own natural key.
+    bare = _pinned_key(db, tmp_path, "acct_never_seen")
+    _pin_link(db, link_id="lnk_other", account_id="acct_other", ref_value=bare)
+    _pin_link(db, link_id="lnk_x", account_id="acct_x", ref_value="statement-9f2c1234")
+
+    assert _pinned_key(db, tmp_path, "acct_x") == bare, (
+        "reused the pin target's key and hid this file's accepted owner"
+    )
+
+
+def _pinned_keys_for(db: Database, export: Path) -> list[str]:
+    return [
+        r[0]
+        for r in db.execute(
+            "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+            "WHERE source_file = ?",
+            [str(export)],
+        ).fetchall()
+    ]
+
+
+def test_supplying_account_name_later_does_not_re_key_a_pinned_import(
+    db: Database, tmp_path: Path
+) -> None:
+    """``--account-name`` labels the account; the pin already said which one.
+
+    Letting the label pick the native key means adding or dropping the flag
+    between two imports of one recurring export re-keys it — and on tabular the
+    ``transaction_id`` is derived FROM that key, so every row in the overlap
+    gets a new id and staging's ``(transaction_id, account_id)`` dedup lets both
+    copies through. So a pinned import asks the same question either way: what
+    does this account already call itself here? The label is only the seed for a
+    first import that has nothing to reuse.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_type, institution_name, source_type) "
+        "VALUES ('acct_pinned01', 'CHECKING', 'Bank', 'csv')"
+    )
+    header = "Date,Description,Amount,Balance\n"
+    first = "2026-01-05,GROCERY STORE PURCHASE,-52.30,3947.70\n"
+    export = tmp_path / "export.csv"
+    export.write_text(header + first)
+    import_answering_gate(
+        ImportService(db),
+        export,
+        account_id="acct_pinned01",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+    keys_first = _pinned_keys_for(db, export)
+
+    # Same recurring export, one row appended — and this time a label is given.
+    export.write_text(
+        header + first + "2026-01-06,DIRECT DEPOSIT PAYROLL,2500.00,6447.70\n"
+    )
+    import_answering_gate(
+        ImportService(db),
+        export,
+        account_id="acct_pinned01",
+        account_name="Checking",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+        force=True,
+    )
+
+    assert _pinned_keys_for(db, export) == keys_first, (
+        f"adding --account-name re-keyed the pinned account: {keys_first} -> "
+        f"{_pinned_keys_for(db, export)}"
+    )
+    repeated = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND amount = -52.30",
+        [str(export)],
+    ).fetchone()
+    assert repeated is not None and repeated[0] == 1, (
+        "the row present in both exports was stored twice"
+    )
+
+
+def test_two_accounts_pinned_from_one_file_still_get_their_own_keys(
+    db: Database, tmp_path: Path
+) -> None:
+    """The label still seeds the key when the account has nothing to reuse.
+
+    The guard on the test above: making a pin ignore ``--account-name`` outright
+    would collapse two accounts exported to one file onto a single key — the
+    file's own — and the second pin would then be refused as a contradiction.
+    Both accounts are new here, so neither has a remembered key and each keeps
+    the name it was given.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    for account_id in ("acct_checking1", "acct_savings01"):
+        db.execute(
+            "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+            "(account_id, account_type, institution_name, source_type) "
+            f"VALUES ('{account_id}', 'CHECKING', 'Bank', 'csv')"
+        )
+    export = tmp_path / "joint.csv"
+    export.write_text(
+        "Date,Description,Amount,Balance\n2026-01-05,GROCERY,-52.30,3947.70\n"
+    )
+    for account_id, label in (
+        ("acct_checking1", "Checking"),
+        ("acct_savings01", "Savings"),
+    ):
+        import_answering_gate(
+            ImportService(db),
+            export,
+            account_id=account_id,
+            account_name=label,
+            refresh=False,
+            confirm=True,
+            auto_accept=True,
+            force=True,
+        )
+
+    keys = sorted(_pinned_keys_for(db, export))
+    assert keys == ["checking", "savings"], keys
+
+
+def test_a_label_with_no_ascii_alphanumerics_still_produces_its_own_key(
+    db: Database, tmp_path: Path
+) -> None:
+    """``slugify`` keeps only ``[a-z0-9]``, so some real names slug to nothing.
+
+    A name written in a non-Latin script — or in punctuation alone — leaves an
+    empty slug, and an empty string is not a key: every such account lands on
+    the same ``source_native`` coordinates, so the second one is refused as a
+    contradicting binding and its statement never imports. The fallback is
+    derived from the label rather than the file, so one name keeps one key
+    across files and across pinned and unpinned imports.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    for account_id in ("acct_savings01", "acct_checking1"):
+        db.execute(
+            "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+            "(account_id, account_type, institution_name, source_type) "
+            f"VALUES ('{account_id}', 'CHECKING', 'Bank', 'csv')"
+        )
+    export = tmp_path / "joint.csv"
+    export.write_text(
+        "Date,Description,Amount,Balance\n2026-01-05,GROCERY,-52.30,3947.70\n"
+    )
+    for account_id, label in (("acct_savings01", "储蓄"), ("acct_checking1", "支票")):
+        import_answering_gate(
+            ImportService(db),
+            export,
+            account_id=account_id,
+            account_name=label,
+            refresh=False,
+            confirm=True,
+            auto_accept=True,
+            force=True,
+        )
+
+    keys = sorted(_pinned_keys_for(db, export))
+    assert "" not in keys, f"an empty slug became the source key: {keys}"
+    assert len(keys) == 2, f"the two labels collided onto one key: {keys}"
+
+
+def test_a_third_pinned_reimport_of_a_growing_export_still_reuses_the_key(
+    db: Database, tmp_path: Path
+) -> None:
+    """Reuse has to survive an arbitrary number of imports, not exactly two.
+
+    Teaching the file's own content key alongside a borrowed one hands the
+    account a second accepted key on the second import — and the third then
+    sees two keys, no ``--account-name`` to choose between them, and refuses a
+    file that was never ambiguous. The refusal exists for a genuinely forked
+    account (a merge), not for one this import path forked itself.
+    """
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, account_type, institution_name, source_type) "
+        "VALUES ('acct_pinned01', 'CHECKING', 'Bank', 'csv')"
+    )
+
+    header = "Date,Description,Amount,Balance\n"
+    rows = [
+        "2026-01-05,GROCERY STORE PURCHASE,-52.30,3947.70\n",
+        "2026-01-06,DIRECT DEPOSIT PAYROLL,2500.00,6447.70\n",
+        "2026-01-07,COFFEE SHOP,-4.75,6442.95\n",
+    ]
+    export = tmp_path / "export.csv"
+    keys_by_round: list[list[str]] = []
+    for count in (1, 2, 3):
+        export.write_text(header + "".join(rows[:count]))
+        import_answering_gate(
+            ImportService(db),
+            export,
+            account_id="acct_pinned01",
+            refresh=False,
+            confirm=True,
+            auto_accept=True,
+            force=count > 1,
+        )
+        keys_by_round.append(sorted(_pinned_keys_for(db, export)))
+
+    assert keys_by_round[2] == keys_by_round[0], (
+        f"the export re-keyed across three imports: {keys_by_round}"
+    )
+    repeated = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND amount = -52.30",
+        [str(export)],
+    ).fetchone()
+    assert repeated is not None and repeated[0] == 1, (
+        "the row present in all three exports was stored more than once"
+    )

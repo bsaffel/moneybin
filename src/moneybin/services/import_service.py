@@ -875,6 +875,56 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
+def _label_account_key(account_name: str) -> str:
+    """A native key for an account label, guaranteed non-empty.
+
+    ``slugify`` keeps only ``[a-z0-9]``, so a name written in a non-Latin
+    script — or in punctuation alone — slugifies to ``""``. An empty string is
+    not a key: every such account lands on the same ``source_native``
+    coordinates, so the second one is refused as a contradicting binding and
+    its statement never imports at all.
+
+    The fallback digests the label rather than the file, so one name keeps one
+    key across files and across pinned and unpinned imports — the property the
+    slug already had for names the slug survives.
+    """
+    from moneybin.utils import slugify  # noqa: PLC0415 — matches the call sites
+
+    slug = slugify(account_name)
+    if slug:
+        return slug
+    digest = hashlib.sha256(account_name.encode("utf-8")).hexdigest()
+    return f"label-{digest[:12]}"
+
+
+def _reusable_pinned_keys(
+    resolver: AccountResolver,
+    *,
+    account_id: str,
+    source_type: str,
+    source_origin: str,
+) -> list[str]:
+    """Native keys a pinned import may reuse for this account and source.
+
+    The lookup behind both pinned channels, so tabular and PDF answer "what does
+    this account already call itself here?" identically and only their policy on
+    a non-singleton answer differs.
+
+    Residue is filtered out: a pre-fix pin left the canonical id sitting in the
+    source-key column, and reusing THAT would write it straight back into raw —
+    the defect this rule exists to remove, not a key to adopt.
+    """
+    candidates = resolver.accepted_native_keys_for_account(
+        account_id=account_id,
+        source_type=source_type,
+        source_origin=source_origin,
+    )
+    residue = resolver.account_ids_ever_self_mapped(
+        candidates, source_type=source_type, source_origin=source_origin
+    )
+    return [key for key in candidates if key not in residue]
+
+
 def _bare_account_key(
     file_path: Path,
     *,
@@ -1496,10 +1546,19 @@ def _refuse_contradicted_bindings(
             if binding_targets[index] is not None
             else f"account_id pins {proposal_ref(index)}"
         )
+        # Masked for the reason _pinned_native_key's refusal is, and one more:
+        # `existing` is not even caller input. The caller never typed it, so
+        # echoing it verbatim discloses an id they had not seen — and neither id
+        # is guaranteed to be a minted surrogate, because
+        # stg_tabular__transactions falls back to the source-native key when
+        # nothing resolves. Masked, not dropped: the caller still has to learn
+        # which account to bind to instead.
+        masked_existing = _mask_caller_keys([existing])
         raise ValueError(
-            f"{supplied_by} to {src.explicit_account_id!r}, but this file's "
-            f"account is already accepted onto {existing!r}. Bind it to "
-            f"{existing!r}, or re-point the existing link first."
+            f"{supplied_by} to {_mask_caller_keys([src.explicit_account_id])}, "
+            f"but this file's account is already accepted onto "
+            f"{masked_existing}. Bind it to {masked_existing}, or re-point the "
+            "existing link first."
         )
 
 
@@ -1524,6 +1583,7 @@ class PdfAccountIdentity(NamedTuple):
 def _pdf_source_account(
     decision: "RouteDecision",
     *,
+    resolver: AccountResolver,
     resolved_alias: str,
     account_id_override: str | None,
     document_sha256: str,
@@ -1564,52 +1624,92 @@ def _pdf_source_account(
     # Whether the document named an account, independent of its idempotency key.
     anchored = derived.has_usable_identifier
     derived_key = derived.source_account_key
-    if account_id_override:
-        # Explicit override — agents/users can pin a statement whose text omits
-        # an account anchor to an existing dim_accounts row. The document key
-        # rides along as unpinned_account_key so the pin also teaches the
-        # resolver what this exact file yields on its own.
-        native_key = account_id_override
-    else:
-        native_key = derived_key
-    return PdfAccountIdentity(
-        source=SourceAccount(
+    source = SourceAccount(
+        source_type="pdf",
+        source_origin=derived.source_origin,
+        source_account_key=derived_key,
+        account_name=(
+            decision.metadata.account_label
+            or decision.metadata.product_name
+            or resolved_alias
+        ),
+        account_number=derived.scoped_full_number,
+        institution=issuer or None,
+        # Before document keys, an anchorless PDF used its filename alias.
+        # Preserve that accepted binding as review-only migration evidence.
+        legacy_source_account_key=(
+            derived.legacy_source_account_key
+            or (resolved_alias if not anchored else None)
+        ),
+        legacy_source_origin=(
+            derived.legacy_source_origin or (slugify(issuer) if not anchored else None)
+        ),
+        legacy_source_account_key_is_filename_alias=(
+            derived.legacy_source_account_key is None and not anchored
+        ),
+        source_file=source_file,
+        # None for a digits-free token ("xxxx"), which correctly denies the
+        # institution+last4 signal and routes to name review rather than
+        # inventing a strong match.
+        last_four=derived.last_four,
+        explicit_account_id=account_id_override,
+        # Set even when no key is borrowed below; _teach_unpinned_key ignores it
+        # once it equals source_account_key.
+        unpinned_account_key=derived_key if account_id_override else None,
+    )
+    # A pin (agents/users pointing a statement at an existing dim_accounts row)
+    # says WHICH account this document belongs to. It does not change what the
+    # document's own key is, so it normally travels in explicit_account_id
+    # alone and the native key stays derived.
+    #
+    # Except that the derived key is the document's BYTES, and a bank hands out
+    # a byte-different PDF for the same statement (fresh internal timestamps).
+    # transaction_id folds the canonical account, which the pin holds still, so
+    # a re-download that moves only the source key forks staging's
+    # (transaction_id, account_id) dedup and counts the statement twice. So a
+    # pin reuses the key this account already answers to — the same rule the
+    # tabular channel applies, and the reason both call _reusable_pinned_keys.
+    #
+    # Applies whether or not the document names an account, because
+    # derive_pdf_account_identity keys EVERY statement by its bytes — an
+    # anchored one included — so being anchored buys no stability here. The
+    # collision that document key prevents (two same-issuer/same-last-four
+    # accounts sharing a key) is a question about inferred identity, and a pin
+    # states the account outright, so there is nothing left to disambiguate.
+    #
+    # Several remembered keys take the first in the lookup's stable order
+    # rather than refusing or minting. One key per adopted statement is the
+    # ordinary state of any card with a history, so minting there would re-open
+    # the double count for the accounts holding the most; refusing would
+    # hard-fail an import the user has no --account-name to disambiguate with.
+    # Which key it lands on does not matter — transaction_id already separates
+    # the statements — only that both imports of one statement land on the same
+    # one.
+    #
+    # Gated on the document's own key being unknown, because
+    # _refuse_contradicted_bindings asks whether the key on THIS SourceAccount
+    # is accepted elsewhere. Substituting the target's key first answers that
+    # trivially and loads another account's statement here; a document that
+    # already named its account keeps saying so.
+    #
+    # "Elsewhere" means another account, not this one. A key the pin target
+    # already owns contradicts nothing — and it is the ordinary state here,
+    # because the borrowed import below teaches this document's own key to the
+    # target. Reading that back as a reason to stop borrowing would send the
+    # NEXT import of the same regenerated statement to its own digest while the
+    # previous one sits under the borrowed key, splitting one statement across
+    # two keys — the exact double count the borrowing exists to prevent.
+    document_owner = resolver.accepted_native_account_id(source)
+    if account_id_override and document_owner in (None, account_id_override):
+        reusable = _reusable_pinned_keys(
+            resolver,
+            account_id=account_id_override,
             source_type="pdf",
             source_origin=derived.source_origin,
-            source_account_key=native_key,
-            account_name=(
-                decision.metadata.account_label
-                or decision.metadata.product_name
-                or resolved_alias
-            ),
-            account_number=derived.scoped_full_number,
-            institution=issuer or None,
-            # Before document keys, an anchorless PDF used its filename alias.
-            # Preserve that accepted binding as review-only migration evidence.
-            legacy_source_account_key=(
-                derived.legacy_source_account_key
-                or (resolved_alias if not anchored else None)
-            ),
-            legacy_source_origin=(
-                derived.legacy_source_origin
-                or (slugify(issuer) if not anchored else None)
-            ),
-            legacy_source_account_key_is_filename_alias=(
-                derived.legacy_source_account_key is None and not anchored
-            ),
-            source_file=source_file,
-            # None for a digits-free token ("xxxx"), which correctly denies the
-            # institution+last4 signal and routes to name review rather than
-            # inventing a strong match.
-            last_four=derived.last_four,
-            explicit_account_id=account_id_override,
-            # The unpinned PDF key is always an opaque document digest. Teach it
-            # after an explicit pin so exact bytes re-adopt silently; the
-            # resolver's conflict guard refuses any attempted re-point.
-            unpinned_account_key=(derived_key if account_id_override else None),
-        ),
-        identity_unknown=not anchored,
-    )
+        )
+        if reusable:
+            source = dataclasses.replace(source, source_account_key=reusable[0])
+    return PdfAccountIdentity(source=source, identity_unknown=not anchored)
 
 
 def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAccount]:
@@ -2269,6 +2369,95 @@ class ImportService:
                 ratified_bindings=ratified,
             )
         )
+
+    def _pinned_native_key(
+        self,
+        *,
+        resolver: AccountResolver,
+        account_id: str,
+        file_path: Path,
+        source_bytes: bytes | None,
+        source_type: str,
+        source_origin: str,
+        account_name: str | None = None,
+    ) -> str:
+        """The native key a pinned import with no ``--account-name`` should use.
+
+        ``_bare_account_key`` hashes the file's bytes, which identifies a
+        *document*: stable for an unchanged file, different the moment a
+        recurring export grows by a row. ``account_id`` is folded into
+        ``transaction_id``, so a rotated key re-keys every row already imported
+        and both copies clear the ``(transaction_id, account_id)`` dedup —
+        double-counting the overlap, which is the very thing the pin exists to
+        prevent. No file-derived key escapes this: a content hash breaks when
+        the file grows, a filename breaks when it is renamed.
+
+        So the pin itself carries the identity. Reuse the key this account
+        already resolved to for this source; the first import has none and
+        falls back to the content hash, which every later pinned import then
+        finds. Nothing canonical enters the key-space — the key stays the one
+        the document itself produced.
+
+        Refuses rather than guesses when the account holds several keys for one
+        source: picking one would silently bind this file to whichever sorted
+        first, and ``--account-name`` states the answer explicitly.
+
+        Reuse only fires while this file's own key is unclaimed.
+        ``_refuse_contradicted_bindings`` looks up whatever key the
+        ``SourceAccount`` ends up carrying, so handing it the pin target's
+        remembered key makes that lookup resolve to the target and find nothing
+        to contradict — and a file already accepted onto another account loads
+        here as well, putting one file's transactions on two accounts with no
+        per-account view able to show it. ``_pdf_source_account`` is gated the
+        identical way; a channel that skips the check is the fork the shared
+        ``_reusable_pinned_keys`` exists to prevent.
+        """
+        # A pre-fix pin left a self-map: the canonical id sitting in the
+        # source-key column. Reusing THAT would write it back into raw for this
+        # import — the exact defect this change removes — so it is residue to be
+        # ignored, never a key to adopt.
+        # What this file calls its account with no history to consult. A label
+        # is the caller naming which account in the file the pin means, so it
+        # seeds the key exactly as an unpinned import with the same label would;
+        # otherwise the file's own content key does.
+        own_key = (
+            _label_account_key(account_name)
+            if account_name
+            else _bare_account_key(file_path, source_bytes=source_bytes)
+        )
+        if (
+            resolver.accepted_native_owner(
+                source_type=source_type, source_origin=source_origin, key=own_key
+            )
+            is not None
+        ):
+            return own_key
+        keys = _reusable_pinned_keys(
+            resolver,
+            account_id=account_id,
+            source_type=source_type,
+            source_origin=source_origin,
+        )
+        if len(keys) == 1:
+            return keys[0]
+        if len(keys) > 1 and account_name:
+            # The refusal below asks for exactly this flag, so honour it rather
+            # than refusing a caller who already answered.
+            return own_key
+        if len(keys) > 1:
+            # Masked like every other refusal that quotes a caller's key: the pin
+            # arrives from the command line, and account_id is not always a minted
+            # surrogate — stg_tabular__transactions falls back to the source-native
+            # key when nothing resolves, so the id a caller reads back can be the
+            # institution's own. source_origin is left out rather than masked; on
+            # this branch it is a registered format name, and naming the file's own
+            # coordinates tells the caller nothing they did not just type.
+            raise ValueError(
+                f"--account-id {_mask_caller_keys([account_id])} already has "
+                f"{len(keys)} source keys for this {source_type} source; pass "
+                "--account-name to say which account in this file the pin refers to"
+            )
+        return own_key
 
     def _import_tabular(
         self,
@@ -3079,29 +3268,67 @@ class ImportService:
         # Source keys whose gate offers a fallback pick-list (see the bare branch).
         fallback_keys: set[str] = set()
         if account_id:
-            account_ids: str | list[str] = account_id
-            acct_id_to_name[account_id] = account_name or account_id
-            # Parse only a real display label, never the canonical --account-id
-            # itself: an opaque id ending in 4 digits ("acct-1234") would
-            # otherwise fabricate a "****1234" bank mask in dim_accounts. No
-            # label supplied → no derived last4.
-            label_parsed_by_key[account_id] = (
-                parse_account_label(account_name)
-                if account_name
-                else (account_id, None)
+            # A pin says which account this file belongs to; it does not rename
+            # what the file calls that account. Derive the same native key the
+            # unpinned branches below would, and carry the pin in
+            # explicit_account_id alone.
+            # --account-name does not pick the key here. It labels the account,
+            # and the pin already said which account this is; letting the label
+            # key the row means adding or dropping the flag between two imports
+            # of one recurring export re-keys it — and tabular derives
+            # transaction_id FROM this key, so every row in the overlap changes
+            # id and both copies clear staging's dedup. It still seeds a first
+            # import that has nothing to reuse, which is what keeps two accounts
+            # exported to one file on separate keys.
+            native_key = self._pinned_native_key(
+                resolver=resolver,
+                account_id=account_id,
+                file_path=file_path,
+                source_bytes=source_bytes,
+                source_type=source_type,
+                source_origin=source_origin,
+                account_name=account_name,
             )
+            account_ids: str | list[str] = native_key
+            # Parse only a real display label, never a derived key: both a
+            # canonical id and a bare content key can end in 4 digits
+            # ("acct-1234", "statement-9f2c1234"), and parsing one would
+            # fabricate a "****1234" bank mask in dim_accounts. No label
+            # supplied → no derived last4.
+            if account_name:
+                display_name = account_name
+                clean_name, label_last4 = parse_account_label(account_name)
+            else:
+                display_name = file_path.stem or native_key
+                clean_name, label_last4 = display_name, None
+            acct_id_to_name[native_key] = display_name
+            label_parsed_by_key[native_key] = (clean_name, label_last4)
             source_accounts.append(
                 SourceAccount(
                     source_type=source_type,
                     source_origin=source_origin,
-                    source_account_key=account_id,
-                    account_name=account_name or account_id,
+                    source_account_key=native_key,
+                    account_name=clean_name,
                     institution=institution,
+                    last_four=label_last4,
                     explicit_account_id=account_id,
+                    # Deliberately does NOT teach this file's own content key the
+                    # way the PDF channel teaches a borrowed document's digest.
+                    # There, transaction_id folds the canonical account, so an
+                    # extra accepted key is a harmless alias. Here it is derived
+                    # FROM the raw key, so an extra key is a second dedup
+                    # namespace — and _pinned_native_key reads two keys back as
+                    # ambiguity and refuses a file that was never ambiguous. It
+                    # would also buy little: this key is the file's bytes, and a
+                    # recurring export's bytes change every period, so the key
+                    # taught is not the one the next unpinned import derives.
+                    # Cost: an unpinned re-import of a CHANGED file stops at the
+                    # confirm gate instead of self-recognising. Visible and
+                    # safe, and tracked with the rest of the key-identity work.
                 )
             )
         elif account_name:
-            native_key = slugify(account_name)
+            native_key = _label_account_key(account_name)
             account_ids = native_key
             acct_id_to_name[native_key] = account_name
             clean_name, label_last4 = parse_account_label(account_name)
@@ -3865,15 +4092,20 @@ class ImportService:
         # routing settles, before begin_import. A bridge recipe is agent-authored,
         # so the account identity it implies is no more ratified than a
         # deterministic one — and an agent must never self-pick an identity.
+        # One resolver for the identity and the gate: the key reuse inside
+        # _pdf_source_account reads the same accepted links the gate does, and
+        # the identity the user ratifies has to be the one that gets bound.
+        pdf_resolver = AccountResolver(self._db, actor="system")
         identity = _pdf_source_account(
             decision,
+            resolver=pdf_resolver,
             resolved_alias=resolved_alias,
             account_id_override=account_id,
             document_sha256=file_sha256,
             source_file=str(canonical),
         )
         gated = self._gate_account_proposals(
-            AccountResolver(self._db, actor="system"),
+            pdf_resolver,
             [identity.source],
             account_bindings,
             channel="pdf",
@@ -4525,21 +4757,23 @@ class ImportService:
         # is exactly the coupling that let the load re-derive its own copy.
         pdf_bound: SourceAccount | None = None
         if decision.outcome == "transactions":
+            pdf_resolver = AccountResolver(
+                self._db,
+                actor="system",
+                include_unmaterialized_candidates=(
+                    include_unmaterialized_account_candidates
+                ),
+            )
             identity = _pdf_source_account(
                 decision,
+                resolver=pdf_resolver,
                 resolved_alias=resolved_alias,
                 account_id_override=account_id,
                 document_sha256=file_sha256,
                 source_file=str(canonical),
             )
             gated = self._gate_account_proposals(
-                AccountResolver(
-                    self._db,
-                    actor="system",
-                    include_unmaterialized_candidates=(
-                        include_unmaterialized_account_candidates
-                    ),
-                ),
+                pdf_resolver,
                 [identity.source],
                 account_bindings,
                 channel="pdf",
