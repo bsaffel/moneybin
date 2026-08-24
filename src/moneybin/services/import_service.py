@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
 import duckdb
 
 if TYPE_CHECKING:
+    import polars as pl
+
     from moneybin.extractors.pdf.ir import PdfDocument
     from moneybin.extractors.pdf.routing import RouteDecision
     from moneybin.extractors.tabular.formats import TabularFormat
@@ -2317,7 +2319,9 @@ class ImportService:
             )
         return _bare_account_key(file_path, source_bytes=source_bytes)
 
-    def _supersede_legacy_pinned_raw_rows(self, source_file: str) -> None:
+    def _supersede_legacy_pinned_raw_rows(
+        self, source_file: str, *, replacing: "pl.DataFrame"
+    ) -> None:
         """Drop raw rows a pre-fix ``--account-id`` pin wrote under the canonical id.
 
         ``--account-id`` used to overwrite the source-native key with the
@@ -2352,13 +2356,35 @@ class ImportService:
             TABULAR_TRANSACTIONS,
         )
 
-        for table in (TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS):
+        # Only the transactions this import actually rewrites. A legacy row the
+        # incoming file no longer carries is NOT residue to discard: deleting it
+        # would destroy a transaction with nothing to replace it, which is how a
+        # shorter re-export saved over the same path would silently lose the
+        # difference. Left alone it stays wrongly keyed but counted once, which
+        # is strictly better than gone.
+        #
+        # Identity is (date, amount, description) — the tuple the content hash
+        # encodes, minus the account token, which differs by construction
+        # between a legacy row and its replacement and so cannot be matched on.
+        with self._db.registered_frame("_superseding_rows", replacing):
             self._db.execute(
-                f"DELETE FROM {table.full_name} "  # noqa: S608  # TableRef constants, value parameterized
-                "WHERE source_file = ? AND account_id IN "
-                f"(SELECT account_id FROM {ACCOUNT_LINKS.full_name})",
+                f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} AS legacy "  # noqa: S608  # TableRef constants, value parameterized
+                "WHERE legacy.source_file = ? AND legacy.account_id IN "
+                f"(SELECT account_id FROM {ACCOUNT_LINKS.full_name}) "
+                "AND EXISTS (SELECT 1 FROM _superseding_rows AS fresh "
+                "WHERE fresh.transaction_date = legacy.transaction_date "
+                "AND fresh.amount = legacy.amount "
+                "AND fresh.description IS NOT DISTINCT FROM legacy.description)",
                 [source_file],
             )
+        # The account row carries no history to lose and this import regenerates
+        # it, so the legacy one goes unconditionally.
+        self._db.execute(
+            f"DELETE FROM {TABULAR_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constants, value parameterized
+            "WHERE source_file = ? AND account_id IN "
+            f"(SELECT account_id FROM {ACCOUNT_LINKS.full_name})",
+            [source_file],
+        )
 
     def _import_tabular(
         self,
@@ -3505,7 +3531,9 @@ class ImportService:
         if owns_txn:
             self._db.begin()
         try:
-            self._supersede_legacy_pinned_raw_rows(str(file_path))
+            self._supersede_legacy_pinned_raw_rows(
+                str(file_path), replacing=transform_result.transactions
+            )
             rows_imported = extractor.load_transactions(transform_result.transactions)
             extractor.load_accounts(account_df)
         except BaseException:
@@ -5101,7 +5129,9 @@ class ImportService:
             # That pass drops a row from this insert when it finds the legacy
             # copy already present; superseding afterwards would then delete the
             # copy it deferred to, losing the transaction from both sides.
-            self._supersede_legacy_pinned_raw_rows(str(canonical))
+            self._supersede_legacy_pinned_raw_rows(
+                str(canonical), replacing=pl.DataFrame(rows_list)
+            )
             # The account-identity upgrade changed the account token inside PDF
             # transaction hashes. If the exact legacy hash already exists, keep
             # that raw row authoritative instead of inserting its replacement

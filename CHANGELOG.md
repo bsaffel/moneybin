@@ -1212,8 +1212,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   **Behaviour change:** pinning a statement already bound to another account
   used to succeed and silently double-count it, and now errors instead, naming
   the account it is bound to. Rows written under the old scheme are superseded
-  automatically the next time that file is imported, in one transaction, so no
-  revert step is needed. A pin with no `--account-name` reuses the key its
+  the next time that same path is imported — only the ones the incoming file
+  actually replaces, so a shorter re-export cannot delete the difference — which
+  needs no revert step; a copy re-downloaded under a new name is not matched and
+  keeps the old key until it too is re-imported. A pin with no `--account-name` reuses the key its
   account is already bound under rather than re-deriving one from the file's
   bytes, which would rotate whenever a recurring export grew (#438, #418).
 

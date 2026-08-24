@@ -911,6 +911,21 @@ class Database:
             )
         return self._conn
 
+    @contextmanager
+    def registered_frame(self, name: str, df: Any) -> Generator[None, None, None]:
+        """Expose a DataFrame to SQL under ``name`` for the duration of the block.
+
+        Read-only counterpart to :meth:`ingest_dataframe`'s own registration: it
+        lets a statement JOIN or filter against rows that are not in a table yet,
+        without staging them in one. Unregistered on exit so a failure cannot
+        leave the name bound for the next statement.
+        """
+        self.conn.register(name, df.to_arrow())
+        try:
+            yield
+        finally:
+            self.conn.unregister(name)
+
     def ingest_dataframe(
         self,
         table: str,

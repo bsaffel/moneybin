@@ -1512,10 +1512,10 @@ def test_pdf_reimport_supersedes_rows_a_pre_fix_pin_wrote_under_the_canonical_id
     source_file = str(pdf.resolve())
     db.execute(
         "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
-        "(transaction_id, account_id, transaction_date, amount, source_file, "
-        "source_type, source_origin, import_id) VALUES "
-        "('acct_legacy01:legacy-1', 'acct_legacy01', DATE '2026-01-05', -1.00, "
-        "?, 'pdf', 'unknown', 'imp_legacy')",
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_file, source_type, source_origin, import_id) VALUES "
+        "('acct_legacy01:legacy-1', 'acct_legacy01', DATE '2024-01-15', -50.00, "
+        "'Coffee Shop', ?, 'pdf', 'unknown', 'imp_legacy')",
         [source_file],
     )
 
@@ -3139,10 +3139,10 @@ def test_pdf_supersede_rolls_back_when_the_replacement_load_fails(
     source_file = str(pdf.resolve())
     db.execute(
         "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
-        "(transaction_id, account_id, transaction_date, amount, source_file, "
-        "source_type, source_origin, import_id) VALUES "
-        "('acct_legacy01:legacy-1', 'acct_legacy01', DATE '2026-01-05', -1.00, "
-        "?, 'pdf', 'unknown', 'imp_legacy')",
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_file, source_type, source_origin, import_id) VALUES "
+        "('acct_legacy01:legacy-1', 'acct_legacy01', DATE '2024-01-15', -50.00, "
+        "'Coffee Shop', ?, 'pdf', 'unknown', 'imp_legacy')",
         [source_file],
     )
 
@@ -3201,9 +3201,9 @@ def test_pdf_supersede_runs_before_the_historical_hash_pass(
             order.append("historical_read")
         return real_execute(self, query, *a, **k)  # type: ignore[arg-type]
 
-    def spy_supersede(self: ImportService, source_file: str) -> None:
+    def spy_supersede(self: ImportService, source_file: str, **kw: object) -> None:
         order.append("supersede")
-        real_supersede(self, source_file)
+        real_supersede(self, source_file, **kw)  # type: ignore[arg-type]
 
     with (
         patch(

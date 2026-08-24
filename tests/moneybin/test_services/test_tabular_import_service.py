@@ -508,10 +508,10 @@ def test_reimport_supersedes_rows_a_pre_fix_pin_wrote_under_the_canonical_id(
     # to stamp the canonical id straight into the raw source-key column.
     db.execute(
         "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
-        "(transaction_id, account_id, transaction_date, amount, source_file, "
-        "source_type, source_origin, import_id) VALUES "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_file, source_type, source_origin, import_id) VALUES "
         "('acct_legacy01:legacy-1', 'acct_legacy01', DATE '2026-01-05', -52.30, "
-        "?, 'csv', 'unknown', 'imp_legacy')",
+        "'GROCERY STORE PURCHASE', ?, 'csv', 'unknown', 'imp_legacy')",
         [str(_STANDARD_CSV)],
     )
     db.execute(
@@ -1759,10 +1759,10 @@ def test_supersede_rolls_back_when_the_replacement_load_fails(db: Database) -> N
     )
     db.execute(
         "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
-        "(transaction_id, account_id, transaction_date, amount, source_file, "
-        "source_type, source_origin, import_id) VALUES "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_file, source_type, source_origin, import_id) VALUES "
         "('acct_legacy01:legacy-1', 'acct_legacy01', DATE '2026-01-05', -52.30, "
-        "?, 'csv', 'unknown', 'imp_legacy')",
+        "'GROCERY STORE PURCHASE', ?, 'csv', 'unknown', 'imp_legacy')",
         [str(_STANDARD_CSV)],
     )
 
@@ -1896,10 +1896,10 @@ def test_supersede_finds_residue_core_never_materialized(db: Database) -> None:
     # profile never refreshed after the pinned import.
     db.execute(
         "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
-        "(transaction_id, account_id, transaction_date, amount, source_file, "
-        "source_type, source_origin, import_id) VALUES "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_file, source_type, source_origin, import_id) VALUES "
         "('acct_legacy01:legacy-1', 'acct_legacy01', DATE '2026-01-05', -52.30, "
-        "?, 'csv', 'unknown', 'imp_legacy')",
+        "'GROCERY STORE PURCHASE', ?, 'csv', 'unknown', 'imp_legacy')",
         [str(_STANDARD_CSV)],
     )
 
@@ -1998,3 +1998,68 @@ def test_pinned_native_key_falls_back_on_the_first_import(
     """No key yet — derive one from content; every later pinned import finds it."""
     key = _pinned_key(db, tmp_path, "acct_never_seen")
     assert key.startswith("export-"), key
+
+
+def test_supersede_keeps_legacy_rows_the_new_file_no_longer_carries(
+    db: Database,
+) -> None:
+    """A shorter re-export must not silently delete the difference.
+
+    The supersede replaces pre-fix rows so the re-import cannot double-count
+    them. A legacy row the incoming file does NOT carry has no replacement
+    coming, so deleting it would destroy a transaction outright — a worse
+    outcome than the duplicate it exists to prevent. It stays, wrongly keyed
+    but counted once.
+    """
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+    from moneybin.services.import_service import ImportService
+
+    create_core_tables(db)
+    AccountLinksRepo(db).insert(
+        link_id="lnk_legacy",
+        account_id="acct_legacy01",
+        ref_kind="source_native",
+        ref_value="acct_legacy01",
+        source_type="csv",
+        source_origin="legacy-origin",
+        decided_by="user",
+        actor="cli",
+    )
+    # One legacy row the incoming file still carries, one it does not.
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_file, source_type, source_origin, import_id) VALUES "
+        "('acct_legacy01:kept', 'acct_legacy01', DATE '2025-12-20', -99.99, "
+        "'STATEMENT ONLY IN THE OLDER EXPORT', ?, 'csv', 'unknown', 'imp_legacy'), "
+        "('acct_legacy01:replaced', 'acct_legacy01', DATE '2026-01-05', -52.30, "
+        "'GROCERY STORE PURCHASE', ?, 'csv', 'unknown', 'imp_legacy')",
+        [str(_STANDARD_CSV), str(_STANDARD_CSV)],
+    )
+
+    import_answering_gate(
+        ImportService(db),
+        _STANDARD_CSV,
+        account_name="Primary Checking",
+        account_id="acct_legacy01",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+
+    survivors = db.execute(
+        "SELECT transaction_id FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND account_id = 'acct_legacy01' "
+        "ORDER BY transaction_id",
+        [str(_STANDARD_CSV)],
+    ).fetchall()
+    assert survivors == [("acct_legacy01:kept",)], (
+        f"expected only the unreplaced legacy row to survive, got {survivors}"
+    )
+    # The replaced one came back under the file's own key, counted once.
+    grocery = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "WHERE source_file = ? AND amount = -52.30",
+        [str(_STANDARD_CSV)],
+    ).fetchone()
+    assert grocery is not None and grocery[0] == 1, grocery
