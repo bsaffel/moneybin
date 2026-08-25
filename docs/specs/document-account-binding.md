@@ -26,15 +26,24 @@ by a minted opaque key bound to documents by an explicit human decision.
 - [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — owns the
   match engine this spec modifies in R12.
 
-### One reversal from the decision record
+### Two reversals from the decision record
 
+Where the decision record and this spec disagree, this spec governs.
+
+**1. The binding ref is a content digest, not a filename stem.**
 `transaction-identity-stability.md` §"The one genuinely open sub-decision"
-recommends a **filename stem**, user-confirmed and scoped by source, as the
-durable binding ref. **That recommendation is withdrawn.** A filename is not a
-reliable signal of contents: exports arrive as `transactions.csv` and are
-renamed by hand, so the stem is both unstable and non-unique. Document identity
-is a content digest. Where the decision record and this spec disagree, this
-spec governs.
+recommends a filename stem, user-confirmed and scoped by source. Withdrawn: a
+filename is not a reliable signal of contents. Exports arrive as
+`transactions.csv` and are renamed by hand, so the stem is both unstable and
+non-unique.
+
+**2. The changes ship as one slice, not change 1 alone first.**
+`transaction-identity-stability.md:606-607` asks "Ship change 1 alone first? It
+is free and forward-only" and recommends yes. Withdrawn: change 1 is only
+forward-only in isolation. Every other change rotates `transaction_id`, so
+shipping them separately means several rotations, several migrations, and
+several windows in which curation can orphan. The migration is the atom (§Key
+Decisions 3).
 
 ## The governing rule
 
@@ -101,8 +110,17 @@ path, or a display label. For a file with no caller-stated account, the import
 **mints** an opaque `source_account_key`.
 
 **R5.** A minted account key is opaque and non-reproducible across databases. A
-wiped database re-mints different keys; that is intended, and re-loading the
-source files is the recovery path.
+wiped database re-mints different keys, so re-loading the same source files
+into a fresh database yields different transaction ids and no `app.*` curation
+survives. That is accepted: wiping the database is a deliberate act, and the
+recovery path is a database restore, not a re-import.
+
+Note the precise scope, because it narrows §Key Decisions 1's recomputability
+claim. `raw.*` stores the stamped account key, so `transaction_id` stays
+recomputable from `raw` — re-running the transform after any derived-layer loss
+reproduces every id exactly. What is *not* reproducible is regenerating `raw`
+itself from the original files after `raw` is gone. Backups cover that; the
+identity model does not.
 
 **R6.** A file with no stated account **never binds silently**. It surfaces an
 `account_confirmation` proposal through the existing gate and waits for a human
@@ -122,14 +140,54 @@ No caller flag may move a component of the identity hash. (MB-147.)
 
 **R9.** Manual rows carry no `account_id` in the identity tuple. Manual rows
 already hold an immutable `manual_<uuid4>` as `source_transaction_id`; the
-account slot becomes a minted per-account source key or the constant `'user'`.
+account slot becomes a **minted per-account source key**.
+
+An earlier draft also offered the constant `'user'`. That option is withdrawn as
+unsafe: `stg_manual__transactions.sql:7-8` reads `t.account_id` as both
+`source_account_key` and the link join's `ref_value`, so a constant would bind
+every manual account to one `app.account_links` row and silently merge every
+hand-entered account into a single account.
 
 ### Provenance vs. identity
 
-**R10.** `source_file` is renamed `source_path` and becomes informational
-metadata. It MUST NOT appear in any join predicate, equality test, hash input,
-`PARTITION BY`, or `ORDER BY` that affects a result. It remains freely
-displayable and loggable (R11).
+**R10.** `source_document_key` **replaces** `source_file` in every position
+where the schema or a query treats it as identity. `source_path` is what is
+left over: informational metadata that MUST NOT appear in any join predicate,
+equality test, hash input, `PARTITION BY`, or `ORDER BY` affecting a result. It
+remains freely displayable and loggable (R11).
+
+This is a substitution, not a rename-and-demote. `source_file` is load-bearing
+in two ways that a demotion alone would break:
+
+**It is a PRIMARY KEY component in eight raw tables.** A PK is a uniqueness
+constraint that affects results and cannot be NULL, so "informational and
+nullable" is not available until the key moves:
+
+| Table | Current primary key |
+|---|---|
+| `raw_tabular_transactions.sql:33` | `(transaction_id, account_id, source_file)` |
+| `raw_tabular_accounts.sql:19` | `(account_id, source_file)` |
+| `raw_ofx_transactions.sql:19` | `(source_transaction_id, account_id, source_file)` |
+| `raw_ofx_accounts.sql:14` | `(account_id, source_file, extracted_at)` |
+| `raw_ofx_balances.sql:16` | `(account_id, statement_end_date, source_file)` |
+| `raw_plaid_investment_holdings.sql:27` | `(account_id, security_id, source_origin, source_file)` |
+| `raw_plaid_investment_holdings_snapshots.sql:22` | `(source_origin, source_file)` |
+| `raw_plaid_investment_holding_lots.sql:18` | `(account_id, security_id, source_origin, lot_index, source_file)` |
+
+Each of these reads "one row per business key **per document**" — the schema
+has been asserting document identity all along and spelling it with a path.
+`source_document_key` takes the `source_file` slot in all eight. That is why
+the substitution strengthens the model rather than working around it: the PKs
+become true statements instead of accidentally-true ones.
+
+**Nine query sites use it as a batch discriminator**, all of which move to
+`source_document_key`:
+
+`import_service.py:1862`, `:5026`, `:5257`, `:6112`;
+`account_resolver.py:1318`; `doctor_service.py:141`;
+`dim_holdings.sql:88`; `gsheet/connection_service.py:566`; and
+`import_log.py:410,415` — the last being the legacy path fallback that
+`find_existing_import` already documents as retiring, which this spec retires.
 
 **R11.** A filename or path is **not** treated as a sensitive leak vector.
 `source_path` keeps `DataClass.RECORD_ID` (`taxonomy.py:692`, `Tier.LOW`,
@@ -176,10 +234,29 @@ Required:
 - `source_transaction_id` carries the institution's id where the source
   supplies one, and NULL where it does not. No `COALESCE` may fill it.
 - `source_row_key` carries MoneyBin's within-document row identity, derived
-  from transaction date, amount, and a within-file ordinal — dropping
-  `description` (which a bank may re-render) and the account key (already an
-  identity-tuple component, so embedding it twice compounds any wobble). This
-  is the hardening ADR-015 already names as a follow-up.
+  from transaction date, amount, and an **occurrence index scoped to that
+  `(date, amount)` pair** — dropping `description` (which a bank may re-render)
+  and the account key (already an identity-tuple component, so embedding it
+  twice compounds any wobble). This is the hardening ADR-015 already names as a
+  follow-up.
+
+  **The occurrence index must not be a row position.** Today the row hash uses
+  `row_number`, raw file order (`transforms.py:142`, no sort anywhere in the
+  module). A position moves whenever the export window shifts, so a Feb row
+  sitting at offset 40 in a Jan–Mar export sits at offset 8 in a Feb–Apr one —
+  and a position-derived key would rotate its id, defeating this spec's Goal
+  for precisely the recurring-export case it exists to fix. An occurrence index
+  is stable under that shift: a Feb 15 / −52.30 row that is the only one of its
+  `(date, amount)` is occurrence 1 in both files.
+
+  The cost, stated plainly: two genuinely distinct transactions sharing a date
+  and an amount become interchangeable under this key, because `description` is
+  gone. They still both exist and still both get ids — but which id attaches to
+  which row is arbitrary, and if their relative order flips between exports the
+  two ids swap. That is acceptable only because the two rows are, by
+  construction, indistinguishable on every field the key retains; a user who
+  curated one and not the other could see that curation move. Sources with a
+  native id never touch this path.
 - The identity hash consumes `source_transaction_id` when present and
   `source_row_key` otherwise. That selection happens **once**, explicitly, in
   the identity derivation — not by a fallback hidden inside a column's meaning.
@@ -197,19 +274,47 @@ into an `account_id` column, a `display_name` into a `source_account_key`, a
 `src/moneybin/sqlmesh/models/`, paired with a behavioural test that a resolved
 account never carries a source-native value in `account_id`.
 
-**R15.** After R4–R8, `core.dim_accounts.account_id` holds only minted
-surrogates, making its existing `DataClass.RECORD_ID` classification
-unconditionally true rather than true-only-where-a-link-exists.
+**R15.** `core.dim_accounts.account_id` holds only minted surrogates, making
+its existing `DataClass.RECORD_ID` classification unconditionally true rather
+than true-only-where-a-link-exists.
+
+R4–R8 alone do **not** achieve this, and an earlier draft claimed they did. R4
+mints a `source_account_key`, which still lands in `raw.*.account_id` and is
+still passed through `COALESCE(links.account_id, <source>.account_id) AS
+account_id` in **nine** prep models — `stg_{ofx,tabular,plaid,manual}__transactions`,
+`stg_{ofx,tabular,plaid}__accounts`, and `stg_{ofx,plaid}__balances`. An
+unlinked account would keep publishing a source-native value in `account_id`,
+which is precisely what R14's guard forbids, so the guard would fail against
+unmodified files the day it lands.
+
+Removing the fallback requires that every account be linked, which R6's
+always-propose rule delivers: a file that reaches the confirm gate produces an
+`app.account_links` row before load, so the join always hits and the `COALESCE`
+has nothing left to fall back to. The nine models must then drop the fallback
+arm — otherwise a dead branch keeps the ambiguity alive in the code and in
+`taxonomy.py`'s reasoning about the column.
+
+(The decision record says "all four `stg_*` models"
+(`transaction-identity-stability.md:26`). That undercounts by five and
+understates the Part 1 blast radius; corrected here.)
 
 ## Data Model
 
 ### New column
 
-`source_document_key VARCHAR` on every `raw.*` transaction and account table
-that today carries `source_file`, and on `raw.import_log`.
+`source_document_key VARCHAR NOT NULL` on every `raw.*` transaction and account
+table that today carries `source_file`, and on `raw.import_log`. `NOT NULL`
+because it takes `source_file`'s place in eight primary keys (R10).
 
-For channels with no file, the document key is the batch's existing stable
-token, hashed the same way, so the column holds one kind of value everywhere:
+**Truncation: 16 hex characters**, matching `transaction_id` and
+`migrations.py:35`'s documented 64-bit content-hash convention, rather than
+`_bare_account_key`'s 12. The full digest stays in
+`raw.import_log.file_sha256`, which the key is a prefix of **for file-backed
+channels only** — Plaid, Google Sheets, and manual have no `file_sha256`, so
+the two columns coexist rather than agree everywhere.
+
+For channels with no file, the document key hashes the batch's existing stable
+token, so the column holds one kind of value everywhere:
 
 | Channel | Document key input |
 |---|---|
@@ -218,8 +323,8 @@ token, hashed the same way, so the column holds one kind of value everywhere:
 | Google Sheets | `gsheet://{spreadsheet_id}/{sheet_gid}` plus the pull's row digest |
 | Manual | the minting batch token |
 
-`raw.import_log.file_sha256` is the existing full digest and stays; the new
-column is the truncated form used for joins, so the two agree by construction.
+`raw.import_log.file_sha256` is the existing full digest and stays, retaining
+its role in `find_existing_import`.
 
 ### Second new column
 
@@ -236,10 +341,18 @@ remove.
 
 ### Renamed column
 
-`source_file` → `source_path`, nullable, informational. Retained rather than
-dropped: it is the only human-legible pointer back to the artifact on disk, and
-dropping it would make a failed import unexplainable. Its privacy class is
-unchanged (R11).
+`source_file` → `source_path`, nullable, informational — but only **after**
+`source_document_key` has taken its place in the eight primary keys listed in
+R10. Until that swap lands the column cannot be nullable, so the two changes
+are one step, not two.
+
+Retained rather than dropped: it is the only human-legible pointer back to the
+artifact on disk, and dropping it would make a failed import unexplainable. For
+the three channels whose `source_file` is already a synthetic batch token
+rather than a path (Plaid, Google Sheets, manual), `source_path` becomes
+redundant with `source_document_key` and may be left NULL.
+
+Its privacy class is unchanged (R11).
 
 ### Unchanged
 
@@ -260,17 +373,36 @@ The migration must:
 1. Add `source_document_key` and backfill it. For rows whose source artifact is
    gone, backfill from `raw.import_log.file_sha256` where present; where absent
    (pre-V046 batches), mint a per-batch key so the column is never NULL.
-2. Rename `source_file` to `source_path`.
-3. Add `source_row_key` and populate it from the existing row hash; null out
-   `source_transaction_id` on every row where the value was MoneyBin-derived
-   rather than institution-supplied, recoverable because
-   `raw.tabular_transactions` still holds the honest column beside the
-   fallback. Then drop the fallback `transaction_id` column.
-4. Recompute `transaction_id` for every affected row and rewrite the
+2. Add `source_row_key` and **recompute** it from the raw columns
+   (`transaction_date`, `amount`, occurrence index), not by copying the existing
+   `transaction_id` hash — that hash still contains `description` and
+   `account_id`, the two components R13 removes, so copying it would leave
+   every migrated row carrying a key no fresh import can reproduce and break
+   the `--force` idempotence test. Then drop the fallback `transaction_id`
+   column.
+
+   `source_transaction_id` needs no null-out pass: in
+   `raw.tabular_transactions` it is *already* NULL for exactly the rows whose
+   id was MoneyBin-derived (`raw_tabular_transactions.sql:20`) — the derived
+   value only ever lived in the separate `transaction_id` column. The
+   correction is at the union (`int_transactions__unioned.sql:82`), not in the
+   data.
+3. **Mint replacement account keys.** For every distinct existing
+   bytes-derived `source_account_key` in `raw.*`, mint an opaque key, rewrite
+   the `raw.*.account_id` values that carry it, and update the matching
+   `app.account_links.ref_value` rows in the same transaction. Without this
+   step R4 and R15 are not achieved on any existing database and step 5's
+   rotation is largely a no-op, because the account slot would rehash to the
+   same value. Where two bytes-derived keys already resolve to one
+   `account_id`, they collapse to one minted key — which is the duplicate this
+   spec exists to stop creating.
+4. Swap `source_document_key` for `source_file` in the eight primary keys
+   (R10), then rename the leftover to `source_path` and make it nullable.
+5. Recompute `transaction_id` for every affected row and rewrite the
    `transaction_id` held by the five hard-coupled `app.*` tables named in
    §Migration and On-Disk Impact, verifying row counts before and after —
    nothing cascades, so a missed table fails silently.
-5. Refuse to run partially: either every table is rotated or none is.
+6. Refuse to run partially: either every table is rotated or none is.
 
 ## Implementation Plan
 
@@ -317,18 +449,40 @@ The migration must:
 - `src/moneybin/matching/assignment.py:88,173,191,199-206` — physical-import
   key to `source_document_key`.
 
-**Models** — the 22 models referencing `source_file`, of which the load-bearing
-ones are `int_transactions__unioned.sql`, `int_transactions__matched.sql`,
-`stg_tabular__transactions.sql`, `stg_plaid__investment_holdings.sql`,
+**Raw schemas** — the eight files in R10's table, each swapping
+`source_document_key` for `source_file` in its PRIMARY KEY.
+
+**The nine query sites** in R10 that use `source_file` as a batch
+discriminator.
+
+**The nine `COALESCE` prep models** in R15, each dropping the fallback arm:
+`stg_ofx__transactions.sql:102`, `stg_tabular__transactions.sql:45`,
+`stg_plaid__transactions.sql:7`, `stg_manual__transactions.sql:7`,
+`stg_ofx__accounts.sql:25`, `stg_tabular__accounts.sql:7`,
+`stg_plaid__accounts.sql:29`, `stg_ofx__balances.sql:7`,
+`stg_plaid__balances.sql:7`.
+
+**`stg_tabular__transactions.sql:35`** — the staging dedup partition
+`ROW_NUMBER() OVER (PARTITION BY transaction_id, account_id …)` names the
+`transaction_id` column R13 drops. It repartitions on
+`(source_document_key, source_row_key, account_id)`. It must **not** repartition
+on `source_transaction_id` alone: after R13 that column is legitimately NULL for
+every no-native-id source, which would collapse an entire document into one
+partition and delete all but one row.
+
+**Other models** — the remainder of the 22 referencing `source_file`, of which
+the load-bearing ones are `int_transactions__unioned.sql`,
+`int_transactions__matched.sql`, `stg_plaid__investment_holdings.sql`,
 `int_plaid__opening_positions.sql`, `stg_plaid__opening_lots.sql`,
-`core/dim_accounts.sql`, and `meta/fct_transaction_provenance.sql`. For Plaid,
-gsheet, and manual the *value* does not change — those columns already hold a
-batch token — so those edits are a rename.
+`core/dim_accounts.sql`, `core/dim_holdings.sql`, and
+`meta/fct_transaction_provenance.sql`.
 
 **Privacy**
 
-- `src/moneybin/privacy/taxonomy.py:692` and every other `source_file` entry —
-  R11.
+- `src/moneybin/privacy/taxonomy.py:692` — the sole `source_file` entry,
+  renamed to `source_path` with its class unchanged (R11). New entries are
+  needed wherever `source_document_key` and `source_row_key` become
+  publishable; both are `RECORD_ID`.
 
 ### Key Decisions
 
@@ -433,7 +587,7 @@ Per `docs/specs/observability.md`, registered in
 
 The generator needs a **recurring export series**: three files for one account
 covering overlapping date windows, with rows appended at the top in one variant
-and at the bottom in another, so the row-ordinal component of R13 is exercised
+and at the bottom in another, so the occurrence-index component of R13 is exercised
 in both directions. Ground truth is the set of distinct transactions across the
 series, so a test can assert the count after importing all three.
 
@@ -481,7 +635,7 @@ the migration's before/after verification checkable afterwards.
 
 Recovery, if the migration is abandoned: the raw layer is unchanged by identity
 rotation, so re-running the transform reproduces the derived layers. Curation
-in `app.*` is the only thing that cannot be recomputed, which is why step 5 of
+in `app.*` is the only thing that cannot be recomputed, which is why step 6 of
 the migration refuses partial application.
 
 ## Dependencies
