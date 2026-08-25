@@ -23,7 +23,7 @@ Three fallbacks blur the vocabulary today:
 
 | Fallback | Blurs | Consequence |
 |---|---|---|
-| `COALESCE(links.account_id, <source>.account_id)` in nine `stg_*` models (4 transaction, 3 account, 2 balance) | `account_id` | The canonical surrogate silently becomes a source-native key — which for OFX **is the institution's account number** |
+| `COALESCE(links.account_id, <source>.account_id)` in thirteen `stg_*` models (4 transaction, 3 account, 2 balance, 4 Plaid investment) | `account_id` | The canonical surrogate silently becomes a source-native key — which for OFX **is the institution's account number** |
 | `--account-name` seeding `_label_account_key` and `source_origin` | `account_name` | A display label becomes an identity input; passing or omitting the flag moves two of the four hash components |
 | `_bare_account_key` synthesizing an account key from file bytes | `source_account_key` | A *document* key impersonates an *account* key, so it changes every time a recurring export grows |
 

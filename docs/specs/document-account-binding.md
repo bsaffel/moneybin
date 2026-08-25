@@ -38,7 +38,7 @@ filename is not a reliable signal of contents. Exports arrive as
 non-unique.
 
 **2. The changes ship as one slice, not change 1 alone first.**
-`transaction-identity-stability.md:606-607` asks "Ship change 1 alone first? It
+`transaction-identity-stability.md:614-615` asks "Ship change 1 alone first? It
 is free and forward-only" and recommends yes. Withdrawn: change 1 is only
 forward-only in isolation. Every other change rotates `transaction_id`, so
 shipping them separately means several rotations, several migrations, and
@@ -281,22 +281,24 @@ than true-only-where-a-link-exists.
 R4–R8 alone do **not** achieve this, and an earlier draft claimed they did. R4
 mints a `source_account_key`, which still lands in `raw.*.account_id` and is
 still passed through `COALESCE(links.account_id, <source>.account_id) AS
-account_id` in **nine** prep models — `stg_{ofx,tabular,plaid,manual}__transactions`,
-`stg_{ofx,tabular,plaid}__accounts`, and `stg_{ofx,plaid}__balances`. An
-unlinked account would keep publishing a source-native value in `account_id`,
-which is precisely what R14's guard forbids, so the guard would fail against
-unmodified files the day it lands.
+account_id` in **thirteen** prep models —
+`stg_{ofx,tabular,plaid,manual}__transactions`,
+`stg_{ofx,tabular,plaid}__accounts`, `stg_{ofx,plaid}__balances`, and the four
+Plaid investment models (`stg_plaid__investment_holdings`,
+`stg_plaid__investment_transactions`, `stg_plaid__opening_lots`,
+`stg_plaid__opening_lot_review`). An unlinked account would keep publishing a
+source-native value in `account_id`, which is precisely what R14's guard
+forbids, so the guard would fail against unmodified files the day it lands.
+Two of the investment models fall back to `source_account_key` **by name** —
+the most explicit form of the defect, and the reason an earlier count of nine
+was wrong rather than merely incomplete.
 
 Removing the fallback requires that every account be linked, which R6's
 always-propose rule delivers: a file that reaches the confirm gate produces an
 `app.account_links` row before load, so the join always hits and the `COALESCE`
-has nothing left to fall back to. The nine models must then drop the fallback
+has nothing left to fall back to. The thirteen models must then drop the
 arm — otherwise a dead branch keeps the ambiguity alive in the code and in
 `taxonomy.py`'s reasoning about the column.
-
-(The decision record says "all four `stg_*` models"
-(`transaction-identity-stability.md:26`). That undercounts by five and
-understates the Part 1 blast radius; corrected here.)
 
 ## Data Model
 
@@ -455,12 +457,14 @@ The migration must:
 **The nine query sites** in R10 that use `source_file` as a batch
 discriminator.
 
-**The nine `COALESCE` prep models** in R15, each dropping the fallback arm:
+**The thirteen `COALESCE` prep models** in R15, each dropping the fallback arm:
 `stg_ofx__transactions.sql:102`, `stg_tabular__transactions.sql:45`,
 `stg_plaid__transactions.sql:7`, `stg_manual__transactions.sql:7`,
 `stg_ofx__accounts.sql:25`, `stg_tabular__accounts.sql:7`,
 `stg_plaid__accounts.sql:29`, `stg_ofx__balances.sql:7`,
-`stg_plaid__balances.sql:7`.
+`stg_plaid__balances.sql:7`, `stg_plaid__investment_holdings.sql:18`,
+`stg_plaid__investment_transactions.sql:241`,
+`stg_plaid__opening_lots.sql:257`, `stg_plaid__opening_lot_review.sql:107`.
 
 **`stg_tabular__transactions.sql:35`** — the staging dedup partition
 `ROW_NUMBER() OVER (PARTITION BY transaction_id, account_id …)` names the
