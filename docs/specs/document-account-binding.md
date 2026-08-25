@@ -42,7 +42,7 @@ spec governs.
 > name into another.
 
 Every defect below is a place where one word means two things depending on the
-data. The requirements are that rule applied to four columns.
+data. The requirements are that rule applied to five columns.
 
 ## What is true today (verified at `de040465`)
 
@@ -56,7 +56,7 @@ Three of its four inputs move under ordinary user action:
 |---|---|---|
 | `source_account_key` | For an unregistered tabular file it is `f"{slugify(file_path.stem) or 'file'}-{digest}"` — filename stem plus a digest of file **bytes**. A rename moves it; so does next month's export. | `import_service.py:947` |
 | `source_origin` | Falls back to `slugify(account_name or "unknown")` when no format matches, so passing or omitting `--account-name` re-namespaces identity. | `import_service.py:3222` (MB-147) |
-| `source_transaction_id` | For tabular without a native id, hashes `date\|amount\|description\|account_id\|row_number` — embedding the account key a second time. | `raw_tabular_transactions.sql:6` |
+| `source_transaction_id` | The union aliases the tabular *fallback* column into this name (`transaction_id AS source_transaction_id`) and discards the genuinely-native one, so it is the institution's id on some rows and a MoneyBin hash of `date\|amount\|description\|account_id\|row_number` on others — re-embedding the account key a second time. | `raw_tabular_transactions.sql:6`, `int_transactions__unioned.sql:82` |
 
 `source_file` is **already not a path** in most channels, which is why it
 cannot serve as a document identity:
@@ -128,18 +128,22 @@ account slot becomes a minted per-account source key or the constant `'user'`.
 
 **R10.** `source_file` is renamed `source_path` and becomes informational
 metadata. It MUST NOT appear in any join predicate, equality test, hash input,
-`PARTITION BY`, or `ORDER BY` that affects a result. It may be displayed and
-logged subject to R11.
+`PARTITION BY`, or `ORDER BY` that affects a result. It remains freely
+displayable and loggable (R11).
 
-**R11.** `source_path`'s privacy class is re-derived. Today `source_file` is
-`DataClass.RECORD_ID` (`taxonomy.py:692`), which maps to `Tier.LOW` —
-unmasked — while `core.dim_accounts` projects it at `dim_accounts.sql:269`
-with the comment *"Path to the source file from which the winning record was
-loaded"* and `meta.fct_transaction_provenance:14` projects the
-transaction-level one. A path naming an institution and a last four is
-therefore published unmasked into an agent-readable schema. The classification
-is right about the column's name and wrong about what two of five channels put
-in it.
+**R11.** A filename or path is **not** treated as a sensitive leak vector.
+`source_path` keeps `DataClass.RECORD_ID` (`taxonomy.py:692`, `Tier.LOW`,
+unmasked), and stays projected by `core.dim_accounts` (`dim_accounts.sql:269`)
+and `meta.fct_transaction_provenance:14`.
+
+This is a deliberate decision, recorded so a later reviewer does not "fix" it.
+An incoming filename is chosen by the user on their own disk and typed into the
+import command; if it embeds an account number, that number was already exposed
+where MoneyBin cannot reach. Masking it would cost legibility in every import
+error, doctor check, and provenance lookup, in exchange for closing nothing.
+The masking rules that matter apply to values MoneyBin *extracts* — account
+numbers, balances, descriptions — not to the name of the container they arrived
+in.
 
 **R12.** Wherever the match engine needs "did these two rows come from the same
 physical import?", it keys on `source_document_key`, not on a path. Two sites:
@@ -147,16 +151,49 @@ the Tier 2b blocking guard `a.source_file != b.source_file`
 (`scoring.py:284`) and the 1:1 assignment key
 `(source_type, source_origin, source_file)` (`assignment.py:88`).
 
-**R13.** The tabular row hash drops `description` and the account key, leaving
-transaction date, amount, and a within-file ordinal. This is the hardening
-ADR-015 already names as a follow-up, and it removes the account key's double
-embedding identified in the table above.
+**R13.** `source_transaction_id` means **the source's own transaction id, or
+NULL**. It is never synthesized. MoneyBin's own within-document row identity
+moves to a separate column, `source_row_key`.
+
+This is the fifth fallback, and it is currently invisible because the two
+columns already exist and are then collapsed. `raw.tabular_transactions` is
+honest at the raw layer: `source_transaction_id` is *"Institution-assigned
+unique transaction identifier if present"*, kept beside a distinct
+`transaction_id` that is *"source_transaction_id when available, else SHA-256
+hash of `date|amount|description|account_id|row_number`"*
+(`raw_tabular_transactions.sql:20,6`). Staging carries both
+(`stg_tabular__transactions.sql:60`). Then
+`int_transactions__unioned.sql:82` aliases `transaction_id AS
+source_transaction_id` — promoting the **fallback** column into that name and
+discarding the honest one. Downstream, a MoneyBin-synthesized surrogate is
+indistinguishable from an institution-assigned id.
+
+Plaid's equivalent aliasing at `:119` is *correct* and stays: its raw
+`transaction_id` genuinely is Plaid's own id.
+
+Required:
+
+- `source_transaction_id` carries the institution's id where the source
+  supplies one, and NULL where it does not. No `COALESCE` may fill it.
+- `source_row_key` carries MoneyBin's within-document row identity, derived
+  from transaction date, amount, and a within-file ordinal — dropping
+  `description` (which a bank may re-render) and the account key (already an
+  identity-tuple component, so embedding it twice compounds any wobble). This
+  is the hardening ADR-015 already names as a follow-up.
+- The identity hash consumes `source_transaction_id` when present and
+  `source_row_key` otherwise. That selection happens **once**, explicitly, in
+  the identity derivation — not by a fallback hidden inside a column's meaning.
+
+The payoff is that "does this source give us stable ids?" becomes a question
+the data answers. Today it cannot be asked: every row has a
+`source_transaction_id` whether or not the institution supplied one.
 
 ### Invariants (testable as refusals)
 
 **R14.** No `COALESCE`, `IFNULL`, or `CASE` may place a `source_account_key`
-into an `account_id` column, a `display_name` into a `source_account_key`, or a
-`source_path` into any key. A source-scan guard enforces this across
+into an `account_id` column, a `display_name` into a `source_account_key`, a
+`source_path` into any key, or a MoneyBin-derived value into
+`source_transaction_id`. A source-scan guard enforces this across
 `src/moneybin/sqlmesh/models/`, paired with a behavioural test that a resolved
 account never carries a source-native value in `account_id`.
 
@@ -184,11 +221,25 @@ token, hashed the same way, so the column holds one kind of value everywhere:
 `raw.import_log.file_sha256` is the existing full digest and stays; the new
 column is the truncated form used for joins, so the two agree by construction.
 
+### Second new column
+
+`source_row_key VARCHAR` on `raw.tabular_transactions` and any other raw
+transaction table whose source may not supply a native id. Carries MoneyBin's
+within-document row identity (R13). `source_transaction_id` becomes nullable
+wherever it is not already, since NULL is now its honest answer for a source
+that assigns no id.
+
+The existing `raw.tabular_transactions.transaction_id` column — the
+native-or-synthesized fallback — is **dropped**. Its two jobs are now the two
+columns above, and leaving it would preserve the ambiguity this spec exists to
+remove.
+
 ### Renamed column
 
 `source_file` → `source_path`, nullable, informational. Retained rather than
 dropped: it is the only human-legible pointer back to the artifact on disk, and
-dropping it would make a failed import unexplainable.
+dropping it would make a failed import unexplainable. Its privacy class is
+unchanged (R11).
 
 ### Unchanged
 
@@ -210,11 +261,16 @@ The migration must:
    gone, backfill from `raw.import_log.file_sha256` where present; where absent
    (pre-V046 batches), mint a per-batch key so the column is never NULL.
 2. Rename `source_file` to `source_path`.
-3. Recompute `transaction_id` for every affected row and rewrite the
+3. Add `source_row_key` and populate it from the existing row hash; null out
+   `source_transaction_id` on every row where the value was MoneyBin-derived
+   rather than institution-supplied, recoverable because
+   `raw.tabular_transactions` still holds the honest column beside the
+   fallback. Then drop the fallback `transaction_id` column.
+4. Recompute `transaction_id` for every affected row and rewrite the
    `transaction_id` held by the five hard-coupled `app.*` tables named in
    §Migration and On-Disk Impact, verifying row counts before and after —
    nothing cascades, so a missed table fails silently.
-4. Refuse to run partially: either every table is rotated or none is.
+5. Refuse to run partially: either every table is rotated or none is.
 
 ## Implementation Plan
 
@@ -235,7 +291,15 @@ The migration must:
 - `src/moneybin/services/account_resolver.py` — confirm
   `accepted_native_keys_for_account` needs no scoping change for its new
   unpinned caller.
-- `src/moneybin/extractors/tabular/schema/raw_tabular_transactions.sql` — R13.
+- `src/moneybin/extractors/tabular/schema/raw_tabular_transactions.sql` — R13:
+  add `source_row_key`, drop the `transaction_id` fallback column.
+- `src/moneybin/sqlmesh/models/prep/int_transactions__unioned.sql:82` — stop
+  aliasing the fallback column into `source_transaction_id`; carry the honest
+  `source_transaction_id` and `source_row_key` separately. `:119` (Plaid) is
+  correct and stays.
+- `src/moneybin/sqlmesh/models/prep/int_transactions__matched.sql` — the
+  identity hash selects `source_transaction_id` when present and
+  `source_row_key` otherwise, explicitly and in one place.
 
 **Deletions**
 
@@ -336,24 +400,34 @@ Per `docs/specs/observability.md`, registered in
 7. An agent path cannot self-accept that gate.
 8. Two different-account files that happen to share a name do not collide.
 
+**Source id honesty (R13)**
+
+9. Import a file whose source assigns no transaction id → every row's
+   `source_transaction_id` is NULL, and `source_row_key` is populated.
+10. Import a file that *does* carry a native id column → `source_transaction_id`
+    holds the institution's value verbatim, and the identity hash consumes it
+    rather than `source_row_key`.
+11. A file with a native id keeps its transaction ids when rows are reordered;
+    a file without one does not (and relies on R3's document-key idempotence
+    instead). This asserts the two paths are genuinely distinct rather than one
+    path with a hidden fallback.
+
 **Invariants**
 
-9. Source-scan guard: no model places a source-native value into an
-   `account_id` (R14), with a behavioural partner asserting the same at
-   runtime — a source scan alone cannot see a Python-side fallback.
-10. `source_path` appears in no join, equality test, or hash input (R10).
+12. Source-scan guard: no model places a source-native value into an
+    `account_id`, and no `COALESCE` fills `source_transaction_id` (R14), with a
+    behavioural partner asserting the same at runtime — a source scan alone
+    cannot see a Python-side fallback.
+13. `source_path` appears in no join, equality test, or hash input (R10).
 
 **Migration**
 
-11. Round-trip: a database with curation on rotated ids retains every
+14. Round-trip: a database with curation on rotated ids retains every
     category, note, tag, split, and match decision.
-12. Partial-failure: an interrupted migration leaves the database on the old
+15. Partial-failure: an interrupted migration leaves the database on the old
     schema, not half-rotated.
-
-**Privacy**
-
-13. A `source_path` containing an institution name and four digits does not
-    reach an unmasked read surface (R11).
+16. Backfill: a pre-V046 batch with no `file_sha256` gets a minted per-batch
+    document key rather than a NULL.
 
 ## Synthetic Data Requirements
 
@@ -362,6 +436,12 @@ covering overlapping date windows, with rows appended at the top in one variant
 and at the bottom in another, so the row-ordinal component of R13 is exercised
 in both directions. Ground truth is the set of distinct transactions across the
 series, so a test can assert the count after importing all three.
+
+The series is needed in **two flavours** — one carrying a native
+transaction-id column and one without — because R13 makes those genuinely
+different code paths rather than one path with a fallback. The with-id flavour
+should survive row reordering; the without-id flavour should not, and tests 9
+through 11 assert exactly that asymmetry.
 
 Also needed: two files for *different* accounts sharing one filename, to
 exercise test 8.
@@ -401,7 +481,7 @@ the migration's before/after verification checkable afterwards.
 
 Recovery, if the migration is abandoned: the raw layer is unchanged by identity
 rotation, so re-running the transform reproduces the derived layers. Curation
-in `app.*` is the only thing that cannot be recomputed, which is why step 4 of
+in `app.*` is the only thing that cannot be recomputed, which is why step 5 of
 the migration refuses partial application.
 
 ## Dependencies
@@ -429,11 +509,27 @@ ship today.
   system notices a second import of the same shape. A good UX prompt and a
   natural successor; not required for identity stability.
 
+## Decisions Taken
+
+Recorded here because both were live questions during design, and a later
+reader would otherwise reopen them.
+
+1. **Filenames are not a sensitive leak vector** (R11). Treating an incoming
+   filename as sensitive would cost legibility everywhere and close nothing: a
+   name that embeds an account number was already exposed on the user's own
+   disk before MoneyBin saw it. `source_path` stays unmasked.
+2. **The source's transaction id stays independent of MoneyBin's** (R13).
+   Whether a given institution supplies one is unknown and varies by source, so
+   the design must not depend on the answer. Keeping `source_transaction_id`
+   honest — the institution's value or NULL — and putting MoneyBin's row
+   identity in `source_row_key` makes both cases explicit, instead of hiding the
+   difference behind one column that means whichever the data happened to
+   allow.
+
 ## Open Questions
 
-1. Does any path currently stored in a live `raw.*.source_file` contain an
-   institution name plus digits? R11 is a latent gap or an active one depending
-   on the answer, and that changes only its urgency, not its fix.
-2. How many of the real files in use carry a native transaction-id column?
-   Those files never touch the derived row hash, so the answer sizes R13's
-   blast radius — it does not change R13's correctness.
+None blocking. One sizing question remains: what fraction of real files carry a
+native id column. That changes how often the `source_row_key` path is
+exercised, not whether either path is correct — and after R13 it becomes a
+question the data can answer, because a NULL `source_transaction_id` will mean
+exactly "this source assigns no id."
