@@ -23,7 +23,7 @@ Three fallbacks blur the vocabulary today:
 
 | Fallback | Blurs | Consequence |
 |---|---|---|
-| `COALESCE(links.account_id, ranked.account_id)` in all four `stg_*` models | `account_id` | The canonical surrogate silently becomes a source-native key — which for OFX **is the institution's account number** |
+| `COALESCE(links.account_id, <source>.account_id)` in nine `stg_*` models (4 transaction, 3 account, 2 balance) | `account_id` | The canonical surrogate silently becomes a source-native key — which for OFX **is the institution's account number** |
 | `--account-name` seeding `_label_account_key` and `source_origin` | `account_name` | A display label becomes an identity input; passing or omitting the flag moves two of the four hash components |
 | `_bare_account_key` synthesizing an account key from file bytes | `source_account_key` | A *document* key impersonates an *account* key, so it changes every time a recurring export grows |
 
@@ -359,8 +359,8 @@ itself.
 transaction that changed its id**. The tabular failure produces **two rows that
 were never merged**. There is no `old_id`, no `new_id`, and no merge event to
 write an alias row at. Wiring the alias table — writers, resolution in the
-models, FK behaviour, doctor checks — would be real work that leaves the
-double-count exactly where it is.
+models, `app.*` update behaviour, doctor checks — would be real work that
+leaves the double-count exactly where it is.
 
 The alias map remains the right answer to the problem ADR-015 actually
 anticipated: a merged group re-anchoring when a more-stable source backfills
@@ -379,8 +379,9 @@ table constant, schema registration, the privacy taxonomy, and a
 **A — keep it derived, migrate on re-bind.** Rejected: it cannot address the
 dominant failure, for the reason above. Costed anyway: writers at every
 id-changing merge; resolution wired into the 13 models that reference a bare
-`transaction_id`; FK behaviour in five hard-FK tables; chain collapse across
-successive merges (an open follow-up ADR-015 already names); doctor coverage. An
+`transaction_id`; update behaviour in the five hard-coupled `app.*` tables;
+chain collapse across successive merges (an open follow-up ADR-015 already
+names); doctor coverage. An
 id held mid-session by an agent or sitting in an exported CSV resolves only if
 every read path resolves through the map — and the export round-trip
 (§Blast radius) reads the file back through
@@ -497,10 +498,15 @@ overstated. Exposure is not uniform:**
 | `proposed_rules` | `sample_txn_ids VARCHAR[]`, "up to 5" illustrative samples | non-authoritative |
 | `audit_log` | `target_id`, free-form historical record | a stale id there is arguably correct |
 
-Five tables carry hard FKs, not nine. `match_decisions` — which the brief lists —
+Five tables are hard-coupled, not nine — and **none of them by a declared
+foreign key**. A repo-wide grep for `FOREIGN KEY|REFERENCES` across
+`src/moneybin/**/*.sql` returns zero: the coupling above is PK, `NOT NULL`, and
+`UNIQUE` only. Nothing cascades, so a re-key that misses a table orphans its
+rows silently instead of erroring — which is what makes the doctor gap below
+load-bearing rather than cosmetic. `match_decisions` — which the brief lists —
 is the one table structurally immune to gold-id churn.
 
-**Doctor coverage is thinner than the FK count.** `_run_orphan_app_state`
+**Doctor coverage is thinner than the coupling count.** `_run_orphan_app_state`
 (`doctor_service.py:713`) checks `transaction_notes` and `transaction_tags`
 **only**. `transaction_categories`, `transaction_splits`, and
 `categorization_decisions` have no orphan detection at all — so a re-key silently
@@ -587,9 +593,10 @@ Recorded so they are not repeated:
    dedup at all — a repo-wide grep for `ROW_NUMBER|PARTITION BY` across the four
    matches only the first two. The conclusion the brief draws from it (a staging
    partition-key change cannot collapse OFX against CSV) still holds.
-2. **Nine `app.*` tables do not uniformly key on `transaction_id`** — five carry
-   hard FKs; `match_decisions` keys on source identity instead. See
-   §Blast radius.
+2. **Nine `app.*` tables do not uniformly key on `transaction_id`** — five are
+   hard-coupled by PK/`NOT NULL`/`UNIQUE`. No `FOREIGN KEY` is declared
+   anywhere, so nothing cascades; `match_decisions` keys on source identity
+   instead. See §Blast radius.
 3. **22 models → measured 21** under `models/` (28 across all of `sqlmesh/`).
 4. **`--account-name` is not silently ignored off-channel** — it is refused by
    `reject_unhonored_account_signals`. Part 1 item 4.
