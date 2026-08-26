@@ -262,6 +262,14 @@ Required:
   `source_row_key` otherwise. That selection happens **once**, explicitly, in
   `int_transactions__matched`, under the name `identity_component` — never by a
   fallback hidden inside a column's meaning.
+- Staging's tabular dedup groups on that same expression.
+  `stg_tabular__transactions.sql:35` partitions on `(transaction_id,
+  account_id)` today and on `(COALESCE(source_transaction_id, source_row_key),
+  account_id)` after this requirement, so staging and core agree by
+  construction about what one row is. This is a grouping key, not a second
+  selection, and it is the only other place the pair may appear; a guard pins
+  the count at two. The two forms that are wrong, and why, are in *Files to
+  Modify*.
 - `app.match_decisions.source_transaction_id_a/_b` are renamed
   `identity_component_a/_b`, because that is what they have always held. They
   stay `NOT NULL`: `identity_component` is never NULL, so the matcher's node
@@ -504,10 +512,27 @@ discriminator.
 **`stg_tabular__transactions.sql:35`** — the staging dedup partition
 `ROW_NUMBER() OVER (PARTITION BY transaction_id, account_id …)` names the
 `transaction_id` column R13 drops. It repartitions on
-`(source_document_key, source_row_key, account_id)`. It must **not** repartition
-on `source_transaction_id` alone: after R13 that column is legitimately NULL for
-every no-native-id source, which would collapse an entire document into one
-partition and delete all but one row.
+`(COALESCE(source_transaction_id, source_row_key), account_id)`, the expression
+R13 selects as `identity_component`. `account_id` here is the source-native key
+read from `raw.tabular_transactions`; the resolved id is not in scope inside the
+CTE, and that is unchanged.
+
+Three other forms are wrong:
+
+- **Adding `source_document_key` to the key.** This partition exists to *ignore*
+  which file a row arrived in — that is what collapses the February rows of a
+  Jan–Mar export and a Feb–Apr export into one. Adding the document puts the two
+  copies in separate partitions, so both reach `core` carrying the same
+  `transaction_id`. Testing Strategy item 3 is exactly this case.
+- **`source_row_key` alone.** It fixes the duplicate above, but the row key is
+  derived from the row's content, so a bank that restates a description between
+  exports (`PENDING - AMAZON` → `AMAZON MKTPLACE`) changes it and the two copies
+  stop grouping. The institution's own id survives that restatement, which is
+  why it must win where it exists.
+- **`source_transaction_id` alone.** After R13 that column is legitimately NULL
+  for every no-native-id source, which would collapse an entire document into
+  one partition and delete all but one row. The `COALESCE` is what makes NULL
+  safe.
 
 **Other models** — the remainder of the 22 referencing `source_file`, of which
 the load-bearing ones are `int_transactions__unioned.sql`,
