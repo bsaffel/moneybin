@@ -24,9 +24,10 @@ analysis, and serving; the groupings below are for reading, not boundaries.
 ### Ingestion
 
 **Provider**:
-An in-tree component that ingests one external source into the Raw layer.
-Always qualified when the aggregator sense is meant — see **"Provider"** under
-Flagged ambiguities.
+The in-tree component behind the `Provider` protocol, which ingests one
+external source into the Raw layer. A price adapter also writes to Raw but
+implements its own protocol and keeps its own name. Always qualified when the
+aggregator sense is meant — see **"Provider"** under Flagged ambiguities.
 _Avoid_: extractor, loader, importer
 
 **Import**:
