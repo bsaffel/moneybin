@@ -1,3 +1,4 @@
+<!-- Last reviewed: 2026-08-26 -->
 # MoneyBin
 
 Personal financial data platform: it ingests a person's financial records from
@@ -64,9 +65,9 @@ rates; a caller may select a subset.
 _Avoid_: rebuild, update, sync, reprocess
 
 **Source type**:
-The kind of source one typed row came from — a file format, an aggregator, or a
-derivation. An ingested type rides along from Raw; a derived one is minted in
-Core. Several types share one ingestion pathway.
+The discriminator naming what produced one typed row. An ingested type rides
+along from Raw; a derived one is minted in Core. Several types share one
+ingestion pathway.
 _Avoid_: source, format, provider, channel
 
 **Source origin**:
@@ -291,9 +292,9 @@ class.
 _Avoid_: masking, sanitization, scrubbing, anonymization, obfuscation
 
 **Consent**:
-The user's recorded, revocable grant naming one feature category that may send
-data to an AI provider. It is a ledger of what the user intends: the gate that
-withholds data per call is not yet built.
+The user's recorded, revocable grant pairing one feature category with the one
+AI backend that may receive data for it. It is a ledger of what the user
+intends: the gate that withholds data per call is not yet built.
 _Avoid_: permission, opt-in, authorization, approval
 
 ### Verification
@@ -408,11 +409,11 @@ _Avoid_: tier, level, grade, rating
   **investment transaction** for the ledger entry; leave the database sense to
   context, and never abbreviate any of the three to "txn" in prose.
 
-- **"Tier"** carries at least five unrelated meanings: privacy severity
+- **"Tier"** carries at least six unrelated meanings: privacy severity
   (**Sensitivity tier**), the AI data-flow bands a **Consent** grant is written
-  against, the numbered matcher stages — whose labels the categorizer reuses
-  for its own, unrelated stages — extension maturity (**Quality scale**), and
-  the high/medium/low confidence band on a smart-import inference. Two of these
+  against, the numbered matcher stages, the two-tier category-source bridge the
+  categorizer runs against, extension maturity (**Quality scale**), and the
+  high/medium/low confidence band on a smart-import inference. Two of these
   are types literally named `Tier`, one in privacy and one in ingestion, with
   different value sets. Resolved: always qualify. Bare "tier" is not a term.
 
