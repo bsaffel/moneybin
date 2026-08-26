@@ -135,6 +135,14 @@ key wins forever. It has exactly one caller today —
 `import_service.py:917`, the `--account-id`-pinned path. Call it from the
 unpinned branch too.
 
+R7 fires only once the account is known. Its input is an `account_id`: it
+answers "what does this account already call itself here?", never "which
+account is this file?". A file that states an account supplies that input and
+R7 stamps the remembered key. A file that states nothing supplies nothing, so
+R7 cannot fire, and R6's gate is reached on every import of a recurring
+export. R17 addresses that population; it is not a gap R7 closes, and an
+earlier draft implied it was.
+
 **R8.** `source_origin` for a file matching no registered format is a constant.
 No caller flag may move a component of the identity hash. (MB-147.)
 
@@ -147,6 +155,41 @@ unsafe: `stg_manual__transactions.sql:7-8` reads `t.account_id` as both
 `source_account_key` and the link join's `ref_value`, so a constant would bind
 every manual account to one `app.account_links` row and silently merge every
 hand-entered account into a single account.
+
+**R17.** A file that states no account identity reaches the gate carrying
+**ledger evidence**, not a bare pick-list. The tabular gate passes its
+extracted rows to `probe_incoming_ledger_overlap` (`ledger_overlap.py:95-176`)
+exactly as the PDF channel already does (`import_service.py:4113,4781`), so
+every candidate arrives with `matched`, `comparable`, and its date window, and
+the candidate list is ordered by that evidence. The leading candidate may be
+pre-selected. It stays a suggestion: R6 is unchanged, and a human answers the
+gate.
+
+This is a wiring change, not a new heuristic. The probe exists and is
+calibrated — "amount within ±3 days matched 345 of 346 rows against the true
+twin and 0 of 346 against each of two controls" (`ledger_overlap.py:39-40`) —
+and the gate already attaches overlap to every candidate whenever the caller
+supplies rows (`import_service.py:2296-2306`). Only the tabular and OFX call
+sites omit `incoming_transactions`, which is why no CSV proposal carries
+overlap today on *any* signal, not merely the fallback one.
+
+**What it changes.** A second bare CSV has new bytes, so a new
+`_bare_account_key`, so it gates again — and because `last_four is None`
+forces the review open, it skips both the institution scope and the
+25-candidate cap and offers every account in `core.dim_accounts`
+(`account_resolver.py:1422-1442`). That completeness is deliberate and stays:
+the method's own reasoning is that "a long list is the lesser cost;
+institution matches still lead it" (`account_resolver.py:1419-1420`). R17
+does not shorten the list — it orders it by evidence, so the likely answer
+leads on a measured signal rather than on institution slug.
+
+**What it does not change, deliberately.** Overlap compares amount, currency,
+and transaction date within a ±3-day window against `core.fct_transactions`
+(`ledger_overlap.py:151-161`), and `comparable` counts only rows falling
+inside the existing ledger's span. A **disjoint** export — one file per
+statement period, sharing no rows with what is already loaded — therefore has
+zero comparable rows and yields no signal at all. That case still confirms
+once per file, and no file-derived signal can change it (§Decisions Taken 5).
 
 ### Provenance vs. identity
 
@@ -573,6 +616,9 @@ No new commands. Behavioural changes:
   is, and is refused as a duplicate rather than imported as a new account.
 - Re-importing from a reused path with new contents is recognized as a new
   document.
+- The gate for a file that states no account ranks its candidates by ledger
+  overlap and shows that evidence, instead of listing every account in slug
+  order (R17). The list is unchanged in length.
 
 `--account-name` is unchanged by this spec; its decomposition is Out of Scope.
 
@@ -593,7 +639,8 @@ Per `docs/specs/observability.md`, registered in
 |---|---|---|---|
 | `import_document_rebinds_total` | Counter | `source_type`, `outcome` | How often a known document key resolves to an account vs. reaches the confirm gate. Measures whether R6's confirm burden is once-per-import or worse. |
 | `import_account_keys_minted_total` | Counter | `source_type` | A rise without a matching import rise means keys are still churning. |
-| `import_remembered_key_reuse_total` | Counter | `source_type`, `hit` | Directly measures R7. A `hit=false` rate near 1.0 means the unpinned path is not reaching the resolver. |
+| `import_remembered_key_reuse_total` | Counter | `source_type`, `hit` | Directly measures R7, on the population R7 can serve — files that state an account. A `hit=false` rate near 1.0 there means the unpinned path is not reaching the resolver. It is silent on identity-unknown files, which have no account to look up. |
+| `import_overlap_evidence_total` | Counter | `source_type`, `verdict` | R17's evidence on the identity-unknown path: `decisive` (one account, no near runner-up), `ambiguous`, or `absent` (a disjoint export). This is what §Open Questions turns on, and the only measurement that can answer it. |
 | `matching_pairs_blocked_total` | Counter | `tier`, `reason` | R12 changes what Tier 2b can see; this makes the change observable rather than inferred. |
 
 ## Testing Strategy
@@ -646,6 +693,17 @@ Per `docs/specs/observability.md`, registered in
     schema, not half-rotated.
 16. Backfill: a pre-V046 batch with no `file_sha256` gets a minted per-batch
     document key rather than a NULL.
+
+**Binding evidence (R17)**
+
+17. A second file from a recurring **overlapping** export reaches the gate
+    with its true account ranked first, carrying a non-zero `overlap_matched`.
+18. A file overlapping nothing reaches the gate with no overlap evidence and
+    still loads nothing. Absence of a signal is not itself a signal and must
+    not promote a candidate.
+19. A tabular gate and a PDF gate over the same ledger produce the same
+    overlap numbers. R17 is a wiring change; a divergence means the two
+    channels have forked.
 
 ## Synthetic Data Requirements
 
@@ -732,7 +790,11 @@ ship today.
   rename does create a second view.
 - **Promoting a recurring export to a registered format** at the moment the
   system notices a second import of the same shape. A good UX prompt and a
-  natural successor; not required for identity stability.
+  natural successor; not required for identity stability. It is also where a
+  human-declared import route would live — the only mechanism that could ever
+  auto-confirm a *disjoint* recurring export (§Decisions Taken 5). A safe one
+  needs a user-managed coordinate that does not exist yet, so it is not
+  smuggled into this milestone.
 
 ## Decisions Taken
 
@@ -768,10 +830,60 @@ reader would otherwise reopen it.
    audit detects the condition by finding the rows in `core`. The `LEFT JOIN`
    stays, the rows keep a NULL `account_id`, and a standalone audit reports
    them.
+5. **No file-derived signal can auto-confirm a file that states no account**
+   (R6, R17). Auto-confirm needs a reference that *recurs* across imports of
+   one account and does not *collide* across accounts. Every candidate the
+   file itself offers fails one of the two. A content digest is unique but
+   does not recur — "this key is the file's bytes, and a recurring export's
+   bytes change every period" (`import_service.py:3322-3324`). A filename stem
+   recurs but collides, because `statement.csv` is universal. A column
+   signature recurs but collides, because two accounts at one institution
+   export identically. The pinned path reached the same conclusion first:
+   "No file-derived key escapes this: a content hash breaks when the file
+   grows, a filename breaks when it is renamed" (`import_service.py:2392-2393`).
+
+   So the signal has to come from outside the file, and there are exactly two
+   sources: the accumulated ledger, which R17 wires up, and a human-declared
+   route recorded once. **The route is rejected for this milestone**, and not
+   only on scope. No original filesystem path is persisted anywhere.
+   `raw.import_log.source_file` stores the path at import time, which under
+   the inbox flow is the inbox path and goes stale the moment the file is
+   moved (`inbox_service.py:569-574`, `import_log.py:126-143`). The only path
+   actually available is therefore the inbox path — and every institution's
+   `statement.csv` arrives at the same one, so binding on it would silently
+   merge two banks' accounts. That is the exact failure `_bare_account_key`
+   was written to prevent (`import_service.py:934-937`). A safe route needs a
+   new user-managed coordinate and new plumbing to retain it, which is the
+   registered-recurring-export work in §Out of Scope.
 
 ## Open Questions
 
-None blocking. One sizing question remains: what fraction of real files carry a
+**Should a decisive overlap bind silently?** R17 deliberately stops at
+evidence: the leading candidate is ranked and may be pre-selected, but a human
+still answers the gate. Going further is arguable — the probe separated a true
+twin from two controls 345/346 to 0/346, and a monthly confirm on a signal
+that strong is confirm volume scaling with items rather than with uncertainty,
+which `design-principles.md` treats as a design failure in its own right.
+
+Two things hold it back, and neither is squeamishness. This is a **merge onto
+an existing account**, the case `account_resolution_types.py:154-155` names as
+one where "a wrong merge is hard to notice and hard to undo" — the reason the
+gate exists at all. And the probe's own author already assigned it the other
+role: its window is deliberately kept off the user-tunable setting because
+"this one supplies the evidence a human ratifies an irreversible whole-ledger
+merge on" (`ledger_overlap.py:50-51`). Reusing it as grounds for acting
+*without* that human inverts what it was calibrated for.
+
+So the question is left open rather than answered by default, and
+`import_overlap_evidence_total` (§Observability) is what settles it: after one
+dogfooding cycle it reports how often the identity-unknown path is `decisive`
+versus `ambiguous`, which is the fact nobody has today. If it is taken later,
+the shape is narrow — decisive for exactly one account, no near runner-up, and
+`comparable` above a floor so a two-row file proves nothing — and the import
+result must show the binding it made and offer its reversal, because that is
+what "magic stays visible" requires of a silent action.
+
+One sizing question also remains: what fraction of real files carry a
 native id column. That changes how often the `source_row_key` path is
 exercised, not whether either path is correct — and after R13 it becomes a
 question the data can answer, because a NULL `source_transaction_id` will mean
