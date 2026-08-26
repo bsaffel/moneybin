@@ -63,8 +63,9 @@ step, matching, transformation, categorization, identity, and rates.
 _Avoid_: rebuild, update, sync, reprocess
 
 **Source type**:
-The ingestion pathway a row arrived by, carried from Raw onward on every typed
-row. The seed-payload tables store their rows untyped and carry none.
+The kind of source one typed row came from — a file format, an aggregator, or a
+derivation — carried from Raw onward. Several types share one ingestion
+pathway. The seed-payload tables store their rows untyped and carry none.
 _Avoid_: source, format, provider, channel
 
 **Source origin**:
@@ -80,7 +81,7 @@ _Avoid_: bronze, landing, source layer, staging
 
 **Staging**:
 The layer that cleans, types, and unions each source into a common shape. Its
-intermediate models are a sub-tier within it, not a layer of their own.
+intermediate models belong to it rather than forming a layer of their own.
 _Avoid_: silver, cleansing layer, transform layer
 
 **Core**:
@@ -188,7 +189,9 @@ Match, Rule, or Category.
 _Avoid_: suggestion, candidate, recommendation, draft
 
 **Decision**:
-The recorded, reversible answer to one Proposal, carrying who decided and when.
+The recorded, reversible answer to one Review queue item, carrying who decided
+and when. It ratifies a Proposal where one was offered, and otherwise supplies
+the answer itself.
 _Avoid_: approval, resolution, verdict, vote
 
 **Review queue**:
@@ -340,8 +343,8 @@ _Avoid_: tier, level, grade, rating
   across two **Accounts**
 - A **Link** binds one **Native reference** to one **Account**, **Merchant**,
   or **Security**
-- A **Proposal** waits in a **Review queue** until a **Decision** resolves it;
-  every **Decision** names an **Actor**
+- A **Review queue** item waits until a **Decision** resolves it, whether or
+  not a **Proposal** was offered; every **Decision** names an **Actor**
 - A **Confirm** stands between an uncertain inference or a destructive change
   and its effect
 - An **Account** holds many **Holdings**; a **Holding** is composed of **Lots**
@@ -407,11 +410,13 @@ _Avoid_: tier, level, grade, rating
   Resolved: **Invariant** is the data property; say **architecture invariant**
   for the codebase rule.
 
-- **"Recipe"** carries three unrelated meanings: the recovery steps offered when
+- **"Recipe"** carries four unrelated meanings: the recovery steps offered when
   an **Invariant** fails, the learned deterministic instructions for parsing one
-  PDF layout, and the curated library of built-in **Reports**. Resolved: always
-  qualify — **recovery recipe**, **parse recipe**, **report recipe**. For the
-  ordinary how-to sense say **steps**; bare "recipe" is not a term.
+  PDF layout, the curated library of built-in **Reports**, and the contributor
+  procedure for turning a bug report into a permanent **Scenario**. Resolved:
+  always qualify — **recovery recipe**, **parse recipe**, **report recipe**,
+  **bug-report recipe**. For the ordinary how-to sense say **steps**; bare
+  "recipe" is not a term.
 
 - **"Seed"** carries four unrelated meanings: reference data shipped in the
   repository, the untyped payload storage a catch-all source writes into, the
@@ -419,9 +424,9 @@ _Avoid_: tier, level, grade, rating
   pre-populating anything. Resolved: always qualify — **seed data**, **seed
   payload**, **random seed**. Bare "seed" is not a term.
 
-- **"Source"** carries three meanings that must not collapse: the ingestion
-  pathway (**Source type**), the institution or exporter behind a row (**Source
-  origin**), and the file a row came from. Bare "source" keeps its ordinary
+- **"Source"** carries three meanings that must not collapse: what kind of
+  source produced a row (**Source type**), the institution or exporter behind
+  it (**Source origin**), and the file it came from. Bare "source" keeps its ordinary
   sense — the external system or dataset being ingested. Resolved: qualify it
   wherever one of the three specific meanings is meant.
 
