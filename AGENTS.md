@@ -52,6 +52,13 @@ lines and it could be 50, rewrite it.
 
 - **Sync server is opaque.** The client communicates only with moneybin-sync's API surface. External service providers are implementation details hidden behind the server.
 
+## Shared Vocabulary
+
+[`CONTEXT.md`](CONTEXT.md) is the glossary: the canonical word for each concept,
+and the resolution for overloaded ones (`provider`, `tier`, `audit`, `source`).
+Consult it when naming or writing. Where code disagrees, the glossary wins for
+new writing; existing uses migrate as they are touched.
+
 ## Design System
 
 MoneyBin's visual language lives in `design-system/`. The repo is canonical;

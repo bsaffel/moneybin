@@ -41,6 +41,7 @@ _AUTHORITY_DOCS = (_REPO_ROOT / "docs" / "specs", _REPO_ROOT / "docs" / "decisio
 _PUBLIC_DOC_FILES = (
     _REPO_ROOT / "README.md",
     _REPO_ROOT / "CONTRIBUTING.md",
+    _REPO_ROOT / "CONTEXT.md",
     _REPO_ROOT / "CHANGELOG.md",
     _REPO_ROOT / "SECURITY.md",
 )
