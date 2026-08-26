@@ -322,8 +322,10 @@ _Avoid_: tier, level, grade, rating
 - An **Institution** holds many **Accounts**; an **Account** has many
   **Transactions**
 - A **Provider** ingests one source into **Raw**; **Raw** feeds **Staging**,
-  **Staging** feeds **Core**, and every **Report** draws on **Core** and
-  **App state**
+  **Staging** feeds **Core**
+- A **Report** reads the warehouse: a model in the `reports` schema reads
+  **Core** and **App state**, while a saved one may also read **Raw** and
+  **Staging**
 - **App state** is joined into **Core**, never derived from it
 - Every typed row carries a **Source type** from **Raw** onward; **Source
   origin** rides alongside it wherever native identifiers need scoping, and
