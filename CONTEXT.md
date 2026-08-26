@@ -99,7 +99,8 @@ The one thing a single row of a model stands for.
 _Avoid_: granularity, level, key, cardinality
 
 **Golden record**:
-The single canonical row that a group of matched source rows collapses to.
+The single canonical row its contributing source rows collapse to, whether one
+row contributed or many.
 _Avoid_: gold record, master record, survivor, winner
 
 **Provenance**:
@@ -337,8 +338,8 @@ _Avoid_: tier, level, grade, rating
 - Every typed row carries a **Source type** from **Raw** onward; **Source
   origin** rides alongside it wherever native identifiers need scoping, and
   **Core** collapses origin wherever it merges
-- Many source rows collapse into one **Golden record**; **Provenance** records
-  every contributor
+- Every **Golden record** collapses one or more source rows; **Provenance**
+  records every contributor
 - A **Match** groups source rows; a **Transfer** pairs two **Transactions**
   across two **Accounts**
 - A **Link** binds one **Native reference** to one **Account**, **Merchant**,

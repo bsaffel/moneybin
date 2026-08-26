@@ -37,6 +37,7 @@ under `src/moneybin/`; SQL transformations under `src/moneybin/sqlmesh/`; tests 
 `tests/`. Read these as you need them:
 
 - [`AGENTS.md`](AGENTS.md) — critical rules, key abstractions, code standards.
+- [`CONTEXT.md`](CONTEXT.md) — the glossary: the canonical word for each concept.
 - [`docs/architecture.md`](docs/architecture.md) — system shape and data layers.
 - [`docs/specs/INDEX.md`](docs/specs/INDEX.md) — every feature spec and its status.
 - [`.claude/rules/`](.claude/rules/) — per-domain rules (security, database,
