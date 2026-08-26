@@ -194,9 +194,9 @@ An inference offered for ratification rather than applied.
 _Avoid_: suggestion, candidate, recommendation, draft
 
 **Decision**:
-The recorded, reversible answer to one Review queue item, carrying who decided
-and when. It ratifies a Proposal where one was offered, and otherwise supplies
-the answer itself.
+The recorded answer to one Review queue item, carrying who decided and when. It
+ratifies a Proposal where one was offered, and otherwise supplies the answer
+itself. Whether it can be reversed depends on the queue.
 _Avoid_: approval, resolution, verdict, vote
 
 **Review queue**:
@@ -318,8 +318,9 @@ generator produces.
 _Avoid_: profile, fixture, sample user, archetype
 
 **Ground truth**:
-The labels the synthetic generator emits alongside the data it generated, which
-a Scenario judges against.
+The expectations a Scenario judges against, derived independently of the
+pipeline — emitted by the synthetic generator, or hand-authored before the
+run.
 _Avoid_: expected output, golden data, answer key
 
 ### Extension
@@ -367,8 +368,8 @@ _Avoid_: tier, level, grade, rating
   envelope**; direct SQL returns rows
 - A **Split** divides one **Transaction**; an unsplit **Transaction** is still
   one **Transaction line**
-- An ingestion **Scenario** judges generated data against the **Ground truth**
-  its **Persona** produced
+- An ingestion **Scenario** judges what the pipeline produced against its
+  **Ground truth**, which for generated data comes from its **Persona**
 
 ## Flagged ambiguities
 
