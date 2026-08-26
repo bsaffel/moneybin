@@ -192,7 +192,8 @@ The recorded, reversible answer to one Proposal, carrying who decided and when.
 _Avoid_: approval, resolution, verdict, vote
 
 **Review queue**:
-The Proposals of one kind still awaiting Decisions.
+The items of one kind still awaiting Decisions. Most carry a Proposal; the
+categorization queue carries transactions with no candidate offered.
 _Avoid_: inbox, backlog, pending list, worklist
 
 **Confirm**:
@@ -262,7 +263,9 @@ _Avoid_: workspace, account, environment, instance, tenant
 ### Privacy
 
 **Data class**:
-What a column actually holds, in privacy terms, assigned per column.
+What a column actually holds, in privacy terms, declared per column across
+`core` and `app`. Columns elsewhere fall back to a floor rather than a
+declaration.
 _Avoid_: tag, label, PII type, classification
 
 **Sensitivity tier**:
@@ -288,8 +291,8 @@ passing or failing. See **"Invariant"** under Flagged ambiguities.
 _Avoid_: check, constraint, assertion, validation
 
 **Doctor**:
-The run that executes every Invariant and reports how many hold — the project's
-trust artifact.
+The run that executes the Invariants and reports how many hold — the project's
+trust artifact. Some sample rather than scan, and some report as skipped.
 _Avoid_: health check, diagnostics, lint, validate
 
 **Scenario**:
@@ -344,8 +347,8 @@ _Avoid_: tier, level, grade, rating
 - An **Account** holds many **Holdings**; a **Holding** is composed of **Lots**
   of one **Security**
 - A **Profile** owns exactly one database and everything in it
-- Every column carries one **Data class**, which fixes its **Sensitivity tier**
-  and how **Redaction** treats it
+- A **Data class** is declared for each **Core** and **App state** column,
+  fixing its **Sensitivity tier** and how **Redaction** treats it
 - The MCP server and most of the CLI's JSON output return the same **Response
   envelope**; direct SQL returns rows
 - A **Split** divides one **Transaction**; an unsplit **Transaction** is still
@@ -395,7 +398,7 @@ _Avoid_: tier, level, grade, rating
   different value sets. Resolved: always qualify. Bare "tier" is not a term.
 
 - **"Audit"** carries three unrelated meanings: a data-invariant check that runs
-  against a model, the trail recording every **App state** mutation, and the
+  against a model, the trail recording **App state** mutations, and the
   general sense of examining something. Resolved: say **Invariant** for the
   check, **audit log** for the trail, and **review** for the general sense.
 
@@ -455,6 +458,7 @@ _Avoid_: tier, level, grade, rating
   **Sensitivity tier**.
 
 - **Is "connection" a first-class term?** It appears in **Source origin**, in
-  **Connect**, and in the aggregator sense of a login covering several
-  **Accounts**, but nothing defines it. Either it earns an entry or each use
+  **Connect**, in the aggregator sense of a login covering several
+  **Accounts**, and as a stored Google Sheet connection — the only one of the
+  four the code defines. Either it earns an entry or each use
   should name what it actually means.
