@@ -65,7 +65,7 @@ Three of its four inputs move under ordinary user action:
 |---|---|---|
 | `source_account_key` | For an unregistered tabular file it is `f"{slugify(file_path.stem) or 'file'}-{digest}"` — filename stem plus a digest of file **bytes**. A rename moves it; so does next month's export. | `import_service.py:947` |
 | `source_origin` | Falls back to `slugify(account_name or "unknown")` when no format matches, so passing or omitting `--account-name` re-namespaces identity. | `import_service.py:3222` (MB-147) |
-| `source_transaction_id` | The union aliases the tabular *fallback* column into this name (`transaction_id AS source_transaction_id`) and discards the genuinely-native one, so it is the institution's id on some rows and a MoneyBin hash of `date\|amount\|description\|account_id\|row_number` on others — re-embedding the account key a second time. | `raw_tabular_transactions.sql:6`, `int_transactions__unioned.sql:82` |
+| `source_transaction_id` | The union aliases the tabular *fallback* column into this name (`transaction_id AS source_transaction_id`) and discards the genuinely-native one, so it is the institution's id on some rows and a MoneyBin hash of `date\|amount\|description\|account_id` plus an occurrence index on others. | `raw_tabular_transactions.sql:6`, `int_transactions__unioned.sql:82` |
 
 `source_file` is **already not a path** in most channels, which is why it
 cannot serve as a document identity:
@@ -211,20 +211,19 @@ the Tier 2b blocking guard `a.source_file != b.source_file`
 
 **R13.** `source_transaction_id` means **the source's own transaction id, or
 NULL**. It is never synthesized. MoneyBin's own within-document row identity
-moves to a separate column, `source_row_key`.
+moves to a separate column, `source_row_key`, and the value the identity hash
+actually consumes is named `identity_component`.
 
 This is the fifth fallback, and it is currently invisible because the two
 columns already exist and are then collapsed. `raw.tabular_transactions` is
 honest at the raw layer: `source_transaction_id` is *"Institution-assigned
 unique transaction identifier if present"*, kept beside a distinct
-`transaction_id` that is *"source_transaction_id when available, else SHA-256
-hash of `date|amount|description|account_id|row_number`"*
-(`raw_tabular_transactions.sql:20,6`). Staging carries both
-(`stg_tabular__transactions.sql:60`). Then
-`int_transactions__unioned.sql:82` aliases `transaction_id AS
-source_transaction_id` — promoting the **fallback** column into that name and
-discarding the honest one. Downstream, a MoneyBin-synthesized surrogate is
-indistinguishable from an institution-assigned id.
+`transaction_id` (`raw_tabular_transactions.sql:20,6`). Staging carries both
+(`stg_tabular__transactions.sql:60`). Then `int_transactions__unioned.sql:82`
+aliases `transaction_id AS source_transaction_id` — promoting the **fallback**
+column into that name and discarding the honest one. Downstream, a
+MoneyBin-synthesized surrogate is indistinguishable from an
+institution-assigned id.
 
 Plaid's equivalent aliasing at `:119` is *correct* and stays: its raw
 `transaction_id` genuinely is Plaid's own id.
@@ -233,37 +232,52 @@ Required:
 
 - `source_transaction_id` carries the institution's id where the source
   supplies one, and NULL where it does not. No `COALESCE` may fill it.
-- `source_row_key` carries MoneyBin's within-document row identity, derived
-  from transaction date, amount, and an **occurrence index scoped to that
-  `(date, amount)` pair** — dropping `description` (which a bank may re-render)
-  and the account key (already an identity-tuple component, so embedding it
-  twice compounds any wobble). This is the hardening ADR-015 already names as a
-  follow-up.
+- `source_row_key` carries MoneyBin's within-document row identity. It keeps
+  today's inputs — transaction date, amount, description, and the source
+  account key, with an occurrence index counting repeats of that same content —
+  and is therefore **byte-identical to the value `transaction_id` holds today**
+  for every row with no native id. That identity is what keeps this change from
+  rotating those rows.
 
-  **The occurrence index must not be a row position.** Today the row hash uses
-  `row_number`, raw file order (`transforms.py:142`, no sort anywhere in the
-  module). A position moves whenever the export window shifts, so a Feb row
-  sitting at offset 40 in a Jan–Mar export sits at offset 8 in a Feb–Apr one —
-  and a position-derived key would rotate its id, defeating this spec's Goal
-  for precisely the recurring-export case it exists to fix. An occurrence index
-  is stable under that shift: a Feb 15 / −52.30 row that is the only one of its
-  `(date, amount)` is occurrence 1 in both files.
-
-  The cost, stated plainly: two genuinely distinct transactions sharing a date
-  and an amount become interchangeable under this key, because `description` is
-  gone. They still both exist and still both get ids — but which id attaches to
-  which row is arbitrary, and if their relative order flips between exports the
-  two ids swap. That is acceptable only because the two rows are, by
-  construction, indistinguishable on every field the key retains; a user who
-  curated one and not the other could see that curation move. Sources with a
-  native id never touch this path.
+  An earlier draft dropped `description` and the account key from this key, and
+  justified it by saying the existing hash used `row_number`, raw file order.
+  Both were wrong. `row_number` is assigned at `transforms.py:142` and never
+  reaches the hash — the call site passes seven arguments and that is not among
+  them (`transforms.py:228-236`) — and the index already counts repeats of the
+  same content, as the module's own comment states. Dropping the account key
+  would also bucket a multi-account file's rows together: `transforms.py:137`
+  broadcasts a per-row account key precisely because one file can carry several
+  accounts, so two rows alike on date, amount, and description but sitting in
+  different accounts would take occurrence 0 and 1, and a reorder between
+  exports would swap them. That is the failure this requirement exists to
+  prevent. The stale claim traces to the schema comment at
+  `raw_tabular_transactions.sql:6`, which was never updated when the scheme
+  changed.
+- Manual entries have no institution, so `raw.manual_transactions` carries no
+  `source_transaction_id`: its minted `manual_<uuid4>` is a row key, and the
+  column is renamed `source_row_key` (`raw_manual_transactions.sql:6`). This
+  resolves R9's conflict with this requirement — a MoneyBin-minted value
+  sitting in a column named for the source's own id.
 - The identity hash consumes `source_transaction_id` when present and
   `source_row_key` otherwise. That selection happens **once**, explicitly, in
-  the identity derivation — not by a fallback hidden inside a column's meaning.
+  `int_transactions__matched`, under the name `identity_component` — never by a
+  fallback hidden inside a column's meaning.
+- `app.match_decisions.source_transaction_id_a/_b` are renamed
+  `identity_component_a/_b`, because that is what they have always held. They
+  stay `NOT NULL`: `identity_component` is never NULL, so the matcher's node
+  identity and its group-recovery join keep working unchanged
+  (`int_transactions__matched.sql:130,209`).
 
 The payoff is that "does this source give us stable ids?" becomes a question
 the data answers. Today it cannot be asked: every row has a
 `source_transaction_id` whether or not the institution supplied one.
+
+**What rotates, and what does not.** Tabular rows carrying a native id rotate,
+and only those: their identity component is `{account_key}:{native_id}` today
+(`transforms.py:637`) and becomes the bare native id, matching what OFX and
+Plaid already feed into that position. One hash slot stops meaning two
+different things by channel. Rows with no native id do not rotate at all,
+because `source_row_key` reproduces their existing value byte for byte.
 
 ### Invariants (testable as refusals)
 
@@ -299,6 +313,13 @@ always-propose rule delivers: a file that reaches the confirm gate produces an
 has nothing left to fall back to. The thirteen models must then drop the
 arm — otherwise a dead branch keeps the ambiguity alive in the code and in
 `taxonomy.py`'s reasoning about the column.
+
+**R16.** `moneybin doctor` detects orphaned rows in all five `app.*` tables
+hard-coupled to `transaction_id`, not the two it covers today
+(`doctor_service.py:713`). V052 deliberately preserves no `app.*` state, and no
+foreign key exists anywhere in `app.*` to complain, so doctor is the only
+surface that can tell a user what the migration and re-import cost them. It
+ships **with** the migration, not after it.
 
 ## Data Model
 
@@ -367,44 +388,45 @@ Its privacy class is unchanged (R11).
 
 `V052__separate_document_and_account_identity.py`. One migration, because the
 migration is the atom: R4, R7, R8, R9, and R13 each rotate `transaction_id`.
-Shipped separately they would mean five rotations, five migrations, and five
-windows in which a user's curation can orphan.
+
+**Posture: schema only, no data preservation.** The migration changes shape and
+recreates the re-derivable raw tables empty. It does not backfill identity
+values, mint replacement account keys, or rewrite the `transaction_id` held in
+`app.*`. Recovery is a re-import, which regenerates every `raw.*` identity
+correctly by construction — a fresh import is the definition of the right
+answer here, so reproducing it inside a migration is duplicated logic that can
+only diverge.
+
+This is a deliberate pre-launch trade. A data-preserving migration costs more
+to write, review, and verify than a re-import costs to run, and the repo is
+pre-launch with no user whose curation cannot be rebuilt. The migration is
+written **to be deleted wholesale** in a future pre-release schema reset rather
+than maintained: it carries no data-preservation logic to unwind, and nothing
+else may depend on having run it.
 
 The migration must:
 
-1. Add `source_document_key` and backfill it. For rows whose source artifact is
-   gone, backfill from `raw.import_log.file_sha256` where present; where absent
-   (pre-V046 batches), mint a per-batch key so the column is never NULL.
-2. Add `source_row_key` and **recompute** it from the raw columns
-   (`transaction_date`, `amount`, occurrence index), not by copying the existing
-   `transaction_id` hash — that hash still contains `description` and
-   `account_id`, the two components R13 removes, so copying it would leave
-   every migrated row carrying a key no fresh import can reproduce and break
-   the `--force` idempotence test. Then drop the fallback `transaction_id`
-   column.
+1. Recreate the eight `raw.*` tables in R10's table with the new shape —
+   `source_document_key` and `source_row_key` added, `source_file` renamed to
+   `source_path` and nullable, `source_document_key` swapped for `source_file`
+   in the primary key. They are recreated **empty**; DuckDB cannot `ADD` or
+   `DROP` a primary key, so each is a create-drop-rename regardless, and
+   carrying rows across would require backfilling a `NOT NULL` key component
+   that only a re-import can compute.
+2. Preserve `raw.manual_transactions`, which no re-import can rebuild because
+   the user typed it. Rename its minted `source_transaction_id` to
+   `source_row_key`; the column stays the primary key and no value changes.
+3. Rename `app.match_decisions.source_transaction_id_a/_b` to
+   `identity_component_a/_b`. Values are kept as-is: decisions on rows that do
+   not rotate re-anchor on the next import, and decisions on tabular native-id
+   rows orphan.
+4. Log, at INFO, that a re-import is required, and that `moneybin doctor` lists
+   whatever `app.*` curation no longer resolves (R16).
 
-   `source_transaction_id` needs no null-out pass: in
-   `raw.tabular_transactions` it is *already* NULL for exactly the rows whose
-   id was MoneyBin-derived (`raw_tabular_transactions.sql:20`) — the derived
-   value only ever lived in the separate `transaction_id` column. The
-   correction is at the union (`int_transactions__unioned.sql:82`), not in the
-   data.
-3. **Mint replacement account keys.** For every distinct existing
-   bytes-derived `source_account_key` in `raw.*`, mint an opaque key, rewrite
-   the `raw.*.account_id` values that carry it, and update the matching
-   `app.account_links.ref_value` rows in the same transaction. Without this
-   step R4 and R15 are not achieved on any existing database and step 5's
-   rotation is largely a no-op, because the account slot would rehash to the
-   same value. Where two bytes-derived keys already resolve to one
-   `account_id`, they collapse to one minted key — which is the duplicate this
-   spec exists to stop creating.
-4. Swap `source_document_key` for `source_file` in the eight primary keys
-   (R10), then rename the leftover to `source_path` and make it nullable.
-5. Recompute `transaction_id` for every affected row and rewrite the
-   `transaction_id` held by the five hard-coupled `app.*` tables named in
-   §Migration and On-Disk Impact, verifying row counts before and after —
-   nothing cascades, so a missed table fails silently.
-6. Refuse to run partially: either every table is rotated or none is.
+**The one thing a re-import cannot rebuild** is a Plaid batch older than the
+API's available history window. A user in that position takes `moneybin db
+backup` before upgrading. Manual entries are covered by step 2; every
+file-backed channel re-imports from files the user still holds.
 
 ## Implementation Plan
 
@@ -606,41 +628,48 @@ exercise test 8.
 
 ## Migration and On-Disk Impact
 
-**This breaks existing databases and requires V052 to be run.** Every
-transaction id derived from an unregistered tabular file rotates. Databases
-whose transactions come only from OFX, Plaid, or registered tabular formats
-with native transaction ids are unaffected in their ids but still take the
-column rename.
+**This breaks existing databases and requires V052 to be run, followed by a
+re-import.** The migration recreates the re-derivable `raw.*` tables empty
+(§Migration), so every derived layer rebuilds from the re-imported sources.
 
-Five `app.*` tables are hard-coupled to `transaction_id` and must be rewritten
-in the same transaction as the rotation: `transaction_categories` (PK),
-`transaction_tags` (PK), `transaction_notes` (`NOT NULL` + index),
-`transaction_splits` (`NOT NULL` + index), and `categorization_decisions`
-(`UNIQUE (transaction_id, attempt_number)`). The other four tables the brief
-listed are insulated — `match_decisions` keys on
-`(source_type, source_transaction_id, account_id)` rather than the gold id,
-`lot_selections` follows a separate `investment_transaction_id` lineage,
-`proposed_rules.sample_txn_ids` is illustrative, and `audit_log.target_id` is a
-historical record where a stale id is arguably correct.
+**Expect `app.*` curation to orphan broadly, and treat that as the cost of the
+posture rather than a defect.** Two things rotate `transaction_id`
+independently: R13 rotates tabular rows carrying a native id, and R4 rotates
+any row whose account slot held a bytes-derived key. How much the second one
+touches on re-import depends on whether the resolver reuses the account key
+remembered in `app.account_links` (R7) or mints a new one — `app.account_links`
+survives the migration, so R7's remembered-binding path is what decides it.
+**Verify this on a real database before relying on either answer**; it is the
+difference between a handful of orphans and all of them.
+
+Five `app.*` tables are hard-coupled to `transaction_id`:
+`transaction_categories` (PK), `transaction_tags` (PK), `transaction_notes`
+(`NOT NULL` + index), `transaction_splits` (`NOT NULL` + index), and
+`categorization_decisions` (`UNIQUE (transaction_id, attempt_number)`). The
+migration does not rewrite them. `app.match_decisions` is **not** insulated as
+an earlier draft claimed: it anchors rows by the value the union called
+`source_transaction_id`, both anchor columns are `NOT NULL`
+(`app_match_decisions.sql:4,7`), and R13 renames them to
+`identity_component_a/_b`. Of the rest, `lot_selections` follows a separate
+`investment_transaction_id` lineage, `proposed_rules.sample_txn_ids` is
+illustrative, and `audit_log.target_id` is a historical record where a stale id
+is arguably correct.
 
 **No foreign key is declared anywhere in `app.*`** — `FOREIGN KEY` and
-`REFERENCES` appear in none of the schema files. So nothing cascades and
-nothing errors: a rotation that misses a table orphans that curation silently.
-The migration must enumerate the five tables explicitly and verify row counts
-before and after, rather than relying on the database to complain.
+`REFERENCES` appear in none of the schema files. Nothing cascades and nothing
+errors, so orphaned curation is silent unless something goes looking.
 
-**Doctor coverage is thinner than the coupling.** `_run_orphan_app_state`
-(`doctor_service.py:713`) checks `transaction_notes` and `transaction_tags`
-only. `transaction_categories`, `transaction_splits`, and
-`categorization_decisions` have no orphan detection, so today a bad re-key
-drops the highest-value curation in the system with nothing flagging it.
-Closing that gap is worthwhile independent of this spec, and it is what makes
-the migration's before/after verification checkable afterwards.
+**That makes the doctor gap load-bearing, not optional.**
+`_run_orphan_app_state` (`doctor_service.py:713`) checks `transaction_notes`
+and `transaction_tags` only. `transaction_categories`, `transaction_splits`,
+and `categorization_decisions` have no orphan detection. Under a migration that
+deliberately preserves nothing, doctor is the *only* thing that will tell a
+user what they lost — so R16 closing that gap is a prerequisite of this
+migration shipping, not a follow-up to it.
 
-Recovery, if the migration is abandoned: the raw layer is unchanged by identity
-rotation, so re-running the transform reproduces the derived layers. Curation
-in `app.*` is the only thing that cannot be recomputed, which is why step 6 of
-the migration refuses partial application.
+Recovery, if the migration is abandoned partway: restore from `moneybin db
+backup`. The migration is not designed to be reversible in place, and is not
+worth making so — see the collapsibility note in §Migration.
 
 ## Dependencies
 
@@ -669,8 +698,8 @@ ship today.
 
 ## Decisions Taken
 
-Recorded here because both were live questions during design, and a later
-reader would otherwise reopen them.
+Recorded here because each was a live question during design, and a later
+reader would otherwise reopen it.
 
 1. **Filenames are not a sensitive leak vector** (R11). Treating an incoming
    filename as sensitive would cost legibility everywhere and close nothing: a
@@ -683,6 +712,17 @@ reader would otherwise reopen them.
    identity in `source_row_key` makes both cases explicit, instead of hiding the
    difference behind one column that means whichever the data happened to
    allow.
+3. **The separation ships as a rotation, not as a data-preserving migration**
+   (R13, §Migration). The alternative kept the existing never-null column and
+   added an honest one beside it, rotating nothing — but it would have left one
+   hash slot meaning `{account_key}:{id}` for tabular and the bare id for OFX
+   and Plaid, permanently, and a per-channel exception in an identity contract
+   is exactly what stops being fixable after launch. Pre-launch is the cheapest
+   moment to end it, so the rotation is taken now. The migration that carries
+   it is kept deliberately thin — schema only, re-import to recover, written to
+   be deleted in a later pre-release reset — because a fresh import already
+   computes the right answer, and reproducing that inside a migration is
+   duplicated logic that can only diverge from it.
 
 ## Open Questions
 
