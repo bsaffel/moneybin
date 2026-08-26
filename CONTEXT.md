@@ -63,7 +63,8 @@ step, matching, transformation, categorization, identity, and rates.
 _Avoid_: rebuild, update, sync, reprocess
 
 **Source type**:
-The ingestion pathway a row arrived by. Carried on every row from Raw onward.
+The ingestion pathway a row arrived by, carried from Raw onward on every typed
+row. The seed-payload tables store their rows untyped and carry none.
 _Avoid_: source, format, provider, channel
 
 **Source origin**:
@@ -108,8 +109,8 @@ _Avoid_: history, audit trail, source tracking
 ### Money
 
 **Transaction**:
-One posted movement of money against an Account. Investment activity is a
-separate ledger — see **"Transaction"** under Flagged ambiguities.
+One movement of money against an Account, posted or still pending. Investment
+activity is a separate ledger — see **"Transaction"** under Flagged ambiguities.
 _Avoid_: entry, posting, record, txn
 
 **Split**:
@@ -243,8 +244,8 @@ is functional, not name-for-name.
 _Avoid_: symmetry, feature parity, mirroring, equivalence
 
 **Response envelope**:
-The one response shape every MCP tool result and every JSON CLI result takes.
-Always qualified; bare "envelope" is not a term.
+The one response shape MCP tool results and JSON CLI results take, which a few
+CLI commands have yet to adopt. Always qualified; bare "envelope" is not a term.
 _Avoid_: envelope, payload, wrapper, result object
 
 **Report**:
@@ -324,9 +325,9 @@ _Avoid_: tier, level, grade, rating
   **Staging** feeds **Core**, and every **Report** draws on **Core** and
   **App state**
 - **App state** is joined into **Core**, never derived from it
-- Every row carries a **Source type** from **Raw** onward; **Source origin**
-  rides alongside it wherever native identifiers need scoping, and **Core**
-  collapses origin wherever it merges
+- Every typed row carries a **Source type** from **Raw** onward; **Source
+  origin** rides alongside it wherever native identifiers need scoping, and
+  **Core** collapses origin wherever it merges
 - Many source rows collapse into one **Golden record**; **Provenance** records
   every contributor
 - A **Match** groups source rows; a **Transfer** pairs two **Transactions**
@@ -341,7 +342,7 @@ _Avoid_: tier, level, grade, rating
 - A **Profile** owns exactly one database and everything in it
 - Every column carries one **Data class**, which fixes its **Sensitivity tier**
   and how **Redaction** treats it
-- The MCP server and the CLI's JSON output return the same **Response
+- The MCP server and most of the CLI's JSON output return the same **Response
   envelope**; direct SQL returns rows
 - A **Split** divides one **Transaction**; an unsplit **Transaction** is still
   one **Transaction line**
@@ -373,7 +374,7 @@ _Avoid_: tier, level, grade, rating
   opaque id. Say **Native reference** for a source's identifier, **connection**
   for a login covering several, and **Profile** for the installation.
 
-- **"Transaction"** carries three unrelated meanings: the posted money movement
+- **"Transaction"** carries three unrelated meanings: the money movement
   (**Transaction**), an entry in the separate investment ledger, and a database
   transaction. Resolved: **Transaction** is the money movement; say
   **investment transaction** for the ledger entry; leave the database sense to
