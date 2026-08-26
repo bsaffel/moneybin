@@ -65,7 +65,8 @@ _Avoid_: rebuild, update, sync, reprocess
 **Source type**:
 The kind of source one typed row came from — a file format, an aggregator, or a
 derivation — carried from Raw onward. Several types share one ingestion
-pathway. The seed-payload tables store their rows untyped and carry none.
+pathway. Rows with no single source, such as canonical dimensions and the
+untyped seed payloads, carry none.
 _Avoid_: source, format, provider, channel
 
 **Source origin**:
@@ -250,7 +251,8 @@ _Avoid_: interface, client, frontend, channel, endpoint
 
 **Parity**:
 The guarantee that the same outcome is reachable from the CLI and from MCP. It
-is functional, not name-for-name.
+is functional, not name-for-name, and exempts secret material and hands-on
+operator work, which stay CLI-only.
 _Avoid_: symmetry, feature parity, mirroring, equivalence
 
 **Response envelope**:
@@ -342,9 +344,10 @@ _Avoid_: tier, level, grade, rating
   **Staging**
 - **App state** is joined into **Core**, and no derived **Core** value is
   snapshotted back into it
-- Every typed row carries a **Source type** from **Raw** onward; **Source
-  origin** rides alongside it wherever native identifiers need scoping, and
-  **Core** collapses origin wherever it merges
+- A row that came from a source carries a **Source type** from **Raw** onward,
+  with **Source origin** alongside it wherever native identifiers need scoping;
+  **Core** collapses origin wherever it merges, and derived facts and canonical
+  dimensions carry neither
 - Every **Golden record** collapses one or more source rows; **Provenance**
   records every contributor
 - A **Match** groups source rows; a **Transfer** pairs two **Transactions**
