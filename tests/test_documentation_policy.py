@@ -104,7 +104,7 @@ def _active_agent_instruction_files(repo_root: Path = _REPO_ROOT) -> list[Path]:
         relative = Path(raw_path)
         posix = relative.as_posix()
         if (
-            relative.name in {"AGENTS.md", "CLAUDE.md"}
+            relative.name in {"AGENTS.md", "CLAUDE.md", "CONTEXT.md"}
             or (posix.startswith(".claude/") and relative.suffix == ".md")
             or (posix.startswith(".cursor/rules/") and relative.suffix == ".mdc")
             or posix
@@ -154,6 +154,7 @@ def test_active_agent_instruction_files_include_all_harness_surfaces() -> None:
     expected = {
         _REPO_ROOT / "AGENTS.md",
         _REPO_ROOT / "CLAUDE.md",
+        _REPO_ROOT / "CONTEXT.md",
         _REPO_ROOT / "design-system/CLAUDE.md",
     }
     for root in (

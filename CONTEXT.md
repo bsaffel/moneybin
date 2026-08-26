@@ -7,9 +7,11 @@ answers questions about them through a CLI, an MCP server, and direct SQL.
 This is the project's shared vocabulary. Use these terms exactly in new and
 edited prose, code, commit messages, issues, and conversation. Where a term is
 listed under `_Avoid_`, it means the same thing and should not be used. Prose
-and code written before this glossary migrate as they are touched, so the
-glossary states what the repository is converging on rather than claiming it
-already complies.
+and internal names written before this glossary migrate as they are touched, so
+the glossary states what the repository is converging on rather than claiming it
+already complies. Shipped `core` and `app` columns, MCP tool names, and CLI
+command names are public contracts: renaming one is a contract change, not a
+migration this glossary authorizes.
 
 MoneyBin is a single context. The same words mean the same things in ingestion,
 analysis, and serving; the groupings below are for reading, not boundaries.
@@ -45,7 +47,8 @@ _Avoid_: bank, provider, issuer, source, org
 
 **Format**:
 A saved, reusable description of one source layout, so a file that has been
-read once can be read again without asking.
+read once can be read again without asking. Its stored parsing instructions are
+a **parse recipe**.
 _Avoid_: profile, template, mapping, layout, schema
 
 **Inbox**:
@@ -53,8 +56,8 @@ The watched folder where a user drops files for unattended Import.
 _Avoid_: watch folder, dropbox, queue, staging folder
 
 **Refresh**:
-The pass that brings the warehouse up to date after new data lands, covering
-matching, transformation, categorization, identity, and rates.
+The one pass that brings the warehouse up to date, covering the connected-sheet
+pull, matching, transformation, categorization, identity, and rates.
 _Avoid_: rebuild, update, sync, reprocess
 
 **Source type**:
@@ -73,8 +76,9 @@ The layer holding ingested data untouched, re-importable from the original.
 _Avoid_: bronze, landing, source layer, staging
 
 **Staging**:
-The layer that cleans, types, and unions each source into a common shape.
-_Avoid_: silver, intermediate, cleansing, transform layer
+The layer that cleans, types, and unions each source into a common shape. Its
+intermediate models are a sub-tier within it, not a layer of their own.
+_Avoid_: silver, cleansing layer, transform layer
 
 **Core**:
 The canonical, deduplicated, multi-source layer: one model per real-world
@@ -97,14 +101,19 @@ _Avoid_: gold record, master record, survivor, winner
 **Provenance**:
 The recorded trail from a Golden record back to every source row that
 contributed to it. Not lineage — see Flagged ambiguities.
-_Avoid_: lineage, history, audit trail, source tracking
+_Avoid_: history, audit trail, source tracking
 
 ### Money
 
 **Transaction**:
 One posted movement of money against an Account. Investment activity is a
 separate ledger — see **"Transaction"** under Flagged ambiguities.
-_Avoid_: entry, posting, record, txn, line item
+_Avoid_: entry, posting, record, txn
+
+**Split**:
+A user's division of one Transaction into parts that carry their own
+Categories. The Transaction keeps its total; each part is one line of it.
+_Avoid_: allocation, breakdown, itemization, sub-transaction, line item
 
 **Sign convention**:
 MoneyBin's fixed reading of a signed amount: negative is money leaving,
@@ -237,8 +246,8 @@ reachable identically from every Surface.
 _Avoid_: view, query, dashboard, chart, analysis
 
 **Profile**:
-One isolated MoneyBin instance — its own database, its own encryption key, its
-own logs and configuration.
+One isolated MoneyBin setup — its own database, its own encryption key, its own
+logs and configuration.
 _Avoid_: workspace, account, environment, instance, tenant
 
 ### Privacy
@@ -305,7 +314,8 @@ _Avoid_: tier, level, grade, rating
 - An **Institution** holds many **Accounts**; an **Account** has many
   **Transactions**
 - A **Provider** ingests one source into **Raw**; **Raw** feeds **Staging**,
-  **Staging** feeds **Core**, **Core** feeds **Reports**
+  **Staging** feeds **Core**, and **Core** feeds the `reports` schema where each
+  **Report** is defined
 - **App state** is joined into **Core**, never derived from it
 - Every row carries one **Source type** and one **Source origin**
 - Many source rows collapse into one **Golden record**; **Provenance** records
@@ -322,23 +332,29 @@ _Avoid_: tier, level, grade, rating
 - A **Profile** owns exactly one database and everything in it
 - Every column carries one **Data class**, which fixes its **Sensitivity tier**
   and how **Redaction** treats it
-- Every **Surface** returns the same **Response envelope**
+- The CLI and the MCP server return the same **Response envelope**; direct SQL
+  returns rows
+- A **Split** divides one **Transaction** into lines carrying their own
+  **Categories**
 - A **Scenario** judges generated data against the **Ground truth** its
   **Persona** produced
 
 ## Flagged ambiguities
 
-- **"Provider"** carries three unrelated meanings: the in-tree ingestion
+- **"Provider"** carries four unrelated meanings: the in-tree ingestion
   component (**Provider**), the third-party financial aggregator whose data
-  arrives by **Sync**, and the AI vendor a **Consent** grant names. Resolved:
-  **Provider** keeps the ingestion sense; say **aggregator** for the financial
-  third party and **AI provider** for the vendor.
+  arrives by **Sync**, the AI vendor a **Consent** grant names, and the
+  market-data or exchange-rate vendor a price adapter fetches from. Resolved:
+  **Provider** keeps the ingestion sense; say **aggregator**, **AI provider**,
+  and **market-data vendor** for the other three. Price and rate feeds are
+  ingestion, but they arrive by none of **Import**, **Sync**, or **Connect**;
+  that pathway has no name yet.
 
 - **"Extractor"** and **"Loader"** named the file-driven and sync-driven halves
   of ingestion before one Protocol unified them. Resolved: **Provider** is the
   term. The `extractors/` directory, the `*Extractor` class names, and the
-  residual `loaders/` package are unmigrated, not a second pattern; they
-  migrate as they are touched.
+  residual `loaders/` package still carry the old one. They are internal
+  naming, so they migrate as they are touched.
 
 - **"Account"** carries four meanings across the sources MoneyBin reads: the
   real account at an institution, a source's own identifier for it, a login
@@ -374,8 +390,8 @@ _Avoid_: tier, level, grade, rating
 - **"Recipe"** carries three unrelated meanings: the recovery steps offered when
   an **Invariant** fails, the learned deterministic instructions for parsing one
   PDF layout, and the curated library of built-in **Reports**. Resolved: always
-  qualify — **recovery recipe**, **parse recipe**, **report recipe**. Bare
-  "recipe" is not a term.
+  qualify — **recovery recipe**, **parse recipe**, **report recipe**. For the
+  ordinary how-to sense say **steps**; bare "recipe" is not a term.
 
 - **"Seed"** carries four unrelated meanings: reference data shipped in the
   repository, the untyped payload storage a catch-all source writes into, the
@@ -385,8 +401,9 @@ _Avoid_: tier, level, grade, rating
 
 - **"Source"** carries three meanings that must not collapse: the ingestion
   pathway (**Source type**), the institution or exporter behind a row (**Source
-  origin**), and the file a row came from. Resolved: never write bare "source"
-  where one of the three is meant.
+  origin**), and the file a row came from. Bare "source" keeps its ordinary
+  sense — the external system or dataset being ingested. Resolved: qualify it
+  wherever one of the three specific meanings is meant.
 
 - **"Actor"** carries two different value sets: the surface or internal driver
   recorded on an audit-log entry, and the domain actor recorded on a
