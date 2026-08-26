@@ -293,8 +293,9 @@ class.
 _Avoid_: masking, sanitization, scrubbing, anonymization, obfuscation
 
 **Consent**:
-The user's recorded, revocable grant allowing one named feature category to
-send data to an AI provider.
+The user's recorded, revocable grant naming one feature category that may send
+data to an AI provider. It is a ledger of what the user intends: the gate that
+withholds data per call is not yet built.
 _Avoid_: permission, opt-in, authorization, approval
 
 ### Verification
