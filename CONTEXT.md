@@ -90,9 +90,10 @@ entity at its primary grain.
 _Avoid_: gold, marts, analytics layer, warehouse
 
 **App state**:
-User-owned mutable state that no derivation can reproduce from Raw — notes,
-tags, rules, settings, decisions.
-_Avoid_: metadata, user data, overrides, config
+Mutable state no derivation can reproduce from Raw — the user's notes, tags,
+rules, settings, and decisions, alongside the application's own operational
+metadata.
+_Avoid_: user data, overrides, config, cache
 
 **Grain**:
 The one thing a single row of a model stands for.
@@ -140,12 +141,13 @@ never change.
 _Avoid_: target currency, converted currency, view currency
 
 **Category**:
-One node of MoneyBin's own canonical spending taxonomy, referenced by id.
+One node of MoneyBin's spending taxonomy, referenced by id. The taxonomy ships
+with a default set and the user may add to it.
 _Avoid_: label, classification, bucket, tag
 
 **Tag**:
-A user-authored slug label on a Transaction. Unlike a Category it comes from no
-fixed taxonomy, and a Transaction may carry many.
+A user-authored slug label on a Transaction. Unlike a Category it belongs to no
+taxonomy at all, and a Transaction may carry many.
 _Avoid_: label, category, keyword, flag
 
 **Rule**:
@@ -290,8 +292,9 @@ _Avoid_: permission, opt-in, authorization, approval
 ### Verification
 
 **Invariant**:
-A named property of the data that must hold, checked on demand and reported as
-passing or failing. See **"Invariant"** under Flagged ambiguities.
+A named property of the data that must hold, checked on demand. A check reports
+passing, failing, a warning, or skipped. See **"Invariant"** under Flagged
+ambiguities.
 _Avoid_: check, constraint, assertion, validation
 
 **Doctor**:
@@ -300,8 +303,9 @@ trust artifact. Some sample rather than scan, and some report as skipped.
 _Avoid_: health check, diagnostics, lint, validate
 
 **Scenario**:
-A whole-pipeline test that drives an empty database through ingestion and
-judges the result against independently derived expectations.
+A whole-system test of one end-to-end behaviour against a real database. Most
+drive ingestion and judge the result against independently derived
+expectations; others exercise infrastructure the pipeline depends on.
 _Avoid_: e2e test, integration test, fixture, golden test
 
 **Persona**:
@@ -357,8 +361,8 @@ _Avoid_: tier, level, grade, rating
   envelope**; direct SQL returns rows
 - A **Split** divides one **Transaction**; an unsplit **Transaction** is still
   one **Transaction line**
-- A **Scenario** judges generated data against the **Ground truth** its
-  **Persona** produced
+- An ingestion **Scenario** judges generated data against the **Ground truth**
+  its **Persona** produced
 
 ## Flagged ambiguities
 
