@@ -7,7 +7,7 @@ answers questions about them through a CLI, an MCP server, and direct SQL.
 This is the project's shared vocabulary. Use these terms exactly in new and
 edited prose, code, commit messages, issues, and conversation. A word under
 `_Avoid_` is banned for that entry's sense only: some are plain synonyms, some
-are near neighbours that must not blur, and some are bare forms the glossary
+are near neighbors that must not blur, and some are bare forms the glossary
 always qualifies elsewhere. Prose
 and internal names written before this glossary migrate as they are touched, so
 the glossary states what the repository is converging on rather than claiming it
@@ -117,8 +117,9 @@ activity is a separate ledger — see **"Transaction"** under Flagged ambiguitie
 _Avoid_: entry, posting, record, txn
 
 **Split**:
-A user's division of one Transaction into parts that carry their own
-Categories. The Transaction keeps its total.
+A user's division of one Transaction into parts that may each carry their own
+Category, inheriting the Transaction's where they do not. The Transaction keeps
+its total.
 _Avoid_: allocation, breakdown, itemization, sub-transaction
 
 **Transaction line**:
@@ -225,8 +226,9 @@ A position in one Security in one Account at a point in time.
 _Avoid_: position, balance, stake
 
 **Lot**:
-One acquisition of a Security, carrying its own cost basis and acquisition
-date.
+One acquisition of a Security, carrying its own acquisition date and its cost
+basis where the source supplied one. A Lot opened without one is marked as
+such rather than reading as a zero basis.
 _Avoid_: tranche, purchase, batch, parcel
 
 **Asset**:
@@ -303,7 +305,7 @@ trust artifact. Some sample rather than scan, and some report as skipped.
 _Avoid_: health check, diagnostics, lint, validate
 
 **Scenario**:
-A whole-system test of one end-to-end behaviour against a real database. Most
+A whole-system test of one end-to-end behavior against a real database. Most
 drive ingestion and judge the result against independently derived
 expectations; others exercise infrastructure the pipeline depends on.
 _Avoid_: e2e test, integration test, fixture, golden test
