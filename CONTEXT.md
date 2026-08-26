@@ -65,10 +65,8 @@ _Avoid_: rebuild, update, sync, reprocess
 
 **Source type**:
 The kind of source one typed row came from — a file format, an aggregator, or a
-derivation — carried from Raw onward. Several types share one ingestion
-pathway. A merged row keeps its winner's. Rows with no source at all — derived
-facts, the dimensions MoneyBin assembles itself, and the untyped seed payloads
-— carry none.
+derivation. An ingested type rides along from Raw; a derived one is minted in
+Core. Several types share one ingestion pathway.
 _Avoid_: source, format, provider, channel
 
 **Source origin**:
@@ -350,10 +348,10 @@ _Avoid_: tier, level, grade, rating
   **Staging**
 - **App state** is joined into **Core**, and no derived **Core** value is
   snapshotted back into it
-- A row that came from a source carries a **Source type** from **Raw** onward,
-  with **Source origin** alongside it wherever native identifiers need scoping;
-  **Core** collapses origin wherever it merges and keeps the winner's type;
-  rows with no source carry neither
+- An ingested row carries a **Source type** from **Raw** onward, with **Source
+  origin** alongside it wherever native identifiers need scoping; **Core**
+  collapses origin where it merges, keeps the winner's type, and mints a type
+  for what it derives. A row with no source carries neither
 - Every **Golden record** collapses one or more source rows; **Provenance**
   recovers its contributors, though only **Transactions** have a relation
   dedicated to it
