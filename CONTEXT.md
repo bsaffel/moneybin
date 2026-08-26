@@ -48,9 +48,9 @@ The bank, broker, or issuer that holds an Account.
 _Avoid_: bank, provider, issuer, source, org
 
 **Format**:
-A saved, reusable description of one source layout, so a file that has been
-read once can be read again without asking. For a PDF, the instructions it
-stores are a **parse recipe**.
+A reusable description of one source layout, so a file of that shape can be
+read without asking. Some ship with MoneyBin; the rest are saved from a file
+read once. For a PDF, the instructions it stores are a **parse recipe**.
 _Avoid_: profile, template, mapping, layout, schema
 
 **Inbox**:
@@ -434,9 +434,9 @@ _Avoid_: tier, level, grade, rating
 
 - **"Source"** carries three meanings that must not collapse: what kind of
   source produced a row (**Source type**), the institution or exporter behind
-  it (**Source origin**), and the file it came from. Bare "source" keeps its ordinary
-  sense — the external system or dataset being ingested. Resolved: qualify it
-  wherever one of the three specific meanings is meant.
+  it (**Source origin**), and the file it came from. Bare "source" keeps its
+  ordinary sense — the external system or dataset being ingested. Resolved:
+  qualify it wherever one of the three specific meanings is meant.
 
 - **"Actor"** carries two different value sets: the surface or internal driver
   recorded on an audit-log entry, and the domain actor recorded on a
