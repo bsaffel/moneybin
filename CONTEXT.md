@@ -58,8 +58,9 @@ The watched folder where a user drops files for unattended Import.
 _Avoid_: watch folder, dropbox, queue, staging folder
 
 **Refresh**:
-The one pass that brings the warehouse up to date, covering the connected-sheet
-step, matching, transformation, categorization, identity, and rates.
+The pass that brings the warehouse up to date. A full one covers the
+connected-sheet step, matching, transformation, categorization, identity, and
+rates; a caller may select a subset.
 _Avoid_: rebuild, update, sync, reprocess
 
 **Source type**:
@@ -87,8 +88,9 @@ intermediate models belong to it rather than forming a layer of their own.
 _Avoid_: silver, cleansing layer, transform layer
 
 **Core**:
-The canonical, deduplicated, multi-source layer: one model per real-world
-entity at its primary grain.
+The canonical, deduplicated, multi-source layer. One model names each
+real-world entity at its primary grain, alongside the relationships, derived
+facts, and review projections built on them.
 _Avoid_: gold, marts, analytics layer, warehouse
 
 **App state**:
@@ -238,9 +240,9 @@ house, a car, jewelry. If a market ticker prices it, it is an investment.
 _Avoid_: holding, property, possession, item
 
 **Price basis**:
-What the publisher of a price series says it did to the numbers: unadjusted,
-split-adjusted, or split-and-dividend-adjusted. Declared by whatever supplied
-the series, never inferred from the numbers.
+What the publisher of a price series says it did to the numbers: `raw`,
+`split_adjusted`, or `split_and_dividend_adjusted`. Declared by whatever
+supplied the series, never inferred from the numbers.
 _Avoid_: adjustment, price type, series type
 
 ### Surfaces
