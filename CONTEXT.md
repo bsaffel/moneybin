@@ -76,7 +76,8 @@ _Avoid_: origin, institution, connection, item
 ### The warehouse
 
 **Raw**:
-The layer holding ingested data untouched, re-importable from the original.
+The layer holding ingested data untouched, re-importable from the original. A
+few tables hold user-entered rows that merely live here; those are editable.
 _Avoid_: bronze, landing, source layer, staging
 
 **Staging**:
@@ -188,8 +189,7 @@ the user's own accounts.
 _Avoid_: internal transaction, contra entry, double entry, self-transfer
 
 **Proposal**:
-An inference offered for ratification rather than applied — a candidate Link,
-Match, Rule, or Category.
+An inference offered for ratification rather than applied.
 _Avoid_: suggestion, candidate, recommendation, draft
 
 **Decision**:
@@ -340,7 +340,8 @@ _Avoid_: tier, level, grade, rating
 - A **Report** reads the warehouse: a model in the `reports` schema reads
   **Core** and **App state**, while a saved one may also read **Raw** and
   **Staging**
-- **App state** is joined into **Core**, never derived from it
+- **App state** is joined into **Core**, and no derived **Core** value is
+  snapshotted back into it
 - Every typed row carries a **Source type** from **Raw** onward; **Source
   origin** rides alongside it wherever native identifiers need scoping, and
   **Core** collapses origin wherever it merges
