@@ -5,8 +5,10 @@ files and connected services, resolves them into one canonical warehouse, and
 answers questions about them through a CLI, an MCP server, and direct SQL.
 
 This is the project's shared vocabulary. Use these terms exactly in new and
-edited prose, code, commit messages, issues, and conversation. Where a term is
-listed under `_Avoid_`, it means the same thing and should not be used. Prose
+edited prose, code, commit messages, issues, and conversation. A word under
+`_Avoid_` is banned for that entry's sense only: some are plain synonyms, some
+are near neighbours that must not blur, and some are bare forms the glossary
+always qualifies elsewhere. Prose
 and internal names written before this glossary migrate as they are touched, so
 the glossary states what the repository is converging on rather than claiming it
 already complies. Shipped `core` and `app` columns, MCP tool names, and CLI
@@ -24,7 +26,7 @@ analysis, and serving; the groupings below are for reading, not boundaries.
 An in-tree component that ingests one external source into the Raw layer.
 Always qualified when the aggregator sense is meant — see **"Provider"** under
 Flagged ambiguities.
-_Avoid_: extractor, loader, importer, adapter, connector
+_Avoid_: extractor, loader, importer
 
 **Import**:
 Ingestion driven by a file the user supplies, whether handed over directly or
@@ -47,8 +49,8 @@ _Avoid_: bank, provider, issuer, source, org
 
 **Format**:
 A saved, reusable description of one source layout, so a file that has been
-read once can be read again without asking. Its stored parsing instructions are
-a **parse recipe**.
+read once can be read again without asking. For a PDF, the instructions it
+stores are a **parse recipe**.
 _Avoid_: profile, template, mapping, layout, schema
 
 **Inbox**:
@@ -57,7 +59,7 @@ _Avoid_: watch folder, dropbox, queue, staging folder
 
 **Refresh**:
 The one pass that brings the warehouse up to date, covering the connected-sheet
-pull, matching, transformation, categorization, identity, and rates.
+step, matching, transformation, categorization, identity, and rates.
 _Avoid_: rebuild, update, sync, reprocess
 
 **Source type**:
@@ -112,8 +114,13 @@ _Avoid_: entry, posting, record, txn
 
 **Split**:
 A user's division of one Transaction into parts that carry their own
-Categories. The Transaction keeps its total; each part is one line of it.
-_Avoid_: allocation, breakdown, itemization, sub-transaction, line item
+Categories. The Transaction keeps its total.
+_Avoid_: allocation, breakdown, itemization, sub-transaction
+
+**Transaction line**:
+One row of the split-expanded grain: the whole Transaction when it carries no
+Split, or one Split of it when it does.
+_Avoid_: line item, split line, child transaction
 
 **Sign convention**:
 MoneyBin's fixed reading of a signed amount: negative is money leaving,
@@ -242,7 +249,7 @@ _Avoid_: envelope, payload, wrapper, result object
 
 **Report**:
 A named, re-runnable answer to one money question, with declared columns,
-reachable identically from every Surface.
+reachable identically from the CLI and from MCP.
 _Avoid_: view, query, dashboard, chart, analysis
 
 **Profile**:
@@ -314,10 +321,12 @@ _Avoid_: tier, level, grade, rating
 - An **Institution** holds many **Accounts**; an **Account** has many
   **Transactions**
 - A **Provider** ingests one source into **Raw**; **Raw** feeds **Staging**,
-  **Staging** feeds **Core**, and **Core** feeds the `reports` schema where each
-  **Report** is defined
+  **Staging** feeds **Core**, and every **Report** draws on **Core** and
+  **App state**
 - **App state** is joined into **Core**, never derived from it
-- Every row carries one **Source type** and one **Source origin**
+- Every row carries a **Source type** from **Raw** onward; **Source origin**
+  rides alongside it wherever native identifiers need scoping, and **Core**
+  collapses origin wherever it merges
 - Many source rows collapse into one **Golden record**; **Provenance** records
   every contributor
 - A **Match** groups source rows; a **Transfer** pairs two **Transactions**
@@ -332,10 +341,10 @@ _Avoid_: tier, level, grade, rating
 - A **Profile** owns exactly one database and everything in it
 - Every column carries one **Data class**, which fixes its **Sensitivity tier**
   and how **Redaction** treats it
-- The CLI and the MCP server return the same **Response envelope**; direct SQL
-  returns rows
-- A **Split** divides one **Transaction** into lines carrying their own
-  **Categories**
+- The MCP server and the CLI's JSON output return the same **Response
+  envelope**; direct SQL returns rows
+- A **Split** divides one **Transaction**; an unsplit **Transaction** is still
+  one **Transaction line**
 - A **Scenario** judges generated data against the **Ground truth** its
   **Persona** produced
 
@@ -346,9 +355,10 @@ _Avoid_: tier, level, grade, rating
   arrives by **Sync**, the AI vendor a **Consent** grant names, and the
   market-data or exchange-rate vendor a price adapter fetches from. Resolved:
   **Provider** keeps the ingestion sense; say **aggregator**, **AI provider**,
-  and **market-data vendor** for the other three. Price and rate feeds are
-  ingestion, but they arrive by none of **Import**, **Sync**, or **Connect**;
-  that pathway has no name yet.
+  and **market-data vendor** for the other three. Prices fetched from a
+  market-data vendor are ingestion, but they arrive by none of **Import**,
+  **Sync**, or **Connect**; that pathway has no name yet. Prices that ride in
+  on an aggregator's feed arrive by **Sync** like any other row.
 
 - **"Extractor"** and **"Loader"** named the file-driven and sync-driven halves
   of ingestion before one Protocol unified them. Resolved: **Provider** is the
