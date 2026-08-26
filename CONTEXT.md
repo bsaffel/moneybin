@@ -159,9 +159,9 @@ _Avoid_: payee, vendor, counterparty, entity
 ### Identity and review
 
 **Account**:
-One real financial account held at an Institution, identified by an opaque
-canonical id that no source supplies. See **"Account"** under Flagged
-ambiguities.
+One real financial account held at an Institution, identified by a canonical
+id — MoneyBin's own once the account is linked, the source's own key until
+then. See **"Account"** under Flagged ambiguities.
 _Avoid_: item, login, connection, ledger, profile
 
 **Native reference**:
@@ -196,8 +196,9 @@ The Proposals of one kind still awaiting Decisions.
 _Avoid_: inbox, backlog, pending list, worklist
 
 **Confirm**:
-The visible ratification step an uncertain inference must pass before it takes
-effect. Silence is reserved for near-certain signals.
+The visible ratification step an uncertain inference or a destructive change
+must pass before it takes effect. Silence is reserved for near-certain signals
+with little at stake.
 _Avoid_: prompt, approval, checkpoint, gate
 
 **Actor**:
@@ -338,7 +339,8 @@ _Avoid_: tier, level, grade, rating
   or **Security**
 - A **Proposal** waits in a **Review queue** until a **Decision** resolves it;
   every **Decision** names an **Actor**
-- A **Confirm** stands between an uncertain inference and its effect
+- A **Confirm** stands between an uncertain inference or a destructive change
+  and its effect
 - An **Account** holds many **Holdings**; a **Holding** is composed of **Lots**
   of one **Security**
 - A **Profile** owns exactly one database and everything in it
@@ -372,9 +374,11 @@ _Avoid_: tier, level, grade, rating
 - **"Account"** carries four meanings across the sources MoneyBin reads: the
   real account at an institution, a source's own identifier for it, a login
   covering several accounts at once, and, loosely, the user's own MoneyBin
-  installation. Resolved: **Account** is the real account, named by MoneyBin's
-  opaque id. Say **Native reference** for a source's identifier, **connection**
-  for a login covering several, and **Profile** for the installation.
+  installation. Resolved: **Account** is the real account, named by its
+  canonical id — MoneyBin's own once the account is linked, the source's own
+  key until then, so it is not unconditionally opaque. Say **Native reference**
+  for a source's identifier, **connection** for a login covering several, and
+  **Profile** for the installation.
 
 - **"Transaction"** carries three unrelated meanings: the money movement
   (**Transaction**), an entry in the separate investment ledger, and a database

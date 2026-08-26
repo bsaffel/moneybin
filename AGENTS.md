@@ -50,7 +50,7 @@ lines and it could be 50, rewrite it.
 
 ## Design Philosophy
 
-- **Sync server is opaque.** The client communicates only with moneybin-sync's API surface. External service providers are implementation details hidden behind the server.
+- **Sync server is opaque.** The client communicates only with moneybin-sync's API surface. External aggregators are implementation details hidden behind the server.
 
 ## Shared Vocabulary
 
