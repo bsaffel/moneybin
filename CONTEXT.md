@@ -66,12 +66,13 @@ _Avoid_: rebuild, update, sync, reprocess
 **Source type**:
 The kind of source one typed row came from — a file format, an aggregator, or a
 derivation — carried from Raw onward. Several types share one ingestion
-pathway. Rows with no single source, such as canonical dimensions and the
-untyped seed payloads, carry none.
+pathway. Rows with no single source, such as derived facts, canonical
+dimensions, and the untyped seed payloads, carry none.
 _Avoid_: source, format, provider, channel
 
 **Source origin**:
-The institution, connection, or exporter that produced a row. It scopes native
+What produced a row — an institution, a connection, an exporter, or MoneyBin
+itself for rows the user entered and rows it backfilled. It scopes native
 identifiers, so two institutions using the same account number stay distinct.
 _Avoid_: origin, institution, connection, item
 
@@ -352,7 +353,8 @@ _Avoid_: tier, level, grade, rating
   **Core** collapses origin wherever it merges, and derived facts and canonical
   dimensions carry neither
 - Every **Golden record** collapses one or more source rows; **Provenance**
-  records every contributor
+  recovers its contributors, though only **Transactions** have a relation
+  dedicated to it
 - A **Match** groups source rows; a **Transfer** pairs two **Transactions**
   across two **Accounts**
 - A **Link** binds one **Native reference** to one **Account**, **Merchant**,
@@ -453,7 +455,9 @@ _Avoid_: tier, level, grade, rating
 - **"Provenance"** and **"lineage"** are used interchangeably but name different
   things: **Provenance** traces a **Golden record** back to its source rows;
   lineage traces a column back through the SQL that produced it, which is how a
-  **Data class** is resolved. Resolved: keep both, never as synonyms.
+  **Data class** is resolved. Resolved: keep both, never as synonyms. Code
+  also calls a **Report**'s upstream tables and a conversion's rate evidence
+  "provenance"; the first is lineage, the second is neither.
 
 - **"Package"** names both an **Analysis package** and an ordinary Python
   package, and the repository contains both. Resolved: the analysis sense is
