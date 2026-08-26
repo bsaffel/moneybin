@@ -308,11 +308,24 @@ the most explicit form of the defect, and the reason an earlier count of nine
 was wrong rather than merely incomplete.
 
 Removing the fallback requires that every account be linked, which R6's
-always-propose rule delivers: a file that reaches the confirm gate produces an
-`app.account_links` row before load, so the join always hits and the `COALESCE`
-has nothing left to fall back to. The thirteen models must then drop the
-arm — otherwise a dead branch keeps the ambiguity alive in the code and in
-`taxonomy.py`'s reasoning about the column.
+always-propose rule delivers **for new imports**: a file that reaches the
+confirm gate produces an `app.account_links` row before load. It does not cover
+a link the user later reverses, or one still pending — the join matches only
+`status = 'accepted'`. Those rows keep a NULL `account_id` instead of a
+source-native one.
+
+**The join therefore stays a `LEFT JOIN`.** Converting it to an inner join
+would delete the row instead, which reads as a stricter contract and is the
+opposite: `fct_transactions_fk_integrity` finds unresolvable accounts by
+looking for them in `core`, so removing them upstream makes that audit pass by
+destroying its evidence. A NULL is visible; a deleted row is not. A standalone
+audit, `fct_transactions_account_linkage`, names the case so `moneybin doctor`
+reports it — standalone, so a reversed link surfaces a finding rather than
+halting every transform.
+
+The thirteen models must still drop the fallback arm — otherwise a dead branch
+keeps the ambiguity alive in the code and in `taxonomy.py`'s reasoning about
+the column.
 
 **R16.** `moneybin doctor` detects orphaned rows in all five `app.*` tables
 hard-coupled to `transaction_id`, not the two it covers today
@@ -723,6 +736,13 @@ reader would otherwise reopen it.
    be deleted in a later pre-release reset — because a fresh import already
    computes the right answer, and reproducing that inside a migration is
    duplicated logic that can only diverge from it.
+4. **An unlinked account yields a NULL, not a dropped row** (R15). Removing
+   the `COALESCE` leaves one case unnamed: an account whose link is pending or
+   reversed. Dropping those rows would make the data look clean and make
+   `fct_transactions_fk_integrity` pass for the wrong reason, because that
+   audit detects the condition by finding the rows in `core`. The `LEFT JOIN`
+   stays, the rows keep a NULL `account_id`, and a standalone audit reports
+   them.
 
 ## Open Questions
 
