@@ -80,8 +80,11 @@ _Avoid_: origin, institution, connection, item
 ### The warehouse
 
 **Raw**:
-The layer holding ingested data untouched, re-importable from the original. A
-few tables hold user-entered rows that merely live here; those are editable.
+The layer holding each source's own fields, with the values as that source
+supplied them. It tracks its sources rather than freezing them: a later
+ingestion may revise or withdraw what an earlier one wrote. A few tables hold
+rows that merely live here rather than arriving from a source; those are
+editable.
 _Avoid_: bronze, landing, source layer, staging
 
 **Staging**:
