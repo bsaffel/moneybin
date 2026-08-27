@@ -50,7 +50,15 @@ lines and it could be 50, rewrite it.
 
 ## Design Philosophy
 
-- **Sync server is opaque.** The client communicates only with moneybin-sync's API surface. External service providers are implementation details hidden behind the server.
+- **Sync server is opaque.** The client communicates only with moneybin-sync's API surface. External aggregators are implementation details hidden behind the server.
+
+## Shared Vocabulary
+
+[`CONTEXT.md`](CONTEXT.md) is the glossary: the canonical word for each concept,
+and the resolution for overloaded ones (`provider`, `tier`, `audit`, `source`).
+Consult it when naming or writing. Where code disagrees, the glossary wins for
+new writing and internal names migrate as they are touched; renaming a shipped
+schema column, MCP tool, or CLI command is a public-contract change first.
 
 ## Design System
 
