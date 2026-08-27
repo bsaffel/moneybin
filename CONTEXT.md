@@ -80,8 +80,8 @@ _Avoid_: origin, institution, connection, item
 ### The warehouse
 
 **Raw**:
-The layer each ingestion lands in, one table per source, before any
-cross-source reconciliation. It records what a source supplied rather than
+The layer each ingestion lands in, where a source owns its own tables, before
+any cross-source reconciliation. It records what a source supplied rather than
 archiving it: a loader may normalize or repair a value on the way in, and a
 later ingestion may revise or withdraw what an earlier one wrote. A few tables
 hold rows that merely live here rather than arriving from a source; those are
@@ -89,8 +89,10 @@ editable.
 _Avoid_: bronze, landing, source layer, staging
 
 **Staging**:
-The layer that cleans, types, and unions each source into a common shape. Its
-intermediate models belong to it rather than forming a layer of their own.
+The layer that cleans and types each source into a shape Core can combine. It
+unions sources only where one pipeline needs it early; the canonical
+multi-source union is Core's. Its intermediate models belong to it rather than
+forming a layer of their own.
 _Avoid_: silver, cleansing layer, transform layer
 
 **Core**:
