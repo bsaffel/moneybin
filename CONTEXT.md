@@ -278,7 +278,9 @@ _Avoid_: envelope, payload, wrapper, result object
 
 **Report**:
 A named, re-runnable answer to one money question, with declared columns,
-reachable identically from the CLI and from MCP.
+reachable identically from the CLI and from MCP. One either arrives with the
+code — MoneyBin's own or an Analysis package's — or is saved by the user from
+SQL of their own.
 _Avoid_: view, query, dashboard, chart, analysis
 
 **Profile**:
