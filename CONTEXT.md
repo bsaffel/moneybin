@@ -80,10 +80,11 @@ _Avoid_: origin, institution, connection, item
 ### The warehouse
 
 **Raw**:
-The layer holding each source's own fields, with the values as that source
-supplied them. It tracks its sources rather than freezing them: a later
-ingestion may revise or withdraw what an earlier one wrote. A few tables hold
-rows that merely live here rather than arriving from a source; those are
+The layer each ingestion lands in, one table per source, before any
+cross-source reconciliation. It records what a source supplied rather than
+archiving it: a loader may normalize or repair a value on the way in, and a
+later ingestion may revise or withdraw what an earlier one wrote. A few tables
+hold rows that merely live here rather than arriving from a source; those are
 editable.
 _Avoid_: bronze, landing, source layer, staging
 
@@ -115,7 +116,8 @@ _Avoid_: gold record, master record, survivor, winner
 
 **Provenance**:
 The recorded trail from a Golden record back to every source row that
-contributed to it. Not lineage — see Flagged ambiguities.
+contributed to it. Not lineage — see **"Provenance"** under Flagged
+ambiguities.
 _Avoid_: history, audit trail, source tracking
 
 ### Money
@@ -259,7 +261,8 @@ _Avoid_: interface, client, frontend, channel, endpoint
 **Parity**:
 The guarantee that the same outcome is reachable from the CLI and from MCP. It
 is functional, not name-for-name, and exempts secret material and hands-on
-operator work, which stay CLI-only.
+operator work, which stay CLI-only. See **"Parity"** under Flagged
+ambiguities.
 _Avoid_: symmetry, feature parity, mirroring, equivalence
 
 **Response envelope**:
