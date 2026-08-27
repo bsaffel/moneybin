@@ -80,12 +80,11 @@ _Avoid_: origin, institution, connection, item
 ### The warehouse
 
 **Raw**:
-The layer each ingestion lands in, where a source owns its own tables, before
-any cross-source reconciliation. It records what a source supplied rather than
-archiving it: a loader may normalize or repair a value on the way in, and a
-later ingestion may revise or withdraw what an earlier one wrote. A few tables
-hold rows that merely live here rather than arriving from a source; those are
-editable.
+The layer each ingestion lands in, before any cross-source reconciliation. It
+records what a source supplied rather than archiving it: a loader may normalize
+or repair a value on the way in, and a later ingestion may revise or withdraw
+what an earlier one wrote. A few tables hold rows that merely live here rather
+than arriving from a source; those are editable.
 _Avoid_: bronze, landing, source layer, staging
 
 **Staging**:
