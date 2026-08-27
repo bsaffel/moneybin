@@ -145,12 +145,17 @@ positive is money arriving.
 _Avoid_: polarity, direction, debit/credit convention
 
 **Home currency**:
-The single currency the user's own totals are expressed in.
+The profile's standing default for the currency money is priced in, used when
+a request names no Display currency. It is optional and it is a target, not a
+guarantee: with none chosen, or with no rate to apply, amounts stay in the
+currencies they are already in.
 _Avoid_: base currency, default currency, local currency, primary currency
 
 **Display currency**:
-The currency one response is converted into for presentation. Stored originals
-never change.
+The currency a request asks one response to be priced in, overriding Home
+currency for that response alone. Stored originals never change, and a
+response with no rate to apply comes back split by currency rather than
+converted.
 _Avoid_: target currency, converted currency, view currency
 
 **Category**:
@@ -398,8 +403,10 @@ _Avoid_: tier, level, grade, rating
 
 - **"Extractor"** and **"Loader"** named the file-driven and sync-driven halves
   of ingestion before one Protocol unified them. Resolved: **Provider** is the
-  term. The `extractors/` directory, the `*Extractor` class names, and the
-  residual `loaders/` package still carry the old one. They are internal
+  term, and it covers only what implements the Protocol — a class that merely
+  parses a file into an intermediate shape is not one, whatever it is named.
+  The `extractors/` directory, the residual `loaders/` package, and the
+  Providers' own class names still carry the old term. They are internal
   naming, so they migrate as they are touched.
 
 - **"Account"** carries four meanings across the sources MoneyBin reads: the
