@@ -32,6 +32,7 @@ not as the starting point.
 - `README.md`
 - `CHANGELOG.md`
 - `CONTRIBUTING.md`
+- `CONTEXT.md`
 - `docs/*.md` — top-level: `architecture.md`, `audience.md`, `comparison.md`, `features.md`, `licensing.md`, `roadmap.md`
 - `docs/guides/`
 - `docs/reference/`
@@ -65,7 +66,7 @@ Two uses:
 
 1. **Scope detection.** Future runs can identify docs whose stamp
    predates the newest in-scope `src/` change — those are review
-   candidates. Grep: `grep -rln '<!-- Last reviewed:' README.md CHANGELOG.md CONTRIBUTING.md docs/`.
+   candidates. Grep: `grep -rln '<!-- Last reviewed:' README.md CHANGELOG.md CONTRIBUTING.md CONTEXT.md docs/`.
 2. **Reader signal.** A doc stamped six months ago has earned skepticism;
    a doc stamped last week is fresh.
 
