@@ -84,10 +84,19 @@ cannot serve as a document identity:
 
 | Channel | `source_file` value | Ref |
 |---|---|---|
-| OFX / tabular | `str(canonical_path)` — a resolved filesystem path | `import_service.py:2044`, `:3518` |
+| OFX | `str(canonical_path)` — a **resolved** filesystem path | `import_service.py:2044` |
+| Tabular | `str(file_path)` — the path **as given**, never `.resolve()`d | `import_service.py:3518` |
+| PDF | the original filename, **basename only, no path** | `raw_pdf_seeds.sql:9` |
 | Plaid | `f"sync_{job_id}"` | `extractors/plaid/extractor.py:322` |
 | Google Sheets | `f"gsheet://{spreadsheet_id}/{sheet_gid}"` | `gsheet/adapters/transactions.py:254` |
 | Manual | `f"<{source_type}:{format_name}:{actor}>"`, then `NULL` in the union | `import_service.py:1826`, `int_transactions__unioned.sql:76` |
+
+Six channels, one column, four different kinds of value: a synthetic batch
+token in three of them, a filesystem path in two — and those two do not even
+agree, since OFX canonicalises and tabular does not, so the same file reached
+by two paths is one document to OFX and two to tabular. PDF is the sharpest
+case of all: a bare basename is neither unique nor stable, and two statements
+downloaded a month apart routinely share one.
 
 The re-import gate already reached this spec's conclusion and applies it in one
 place only. `find_existing_import` matches on the content digest and treats the
@@ -710,10 +719,18 @@ The migration must:
    can compute.
 2. Clear the remaining re-derivable `raw.*` tables, which hold no identity the
    new shape changes: the five `raw.plaid_*` tables named in §Data Model,
-   `raw.ofx_institutions`, `raw.pdf_seeds`, `raw.gsheet_seeds`, and
+   `raw.ofx_institutions`, `raw.pdf_seeds`, and
    `raw.import_preview_snapshots` — the last holding staged bytes that are
-   deleted on consumption anyway. They still take the new `NOT NULL`
-   `source_document_key`, so clearing is what satisfies it.
+   deleted on consumption anyway.
+
+   **Eight cleared, but only seven take the new column.** Those seven carry
+   `source_file` today, so all seven fall under §Data Model's rule and acquire
+   a `NOT NULL` `source_document_key` that only a re-import can fill — which is
+   what makes clearing the thing that satisfies it. `raw.import_preview_snapshots`
+   is the exception on both counts: it has no `source_file` (it keys on
+   `preview_id` and holds only staged bytes), so it takes no new column, and it
+   is cleared because its rows are deleted on consumption anyway. Do not read
+   "cleared" and "takes the column" as the same set.
 
    Clearing is a cost decision, not an impossibility. For `raw.plaid_*` the
    document key *is* derivable without an API call — the key hashes
@@ -755,7 +772,7 @@ The migration must:
    piece of durable state the thin-migration posture requires, and it exists
    precisely because everything else about the posture is deliberately
    disposable.
-3. Preserve the five `raw.*` tables a re-import does not rebuild. The list is
+3. Preserve the six `raw.*` tables a re-import does not rebuild. The list is
    enumerated here rather than left to a predicate, because the failure mode is
    a list that looks complete and is short by one:
 
@@ -765,7 +782,8 @@ The migration must:
    | `raw.manual_investment_transactions` | The same, for investment events — the second manual table, easily missed because only the first is named elsewhere in this spec (`raw_manual_investment_transactions.sql:1-6`). |
    | `raw.exchange_rates` | Append-only by design: "a rate a provider published for a date is a historical fact, so a refetch never rewrites one." A refetch is also bounded by the provider's history window, so what falls outside it is simply gone. |
    | `raw.security_prices` | Append-only for the same reason — "a historical close is an immutable fact" — and the schema says so precisely to contrast with `raw.plaid_securities`, whose close price is overwritten on every pull and therefore *cannot* carry a history. |
-   | `raw.import_log` | The batch parent of all four above: dropping it dangles their `import_id`. It is also the audit record of every import ever run, which a re-import appends to rather than reconstructs. |
+   | `raw.gsheet_seeds` | Holds **soft-deleted** rows a re-pull cannot return. Each pull sets `deleted_from_source_at` on rows that have vanished from the sheet and keeps their `data` (`raw_gsheet_seeds.sql:8`), but the adapter can only read rows the sheet still has — so a row the user deleted upstream exists nowhere else. Clearing this table is unrecoverable by any command, `--force` included, which is what separates it from `raw.plaid_*`. It carries no `source_file` and takes no new column, so preserving it needs no reshape. |
+   | `raw.import_log` | The batch parent of all five above: dropping it dangles their `import_id`. It is also the audit record of every import ever run, which a re-import appends to rather than reconstructs. |
 
 4. On both manual tables, rename the minted `source_transaction_id` to
    `source_row_key` (R13). It stays the primary key and no value changes.
@@ -1145,11 +1163,16 @@ Per `docs/specs/observability.md`, registered in
 **Migration**
 
 14. Every re-derivable `raw.*` table is empty afterwards **and** each of the
-    five preserved tables still holds every row it held before. Both halves
+    six preserved tables still holds every row it held before. Both halves
     are the test: an over-broad clear is silent data loss, and a missed clear
-    leaves rows carrying a `NOT NULL` document key that nothing can fill. A
-    fixture that seeds only the tables being cleared passes this vacuously,
-    so it seeds all thirteen.
+    leaves rows carrying a `NOT NULL` document key that nothing can fill.
+
+    **The fixture seeds all 22 affected tables** — the eight recreated in step
+    1, the eight cleared in step 2, and the six preserved in step 3. Seeding only some of them makes one half vacuous
+    without failing: seed only the survivors and "every cleared table is empty"
+    is trivially true of a table that started empty, which is exactly how an
+    over-broad clear passes. Every destructive path in the migration must run
+    against rows that were actually there.
 15. Partial-failure: an interrupted migration leaves the database on the old
     schema, not half-rotated.
 16. The stored gold-key prediction is NULL on every preserved
