@@ -247,8 +247,36 @@ so that residual stands exactly as scoped. And it does not contradict R8's
 refusal to add a discriminator column: that one would have existed solely to
 disambiguate a legacy population for a migration written to be deleted, while
 this is permanent product state every future import reads. `source_label`
-carries the same sensitivity as the account name it was copied from — not
-`ref_value`'s, which can hold a full account number and is never projected.
+is `DataClass.ACCOUNT_IDENTIFIER`, named explicitly rather than
+left as "the account name's class" to resolve on its own. The column is copied
+from the tabular/PDF in-file account-name column — `("raw",
+"tabular_accounts").account_name`, which `taxonomy.py:1072` already classifies
+`ACCOUNT_IDENTIFIER` precisely because the mapped account column can *be* the
+account number. Naming a class here matters more than usual because
+`source_label` is designed to be shown at the confirm gate: an implementer who
+resolved "the account name's class" to one of the lower classes the taxonomy
+also uses for account names would unmask what is effectively a raw account
+number on the one surface built to display it. It is not `ref_value`'s class
+only in that `ref_value` is never projected at all.
+
+**Remembering a renamed label is an UPDATE, and the repository has no verb for
+it.** `AccountLinksRepo` exposes `insert` and `repoint`
+(`account_links_repo.py:120,176`) and nothing else. On a rename the account's
+`ref_value` is unchanged — reusing it is what preserves the transaction ids
+testing item 26 asserts — so re-inserting an accepted row for the same tuple
+trips `_guard_uniqueness`, and `repoint` is the wrong verb: it moves a link to
+a different `account_id` by reversing and re-inserting, when the account here is
+the same and only its label changed. Without a third verb the rename path either
+raises on uniqueness or mints a new key and rotates every id beneath the
+account — the precise `slugify` failure R4 exists to end.
+
+So the repo gains `relabel`: an audited UPDATE of `source_label` on one accepted
+link, paired with its `app.audit_log` row like every other mutation
+(Invariant 10), with `before_value` carrying the prior label rather than NULL —
+it is an update, not a creation. It is deliberately not folded into `repoint`;
+one changes which account a ref means, the other changes only what the file
+called it, and collapsing them would let a relabel silently carry an account
+move.
 
 **R5.** A minted account key is opaque and non-reproducible across databases. A
 wiped database re-mints different keys, so re-loading the same source files
@@ -353,6 +381,11 @@ unsafe: `stg_manual__transactions.sql:7-8` reads `t.account_id` as both
 `source_account_key` and the link join's `ref_value`, so a constant would bind
 every manual account to one `app.account_links` row and silently merge every
 hand-entered account into a single account.
+
+**R17** is numbered out of sequence deliberately: it was added after R10–R16
+existed, and requirement numbers are append-only so a citation never silently
+changes meaning (`design-principles.md`'s addressing rule). It sits here rather
+than at the end because it is about gate evidence and belongs beside R9.
 
 **R17.** A file that states no account identity reaches the gate carrying
 **ledger evidence**, not a bare pick-list. The tabular gate passes its
@@ -717,6 +750,34 @@ The thirteen models must still drop the fallback arm — otherwise a dead branch
 keeps the ambiguity alive in the code and in `taxonomy.py`'s reasoning about
 the column.
 
+**`core.dim_accounts` carries a fourteenth fallback, and it is the one that
+actually publishes.** `dim_accounts.sql:199` computes `COALESCE(account_id,
+source_account_key) AS grain_key` and `:231` projects `grain_key AS
+account_id`. Dropping the thirteen prep arms without this one achieves nothing
+observable: the NULL those thirteen now produce is caught here and replaced by
+the source-native key, which is then published as the canonical
+`core.dim_accounts.account_id` — a `DataClass.RECORD_ID` column, unmasked. R15
+would be false on the exact surface it names, and R14's guard would still fail.
+
+**Deleting this COALESCE naively is worse than leaving it, and the model's own
+comment says so.** `:185-193` records that the fallback "never fires: all three
+`stg_*__accounts` models already project `COALESCE(links.account_id,
+a.account_id)`", kept "as a second line of defence — were a staging model to
+stop falling back, every NULL would collapse into one bad row." R15 *is* that
+event. Remove the fallback and every unlinked account grains on NULL, so the
+`merged` GROUP BY collapses them into a single row — silently merging unrelated
+accounts, which is strictly worse than publishing a source-native id.
+
+The defect is that one expression serves two jobs. Split them: `grain_key`
+remains the internal grouping key and may still fall back to the source-native
+value, so unlinked accounts stay *distinct* rows; the published column stops
+being `grain_key` and becomes the minted `account_id` itself — NULL when no
+accepted link exists. Grouping by a value is not publishing it, and only the
+projection was ever the contract. That keeps R15 true, keeps the collapse from
+happening, and keeps R15's own NULL-over-deletion choice: several unlinked rows
+publishing NULL `account_id` is visible to
+`fct_transactions_account_linkage`, where a merged-away row is not.
+
 **R16.** `moneybin doctor` detects orphaned rows in all six `app.*` tables
 hard-coupled to `transaction_id`, not the two it covers today
 (`doctor_service.py:713`). Five take the same check — a row whose
@@ -727,6 +788,29 @@ rotated id is the failure it can suffer. V052 deliberately preserves no `app.*` 
 foreign key exists anywhere in `app.*` to complain, so doctor is the only
 surface that can tell a user what the migration and re-import cost them. It
 ships **with** the migration, not after it.
+
+**`app.match_decisions` needs a seventh check, because the other six cannot
+reach it.** R16's six are the tables hard-coupled to `transaction_id`, and
+`match_decisions` is not one of them: it anchors on the source-native pair
+(`source_transaction_id_a/_b` + type + origin), which R13 renames to
+`identity_component_a/_b` and whose *values* rotate for tabular native-id rows.
+Migration step 8 already says those decisions orphan. What is missing is that
+nothing detects it. The existing `_run_match_decisions_account_fk`
+(`doctor_service.py:1702-1715`) validates only `account_id`/`account_id_b`
+against `dim_accounts` — its docstring states outright that "there is no clean
+transaction FK here" — so it stays green while every anchor dangles.
+
+The consequence is not cosmetic. `int_transactions__matched.sql:10-34` builds
+its dedup edges from accepted decisions keyed on `(source_type,
+source_transaction_id)` scoped by `account_id`. An anchor that no longer names
+a node contributes no edge, the accepted dedup silently stops collapsing its
+pair, and both rows are counted — a user's *accepted* de-duplication reverting
+itself, with no error and no doctor finding. So the seventh check tests anchor
+resolvability against the staging identity set, not `transaction_id`. It
+reports rather than repairs, consistent with this migration preserving no
+`app.*` curation: re-anchoring inside V052 would mean rewriting a human
+decision's subject from a value the user never saw, which is the silent-merge
+class again.
 
 ## Data Model
 
@@ -1463,6 +1547,14 @@ double-counting bug into a deletion bug. The guard also states the intent
 better than the old suffix test did: only a stale **bare** row is ever
 suppressed.
 
+**`moneybin import history` table output** — `import_cmd.py:2311` reads
+`rec.get("source_file", "")` and feeds it to the displayed path. It is a
+`.get` with a default, so the rename does not raise here; the column simply
+renders blank for every record while the JSON output beside it carries the
+populated `source_path`. A silent blank column is the failure mode a rename
+sweep that greps only for subscript access misses, and the heading and help
+text on the same command carry the old word too.
+
 **Import-log producers and readers** — `raw.import_log` is written by every
 channel, and the enumeration above named only the `find_existing_import`
 predicate. The writers break first and hardest: `loaders/import_log.py:129`
@@ -1485,6 +1577,12 @@ the same defect as having no column at all, one layer down. The column tuple
 feeds the audited row snapshot, so adding it there also keeps
 `before_value`/`after_value` complete (Invariant 11); a repo that writes a
 column it does not serialize would make the audit silently partial.
+
+The same file gains `relabel` per R4 — the audited UPDATE that attaches a new
+label to an existing accepted link. `insert` cannot serve the rename (the tuple
+is unchanged, so `_guard_uniqueness` rejects it) and `repoint` is a different
+verb (it moves the link to another `account_id`), so without it the remembered
+rename has no write path at all.
 
 **Per-account overlap evidence** — `_gate_account_proposals`
 (`import_service.py:2214`) applies its one `incoming_transactions` sequence to
@@ -1894,6 +1992,23 @@ Per `docs/specs/observability.md`, registered in
     binding either. Assert on the gate, not on a returned key — a lookup that
     silently returns its first match passes any test that only checks some key
     came back, which is the failure mode this requirement exists to stop.
+36. Two accounts with **no** accepted link publish two distinct
+    `core.dim_accounts` rows, each with a NULL `account_id`. Both halves are
+    load-bearing: asserting only the NULL passes against a model that collapsed
+    them into one row, and asserting only the row count passes against one that
+    published their source-native keys.
+37. An accepted dedup decision whose anchor rotates is reported by `moneybin
+    doctor`. Assert the finding, not the row's survival — the row survives
+    either way, and `app_match_decisions_account_fk` stays green throughout
+    because both accounts still resolve.
+38. A renamed in-file label re-binds to the **same** link row: `source_label`
+    holds the new value, `link_id` and `ref_value` are unchanged, and an
+    `app.audit_log` row carries the prior label in `before_value`. The
+    unchanged `ref_value` is what makes item 26's ids stable; the audit row is
+    what catches a relabel written as a raw UPDATE below the repository.
+39. `moneybin import history` renders a non-empty source column for a migrated
+    record in **table** output. The JSON path passes with or without the fix,
+    so a test that only parses JSON is the one that misses this entirely.
 
 ## Synthetic Data Requirements
 
