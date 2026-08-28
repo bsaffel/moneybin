@@ -135,6 +135,21 @@ re-asking. The precondition carries the whole guarantee: if those rows are
 gone, the document is no longer recorded against a live batch, R3 does not
 apply, and the import returns to R6's gate like any other.
 
+**The replay revalidates the binding; it does not merely find it.** A stamped
+key in `raw` records what was decided, not what is still true — the user may
+have reversed that link since. So `--force` proceeds without a decision only
+when the recovered key still carries a **currently accepted**
+`app.account_links` row. If the link was reversed or is pending, the import
+returns to R6's gate rather than re-stamping it.
+
+Without that check the guarantee inverts into the failure it exists to
+prevent. R15 resolves only accepted links, so replaying a reversed binding
+would re-stamp the old key, produce the promised identical transaction ids,
+and then materialize every one of them against a NULL canonical account — a
+silent reinstatement of a decision the user explicitly undid, which is the
+class of wrong silent action `.claude/rules/design-principles.md` weighs most
+heavily because it is the hardest to notice and undo.
+
 ### Account identity
 
 **R4.** An account key is never derived from document bytes, a filename, or a
@@ -286,7 +301,9 @@ today and R13 does not change that. The extractor repairs a colliding `<FITID>`
 rather than dropping it (`:18`), which is the same premise stated from the
 other side.
 
-**Nine query sites use it as a batch discriminator**, all of which move to
+**Nine query sites use it as a batch discriminator** — ten line references,
+because `import_log.py:410,415` is a single site spanning two lines of one
+query (both bound by the same parameters at `:426`) — all of which move to
 `source_document_key`:
 
 `import_service.py:1862`, `:5026`, `:5257`, `:6112`;
@@ -493,7 +510,7 @@ hard-coupled to `transaction_id`, not the two it covers today
 `transaction_id` no longer resolves. `transaction_id_aliases` takes a different
 one, because its rows are never orphaned in that sense: check that each
 `new_transaction_id` still resolves, since a preserved alias forwarding to a
-rotated id is the failure it can suffer. V052 deliberately preserves no `app.*` state, and no
+rotated id is the failure it can suffer. V052 deliberately preserves no `app.*` curation, and no
 foreign key exists anywhere in `app.*` to complain, so doctor is the only
 surface that can tell a user what the migration and re-import cost them. It
 ships **with** the migration, not after it.
@@ -649,18 +666,30 @@ re-import, which regenerates every `raw.*` identity correctly by construction �
 a fresh import is the definition of the right answer here, so reproducing it
 inside a migration is duplicated logic that can only diverge.
 
-**It mints exactly one thing**, and only on rows it preserves rather than
-clears: a source key per existing manual account (step 6). That is the single
-exception to this posture. It is here because the alternative is not "less
-migration code" but "the defect R9 exists to remove, surviving permanently on
-the rows the migration went out of its way to save" — see the step.
+**It writes exactly two things beyond the schema change**, both named here so
+neither is discovered later as an inconsistency. A minted source key per
+existing manual account, on rows it preserves rather than clears (step 6). And
+a pre-clear row-count baseline with an `incomplete` marker for the Plaid tables
+it empties (step 2). Everything else is shape.
+
+Both survive the posture for the same reason: each is the minimum durable state
+without which the migration fails *silently*. Drop the mint and the defect R9
+exists to remove survives permanently on the rows the migration went out of its
+way to save. Drop the baseline and the cleared Plaid history is not merely
+unrecoverable but unreportable, because the counts doctor would compare against
+are exactly what step 2 destroys. Neither is a backfill, and neither rewrites
+an identity value — which is the line this posture actually draws.
 
 This is a deliberate pre-launch trade. A data-preserving migration costs more
 to write, review, and verify than a re-import costs to run, and the repo is
 pre-launch with no user whose curation cannot be rebuilt. The migration is
 written **to be deleted wholesale** in a future pre-release schema reset rather
 than maintained: it carries no backfill or value-rewriting logic to unwind, and
-nothing else may depend on having run it.
+nothing else may depend on having run it. The two writes above are consistent
+with that. The minted keys become ordinary `app.account_links` rows
+indistinguishable from any other, and the recovery baseline is self-retiring —
+cleared when the counts are met — so a database that has finished recovering
+carries no residue of the migration at all.
 
 **"No data preservation" means no backfill, not no data.** The distinction is
 load-bearing and is the one this migration is most likely to get wrong.
@@ -706,11 +735,26 @@ The migration must:
    — and V052 is a local DuckDB migration with no reach into it. So the
    requirement is a reporting one, not a mechanical one: V052 completes with an
    explicit instruction to run `moneybin sync pull --force`, and `moneybin
-   doctor` reports the Plaid tables as incomplete until their row counts
-   return. Doctor is what makes the gap non-silent, which is the same reason
-   R16 is a prerequisite of this migration rather than a follow-up. What the
-   migration may not do is clear the tables and describe the recovery as
-   automatic.
+   doctor` reports the Plaid tables as incomplete until their history returns.
+   What the migration may not do is clear the tables and describe the recovery
+   as automatic.
+
+   **Doctor cannot report that from the tables alone, so V052 must persist a
+   baseline before it clears.** Steps 1–2 destroy the very row counts the check
+   would compare against, and once an incremental pull adds a single row the
+   tables are non-empty — at which point doctor cannot distinguish partially
+   restored history from fully restored history, or from a table that was
+   legitimately empty all along. The gap goes silent again, one row after the
+   migration.
+
+   Before clearing, V052 writes the pre-clear row count for each affected table
+   plus an `incomplete` marker into `app.*`, and doctor reports every marked
+   table until its count is met or exceeded and the marker is cleared. The
+   marker is what makes this a fail-closed check rather than a guess: a missing
+   baseline reads as "not yet recovered," never as "fine." This is the one
+   piece of durable state the thin-migration posture requires, and it exists
+   precisely because everything else about the posture is deliberately
+   disposable.
 3. Preserve the five `raw.*` tables a re-import does not rebuild. The list is
    enumerated here rather than left to a predicate, because the failure mode is
    a list that looks complete and is short by one:
