@@ -328,8 +328,25 @@ rule that buys nothing where the file already sits.
 **R12.** Wherever the match engine needs "did these two rows come from the same
 physical import?", it keys on `source_document_key`, not on a path. Two sites:
 the Tier 2b blocking guard `a.source_file != b.source_file`
-(`scoring.py:284`) and the 1:1 assignment key
+(`scoring.py:284`) and the `SourceKey` cardinality unit
 `(source_type, source_origin, source_file)` (`assignment.py:88`).
+
+**`assignment.py:88` is not the 1:1 assignment key**, and an earlier draft
+called it that. It is `SourceKey`, the cardinality unit inside
+`assign_components`' union-find: two rows sharing it came from the same file
+and are therefore distinct transactions rather than duplicates of each other.
+The actual 1:1 key is `_claim_key` (`assignment.py:34-52`), built from
+`(source_type, account_id, source_transaction_id)` with no `source_file` in it
+at all. The distinction decides which mechanism an implementer edits.
+
+**`_claim_key` does need a change — from R13, not R12.** It reads
+`pair.source_transaction_id_a/_b`, which R13 makes legitimately NULL for a
+tabular row carrying no native id. Every such row within one account would then
+build the identical claim key and collapse into a single claim, silently
+suppressing matches. `_claim_key` must consume `identity_component` instead —
+the value R13 defines precisely so that a total key exists. This is the one
+place R13's honest NULL is actively dangerous rather than merely more truthful,
+so it is named here rather than left to fall out of the rename.
 
 **R13.** `source_transaction_id` means **the source's own transaction id, or
 NULL**. It is never synthesized. MoneyBin's own within-document row identity
@@ -470,9 +487,13 @@ The thirteen models must still drop the fallback arm — otherwise a dead branch
 keeps the ambiguity alive in the code and in `taxonomy.py`'s reasoning about
 the column.
 
-**R16.** `moneybin doctor` detects orphaned rows in all five `app.*` tables
+**R16.** `moneybin doctor` detects orphaned rows in all six `app.*` tables
 hard-coupled to `transaction_id`, not the two it covers today
-(`doctor_service.py:713`). V052 deliberately preserves no `app.*` state, and no
+(`doctor_service.py:713`). Five take the same check — a row whose
+`transaction_id` no longer resolves. `transaction_id_aliases` takes a different
+one, because its rows are never orphaned in that sense: check that each
+`new_transaction_id` still resolves, since a preserved alias forwarding to a
+rotated id is the failure it can suffer. V052 deliberately preserves no `app.*` state, and no
 foreign key exists anywhere in `app.*` to complain, so doctor is the only
 surface that can tell a user what the migration and re-import cost them. It
 ships **with** the migration, not after it.
@@ -482,8 +503,15 @@ ships **with** the migration, not after it.
 ### New column
 
 `source_document_key VARCHAR NOT NULL` on every `raw.*` table that today
-carries `source_file`, and on `raw.import_log`. `NOT NULL` because it takes
-`source_file`'s place in eight primary keys (R10).
+carries `source_file`. `NOT NULL` because it takes `source_file`'s place in
+eight primary keys (R10).
+
+**`raw.import_log` takes the same column nullable**, and the exception is
+deliberate rather than an inconsistency. That table keys on `import_id`, so the
+document key is informational there rather than a key component, and it holds
+rows for pre-V046 batches with no `file_sha256` to derive one from. NULL is the
+honest answer for those; minting a stand-in would put a value into a column
+that names bytes nobody hashed. §Migration step 7 adds it on those terms.
 
 **The column is wider than R10's table, and the difference is what it does.**
 Sixteen `raw.*` schema files carry `source_file` today. R10 names the eight
@@ -661,9 +689,28 @@ The migration must:
    Clearing is a cost decision, not an impossibility. For `raw.plaid_*` the
    document key *is* derivable without an API call — the key hashes
    `sync_{job_id}`, which is the exact value `source_file` already holds
-   (`raw_plaid_transactions.sql:27`) — so a backfill could be written. It is
-   not worth writing: a re-sync rebuilds these rows anyway, and every one of
-   them is re-derivable by definition.
+   (`raw_plaid_transactions.sql:27`) — so a backfill could be written.
+
+   **But recovering the cleared Plaid rows is not automatic, and the migration
+   must not pretend otherwise.** "A re-sync rebuilds them" is false for the
+   default command: `moneybin sync pull` leaves `force=False`
+   (`cli/commands/sync.py:334-336`), which passes `reset_cursor=False`
+   (`sync_service.py:117-119`), and the server contract makes that
+   incremental-only from the last stored cursor
+   (`docs/reference/server-api-contract.md:256`). An ordinary pull after V052
+   returns only what is newer than the cursor and leaves the cleared history
+   missing — silently, because nothing treats an empty raw table as an error.
+
+   **The migration cannot fix this itself.** The cursor is server-side — the
+   contract says `reset_cursor: true` makes "the server discard *its* cursor"
+   — and V052 is a local DuckDB migration with no reach into it. So the
+   requirement is a reporting one, not a mechanical one: V052 completes with an
+   explicit instruction to run `moneybin sync pull --force`, and `moneybin
+   doctor` reports the Plaid tables as incomplete until their row counts
+   return. Doctor is what makes the gap non-silent, which is the same reason
+   R16 is a prerequisite of this migration rather than a follow-up. What the
+   migration may not do is clear the tables and describe the recovery as
+   automatic.
 3. Preserve the five `raw.*` tables a re-import does not rebuild. The list is
    enumerated here rather than left to a predicate, because the failure mode is
    a list that looks complete and is short by one:
@@ -829,6 +876,46 @@ from it.
   every other raw schema this spec touches is under
   `extractors/<channel>/schema/`.
 
+**Raw-table producers** — a schema change alone does not load. `Database.ingest`
+inserts `BY NAME`, so every extractor and transform that builds a DataFrame for
+a changed table must emit the new columns, or the first import after V052 fails
+on an unknown column or a missing `NOT NULL`. Each channel's producer moves
+together with its schema: the tabular and OFX transforms, the Plaid extractor,
+and the Google Sheets adapters. Treat "the schema file is edited" as half the
+change for every table listed above.
+
+**`source_transaction_id_a/_b` consumers** — R13 renames both anchor columns of
+`app.match_decisions` to `identity_component_a/_b`, and the name appears in
+eighteen files. The repository is the mandatory one — `MatchDecisionsRepo`
+(`repositories/match_decisions_repo.py:28,31,103,106,131`) names the columns in
+its column tuple, its signature, and its `INSERT`. Beyond it: `matching/`
+(`persistence.py`, `reconciliation.py`, `engine.py`, `scoring.py`,
+`assignment.py`, `transfer.py`), `services/matching_service.py`,
+`services/doctor_service.py`, `services/categorization/queries.py`,
+`mcp/tools/reviews.py`, `mcp/tools/transactions.py`, `privacy/taxonomy.py`,
+`privacy/payloads/transactions.py`, and three SQLMesh models
+(`core/bridge_transfers.sql`, `meta/fct_transaction_provenance.sql`,
+`prep/int_transactions__matched.sql`). Enumerate with
+`grep -rln source_transaction_id_a src/moneybin` rather than from this list —
+it is accurate at the SHA in the header and nowhere else.
+
+**Manual investment write path** — R13 renames
+`raw.manual_investment_transactions.source_transaction_id` to
+`source_row_key`, and the column is that table's primary key, so its writers
+break. `InvestmentService` mints the value and inserts it
+(`investment_service.py:1224-1239`), and `ManualInvestmentTransactionsRepo`
+selects and updates by it. §Files to Modify previously named only
+`_predict_investment_gold_key` (`:234`), which is the one site the rename does
+*not* break — it is listed for R9's exclusion, not for this rename.
+
+**`EXPECTED_CORE_COLUMNS`** (`database.py:319-329`) — the core schema-drift
+registry still requires `source_file` on `core.dim_accounts`. R10 renames that
+column, and `check_schema_at_boot` (`mcp/server.py:97-160`) raises
+`SchemaDriftError` when a registered column is missing after one self-heal
+attempt. Leaving the registry stale therefore does not degrade gracefully: the
+MCP server refuses to boot on every migrated database, and the recovery tool
+lives inside the server that will not start.
+
 **Manual write path** — the services that author manual rows, without which
 R9's minted key exists in the schema and nothing ever writes it.
 
@@ -954,11 +1041,11 @@ Per `docs/specs/observability.md`, registered in
 
 | Metric | Type | Labels | Why |
 |---|---|---|---|
-| `import_document_rebinds_total` | Counter | `source_type`, `outcome` | How often a known document key resolves to an account vs. reaches the confirm gate. Measures whether R6's confirm burden is once-per-import or worse. |
-| `import_account_keys_minted_total` | Counter | `source_type` | A rise without a matching import rise means keys are still churning. |
-| `import_remembered_key_reuse_total` | Counter | `source_type`, `hit` | Directly measures R7, on the population R7 can serve — files that state an account. A `hit=false` rate near 1.0 there means the unpinned path is not reaching the resolver. It is silent on identity-unknown files, which have no account to look up. |
-| `import_overlap_evidence_total` | Counter | `source_type`, `verdict` | R17's evidence on the identity-unknown path: `decisive` (one account, no near runner-up), `ambiguous`, or `absent` (a disjoint export). This is what §Open Questions turns on, and the only measurement that can answer it. |
-| `matching_pairs_blocked_total` | Counter | `tier`, `reason` | R12 changes what Tier 2b can see; this makes the change observable rather than inferred. |
+| `moneybin_import_document_rebinds_total` | Counter | `source_type`, `outcome` | How often a known document key resolves to an account vs. reaches the confirm gate. Measures whether R6's confirm burden is once-per-import or worse. |
+| `moneybin_import_account_keys_minted_total` | Counter | `source_type` | A rise without a matching import rise means keys are still churning. |
+| `moneybin_import_remembered_key_reuse_total` | Counter | `source_type`, `hit` | Directly measures R7, on the population R7 can serve — files that state an account. A `hit=false` rate near 1.0 there means the unpinned path is not reaching the resolver. It is silent on identity-unknown files, which have no account to look up. |
+| `moneybin_import_overlap_evidence_total` | Counter | `source_type`, `verdict` | R17's evidence on the identity-unknown path: `decisive` (one account, no near runner-up), `ambiguous`, or `absent` (a disjoint export). This is what §Open Questions turns on, and the only measurement that can answer it. |
+| `moneybin_matching_pairs_blocked_total` | Counter | `tier`, `reason` | R12 changes what Tier 2b can see; this makes the change observable rather than inferred. |
 
 ## Testing Strategy
 
@@ -1116,11 +1203,21 @@ survives the migration, so R7's remembered-binding path is what decides it.
 **Verify this on a real database before relying on either answer**; it is the
 difference between a handful of orphans and all of them.
 
-Five `app.*` tables are hard-coupled to `transaction_id`:
+Six `app.*` tables are hard-coupled to `transaction_id`:
 `transaction_categories` (PK), `transaction_tags` (PK), `transaction_notes`
 (`NOT NULL` + index), `transaction_splits` (`NOT NULL` + index), and
-`categorization_decisions` (`UNIQUE (transaction_id, attempt_number)`). The
-migration does not rewrite them. `app.match_decisions` is **not** insulated as
+`categorization_decisions` (`UNIQUE (transaction_id, attempt_number)`), and
+`transaction_id_aliases`, whose `new_transaction_id` is a `NOT NULL` forwarding
+target. The migration does not rewrite them.
+
+`transaction_id_aliases` is the one worth stating separately, because the
+migration silently falsifies the promise its own schema makes: the table exists
+so "a held id stays resolvable -- never an orphan"
+(`app_transaction_id_aliases.sql:1-5`). V052 preserves the alias rows while
+R4 and R13 rotate the ids they forward *to*, so a preserved alias resolves an
+old id to a `new_transaction_id` that no longer exists — a dangling forward
+that reads as success at every call site that trusts the table's contract.
+R16's doctor coverage includes it for that reason. `app.match_decisions` is **not** insulated as
 an earlier draft claimed: it anchors rows by the value the union called
 `source_transaction_id`, both anchor columns are `NOT NULL`
 (`app_match_decisions.sql:4,7`), and R13 renames them to
