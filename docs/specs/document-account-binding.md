@@ -224,6 +224,23 @@ label is remembered too; that is the promised behaviour, and it is the whole
 difference from `slugify`, where a rename silently rotated every id beneath the
 account instead of asking.
 
+**The lookup must be unique, or it is not allowed to bind.** Nothing constrains
+`source_label` — `account_links` guards uniqueness on `ref_value`
+(`account_links_repo.py:75-81`) and never on the label — so two accounts under
+one `(source_type, source_origin)` can both be labelled `Checking`, and R8 makes
+that *likelier* by collapsing every unregistered document import onto a single
+constant origin. The lookup therefore requires **exactly one** accepted match.
+Zero is the ordinary first-import path and reaches the confirm gate. Two or more
+is ambiguity, and it reaches the same gate carrying both candidates — never a
+silent pick of the first row, never an unattended bind.
+
+This is *Magic stays visible* applied literally: a weak or ambiguous inference
+is never eligible for silent action regardless of confidence, and the wrong
+action here is an account *merge*, which that rule names as the case where a
+wrong silent action is hardest to notice and undo. R7's unattended promise is
+scoped to an unambiguous label, and saying so is the honest form of it — a
+promise kept by guessing is worse than the gate it skipped.
+
 Two boundaries, because both are easy to get wrong later. This column does not
 retroactively fix R8's collision residual — pre-migration rows carry no label,
 so that residual stands exactly as scoped. And it does not contradict R8's
@@ -1139,6 +1156,34 @@ The migration must:
    link and a seeded OFX link carry byte-identical `source_origin` values
    before and after V052.
 
+   **The rewrite must not collapse two accepted links onto one key.**
+   `_guard_uniqueness` keys on `(source_type, source_origin, ref_kind,
+   ref_value)` among accepted rows (`account_links_repo.py:75-81`) — it includes
+   `source_origin`, which the table comment's narrower `(source_type, ref_kind,
+   ref_value)` phrasing omits (`app_account_links.sql:6-9`). Two accepted links
+   sharing a `ref_value` under *different* fallback origins are therefore legal
+   today, and re-pointing both at the one constant makes them collide on the full
+   key. Nothing catches it, for the reason this step already gives: a migration
+   writes below the repository layer, so the guard never runs.
+
+   The damage is not confined to the link table.
+   `stg_tabular__transactions.sql:73-78` joins on exactly that tuple, so two
+   surviving accepted rows turn a 1:1 translation into a one-to-many join and
+   **duplicate every transaction** in the affected account — silently, in `prep`,
+   with no error anywhere.
+
+   So step 6 checks before it writes: group the rewrite population by its
+   *post-rewrite* key, and if any group holds more than one accepted row,
+   **refuse the migration** and report the affected pairs — `ref_value` masked
+   per its classification, never printed raw. Refusing is deliberate over
+   auto-consolidating. Picking a survivor means discarding one of two human
+   binding decisions, which is precisely the silent merge *Magic stays visible*
+   forbids without a confirm, and a migration has no confirm surface to offer. A
+   refusal is cheap and recoverable — reverse one link, re-run — while a wrong
+   merge surfaces months later as doubled spending. The refusal also keeps the
+   thin-migration posture honest: detecting the collision is a `GROUP BY … HAVING
+   COUNT(*) > 1`, not a consolidation engine.
+
    The same step adds `app.account_links.source_label` and backfills
    **nothing** into it. A pre-migration row's label is not recoverable — the
    old key was `slugify(name)`, and a slug does not invert — so every existing
@@ -1209,6 +1254,25 @@ item 18.
 ### Files to Create
 
 - `src/moneybin/sql/migrations/V052__separate_document_and_account_identity.py`
+  — **every structural step is guarded on the shape actually present, because a
+  fresh profile reaches this migration already current.** `Database` calls
+  `init_schemas` before it runs the migration runner (`database.py:656-681`), so
+  a brand-new database is built straight from the canonical DDL — `source_path`
+  and both new keys already in place — and only *then* does the runner find V052
+  unapplied and execute it against a schema that needs none of it. An
+  unconditional `ALTER TABLE … RENAME COLUMN source_file TO source_path` fails on
+  a column that does not exist, and a failed migration raises `MigrationError`
+  and aborts the open (`database.py:700-704`). So the failure lands on **every
+  new profile**, not on the legacy databases the step was written for — the one
+  population that has nothing to migrate is the one that cannot open.
+
+  The `ADD COLUMN IF NOT EXISTS` idiom the recent migrations use
+  (`V050__add_plaid_account_identity_fields.py:31-36`) has no rename counterpart
+  in DuckDB, so each rename, drop, and recreate probes the current catalog and
+  no-ops when its target shape is already there. Note this is the one part of the
+  migration path that is *not* cruft to be deleted later: the thin-migration
+  posture is about not over-engineering the legacy path, and this is what makes a
+  fresh install work at all.
 - `src/moneybin/sql/schema/app_sync_recovery_state.sql` — the pre-clear
   baseline and `incomplete` marker V052 writes before step 2 clears the Plaid
   tables.
@@ -1815,6 +1879,21 @@ Per `docs/specs/observability.md`, registered in
     A's candidate and assert they do not appear in A's overlap: a test that
     only checks A's own rows are present passes against the unfiltered
     sequence.
+33. A **fresh** profile initializes cleanly with V052 in the migration set:
+    create a new database, assert the open completes and V052 records success.
+    This is what an unconditional rename fails, and it fails on every new
+    install — so a suite that only exercises upgrade-from-legacy fixtures
+    reports green while no new user can open a database at all.
+34. V052 refuses, **with no partial write**, when two accepted links share a
+    `ref_value` under different fallback origins. Assert both links still carry
+    their original `source_origin` afterwards: a migration that detects the
+    collision only after rewriting the first row leaves exactly the duplicate
+    state the refusal exists to prevent.
+35. Two accounts sharing one in-file label under the same `(source_type,
+    source_origin)` send **both** candidates to the confirm gate rather than
+    binding either. Assert on the gate, not on a returned key — a lookup that
+    silently returns its first match passes any test that only checks some key
+    came back, which is the failure mode this requirement exists to stop.
 
 ## Synthetic Data Requirements
 
