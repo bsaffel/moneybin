@@ -607,14 +607,23 @@ Required:
   selection happens **once**, explicitly, in `int_transactions__matched`, under
   the name `identity_component` — never by a fallback hidden inside a column's
   meaning.
-- Staging's tabular dedup groups on that same expression.
-  `stg_tabular__transactions.sql:35` partitions on `(transaction_id,
-  account_id)` today and on `(COALESCE(source_transaction_id, source_row_key),
-  account_id)` after this requirement, so staging and core agree by
-  construction about what one row is. This is a grouping key, not a second
-  selection, and it is the only other place the pair may appear; a guard pins
-  the count at two. The two forms that are wrong, and why, are in *Files to
+- **Both staging dedups group on that same expression** —
+  `stg_tabular__transactions.sql:35`, which partitions on `(transaction_id,
+  account_id)` today, and `stg_ofx__transactions.sql:61`, which partitions on
+  `(source_transaction_id, account_id)`. Both move to
+  `(identity_component, account_id)`, so staging and core agree by construction
+  about what one row is. These are grouping keys, not further selections, and
+  they are the only other places the expression may appear; a guard pins the
+  count at **three**. The forms that are wrong, and why, are in *Files to
   Modify*.
+
+  **OFX staging is not optional here, and an earlier draft left it out.** Once
+  a repaired row carries the bare `<FITID>` in `source_transaction_id`, the
+  existing OFX partition collapses the two rows the repair separated — in
+  `prep`, before `int_transactions__matched` ever gets to consult
+  `source_row_key`. Fixing the raw key alone moves the loss one layer later
+  instead of removing it: raw would hold both rows and core would still show
+  one.
 - `app.match_decisions.source_transaction_id_a/_b` are renamed
   `identity_component_a/_b`, because that is what they have always held. They
   stay `NOT NULL`: `identity_component` is never NULL, so the matcher's node
@@ -1296,6 +1305,38 @@ together with its schema: the tabular and OFX transforms, the Plaid extractor,
 and the Google Sheets adapters. Treat "the schema file is edited" as half the
 change for every table listed above.
 
+**`stg_ofx__transactions` supersession** — the OFX staging model does two
+things with the repair suffix, and R13 removes the suffix from under both.
+
+Its dedup window (`:61`) partitions on `(source_transaction_id, account_id)`
+and must move to `(identity_component, account_id)` for the reason above.
+
+Its `superseding` CTE (`:27-43`) is the subtler half. It exists for a
+cross-import case: a file imported *before* a collision appeared leaves a bare
+row that a later import cannot overwrite, because the two carry different raw
+keys, so both reach core and one real transaction is counted twice. The CTE
+finds repaired rows and derives the id they supersede by splitting at the last
+`#` — and its own comment carefully justifies splitting by position rather than
+by pattern, since `_` and `%` are `LIKE` wildcards and a prefix test would be
+quadratic.
+
+**All of that machinery disappears, because it existed only to undo the
+suffix.** After R13 a repaired row already holds the superseded id verbatim in
+`source_transaction_id`, so `superseded_transaction_id` *is* that column: no
+`LEFT`/`STRPOS`/`REVERSE`, no `#` search, and none of the reasoning about
+reserved characters. Detection is `fitid_repaired` alone, which the comment
+already calls the only admissible proof. Note the direction of the change —
+this is not a simplification bought by accepting risk; the column now means
+what it says, and the string surgery was the cost of it not meaning that.
+
+One new condition is required, and omitting it inverts the fix: the anti-join
+(`:84-98`) must apply only to rows where `fitid_repaired` is false. A repaired
+row now matches its own superseded id and its own content, so an unguarded
+anti-join makes every repaired row suppress *itself* — turning a
+double-counting bug into a deletion bug. The guard also states the intent
+better than the old suffix test did: only a stale **bare** row is ever
+suppressed.
+
 **Import-log producers and readers** — `raw.import_log` is written by every
 channel, and the enumeration above named only the `find_existing_import`
 predicate. The writers break first and hardest: `loaders/import_log.py:129`
@@ -1349,9 +1390,9 @@ wrong value twice over. `source_row_key` is `NOT NULL` and computed for every
 tabular row (§Added columns), so it is total on its own, and it is the leading
 component of the table's new primary key — which is exactly the
 within-document row identity a soft-delete diff needs. The `COALESCE` pair, by
-contrast, is the *identity hash* input, which R13 confines to two sites with a
-guard pinning the occurrence count at two; a third one here would fail that
-guard.
+contrast, is the *identity hash* input, which R13 confines to one selection
+plus the two staging dedup windows, with a guard pinning the occurrence count
+at three; a fourth one here would fail that guard.
 
 **`source_transaction_id_a/_b` consumers** — R13 renames both anchor columns of
 `app.match_decisions` to `identity_component_a/_b`, and the name appears in
@@ -1681,15 +1722,21 @@ Per `docs/specs/observability.md`, registered in
     `<FITID>` **unsuffixed** while their `source_row_key` values differ. Both
     halves matter: asserting only that both rows survive passes against the
     current repair, which is what R13 forbids.
-29. Their `transaction_id` values also differ — the identity selection reads
-    `source_row_key` for a `fitid_repaired` row. A test that stops at the raw
-    layer misses the re-collapse, because the rows are distinct in `raw` and
-    identical in `core`.
-30. A confirmed multi-account import writes `source_label` on the link, and the
+29. Both rows also survive `prep.stg_ofx__transactions`, and their
+    `transaction_id` values differ in `core`. Assert at both layers: the rows
+    are distinct in `raw` regardless, so a raw-only test passes while staging
+    silently drops one, and that is exactly the defect an earlier draft
+    shipped.
+30. A bare OFX row from an import that predates the collision is still
+    suppressed once the repaired rows arrive, and neither repaired row
+    suppresses itself. The second half is the regression this round could have
+    introduced: with the suffix gone, a repaired row matches its own superseded
+    id and its own content, so an unguarded anti-join deletes it.
+31. A confirmed multi-account import writes `source_label` on the link, and the
     paired `app.audit_log` `after_value` contains it. The second assertion is
     the one that catches a repo updated in its `INSERT` but not in its column
     tuple.
-31. In a two-account file, the overlap evidence offered for account A's
+32. In a two-account file, the overlap evidence offered for account A's
     proposal is computed from A's rows alone. Seed B with rows that would match
     A's candidate and assert they do not appear in A's overlap: a test that
     only checks A's own rows are present passes against the unfiltered
