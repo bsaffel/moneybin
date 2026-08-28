@@ -149,7 +149,11 @@ No caller flag may move a component of the identity hash. (MB-147.)
 
 **R9.** Manual rows carry no `account_id` in the identity tuple. Manual rows
 already hold an immutable `manual_<uuid4>` as `source_transaction_id`; the
-account slot becomes a **minted per-account source key**.
+account slot becomes a **minted per-account source key**. §Data Model defines
+its shape and §Migration step 6 mints it for rows that already exist.
+
+R9 governs `raw.manual_transactions` only. `raw.manual_investment_transactions`
+is excluded, for a reason §Data Model states rather than leaves to inference.
 
 An earlier draft also offered the constant `'user'`. That option is withdrawn as
 unsafe: `stg_manual__transactions.sql:7-8` reads `t.account_id` as both
@@ -259,6 +263,22 @@ error, doctor check, and provenance lookup, in exchange for closing nothing.
 The masking rules that matter apply to values MoneyBin *extracts* — account
 numbers, balances, descriptions — not to the name of the container they arrived
 in.
+
+One counter deserves an answer rather than silence, because it is the reason a
+reviewer keeps re-raising this: MoneyBin's own log is a **new** surface. The
+path on disk was visible only to whoever held the disk; a log file concentrates
+many paths into one artifact a user may attach to a bug report. That is a real
+difference from "it was already exposed."
+
+It does not change the decision, for two reasons. The log is still the user's
+own local artifact, written under the same roof as the database it describes,
+and MoneyBin never transmits it. And the alternative fails on its own terms: a
+masked path in an import error is a path the user cannot match to the file they
+just passed, which is the single most common thing an import error has to
+communicate. What this does change is the advice — a shared log is a shared
+artifact, and `moneybin doctor` output pasted into an issue carries whatever
+the user named their files. That belongs in support guidance, not in a masking
+rule that buys nothing where the file already sits.
 
 **R12.** Wherever the match engine needs "did these two rows come from the same
 physical import?", it keys on `source_document_key`, not on a path. Two sites:
@@ -460,6 +480,38 @@ redundant with `source_document_key` and may be left NULL.
 
 Its privacy class is unchanged (R11).
 
+### Repurposed column
+
+`raw.manual_transactions.account_id` stops holding a canonical
+`core.dim_accounts` id and starts holding a **minted per-account source key**
+(R9): `src_` followed by 12 hex, opaque and not reproducible across databases.
+One key per manual account, minted when the account is created and persisted —
+never per row, never per batch.
+
+The `src_` prefix is load-bearing. Canonical ids are bare 12 hex
+(`account_resolver.py:463`), so the prefix keeps the two kinds visually
+distinct in a column that used to hold the other one, and makes a minted key
+greppable for R14's guard.
+
+The join does not change shape. `stg_manual__transactions.sql:26-31` already
+resolves this column through `app.account_links` on `ref_value = t.account_id`;
+after R9 that join matches a minted key instead of a canonical one, and the
+`COALESCE` at `:7` yields the same canonical account it always did. The column
+keeps its name here. Renaming it to `source_account_key` — which is what the
+staging model already aliases it to — is the honest end state by this spec's
+own rule that a name says where a value came from, but it is a separate change
+to a public column name and is deliberately not folded in.
+
+**`raw.manual_investment_transactions.account_id` is excluded.** Its staging
+model has no link join at all: `stg_manual__investment_transactions.sql:11`
+passes the column straight through as already-canonical. Minting into it would
+therefore emit a `src_` key *as* the canonical `account_id` and orphan every
+row from `core.dim_accounts`. Giving that table an honest source slot means
+first giving its model a link join, which is a larger change than R9 and is not
+in this spec. R9 governs the table whose column is read as
+`source_account_key`; the investment table's column is read as the account
+itself.
+
 ### Unchanged
 
 `app.account_links` needs no new `ref_kind`. A minted opaque account key is a
@@ -474,11 +526,16 @@ migration is the atom: R4, R7, R8, R9, and R13 each rotate `transaction_id`.
 
 **Posture: schema only, no data preservation.** The migration changes shape and
 recreates the re-derivable raw tables empty. It does not backfill identity
-values, mint replacement account keys, or rewrite the `transaction_id` held in
-`app.*`. Recovery is a re-import, which regenerates every `raw.*` identity
-correctly by construction — a fresh import is the definition of the right
-answer here, so reproducing it inside a migration is duplicated logic that can
-only diverge.
+values or rewrite the `transaction_id` held in `app.*`. Recovery is a
+re-import, which regenerates every `raw.*` identity correctly by construction —
+a fresh import is the definition of the right answer here, so reproducing it
+inside a migration is duplicated logic that can only diverge.
+
+**It mints exactly one thing**, and only on rows it preserves rather than
+clears: a source key per existing manual account (step 6). That is the single
+exception to this posture. It is here because the alternative is not "less
+migration code" but "the defect R9 exists to remove, surviving permanently on
+the rows the migration went out of its way to save" — see the step.
 
 This is a deliberate pre-launch trade. A data-preserving migration costs more
 to write, review, and verify than a re-import costs to run, and the repo is
@@ -535,7 +592,38 @@ The migration must:
    report instead — the failure that is visible rather than the one that is
    silent. The column repopulates on the next entry, and the preserved rows
    stop being reported the moment a transform materializes them into `core`.
-6. On `raw.import_log`, rename `source_file` to `source_path` and relax it to
+6. Mint a source key for every manual account that already has rows. For each
+   distinct `account_id` in `raw.manual_transactions`: mint one `src_` key,
+   INSERT the matching `app.account_links` row (`ref_kind='source_native'`,
+   `source_type='manual'`, `source_origin='user'`, `status='accepted'`,
+   `decided_by='system'`) pointing at the canonical id currently stored, then
+   UPDATE that account's rows to the minted key.
+
+   **Mint and link are one step, not two.**
+   `stg_manual__transactions.sql:31` joins on `ref_value`, so rewriting the
+   column without writing the link orphans every preserved manual row from
+   `core.dim_accounts` — the rows the migration preserved precisely because
+   nobody can retype them. Writing the link without rewriting the column does
+   nothing at all.
+
+   Without this step the column holds two kinds of value forever: a canonical
+   id on every preserved row, a minted key on every row entered afterwards. The
+   preserved rows would keep exactly the defect R9 exists to remove, and the
+   R14 guard could not tell a violation from a pre-migration survivor.
+
+   These rows are V052's only `app.*` write and its only departure from
+   Invariant 10's "written only through `AccountLinksRepo`"
+   (`app_account_links.sql:5`) — a migration runs below the repository layer.
+   It writes the paired `app.audit_log` row itself (`actor='system'`,
+   `before_value` NULL, one shared `operation_id`), because the invariant is
+   about the audit row existing, not about which layer emitted it.
+
+   Preserved manual rows rotate their `transaction_id` once here, since the
+   account slot feeding the hash changes value. That is the rotation step 5
+   NULLs the stale predictions for, and it happens once: after this migration
+   the minted key never changes, so a manual row's identity is stable for good.
+
+7. On `raw.import_log`, rename `source_file` to `source_path` and relax it to
    nullable, then add `source_document_key` as a **nullable** column, filled by
    truncating `file_sha256` where one exists. That is a derivation, not a
    backfill: R1's key is exactly that truncation of exactly those bytes. It is
@@ -543,11 +631,11 @@ The migration must:
    informational here; NULL for a pre-V046 batch is the honest answer, and
    minting a stand-in would put a value into a column that names bytes nobody
    hashed.
-7. Rename `app.match_decisions.source_transaction_id_a/_b` to
+8. Rename `app.match_decisions.source_transaction_id_a/_b` to
    `identity_component_a/_b`. Values are kept as-is: decisions on rows that do
    not rotate re-anchor on the next import, and decisions on tabular native-id
    rows orphan.
-8. Log, at INFO, that a re-import is required, and that `moneybin doctor` lists
+9. Log, at INFO, that a re-import is required, and that `moneybin doctor` lists
    whatever `app.*` curation no longer resolves (R16).
 
 **The one thing a re-import cannot rebuild** that this migration does not
@@ -613,9 +701,15 @@ key that table names. Seven are a positional swap;
 `raw_tabular_transactions.sql` is not, because R13 also drops `transaction_id`
 from it.
 
-- `src/moneybin/sql/schema/raw_manual_investment_transactions.sql` — R13's
-  `source_transaction_id` → `source_row_key` rename, the same one
-  `raw.manual_transactions` takes.
+- `src/moneybin/sql/schema/raw_manual_transactions.sql` — R13's
+  `source_transaction_id` → `source_row_key` rename, plus R9's repurposing of
+  `account_id` to a minted source key. Neither R10's eight-file table nor the
+  bullet below covers it, because manual carries no `source_file`; R13's prose
+  warns that this exact omission fails R14's guard on day one, so it is listed
+  in its own right.
+- `src/moneybin/sql/schema/raw_manual_investment_transactions.sql` — the same
+  `source_transaction_id` → `source_row_key` rename. Its `account_id` is **not**
+  repurposed (§Data Model).
 - `src/moneybin/sql/schema/raw_import_log.sql` — `source_file` → `source_path`,
   relaxed to nullable, plus a nullable `source_document_key` (§Migration step
   6). Its own key is `import_id` and does not move.
@@ -789,15 +883,24 @@ Per `docs/specs/observability.md`, registered in
     than merely cheap: it asserts R7 does the work the migration declined to
     do. Its negative partner is an account with no accepted link, whose ids
     *do* rotate and whose curation doctor then lists.
+19. Every preserved manual row's account slot is a `src_` key afterwards, and
+    each distinct pre-migration account has exactly one accepted
+    `app.account_links` row pointing back at the canonical id it had before.
+    Its negative partner is the one that catches a half-applied step: joining
+    `raw.manual_transactions` through `prep.stg_manual__transactions` returns
+    the same canonical `account_id` per row as it did before the migration, and
+    no row resolves to a `src_` value. `raw.manual_investment_transactions` is
+    asserted **unchanged** in the same test, so the exclusion is pinned rather
+    than assumed.
 
 **Binding evidence (R17)**
 
-19. A second file from a recurring **overlapping** export reaches the gate
+20. A second file from a recurring **overlapping** export reaches the gate
     with its true account ranked first, carrying a non-zero `overlap_matched`.
-20. A file overlapping nothing reaches the gate with no overlap evidence and
+21. A file overlapping nothing reaches the gate with no overlap evidence and
     still loads nothing. Absence of a signal is not itself a signal and must
     not promote a candidate.
-21. A tabular gate and a PDF gate over the same ledger produce the same
+22. A tabular gate and a PDF gate over the same ledger produce the same
     overlap numbers. R17 is a wiring change; a divergence means the two
     channels have forked.
 
