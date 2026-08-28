@@ -247,8 +247,23 @@ table: rows with a tabular `source_type` against `app.tabular_formats.name`,
 rows with `source_type='pdf'` against `app.pdf_formats.name`. Not the union of
 the two — a PDF link whose origin happens to collide with a tabular format name
 is still fallback-origin, and the union would spare it. Both columns are
-`VARCHAR PRIMARY KEY`, so within a family the test is decidable rather than a
-guess.
+`VARCHAR PRIMARY KEY`, so within a family the membership test itself is exact.
+
+**One collision survives, and it is bounded rather than fixed.** Both sides are
+arbitrary user-controlled strings, so an old unregistered import whose
+`slugify(account_name)` happens to equal a saved format name in the same family
+is indistinguishable from a genuine format-origin row — no column records which
+path wrote it. That row keeps its old origin and R7 will not find it, so the
+user is asked to bind that one account again. This is accepted, not overlooked:
+the cost is exactly one re-confirmation of a binding the user can re-answer,
+which is the pre-migration behaviour for the whole population and is the
+failure mode this spec treats as recoverable. It is never a wrong binding and
+never data loss, because a stranded link is invisible rather than misapplied.
+Persisting a discriminator would mean adding a column to `app.account_links`
+for the sole benefit of a migration written to be deleted, which the
+thin-migration posture rules out. Doctor's account-links check surfaces an
+accepted link on a non-constant origin after V052, so the residual is
+reportable even though it is not repairable.
 
 This is a link-table rewrite, not an identity backfill: the transaction ids
 still rotate, which R8 already accepts. What it preserves is the *binding
@@ -739,9 +754,12 @@ This is a deliberate pre-launch trade. A data-preserving migration costs more
 to write, review, and verify than a re-import costs to run, and the repo is
 pre-launch with no user whose curation cannot be rebuilt. The migration is
 written **to be deleted wholesale** in a future pre-release schema reset rather
-than maintained: it carries no backfill or value-rewriting logic to unwind, and
-nothing else may depend on having run it. The three writes above are consistent
-with that. The minted keys and the re-pointed origins become ordinary
+than maintained: nothing else may depend on having run it, and the one
+derivation it does carry — computing `source_document_key` from the
+`sync_{job_id}` already in `source_file` for the three Plaid investment tables
+(step 1) — is a pure function of a column that is present, not a reconstruction
+of anything absent. Deleting the migration later deletes that too, with no
+unwind. The three writes above are consistent with that. The minted keys and the re-pointed origins become ordinary
 `app.account_links` rows indistinguishable from any other, and the recovery
 baseline is self-retiring — cleared by a completed forced pull — so a database
 that has finished recovering carries no residue of the migration at all.
@@ -759,10 +777,39 @@ The migration must:
 1. Recreate the eight `raw.*` tables in R10's table with the new shape —
    `source_document_key` and `source_row_key` added, `source_file` renamed to
    `source_path` and nullable, and the new primary key R10's table names for
-   each. They are recreated **empty**; DuckDB cannot `ADD` or `DROP` a primary
-   key, so each is a create-drop-rename regardless, and carrying rows across
-   would require backfilling a `NOT NULL` key component that only a re-import
-   can compute.
+   each. DuckDB cannot `ADD` or `DROP` a primary key, so each is a
+   create-drop-rename regardless of what happens to the rows.
+
+   **Five are recreated empty; three carry their rows across.** The split is
+   not a concession to the posture — it is the posture's own test ("preserve it
+   when nothing outside the database can reproduce it") applied per table. Five
+   of the eight need a `NOT NULL` key component only a re-import can compute,
+   so they are recreated empty. The three Plaid investment tables —
+   `raw.plaid_investment_holdings`, `raw.plaid_investment_holdings_snapshots`,
+   `raw.plaid_investment_holding_lots` — are different on both halves of the
+   test, and clearing them was the single most damaging thing an earlier draft
+   of this migration did.
+
+   **They are not reproducible.** `prep.int_plaid__opening_positions` anchors
+   the opening-lot bootstrap to the **first** snapshot per (account, item)
+   (`:24-45`), and its own comment says why that is safe: "raw.plaid_investment_holdings
+   keeps every snapshot (source_file is part of its PK), so a later sale that
+   drops a lot from the NEWEST snapshot never retroactively rewrites a
+   pre-window lot whose basis was known at connect." A forced pull returns the
+   holdings snapshot **as of that sync** and nothing earlier, so it can add a
+   new newest snapshot and can never restore the first one. Clearing these
+   tables therefore does not cost history that comes back — it silently and
+   permanently changes opening positions and cost basis, which is tax-relevant
+   and which no doctor warning can undo.
+
+   **And no re-import is needed to reshape them.** Their document key is
+   derivable in place: it hashes `sync_{job_id}`, which is exactly the value
+   `source_file` already holds (`raw_plaid_transactions.sql:27`) — the same
+   derivation §step 2 notes for `raw.plaid_*` generally. `source_row_key` is an
+   R13 transaction-identity column and these three are holdings tables, so it
+   does not apply to them. The create-drop-rename therefore selects rows across
+   with `source_document_key` computed from the old column, and the new primary
+   key is satisfied without an API call.
 2. Clear the remaining re-derivable `raw.*` tables, which hold no identity the
    new shape changes: the five `raw.plaid_*` tables named in §Data Model,
    `raw.ofx_institutions`, `raw.pdf_seeds`, and
@@ -931,9 +978,16 @@ The migration must:
    These writes are V052's only `app.*` writes and its only departure from
    Invariant 10's "written only through `AccountLinksRepo`"
    (`app_account_links.sql:5`) — a migration runs below the repository layer.
-   It writes the paired `app.audit_log` row itself (`actor='system'`,
-   `before_value` NULL, one shared `operation_id`), because the invariant is
-   about the audit row existing, not about which layer emitted it.
+   It writes the paired `app.audit_log` rows itself, under one shared
+   `operation_id` with `actor='system'`, because the invariant is about the
+   audit row existing, not about which layer emitted it. **`before_value` is
+   NULL only for the mint.** `app_audit_log.sql:15` defines it as the "full
+   prior row state; NULL on creation (INSERT)", so the minted link — an INSERT
+   — carries NULL, while each re-pointed origin is an UPDATE and carries the
+   complete pre-mutation row. Recording an update as though it were an
+   insertion would leave the audit unable to say which origin was replaced,
+   which is precisely what makes the change reviewable and undoable
+   (Invariant 11).
 
    Preserved manual rows rotate their `transaction_id` once here, since the
    account slot feeding the hash changes value. That is the rotation step 5
@@ -998,6 +1052,17 @@ item 18.
   `app.sync_recovery_state` marker for that connection after a `force=True` run
   completes its load. Without this the marker never clears and doctor reports
   every recovered database as incomplete forever.
+- `src/moneybin/synthetic/writer.py` — emits `source_file` on five raw tables
+  (`:143`, `:175`, `:202`, `:223`, `:260`) and the removed tabular
+  `transaction_id` (`:253`), and supplies neither new column. `Database.ingest`
+  inserts `BY NAME` (`database.py:980`), so after V052 every synthetic frame
+  fails on an unknown column or a `NOT NULL` violation — which takes `moneybin
+  demo` down with it. This is a producer, and §Raw-table producers applies to
+  it in full.
+- `src/moneybin/synthetic/reset.py` — `_SYNTHETIC_ROWS` predicates on
+  `source_file LIKE 'synthetic://%'` (`:36`) under a comment asserting the
+  column is `NOT NULL` "in all five" (`:38`). R12 renames the column and makes
+  it nullable, so both the predicate and the comment move to `source_path`.
 - `src/moneybin/services/doctor_service.py` — report each still-marked table
   with its pre-clear count beside its current one, and say plainly that a
   shortfall after a completed forced pull is the provider window and is
@@ -1275,12 +1340,19 @@ Per `docs/specs/observability.md`, registered in
     are the test: an over-broad clear is silent data loss, and a missed clear
     leaves rows carrying a `NOT NULL` document key that nothing can fill.
 
-    **The fixture seeds all 22 affected tables** — the eight recreated in step
-    1, the eight cleared in step 2, and the six preserved in step 3. Seeding only some of them makes one half vacuous
-    without failing: seed only the survivors and "every cleared table is empty"
-    is trivially true of a table that started empty, which is exactly how an
-    over-broad clear passes. Every destructive path in the migration must run
-    against rows that were actually there.
+    **The fixture seeds all 22 affected tables** — the eight reshaped in step
+    1 (five emptied, three carrying rows), the eight cleared in step 2, and
+    the six preserved in step 3. Seeding only some of them makes one half
+    vacuous without failing: seed only the survivors and "every cleared table
+    is empty" is trivially true of a table that started empty, which is
+    exactly how an over-broad clear passes. Every destructive path in the
+    migration must run against rows that were actually there.
+
+    The three Plaid investment tables need both halves asserted on that same
+    fixture: their rows survive step 1, **and** each row's
+    `source_document_key` equals the hash of the `sync_{job_id}` its old
+    `source_file` held. A test that only counts rows cannot tell a correct
+    derivation from a constant.
 15. Partial-failure: an interrupted migration leaves the database on the old
     schema, not half-rotated.
 16. The stored gold-key prediction is NULL on every preserved
