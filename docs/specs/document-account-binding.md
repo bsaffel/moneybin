@@ -388,7 +388,7 @@ nullable" is not available until the key moves:
 |---|---|---|
 | `raw_tabular_transactions.sql:33` | `(transaction_id, account_id, source_file)` | `(source_row_key, account_id, source_document_key)` |
 | `raw_tabular_accounts.sql:19` | `(account_id, source_file)` | `(account_id, source_document_key)` |
-| `raw_ofx_transactions.sql:19` | `(source_transaction_id, account_id, source_file)` | `(source_transaction_id, account_id, source_document_key)` |
+| `raw_ofx_transactions.sql:19` | `(source_transaction_id, account_id, source_file)` | `(source_row_key, account_id, source_document_key)` |
 | `raw_ofx_accounts.sql:14` | `(account_id, source_file, extracted_at)` | `(account_id, source_document_key, extracted_at)` |
 | `raw_ofx_balances.sql:16` | `(account_id, statement_end_date, source_file)` | `(account_id, statement_end_date, source_document_key)` |
 | `raw_plaid_investment_holdings.sql:27` | `(account_id, security_id, source_origin, source_file)` | `(account_id, security_id, source_origin, source_document_key)` |
@@ -407,12 +407,49 @@ swapping only `source_file` would name a column that no longer exists.
 `source_row_key` takes the vacated slot, because it is what `transaction_id`
 held for a tabular row all along. `source_transaction_id` cannot take it: R13
 makes that column legitimately NULL for a source that assigns no id, and a PK
-component may not be NULL. The OFX key keeps `source_transaction_id` for the
-opposite reason: it is already a key component there
-(`raw_ofx_transactions.sql:19`), so the column cannot be NULL in that table
-today and R13 does not change that. The extractor repairs a colliding `<FITID>`
-rather than dropping it (`:18`), which is the same premise stated from the
-other side.
+component may not be NULL.
+
+**The OFX key moves the same way, and an earlier draft got this backwards.** It
+kept `source_transaction_id` in the OFX key because the column is already a key
+component there and so cannot be NULL, citing the extractor's FITID repair as
+"the same premise stated from the other side." The repair is the *opposite*
+premise. `_disambiguate_colliding_fitids` (`extractor.py:137-167`) does not
+merely keep a colliding `<FITID>`; it appends a content-hash suffix **to
+`source_transaction_id` itself**, which is exactly the synthesis R13 forbids
+and R14 guards. Left as drafted, OFX violates the new contract on the first
+Chase file and R14's guard can never be turned green — the failure mode R4's
+exception paragraph exists to avoid.
+
+Deleting the repair is not the alternative. The raw primary key and the
+`stg_ofx__transactions` dedup window both key on that column, so two distinct
+rows sharing a FITID collapse and one is silently lost — the data-loss bug the
+repair was written to fix, on a real supported case (Chase stamps a foreign
+purchase and its foreign-transaction fee with one shared FITID).
+
+So OFX splits the way tabular does. `source_transaction_id` holds the
+institution's `<FITID>` **verbatim, repaired or not**, which is both honest and
+what R13 and R14 require. A `source_row_key NOT NULL` holds the
+within-document row identity and carries the repair suffix when one fired. The
+raw key becomes `(source_row_key, account_id, source_document_key)` — tabular's
+shape — so the two file channels stop running on two different key grammars.
+
+**The identity selection needs OFX's existing flag, not a new one.** R13's
+"`source_transaction_id` when present, `source_row_key` otherwise" is wrong for
+a repaired OFX row: the FITID *is* present and is *not* unique, so identity
+would re-collapse the two rows the repair just separated — reintroducing the
+loss through the front door. `fitid_repaired` (`raw_ofx_transactions.sql:18`,
+added by V047) already marks exactly those rows, and its column comment already
+calls it "the only proof staging may use to retire the id this row superseded."
+The discriminator exists and is already persisted, so nothing new is invented
+for this.
+
+**These enumerations are a floor, not a census.** Two of them were verified
+short, both in the same way: a name was grepped once, the first hit was
+recorded, and the rest of the file went unread. Take every list below as the
+sites that are known to move, and re-derive the full set with
+`grep -rn source_file src/moneybin` at implementation time — the same
+instruction §`source_transaction_id_a/_b` consumers already carries, for the
+same reason.
 
 **Nine query sites use it as a batch discriminator** — ten line references,
 because `import_log.py:410,415` is a single site spanning two lines of one
@@ -424,6 +461,16 @@ query (both bound by the same parameters at `:426`) — all of which move to
 `dim_holdings.sql:88`; `gsheet/connection_service.py:566`; and
 `import_log.py:410,415` — the last being the legacy path fallback that
 `find_existing_import` already documents as retiring, which this spec retires.
+
+**`doctor_service.py` is six sites, not the one listed.** Beyond `:141`:
+`_NEWEST_HOLDINGS_SNAPSHOT_CTE` both selects and orders by the column
+(`:134`, `:138`), `_run_investment_unreported_holdings` joins two snapshots on
+it (`:1218`), and `_run_unproposed_cross_source_duplicates` projects it twice
+as the matcher's physical-source key (`:2389`, `:2393`); a comment at `:2584`
+describes the NULL semantics and moves with them. Missing these is worse than
+a crash: these checks catch a catalog error and return `skipped`, so a migrated
+database would quietly lose its holdings and duplicate diagnostics while doctor
+still reported a clean run.
 
 **R11.** A filename or path is **not** treated as a sensitive leak vector.
 `source_path` keeps `DataClass.RECORD_ID` (`taxonomy.py:692`, `Tier.LOW`,
@@ -552,10 +599,14 @@ Required:
   — a MoneyBin-minted value sitting in a column named for the source's own id —
   and it has to resolve it in both places or R14's guard fails on day one
   against the table an earlier draft did not name.
-- The identity hash consumes `source_transaction_id` when present and
-  `source_row_key` otherwise. That selection happens **once**, explicitly, in
-  `int_transactions__matched`, under the name `identity_component` — never by a
-  fallback hidden inside a column's meaning.
+- The identity hash consumes `source_transaction_id` when it is present **and
+  not marked unreliable**, and `source_row_key` otherwise. "Unreliable" has
+  exactly one producer today — `fitid_repaired` on a repaired OFX row, where
+  the institution reused one FITID for two distinct transactions — and it is a
+  third case inside the one expression, not a second selection site. That
+  selection happens **once**, explicitly, in `int_transactions__matched`, under
+  the name `identity_component` — never by a fallback hidden inside a column's
+  meaning.
 - Staging's tabular dedup groups on that same expression.
   `stg_tabular__transactions.sql:35` partitions on `(transaction_id,
   account_id)` today and on `(COALESCE(source_transaction_id, source_row_key),
@@ -711,8 +762,11 @@ its role in `find_existing_import`.
 
 ### Second new column
 
-`source_row_key VARCHAR NOT NULL` on `raw.tabular_transactions` and any other
-raw transaction table whose source may not supply a native id. Carries
+`source_row_key VARCHAR NOT NULL` on `raw.tabular_transactions`, on
+`raw.ofx_transactions`, and on any other raw transaction table whose source may
+not supply a native id — OFX for the separate reason above: its source always
+supplies an id, but that id is not always unique, and the repair for that must
+not land in the column that means "the institution's own value". Carries
 MoneyBin's within-document row identity (R13). `source_transaction_id` becomes
 nullable wherever it is not already, since NULL is now its honest answer for a
 source that assigns no id.
@@ -1242,6 +1296,29 @@ together with its schema: the tabular and OFX transforms, the Plaid extractor,
 and the Google Sheets adapters. Treat "the schema file is edited" as half the
 change for every table listed above.
 
+**Import-log producers and readers** — `raw.import_log` is written by every
+channel, and the enumeration above named only the `find_existing_import`
+predicate. The writers break first and hardest: `loaders/import_log.py:129`
+names `source_file` in its `INSERT` column list (bound at `:135`, declared at
+`:89`, and listed in the module's column tuple at `:45`), and
+`connectors/gsheet/pull_service.py:282` has its own `INSERT` naming the same
+column. Both raise a missing-column error on the **first** file, manual, or
+Google Sheets import after V052 — before any data loads. Three history readers
+project it as well (`import_log.py:244`, `:255`, `:333`), and a second
+signature carries it at `:374`. The rename is a module-wide change to
+`loaders/import_log.py` plus the gsheet writer, not an edit to one predicate.
+
+**`AccountLinksRepo` persists `source_label`** — R4's new column needs a write
+path or it is decorative. `_ACCOUNT_LINKS_COLUMNS`
+(`repositories/account_links_repo.py:26-38`) lists eleven columns and does not
+include it, and `insert` has a fixed signature and `INSERT` column list that
+likewise omit it. Left alone, every new link stores NULL, the label lookup
+misses every time, and the unattended re-import R4 promises never happens —
+the same defect as having no column at all, one layer down. The column tuple
+feeds the audited row snapshot, so adding it there also keeps
+`before_value`/`after_value` complete (Invariant 11); a repo that writes a
+column it does not serialize would make the audit silently partial.
+
 **Per-account overlap evidence** — `_gate_account_proposals`
 (`import_service.py:2214`) applies its one `incoming_transactions` sequence to
 every proposal's candidates (`:2296-2309`), so each source account is scored
@@ -1599,7 +1676,20 @@ Per `docs/specs/observability.md`, registered in
     no proposal reaches the confirm gate. This is the half that makes minting
     an improvement rather than a regression, and it fails against a mint with
     no lookup behind it — which is what an earlier draft specified.
-28. In a two-account file, the overlap evidence offered for account A's
+28. An OFX file with two distinct rows sharing one FITID keeps both rows
+    after V052, and each row's `source_transaction_id` equals the institution's
+    `<FITID>` **unsuffixed** while their `source_row_key` values differ. Both
+    halves matter: asserting only that both rows survive passes against the
+    current repair, which is what R13 forbids.
+29. Their `transaction_id` values also differ — the identity selection reads
+    `source_row_key` for a `fitid_repaired` row. A test that stops at the raw
+    layer misses the re-collapse, because the rows are distinct in `raw` and
+    identical in `core`.
+30. A confirmed multi-account import writes `source_label` on the link, and the
+    paired `app.audit_log` `after_value` contains it. The second assertion is
+    the one that catches a repo updated in its `INSERT` but not in its column
+    tuple.
+31. In a two-account file, the overlap evidence offered for account A's
     proposal is computed from A's rows alone. Seed B with rows that would match
     A's candidate and assert they do not appear in A's overlap: a test that
     only checks A's own rows are present passes against the unfiltered
