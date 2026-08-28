@@ -278,6 +278,40 @@ one changes which account a ref means, the other changes only what the file
 called it, and collapsing them would let a relabel silently carry an account
 move.
 
+**The confirm gate cannot show a label the payload does not carry.**
+`AccountProposal.to_dict` returns a fixed seven-key dict — `source_account_key`,
+`proposal_ref`, `proposed_account_id`, `is_new`, `adopted_via`,
+`requires_confirm`, `candidates` (`account_resolution_types.py:229-237`) — and
+`ImportConfirmationAccountProposal` declares the matching keys
+(`privacy/payloads/imports.py:120-134`). `_echo_account_proposals`
+(`import_cmd.py:1148`) prints one line per proposal from the masked dict —
+`{proposal_ref}  account: {source_account_key}` (`:1183-1186`) — then one line
+per candidate. On a first-time multi-account import every account is new, so no
+candidate lines follow, and the human deciding a binding sees `@0` and `@1`
+against two masked keys and nothing else. That function's own docstring calls
+the masked key "a disambiguator when one file proposes several accounts"
+(`:1160-1163`); for a labelled multi-account file it is the weaker of the two
+disambiguators the file supplies, and the stronger one is the value R4 adds.
+R4 declares a class for `source_label` and says it is designed to be shown
+here. Nothing carries it to the surface that would show it.
+
+So the value is added to both types, and the confirm line renders it beside the
+key. Both types, not the dataclass alone: `_redact` walks a TypedDict with
+`hints.get(str(k), Any)` (`redaction.py:536-539`), so a key the declaration
+omits resolves to `Any`, misses every masking arm, and reaches the pass-through
+at `:554`. A `source_label` added to `to_dict` and not to the TypedDict would
+arrive at the gate — and at every masked consumer of that payload — **unmasked**.
+
+Its rendered form is `ACCOUNT_IDENTIFIER`'s, and stating that here is cheaper
+than rediscovering it at the gate: the class is `Tier.CRITICAL`
+(`taxonomy.py:92`) and masks PARTIAL as `"****" + value[-4:]`
+(`redaction.py:76`), so `Joint Checking` displays as `****king`. That is the
+intended cost of R4's own argument — the mapped column can hold an account
+number, and an unmasked label would publish it on exactly the surface built to
+display it. Four characters separate Checking from Savings; two labels sharing
+their last four render alike, and the per-account masked `source_account_key`
+is what still tells those apart.
+
 **R5.** A minted account key is opaque and non-reproducible across databases. A
 wiped database re-mints different keys, so re-loading the same source files
 into a fresh database yields different transaction ids and no `app.*` curation
@@ -777,6 +811,37 @@ projection was ever the contract. That keeps R15 true, keeps the collapse from
 happening, and keeps R15's own NULL-over-deletion choice: several unlinked rows
 publishing NULL `account_id` is visible to
 `fct_transactions_account_linkage`, where a merged-away row is not.
+
+**A NULL is visible only where its consumers render it, and two do not.** Both
+were checked against current code, and both belong to R15 because R15 is what
+introduces the NULL.
+
+`AccountService.list_accounts` builds every row as
+`AccountSummary(account_id=str(row[0]), ...)` (`account_service.py:449`), and
+`str(None)` is `"None"` — so each unlinked account lists under one identical
+id, the collapse this requirement just spent a paragraph preventing inside the
+model, reappearing one layer above it. The canonical listing answers *which
+accounts do I have*, and a row with no minted key is not yet an account, so
+`list_accounts` adds `account_id IS NOT NULL` to the `where_clauses` it already
+assembles (`:414-423`). The row keeps its NULL in `core`, where
+`fct_transactions_account_linkage` and `moneybin doctor` — the surfaces named
+above — are what report it.
+
+The resolver's three candidate queries filter `WHERE account_id != ?`
+(`account_resolver.py:1129`, `:1370`, `:1426`), and three-valued logic drops a
+NULL row from all three. That exclusion is correct and stays: a candidate is a
+bind *target*, and an account with no minted key cannot be one, since
+`AccountLinksService.set()` would have nothing to point at. It is written down
+because it is correct by accident rather than by intent — a later reader
+"repairing" the predicate to `IS DISTINCT FROM` would begin offering
+unbindable candidates at the confirm gate.
+
+Not moving the evidence out of `core` is the deliberate half of this. A review
+proposed publishing unlinked accounts to a separate audit relation instead;
+that satisfies these same two consumers and costs more, because
+`fct_transactions_fk_integrity` finds unresolvable accounts by looking for them
+in `core`, so the move rewrites that audit to keep producing a finding it
+already produces.
 
 **R16.** `moneybin doctor` detects orphaned rows in all six `app.*` tables
 hard-coupled to `transaction_id`, not the two it covers today
@@ -1609,6 +1674,21 @@ is unchanged, so `_guard_uniqueness` rejects it) and `repoint` is a different
 verb (it moves the link to another `account_id`), so without it the remembered
 rename has no write path at all.
 
+**The confirm payload carries `source_label`** — three files, because the value
+crosses a typed boundary. `AccountProposal.to_dict`
+(`account_resolution_types.py:229-237`) serializes the proposal,
+`ImportConfirmationAccountProposal` (`privacy/payloads/imports.py:120-134`)
+declares its masked shape, and `_echo_account_proposals` (`import_cmd.py:1148`)
+renders it. All three take the key. The declaration is not optional
+bookkeeping: an undeclared key masks as `Any` and passes through unredacted
+(R4).
+
+**`AccountService.list_accounts` filters unminted rows** — `:449` stringifies
+the dimension's `account_id` into `AccountSummary`, so R15's NULL publishes as
+the literal `"None"` and every unlinked account lists under it. Add `account_id
+IS NOT NULL` to the `where_clauses` already assembled at `:414-423`. R15
+carries the reasoning, including why the row is not dropped from `core`.
+
 **Per-account overlap evidence** — `_gate_account_proposals`
 (`import_service.py:2214`) applies its one `incoming_transactions` sequence to
 every proposal's candidates (`:2296-2309`), so each source account is scored
@@ -2034,6 +2114,17 @@ Per `docs/specs/observability.md`, registered in
 39. `moneybin import history` renders a non-empty source column for a migrated
     record in **table** output. The JSON path passes with or without the fix,
     so a test that only parses JSON is the one that misses this entirely.
+40. A first-time import of a two-account file renders two **distinguishable**
+    confirm lines. Assert the rendered output, not the payload dict: a
+    `source_label` carried in `to_dict` and never printed passes a dict-only
+    assertion, and one declared on the dataclass but not on
+    `ImportConfirmationAccountProposal` passes it while reaching the terminal
+    unmasked. A second assertion covers that half — the rendered label is
+    `****`-prefixed.
+41. `moneybin accounts list` omits an account whose link is pending or
+    reversed, and lists it once the link is accepted. Pair the omission with
+    item 36's assertion that `core.dim_accounts` still holds both NULL rows;
+    alone, the omission passes against a model that deleted them.
 
 ## Synthetic Data Requirements
 
