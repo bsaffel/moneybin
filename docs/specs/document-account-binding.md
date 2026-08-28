@@ -88,7 +88,8 @@ path as "a legacy fallback that retires per path"
 ### Document identity
 
 **R1.** A document's identity is `source_document_key`: a truncated SHA-256 of
-the artifact's bytes. No filename, path, mtime, size, or caller-supplied value
+the artifact's bytes — the first 16 hex characters, the repo's content-hash
+convention (`.claude/rules/identifiers.md`). No filename, path, mtime, size, or caller-supplied value
 contributes to it. Two files with identical bytes have one document key
 regardless of name or location; one path holding different bytes over time
 yields different document keys.
@@ -206,22 +207,35 @@ in two ways that a demotion alone would break:
 constraint that affects results and cannot be NULL, so "informational and
 nullable" is not available until the key moves:
 
-| Table | Current primary key |
-|---|---|
-| `raw_tabular_transactions.sql:33` | `(transaction_id, account_id, source_file)` |
-| `raw_tabular_accounts.sql:19` | `(account_id, source_file)` |
-| `raw_ofx_transactions.sql:19` | `(source_transaction_id, account_id, source_file)` |
-| `raw_ofx_accounts.sql:14` | `(account_id, source_file, extracted_at)` |
-| `raw_ofx_balances.sql:16` | `(account_id, statement_end_date, source_file)` |
-| `raw_plaid_investment_holdings.sql:27` | `(account_id, security_id, source_origin, source_file)` |
-| `raw_plaid_investment_holdings_snapshots.sql:22` | `(source_origin, source_file)` |
-| `raw_plaid_investment_holding_lots.sql:18` | `(account_id, security_id, source_origin, lot_index, source_file)` |
+| Table | Current primary key | After R10 and R13 |
+|---|---|---|
+| `raw_tabular_transactions.sql:33` | `(transaction_id, account_id, source_file)` | `(source_row_key, account_id, source_document_key)` |
+| `raw_tabular_accounts.sql:19` | `(account_id, source_file)` | `(account_id, source_document_key)` |
+| `raw_ofx_transactions.sql:19` | `(source_transaction_id, account_id, source_file)` | `(source_transaction_id, account_id, source_document_key)` |
+| `raw_ofx_accounts.sql:14` | `(account_id, source_file, extracted_at)` | `(account_id, source_document_key, extracted_at)` |
+| `raw_ofx_balances.sql:16` | `(account_id, statement_end_date, source_file)` | `(account_id, statement_end_date, source_document_key)` |
+| `raw_plaid_investment_holdings.sql:27` | `(account_id, security_id, source_origin, source_file)` | `(account_id, security_id, source_origin, source_document_key)` |
+| `raw_plaid_investment_holdings_snapshots.sql:22` | `(source_origin, source_file)` | `(source_origin, source_document_key)` |
+| `raw_plaid_investment_holding_lots.sql:18` | `(account_id, security_id, source_origin, lot_index, source_file)` | `(account_id, security_id, source_origin, lot_index, source_document_key)` |
 
 Each of these reads "one row per business key **per document**" — the schema
 has been asserting document identity all along and spelling it with a path.
-`source_document_key` takes the `source_file` slot in all eight. That is why
-the substitution strengthens the model rather than working around it: the PKs
-become true statements instead of accidentally-true ones.
+That is why the substitution strengthens the model rather than working around
+it: the PKs become true statements instead of accidentally-true ones.
+
+**Seven of the eight are a positional swap. `raw_tabular_transactions` is
+not**, and the third column above exists so that is stated rather than left to
+be inferred. R13 drops `transaction_id` from that table, so a key written by
+swapping only `source_file` would name a column that no longer exists.
+`source_row_key` takes the vacated slot, because it is what `transaction_id`
+held for a tabular row all along. `source_transaction_id` cannot take it: R13
+makes that column legitimately NULL for a source that assigns no id, and a PK
+component may not be NULL. The OFX key keeps `source_transaction_id` for the
+opposite reason: it is already a key component there
+(`raw_ofx_transactions.sql:19`), so the column cannot be NULL in that table
+today and R13 does not change that. The extractor repairs a colliding `<FITID>`
+rather than dropping it (`:18`), which is the same premise stated from the
+other side.
 
 **Nine query sites use it as a batch discriminator**, all of which move to
 `source_document_key`:
@@ -296,11 +310,16 @@ Required:
   prevent. The stale claim traces to the schema comment at
   `raw_tabular_transactions.sql:6`, which was never updated when the scheme
   changed.
-- Manual entries have no institution, so `raw.manual_transactions` carries no
-  `source_transaction_id`: its minted `manual_<uuid4>` is a row key, and the
-  column is renamed `source_row_key` (`raw_manual_transactions.sql:6`). This
-  resolves R9's conflict with this requirement — a MoneyBin-minted value
-  sitting in a column named for the source's own id.
+- Manual entries have no institution, so neither manual table carries a
+  `source_transaction_id`: the minted `manual_<uuid4>` is a row key, and the
+  column is renamed `source_row_key` in **both**
+  `raw.manual_transactions` (`raw_manual_transactions.sql:6`) and
+  `raw.manual_investment_transactions`
+  (`raw_manual_investment_transactions.sql:8`), which mints the same value into
+  a column of the same name. This resolves R9's conflict with this requirement
+  — a MoneyBin-minted value sitting in a column named for the source's own id —
+  and it has to resolve it in both places or R14's guard fails on day one
+  against the table an earlier draft did not name.
 - The identity hash consumes `source_transaction_id` when present and
   `source_row_key` otherwise. That selection happens **once**, explicitly, in
   `int_transactions__matched`, under the name `identity_component` — never by a
@@ -465,32 +484,83 @@ This is a deliberate pre-launch trade. A data-preserving migration costs more
 to write, review, and verify than a re-import costs to run, and the repo is
 pre-launch with no user whose curation cannot be rebuilt. The migration is
 written **to be deleted wholesale** in a future pre-release schema reset rather
-than maintained: it carries no data-preservation logic to unwind, and nothing
-else may depend on having run it.
+than maintained: it carries no backfill or value-rewriting logic to unwind, and
+nothing else may depend on having run it.
+
+**"No data preservation" means no backfill, not no data.** The distinction is
+load-bearing and is the one this migration is most likely to get wrong.
+Clearing a table a re-import refills is free. Clearing a table nothing outside
+the database can reproduce is permanent loss wearing the same syntax. The rule
+is therefore a single test applied per table, not a blanket `DROP` over the
+`raw` schema: **clear it when a re-import regenerates it by construction;
+preserve it when nothing outside the database can.**
 
 The migration must:
 
 1. Recreate the eight `raw.*` tables in R10's table with the new shape —
    `source_document_key` and `source_row_key` added, `source_file` renamed to
-   `source_path` and nullable, `source_document_key` swapped for `source_file`
-   in the primary key. They are recreated **empty**; DuckDB cannot `ADD` or
-   `DROP` a primary key, so each is a create-drop-rename regardless, and
-   carrying rows across would require backfilling a `NOT NULL` key component
-   that only a re-import can compute.
-2. Preserve `raw.manual_transactions`, which no re-import can rebuild because
-   the user typed it. Rename its minted `source_transaction_id` to
-   `source_row_key`; the column stays the primary key and no value changes.
-3. Rename `app.match_decisions.source_transaction_id_a/_b` to
+   `source_path` and nullable, and the new primary key R10's table names for
+   each. They are recreated **empty**; DuckDB cannot `ADD` or `DROP` a primary
+   key, so each is a create-drop-rename regardless, and carrying rows across
+   would require backfilling a `NOT NULL` key component that only a re-import
+   can compute.
+2. Clear the remaining re-derivable `raw.*` tables, which hold no identity the
+   new shape changes but would otherwise carry a document key nothing can fill:
+   `raw.plaid_*`, `raw.ofx_institutions`, `raw.pdf_seeds`, `raw.gsheet_seeds`,
+   and `raw.import_preview_snapshots` — the last holding staged bytes that are
+   deleted on consumption anyway.
+3. Preserve the five `raw.*` tables a re-import does not rebuild. The list is
+   stated here, once, so it cannot drift into a `_PRESERVED` set of one:
+
+   | Table | Why a re-import does not rebuild it |
+   |---|---|
+   | `raw.manual_transactions` | The user typed the rows. |
+   | `raw.manual_investment_transactions` | The same, for investment events. It is the manual table an earlier draft of this section omitted (`raw_manual_investment_transactions.sql:1-6`). |
+   | `raw.exchange_rates` | Append-only by design: "a rate a provider published for a date is a historical fact, so a refetch never rewrites one." A refetch is also bounded by the provider's history window, so what falls outside it is simply gone. |
+   | `raw.security_prices` | Append-only for the same reason — "a historical close is an immutable fact" — and the schema says so precisely to contrast with `raw.plaid_securities`, whose close price is overwritten on every pull and therefore *cannot* carry a history. |
+   | `raw.import_log` | The batch parent of all four above: dropping it dangles their `import_id`. It is also the audit record of every import ever run, which a re-import appends to rather than reconstructs. |
+
+4. On both manual tables, rename the minted `source_transaction_id` to
+   `source_row_key` (R13). It stays the primary key and no value changes.
+5. NULL the stored gold-key predictions on those two tables —
+   `raw.manual_transactions.transaction_id` and
+   `raw.manual_investment_transactions.investment_transaction_id`. Each was
+   computed at INSERT from inputs that R9 and R13 rotate, so each is stale the
+   moment this migration runs. NULL is deliberate rather than a recomputation:
+   the prediction exists so `_run_orphan_app_state` can suppress a false
+   positive on a row not yet materialized in `core`
+   (`doctor_service.py:754-763` unions it into `valid_txn`), and a *stale*
+   prediction makes that suppression hide a real orphan. NULL makes doctor
+   report instead — the failure that is visible rather than the one that is
+   silent. The column repopulates on the next entry, and the preserved rows
+   stop being reported the moment a transform materializes them into `core`.
+6. On `raw.import_log`, rename `source_file` to `source_path` and relax it to
+   nullable, then add `source_document_key` as a **nullable** column, filled by
+   truncating `file_sha256` where one exists. That is a derivation, not a
+   backfill: R1's key is exactly that truncation of exactly those bytes. It is
+   nullable because this table's key is `import_id` and the document key is
+   informational here; NULL for a pre-V046 batch is the honest answer, and
+   minting a stand-in would put a value into a column that names bytes nobody
+   hashed.
+7. Rename `app.match_decisions.source_transaction_id_a/_b` to
    `identity_component_a/_b`. Values are kept as-is: decisions on rows that do
    not rotate re-anchor on the next import, and decisions on tabular native-id
    rows orphan.
-4. Log, at INFO, that a re-import is required, and that `moneybin doctor` lists
+8. Log, at INFO, that a re-import is required, and that `moneybin doctor` lists
    whatever `app.*` curation no longer resolves (R16).
 
-**The one thing a re-import cannot rebuild** is a Plaid batch older than the
-API's available history window. A user in that position takes `moneybin db
-backup` before upgrading. Manual entries are covered by step 2; every
-file-backed channel re-imports from files the user still holds.
+**The one thing a re-import cannot rebuild** that this migration does not
+preserve is a Plaid batch older than the API's available history window. A user
+in that position takes `moneybin db backup` before upgrading. Everything else
+either re-imports from files the user still holds or is named in step 3.
+
+**What the thin migration is betting on**, and the reason it is safe rather
+than merely cheap: `app.*` is untouched, so `app.account_links` still holds
+each account's accepted key. R7 stamps that remembered key on re-import, so the
+transaction ids come back identical and the curation pointing at them is still
+anchored. Rotation is confined to accounts that never had an accepted link.
+That is a claim a test has to hold down, not an assumption — Testing Strategy
+item 18.
 
 ## Implementation Plan
 
@@ -537,8 +607,17 @@ file-backed channel re-imports from files the user still holds.
 - `src/moneybin/matching/assignment.py:88,173,191,199-206` — physical-import
   key to `source_document_key`.
 
-**Raw schemas** — the eight files in R10's table, each swapping
-`source_document_key` for `source_file` in its PRIMARY KEY.
+**Raw schemas** — the eight files in R10's table, each taking the new primary
+key that table names. Seven are a positional swap;
+`raw_tabular_transactions.sql` is not, because R13 also drops `transaction_id`
+from it.
+
+- `src/moneybin/sql/schema/raw_manual_investment_transactions.sql` — R13's
+  `source_transaction_id` → `source_row_key` rename, the same one
+  `raw.manual_transactions` takes.
+- `src/moneybin/sql/schema/raw_import_log.sql` — `source_file` → `source_path`,
+  relaxed to nullable, plus a nullable `source_document_key` (§Migration step
+  6). Its own key is `import_id` and does not move.
 
 **The nine query sites** in R10 that use `source_file` as a batch
 discriminator.
@@ -687,21 +766,37 @@ Per `docs/specs/observability.md`, registered in
 
 **Migration**
 
-14. Round-trip: a database with curation on rotated ids retains every
-    category, note, tag, split, and match decision.
+14. Every re-derivable `raw.*` table is empty afterwards **and** each of the
+    five preserved tables still holds every row it held before. Both halves
+    are the test: an over-broad clear is silent data loss, and a missed clear
+    leaves rows carrying a `NOT NULL` document key that nothing can fill. A
+    fixture that seeds only the tables being cleared passes this vacuously,
+    so it seeds all thirteen.
 15. Partial-failure: an interrupted migration leaves the database on the old
     schema, not half-rotated.
-16. Backfill: a pre-V046 batch with no `file_sha256` gets a minted per-batch
-    document key rather than a NULL.
+16. The stored gold-key prediction is NULL on every preserved manual row of
+    both manual tables, and `moneybin doctor` therefore reports those rows
+    rather than suppressing them, until a transform materializes them into
+    `core`.
+17. `raw.import_log` keeps every batch row. `source_document_key` equals the
+    truncation of `file_sha256` wherever that column is populated, and NULL
+    for a pre-V046 batch — no batch acquires a minted stand-in.
+18. A re-import after the migration reproduces the transaction ids that
+    `app.*` curation already points at, for every account carrying an accepted
+    `app.account_links` row (after the gate decision, for a file that states
+    no account). This is the test that makes the thin migration safe rather
+    than merely cheap: it asserts R7 does the work the migration declined to
+    do. Its negative partner is an account with no accepted link, whose ids
+    *do* rotate and whose curation doctor then lists.
 
 **Binding evidence (R17)**
 
-17. A second file from a recurring **overlapping** export reaches the gate
+19. A second file from a recurring **overlapping** export reaches the gate
     with its true account ranked first, carrying a non-zero `overlap_matched`.
-18. A file overlapping nothing reaches the gate with no overlap evidence and
+20. A file overlapping nothing reaches the gate with no overlap evidence and
     still loads nothing. Absence of a signal is not itself a signal and must
     not promote a candidate.
-19. A tabular gate and a PDF gate over the same ledger produce the same
+21. A tabular gate and a PDF gate over the same ledger produce the same
     overlap numbers. R17 is a wiring change; a divergence means the two
     channels have forked.
 
