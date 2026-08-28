@@ -952,34 +952,42 @@ reader would otherwise reopen it.
    new user-managed coordinate and new plumbing to retain it, which is the
    registered-recurring-export work in §Out of Scope.
 
+6. **A decisive ledger overlap still asks** (R6, R17). R17 stops at
+   evidence: the leading candidate is ranked, its match count is shown, and it
+   may be pre-selected — but a human answers the gate even when the overlap
+   points at exactly one account and nothing else. Binding silently was
+   considered and declined.
+
+   The case for it was real, which is why it was put rather than assumed. The
+   probe separated a true twin from two controls 345/346 to 0/346, and a
+   confirm that is always answered the same way is confirm volume scaling with
+   *items* rather than with uncertainty — something `design-principles.md`
+   treats as a design failure in its own right, and a live cost here, because a
+   recurring export re-asks every period forever.
+
+   Two things outweighed it. This is a **merge onto an existing account**, the
+   case `account_resolution_types.py:154-155` names as one where "a wrong merge
+   is hard to notice and hard to undo" — the reason the gate exists at all. And
+   the probe's own author already assigned it the opposite role: its window is
+   deliberately kept off the user-tunable setting because "this one supplies the
+   evidence a human ratifies an irreversible whole-ledger merge on"
+   (`ledger_overlap.py:50-51`). Using it as grounds for acting *without* that
+   human inverts what it was calibrated for.
+
+   **What would reopen this**, and the reason `import_overlap_evidence_total`
+   (§Observability) exists: nobody currently knows how often the
+   identity-unknown path is `decisive` versus `ambiguous`. One dogfooding cycle
+   produces that number. If decisive turns out to be the overwhelming majority,
+   the trade changes and this is worth revisiting — but on data, not on the
+   asymmetry of a single calibration run. If it is ever taken, the shape is
+   narrow: decisive for exactly one account, no near runner-up, and `comparable`
+   above a floor so a two-row file proves nothing — and the import result must
+   show the binding it made and offer its reversal, because that is what "magic
+   stays visible" requires of a silent action.
+
 ## Open Questions
 
-**Should a decisive overlap bind silently?** R17 deliberately stops at
-evidence: the leading candidate is ranked and may be pre-selected, but a human
-still answers the gate. Going further is arguable — the probe separated a true
-twin from two controls 345/346 to 0/346, and a monthly confirm on a signal
-that strong is confirm volume scaling with items rather than with uncertainty,
-which `design-principles.md` treats as a design failure in its own right.
-
-Two things hold it back, and neither is squeamishness. This is a **merge onto
-an existing account**, the case `account_resolution_types.py:154-155` names as
-one where "a wrong merge is hard to notice and hard to undo" — the reason the
-gate exists at all. And the probe's own author already assigned it the other
-role: its window is deliberately kept off the user-tunable setting because
-"this one supplies the evidence a human ratifies an irreversible whole-ledger
-merge on" (`ledger_overlap.py:50-51`). Reusing it as grounds for acting
-*without* that human inverts what it was calibrated for.
-
-So the question is left open rather than answered by default, and
-`import_overlap_evidence_total` (§Observability) is what settles it: after one
-dogfooding cycle it reports how often the identity-unknown path is `decisive`
-versus `ambiguous`, which is the fact nobody has today. If it is taken later,
-the shape is narrow — decisive for exactly one account, no near runner-up, and
-`comparable` above a floor so a two-row file proves nothing — and the import
-result must show the binding it made and offer its reversal, because that is
-what "magic stays visible" requires of a silent action.
-
-One sizing question also remains: what fraction of real files carry a
+One sizing question remains: what fraction of real files carry a
 native id column. That changes how often the `source_row_key` path is
 exercised, not whether either path is correct — and after R13 it becomes a
 question the data can answer, because a NULL `source_transaction_id` will mean
