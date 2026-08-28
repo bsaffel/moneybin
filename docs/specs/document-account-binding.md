@@ -1333,6 +1333,24 @@ anchored. Rotation is confined to accounts that never had an accepted link.
 That is a claim a test has to hold down, not an assumption — Testing Strategy
 item 18.
 
+## Deferred
+
+Two questions raised in review are tracked in
+[#445](https://github.com/bsaffel/moneybin/issues/445) and settled in the
+implementation slice rather than here, because both are about a mechanism this
+spec does not yet need to fix in order to be built against.
+
+- **`relabel` keeps one label, not a history.** An account whose in-file label
+  alternates between two spellings re-reaches the confirm gate on each
+  alternation, which is narrower than R4's "re-asked once, then remembered."
+  An alias relation would fix it, and it must preserve R4's exactly-one-match
+  rule rather than reintroduce the ambiguity that rule exists to close.
+- **Recovery state for a multi-connection pull.** `moneybin sync pull --force`
+  without `--institution` can return mixed completed/failed results across
+  institutions; resolving "that connection" does not name that case. The
+  intended shape is per-institution resolution over
+  `sync_data.metadata.institutions`, leaving failed origins `incomplete`.
+
 ## Implementation Plan
 
 ### Files to Create
@@ -1490,8 +1508,15 @@ inserts `BY NAME`, so every extractor and transform that builds a DataFrame for
 a changed table must emit the new columns, or the first import after V052 fails
 on an unknown column or a missing `NOT NULL`. Each channel's producer moves
 together with its schema: the tabular and OFX transforms, the Plaid extractor,
-and the Google Sheets adapters. Treat "the schema file is edited" as half the
-change for every table listed above.
+the Google Sheets adapters, and **the PDF seed writer**
+(`extractors/pdf/seed_store.py:107`, which constructs its row with a literal
+`"source_file"` key). `raw.pdf_seeds` is one of the eight tables gaining
+`source_document_key` and is cleared in migration step 2, so omitting its
+producer fails the first seed-path PDF import after V052 in exactly the way the
+synthetic-writer, gsheet-loader, and import-log-writer gaps already found. This
+list is five channels and is meant as a census, not a floor — unlike R10's
+query-site enumerations, which say otherwise about themselves. Treat "the schema
+file is edited" as half the change for every table listed above.
 
 **`.claude/rules/identifiers.md` § Source-Provided IDs** — a binding rule
 file, and R13 puts it in direct contradiction rather than merely out of date.
