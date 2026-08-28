@@ -1871,6 +1871,26 @@ the load-bearing ones are `int_transactions__unioned.sql`,
 `core/dim_accounts.sql`, `core/dim_holdings.sql`, and
 `meta/fct_transaction_provenance.sql`.
 
+**PDF bridge envelope** — R10's rename and §MCP Interface's added key both
+land in `extractors/pdf/`, and neither is a serialization-site edit.
+`BridgeRequest` (`bridge.py:67-82`) declares `source_file` and no document key;
+`build_bridge_request` fills it from `doc.source_file` (`:123`); and
+`import_service.py:3780` ships the dataclass whole through
+`dataclasses.asdict`. The **dataclass** is therefore the edit — it gains
+`source_document_key` and renames `source_file` to `source_path` — and the
+serialization site needs no change at all. `PdfDocument.source_file`
+(`ir.py:35`) is where the value originates and takes the same pair. A separate
+site, easily conflated with the envelope: `import_service.py:3788` repeats
+`source_file` in the audit `after` dict, and takes the rename on its own
+account.
+
+`extractor.py:59` populates that field with `path.name`, **not** the path, so
+`raw.pdf_seeds` holds a basename in a column R10 renames to `source_path`. That
+predates this spec and R10 does not change it; the name is aspirational for
+this one producer, and R11's "informational, never load-bearing" is what keeps
+the mismatch harmless. It is written down so a reader does not infer that every
+row of that column is a path.
+
 **Privacy**
 
 - `src/moneybin/privacy/taxonomy.py:692` — the sole `source_file` entry,
@@ -1879,15 +1899,15 @@ the load-bearing ones are `int_transactions__unioned.sql`,
   publishable; both are `RECORD_ID`.
 - `src/moneybin/privacy/payloads/imports.py:64,371` —
   `ImportConfirmationBridgePayload` and `ImportBridgeStatementPayload` each
-  declare `source_file: Annotated[str, DataClass.RECORD_ID]`, and
-  `import_service.py:3788` serializes `"source_file":
-  bridge_request.source_file` into the bridge request. These are the public
-  payloads of `import_preview` and `import_confirm`, so renaming the raw
+  declare `source_file: Annotated[str, DataClass.RECORD_ID]`. These are the
+  public payloads of `import_preview` and `import_confirm`, so renaming the raw
   schemas and leaving these behind ships one field under two names across the
   two halves of a single PDF import — the envelope still says `source_file`
-  while everything beneath it says `source_path`. All three take the rename,
-  which the pre-launch posture makes a straight change rather than a
-  deprecation.
+  while everything beneath it says `source_path`. Both take the rename, which
+  the pre-launch posture makes a straight change rather than a deprecation, and
+  both take §MCP Interface's added `source_document_key` — an undeclared key
+  resolves to `Any` in `_redact` and passes through unmasked, the same failure
+  R4 describes for the confirm payload.
 
 ### Key Decisions
 
@@ -2167,9 +2187,11 @@ Per `docs/specs/observability.md`, registered in
     `fct_transactions_fk_integrity` finding. Both halves are load-bearing:
     without the second, the narrowing predicate is untested and the two audits
     can report identical rows under two names that mean different things.
-43. `import_preview` on a PDF returns `source_path` and **no** `source_file`
-    key. Assert the absent key as well — a payload that adds the new name while
-    keeping the old one passes a presence-only assertion and ships both.
+43. `import_preview` on a PDF returns `source_path` and `source_document_key`,
+    and **no** `source_file` key. All three assertions are load-bearing: a
+    payload that adds the new names while keeping the old one passes a
+    presence-only test and ships both, and a rename that never adds the
+    document key passes any test written only against the renamed field.
 
 ## Synthetic Data Requirements
 
