@@ -228,12 +228,31 @@ user is re-asked a question they already answered, which is the failure this
 spec is about.
 
 Migration step 6 therefore re-points those rows in the same statement block
-that mints: any `app.account_links` row whose `source_origin` names no
-registered format takes the constant. The predicate is decidable rather than a
-guess, because registered names are enumerable — `app.tabular_formats.name` and
-`app.pdf_formats.name` are both `VARCHAR PRIMARY KEY`. This is a link-table
-rewrite, not an identity backfill: the transaction ids still rotate, which R8
-already accepts. What it preserves is the *binding decision*.
+that mints. **The predicate is scoped by `source_type` first, and only then by
+the format table of that same family.** "Names no registered format" is not a
+predicate on its own: `source_origin` holds a different kind of value per
+channel — Plaid stores the account's `provider_item_id`
+(`sync_service.py:307`), OFX the institution, Google Sheets the connection id —
+and none of those is a row in either format table. An unscoped `NOT IN` would
+therefore match **every** Plaid, OFX, and gsheet link and overwrite a valid
+origin with the tabular fallback constant, which is strictly worse than the
+defect it fixes: `stg_plaid__accounts.sql:55` joins
+`links.source_origin = a.source_origin`, so the rewrite would make every Plaid
+account unresolvable rather than merely re-asked.
+
+The rewrite is confined to the population the old fallback actually wrote — the
+document-import channels, which are the only ones that put a *format name*
+there (`import_service.py:3219-3222`). Each family is checked against its own
+table: rows with a tabular `source_type` against `app.tabular_formats.name`,
+rows with `source_type='pdf'` against `app.pdf_formats.name`. Not the union of
+the two — a PDF link whose origin happens to collide with a tabular format name
+is still fallback-origin, and the union would spare it. Both columns are
+`VARCHAR PRIMARY KEY`, so within a family the test is decidable rather than a
+guess.
+
+This is a link-table rewrite, not an identity backfill: the transaction ids
+still rotate, which R8 already accepts. What it preserves is the *binding
+decision*.
 
 **R9.** Manual rows carry no `account_id` in the identity tuple. Manual rows
 already hold an immutable `manual_<uuid4>` as `source_transaction_id`; the
@@ -812,6 +831,20 @@ The migration must:
    fewer rows than the baseline, that shortfall is the provider window and it
    is permanent: doctor says so once, plainly, rather than waiting on a count
    that will never arrive or clearing on one that means nothing.
+
+   **The clearing path is named, or the marker is permanent.** A migration that
+   writes state nothing else can clear leaves doctor reporting every recovered
+   database as incomplete forever, which is the same silent-gap failure with
+   the sign flipped. So this state gets the ordinary treatment rather than an
+   ad-hoc table: `app.sync_recovery_state` (one row per affected
+   `(table, source_origin)`, holding the pre-clear count, the marker, and the
+   migration's timestamp), written through a `SyncRecoveryRepo` like every
+   other `app.*` table (Invariant 10), and cleared from exactly one place —
+   `SyncService.pull` (`sync_service.py:85`), at the end of a run whose
+   `force=True` reached a successful load. `force` is already what sets
+   `reset_cursor` (`:119`), so the flag that causes the recovery is the flag
+   that clears the marker; no second notion of "forced" is introduced. Doctor
+   reads the table and reports nothing when it is empty.
 3. Preserve the six `raw.*` tables a re-import does not rebuild. The list is
    enumerated here rather than left to a predicate, because the failure mode is
    a list that looks complete and is short by one:
@@ -876,15 +909,24 @@ The migration must:
    R14 guard could not tell a violation from a pre-migration survivor.
 
    **The same block re-points the fallback-origin links (R8).** In one
-   `UPDATE`, every `app.account_links` row whose `source_origin` names no
-   registered format — `NOT IN (SELECT name FROM app.tabular_formats)` and
-   likewise for `app.pdf_formats` — takes R8's constant. Without it those links
-   become unreachable the moment R8 lands, because
-   `accepted_native_keys_for_account` filters on `source_origin`
-   (`account_resolver.py:802-808`), and the identity-unknown accounts get
-   re-asked a question they already answered. It belongs here rather than in
-   its own step because it touches the same table in the same transaction as
-   the mint.
+   `UPDATE`, every `app.account_links` row written under the old tabular/PDF
+   fallback takes R8's constant. Without it those links become unreachable the
+   moment R8 lands, because `accepted_native_keys_for_account` filters on
+   `source_origin` (`account_resolver.py:802-808`), and the identity-unknown
+   accounts get re-asked a question they already answered. It belongs here
+   rather than in its own step because it touches the same table in the same
+   transaction as the mint.
+
+   **Scoped by `source_type`, then by that family's format table** — per R8. A
+   tabular `source_type` is checked against
+   `NOT IN (SELECT name FROM app.tabular_formats)`, `source_type='pdf'` against
+   `NOT IN (SELECT name FROM app.pdf_formats)`, and every other `source_type`
+   is left alone. The unscoped form is a data-loss bug, not a wider net: Plaid,
+   OFX, and gsheet origins are item ids, institutions, and connection ids, none
+   of which appear in either format table, so an unscoped `NOT IN` rewrites all
+   of them. The migration test asserts the negative directly — a seeded Plaid
+   link and a seeded OFX link carry byte-identical `source_origin` values
+   before and after V052.
 
    These writes are V052's only `app.*` writes and its only departure from
    Invariant 10's "written only through `AccountLinksRepo`"
@@ -931,6 +973,13 @@ item 18.
 ### Files to Create
 
 - `src/moneybin/sql/migrations/V052__separate_document_and_account_identity.py`
+- `src/moneybin/sql/schema/app_sync_recovery_state.sql` — the pre-clear
+  baseline and `incomplete` marker V052 writes before step 2 clears the Plaid
+  tables.
+- `src/moneybin/repositories/sync_recovery_repo.py` — `SyncRecoveryRepo`, so
+  the marker is read and cleared through the repository layer like every other
+  `app.*` table (Invariant 10). V052 itself writes below it, as it does for
+  `app.account_links`.
 - A source-scan guard for R14 plus its behavioural partner.
 
 ### Files to Modify
@@ -945,6 +994,14 @@ item 18.
 - `src/moneybin/services/account_resolver.py` — confirm
   `accepted_native_keys_for_account` needs no scoping change for its new
   unpinned caller.
+- `src/moneybin/services/sync_service.py` — `pull` (`:85`) clears the
+  `app.sync_recovery_state` marker for that connection after a `force=True` run
+  completes its load. Without this the marker never clears and doctor reports
+  every recovered database as incomplete forever.
+- `src/moneybin/services/doctor_service.py` — report each still-marked table
+  with its pre-clear count beside its current one, and say plainly that a
+  shortfall after a completed forced pull is the provider window and is
+  permanent.
 - `src/moneybin/extractors/tabular/schema/raw_tabular_transactions.sql` — R13:
   add `source_row_key`, drop the `transaction_id` fallback column.
 - `src/moneybin/sqlmesh/models/prep/int_transactions__unioned.sql:82` — stop
@@ -1278,6 +1335,17 @@ Per `docs/specs/observability.md`, registered in
 22. A tabular gate and a PDF gate over the same ledger produce the same
     overlap numbers. R17 is a wiring change; a divergence means the two
     channels have forked.
+
+**Migration `app.*` writes**
+
+23. A seeded Plaid link and a seeded OFX link carry byte-identical
+    `source_origin` values before and after V052, while a seeded
+    fallback-origin tabular link takes R8's constant. The negative half is the
+    point: an unscoped predicate passes the positive half alone.
+24. V052 marks the cleared Plaid tables incomplete; a `pull(force=True)` that
+    completes clears the marker; doctor reports the table before and reports
+    nothing after. A test that only asserts the marker is written cannot tell a
+    self-retiring marker from a permanent one.
 
 ## Synthetic Data Requirements
 
