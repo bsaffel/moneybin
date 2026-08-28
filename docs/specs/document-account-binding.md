@@ -843,6 +843,25 @@ that satisfies these same two consumers and costs more, because
 in `core`, so the move rewrites that audit to keep producing a finding it
 already produces.
 
+**`fct_transactions_fk_integrity` narrows in the same change.** It reports
+`t.transaction_id` wherever a `LEFT JOIN core.dim_accounts ON t.account_id =
+a.account_id` finds no row, and a NULL `account_id` matches nothing — so as
+written it absorbs every unresolved binding into a finding whose name says
+*dangling reference*. Two conditions with different remedies, re-run the
+confirm and investigate corruption, would arrive under one name, and the new
+linkage audit would report exactly the rows the old one already did. Its
+predicate gains `t.account_id IS NOT NULL`: corruption keeps the existing
+audit, an unresolved binding gets the new one.
+
+**An account with no transactions is invisible to both**, because both read
+`core.fct_transactions` and the `list_accounts` filter above removes the row
+from the listing. `moneybin doctor` takes a check keyed on
+`app.account_links.link_id` for a reversed link whose account still produces a
+`core.dim_accounts` row. The never-confirmed case needs no check: that table's
+`status` is binary, accepted or reversed (`app_account_links.sql:17-19`), and
+R6 puts the link row in place before load, so an unconfirmed proposal strands
+no `core` row — it is sitting on the confirm surface, which is where it belongs.
+
 **R16.** `moneybin doctor` detects orphaned rows in all six `app.*` tables
 hard-coupled to `transaction_id`, not the two it covers today
 (`doctor_service.py:713`). Five take the same check — a row whose
@@ -1457,6 +1476,13 @@ spec does not yet need to fix in order to be built against.
   `app.*` table (Invariant 10). V052 itself writes below it, as it does for
   `app.account_links`.
 - A source-scan guard for R14 plus its behavioural partner.
+- `src/moneybin/sqlmesh/audits/fct_transactions_account_linkage.sql` — the
+  audit R15 names three times as the surface that reports an unresolved
+  binding. `src/moneybin/sqlmesh/audits/` holds six audits and none of them is
+  it, so without this file R15's NULL is visible only to someone writing SQL by
+  hand. Its shape follows `fct_transactions_fk_integrity.sql` — `standalone
+  TRUE`, first column the violation entity id per the `DoctorService`
+  convention — selecting `transaction_id` where `account_id IS NULL`.
 
 ### Files to Modify
 
@@ -1851,6 +1877,17 @@ the load-bearing ones are `int_transactions__unioned.sql`,
   renamed to `source_path` with its class unchanged (R11). New entries are
   needed wherever `source_document_key` and `source_row_key` become
   publishable; both are `RECORD_ID`.
+- `src/moneybin/privacy/payloads/imports.py:64,371` —
+  `ImportConfirmationBridgePayload` and `ImportBridgeStatementPayload` each
+  declare `source_file: Annotated[str, DataClass.RECORD_ID]`, and
+  `import_service.py:3788` serializes `"source_file":
+  bridge_request.source_file` into the bridge request. These are the public
+  payloads of `import_preview` and `import_confirm`, so renaming the raw
+  schemas and leaving these behind ships one field under two names across the
+  two halves of a single PDF import — the envelope still says `source_file`
+  while everything beneath it says `source_path`. All three take the rename,
+  which the pre-launch posture makes a straight change rather than a
+  deprecation.
 
 ### Key Decisions
 
@@ -2125,6 +2162,14 @@ Per `docs/specs/observability.md`, registered in
     reversed, and lists it once the link is accepted. Pair the omission with
     item 36's assertion that `core.dim_accounts` still holds both NULL rows;
     alone, the omission passes against a model that deleted them.
+42. An account whose link is reversed produces a
+    `fct_transactions_account_linkage` finding and **no**
+    `fct_transactions_fk_integrity` finding. Both halves are load-bearing:
+    without the second, the narrowing predicate is untested and the two audits
+    can report identical rows under two names that mean different things.
+43. `import_preview` on a PDF returns `source_path` and **no** `source_file`
+    key. Assert the absent key as well — a payload that adds the new name while
+    keeping the old one passes a presence-only assertion and ships both.
 
 ## Synthetic Data Requirements
 
