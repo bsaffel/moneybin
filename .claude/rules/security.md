@@ -86,7 +86,7 @@ When catching exceptions from external libraries (keyring, duckdb, argon2, base6
 
 ## PII in Logs and Errors
 
-- **Never log** account numbers, routing numbers, SSNs, transaction amounts, balances, full descriptions, or merchant names. Log record counts, entity IDs, status codes, and masked values only.
+- **Never log** account numbers, routing numbers, SSNs, transaction amounts, balances, full descriptions, or merchant names. What *may* appear is the canonical list linked below, not a shorter restatement of it — a narrow summary makes a reviewer read a deliberate decision as a violation.
 - A `SanitizedLogFormatter` (`src/moneybin/log_sanitizer.py`) provides runtime detection and masking of PII patterns (SSNs, account numbers, dollar amounts) as a safety net. It masks and warns — it never suppresses log entries.
 - **Error messages** returned to users (CLI, MCP) must be generic. Catch specific exceptions and return clean messages — never let stack traces with financial data in local variables propagate to output.
 - See [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md) for the full list of allowed vs prohibited log content.

@@ -165,7 +165,7 @@ Security-critical parameters (crypto cost factors, key lengths, salt sizes) defi
 ## Security
 
 - **Encryption at rest**: AES-256-GCM on all DuckDB databases. See [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md).
-- **No PII or financial data in logs.** Log record counts, IDs, and status codes only. One exception: an account label already reduced to its masked form (`****1098`) may appear in a refusal message, because a caller who passed several keys cannot otherwise tell which one was rejected. That mask is digit-pattern based, so it fires only on keys carrying five or more digits — a shorter key reaches the refusal, and the log, verbatim. Treat that as a known gap, not as licence to widen the exception. See `.claude/rules/identifiers.md` → "Account identifiers".
+- **No PII or financial data in logs.** The permitted list is `privacy-data-protection.md` §"What CAN appear" — record counts, entity ids, masked identifiers, category labels and institution names, status codes and operation names, and file paths (never file contents). Nothing outside it. One exception: an account label already reduced to its masked form (`****1098`) may appear in a refusal message, because a caller who passed several keys cannot otherwise tell which one was rejected. That mask is digit-pattern based, so it fires only on keys carrying five or more digits — a shorter key reaches the refusal, and the log, verbatim. Treat that as a known gap, not as licence to widen the exception. See `.claude/rules/identifiers.md` → "Account identifiers".
 - **Parameterized SQL** with `?` placeholders. See `.claude/rules/security.md` for full standards.
 
 ## Rules Index
