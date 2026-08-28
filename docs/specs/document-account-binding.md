@@ -216,6 +216,25 @@ earlier draft implied it was.
 **R8.** `source_origin` for a file matching no registered format is a constant.
 No caller flag may move a component of the identity hash. (MB-147.)
 
+**The constant strands the links written under the old fallback, so V052
+re-points them.** Today an unregistered file takes
+`slugify(account_name or "unknown")` as its origin
+(`import_service.py:3219-3222`), and that value is what lands in
+`app.account_links.source_origin`. `accepted_native_keys_for_account` filters
+on it (`account_resolver.py:802-808`), so after R8 the lookup asks for the
+constant while the stored rows still say `slugify(account_name)` — and R7 finds
+nothing, for precisely the identity-unknown population R17 exists to serve. The
+user is re-asked a question they already answered, which is the failure this
+spec is about.
+
+Migration step 6 therefore re-points those rows in the same statement block
+that mints: any `app.account_links` row whose `source_origin` names no
+registered format takes the constant. The predicate is decidable rather than a
+guess, because registered names are enumerable — `app.tabular_formats.name` and
+`app.pdf_formats.name` are both `VARCHAR PRIMARY KEY`. This is a link-table
+rewrite, not an identity backfill: the transaction ids still rotate, which R8
+already accepts. What it preserves is the *binding decision*.
+
 **R9.** Manual rows carry no `account_id` in the identity tuple. Manual rows
 already hold an immutable `manual_<uuid4>` as `source_transaction_id`; the
 account slot becomes a **minted per-account source key**. §Data Model defines
@@ -675,30 +694,38 @@ re-import, which regenerates every `raw.*` identity correctly by construction �
 a fresh import is the definition of the right answer here, so reproducing it
 inside a migration is duplicated logic that can only diverge.
 
-**It writes exactly two things beyond the schema change**, both named here so
-neither is discovered later as an inconsistency. A minted source key per
-existing manual account, on rows it preserves rather than clears (step 6). And
-a pre-clear row-count baseline with an `incomplete` marker for the Plaid tables
-it empties (step 2). Everything else is shape.
+**It writes exactly three things beyond the schema change**, all named here so
+none is discovered later as an inconsistency. A minted source key per existing
+manual account, on rows it preserves rather than clears (step 6). A pre-clear
+row-count baseline with an `incomplete` marker for the Plaid tables it empties
+(step 2). And a re-pointing of `app.account_links.source_origin` for links
+written under the old `--account-name` fallback (step 6, R8). Everything else
+is shape.
 
-Both survive the posture for the same reason: each is the minimum durable state
-without which the migration fails *silently*. Drop the mint and the defect R9
-exists to remove survives permanently on the rows the migration went out of its
-way to save. Drop the baseline and the cleared Plaid history is not merely
-unrecoverable but unreportable, because the counts doctor would compare against
-are exactly what step 2 destroys. Neither is a backfill, and neither rewrites
-an identity value — which is the line this posture actually draws.
+All three survive the posture for the same reason: each is the minimum durable
+state without which the migration fails *silently*. Drop the mint and the
+defect R9 exists to remove survives permanently on the rows the migration went
+out of its way to save. Drop the baseline and the cleared Plaid history is not
+merely unrecoverable but unreportable, because the counts doctor would compare
+against are exactly what step 2 destroys. Drop the re-pointing and R7 stops
+finding remembered bindings for the identity-unknown accounts, so the migration
+silently re-opens every confirm the user has already answered.
+
+None of the three is a backfill and none rewrites an identity value — which is
+the line this posture actually draws. Transaction ids still rotate exactly as
+R4, R7, R8, R9, and R13 say they do; what these three preserve is the state a
+re-import cannot reconstruct.
 
 This is a deliberate pre-launch trade. A data-preserving migration costs more
 to write, review, and verify than a re-import costs to run, and the repo is
 pre-launch with no user whose curation cannot be rebuilt. The migration is
 written **to be deleted wholesale** in a future pre-release schema reset rather
 than maintained: it carries no backfill or value-rewriting logic to unwind, and
-nothing else may depend on having run it. The two writes above are consistent
-with that. The minted keys become ordinary `app.account_links` rows
-indistinguishable from any other, and the recovery baseline is self-retiring —
-cleared when the counts are met — so a database that has finished recovering
-carries no residue of the migration at all.
+nothing else may depend on having run it. The three writes above are consistent
+with that. The minted keys and the re-pointed origins become ordinary
+`app.account_links` rows indistinguishable from any other, and the recovery
+baseline is self-retiring — cleared by a completed forced pull — so a database
+that has finished recovering carries no residue of the migration at all.
 
 **"No data preservation" means no backfill, not no data.** The distinction is
 load-bearing and is the one this migration is most likely to get wrong.
@@ -766,12 +793,25 @@ The migration must:
 
    Before clearing, V052 writes the pre-clear row count for each affected table
    plus an `incomplete` marker into `app.*`, and doctor reports every marked
-   table until its count is met or exceeded and the marker is cleared. The
-   marker is what makes this a fail-closed check rather than a guess: a missing
-   baseline reads as "not yet recovered," never as "fine." This is the one
-   piece of durable state the thin-migration posture requires, and it exists
-   precisely because everything else about the posture is deliberately
-   disposable.
+   table until the marker is cleared. The marker is what makes this fail-closed
+   rather than a guess: a missing baseline reads as "not yet recovered," never
+   as "fine." This is the one piece of durable state the thin-migration posture
+   requires, and it exists precisely because everything else about the posture
+   is deliberately disposable.
+
+   **The count is evidence, not the clearing condition.** Clearing on "count
+   met or exceeded" would report a false recovery. A forced pull cannot return
+   history older than the provider's window, and ordinary new transactions
+   accumulate afterwards, so a table can regain its old count — or exceed it —
+   while every row the migration destroyed stays permanently gone. A count
+   cannot separate those two states, because they are not the same rows.
+
+   The marker is therefore cleared only by a **completed forced pull** for that
+   connection, and doctor reports the pre-clear count beside the current one
+   instead of asserting they are equivalent. Where the forced pull returns
+   fewer rows than the baseline, that shortfall is the provider window and it
+   is permanent: doctor says so once, plainly, rather than waiting on a count
+   that will never arrive or clearing on one that means nothing.
 3. Preserve the six `raw.*` tables a re-import does not rebuild. The list is
    enumerated here rather than left to a predicate, because the failure mode is
    a list that looks complete and is short by one:
@@ -835,7 +875,18 @@ The migration must:
    preserved rows would keep exactly the defect R9 exists to remove, and the
    R14 guard could not tell a violation from a pre-migration survivor.
 
-   These rows are V052's only `app.*` write and its only departure from
+   **The same block re-points the fallback-origin links (R8).** In one
+   `UPDATE`, every `app.account_links` row whose `source_origin` names no
+   registered format — `NOT IN (SELECT name FROM app.tabular_formats)` and
+   likewise for `app.pdf_formats` — takes R8's constant. Without it those links
+   become unreachable the moment R8 lands, because
+   `accepted_native_keys_for_account` filters on `source_origin`
+   (`account_resolver.py:802-808`), and the identity-unknown accounts get
+   re-asked a question they already answered. It belongs here rather than in
+   its own step because it touches the same table in the same transaction as
+   the mint.
+
+   These writes are V052's only `app.*` writes and its only departure from
    Invariant 10's "written only through `AccountLinksRepo`"
    (`app_account_links.sql:5`) — a migration runs below the repository layer.
    It writes the paired `app.audit_log` row itself (`actor='system'`,
