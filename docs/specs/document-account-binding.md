@@ -30,12 +30,20 @@ by a minted opaque key bound to documents by an explicit human decision.
 
 Where the decision record and this spec disagree, this spec governs.
 
-**1. The binding ref is a content digest, not a filename stem.**
+**1. The *document* key is a content digest, not a filename stem.**
 `transaction-identity-stability.md` §"The one genuinely open sub-decision"
 recommends a filename stem, user-confirmed and scoped by source. Withdrawn: a
 filename is not a reliable signal of contents. Exports arrive as
 `transactions.csv` and are renamed by hand, so the stem is both unstable and
 non-unique.
+
+This reverses what identifies **a document**, and says nothing about what may
+bind **an account**. §Decisions Taken 5 rejects the content digest for that
+second job, and the two hold together rather than colliding: a digest is
+unique-but-non-recurring, which is exactly right for naming one artifact and
+exactly wrong for recognising the same account next period. The earlier
+document called both jobs "the binding ref," which is the conflation this spec
+exists to remove — so the word is avoided here.
 
 **2. The changes ship as one slice, not change 1 alone first.**
 `transaction-identity-stability.md:614-615` asks "Ship change 1 alone first? It
@@ -106,9 +114,23 @@ may proceed with no human decision.
 
 ### Account identity
 
-**R4.** An account key is never derived from document bytes, a filename, a
-path, or a display label. For a file with no caller-stated account, the import
-**mints** an opaque `source_account_key`.
+**R4.** An account key is never derived from document bytes, a filename, or a
+path. For a file with no caller-stated account, the import **mints** an opaque
+`source_account_key`.
+
+**One exception, named rather than implied: `--account-name`.**
+`_label_account_key` (`import_service.py:878`, called at `:2424` and `:3331`)
+derives an account key from the caller's display label, and this spec leaves
+that path alone — its decomposition is Out of Scope (§Testing Strategy). Stating
+R4 as an unqualified "never … or a display label" would make it an invariant
+the shipping code violates on day one, which is worse than an honest exception:
+a guard nobody can turn green gets disabled, and then it guards nothing.
+
+The exception is bounded and self-retiring. It fires only when a caller passes
+`--account-name`, it is the one label-derived key in the codebase, and it
+disappears with the Part 1 vocabulary work that decomposes `--account-name`.
+Until then R4 governs every key the *file* produces, which is the population
+this spec is about.
 
 **R5.** A minted account key is opaque and non-reproducible across databases. A
 wiped database re-mints different keys, so re-loading the same source files
@@ -378,6 +400,14 @@ into an `account_id` column, a `display_name` into a `source_account_key`, a
 `src/moneybin/sqlmesh/models/`, paired with a behavioural test that a resolved
 account never carries a source-native value in `account_id`.
 
+The `--account-name` path (R4's named exception) is the guard's **only**
+exemption, and the guard asserts its exemption list by **set equality** rather
+than by membership. A membership check silently absorbs the next exemption
+somebody adds; set equality fails the moment the list changes, which turns
+adding one into a decision somebody has to make on purpose. The list empties
+itself when the Part 1 decomposition lands, and the guard then fails until the
+exemption is removed — which is the intended way for it to be retired.
+
 **R15.** `core.dim_accounts.account_id` holds only minted surrogates, making
 its existing `DataClass.RECORD_ID` classification unconditionally true rather
 than true-only-where-a-link-exists.
@@ -454,11 +484,22 @@ its role in `find_existing_import`.
 
 ### Second new column
 
-`source_row_key VARCHAR` on `raw.tabular_transactions` and any other raw
-transaction table whose source may not supply a native id. Carries MoneyBin's
-within-document row identity (R13). `source_transaction_id` becomes nullable
-wherever it is not already, since NULL is now its honest answer for a source
-that assigns no id.
+`source_row_key VARCHAR NOT NULL` on `raw.tabular_transactions` and any other
+raw transaction table whose source may not supply a native id. Carries
+MoneyBin's within-document row identity (R13). `source_transaction_id` becomes
+nullable wherever it is not already, since NULL is now its honest answer for a
+source that assigns no id.
+
+**`NOT NULL`, and computed for every tabular row — including rows that carry a
+native id.** This is the one place the two columns are not symmetric, and
+getting it backwards breaks native-id imports on the first file. R10 makes
+`source_row_key` the leading component of `raw.tabular_transactions`' new
+primary key, and a key component cannot be NULL. "The column for rows without a
+native id" is therefore the wrong reading: `source_row_key` is *always*
+populated, and `source_transaction_id` is the one that may be NULL. Which of
+the two the identity hash consumes is a separate question, answered once by
+`identity_component` (R13) — a populated `source_row_key` on a native-id row is
+simply unused by the hash, not a contradiction.
 
 The existing `raw.tabular_transactions.transaction_id` column — the
 native-or-synthesized fallback — is **dropped**. Its two jobs are now the two
@@ -580,18 +621,35 @@ The migration must:
 
 4. On both manual tables, rename the minted `source_transaction_id` to
    `source_row_key` (R13). It stays the primary key and no value changes.
-5. NULL the stored gold-key predictions on those two tables —
-   `raw.manual_transactions.transaction_id` and
-   `raw.manual_investment_transactions.investment_transaction_id`. Each was
-   computed at INSERT from inputs that R9 and R13 rotate, so each is stale the
-   moment this migration runs. NULL is deliberate rather than a recomputation:
-   the prediction exists so `_run_orphan_app_state` can suppress a false
-   positive on a row not yet materialized in `core`
-   (`doctor_service.py:754-763` unions it into `valid_txn`), and a *stale*
-   prediction makes that suppression hide a real orphan. NULL makes doctor
-   report instead — the failure that is visible rather than the one that is
-   silent. The column repopulates on the next entry, and the preserved rows
-   stop being reported the moment a transform materializes them into `core`.
+5. NULL the stored gold-key prediction on `raw.manual_transactions` —
+   `transaction_id`, and **only** that one. It was computed at INSERT from
+   inputs step 6 rotates, so it is stale the moment this migration runs. NULL
+   is deliberate rather than a recomputation: the prediction exists so
+   `_run_orphan_app_state` can suppress a false positive on a row not yet
+   materialized in `core` (`doctor_service.py:754-763` unions it into
+   `valid_txn`), and a *stale* prediction makes that suppression hide a real
+   orphan. NULL makes doctor report instead — the failure that is visible
+   rather than the one that is silent. The column repopulates on the next
+   entry, and the preserved rows stop being reported the moment a transform
+   materializes them into `core`.
+
+   **`raw.manual_investment_transactions.investment_transaction_id` is
+   preserved, not NULLed**, and the two tables are not symmetric here even
+   though they look it. On the transactions side the stored value is a
+   *prediction* that `int_transactions__matched` recomputes. On the investment
+   side there is no matcher pipeline, so the stored value is the canonical id
+   itself: `stg_manual__investment_transactions.sql:28` passes it straight
+   through, and `fct_investment_transactions.sql:16` declares
+   `grain investment_transaction_id`. NULLing it would not make doctor report a
+   recoverable orphan — it would materialize every preserved investment event
+   with a NULL grain key and break every lot reference pointing at one, with
+   nothing anywhere able to recompute the value.
+
+   Nothing forces it stale, either. Its hash inputs are
+   `manual|user|account_id|source_transaction_id`; R9 excludes this table's
+   `account_id` (§Data Model), and step 4's rename carries the same value under
+   a new name. Both inputs survive the migration unchanged, so the stored id is
+   still correct.
 6. Mint a source key for every manual account that already has rows. For each
    distinct `account_id` in `raw.manual_transactions`: mint one `src_` key,
    INSERT the matching `app.account_links` row (`ref_kind='source_native'`,
@@ -700,6 +758,21 @@ item 18.
 key that table names. Seven are a positional swap;
 `raw_tabular_transactions.sql` is not, because R13 also drops `transaction_id`
 from it.
+
+**Manual write path** — the services that author manual rows, without which
+R9's minted key exists in the schema and nothing ever writes it.
+
+- `src/moneybin/services/transaction_service.py:1077` — `create_manual_batch`
+  writes `entry["account_id"]` straight into the account slot (`:1150`) and
+  feeds the same value to `_predict_manual_gold_key` (`:110,1127`). After R9 it
+  must resolve or mint the account's `src_` key, persist the accepted
+  `manual`/`user` link through `AccountLinksRepo` in the same transaction, and
+  hash the minted key. Without this, every post-migration manual row resolves
+  to a NULL canonical account once R15 removes the staging fallback.
+- `src/moneybin/services/investment_service.py:234` — `_predict_investment_gold_key`
+  keeps hashing the canonical `account_id`, because R9 excludes its table
+  (§Data Model). It is listed so the exclusion is a decision on the record
+  rather than a file nobody checked.
 
 - `src/moneybin/sql/schema/raw_manual_transactions.sql` — R13's
   `source_transaction_id` → `source_row_key` rename, plus R9's repurposing of
@@ -844,12 +917,21 @@ Per `docs/specs/observability.md`, registered in
 9. Import a file whose source assigns no transaction id → every row's
    `source_transaction_id` is NULL, and `source_row_key` is populated.
 10. Import a file that *does* carry a native id column → `source_transaction_id`
-    holds the institution's value verbatim, and the identity hash consumes it
-    rather than `source_row_key`.
-11. A file with a native id keeps its transaction ids when rows are reordered;
-    a file without one does not (and relies on R3's document-key idempotence
-    instead). This asserts the two paths are genuinely distinct rather than one
-    path with a hidden fallback.
+    holds the institution's value verbatim, `source_row_key` is **also**
+    populated (it is a primary-key component, so a native id does not excuse
+    it), and the identity hash consumes the native id rather than the row key.
+11. **Both** paths keep their transaction ids when rows are reordered. A row
+    key counts occurrences within a group of identical rows, so reordering
+    permutes interchangeable rows and leaves every key intact; asserting
+    otherwise would push the implementation toward physical row position, which
+    would rotate ids on an ordinary export reshuffle.
+
+    What separates the two paths is **restatement**, so test that instead: an
+    export that rewords a description or corrects an amount keeps its
+    transaction id on the native-id path (the institution's id did not change)
+    and rotates it on the row-key path (a hashed field did). That asserts the
+    two paths are genuinely distinct rather than one path with a hidden
+    fallback, and it asserts the thing that actually differs.
 
 **Invariants**
 
@@ -869,10 +951,15 @@ Per `docs/specs/observability.md`, registered in
     so it seeds all thirteen.
 15. Partial-failure: an interrupted migration leaves the database on the old
     schema, not half-rotated.
-16. The stored gold-key prediction is NULL on every preserved manual row of
-    both manual tables, and `moneybin doctor` therefore reports those rows
-    rather than suppressing them, until a transform materializes them into
-    `core`.
+16. The stored gold-key prediction is NULL on every preserved
+    `raw.manual_transactions` row, and `moneybin doctor` therefore reports
+    those rows rather than suppressing them, until a transform materializes
+    them into `core`. Its partner asserts the asymmetry rather than assuming
+    it: every preserved `raw.manual_investment_transactions` row still holds
+    the **same non-NULL** `investment_transaction_id` it held before the
+    migration. That column is the canonical grain key, not a prediction, and
+    nothing downstream can recompute it — a test that accepts NULL here would
+    pass while every preserved investment event loses its identity.
 17. `raw.import_log` keeps every batch row. `source_document_key` equals the
     truncation of `file_sha256` wherever that column is populated, and NULL
     for a pre-V046 batch — no batch acquires a minted stand-in.
