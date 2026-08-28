@@ -193,14 +193,42 @@ in next month's export would go on silently rotating every transaction id
 beneath it.
 
 So this branch mints like the rest: each account the file states gets a minted
-or remembered `source_account_key`, and the binding is remembered against
-`(source_origin, in-file label)` so a later rename re-asks once instead of
-rotating ids. The gate infrastructure is already there — phase 1 enumerates one
-`SourceAccount` per native key precisely so the account-binding gate can run
-before the writing `resolve()` pass. What changes is which key each enumerated
-account carries, not when the user is asked: it stays **one** gate per file
-listing that file's accounts, never one gate per account. Confirm volume tracks
-the uncertainty, which is per file, not the row count.
+`source_account_key` on first contact, and the binding is remembered so next
+month's export reuses it. The gate infrastructure is already there — phase 1
+enumerates one `SourceAccount` per native key precisely so the account-binding
+gate can run before the writing `resolve()` pass. What changes is which key
+each enumerated account carries, not when the user is asked: it stays **one**
+gate per file listing that file's accounts, never one gate per account. Confirm
+volume tracks the uncertainty, which is per file, not the row count.
+
+**"Remembered" needs storage, and the storage does not exist yet.** This is the
+half an earlier draft asserted without building, and without it the change is a
+regression rather than a fix: the existing ladder can go native key → account
+(`accepted_native_account_id`) and account → native keys
+(`accepted_native_keys_for_account`, which takes an `account_id`
+(`account_resolver.py:782-784`) and so presupposes the answer). Neither goes
+*label → key*. A minted key is opaque and a fresh parse cannot re-derive it, so
+every recurring multi-account export would reach the confirm gate on every
+file, forever — and unattended imports would stop on all of them. `slugify`
+at least reused its key.
+
+So `app.account_links` gains a nullable `source_label`: the in-file label the
+binding was made under, giving a `(source_type, source_origin, source_label)`
+lookup that returns the account and its already-minted key. R4 still holds —
+the key is minted, and the label is a lookup handle, never an input to the
+hash. A renamed account misses the lookup and re-asks **once**, then the new
+label is remembered too; that is the promised behaviour, and it is the whole
+difference from `slugify`, where a rename silently rotated every id beneath the
+account instead of asking.
+
+Two boundaries, because both are easy to get wrong later. This column does not
+retroactively fix R8's collision residual — pre-migration rows carry no label,
+so that residual stands exactly as scoped. And it does not contradict R8's
+refusal to add a discriminator column: that one would have existed solely to
+disambiguate a legacy population for a migration written to be deleted, while
+this is permanent product state every future import reads. `source_label`
+carries the same sensitivity as the account name it was copied from — not
+`ref_value`'s, which can hold a full account number and is never projected.
 
 **R5.** A minted account key is opaque and non-reproducible across databases. A
 wiped database re-mints different keys, so re-loading the same source files
@@ -932,8 +960,18 @@ The migration must:
    resolution timestamp, moving the row from `incomplete` to `recovered` when
    the count is whole or `short` when it is not. A `recovered` row goes quiet.
    A `short` row is reported as a settled fact — history the provider window
-   will not return — which the user can acknowledge to silence, and which no
-   later pull reopens, because no later pull can change it.
+   will not return — and no later pull reopens it, because no later pull can
+   change it.
+
+   **A `short` row carries no acknowledgement**, and an earlier draft's "the
+   user can acknowledge it" was a surface this spec never defines: §CLI and
+   §MCP add no operations, so the acknowledgement would have had no way to be
+   made. Inventing one also gets the polarity backwards. The shortfall is a
+   permanent property of this database, so doctor reports it the way it reports
+   any other standing fact about the data — an informational line, not a
+   finding that asks for an action no action can satisfy. What retires is the
+   *warning*: an `incomplete` row is an open recovery item, a `short` row is
+   closed history.
 
    **The clearing path is named, or the marker is permanent.** A migration that
    writes state nothing else can clear leaves doctor reporting every recovered
@@ -942,16 +980,16 @@ The migration must:
    ad-hoc table: `app.sync_recovery_state` (one row per affected
    `(table, source_origin)`, holding the pre-clear count and the migration's
    timestamp, then the recovered count, the resolution timestamp, and the
-   `incomplete` / `recovered` / `short` state the pull stamps on it, plus the
-   acknowledgement a `short` row can carry), written through a
-   `SyncRecoveryRepo` like every
-   other `app.*` table (Invariant 10), and resolved from exactly one
+   `incomplete` / `recovered` / `short` state the pull stamps on it), written
+   through a
+   `SyncRecoveryRepo` like every other `app.*` table (Invariant 10), and
+   resolved from exactly one
    place — `SyncService.pull` (`sync_service.py:85`), at the end of a run whose
    `force=True` reached a successful load. `force` is already what sets
    `reset_cursor` (`:119`), so the flag that causes the recovery is the flag
    that resolves the marker; no second notion of "forced" is introduced. Doctor
-   reads the table and reports nothing once every row is `recovered` or an
-   acknowledged `short`.
+   reports nothing once every row is `recovered`, and reports each `short` row
+   as standing history for as long as the database exists.
 3. Preserve the six `raw.*` tables a re-import does not rebuild. The list is
    enumerated here rather than left to a predicate, because the failure mode is
    a list that looks complete and is short by one:
@@ -1034,6 +1072,14 @@ The migration must:
    of them. The migration test asserts the negative directly — a seeded Plaid
    link and a seeded OFX link carry byte-identical `source_origin` values
    before and after V052.
+
+   The same step adds `app.account_links.source_label` and backfills
+   **nothing** into it. A pre-migration row's label is not recoverable — the
+   old key was `slugify(name)`, and a slug does not invert — so every existing
+   row keeps NULL and the first import after V052 re-asks that account once,
+   then remembers. Guessing a label back from a slug is the one thing worse
+   than asking: it would silently bind an account under a name the file never
+   used.
 
    These are V052's largest `app.*` mutation but **not its only one**: step 2
    writes an `app.sync_recovery_state` baseline row per affected
@@ -1196,6 +1242,18 @@ together with its schema: the tabular and OFX transforms, the Plaid extractor,
 and the Google Sheets adapters. Treat "the schema file is edited" as half the
 change for every table listed above.
 
+**Per-account overlap evidence** — `_gate_account_proposals`
+(`import_service.py:2214`) applies its one `incoming_transactions` sequence to
+every proposal's candidates (`:2296-2309`), so each source account is scored
+against the whole file's rows. That is harmless today: only the two PDF paths
+pass the argument (`:4113`, `:4781`), and a PDF states one account. It stops
+being harmless the moment the multi-account tabular branch above gates with
+evidence, because a file holding accounts A and B would offer A's proposal
+matches drawn from B's rows — overlap evidence that reads as corroboration and
+is nothing of the kind, on the exact surface §Magic stays visible says must be
+calibrated to certainty. Filter the sequence by `source_account_key` per
+proposal.
+
 **Google Sheets soft-delete state machine** — the gsheet transactions adapter
 is not only a producer, and treating it as one leaves the channel broken. R13
 drops `raw.tabular_transactions.transaction_id`, and
@@ -1277,6 +1335,12 @@ R9's minted key exists in the schema and nothing ever writes it.
 - `src/moneybin/sql/schema/raw_import_log.sql` — `source_file` → `source_path`,
   relaxed to nullable, plus a nullable `source_document_key` (§Migration step
   6). Its own key is `import_id` and does not move.
+- `src/moneybin/sql/schema/app_account_links.sql` — a nullable `source_label`
+  recording the in-file account label a binding was made under, so a recurring
+  multi-account export can find its already-minted key (R4). Nullable because
+  every pre-migration row has one and because the channels that state no label
+  never will. It is a lookup handle, never an identity input, and it carries
+  the sensitivity of the account name it was copied from — not `ref_value`'s.
 
 **The nine query sites** in R10 that use `source_file` as a batch
 discriminator.
@@ -1530,6 +1594,16 @@ Per `docs/specs/observability.md`, registered in
     overlapping rows. Under `slugify(name)` keying, every id beneath that
     account changes, so this test fails against today's branch — which is why
     the branch is in scope rather than exempt.
+27. An **unchanged** multi-account export re-imported a second time loads
+    unattended: the `source_label` lookup returns each account's minted key and
+    no proposal reaches the confirm gate. This is the half that makes minting
+    an improvement rather than a regression, and it fails against a mint with
+    no lookup behind it — which is what an earlier draft specified.
+28. In a two-account file, the overlap evidence offered for account A's
+    proposal is computed from A's rows alone. Seed B with rows that would match
+    A's candidate and assert they do not appear in A's overlap: a test that
+    only checks A's own rows are present passes against the unfiltered
+    sequence.
 
 ## Synthetic Data Requirements
 
