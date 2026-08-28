@@ -165,19 +165,42 @@ heavily because it is the hardest to notice and undo.
 path. For a file with no caller-stated account, the import **mints** an opaque
 `source_account_key`.
 
-**One exception, named rather than implied: `--account-name`.**
-`_label_account_key` (`import_service.py:878`, called at `:2424` and `:3331`)
-derives an account key from the caller's display label, and this spec leaves
-that path alone — its decomposition is Out of Scope (§Testing Strategy). Stating
-R4 as an unqualified "never … or a display label" would make it an invariant
-the shipping code violates on day one, which is worse than an honest exception:
-a guard nobody can turn green gets disabled, and then it guards nothing.
+**Two branches derive an account key from a label, and only one of them is
+an exception.** An earlier draft called `--account-name` "the one label-derived
+key in the codebase". That is false, and the branch it missed is the one R4 is
+actually about.
 
-The exception is bounded and self-retiring. It fires only when a caller passes
-`--account-name`, it is the one label-derived key in the codebase, and it
-disappears with the account-vocabulary work that decomposes `--account-name`.
-Until then R4 governs every key the *file* produces, which is the population
-this spec is about.
+*The exception, named rather than implied: `--account-name`.*
+`_label_account_key` (`import_service.py:878`, called at `:2424` and `:3331`)
+derives an account key from the **caller's** display label, and this spec
+leaves that path alone — its decomposition is Out of Scope (§Testing Strategy).
+Stating R4 as an unqualified "never … or a display label" would make it an
+invariant the shipping code violates on day one, which is worse than an honest
+exception: a guard nobody can turn green gets disabled, and then it guards
+nothing. It is bounded and self-retiring — it fires only when a caller passes
+`--account-name`, and it retires with the account-vocabulary work that
+decomposes the flag.
+
+*In scope, and not an exception: the multi-account tabular branch.* When a
+format is multi-account and an account-name column is mapped,
+`import_service.py:3358` keys every enumerated account on `slugify(name)` read
+**from the file's own column**, and `:3380` slugifies the same label again to
+attach the per-account institution. Nothing there is caller-supplied, so it
+sits squarely inside "every key the *file* produces" — the population R4
+governs. Leaving it alone would make R4 false for exactly the Tiller- and
+Monarch-shaped exports that make a format multi-account, and a renamed account
+in next month's export would go on silently rotating every transaction id
+beneath it.
+
+So this branch mints like the rest: each account the file states gets a minted
+or remembered `source_account_key`, and the binding is remembered against
+`(source_origin, in-file label)` so a later rename re-asks once instead of
+rotating ids. The gate infrastructure is already there — phase 1 enumerates one
+`SourceAccount` per native key precisely so the account-binding gate can run
+before the writing `resolve()` pass. What changes is which key each enumerated
+account carries, not when the user is asked: it stays **one** gate per file
+listing that file's accounts, never one gate per account. Confirm volume tracks
+the uncertainty, which is per file, not the row count.
 
 **R5.** A minted account key is opaque and non-reproducible across databases. A
 wiped database re-mints different keys, so re-loading the same source files
@@ -403,6 +426,26 @@ communicate. What this does change is the advice — a shared log is a shared
 artifact, and `moneybin doctor` output pasted into an issue carries whatever
 the user named their files. That belongs in support guidance, not in a masking
 rule that buys nothing where the file already sits.
+
+**This is not a departure from the privacy rules — it is what they already
+say.** `privacy-data-protection.md` §"What CAN appear" lists "File paths (not
+file contents)" beside record counts, entity ids, masked identifiers, and
+institution names. R11 restates that for `source_path`; it carves no exception
+out of it.
+
+What does need correcting is AGENTS.md's one-line summary — "Log record counts,
+IDs, and status codes only" — which is narrower than the canonical spec it
+points at and drops four of the six permitted categories. Read literally it
+forbids the masked account label its own next sentence permits. A reviewer
+holding the summary against this column will read a deliberate decision as a
+violation, and has. The summary moves to the canonical list; the canonical list
+does not move to the summary.
+
+**And the advice above gets an owner.** `privacy-data-protection.md` gains it
+next to the permitted list, where a reader meets it: doctor and import output
+carry file paths verbatim, and are worth a glance before being pasted into an
+issue. A mitigation named in a rationale and assigned to no file is a sentence
+nobody implements.
 
 **R12.** Wherever the match engine needs "did these two rows come from the same
 physical import?", it keys on `source_document_key`, not on a path. Two sites:
@@ -859,39 +902,56 @@ The migration must:
 
    Before clearing, V052 writes the pre-clear row count for each affected table
    plus an `incomplete` marker into `app.*`, and doctor reports every marked
-   table until the marker is cleared. The marker is what makes this fail-closed
+   table until the marker is retired. The marker is what makes this fail-closed
    rather than a guess: a missing baseline reads as "not yet recovered," never
    as "fine." This is the one piece of durable state the thin-migration posture
    requires, and it exists precisely because everything else about the posture
    is deliberately disposable.
 
-   **The count is evidence, not the clearing condition.** Clearing on "count
+   **The count is evidence, not the resolving condition.** Resolving on "count
    met or exceeded" would report a false recovery. A forced pull cannot return
    history older than the provider's window, and ordinary new transactions
    accumulate afterwards, so a table can regain its old count — or exceed it —
    while every row the migration destroyed stays permanently gone. A count
    cannot separate those two states, because they are not the same rows.
 
-   The marker is therefore cleared only by a **completed forced pull** for that
-   connection, and doctor reports the pre-clear count beside the current one
-   instead of asserting they are equivalent. Where the forced pull returns
+   The marker is therefore retired only by a **completed forced pull** for
+   that connection, and doctor reports the pre-clear count beside the current
+   one instead of asserting they are equivalent. Where the forced pull returns
    fewer rows than the baseline, that shortfall is the provider window and it
-   is permanent: doctor says so once, plainly, rather than waiting on a count
-   that will never arrive or clearing on one that means nothing.
+   is permanent — doctor says so plainly rather than waiting on a count that
+   will never arrive or clearing on one that means nothing.
+
+   **A completed pull resolves the row; it does not delete it.** That
+   distinction is the whole mechanism, and an earlier draft got it backwards.
+   The completed pull is the first moment the shortfall is *knowable* — only
+   then is there a post-recovery count to set beside the baseline — so deleting
+   the row on completion would destroy the evidence in the same instant it
+   comes into existence, and doctor could never report the permanent loss the
+   paragraph above promises. The pull instead stamps the recovered count and a
+   resolution timestamp, moving the row from `incomplete` to `recovered` when
+   the count is whole or `short` when it is not. A `recovered` row goes quiet.
+   A `short` row is reported as a settled fact — history the provider window
+   will not return — which the user can acknowledge to silence, and which no
+   later pull reopens, because no later pull can change it.
 
    **The clearing path is named, or the marker is permanent.** A migration that
    writes state nothing else can clear leaves doctor reporting every recovered
    database as incomplete forever, which is the same silent-gap failure with
    the sign flipped. So this state gets the ordinary treatment rather than an
    ad-hoc table: `app.sync_recovery_state` (one row per affected
-   `(table, source_origin)`, holding the pre-clear count, the marker, and the
-   migration's timestamp), written through a `SyncRecoveryRepo` like every
-   other `app.*` table (Invariant 10), and cleared from exactly one place —
-   `SyncService.pull` (`sync_service.py:85`), at the end of a run whose
+   `(table, source_origin)`, holding the pre-clear count and the migration's
+   timestamp, then the recovered count, the resolution timestamp, and the
+   `incomplete` / `recovered` / `short` state the pull stamps on it, plus the
+   acknowledgement a `short` row can carry), written through a
+   `SyncRecoveryRepo` like every
+   other `app.*` table (Invariant 10), and resolved from exactly one
+   place — `SyncService.pull` (`sync_service.py:85`), at the end of a run whose
    `force=True` reached a successful load. `force` is already what sets
    `reset_cursor` (`:119`), so the flag that causes the recovery is the flag
-   that clears the marker; no second notion of "forced" is introduced. Doctor
-   reads the table and reports nothing when it is empty.
+   that resolves the marker; no second notion of "forced" is introduced. Doctor
+   reads the table and reports nothing once every row is `recovered` or an
+   acknowledged `short`.
 3. Preserve the six `raw.*` tables a re-import does not rebuild. The list is
    enumerated here rather than left to a predicate, because the failure mode is
    a list that looks complete and is short by one:
@@ -975,12 +1035,22 @@ The migration must:
    link and a seeded OFX link carry byte-identical `source_origin` values
    before and after V052.
 
-   These writes are V052's only `app.*` writes and its only departure from
-   Invariant 10's "written only through `AccountLinksRepo`"
-   (`app_account_links.sql:5`) — a migration runs below the repository layer.
-   It writes the paired `app.audit_log` rows itself, under one shared
-   `operation_id` with `actor='system'`, because the invariant is about the
-   audit row existing, not about which layer emitted it. **`before_value` is
+   These are V052's largest `app.*` mutation but **not its only one**: step 2
+   writes an `app.sync_recovery_state` baseline row per affected
+   `(table, source_origin)`, and that table is not one of Invariant 10's exempt
+   system tables either. It takes the identical treatment — an `app.audit_log`
+   row paired with each marker insertion, in the same transaction,
+   `actor='system'`, `before_value` NULL because it is an INSERT. Skipping it
+   would ship a protected app-state mutation the migration's own audit routing
+   cannot account for, which is the precise hole Invariant 10 exists to close.
+
+   Each of these writes departs from its table's repository-only rule —
+   `AccountLinksRepo` for the links (`app_account_links.sql:5`),
+   `SyncRecoveryRepo` for the baseline — in the same way and for the same
+   reason: a migration runs below the repository layer. V052 therefore writes
+   the paired `app.audit_log` rows itself, under one shared `operation_id` with
+   `actor='system'`, because the invariant is about the audit row existing, not
+   about which layer emitted it. **`before_value` is
    NULL only for the mint.** `app_audit_log.sql:15` defines it as the "full
    prior row state; NULL on creation (INSERT)", so the minted link — an INSERT
    — carries NULL, while each re-pointed origin is an UPDATE and carries the
@@ -1044,13 +1114,20 @@ item 18.
   (`:947`) into a document-key function and a minting account-key function;
   call `accepted_native_keys_for_account` from the unpinned branch (R7); pin
   `source_origin` (R8); stop seeding any key path from the filename stem
-  (`:3302`, `:3408` keep the stem as a *suggestion* only).
+  (`:3302`, `:3408` keep the stem as a *suggestion* only); and mint or remember
+  a key per file-stated account in the **multi-account branch** instead of
+  `slugify(name)` (`:3358`, and `:3380` for the per-account institution) — R4
+  governs it, and it is the branch an earlier draft mistook for the
+  `--account-name` exception.
 - `src/moneybin/services/account_resolver.py` — confirm
   `accepted_native_keys_for_account` needs no scoping change for its new
   unpinned caller.
-- `src/moneybin/services/sync_service.py` — `pull` (`:85`) clears the
-  `app.sync_recovery_state` marker for that connection after a `force=True` run
-  completes its load. Without this the marker never clears and doctor reports
+- `src/moneybin/services/sync_service.py` — `pull` (`:85`) resolves the
+  `app.sync_recovery_state` row for that connection after a `force=True` run
+  completes its load, stamping the recovered count and marking it `recovered`
+  or `short`. It does not delete the row: the completed pull is the moment the
+  shortfall becomes knowable, so deleting here destroys the evidence as it
+  appears. Without the resolve the marker never retires and doctor reports
   every recovered database as incomplete forever.
 - `src/moneybin/synthetic/writer.py` — emits `source_file` on five raw tables
   (`:143`, `:175`, `:202`, `:223`, `:260`) and the removed tabular
@@ -1118,6 +1195,28 @@ on an unknown column or a missing `NOT NULL`. Each channel's producer moves
 together with its schema: the tabular and OFX transforms, the Plaid extractor,
 and the Google Sheets adapters. Treat "the schema file is edited" as half the
 change for every table listed above.
+
+**Google Sheets soft-delete state machine** — the gsheet transactions adapter
+is not only a producer, and treating it as one leaves the channel broken. R13
+drops `raw.tabular_transactions.transaction_id`, and
+`connectors/gsheet/adapters/transactions.py` uses that column as the identity
+of its diff: `:287` builds `current_ids` from `df["transaction_id"]`, `:291`
+selects the connection's still-active ids by it, `:317` soft-deletes by it, and
+`:270` documents the state machine in its terms. `connection_service.py:566`
+orders by it as well — the same line §R10 already lists for its `source_file`
+half, so that one line takes both edits, not one. A producer-only instruction
+leaves all five, and the first Google Sheets pull after V052 fails on a missing
+column before it loads a row.
+
+The replacement is `source_row_key`, **not** the identity expression. A review
+proposed `COALESCE(source_transaction_id, source_row_key)` here; that is the
+wrong value twice over. `source_row_key` is `NOT NULL` and computed for every
+tabular row (§Added columns), so it is total on its own, and it is the leading
+component of the table's new primary key — which is exactly the
+within-document row identity a soft-delete diff needs. The `COALESCE` pair, by
+contrast, is the *identity hash* input, which R13 confines to two sites with a
+guard pinning the occurrence count at two; a third one here would fail that
+guard.
 
 **`source_transaction_id_a/_b` consumers** — R13 renames both anchor columns of
 `app.match_decisions` to `identity_component_a/_b`, and the name appears in
@@ -1415,9 +1514,22 @@ Per `docs/specs/observability.md`, registered in
     fallback-origin tabular link takes R8's constant. The negative half is the
     point: an unscoped predicate passes the positive half alone.
 24. V052 marks the cleared Plaid tables incomplete; a `pull(force=True)` that
-    completes clears the marker; doctor reports the table before and reports
-    nothing after. A test that only asserts the marker is written cannot tell a
-    self-retiring marker from a permanent one.
+    completes and returns the whole baseline resolves the row to `recovered`
+    and doctor goes quiet; a `pull(force=True)` that completes and returns
+    fewer rows resolves it to `short` and doctor still reports the shortfall.
+    Both halves are required — asserting only the first cannot tell a resolving
+    marker from one that deletes the evidence of a permanent loss, and cannot
+    tell either from a marker that never retires.
+25. A Google Sheets pull round-trips soft-delete across V052: seed a
+    connection, drop a row from the sheet, pull, and the vanished row carries
+    `deleted_from_source_at` while the survivors do not. This test passes today
+    against `transaction_id`; the point is that it still passes with the column
+    gone.
+26. A multi-account tabular export re-imported after one of its in-file account
+    labels is renamed yields byte-identical `transaction_id` values for the
+    overlapping rows. Under `slugify(name)` keying, every id beneath that
+    account changes, so this test fails against today's branch — which is why
+    the branch is in scope rather than exempt.
 
 ## Synthetic Data Requirements
 

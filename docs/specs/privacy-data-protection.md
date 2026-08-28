@@ -214,6 +214,14 @@ duration of the shell session.
 - Status codes, error types, operation names
 - File paths (not file contents)
 
+File paths are permitted because a path is chosen by the user on their own
+disk: if it embeds an account number, that number was already exposed where
+MoneyBin cannot reach, and masking it would cost the one thing an import error
+has to communicate — which file failed. The log is still a concentrating
+artifact, though, so support guidance says what a masking rule should not:
+`moneybin doctor` and import output carry file paths verbatim, and are worth a
+glance before being pasted into an issue.
+
 ### Database Backup and Restore
 41. `db backup` creates a timestamped copy of the encrypted database file in the backup
     directory. Backups are encrypted with the same key — safe to store anywhere.
