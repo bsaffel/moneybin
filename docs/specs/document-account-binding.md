@@ -14,9 +14,11 @@ by a minted opaque key bound to documents by an explicit human decision.
 
 ## Background
 
-- [`transaction-identity-stability.md`](transaction-identity-stability.md) —
-  the decision record this spec implements. Read it for the evidence; this
-  spec carries only what governs the build.
+- **The prior analysis** — an internal account-vocabulary and
+  transaction-identity review that produced this spec. It is working material
+  rather than a public record, so everything from it that governs the build is
+  restated here rather than cited; §"Two reversals" records the two places
+  this spec overrides it.
 - [`account-identity-resolution.md`](account-identity-resolution.md) — M1S.
   Establishes `app.account_links` as the native-ref → canonical registry and
   the adopt-or-confirm ladder. This spec extends it; it does not replace it.
@@ -26,13 +28,15 @@ by a minted opaque key bound to documents by an explicit human decision.
 - [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — owns the
   match engine this spec modifies in R12.
 
-### Two reversals from the decision record
+### Two reversals from the prior analysis
 
-Where the decision record and this spec disagree, this spec governs.
+Where the prior analysis and this spec disagree, this spec governs. Both
+reversals are stated with the position they overturn, so the disagreement is
+legible without reading the earlier material.
 
-**1. The *document* key is a content digest, not a filename stem.**
-`transaction-identity-stability.md` §"The one genuinely open sub-decision"
-recommends a filename stem, user-confirmed and scoped by source. Withdrawn: a
+**1. The *document* key is a content digest, not a filename stem.** The
+prior analysis left this as its one genuinely open sub-decision and
+recommended a filename stem, user-confirmed and scoped by source. Withdrawn: a
 filename is not a reliable signal of contents. Exports arrive as
 `transactions.csv` and are renamed by hand, so the stem is both unstable and
 non-unique.
@@ -45,9 +49,9 @@ exactly wrong for recognising the same account next period. The earlier
 document called both jobs "the binding ref," which is the conflation this spec
 exists to remove — so the word is avoided here.
 
-**2. The changes ship as one slice, not change 1 alone first.**
-`transaction-identity-stability.md:614-615` asks "Ship change 1 alone first? It
-is free and forward-only" and recommends yes. Withdrawn: change 1 is only
+**2. The changes ship as one slice, not change 1 alone first.** The prior
+analysis asks "Ship change 1 alone first? It is free and forward-only" and
+recommends yes. Withdrawn: that first change is only
 forward-only in isolation. Every other change rotates `transaction_id`, so
 shipping them separately means several rotations, several migrations, and
 several windows in which curation can orphan. The migration is the atom (§Key
@@ -147,7 +151,7 @@ a guard nobody can turn green gets disabled, and then it guards nothing.
 
 The exception is bounded and self-retiring. It fires only when a caller passes
 `--account-name`, it is the one label-derived key in the codebase, and it
-disappears with the Part 1 vocabulary work that decomposes `--account-name`.
+disappears with the account-vocabulary work that decomposes `--account-name`.
 Until then R4 governs every key the *file* produces, which is the population
 this spec is about.
 
@@ -424,7 +428,7 @@ exemption, and the guard asserts its exemption list by **set equality** rather
 than by membership. A membership check silently absorbs the next exemption
 somebody adds; set equality fails the moment the list changes, which turns
 adding one into a decision somebody has to make on purpose. The list empties
-itself when the Part 1 decomposition lands, and the guard then fails until the
+itself when the `--account-name` decomposition lands, and the guard then fails until the
 exemption is removed — which is the intended way for it to be retired.
 
 **R15.** `core.dim_accounts.account_id` holds only minted surrogates, making
@@ -1149,11 +1153,9 @@ ship today.
 
 ## Out of Scope
 
-- **The Part 1 vocabulary work** — `nickname`, the `--account-name`
+- **The account-vocabulary work** — `nickname`, the `--account-name`
   decomposition, and the `reports.*.account_name` rename. Public-contract
-  changes with their own review surface.
-  ([`transaction-identity-stability.md`](transaction-identity-stability.md)
-  Part 1.)
+  changes with their own review surface, tracked separately from this spec.
 - **Tier 2b's silent-action posture.** `_classify_pair` returns `None` rather
   than `pending` for a within-source pair below the bar
   (`engine.py:294-307`), so an uncertain pair is dropped instead of reviewed. A
