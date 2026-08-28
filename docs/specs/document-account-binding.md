@@ -27,6 +27,9 @@ by a minted opaque key bound to documents by an explicit human decision.
   surrogate. This spec keeps that decision and repairs its premise.
 - [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — owns the
   match engine this spec modifies in R12.
+- [`moneybin-doctor.md`](moneybin-doctor.md) — owns the check surface this spec
+  modifies in R16, which widens orphan detection from two `app.*` tables to six
+  and adds `app.sync_recovery_state` as a reported state.
 
 ### Two reversals from the prior analysis
 
@@ -413,9 +416,9 @@ component may not be NULL.
 kept `source_transaction_id` in the OFX key because the column is already a key
 component there and so cannot be NULL, citing the extractor's FITID repair as
 "the same premise stated from the other side." The repair is the *opposite*
-premise. `_disambiguate_colliding_fitids` (`extractor.py:137-167`) does not
-merely keep a colliding `<FITID>`; it appends a content-hash suffix **to
-`source_transaction_id` itself**, which is exactly the synthesis R13 forbids
+premise. `_disambiguate_colliding_fitids` (`extractor.py:137-205`) does not
+merely keep a colliding `<FITID>`; at `:196-198` it appends a content-hash
+suffix **to `source_transaction_id` itself**, which is exactly the synthesis R13 forbids
 and R14 guards. Left as drafted, OFX violates the new contract on the first
 Chase file and R14's guard can never be turned green — the failure mode R4's
 exception paragraph exists to avoid.
@@ -1209,6 +1212,15 @@ item 18.
 - `src/moneybin/sql/schema/app_sync_recovery_state.sql` — the pre-clear
   baseline and `incomplete` marker V052 writes before step 2 clears the Plaid
   tables.
+- `src/moneybin/schema.py` — add `app_sync_recovery_state.sql` to
+  `_NON_PROVIDER_SCHEMA_FILES` (`:57`), the closed list `create_all_schemas`
+  reads (`:127`). A DDL file that is not on this list is never executed, so
+  V052's baseline write fails on a table that does not exist — and the table
+  vanishes again on the promised reset that deletes V052.
+- `src/moneybin/tables.py` — a `TableRef` for `app.sync_recovery_state`.
+  `SyncRecoveryRepo`, `SyncService`, and doctor all reach it through
+  `moneybin.tables` rather than a literal (AGENTS.md's Key Abstractions), so
+  without the constant there is no sanctioned way to name it.
 - `src/moneybin/repositories/sync_recovery_repo.py` — `SyncRecoveryRepo`, so
   the marker is read and cleared through the repository layer like every other
   `app.*` table (Invariant 10). V052 itself writes below it, as it does for
@@ -1245,10 +1257,38 @@ item 18.
   fails on an unknown column or a `NOT NULL` violation — which takes `moneybin
   demo` down with it. This is a producer, and §Raw-table producers applies to
   it in full.
-- `src/moneybin/synthetic/reset.py` — `_SYNTHETIC_ROWS` predicates on
-  `source_file LIKE 'synthetic://%'` (`:36`) under a comment asserting the
-  column is `NOT NULL` "in all five" (`:38`). R12 renames the column and makes
-  it nullable, so both the predicate and the comment move to `source_path`.
+- `src/moneybin/synthetic/reset.py` — **this one is not a rename, and treating
+  it as one opens a data-loss hole.** `_SYNTHETIC_ROWS` predicates on
+  `source_file LIKE 'synthetic://%'` (`:36`) under a comment (`:37-39`) that
+  states the exact failure R12 is about to cause: "Relies on `source_file`
+  being NOT NULL in every table above… If that constraint is ever relaxed, this
+  negation starts evaluating to NULL — not TRUE — for those rows, and they go
+  invisible to the real-data guard below."
+
+  Follow the rename naively and that prediction comes true, in the fail-**open**
+  direction. `_NON_SYNTHETIC_ROWS` (`:41`) is `NOT (…)`, and it is what
+  `has_any_user_content` counts to decide whether a database holds anything the
+  generator did not write (`:150-152`). A real row with a NULL `source_path`
+  makes that predicate NULL rather than TRUE, so it is not counted, so a
+  database holding real user data can report **no user content** — and the
+  destructive reset proceeds. The docstring already states the opposite
+  posture: "For a database we CANNOT attribute to the generator, there is no
+  such thing as a safe table."
+
+  So the two directions get fixed asymmetrically, each failing closed.
+  `_SYNTHETIC_ROWS` stays a bare `LIKE`, which already excludes NULL, so only a
+  proven-synthetic row is ever deleted. `_NON_SYNTHETIC_ROWS` becomes
+  `source_path IS NULL OR NOT (source_path LIKE 'synthetic://%')`, so an
+  unattributable row counts as user content and blocks the reset. Absence of
+  evidence that a row is ours must never be read as evidence that it is not
+  the user's.
+
+  This also answers R10 rather than contradicting it. R10 forbids `source_path`
+  as an *identity* discriminator — "did these two rows come from the same
+  physical import?" — which is `source_document_key`'s job now. "Did our own
+  generator write this row?" is a different question about a `synthetic://`
+  sentinel the generator itself writes and no user path ever produces. What the
+  column may not do is answer that question by silence.
 - `src/moneybin/services/doctor_service.py` — report each still-marked table
   with its pre-clear count beside its current one, and say plainly that a
   shortfall after a completed forced pull is the provider window and is
@@ -1304,6 +1344,28 @@ on an unknown column or a missing `NOT NULL`. Each channel's producer moves
 together with its schema: the tabular and OFX transforms, the Plaid extractor,
 and the Google Sheets adapters. Treat "the schema file is edited" as half the
 change for every table listed above.
+
+**`.claude/rules/identifiers.md` § Source-Provided IDs** — a binding rule
+file, and R13 puts it in direct contradiction rather than merely out of date.
+It currently sanctions the behaviour R13 forbids, in as many words: the suffix
+"is disambiguation of a broken source id, not a switch to strategy #2"
+(`:197`). It then documents the superseding CTE's mechanism as settled design
+(`:199`) and derives three generalized rules from it (`:203-205`), one of which
+— "Split the id by position and join on equality" — describes machinery R13
+deletes. Left alone, the repo would hold a rule file calling the same write
+legitimate that this spec calls synthesis, plus rules generalized from code
+that no longer exists.
+
+Rewrite it **as part of implementing R13**, not before: until the change ships,
+that section accurately describes what the extractor does, and editing it early
+would make a binding rule describe code that does not yet exist. What changes:
+the exception moves from "append to `source_transaction_id`" to "write the
+repair into `source_row_key` and leave the source's id verbatim"; the
+supersession paragraph loses the suffix-splitting and keys on `fitid_repaired`;
+and the `LIKE`-wildcard warning survives as the general rule it always was,
+detached from this instance. The R11 precedent applies — a summary that
+contradicts the shipped design is corrected in the change that causes the
+contradiction.
 
 **`stg_ofx__transactions` supersession** — the OFX staging model does two
 things with the repair suffix, and R13 removes the suffix from under both.
@@ -1417,6 +1479,18 @@ break. `InvestmentService` mints the value and inserts it
 selects and updates by it. §Files to Modify previously named only
 `_predict_investment_gold_key` (`:234`), which is the one site the rename does
 *not* break — it is listed for R9's exclusion, not for this rename.
+
+**The privacy classification registry** — `privacy/taxonomy.py`'s
+`CLASSIFICATION` is compared against the live catalog by
+`test_classification_registry_covers_every_app_and_core_column`
+(`tests/moneybin/test_privacy/test_classification_registry_coverage.py:45`), so
+an unclassified column is a failing gate, not a deferred to-do. The renamed
+`core.dim_accounts.source_path` and the two new raw keys are already covered
+above; the slice also adds `app.account_links.source_label` and **every column
+of `app.sync_recovery_state`**, and neither is enumerated anywhere else in this
+spec. `source_label` takes the account name's class, not `ref_value`'s (R4);
+the recovery table holds table names, row counts, states, and timestamps, which
+is `RECORD_ID`/`Tier.LOW` throughout.
 
 **`EXPECTED_CORE_COLUMNS`** (`database.py:319-329`) — the core schema-drift
 registry still requires `source_file` on `core.dim_accounts`. R10 renames that
