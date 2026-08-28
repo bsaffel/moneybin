@@ -112,6 +112,25 @@ against a live batch is idempotent: it is refused without `--force`, and under
 `--force` it recomputes identical transaction ids. This is the one case that
 may proceed with no human decision.
 
+**The account key is recovered by lookup, not recomputation**, and saying so is
+load-bearing rather than pedantic: for a document that states no account,
+nothing else in this spec can supply it. R4 mints a *non-reproducible* key, so
+minting a second time yields a different one and rotates every id. R7 cannot
+help either — its input is an `account_id`, and a file that states nothing
+supplies none (see R7). What does supply it is the batch this document is
+already recorded against: the `raw.*` rows stamped with this
+`source_document_key` carry the account key chosen on the first import, and the
+`--force` path re-stamps that stored value instead of deriving a new one. R5's
+note is the same mechanism seen from the other side — `raw.*` stores the
+stamped key, which is exactly what keeps `transaction_id` recomputable.
+
+This is also what makes "no human decision" a replay rather than a silent bind.
+The binding was decided once, by a human, at first import; the document key is
+what remembers that decision, so a forced re-import repeats it instead of
+re-asking. The precondition carries the whole guarantee: if those rows are
+gone, the document is no longer recorded against a live batch, R3 does not
+apply, and the import returns to R6's gate like any other.
+
 ### Account identity
 
 **R4.** An account key is never derived from document bytes, a filename, or a
@@ -458,9 +477,35 @@ ships **with** the migration, not after it.
 
 ### New column
 
-`source_document_key VARCHAR NOT NULL` on every `raw.*` transaction and account
-table that today carries `source_file`, and on `raw.import_log`. `NOT NULL`
-because it takes `source_file`'s place in eight primary keys (R10).
+`source_document_key VARCHAR NOT NULL` on every `raw.*` table that today
+carries `source_file`, and on `raw.import_log`. `NOT NULL` because it takes
+`source_file`'s place in eight primary keys (R10).
+
+**The column is wider than R10's table, and the difference is what it does.**
+Sixteen `raw.*` schema files carry `source_file` today. R10 names the eight
+whose *primary key* changes — three of them already Plaid tables
+(`raw_plaid_investment_holdings`, `_snapshots`, `_holding_lots`). The other
+eight take `source_document_key` as a plain descriptive column and keep their
+existing keys, which are built on the source's own ids rather than on a
+document:
+
+| Table | Where it lives |
+|---|---|
+| `raw_plaid_transactions` | `extractors/plaid/schema/` |
+| `raw_plaid_accounts` | `extractors/plaid/schema/` |
+| `raw_plaid_balances` | `extractors/plaid/schema/` |
+| `raw_plaid_investment_transactions` | `extractors/plaid/schema/` |
+| `raw_plaid_securities` | `extractors/plaid/schema/` |
+| `raw_ofx_institutions` | `extractors/ofx/schema/` |
+| `raw_pdf_seeds` | `sql/schema/` |
+| `raw_import_log` | `sql/schema/` (already named above) |
+
+**Enumerate rather than search, because the files are not where a reader
+looks.** Only `raw_import_log.sql` and `raw_pdf_seeds.sql` live under
+`sql/schema/`; the other fourteen live under `extractors/<channel>/schema/`. A
+`grep` of `sql/schema/` therefore returns two of sixteen, and the resulting
+list looks complete long before it is — which is how the five Plaid tables and
+`raw_ofx_institutions` go missing from a change that must touch all of them.
 
 **Truncation: 16 hex characters**, matching `transaction_id` and
 `migrations.py:35`'s documented 64-bit content-hash convention, rather than
@@ -603,10 +648,18 @@ The migration must:
    would require backfilling a `NOT NULL` key component that only a re-import
    can compute.
 2. Clear the remaining re-derivable `raw.*` tables, which hold no identity the
-   new shape changes but would otherwise carry a document key nothing can fill:
-   `raw.plaid_*`, `raw.ofx_institutions`, `raw.pdf_seeds`, `raw.gsheet_seeds`,
-   and `raw.import_preview_snapshots` — the last holding staged bytes that are
-   deleted on consumption anyway.
+   new shape changes: the five `raw.plaid_*` tables named in §Data Model,
+   `raw.ofx_institutions`, `raw.pdf_seeds`, `raw.gsheet_seeds`, and
+   `raw.import_preview_snapshots` — the last holding staged bytes that are
+   deleted on consumption anyway. They still take the new `NOT NULL`
+   `source_document_key`, so clearing is what satisfies it.
+
+   Clearing is a cost decision, not an impossibility. For `raw.plaid_*` the
+   document key *is* derivable without an API call — the key hashes
+   `sync_{job_id}`, which is the exact value `source_file` already holds
+   (`raw_plaid_transactions.sql:27`) — so a backfill could be written. It is
+   not worth writing: a re-sync rebuilds these rows anyway, and every one of
+   them is re-derivable by definition.
 3. Preserve the five `raw.*` tables a re-import does not rebuild. The list is
    enumerated here rather than left to a predicate, because the failure mode is
    a list that looks complete and is short by one:
@@ -758,6 +811,19 @@ item 18.
 key that table names. Seven are a positional swap;
 `raw_tabular_transactions.sql` is not, because R13 also drops `transaction_id`
 from it.
+
+- The seven further schema files that carry `source_file` without holding it
+  in a primary key, each taking `source_document_key` as a plain column and
+  R10's `source_file` → `source_path` rename (§Data Model lists all eight,
+  `raw_import_log.sql` being the eighth and already named above):
+  `extractors/plaid/schema/raw_plaid_transactions.sql`,
+  `raw_plaid_accounts.sql`, `raw_plaid_balances.sql`,
+  `raw_plaid_investment_transactions.sql`, `raw_plaid_securities.sql`;
+  `extractors/ofx/schema/raw_ofx_institutions.sql`; and
+  `sql/schema/raw_pdf_seeds.sql`. Note the two directories: **only**
+  `raw_import_log.sql` and `raw_pdf_seeds.sql` are under `sql/schema/`, and
+  every other raw schema this spec touches is under
+  `extractors/<channel>/schema/`.
 
 **Manual write path** — the services that author manual rows, without which
 R9's minted key exists in the schema and nothing ever writes it.
@@ -964,12 +1030,25 @@ Per `docs/specs/observability.md`, registered in
     truncation of `file_sha256` wherever that column is populated, and NULL
     for a pre-V046 batch — no batch acquires a minted stand-in.
 18. A re-import after the migration reproduces the transaction ids that
-    `app.*` curation already points at, for every account carrying an accepted
-    `app.account_links` row (after the gate decision, for a file that states
-    no account). This is the test that makes the thin migration safe rather
-    than merely cheap: it asserts R7 does the work the migration declined to
-    do. Its negative partner is an account with no accepted link, whose ids
-    *do* rotate and whose curation doctor then lists.
+    `app.*` curation already points at, for every **row carrying no native
+    transaction id** whose account holds an accepted `app.account_links` row
+    (after the gate decision, for a file that states no account). This is the
+    test that makes the thin migration safe rather than merely cheap: it
+    asserts R7 does the work the migration declined to do.
+
+    **Scope this by row, not by account.** A remembered account key is
+    necessary but not sufficient: R13 independently rotates tabular rows that
+    *do* carry a native id, by moving their identity component off the
+    MoneyBin-synthesized value and onto the institution's own. Those rows
+    rotate however well R7 works — §Migration and On-Disk Impact names R13 and
+    R4 as two independent rotation causes for exactly this reason. Written as
+    "every account," this test would fail on correct behaviour the first time
+    it met a native-id file.
+
+    Two negative partners, then, one per cause: an account with no accepted
+    link, whose ids rotate because R7 had nothing to remember; and a native-id
+    tabular file under a fully remembered account, whose ids rotate because
+    R13 changed the component. Doctor lists the orphaned curation in both.
 19. Every preserved manual row's account slot is a `src_` key afterwards, and
     each distinct pre-migration account has exactly one accepted
     `app.account_links` row pointing back at the canonical id it had before.
@@ -1001,9 +1080,18 @@ series, so a test can assert the count after importing all three.
 
 The series is needed in **two flavours** — one carrying a native
 transaction-id column and one without — because R13 makes those genuinely
-different code paths rather than one path with a fallback. The with-id flavour
-should survive row reordering; the without-id flavour should not, and tests 9
-through 11 assert exactly that asymmetry.
+different code paths rather than one path with a fallback.
+
+**Both flavours must survive row reordering** (test 11). A row key counts
+occurrences within a group of identical rows, so a reshuffle permutes
+interchangeable rows and changes no key; a generator built to make the
+without-id flavour rotate on reorder would encode the wrong invariant and push
+the implementation toward physical row position. What separates the flavours is
+**restatement**, so the generator needs one further variant of each series: a
+file with a reworded description and a file with a corrected amount. Those keep
+the id on the with-id flavour (the institution's id did not change) and rotate
+it on the without-id flavour (a hashed field did). Tests 9 through 11 assert
+that asymmetry.
 
 Also needed: two files for *different* accounts sharing one filename, to
 exercise test 8.
