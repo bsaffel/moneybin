@@ -510,12 +510,13 @@ The migration must:
    and `raw.import_preview_snapshots` — the last holding staged bytes that are
    deleted on consumption anyway.
 3. Preserve the five `raw.*` tables a re-import does not rebuild. The list is
-   stated here, once, so it cannot drift into a `_PRESERVED` set of one:
+   enumerated here rather than left to a predicate, because the failure mode is
+   a list that looks complete and is short by one:
 
    | Table | Why a re-import does not rebuild it |
    |---|---|
    | `raw.manual_transactions` | The user typed the rows. |
-   | `raw.manual_investment_transactions` | The same, for investment events. It is the manual table an earlier draft of this section omitted (`raw_manual_investment_transactions.sql:1-6`). |
+   | `raw.manual_investment_transactions` | The same, for investment events — the second manual table, easily missed because only the first is named elsewhere in this spec (`raw_manual_investment_transactions.sql:1-6`). |
    | `raw.exchange_rates` | Append-only by design: "a rate a provider published for a date is a historical fact, so a refetch never rewrites one." A refetch is also bounded by the provider's history window, so what falls outside it is simply gone. |
    | `raw.security_prices` | Append-only for the same reason — "a historical close is an immutable fact" — and the schema says so precisely to contrast with `raw.plaid_securities`, whose close price is overwritten on every pull and therefore *cannot* carry a history. |
    | `raw.import_log` | The batch parent of all four above: dropping it dangles their `import_id`. It is also the audit record of every import ever run, which a re-import appends to rather than reconstructs. |
