@@ -102,7 +102,13 @@ duration of the shell session.
 11. A `SecretStore` class centralizes all local secret management. It is the only
     module that imports `keyring`. Three operations:
     - **`get_key(name)`**: OS keychain → `MONEYBIN_{NAME}` env var →
-      `SecretNotFoundError`. Used for encryption keys (database, e2e).
+      `SecretNotFoundError`. If the keychain backend itself reports the read as
+      denied/locked rather than a routine miss (e.g. a locked Linux secret
+      service), raises `SecretUnavailableError` instead — a subclass of
+      `SecretNotFoundError`, so existing catch sites are unaffected. macOS
+      cannot distinguish a denied read from a missing key at the OS level
+      (moneybin#419), so this only fires on backends that can. Used for
+      encryption keys (database, e2e).
     - **`set_key(name, value)` / `delete_key(name)`**: Write to / clear from OS
       keychain. Used by CLI commands (`db init`, `db lock`, `db unlock`,
       `db key rotate`) to manage key lifecycle. SecretStore does not own the
@@ -448,6 +454,9 @@ this spec — the CLI is the primary interface for infrastructure concerns.
 - **`get_key` env fallback:** keychain miss + `MONEYBIN_{NAME}` set → returns env var.
 - **`get_key` missing:** both miss → raises `SecretNotFoundError` with actionable
   instructions.
+- **`get_key` denied:** keychain backend reports the read as denied/locked
+  (e.g. `keyring.errors.KeyringLocked`) → raises `SecretUnavailableError`
+  (subclass of `SecretNotFoundError`), distinct from a routine miss.
 - **`get_env`:** env var set → returns value. Missing → raises `SecretNotFoundError`.
 - **`set_key` / `delete_key`:** writes to / clears from keychain (mock keyring in
   tests).

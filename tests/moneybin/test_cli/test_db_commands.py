@@ -31,6 +31,19 @@ def _make_settings_mock(db_path: Path, mocker: Any) -> MagicMock:
     )
 
 
+def _make_settings_mock_for_hint(db_path: Path, mocker: Any) -> MagicMock:
+    """Like `_make_settings_mock`, but also patches database.py's own binding.
+
+    `database_key_error_hint()` resolves `get_settings` via the module-level
+    `from moneybin.config import get_settings` in database.py — a separate
+    bound name that patching `moneybin.config.get_settings` alone does not
+    reach, since that import already ran at collection time.
+    """
+    mock_settings = _make_settings_mock(db_path, mocker).return_value
+    mocker.patch("moneybin.database.get_settings", return_value=mock_settings)
+    return mock_settings
+
+
 class TestShellCommand:
     """Tests for 'moneybin db shell'."""
 
@@ -459,6 +472,63 @@ class TestQueryCommand:
         result = runner.invoke(app, ["query", "SELECT 1"])
         assert result.exit_code == 1
 
+    def test_query_locked_database_offers_unlock_and_env_var_never_db_init(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        mock_duckdb_cli: MagicMock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The message names both recovery paths, never the dangerous db init.
+
+        A denied keychain read and a missing key raise the same exception
+        (see #419) — against an existing database file, suggesting `db init`
+        first is the dangerous case the issue was filed about.
+        """
+        from moneybin.secrets import SecretNotFoundError
+
+        test_db = tmp_path / "test.duckdb"
+        test_db.touch()
+        _make_settings_mock_for_hint(test_db, mocker)
+        mocker.patch(
+            "moneybin.cli.commands.db._create_init_script",
+            side_effect=SecretNotFoundError("locked"),
+        )
+
+        with caplog.at_level("INFO"):
+            result = runner.invoke(app, ["query", "SELECT 1"])
+
+        assert result.exit_code == 1
+        assert "db unlock" in caplog.text
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in caplog.text
+        assert "db init" not in caplog.text
+
+    def test_query_denied_keychain_message_is_confident_not_a_hedge(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        mock_duckdb_cli: MagicMock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """SecretUnavailableError names the OS denial, not a generic miss."""
+        from moneybin.secrets import SecretUnavailableError
+
+        test_db = tmp_path / "test.duckdb"
+        test_db.touch()
+        _make_settings_mock_for_hint(test_db, mocker)
+        mocker.patch(
+            "moneybin.cli.commands.db._create_init_script",
+            side_effect=SecretUnavailableError("denied"),
+        )
+
+        with caplog.at_level("INFO"):
+            result = runner.invoke(app, ["query", "SELECT 1"])
+
+        assert result.exit_code == 1
+        assert "denied" in caplog.text
+
 
 class TestDbInitCommand:
     """Tests for 'moneybin db init'."""
@@ -573,6 +643,56 @@ class TestDbUnlockCommand:
         result = runner.invoke(app, ["unlock"], input="anypassphrase\n")
 
         assert result.exit_code == 1
+
+    def test_unlock_no_salt_on_fresh_install_points_at_db_init(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """No database at all — the salt miss is unambiguous: run db init."""
+        from moneybin.secrets import SecretNotFoundError
+
+        mock_store = MagicMock()
+        mock_store.get_key.side_effect = SecretNotFoundError("no salt")
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        _make_settings_mock(tmp_path / "never-created.duckdb", mocker)
+
+        with caplog.at_level("INFO"):
+            result = runner.invoke(app, ["unlock"], input="anypassphrase\n")
+
+        assert result.exit_code == 1
+        assert "db init --passphrase" in caplog.text
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" not in caplog.text
+
+    def test_unlock_no_salt_on_existing_database_names_env_denial(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Database already exists — a denied read looks identical to a missing salt.
+
+        Offers the env-var route (which needs no further keychain access)
+        instead of only "was this created with --passphrase mode?" (see #419).
+        """
+        from moneybin.secrets import SecretNotFoundError
+
+        mock_store = MagicMock()
+        mock_store.get_key.side_effect = SecretNotFoundError("no salt")
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        existing = tmp_path / "moneybin.duckdb"
+        existing.write_bytes(b"")
+        _make_settings_mock(existing, mocker)
+
+        with caplog.at_level("INFO"):
+            result = runner.invoke(app, ["unlock"], input="anypassphrase\n")
+
+        assert result.exit_code == 1
+        assert "already exists" in caplog.text
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in caplog.text
 
     def test_unlock_database_not_found_deletes_key_and_exits_1(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
@@ -790,6 +910,22 @@ class TestDbKeyCommand:
 
         result = runner.invoke(app, ["key", "show"])
         assert result.exit_code == 1
+
+    def test_key_fails_with_confident_message_when_keychain_denied(
+        self, runner: CliRunner, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """SecretUnavailableError names the OS denial, not a generic miss (#419)."""
+        from moneybin.secrets import SecretUnavailableError
+
+        mock_store = MagicMock()
+        mock_store.get_key.side_effect = SecretUnavailableError("denied")
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+
+        with caplog.at_level("INFO"):
+            result = runner.invoke(app, ["key", "show"])
+
+        assert result.exit_code == 1
+        assert "denied" in caplog.text
 
 
 class TestDbBackupCommand:

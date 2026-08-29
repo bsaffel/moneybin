@@ -220,6 +220,25 @@ class TestDatabaseInit:
         with pytest.raises(DatabaseKeyError, match="encryption key"):
             Database(db_path, secret_store=store, read_only=False)
 
+    def test_raises_database_key_error_with_denied_message_when_keychain_denied(
+        self, db_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A denied keychain read gets a confident message, not a generic miss.
+
+        Distinguishes the two exceptions SecretStore can raise (see #419):
+        SecretUnavailableError means the OS reported the read as denied, so
+        the message says so instead of implying the key is simply absent.
+        """
+        import moneybin.database as db_module
+        from moneybin.secrets import SecretUnavailableError
+
+        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+        store = MagicMock()
+        store.get_key.side_effect = SecretUnavailableError("denied")
+        db_path = db_dir / "moneybin.duckdb"
+        with pytest.raises(DatabaseKeyError, match="denied"):
+            Database(db_path, secret_store=store, read_only=False)
+
     def test_read_only_missing_file_does_not_consult_secret_store(
         self, db_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -234,6 +253,180 @@ class TestDatabaseInit:
             Database(db_path, read_only=True, secret_store=store)
 
         store.get_key.assert_not_called()
+
+
+class TestDatabaseKeyErrorHint:
+    """database_key_error_hint() — existence-aware recovery hint (see #419)."""
+
+    def test_fresh_install_points_at_db_init_only(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """No database file at all — the only unambiguous case: run db init."""
+        from moneybin.database import database_key_error_hint
+
+        settings = MagicMock()
+        settings.database.path = tmp_path / "never-created.duckdb"
+        mocker.patch("moneybin.database.get_settings", return_value=settings)
+
+        hint = database_key_error_hint()
+
+        assert "db init" in hint
+        assert "db unlock" not in hint
+
+    def test_existing_database_hints_both_unlock_and_env_var_never_db_init(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """File exists — ambiguous: offer db unlock AND the keychain-free env var.
+
+        Never leads with db init against a database that already holds data
+        (the dangerous suggestion #419 was filed about), and always includes a
+        path that works even when this environment denies keychain access
+        outright.
+        """
+        from moneybin.database import database_key_error_hint
+
+        existing = tmp_path / "moneybin.duckdb"
+        existing.write_bytes(b"")
+        settings = MagicMock()
+        settings.database.path = existing
+        mocker.patch("moneybin.database.get_settings", return_value=settings)
+
+        hint = database_key_error_hint()
+
+        assert "db unlock" in hint
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in hint
+        assert "db init" not in hint
+
+    def test_settings_load_failure_falls_back_to_db_init(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Settings can't load at all — degrade to the safest default."""
+        from moneybin.database import database_key_error_hint
+
+        mocker.patch(
+            "moneybin.database.get_settings", side_effect=RuntimeError("no profile")
+        )
+
+        assert "db init" in database_key_error_hint()
+
+    def test_explicit_db_path_overrides_profile_settings(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """An explicit db_path wins over the profile's configured path.
+
+        A caller that resolved its own path (e.g. a `--database` override)
+        must not have the hint re-derive a different, possibly-nonexistent
+        path from settings and wrongly recommend db init (see #419).
+        """
+        from moneybin.database import database_key_error_hint
+
+        settings = MagicMock()
+        settings.database.path = tmp_path / "never-created.duckdb"
+        mocker.patch("moneybin.database.get_settings", return_value=settings)
+
+        selected = tmp_path / "explicit.duckdb"
+        selected.write_bytes(b"")
+
+        hint = database_key_error_hint(selected)
+
+        assert "db unlock" in hint
+        assert "db init" not in hint
+
+
+class TestInitDb:
+    """init_db() — refuses to overwrite an ambiguously-unreadable secret (see #419)."""
+
+    def test_passphrase_mode_refuses_when_prev_key_read_denied(
+        self, db_dir: Path
+    ) -> None:
+        """A denied prev_key read must not be treated as "no previous key".
+
+        Proceeding would overwrite the real key with a freshly-derived one,
+        then delete it on rollback if the (now-mismatched) database fails to
+        open — permanently losing access.
+        """
+        from moneybin.database import init_db
+        from moneybin.secrets import SecretUnavailableError
+
+        store = MagicMock()
+        store.get_key.side_effect = SecretUnavailableError("denied")
+        db_path = db_dir / "moneybin.duckdb"
+        db_path.write_bytes(b"pre-existing-encrypted-content")
+
+        with pytest.raises(DatabaseKeyError, match="denied"):
+            init_db(
+                db_path,
+                passphrase="test-passphrase",  # noqa: S106  # test fixture, not a real credential
+                secret_store=store,
+            )
+
+        store.set_key.assert_not_called()
+        store.delete_key.assert_not_called()
+
+    def test_passphrase_mode_refuses_when_prev_salt_read_denied(
+        self, db_dir: Path
+    ) -> None:
+        """Same refusal for the salt read, which is checked separately."""
+        from moneybin.database import SALT_NAME, init_db
+        from moneybin.secrets import SecretNotFoundError, SecretUnavailableError
+
+        def get_key(name: str) -> str:
+            if name == SALT_NAME:
+                raise SecretUnavailableError("denied")
+            raise SecretNotFoundError("no prior key")
+
+        store = MagicMock()
+        store.get_key.side_effect = get_key
+        db_path = db_dir / "moneybin.duckdb"
+        db_path.write_bytes(b"pre-existing-encrypted-content")
+
+        with pytest.raises(DatabaseKeyError, match="denied"):
+            init_db(
+                db_path,
+                passphrase="test-passphrase",  # noqa: S106  # test fixture, not a real credential
+                secret_store=store,
+            )
+
+        store.set_key.assert_not_called()
+
+    def test_auto_key_mode_refuses_when_existence_check_denied(
+        self, db_dir: Path
+    ) -> None:
+        """has_keychain_entry() reporting denial must not read as "absent".
+
+        Proceeding would mint and persist a fresh random key over one that
+        couldn't be read, then delete it on rollback.
+        """
+        from moneybin.database import init_db
+        from moneybin.secrets import SecretUnavailableError
+
+        store = MagicMock()
+        store.has_keychain_entry.side_effect = SecretUnavailableError("denied")
+        db_path = db_dir / "moneybin.duckdb"
+        db_path.write_bytes(b"pre-existing-encrypted-content")
+
+        with pytest.raises(DatabaseKeyError, match="denied"):
+            init_db(db_path, secret_store=store)
+
+        store.set_key.assert_not_called()
+
+    def test_auto_key_mode_refuses_when_key_read_denied_after_absent_check(
+        self, db_dir: Path
+    ) -> None:
+        """A denial surfacing only on the get_key() fallback still refuses."""
+        from moneybin.database import init_db
+        from moneybin.secrets import SecretUnavailableError
+
+        store = MagicMock()
+        store.has_keychain_entry.return_value = False
+        store.get_key.side_effect = SecretUnavailableError("denied")
+        db_path = db_dir / "moneybin.duckdb"
+        db_path.write_bytes(b"pre-existing-encrypted-content")
+
+        with pytest.raises(DatabaseKeyError, match="denied"):
+            init_db(db_path, secret_store=store)
+
+        store.set_key.assert_not_called()
 
 
 class TestDatabaseOperations:

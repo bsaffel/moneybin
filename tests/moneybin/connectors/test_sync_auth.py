@@ -28,9 +28,12 @@ class _PatchedKeyring:
         self.values: dict[tuple[str, str], str] = {}
         self.lock = threading.Lock()
         self.fail_next_write = False
+        self.deny_reads = False
 
     def get_password(self, service: str, name: str) -> str | None:
         with self.lock:
+            if self.deny_reads:
+                raise keyring.errors.KeyringLocked
             return self.values.get((service, name))
 
     def set_password(self, service: str, name: str, value: str) -> None:
@@ -229,6 +232,49 @@ def test_begin_retains_only_sixteen_newest_terminal_sessions(
     assert all(
         collection[session_id]["device_code"] is None for session_id in terminal_ids
     )
+
+
+def test_begin_refuses_when_existing_sessions_cannot_be_read(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    """A denied read of the existing collection must not read as "no sessions".
+
+    Proceeding would let the new session's persist silently overwrite real
+    pending/active sessions that merely couldn't be read (see #419).
+    """
+    from moneybin.secrets import SecretUnavailableError
+
+    patched_keyring.values[("moneybin-alice", "SYNC__AUTH_SESSIONS")] = json.dumps({
+        "syncauth_existing": _stored_session(
+            "syncauth_existing",
+            status="pending",
+            expiration=datetime(2026, 7, 19, tzinfo=UTC) + timedelta(minutes=10),
+            device_code="existing-device-code",
+        )
+    })
+    patched_keyring.deny_reads = True
+    client = MagicMock()
+    client.begin_login.return_value = _challenge()
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+
+    with pytest.raises(SecretUnavailableError):
+        service.begin()
+
+    # The pre-existing collection must be untouched, not overwritten.
+    stored = patched_keyring.values[("moneybin-alice", "SYNC__AUTH_SESSIONS")]
+    assert json.loads(stored) == {
+        "syncauth_existing": _stored_session(
+            "syncauth_existing",
+            status="pending",
+            expiration=datetime(2026, 7, 19, tzinfo=UTC) + timedelta(minutes=10),
+            device_code="existing-device-code",
+        )
+    }
 
 
 def test_begin_retains_new_session_and_only_fifteen_other_pending_sessions(

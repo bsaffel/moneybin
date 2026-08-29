@@ -56,6 +56,19 @@ class SecretNotFoundError(Exception):
     """Raised when a secret cannot be found in keychain or environment."""
 
 
+class SecretUnavailableError(SecretNotFoundError):
+    """Raised when the OS keychain reports a read as denied, not missing.
+
+    Subclasses ``SecretNotFoundError`` so every existing ``except
+    SecretNotFoundError`` call site keeps working unchanged — this only lets
+    a caller that wants to react more precisely catch it first. Most
+    platforms can't actually raise this: macOS reports a sandbox-denied read
+    identically to a missing item (``errSecItemNotFound``), so this fires
+    only where the keyring backend itself distinguishes the two (e.g. a
+    locked Linux secret service, or an explicit macOS keychain ACL denial).
+    """
+
+
 class SecretStorageUnavailableError(Exception):
     """Raised when no OS keyring backend is available to persist a secret.
 
@@ -103,15 +116,24 @@ class SecretStore:
             The secret value.
 
         Raises:
+            SecretUnavailableError: If the keychain backend reports the read
+                as denied/locked (rather than a routine miss) and no env var
+                fallback is set.
             SecretNotFoundError: If the secret is not in keychain or env var.
         """
         # Try OS keychain first; missing backend (headless CI, minimal
         # containers) is treated as a keychain miss so the env-var fallback
-        # below can satisfy the read.
+        # below can satisfy the read. A denied/locked keychain is tracked
+        # separately from a routine miss — env var fallback still applies,
+        # but if that's also unset we can raise a more specific error.
+        denied = False
         try:
             value = keyring.get_password(self._service, name)
         except keyring.errors.NoKeyringError:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
             value = None
+        except keyring.errors.KeyringLocked:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
+            value = None
+            denied = True
         if value is not None:
             return value
 
@@ -121,6 +143,13 @@ class SecretStore:
         if value is not None:
             return value
 
+        if denied:
+            raise SecretUnavailableError(
+                f"Secret '{name}' could not be read — the OS keychain "
+                f"denied access (locked or restricted), so whether the "
+                f"secret exists could not be determined. Set env var "
+                f"{env_var} to bypass the keychain."
+            )
         raise SecretNotFoundError(
             f"Secret '{name}' not found. Set it via OS keychain "
             f"(moneybin db init) or env var {env_var}."
@@ -156,11 +185,23 @@ class SecretStore:
         from "key is only available via env var fallback" — e.g. ``init_db``
         needs to persist env-provided keys so the DB stays openable after
         the env var is unset.
+
+        Raises:
+            SecretUnavailableError: If the keychain backend reports the read
+                as denied/locked rather than a routine miss. A caller must
+                not treat this the same as "no entry" — proceeding as if
+                absent risks overwriting an entry that could not be read.
         """
         try:
             return keyring.get_password(self._service, name) is not None
         except keyring.errors.NoKeyringError:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
             return False
+        except keyring.errors.KeyringLocked as e:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
+            raise SecretUnavailableError(
+                f"Secret '{name}' could not be checked — the OS keychain "
+                f"denied access (locked or restricted), so whether an "
+                f"entry exists could not be determined."
+            ) from e
 
     def set_key(self, name: str, value: str) -> None:
         """Store a secret in the OS keychain.

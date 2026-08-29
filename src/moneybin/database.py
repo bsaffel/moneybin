@@ -50,6 +50,7 @@ from moneybin.secrets import (
     SecretNotFoundError,
     SecretStorageUnavailableError,
     SecretStore,
+    SecretUnavailableError,
 )
 
 logger = logging.getLogger(__name__)
@@ -575,11 +576,18 @@ class Database:
         else:
             try:
                 encryption_key = store.get_key(_KEY_NAME)
+            except SecretUnavailableError as e:
+                # More specific than the branch below: the keychain backend
+                # itself reported the read as denied, not a routine miss.
+                raise DatabaseKeyError(
+                    "Cannot open database — the OS keychain denied the "
+                    "encryption-key read (locked or restricted), so "
+                    "whether the key exists could not be determined."
+                ) from e
             except SecretNotFoundError as e:
                 raise DatabaseKeyError(
-                    f"Cannot open database — encryption key not found. "
-                    f"Run 'moneybin db init' to create a new database, or set "
-                    f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
+                    f"Cannot open database — encryption key not found in "
+                    f"keychain or env var MONEYBIN_{_KEY_NAME}."
                 ) from e
             if secret_store is None:
                 _cached_encryption_key = encryption_key
@@ -1162,22 +1170,42 @@ def invalidate_encryption_key_cache() -> None:
     _cached_encryption_key = None
 
 
-def database_key_error_hint() -> str:
-    """Return the appropriate hint for a DatabaseKeyError.
+def database_key_error_hint(db_path: Path | None = None) -> str:
+    """Return the appropriate hint for a keychain-backed secret read failure.
 
-    Checks whether the database file exists to distinguish first-run
-    (need ``db init``) from locked (need ``db unlock``).
+    Checks whether the database file exists to distinguish first-run (need
+    ``db init``) from an existing database whose key could not be read. The
+    latter is genuinely ambiguous on platforms with no distinguishing OS
+    signal: a denied keychain read and a missing key raise the identical
+    exception, since macOS reports both as "item not found" to a process the
+    sandbox denies (moneybin#419). The hint always includes a recovery path
+    that doesn't need further keychain access, since that's exactly what may
+    be unavailable.
+
+    Args:
+        db_path: The database path actually being opened, if the caller has
+            already resolved one (e.g. a ``--database`` override). Falls
+            back to the active profile's configured path when omitted —
+            using the profile default here for a caller that resolved a
+            different path can recommend ``db init`` against a database
+            that already exists at the caller's chosen path.
 
     Returns:
         A hint string with the correct recovery command.
     """
-    try:
-        db_path = get_settings().database.path
-        if db_path.exists():
-            return "💡 Run 'moneybin db unlock' to unlock the database first"
+    if db_path is None:
+        try:
+            db_path = get_settings().database.path
+        except Exception:  # noqa: BLE001 — fallback if settings can't load
+            return "💡 Run 'moneybin db init' to create the database"
+    if not db_path.exists():
         return "💡 Run 'moneybin db init' to create the database first"
-    except Exception:  # noqa: BLE001 — fallback if settings can't load
-        return "💡 Run 'moneybin db init' to create the database"
+    return (
+        "💡 Run 'moneybin db unlock' if the keychain is simply locked, or "
+        f"set MONEYBIN_{_KEY_NAME} if this environment (sandboxed, "
+        "headless, or CI) denies keychain access outright — a denied read "
+        "looks identical to a missing key"
+    )
 
 
 def _lock_error_message(db_path: "Path", max_wait: float) -> str:
@@ -1650,15 +1678,33 @@ def init_db(
             hash_len=argon2_hash_len,
         )
         # Save previous keys so we can roll back if DB open fails
-        # (e.g., db_path already encrypted with a different key).
+        # (e.g., db_path already encrypted with a different key). A denied
+        # read must NOT be treated as "no previous secret" — the rollback
+        # below deletes whatever wasn't captured here, so silently reading
+        # a denial as absence would let a real key get overwritten and then
+        # deleted on rollback, permanently losing access (moneybin#419).
         prev_key: str | None = None
         prev_salt: str | None = None
         try:
             prev_key = store.get_key(_KEY_NAME)
+        except SecretUnavailableError as e:
+            raise DatabaseKeyError(
+                "Cannot initialize database — the OS keychain denied the "
+                "encryption-key read (locked or restricted), so whether a "
+                "key already exists could not be determined. Refusing to "
+                "overwrite it; retry once the keychain is accessible."
+            ) from e
         except SecretNotFoundError:
             pass
         try:
             prev_salt = store.get_key(SALT_NAME)
+        except SecretUnavailableError as e:
+            raise DatabaseKeyError(
+                "Cannot initialize database — the OS keychain denied the "
+                "passphrase-salt read (locked or restricted), so whether a "
+                "salt already exists could not be determined. Refusing to "
+                "overwrite it; retry once the keychain is accessible."
+            ) from e
         except SecretNotFoundError:
             pass
 
@@ -1707,7 +1753,21 @@ def init_db(
         # is unset) or generate a fresh one.
         db_existed = db_path.exists()
         key_was_persisted_now = False
-        if store.has_keychain_entry(_KEY_NAME):
+        try:
+            key_already_present = store.has_keychain_entry(_KEY_NAME)
+        except SecretUnavailableError as e:
+            # A denied read must NOT be treated as "no existing key" — doing
+            # so would mint and persist a fresh key over one that couldn't
+            # be read, then delete it on rollback if the (now-mismatched)
+            # database fails to open (moneybin#419).
+            raise DatabaseKeyError(
+                "Cannot initialize database — the OS keychain denied the "
+                "encryption-key read (locked or restricted), so whether a "
+                "key already exists could not be determined. Refusing to "
+                "overwrite it; retry once the keychain is accessible, or "
+                f"set MONEYBIN_{_KEY_NAME} to bypass the keychain."
+            ) from e
+        if key_already_present:
             logger.debug("Using existing encryption key")
         else:
             key_from_env = False
@@ -1715,6 +1775,15 @@ def init_db(
                 encryption_key = store.get_key(_KEY_NAME)
                 key_from_env = True
                 logger.debug("Persisting env-provided encryption key to keychain")
+            except SecretUnavailableError as e:
+                raise DatabaseKeyError(
+                    "Cannot initialize database — the OS keychain denied "
+                    "the encryption-key read (locked or restricted), so "
+                    "whether a key already exists could not be determined. "
+                    "Refusing to overwrite it; retry once the keychain is "
+                    f"accessible, or set MONEYBIN_{_KEY_NAME} to bypass "
+                    "the keychain."
+                ) from e
             except SecretNotFoundError:
                 encryption_key = secrets_mod.token_hex(32)
                 logger.debug("Auto-generated encryption key stored in OS keychain")

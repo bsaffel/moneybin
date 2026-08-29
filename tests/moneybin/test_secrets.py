@@ -8,6 +8,7 @@ from moneybin.secrets import (
     SecretNotFoundError,
     SecretStorageUnavailableError,
     SecretStore,
+    SecretUnavailableError,
 )
 
 
@@ -44,6 +45,41 @@ class TestGetKey:
             mock_kr.get_password.return_value = None
             with pytest.raises(SecretNotFoundError, match="DATABASE__ENCRYPTION_KEY"):
                 store.get_key("DATABASE__ENCRYPTION_KEY")
+
+    def test_raises_secret_unavailable_when_keychain_locked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keychain reports the read as denied (not a miss) — a distinct error.
+
+        A locked/restricted keychain is not the same condition as a routine
+        miss: the OS is telling us the secret may well exist. See #419.
+        """
+        monkeypatch.delenv("MONEYBIN_DATABASE__ENCRYPTION_KEY", raising=False)
+        store = SecretStore()
+        with patch("moneybin.secrets.keyring") as mock_kr:
+            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
+            mock_kr.errors.KeyringLocked = type("KeyringLocked", (Exception,), {})
+            mock_kr.get_password.side_effect = mock_kr.errors.KeyringLocked("denied")
+            with pytest.raises(SecretUnavailableError, match="denied"):
+                store.get_key("DATABASE__ENCRYPTION_KEY")
+
+    def test_secret_unavailable_error_is_a_secret_not_found_error(self) -> None:
+        """Subclassing keeps every existing `except SecretNotFoundError:` working."""
+        assert issubclass(SecretUnavailableError, SecretNotFoundError)
+
+    def test_falls_back_to_env_var_when_keychain_locked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A locked keychain doesn't block a working env var fallback."""
+        monkeypatch.setenv("MONEYBIN_DATABASE__ENCRYPTION_KEY", "secret-from-env")
+        store = SecretStore()
+        with patch("moneybin.secrets.keyring") as mock_kr:
+            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
+            mock_kr.errors.KeyringLocked = type("KeyringLocked", (Exception,), {})
+            mock_kr.get_password.side_effect = mock_kr.errors.KeyringLocked("denied")
+            result = store.get_key("DATABASE__ENCRYPTION_KEY")
+
+        assert result == "secret-from-env"
 
 
 class TestGetEnv:
@@ -134,3 +170,36 @@ class TestSetAndDeleteKey:
             )
             with pytest.raises(SecretNotFoundError, match="not found in keychain"):
                 store.delete_key("DATABASE__ENCRYPTION_KEY")
+
+
+class TestHasKeychainEntry:
+    """SecretStore.has_keychain_entry() — existence check, ignores env vars."""
+
+    def test_returns_true_when_entry_present(self) -> None:
+        store = SecretStore(profile="alice")
+        with patch("moneybin.secrets.keyring") as mock_kr:
+            mock_kr.get_password.return_value = "existing-value"
+            assert store.has_keychain_entry("DATABASE__ENCRYPTION_KEY") is True
+
+    def test_returns_false_when_no_keyring_backend(self) -> None:
+        store = SecretStore(profile="alice")
+        with patch("moneybin.secrets.keyring") as mock_kr:
+            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
+            mock_kr.get_password.side_effect = mock_kr.errors.NoKeyringError(
+                "no backend"
+            )
+            assert store.has_keychain_entry("DATABASE__ENCRYPTION_KEY") is False
+
+    def test_raises_secret_unavailable_when_keychain_locked(self) -> None:
+        """A denied read is distinct from "no entry" (see #419).
+
+        The caller must not treat it as absence, since doing so risks
+        overwriting an entry that merely couldn't be read.
+        """
+        store = SecretStore(profile="alice")
+        with patch("moneybin.secrets.keyring") as mock_kr:
+            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
+            mock_kr.errors.KeyringLocked = type("KeyringLocked", (Exception,), {})
+            mock_kr.get_password.side_effect = mock_kr.errors.KeyringLocked("denied")
+            with pytest.raises(SecretUnavailableError, match="denied"):
+                store.has_keychain_entry("DATABASE__ENCRYPTION_KEY")
