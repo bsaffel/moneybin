@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-draft
+ready
 
 ## Milestone
 
@@ -42,6 +42,17 @@ up front, because they set the scope:
 
 The remaining findings — F4 through F10 — are each named at the requirement that
 closes them, in the Requirements section below.
+
+**Reconciled against `e9c9ab15` (2026-08-29).** The findings above record the
+audit as taken; two have since moved and the requirements say so at the point
+of use. **F11 is closed** — the profile banner now names one source
+(requirement 19, which stays as a regression guard). **F3 is two-thirds
+closed**, with one leak surviving in a service rather than the CLI
+(requirement 16). **F10 moved the other way:** the total the finding wanted is
+now free to render, and requirement 34 renders it — but the base64 cursor F10
+reported is still printed at 229, so that requirement now deletes a line
+rather than merely declining to add one. Every `file:line` citation in this
+spec was re-verified at that revision.
 
 Governing rules, none of which this spec supersedes:
 
@@ -102,21 +113,25 @@ Numbered, each independently testable.
 6. Every `reports` command declares its default column set, and `render_rows`
    renders only those. The declaration is **parameter-aware**: a static tuple
    where the projection is fixed, and a callable of the report's own parameters
-   where it is not. `cash_flow` is the motivating case —
-   `by="account"` selects `account_id, account_name` and no `category`, while
-   `by="category"` selects `category` and no account columns
-   (`src/moneybin/reports/definitions/cash_flow.py:98-107`), so any single tuple
-   would name a field absent in one mode or drop the only grouping dimension in
-   the other. A report whose default set does not resolve for a legal parameter
+   where it is not. `cash_flow` is the motivating case. It accepts **three**
+   groupings — `account | category | account-and-category`
+   (`src/moneybin/reports/definitions/_shared.py:34`), defaulting to
+   `account-and-category` (`cash_flow.py:82`) — and selects columns from that
+   parameter (`cash_flow.py:114-118`): `account` adds `account_id,
+   account_name` and no `category`, `category` adds `category` and no account
+   columns, and the default adds both. Any single tuple would name a field
+   absent in one mode or drop a grouping dimension in another. The default
+   mode is the one to check first: it is what an unparameterized invocation
+   renders, and it is the widest of the three. A report whose default set does not resolve for a legal parameter
    combination is a spec violation, caught by the contract test in requirement 9.
    **Extension reports** (`register_extension_reports`,
-   `src/moneybin/reports/_framework/registry.py:34`) share the same `@report` /
+   `src/moneybin/reports/_framework/registry.py:53`) share the same `@report` /
    `ReportSpec` contract and the same `register_report_cli` path, so the field is
    **optional** on `ReportSpec`: an extension that declares nothing keeps working
    unchanged. Its fallback is the **first six columns** of the declared
    projection, with the remainder reachable via `--wide`. Six is a fixed count,
    not a computed fit: `OutputColumn` carries only `name`, `description`, and
-   `data_class` (`src/moneybin/reports/_framework/contract.py:62-67`) — no
+   `data_class` (`src/moneybin/reports/_framework/contract.py:139-144`) — no
    display width — so "the columns that fit 80" is not computable without
    measuring runtime values, which would make an extension's column set vary with
    its data. A fixed count is deterministic and needs no new metadata. The
@@ -134,7 +149,15 @@ Numbered, each independently testable.
 9. `DEFAULT_COLUMNS` for every report fits in **80 columns** with no elision of any
     header, and no elision of any value that is not free text. 80 is the width F1
     was reproduced at, so a wider bar would let an implementation satisfy this
-    spec while the reported defect persists.
+    spec while the reported defect persists. Fitting is necessary but not
+    sufficient: a column's rendered form must still preserve **the distinction
+    the column exists to reveal**. A date abbreviated until a year-old value
+    and a four-month-old value render identically clears the width bar while
+    destroying the column's purpose; so does a merchant name truncated until
+    two distinct payees collapse into one string. Where the two bars conflict,
+    drop the column from `DEFAULT_COLUMNS` and disclose the omission under
+    requirement 10 — a named absence beats a present-but-uninformative
+    column.
 10. When columns are omitted, `render_rows` emits one **result-framing** line
     naming the count and the flag: `12 of 23 columns shown — --wide for all`.
     Silent truncation is prohibited. This line is part of the result, not
@@ -154,14 +177,19 @@ Numbered, each independently testable.
     - `flow` — signed under the AGENTS.md accounting convention (negative =
       expense, positive = income). Renders an explicit `+` / `−` (U+2212).
     - `magnitude` — a positive absolute quantity whose polarity is carried by the
-      column, not the value (`spending_trend.total_spend` is a positive outflow).
-      Renders unsigned; never colored as income.
+      column, not the value: `spending_trend.total_spend` is
+      `SUM(ABS(t.amount))`
+      (`src/moneybin/sqlmesh/models/reports/spending_trend.sql:14`), a positive
+      absolute outflow. Renders unsigned; never colored as income.
     - `delta` — a signed *change in a magnitude*, where the sign means direction
       (more / less) rather than income / expense. Declares the polarity of the
       thing it measures, because that determines whether an increase is good or
-      bad. `spending_trend.mom_delta` is current-minus-previous spend
-      (`src/moneybin/reports/definitions/spending_trend.py:54-58`): a positive
-      value means spending *rose*. It renders signed — the direction is the
+      bad. `spending_trend.mom_delta` is `total_spend - prev_month_spend`
+      (`src/moneybin/sqlmesh/models/reports/spending_trend.sql:89`), so a
+      positive value means spending *rose*. The computation lives in the
+      SQLMesh model, not the Python definition — `spending_trend.py` only
+      selects the column (line 62), and reading that declaration alone leaves
+      the sign direction unestablished, which is this kind's entire basis. It renders signed — the direction is the
       column's entire purpose — and colors against the declared polarity, so a
       rise in spending is `--neg-expense`, not `--pos-income`.
     - `balance` — a position, not a movement. Renders **unsigned when
@@ -169,7 +197,7 @@ Numbered, each independently testable.
       "balances unsigned" rule exists so a checking balance is not decorated with
       a `+`; it does not license dropping a minus. `reports.net_worth` is
       `SUM(d.balance)` over accounts whose liabilities are kept negative
-      (`src/moneybin/sqlmesh/models/reports/net_worth.sql:12`), so a net worth of
+      (`src/moneybin/sqlmesh/models/reports/net_worth.sql:13`), so a net worth of
       −50,000.00 is reachable and would otherwise render identically to
       +50,000.00 — the single worst misread this spec could ship.
 
@@ -180,8 +208,8 @@ Numbered, each independently testable.
 
     The kind is declared **per column**, as `money_kind` on `OutputColumn`. It is
     deliberately *not* named `kind`, because `ReportSemantics.kind` already exists
-    with the values `position | flow | ratio | count`
-    (`src/moneybin/reports/_framework/contract.py:77`). That one is **report**-level
+    with the values `position | flow | ratio | count | unknown`
+    (`src/moneybin/reports/_framework/contract.py:163`). That one is **report**-level
     and cannot serve here: `spending_trend` carries a `magnitude` and a `delta` in
     the same result, so one report-level value cannot describe both columns. The
     two overlap in vocabulary (`flow`, and `position` ≈ `balance`) without being
@@ -205,10 +233,11 @@ Numbered, each independently testable.
     non-TTY, and `NO_COLOR`. A negative `balance` is the load-bearing case: it
     carries `−` with no color, so the sign is the only channel and must never be
     dropped.
-    **Rationale:** `spending_trend.py` declares `total_spend` as a positive
-    absolute outflow and `mom_delta` as current-minus-previous spend. Coloring on
-    raw sign would render spending green as income and invert the meaning of a
-    rising `mom_delta`, contradicting AGENTS.md's sign convention.
+    **Rationale:** `spending_trend.sql` computes `total_spend` as
+    `SUM(ABS(t.amount))` (line 14) and `mom_delta` as
+    `total_spend - prev_month_spend` (line 89). Coloring on raw sign would
+    render spending green as income and invert the meaning of a rising
+    `mom_delta`, contradicting AGENTS.md's sign convention.
 15. Color is emitted only when stdout is a TTY and `NO_COLOR` is unset.
 
 **Message hygiene (F3, F11, F12)**
@@ -221,15 +250,29 @@ Numbered, each independently testable.
 
     It deliberately does **not** match single-word registered tool names. The
     registry contains tools literally named `accounts` and `reports`
-    (`src/moneybin/mcp/surface.py:28-29`), which are also unavoidable product
+    (`src/moneybin/mcp/surface.py:30-31`), which are also unavoidable product
     vocabulary — a test rejecting every registered name would fail on
     `Accounts: 5` and force unnatural prose for no privacy or clarity gain.
 
+    **Audit state at spec time.** Two of F3's four leaks are already gone:
+    the `transactions_get returned …` line and the `accounts_links_run:`
+    prefix no longer appear. One survives, and it sits **below the CLI
+    layer** — `src/moneybin/services/merchant_links_service.py:301` logs
+    `merchant_links_run: bound={n} conflicts={n}`, which is a compound
+    snake_case identifier *and* two `key=value` fragments, and it reaches the
+    user through the log handler. Closing it means editing a service, so this
+    requirement is the **second** deliberate below-CLI reach in this spec;
+    requirement 18 is the other. The reach is bounded to the message: the
+    string is rephrased into prose, the counts the step already computes are
+    kept, and no signature, result carrier, or call site changes. Retaining
+    the leak instead would leave requirement 16 asserting a property the
+    codebase does not have.
+
     **Explicit exception — `RecoveryAction` rendering.** `system doctor` and the
     error path render `action.tool(key=value, …)` deliberately
-    (`src/moneybin/cli/commands/system/doctor.py:140`), because
+    (`src/moneybin/cli/commands/system/doctor.py:141`), because
     `RecoveryAction.tool` *is* an MCP tool name by contract
-    (`src/moneybin/errors.py:59`) and the rendered call is meant to be pasted
+    (`src/moneybin/errors.py:60`) and the rendered call is meant to be pasted
     directly by an agent. This is a designed AX affordance, not a leak, and
     requirement 22 preserves it. The audit skips recovery-action lines.
 17. No user-facing message names an internal dependency. `SQLMesh` is not a user
@@ -238,18 +281,25 @@ Numbered, each independently testable.
     observable outcome, including stages whose outcome is zero. A run that changed
     nothing and a run that recategorized 400 transactions are distinguishable from
     stderr alone. This requires a **result-carrier change**, not a renderer-only
-    one: `RefreshResult` (`src/moneybin/services/refresh.py:75`) carries
-    error-or-`None` per step, and `_run_categorize_step` (line 314) computes its
+    one: `RefreshResult` (`src/moneybin/services/refresh.py:92`) carries
+    error-or-`None` per step, and `_run_categorize_step` (line 479) computes its
     counts, logs them, and returns `str | None`, discarding them. The renderer
     cannot recover a count the service already dropped, and must not re-query for
     it. `RefreshResult` therefore gains a per-stage outcome carrying the counts the
-    steps already compute. This is the **one** requirement in this spec that
-    reaches below the CLI layer, and it is deliberate: the outcome per stage is
-    the payload, so no render-layer-only change can satisfy it.
-19. The profile banner names the source that actually resolved, or says nothing.
-    The ambiguous string `config.yaml or first-run wizard`
-    (`src/moneybin/cli/utils.py:254`) does not survive: it lists two candidates
-    and confirms neither, costing a line per invocation to say nothing.
+    steps already compute. This is **one of the two** requirements in this
+    spec that reach below the CLI layer, and it is deliberate: the outcome per
+    stage is the payload, so no render-layer-only change can satisfy it.
+    Requirement 16's `merchant_links_run` leak is the other, and its reach is
+    smaller — a message rewrite rather than a carrier change.
+19. The profile banner names the source that actually resolved, or says
+    nothing. **Already satisfied at spec time:** the ambiguous
+    `config.yaml or first-run wizard` string is gone, and
+    `src/moneybin/cli/utils.py:454` now logs a bare
+    `Using profile: {profile_name}`. The requirement stays as a regression
+    guard — a test asserts the banner never names more than one candidate
+    source — and it is scoped to that. The other half of F11, that the banner
+    costs a line per invocation to say something the reader rarely needs, is
+    a separate call from whether it is ambiguous and is **not** decided here.
 
 **Quiet on success (F6)**
 
@@ -292,8 +342,8 @@ Numbered, each independently testable.
     deliberately not in scope**, for the same reason as requirement 26's balance:
     `TransactionRow` carries only `account_id`
     (`src/moneybin/privacy/payloads/transactions.py:44`) and
-    `TransactionGetResult` returns only `transactions` and `next_cursor`
-    (`src/moneybin/services/transaction_service.py:136-140`), so a name would
+    `TransactionGetResult` carries no account name
+    (`src/moneybin/services/transaction_service.py:178-197`), so a name would
     require a service and payload change — the JSON/MCP contract requirement 8
     keeps untouched. Tracked as a follow-up alongside the balance column.
 28. `accounts list` and `transactions list` share the `account_id` column, with
@@ -334,7 +384,10 @@ Numbered, each independently testable.
     `schedule set|show|remove`), the two `budget` stubs (`set`, `delete`), and the
     three `transactions categorize ml` stubs — **not** a grep for
     `_not_implemented`, which also matches `review`'s `--interactive` branch
-    (#358) and any future partial.
+    (`src/moneybin/cli/commands/transactions/review.py:96`) and any future
+    partial. That branch is deliberate: PR #358 stopped routing users into it
+    while leaving it unbuilt, so `review` is a working command with one
+    pending path — exactly the case hiding would break.
 32. The not-implemented message names a user-facing next action, not a repo path.
      `docs/specs/*.md` does not appear in any message reachable by an installed
      user.
@@ -342,25 +395,40 @@ Numbered, each independently testable.
 
 **Pagination (F10)**
 
-34. The text branch renders a human paging line stating the number of rows shown,
-    whether more exist, and a continuation the reader can actually type —
-    `8 shown · more available · raise --limit for more`.
-    It must **not** name `--cursor`:
-    that option takes a token value
-    (`src/moneybin/cli/commands/transactions/list_.py:50-52`), the token is
-    deliberately withheld from text output, and
-    instructing a reader to pass a flag whose value they were not given produces a
-    usage error. Showing the token instead would re-open F10, whose defect was a
-    base64 cursor printed at a human. `--cursor` remains the agent's continuation
-    over `--output json`, where the token is present.
-    **No total is rendered:** `TransactionGetResult` exposes `transactions` and
-    `next_cursor` only, computing `total_count` to derive `has_more`
-    (`src/moneybin/services/transaction_service.py:793`) and then dropping it
-    rather than carrying it onto the result
-    (`src/moneybin/services/transaction_service.py:136-140`).
-    Surfacing a total would be a service and payload change, which requirement 8
-    excludes. `has_more` is sufficient to close F10 — the defect was a base64
-    cursor shown to a human, not a missing count.
+34. The text branch renders a human paging line stating how many rows were
+    shown, **the total matching the filters**, and a continuation the reader
+    can actually type — `8 of 2,046 shown · raise --limit for more`.
+
+    **The total is rendered, and costs nothing to obtain.**
+    `TransactionGetResult` carries `total_count`
+    (`src/moneybin/services/transaction_service.py:189`), documented there as
+    "every row matching the filters, not the page length — the same meaning
+    `summary.total_count` carries on the MCP surface", and `transactions list`
+    already passes it (`src/moneybin/cli/commands/transactions/list_.py:173`).
+    No service or payload change is required, so requirement 8's exclusion
+    does not bite. This is the count F10 actually wanted: the finding was that
+    a human asking "how much is there?" got a base64 cursor instead.
+
+    **The text branch must stop printing the cursor — a deletion, not an
+    omission.** `list_.py:229` currently emits
+    `Next page: --cursor {result.next_cursor}` to stderr. That line *is* F10:
+    the base64 token rendered at a human. This requirement removes it. Stating
+    only that the token must not be *added* would leave the reported defect
+    untouched, which is how a spec ships green against a live finding.
+
+    **The text branch must not name `--cursor` at all.** The option takes a
+    token value (`list_.py:117-118`) that text output no longer supplies, and
+    instructing a reader to pass a flag whose value they were not given
+    produces a usage error.
+
+    **The agent path is unchanged and asymmetric on purpose.** `--cursor`
+    remains the continuation over `--output json`, where
+    `_continuation_command` (`list_.py:25`) already builds a complete,
+    typeable invocation carrying the token and every bound filter, surfaced
+    through the envelope's `actions` (`list_.py:83`). The asymmetry is the
+    design: the agent receives the token because it can act on it, the human
+    receives the count because that is what they asked for. Neither surface
+    gets the other's answer.
 
 **Non-interference with data correctness (F0)**
 
@@ -369,6 +437,25 @@ Numbered, each independently testable.
     containing two rows identical in every rendered column still renders two
     lines — so a future "tidier output" change cannot mask a data defect behind a
     presentation fix.
+
+**Color as a named palette**
+
+36. Color is declared once, semantically, in `moneybin.cli.render` — a
+    positive/income color, a negative/expense color, a warning color, and a
+    neutral default — and no command or renderer branch writes a Rich color
+    literal inline. Requirements 14 and 15 govern *when* color appears and
+    under what conditions; this one governs **where it is defined**.
+
+    It is stated as a requirement rather than left to implementation because
+    the CLI has no centralized color today — `src/moneybin/cli/` contains zero
+    Rich color markup — so the render layer is being written from scratch and
+    will otherwise scatter literals across every call site as it grows. Once
+    that happens requirement 14 is unenforceable by inspection: verifying that
+    a `magnitude` is never green means auditing every literal rather than
+    reading one table. A single named palette also makes a colorblind-safe or
+    high-contrast variant a one-file change instead of a survey, which matters
+    because requirement 14 already commits to color being redundant with the
+    sign glyph rather than load-bearing.
 
 ## Data Model
 
@@ -391,7 +478,7 @@ removed field and costs a `stats` surface that cannot label nine of its metrics.
 
 | Path | Purpose |
 |---|---|
-| `src/moneybin/cli/render.py` | `render_rows`, `render_summary`, `render_note`, `format_money`, color/TTY gating |
+| `src/moneybin/cli/render.py` | `render_rows`, `render_summary`, `render_note`, `format_money`, the semantic color palette (36), color/TTY gating |
 | `tests/moneybin/test_cli/test_render.py` | Renderer unit tests — alignment, sign, separators, TTY gating, quiet |
 | `tests/moneybin/test_cli/test_message_hygiene.py` | Requirements 16, 17, 32 — the grep-shaped audits |
 | `tests/moneybin/test_cli/test_column_policy.py` | Requirements 6–10 across every `reports` command |
@@ -401,21 +488,22 @@ removed field and costs a `stats` surface that cannot label nine of its metrics.
 | Path | Change |
 |---|---|
 | `src/moneybin/cli/output.py` | `render_or_json` delegates its text branch to the new renderers; `--wide` joins the shared option set |
-| `src/moneybin/reports/_framework/contract.py` (`ReportSpec`, line 88) | Carry the default column set as spec metadata — **this is where the column policy lives**. Parameter-aware per requirement 6 |
-| `src/moneybin/reports/_framework/cli_register.py` | `build_cli_command(spec)` (called by `register_report_cli`, line 115) builds each report's Typer signature — this is where the generated `--wide` option and the `DEFAULT_COLUMNS` application land. Note `register_reports_cli`, the plural fan-out, lives in `registry.py:73` and only loops specs; it likely needs no change |
+| `src/moneybin/reports/_framework/contract.py` (`ReportSpec`, line 192) | Carry the default column set as spec metadata — **this is where the column policy lives**. Parameter-aware per requirement 6 |
+| `src/moneybin/reports/_framework/cli_register.py` | `build_cli_command(spec)` (line 162, called by `register_report_cli`, line 209) builds each report's Typer signature — this is where the generated `--wide` option and the `DEFAULT_COLUMNS` application land. Note `register_reports_cli`, the plural fan-out, lives in `registry.py:98` and only loops specs; it likely needs no change |
 | `src/moneybin/reports/definitions/*.py` | Declare each report's `DEFAULT_COLUMNS`, `spending_trend.py` first (F1) |
 | `src/moneybin/cli/commands/reports/networth.py` | The two hand-written NetworthService-backed commands; adopt `render_summary` / `render_rows` |
 | `src/moneybin/cli/commands/accounts/__init__.py` | Account ID column (26); adopt `render_rows` |
-| `src/moneybin/cli/commands/transactions/list_.py` | Keep rendering the account ID only — requirement 27 excludes the display name (27); drop the `transactions_get …` line (16); human paging (34) |
+| `src/moneybin/cli/commands/transactions/list_.py` | Keep rendering the account ID only — requirement 27 excludes the display name (27); **delete the `Next page: --cursor …` line at 229** and render `N of M shown` from the `total_count` already passed at line 173 (34) |
 | `src/moneybin/cli/commands/transactions/categorize/__init__.py` | Uncategorized queue is a Shape-5 read-projection — migrate off `render_rich_table` (1) |
-| `src/moneybin/cli/commands/accounts/links.py` | `links pending` (lines 70-89) and `links history` (lines 141-185) hand-format an aligned table via `typer.echo`; there is no `links list` subcommand — requirement 1 applies from day one |
-| `src/moneybin/cli/commands/investments/security_links.py` | `links pending` / `links history` hand-format the same padded-column table (lines 78-99, 199-215) |
+| `src/moneybin/cli/commands/accounts/links.py` | `links pending` (line 55) and `links history` (line 512) hand-format an aligned table via `typer.echo`; there is no `links list` subcommand — requirement 1 applies from day one |
+| `src/moneybin/cli/commands/investments/security_links.py` | `links pending` (line 42) / `links history` (line 202) hand-format the same padded-column table |
 | `src/moneybin/cli/commands/transactions/notes.py` | `notes list` emits one `typer.echo` per note (line 103) |
 | `src/moneybin/cli/commands/transactions/tags.py` | `tags list` emits a tab-separated tag/count list (line 150) |
-| `src/moneybin/cli/commands/merchants/links.py` | Same hand-formatted-table pattern as its accounts twin; migrate both together per the coherence rule |
-| `src/moneybin/cli/commands/transactions/matches.py` | `matches pending` hand-formats a padded f-string table (lines 61-77) — the third of the three review-queue renderers |
+| `src/moneybin/cli/commands/merchants/links.py` | `links pending` (line 34) / `links history` (line 140) — same hand-formatted-table pattern as its accounts twin; migrate both together per the coherence rule |
+| `src/moneybin/cli/commands/transactions/matches.py` | `matches pending` (line 35) hand-formats a padded f-string table at lines 70-85 — the third of the three review-queue renderers |
 | `src/moneybin/cli/commands/refresh.py` | Per-stage notes (18); drop function-name prefixes and `SQLMesh` (16, 17) |
 | `src/moneybin/services/refresh.py` | `RefreshResult` gains per-stage outcomes so the counts `_run_categorize_step` already computes reach the renderer instead of only the log (18) |
+| `src/moneybin/services/merchant_links_service.py` | Line 301 — rephrase the `merchant_links_run: bound=… conflicts=…` log into prose, keeping the counts (16). The second and smaller of this spec's two below-CLI reaches |
 | `docs/specs/extension-contracts.md` | Document `DEFAULT_COLUMNS` as an optional `ReportSpec` field and its width-bounded fallback (6) |
 | `src/moneybin/cli/commands/system/doctor.py` | Quiet on success (20–22); recovery-action rendering unchanged per req 16's exception |
 | `src/moneybin/cli/commands/stats.py` | Dimensions, units, grouping (23–25) |
@@ -500,7 +588,7 @@ Per AGENTS.md ("Specs touching app code must include metrics") and
 [`observability.md`](observability.md). Three counters, registered in
 `src/moneybin/metrics/registry.py` alongside the existing declarations and
 following the same Prometheus naming convention the rest of the registry
-from:
+uses:
 
 ```python
 CLI_WIDE_REQUESTED_TOTAL = Counter(
@@ -584,6 +672,12 @@ contract:
   the assertion more broadly than the requirement would fail on legitimate output
   like `Accounts: 5`.
 - No reachable message contains `docs/specs/` (32).
+- No renderer or command module contains an inline Rich color literal; every
+  color resolves through the named palette (36). This is a source-shaped
+  assertion, so it needs the behavioural partner below — a palette can be
+  declared and then bypassed at one call site without the source scan
+  noticing, if the literal is spelled as a style string rather than a color
+  name.
 - No stub command appears in any `--help` output, **and every
   partially-implemented command still does** (31). Both directions are required:
   the one-sided assertion passes trivially against an implementation that hides
@@ -599,6 +693,17 @@ today's code. Two need specific shapes:
 - **F8** — a fixture containing both a mapped and an unmapped category, asserting
   the column is homogeneous and the unmapped one is counted in the result framing — not a `render_note`, which requirement 4 suppresses under `-q`. A
   fully-mapped fixture passes trivially.
+- **F10** — two assertions, because requirement 34 both adds and deletes.
+  The first: a paged text run renders `N of M shown` with `M` equal to
+  `total_count`, not to the page length, which requires a fixture whose match
+  count exceeds its `--limit`. The second: **no text-branch output contains
+  the cursor token**, asserted against stdout *and* stderr together, because
+  the line being deleted (`list_.py:229`) writes to stderr — an assertion over
+  stdout alone passes against the unfixed code.
+- **F9 / req 36** — the behavioural partner to the source scan above: render a
+  `magnitude`, a negative `flow`, and a negative `balance` with color forced
+  on, and assert the emitted ANSI codes match the palette's declared values.
+  This catches a bypassed palette that the source scan misses.
 
 **Not covered by the default gate:** these are CLI-surface tests in
 `tests/moneybin/test_cli/`, so `make check test` is the correct gate. No
