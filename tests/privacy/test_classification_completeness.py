@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
+from moneybin.privacy.redaction import MaskStrength, mask_strength
 from moneybin.privacy.sql_lineage import reports_class_map
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 
@@ -20,6 +21,17 @@ def _live_columns(db: Database) -> set[tuple[str, str, str]]:
         SELECT schema_name, table_name, column_name
         FROM duckdb_columns()
         WHERE schema_name IN ('core', 'app')
+        """
+    ).fetchall()
+    return {(str(s), str(t), str(c)) for s, t, c in rows}
+
+
+def _live_json_columns(db: Database) -> set[tuple[str, str, str]]:
+    rows = db.execute(
+        """
+        SELECT schema_name, table_name, column_name
+        FROM duckdb_columns()
+        WHERE schema_name IN ('core', 'app') AND data_type = 'JSON'
         """
     ).fetchall()
     return {(str(s), str(t), str(c)) for s, t, c in rows}
@@ -87,4 +99,26 @@ def test_unresolved_is_never_declared_as_a_column_class() -> None:
         + "\n".join(f"  {d}" for d in sorted(declared))
         + "\nIt is the fail-closed marker for columns lineage could not "
         "resolve. Classify these columns properly instead."
+    )
+
+
+def test_no_json_column_takes_a_partial_mask(populated_db: Database) -> None:
+    """Regression guard: a JSON column must never take a PARTIAL-masking class.
+
+    A JSON column reaches the redaction transform as ``str`` (DuckDB casts
+    it), so a PARTIAL mask keeps the tail of the *serialized text* — whichever
+    key happens to sort last, not any value inside it. See issue #451.
+    """
+    offenders = [
+        f"{schema}.{table}.{col} -> {dc.value}"
+        for schema, table, col in sorted(_live_json_columns(populated_db))
+        for dc in [CLASSIFICATION.get((schema, table), {}).get(col)]
+        if dc is not None and mask_strength(dc) is MaskStrength.PARTIAL
+    ]
+    assert not offenders, (
+        "JSON columns classified with a PARTIAL-masking DataClass — this "
+        "publishes the tail of the serialized JSON text, not a real value's "
+        "tail:\n"
+        + "\n".join(f"  {o}" for o in offenders)
+        + "\nUse a WHOLE-masking class instead (see DataClass.COMPOSITE_IDENTIFIER)."
     )

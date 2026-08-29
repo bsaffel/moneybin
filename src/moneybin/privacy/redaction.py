@@ -100,11 +100,34 @@ def _mask_account_identifier(value: Any, _consent: ConsentSet | None) -> Any:
     return "****" + value[-4:] if len(value) >= 4 else "****"
 
 
-def _mask_routing_number(value: str | None, _consent: ConsentSet | None) -> str | None:
-    """ROUTING_NUMBER → constant ``"*****"`` (or ``None`` for nullable)."""
+def _mask_to_constant(value: Any) -> Any:
+    """Shared body for classes that mask WHOLE to ``"*****"`` (or ``None``).
+
+    ROUTING_NUMBER, COMPOSITE_IDENTIFIER, and UNRESOLVED all destroy the value
+    identically — the class distinction is *why* each is masked WHOLE, not
+    *how*. Kept as one body so the constant can't drift between the three call
+    sites; each keeps its own function name and docstring for that reason.
+    """
     if value is None:
         return None
     return "*****"
+
+
+def _mask_routing_number(value: str | None, _consent: ConsentSet | None) -> str | None:
+    """ROUTING_NUMBER → constant ``"*****"`` (or ``None`` for nullable)."""
+    return _mask_to_constant(value)
+
+
+def _mask_composite_identifier(value: Any, _consent: ConsentSet | None) -> Any:
+    """COMPOSITE_IDENTIFIER → constant ``"*****"`` (or ``None`` for nullable).
+
+    Whole, not the partial mask ACCOUNT_IDENTIFIER takes: this class covers
+    serialized/composite values (JSON, a packed multi-field string) where an
+    identifier fragment can land anywhere, so ``"****" + value[-4:]`` would
+    keep the tail of the serialization rather than the tail of any single
+    value inside it. See the class's ``taxonomy.py`` comment.
+    """
+    return _mask_to_constant(value)
 
 
 def _mask_unresolved(value: Any, _consent: ConsentSet | None) -> Any:
@@ -118,9 +141,7 @@ def _mask_unresolved(value: Any, _consent: ConsentSet | None) -> Any:
     ``_mask_account_identifier`` does) would raise ``TypeError`` on those and
     fail the query OPEN through the caller's error path.
     """
-    if value is None:
-        return None
-    return "*****"
+    return _mask_to_constant(value)
 
 
 def _passthrough(value: Any, _consent: ConsentSet | None) -> Any:
@@ -221,6 +242,7 @@ _TRANSFORMS: dict[DataClass, Any] = {
     DataClass.ACCOUNT_IDENTIFIER: _mask_account_identifier,
     DataClass.INSTITUTION_ACCOUNT_NUMBER: _mask_account_identifier,
     DataClass.ROUTING_NUMBER: _mask_routing_number,
+    DataClass.COMPOSITE_IDENTIFIER: _mask_composite_identifier,
     DataClass.UNRESOLVED: _mask_unresolved,
     # HIGH-tier — pass through in PR 2 (PR 3 adds bucketing).
     DataClass.BALANCE: _passthrough,
@@ -250,12 +272,12 @@ class MaskStrength(IntEnum):
 
     Tier says how *sensitive* a class is; strength says how *hard* its transform
     hides the value. The two are independent, and conflating them leaks: all
-    four CRITICAL classes share ``Tier.CRITICAL``, but ROUTING_NUMBER and
-    UNRESOLVED mask WHOLE while ACCOUNT_IDENTIFIER and
-    INSTITUTION_ACCOUNT_NUMBER mask PARTIAL (``"****" + value[-4:]``). Standing
-    a PARTIAL class in for a WHOLE one at the same tier publishes the last four
-    characters of a value the declaration does not describe — the same
-    order-dependence ``sql_lineage._combined_class`` collapses to
+    five CRITICAL classes share ``Tier.CRITICAL``, but ROUTING_NUMBER,
+    UNRESOLVED, and COMPOSITE_IDENTIFIER mask WHOLE while ACCOUNT_IDENTIFIER
+    and INSTITUTION_ACCOUNT_NUMBER mask PARTIAL (``"****" + value[-4:]``).
+    Standing a PARTIAL class in for a WHOLE one at the same tier publishes the
+    last four characters of a value the declaration does not describe — the
+    same order-dependence ``sql_lineage._combined_class`` collapses to
     ``FAIL_CLOSED_CLASS``, reached through the declaration path instead.
     """
 

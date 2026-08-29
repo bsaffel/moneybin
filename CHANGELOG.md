@@ -2053,6 +2053,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   update.
 
 ### Security
+- **`sql_query` no longer publishes the tail of a serialized JSON column as if
+  it were an account number's last four digits.**
+  `app.account_link_decisions.match_signals` — a JSON column holding the weak
+  signals behind a proposed account link (institution last-four, name
+  similarity) — was classified `ACCOUNT_IDENTIFIER`, whose mask keeps
+  `value[-4:]`. A JSON column reaches the masking transform as a serialized
+  `str`, so the four characters that survived were the tail of the JSON
+  text — closing punctuation plus whatever key happened to sort last — not a
+  real signal value, and which characters leaked depended on key order rather
+  than anything the declaration controlled. A new `COMPOSITE_IDENTIFIER` class
+  masks this and any future serialized/composite column WHOLE instead,
+  matching the precedent already set for two sibling JSON columns
+  (`raw.import_log.account_names`, `prep.int_transactions__matched
+  .match_group_id`). A regression test walks every JSON-typed `core.*`/`app.*`
+  column and fails if one is ever classified with a partial mask again. (#451)
 - **Six CVEs cleared, and the audit that missed two of them now sees every
   dependency group.** `cryptography` 49.0.0 → 50.0.0 (PYSEC-2026-3552), `pip`
   26.1.2 → 26.2.1 (PYSEC-2026-3721), and `pymdown-extensions` 10.21.3 → 11.0.2

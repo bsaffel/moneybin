@@ -22,6 +22,10 @@ def test_record_id_is_low() -> None:
     assert DataClass.RECORD_ID.tier is Tier.LOW
 
 
+def test_composite_identifier_is_critical() -> None:
+    assert DataClass.COMPOSITE_IDENTIFIER.tier is Tier.CRITICAL
+
+
 def test_floored_is_low() -> None:
     """Pinned: Task 6's query gate keys off this tier to consent-gate raw/prep.
 

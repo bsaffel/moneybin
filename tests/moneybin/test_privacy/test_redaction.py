@@ -101,6 +101,32 @@ def test_institution_account_number_uses_last_four_pattern() -> None:
     assert out.last_four == "****4242"
 
 
+def test_composite_identifier_masked_to_constant() -> None:
+    """WHOLE mask — a partial mask would publish the tail of a serialized blob.
+
+    ``account_link_decisions.match_signals`` reaches this transform as a DuckDB
+    JSON column cast to ``str``: ``"****" + value[-4:]`` would keep the tail of
+    the serialized JSON text, not the tail of any single signal value.
+    """
+    (masked,) = redact_records(
+        [{"n": '{"institution_last4": "9940"}'}],
+        {"n": DataClass.COMPOSITE_IDENTIFIER},
+        consent=None,
+    )
+    assert masked["n"] == "*****"
+
+
+def test_composite_identifier_none_passes_through() -> None:
+    (masked,) = redact_records(
+        [{"n": None}], {"n": DataClass.COMPOSITE_IDENTIFIER}, consent=None
+    )
+    assert masked["n"] is None
+
+
+def test_composite_identifier_measures_whole() -> None:
+    assert mask_strength(DataClass.COMPOSITE_IDENTIFIER) is MaskStrength.WHOLE
+
+
 @pytest.mark.parametrize(
     "value", [4, Decimal("4"), True, b"4021", ("4", "0"), Decimal("40.21")]
 )
