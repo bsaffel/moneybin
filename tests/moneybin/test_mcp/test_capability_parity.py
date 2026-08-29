@@ -55,6 +55,14 @@ UNIMPLEMENTED_CLI_INVOCATIONS = {
     "transactions categorize ml train": (),
 }
 UNIMPLEMENTED_CLI_PATHS = set(UNIMPLEMENTED_CLI_INVOCATIONS)
+# Whole-command stubs that exit 1 rather than 0. Kept out of the set above
+# because that one drives the exit-0 / shared-message assertions; these
+# predate that policy and MB-37 preserves their exit code.
+UNIMPLEMENTED_EXIT_ONE_CLI_PATHS = {
+    "db key export",
+    "db key import",
+    "db key verify",
+}
 HIDDEN_COMPATIBILITY_ALIASES = {
     "sync connect": "sync link",
     "sync connect-status": "sync link-status",
@@ -223,7 +231,11 @@ def test_hidden_cli_paths_are_aliases_or_unimplemented_stubs() -> None:
     hidden = {path for path, command in commands.items() if command.hidden}
     mapped = {path for row in load_outcome_map() for path in row.cli_commands}
 
-    assert hidden == set(HIDDEN_COMPATIBILITY_ALIASES) | UNIMPLEMENTED_CLI_PATHS
+    assert hidden == (
+        set(HIDDEN_COMPATIBILITY_ALIASES)
+        | UNIMPLEMENTED_CLI_PATHS
+        | UNIMPLEMENTED_EXIT_ONE_CLI_PATHS
+    )
     assert set(HIDDEN_COMPATIBILITY_ALIASES) <= mapped
     for alias, canonical in HIDDEN_COMPATIBILITY_ALIASES.items():
         assert commands[alias].hidden

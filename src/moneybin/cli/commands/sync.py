@@ -28,7 +28,7 @@ key_app = typer.Typer(
     help="Manage the sync server's encryption key",
     no_args_is_help=True,
 )
-app.add_typer(key_app, name="key")
+app.add_typer(key_app, name="key", hidden=True)
 logger = logging.getLogger(__name__)
 
 
@@ -526,7 +526,7 @@ def sync_key_rotate() -> None:
 
 # sync schedule subgroup
 schedule_app = typer.Typer(help="Manage scheduled sync jobs")
-app.add_typer(schedule_app, name="schedule")
+app.add_typer(schedule_app, name="schedule", hidden=True)
 
 
 @schedule_app.command("set", hidden=True)

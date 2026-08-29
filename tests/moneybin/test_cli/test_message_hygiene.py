@@ -1,9 +1,11 @@
 """User-facing message hygiene (cli-output-coherence reqs 16, 17, 19, 31-33).
 
 Requirement 31 hides whole-command stubs from ``--help`` while keeping them
-invocable. The enumeration below is deliberate, not a grep for
-``_not_implemented``: a command that reaches it on *some* paths is not a stub,
-and hiding it would remove working behaviour from ``--help``.
+invocable. The enumerations below are deliberate rather than a grep for
+``_not_implemented``, which is wrong in both directions: it over-matches
+``transactions review``, which reaches that helper only on ``--interactive``
+and would lose working behaviour if hidden, and it under-matches the ``db key``
+trio, which predates the helper and inlines its own message.
 """
 
 import ast
@@ -32,6 +34,30 @@ STUB_COMMANDS = (
     "transactions categorize ml train",
 )
 
+# Whole-command stubs that predate the shared helper and exit 1 rather than 0.
+# MB-37 preserves exit codes, so the divergence is recorded here, not unified.
+EXIT_ONE_STUB_COMMANDS = (
+    "db key export",
+    "db key import",
+    "db key verify",
+)
+
+ALL_STUB_COMMANDS = STUB_COMMANDS + EXIT_ONE_STUB_COMMANDS
+
+# Groups whose every command is a stub. An empty group still promises a
+# capability the CLI does not have, which is the trust problem req 31 exists
+# to fix, so the group is hidden alongside its leaves.
+STUB_GROUPS = (
+    "budget",
+    "sync key",
+    "sync schedule",
+    "transactions categorize ml",
+)
+
+# A group holding both stubs and working commands stays visible — hiding it
+# would take `db key show` and `db key rotate` out of --help with it.
+MIXED_GROUPS = ("db key",)
+
 # Commands that reach a not-implemented branch on *some* paths only. These
 # must stay visible: hiding them would remove working behaviour from --help.
 PARTIALLY_IMPLEMENTED_COMMANDS = ("transactions review",)
@@ -54,12 +80,64 @@ def _walk_commands() -> dict[str, click.Command]:
     return found
 
 
-@pytest.mark.parametrize("path", STUB_COMMANDS)
+def _walk_groups() -> dict[str, click.Group]:
+    """Map every command group path to its click group.
+
+    Separate from ``_walk_commands`` because a group built with
+    ``no_args_is_help=True`` does not set ``invoke_without_command``, so it
+    never lands in the executable-command map.
+    """
+    found: dict[str, click.Group] = {}
+
+    def walk(command: click.Command, prefix: tuple[str, ...]) -> None:
+        if not isinstance(command, click.Group):
+            return
+        if prefix:
+            found[" ".join(prefix)] = command
+        for name, child in command.commands.items():
+            walk(child, (*prefix, name))
+
+    walk(get_command(app), ())
+    return found
+
+
+@pytest.mark.parametrize("path", ALL_STUB_COMMANDS)
 def test_stub_command_is_hidden_from_help(path: str) -> None:
     """A whole-command stub is registered but never advertised."""
     command = _walk_commands()[path]
 
     assert command.hidden, f"{path} is a stub and must not appear in --help"
+
+
+@pytest.mark.parametrize("path", STUB_GROUPS)
+def test_group_of_only_stubs_is_hidden(path: str) -> None:
+    """Hiding the leaves alone leaves a group that lists nothing."""
+    group = _walk_groups()[path]
+
+    assert group.hidden, f"`{path}` advertises a group with no working command"
+
+
+@pytest.mark.parametrize("path", STUB_GROUPS)
+def test_hidden_group_is_still_invocable(path: str) -> None:
+    """Hiding reserves the namespace; it does not remove it."""
+    result = runner.invoke(app, [*path.split(), "--help"])
+
+    assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize("path", MIXED_GROUPS)
+def test_group_with_a_working_command_stays_visible(path: str) -> None:
+    """The other direction: a group is hidden for having no working command.
+
+    Without this, an implementation that hides every group containing any
+    stub passes the test above while deleting working commands from --help.
+    """
+    group = _walk_groups()[path]
+
+    assert not group.hidden, f"`{path}` has working commands and must stay in --help"
+    assert any(not command.hidden for command in group.commands.values()), (
+        f"`{path}` was expected to hold at least one visible command"
+    )
 
 
 @pytest.mark.parametrize("path", PARTIALLY_IMPLEMENTED_COMMANDS)
@@ -70,7 +148,7 @@ def test_partially_implemented_command_stays_visible(path: str) -> None:
     assert not command.hidden, f"{path} has working paths and must stay in --help"
 
 
-@pytest.mark.parametrize("path", STUB_COMMANDS)
+@pytest.mark.parametrize("path", ALL_STUB_COMMANDS)
 def test_stub_name_absent_from_parent_help(path: str) -> None:
     """The stub's name does not appear in its parent group's --help listing."""
     parent, _, leaf = path.rpartition(" ")
@@ -91,10 +169,13 @@ STUB_INVOCATIONS = {
     "transactions categorize ml apply": (),
     "transactions categorize ml status": (),
     "transactions categorize ml train": (),
+    "db key export": (),
+    "db key import": ("envelope.bin",),
+    "db key verify": (),
 }
 
 
-@pytest.mark.parametrize("path", STUB_COMMANDS)
+@pytest.mark.parametrize("path", ALL_STUB_COMMANDS)
 def test_stub_message_names_no_repo_path(path: str) -> None:
     """An installed user has no checkout, so a repo path is not a next action."""
     result = runner.invoke(app, [*path.split(), *STUB_INVOCATIONS[path]])
@@ -104,9 +185,13 @@ def test_stub_message_names_no_repo_path(path: str) -> None:
     assert ".md" not in combined, f"{path} names a source file"
 
 
-@pytest.mark.parametrize("path", STUB_COMMANDS)
+@pytest.mark.parametrize("path", ALL_STUB_COMMANDS)
 def test_stub_message_names_a_next_action(path: str) -> None:
-    """The message tells the user what they can do instead."""
+    """The message tells the user what they can do instead.
+
+    Covers both stub families: two message shapes for one situation is the
+    coherence failure the spec's "one way to do each thing" rule forbids.
+    """
     result = runner.invoke(app, [*path.split(), *STUB_INVOCATIONS[path]])
     combined = result.stdout + result.stderr
 
@@ -128,6 +213,19 @@ def test_stub_exits_zero(path: str) -> None:
     result = runner.invoke(app, [*path.split(), *STUB_INVOCATIONS[path]])
 
     assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize("path", EXIT_ONE_STUB_COMMANDS)
+def test_exit_one_stub_keeps_its_exit_code(path: str) -> None:
+    """The `db key` stubs shipped exiting 1; MB-37 preserves exit codes.
+
+    Unifying them on the 0 policy would be a public-contract change to a
+    published command, which this pull request is not making. The split is
+    pinned here so it stays a recorded decision rather than an accident.
+    """
+    result = runner.invoke(app, [*path.split(), *STUB_INVOCATIONS[path]])
+
+    assert result.exit_code == 1, result.output
 
 
 # --- Requirement 17: no user-facing message names an internal dependency ----

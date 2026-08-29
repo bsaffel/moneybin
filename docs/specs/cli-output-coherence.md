@@ -385,17 +385,39 @@ Numbered, each independently testable.
     `_not_implemented` on *some* paths is not a stub and is not hidden — hiding it
     would remove working behavior from `--help`, the opposite of the trust repair
     F4 exists for. The enumeration is the four `sync` stubs (`key rotate`,
-    `schedule set|show|remove`), the two `budget` stubs (`set`, `delete`), and the
-    three `transactions categorize ml` stubs — **not** a grep for
-    `_not_implemented`, which also matches `review`'s `--interactive` branch
+    `schedule set|show|remove`), the two `budget` stubs (`set`, `delete`), the
+    three `transactions categorize ml` stubs, and the three `db key` stubs
+    (`export`, `import`, `verify`) — **not** a grep for
+    `_not_implemented`, which both over- and under-matches. It over-matches on
+    `review`'s `--interactive` branch
     (`src/moneybin/cli/commands/transactions/review.py:96`) and any future
-    partial. That branch is deliberate: PR #358 stopped routing users into it
-    while leaving it unbuilt, so `review` is a working command with one
-    pending path — exactly the case hiding would break.
+    partial: that branch is deliberate, since PR #358 stopped routing users
+    into it while leaving it unbuilt, so `review` is a working command with one
+    pending path — exactly the case hiding would break. It under-matches on the
+    `db key` trio, which predates the helper and inlines its own message and
+    `typer.Exit(1)` (`src/moneybin/cli/commands/db.py`); they are whole-command
+    stubs by every other measure, and an enumeration derived from the grep
+    silently omitted them.
+
+    **A group whose every command is a stub is hidden too.** Hiding only the
+    leaves leaves `sync key`, `sync schedule`, `budget`, and
+    `transactions categorize ml` advertising a group that lists nothing, which
+    is the same promise F4 exists to withdraw. `db key` is the counter-case and
+    stays visible: `show` and `rotate` work, so hiding the group would take
+    them out of `--help` too. Both directions are asserted — an implementation
+    that hides every group containing any stub passes the first and fails the
+    second.
 32. The not-implemented message names a user-facing next action, not a repo path.
      `docs/specs/*.md` does not appear in any message reachable by an installed
-     user.
-33. The exit-code policy in `stubs.py` (stubs exit `0`) is unchanged.
+     user. Both stub families share one message: two shapes for one situation
+     is the coherence failure "one way to do each thing" forbids.
+33. Exit codes are unchanged. The tree carries **two** policies, and this spec
+    records rather than unifies them: stubs routed through `stubs.py` exit `0`
+    (the reasoning is in its docstring — `1` means "ran and failed"), while the
+    three `db key` stubs exit `1` because they shipped that way. Unifying them
+    would be a public-contract change to a published command, which the
+    milestone's "preserve exit codes" boundary excludes. Revisit only behind an
+    explicit stub-exit-code decision.
 
 **Pagination (F10)**
 
@@ -512,8 +534,9 @@ removed field and costs a `stats` surface that cannot label nine of its metrics.
 | `src/moneybin/cli/commands/system/doctor.py` | Quiet on success (20–22); recovery-action rendering unchanged per req 16's exception |
 | `src/moneybin/cli/commands/stats.py` | Dimensions, units, grouping (23–25) |
 | `src/moneybin/cli/utils.py` | Profile banner (19); **retire `render_rich_table`** into `render_rows` — it is the shared `rich.Table` builder req 1 supersedes |
-| `src/moneybin/cli/commands/stubs.py` | Message copy (32) |
-| `src/moneybin/cli/main.py` + group modules | `hidden=True` on stub registrations (31) |
+| `src/moneybin/cli/commands/stubs.py` | Message copy (32); the parameter carries a user-facing feature name, never a spec filename |
+| `src/moneybin/cli/main.py` + group modules | `hidden=True` on stub registrations, and on the four groups whose every command is a stub (31) |
+| `src/moneybin/cli/commands/db.py` | Route the three `db key` stubs through `_not_implemented` and hide them, keeping their `typer.Exit(1)` (31–33) |
 | `src/moneybin/metrics/registry.py` | Add a `unit` field to each histogram declaration (24); add the three counters in Observability below |
 | `.claude/rules/cli.md` | Add a "Text rendering" section pointing at this spec — the rule file is where a future contributor looks first |
 
@@ -686,7 +709,9 @@ contract:
   partially-implemented command still does** (31). Both directions are required:
   the one-sided assertion passes trivially against an implementation that hides
   everything matching `_not_implemented`, which is exactly the over-broad reading
-  requirement 31 rules out.
+  requirement 31 rules out. The same pairing applies one level up — a group whose
+  every command is a stub is hidden, **and `db key`, which holds both stubs and
+  working commands, is not.**
 
 **Regression, F-numbered** — one test per finding, each written to fail against
 today's code. Two need specific shapes:

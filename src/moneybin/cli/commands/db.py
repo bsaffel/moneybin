@@ -27,6 +27,8 @@ from moneybin.cli.output import (
 )
 from moneybin.protocol.envelope import build_envelope
 
+from .stubs import _not_implemented
+
 app = typer.Typer(help="Database management commands", no_args_is_help=True)
 key_app = typer.Typer(
     help="Manage the encryption key for the active profile's database",
@@ -863,7 +865,7 @@ def db_key_rotate(
     logger.info("💡 Existing backups are still encrypted with the old key")
 
 
-@key_app.command("export")
+@key_app.command("export", hidden=True)
 def db_key_export(
     out: Annotated[
         Path | None,
@@ -876,14 +878,14 @@ def db_key_export(
 ) -> None:
     """Export the encryption key to an encrypted envelope (not yet implemented)."""
     del out
-    typer.echo(
-        "db key export is not yet implemented.",
-        err=True,
-    )
+    # Exits 1, unlike the stubs that only log: this command shipped that way
+    # and MB-37 preserves exit codes. The message is shared so both stub
+    # families read identically.
+    _not_implemented("encryption key export")
     raise typer.Exit(1)
 
 
-@key_app.command("import")
+@key_app.command("import", hidden=True)
 def db_key_import(
     envelope: Annotated[
         Path,
@@ -892,20 +894,14 @@ def db_key_import(
 ) -> None:
     """Import an encryption key from an envelope (not yet implemented)."""
     del envelope
-    typer.echo(
-        "db key import is not yet implemented.",
-        err=True,
-    )
+    _not_implemented("encryption key import")
     raise typer.Exit(1)
 
 
-@key_app.command("verify")
+@key_app.command("verify", hidden=True)
 def db_key_verify() -> None:
     """Verify the encryption key matches the database (not yet implemented)."""
-    typer.echo(
-        "db key verify is not yet implemented.",
-        err=True,
-    )
+    _not_implemented("encryption key verification")
     raise typer.Exit(1)
 
 

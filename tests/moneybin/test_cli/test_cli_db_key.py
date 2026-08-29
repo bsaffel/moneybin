@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -26,26 +27,44 @@ class TestDbKeySubgroup:
     """Verify the db key sub-group structure and stub behavior."""
 
     @pytest.mark.unit
-    def test_key_help_lists_all_actions(self, runner: CliRunner) -> None:
-        """`db key --help` should list show/rotate/export/import/verify."""
+    def test_key_help_lists_only_working_actions(self, runner: CliRunner) -> None:
+        """`db key --help` lists what works and hides the stubs (req 31).
+
+        The group itself stays visible: `show` and `rotate` are real, so
+        hiding it would take working commands out of --help with it.
+        """
         result = runner.invoke(db_app, ["key", "--help"])
         assert result.exit_code == 0
-        for action in ("show", "rotate", "export", "import", "verify"):
+        for action in ("show", "rotate"):
             assert action in result.stdout
+        for stub in ("export", "import", "verify"):
+            assert stub not in result.stdout
 
     @pytest.mark.unit
     @pytest.mark.parametrize("action", ["export", "import", "verify"])
     def test_stub_actions_exit_with_not_implemented(
-        self, runner: CliRunner, action: str, tmp_path: Path
+        self,
+        runner: CliRunner,
+        action: str,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Stub sub-commands exit 1 with a "not yet implemented" message."""
+        """Stub sub-commands stay invocable and exit 1 with a message.
+
+        Read from the log rather than ``result.output``: the message is
+        emitted by the shared ``_not_implemented`` helper, which logs, and
+        ``setup_logging(cli_mode=True)`` — installed by the root app, not by
+        this sub-app — is what routes it to stderr for a real user.
+        """
         argv = ["key", action]
         if action == "import":
             argv.append(str(tmp_path / "envelope.bin"))
-        result = runner.invoke(db_app, argv)
+
+        with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.stubs"):
+            result = runner.invoke(db_app, argv)
+
         assert result.exit_code == 1
-        combined = (result.output or "").lower()
-        assert "not yet implemented" in combined
+        assert "not yet implemented" in caplog.text.lower()
 
     @pytest.mark.unit
     def test_old_rotate_key_no_longer_exists(self, runner: CliRunner) -> None:
