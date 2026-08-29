@@ -1164,6 +1164,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **Google Sheets connects without a Google Cloud Console detour.** The
+  connector shipped without an OAuth client of its own, so `moneybin gsheet
+  auth` on a fresh install refused outright — "Google Sheets OAuth client ID is
+  not configured" — until you registered your own Google Cloud project, roughly
+  the fifteen minutes of console clicking the feature had been designed to
+  spare you. MoneyBin now ships its own public client ID, which is how desktop
+  OAuth is meant to work: an installed app cannot keep a secret, so the
+  security rests on PKCE and a loopback redirect rather than on the identifier
+  being hidden. Point `MONEYBIN_GSHEET__OAUTH_CLIENT_ID` at your own project to
+  use its API quota instead, or set it empty to disable the connector. (#452)
 - **An account with nothing to identify it now reads `Unnamed account`, not
   `Account <id>`.** `core.dim_accounts.display_name` ended its fallback chain
   with the account's grain key, which for an account imported before the

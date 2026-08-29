@@ -453,7 +453,7 @@ class SyncConfig(BaseModel):
 # Public installed-app OAuth client. Native apps are public clients (RFC 8252)
 # and cannot hold a secret, so PKCE and the loopback redirect carry the security
 # and this ships in source — a wheel contains no dotenv to read it from.
-# connect-gsheet.md "Design decisions"; a wrong-field copy would land in
+# connect-gsheet.md "Design rationale"; a wrong-field copy would land in
 # SyncConfig.oauth_client_id, which is the unrelated Auth0 client.
 GSHEET_PUBLIC_OAUTH_CLIENT_ID = (
     "719646616923-nteho06cqo7lfprmtvmsnpk6842m5lfp.apps.googleusercontent.com"
