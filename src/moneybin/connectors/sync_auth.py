@@ -16,7 +16,7 @@ from moneybin import error_codes
 from moneybin.connectors.sync_client import SyncClient
 from moneybin.connectors.sync_errors import SyncAPIError, SyncAuthError
 from moneybin.errors import UserError
-from moneybin.secrets import SecretNotFoundError, SecretStore
+from moneybin.secrets import SecretNotFoundError, SecretStore, SecretUnavailableError
 
 _AUTH_SESSIONS_KEY = "SYNC__AUTH_SESSIONS"
 _LOCK_FILE_MODE = 0o600
@@ -287,6 +287,11 @@ class SyncAuthService:
     def _load_collection(self) -> dict[str, _StoredAuthSession]:
         try:
             raw = self._secrets.get_key(_AUTH_SESSIONS_KEY)
+        except SecretUnavailableError:
+            # A denied read is not "no sessions yet" — treating it that way
+            # would let a later save silently overwrite real sessions that
+            # simply couldn't be read (moneybin#419).
+            raise
         except SecretNotFoundError:
             return {}
         payload = cast(dict[str, dict[str, object]], json.loads(raw))

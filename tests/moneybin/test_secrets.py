@@ -170,3 +170,36 @@ class TestSetAndDeleteKey:
             )
             with pytest.raises(SecretNotFoundError, match="not found in keychain"):
                 store.delete_key("DATABASE__ENCRYPTION_KEY")
+
+
+class TestHasKeychainEntry:
+    """SecretStore.has_keychain_entry() — existence check, ignores env vars."""
+
+    def test_returns_true_when_entry_present(self) -> None:
+        store = SecretStore(profile="alice")
+        with patch("moneybin.secrets.keyring") as mock_kr:
+            mock_kr.get_password.return_value = "existing-value"
+            assert store.has_keychain_entry("DATABASE__ENCRYPTION_KEY") is True
+
+    def test_returns_false_when_no_keyring_backend(self) -> None:
+        store = SecretStore(profile="alice")
+        with patch("moneybin.secrets.keyring") as mock_kr:
+            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
+            mock_kr.get_password.side_effect = mock_kr.errors.NoKeyringError(
+                "no backend"
+            )
+            assert store.has_keychain_entry("DATABASE__ENCRYPTION_KEY") is False
+
+    def test_raises_secret_unavailable_when_keychain_locked(self) -> None:
+        """A denied read is distinct from "no entry" (see #419).
+
+        The caller must not treat it as absence, since doing so risks
+        overwriting an entry that merely couldn't be read.
+        """
+        store = SecretStore(profile="alice")
+        with patch("moneybin.secrets.keyring") as mock_kr:
+            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
+            mock_kr.errors.KeyringLocked = type("KeyringLocked", (Exception,), {})
+            mock_kr.get_password.side_effect = mock_kr.errors.KeyringLocked("denied")
+            with pytest.raises(SecretUnavailableError, match="denied"):
+                store.has_keychain_entry("DATABASE__ENCRYPTION_KEY")

@@ -309,6 +309,125 @@ class TestDatabaseKeyErrorHint:
 
         assert "db init" in database_key_error_hint()
 
+    def test_explicit_db_path_overrides_profile_settings(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """An explicit db_path wins over the profile's configured path.
+
+        A caller that resolved its own path (e.g. a `--database` override)
+        must not have the hint re-derive a different, possibly-nonexistent
+        path from settings and wrongly recommend db init (see #419).
+        """
+        from moneybin.database import database_key_error_hint
+
+        settings = MagicMock()
+        settings.database.path = tmp_path / "never-created.duckdb"
+        mocker.patch("moneybin.database.get_settings", return_value=settings)
+
+        selected = tmp_path / "explicit.duckdb"
+        selected.write_bytes(b"")
+
+        hint = database_key_error_hint(selected)
+
+        assert "db unlock" in hint
+        assert "db init" not in hint
+
+
+class TestInitDb:
+    """init_db() — refuses to overwrite an ambiguously-unreadable secret (see #419)."""
+
+    def test_passphrase_mode_refuses_when_prev_key_read_denied(
+        self, db_dir: Path
+    ) -> None:
+        """A denied prev_key read must not be treated as "no previous key".
+
+        Proceeding would overwrite the real key with a freshly-derived one,
+        then delete it on rollback if the (now-mismatched) database fails to
+        open — permanently losing access.
+        """
+        from moneybin.database import init_db
+        from moneybin.secrets import SecretUnavailableError
+
+        store = MagicMock()
+        store.get_key.side_effect = SecretUnavailableError("denied")
+        db_path = db_dir / "moneybin.duckdb"
+        db_path.write_bytes(b"pre-existing-encrypted-content")
+
+        with pytest.raises(DatabaseKeyError, match="denied"):
+            init_db(
+                db_path,
+                passphrase="test-passphrase",  # noqa: S106  # test fixture, not a real credential
+                secret_store=store,
+            )
+
+        store.set_key.assert_not_called()
+        store.delete_key.assert_not_called()
+
+    def test_passphrase_mode_refuses_when_prev_salt_read_denied(
+        self, db_dir: Path
+    ) -> None:
+        """Same refusal for the salt read, which is checked separately."""
+        from moneybin.database import SALT_NAME, init_db
+        from moneybin.secrets import SecretNotFoundError, SecretUnavailableError
+
+        def get_key(name: str) -> str:
+            if name == SALT_NAME:
+                raise SecretUnavailableError("denied")
+            raise SecretNotFoundError("no prior key")
+
+        store = MagicMock()
+        store.get_key.side_effect = get_key
+        db_path = db_dir / "moneybin.duckdb"
+        db_path.write_bytes(b"pre-existing-encrypted-content")
+
+        with pytest.raises(DatabaseKeyError, match="denied"):
+            init_db(
+                db_path,
+                passphrase="test-passphrase",  # noqa: S106  # test fixture, not a real credential
+                secret_store=store,
+            )
+
+        store.set_key.assert_not_called()
+
+    def test_auto_key_mode_refuses_when_existence_check_denied(
+        self, db_dir: Path
+    ) -> None:
+        """has_keychain_entry() reporting denial must not read as "absent".
+
+        Proceeding would mint and persist a fresh random key over one that
+        couldn't be read, then delete it on rollback.
+        """
+        from moneybin.database import init_db
+        from moneybin.secrets import SecretUnavailableError
+
+        store = MagicMock()
+        store.has_keychain_entry.side_effect = SecretUnavailableError("denied")
+        db_path = db_dir / "moneybin.duckdb"
+        db_path.write_bytes(b"pre-existing-encrypted-content")
+
+        with pytest.raises(DatabaseKeyError, match="denied"):
+            init_db(db_path, secret_store=store)
+
+        store.set_key.assert_not_called()
+
+    def test_auto_key_mode_refuses_when_key_read_denied_after_absent_check(
+        self, db_dir: Path
+    ) -> None:
+        """A denial surfacing only on the get_key() fallback still refuses."""
+        from moneybin.database import init_db
+        from moneybin.secrets import SecretUnavailableError
+
+        store = MagicMock()
+        store.has_keychain_entry.return_value = False
+        store.get_key.side_effect = SecretUnavailableError("denied")
+        db_path = db_dir / "moneybin.duckdb"
+        db_path.write_bytes(b"pre-existing-encrypted-content")
+
+        with pytest.raises(DatabaseKeyError, match="denied"):
+            init_db(db_path, secret_store=store)
+
+        store.set_key.assert_not_called()
+
 
 class TestDatabaseOperations:
     """Database.execute(), .sql(), .conn property."""

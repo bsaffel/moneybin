@@ -254,11 +254,12 @@ def _run_duckdb_cli(
         init_script = _create_init_script(db_path)
     except SecretUnavailableError:
         logger.error(
-            f"❌ OS keychain denied access to the key. {database_key_error_hint()}"
+            f"❌ OS keychain denied access to the key. "
+            f"{database_key_error_hint(db_path)}"
         )
         raise typer.Exit(1) from None
     except SecretNotFoundError:
-        logger.error(f"❌ Key not found. {database_key_error_hint()}")
+        logger.error(f"❌ Key not found. {database_key_error_hint(db_path)}")
         raise typer.Exit(1) from None
 
     try:
@@ -669,7 +670,11 @@ def db_unlock() -> None:
     settings = get_settings()
     store = SecretStore()
 
-    # Retrieve the stored salt
+    # Retrieve the stored salt. Deliberately not split into a separate
+    # SecretUnavailableError branch like the other two call sites: even a
+    # confirmed denial doesn't resolve the ambiguity here, since the salt
+    # could equally be absent because auto-key mode (not --passphrase) was
+    # used — the hedge below covers both regardless of which was raised.
     try:
         salt_b64 = store.get_key(SALT_NAME)
     except SecretNotFoundError:
