@@ -200,3 +200,20 @@ def test_auto_rule_guard_defaults() -> None:
     assert s.auto_rule_min_contains_length == 4
     assert s.auto_rule_broad_match_min == 20
     assert s.auto_rule_broad_match_factor == 10
+
+
+@pytest.mark.unit
+def test_gsheet_oauth_client_id_ships_embedded_by_default() -> None:
+    """The Sheets connector authorizes on a fresh install with no dotenv.
+
+    connect-gsheet.md ships a public installed-app client ID (PKCE, no
+    secret) so a pip user never touches Google Cloud Console. SyncConfig
+    carries a same-named Auth0 field; embedding must not land there.
+    """
+    from moneybin.config import GSHEET_PUBLIC_OAUTH_CLIENT_ID, MoneyBinSettings
+
+    settings = MoneyBinSettings()
+
+    assert settings.gsheet.oauth_client_id == GSHEET_PUBLIC_OAUTH_CLIENT_ID
+    assert GSHEET_PUBLIC_OAUTH_CLIENT_ID.endswith(".apps.googleusercontent.com")
+    assert settings.sync.oauth_client_id is None
