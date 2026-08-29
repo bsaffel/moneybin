@@ -292,14 +292,18 @@ Numbered, each independently testable.
     Requirement 16's `merchant_links_run` leak is the other, and its reach is
     smaller — a message rewrite rather than a carrier change.
 19. The profile banner names the source that actually resolved, or says
-    nothing. **Already satisfied at spec time:** the ambiguous
-    `config.yaml or first-run wizard` string is gone, and
-    `src/moneybin/cli/utils.py:454` now logs a bare
-    `Using profile: {profile_name}`. The requirement stays as a regression
-    guard — a test asserts the banner never names more than one candidate
-    source — and it is scoped to that. The other half of F11, that the banner
-    costs a line per invocation to say something the reader rarely needs, is
-    a separate call from whether it is ambiguous and is **not** decided here.
+    nothing. Two lines carry it, and only one was clean at spec time.
+    `src/moneybin/cli/utils.py` logs a bare `Using profile: {profile_name}`,
+    which is fine; the *source* line beside it read
+    `Profile resolved from config.yaml or first-run wizard` — it told the
+    reader that one of two things happened without saying which, which is
+    exactly the ambiguity this requirement forbids. Reading
+    `get_default_profile()` before `ensure_default_profile()` resolves it:
+    that is the same check `ensure_default_profile` makes first, so a
+    non-`None` result means the config path and `None` means the wizard.
+    The other half of F11, that the banner costs a line per invocation to say
+    something the reader rarely needs, is a separate call from whether it is
+    ambiguous and is **not** decided here.
 
 **Quiet on success (F6)**
 

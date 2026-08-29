@@ -101,6 +101,52 @@ class TestCLIProfileHandling:
             assert result.exit_code == 0
             assert get_current_profile() == "test"
 
+    def test_profile_source_names_the_source_that_resolved(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Req 19: the banner names one source, never a list of candidates.
+
+        `config.yaml or first-run wizard` told the reader that one of two
+        things happened without saying which — the exact ambiguity the
+        requirement exists to forbid.
+
+        Captured with a handler bound to the source logger rather than
+        ``caplog``: ``resolve_profile`` calls ``setup_observability`` before it
+        reports, which rebuilds root handlers and drops caplog's.
+        """
+        mocker.patch.dict(os.environ, {})
+        os.environ.pop("MONEYBIN_PROFILE", None)
+
+        from moneybin.cli.utils import resolve_profile
+        from moneybin.utils.user_config import set_default_profile
+
+        records: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        source_logger = logging.getLogger("moneybin.cli.utils.profile_source")
+        handler = _Capture(level=logging.INFO)
+        source_logger.addHandler(handler)
+        source_logger.setLevel(logging.INFO)
+        try:
+            with _create_profile("test"):
+                # Make config.yaml genuinely name the active profile, so the
+                # real resolver takes the config path rather than the wizard.
+                set_default_profile("test")
+                resolve_profile()
+        finally:
+            source_logger.removeHandler(handler)
+
+        reported = "\n".join(record.getMessage() for record in records)
+
+        assert reported, "the profile source was never reported"
+        assert " or " not in reported, (
+            f"banner names more than one candidate source: {reported!r}"
+        )
+        assert reported == "Profile resolved from config.yaml", reported
+
     def test_explicit_profile_bob(self, mocker: MockerFixture) -> None:
         """Test setting a different user profile."""
         with _create_profile("bob"):

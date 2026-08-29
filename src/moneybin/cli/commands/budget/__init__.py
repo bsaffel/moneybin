@@ -13,13 +13,13 @@ app = typer.Typer(
 )
 
 
-@app.command("set")
+@app.command("set", hidden=True)
 def budget_set(category: str, amount: float) -> None:
     """Set or update a budget target for a category."""
-    _not_implemented("budget-tracking.md")
+    _not_implemented("budget targets")
 
 
-@app.command("delete")
+@app.command("delete", hidden=True)
 def budget_delete(category: str) -> None:
     """Delete a budget target for a category."""
-    _not_implemented("budget-tracking.md")
+    _not_implemented("budget targets")
