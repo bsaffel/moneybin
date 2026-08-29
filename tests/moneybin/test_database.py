@@ -220,6 +220,25 @@ class TestDatabaseInit:
         with pytest.raises(DatabaseKeyError, match="encryption key"):
             Database(db_path, secret_store=store, read_only=False)
 
+    def test_raises_database_key_error_with_denied_message_when_keychain_denied(
+        self, db_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A denied keychain read gets a confident message, not a generic miss.
+
+        Distinguishes the two exceptions SecretStore can raise (see #419):
+        SecretUnavailableError means the OS reported the read as denied, so
+        the message says so instead of implying the key is simply absent.
+        """
+        import moneybin.database as db_module
+        from moneybin.secrets import SecretUnavailableError
+
+        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+        store = MagicMock()
+        store.get_key.side_effect = SecretUnavailableError("denied")
+        db_path = db_dir / "moneybin.duckdb"
+        with pytest.raises(DatabaseKeyError, match="denied"):
+            Database(db_path, secret_store=store, read_only=False)
+
     def test_read_only_missing_file_does_not_consult_secret_store(
         self, db_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -234,6 +253,61 @@ class TestDatabaseInit:
             Database(db_path, read_only=True, secret_store=store)
 
         store.get_key.assert_not_called()
+
+
+class TestDatabaseKeyErrorHint:
+    """database_key_error_hint() — existence-aware recovery hint (see #419)."""
+
+    def test_fresh_install_points_at_db_init_only(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """No database file at all — the only unambiguous case: run db init."""
+        from moneybin.database import database_key_error_hint
+
+        settings = MagicMock()
+        settings.database.path = tmp_path / "never-created.duckdb"
+        mocker.patch("moneybin.database.get_settings", return_value=settings)
+
+        hint = database_key_error_hint()
+
+        assert "db init" in hint
+        assert "db unlock" not in hint
+
+    def test_existing_database_hints_both_unlock_and_env_var_never_db_init(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """File exists — ambiguous: offer db unlock AND the keychain-free env var.
+
+        Never leads with db init against a database that already holds data
+        (the dangerous suggestion #419 was filed about), and always includes a
+        path that works even when this environment denies keychain access
+        outright.
+        """
+        from moneybin.database import database_key_error_hint
+
+        existing = tmp_path / "moneybin.duckdb"
+        existing.write_bytes(b"")
+        settings = MagicMock()
+        settings.database.path = existing
+        mocker.patch("moneybin.database.get_settings", return_value=settings)
+
+        hint = database_key_error_hint()
+
+        assert "db unlock" in hint
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in hint
+        assert "db init" not in hint
+
+    def test_settings_load_failure_falls_back_to_db_init(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Settings can't load at all — degrade to the safest default."""
+        from moneybin.database import database_key_error_hint
+
+        mocker.patch(
+            "moneybin.database.get_settings", side_effect=RuntimeError("no profile")
+        )
+
+        assert "db init" in database_key_error_hint()
 
 
 class TestDatabaseOperations:

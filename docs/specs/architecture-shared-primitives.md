@@ -494,7 +494,7 @@ Two narrow naming changes rode along with this spec landing — both shipped. Re
 ### Source files (primitives)
 
 - `src/moneybin/database.py` — `Database`, `get_database`, `init_db`, `sqlmesh_context`, `interrupt_and_reset_database`.
-- `src/moneybin/secrets.py` — `SecretStore`, `SecretNotFoundError`, `SecretStorageUnavailableError`.
+- `src/moneybin/secrets.py` — `SecretStore`, `SecretNotFoundError`, `SecretUnavailableError`, `SecretStorageUnavailableError`.
 - `src/moneybin/config.py` — `MoneyBinSettings` and nested config sections.
 - `src/moneybin/tables.py` — `TableRef` constants and the `INTERFACE_TABLES` derivation.
 - `src/moneybin/staleness.py` — `resolve_threshold_days`, `is_stale`, `SECURITY_TYPE_STALENESS_DAYS`; the observation-age vocabulary shared by every valuation domain (see "Observation staleness" below).

@@ -1164,6 +1164,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **A denied keychain read is no longer reported as a missing key.** macOS
+  reports a sandbox-denied keychain read identically to a genuinely absent
+  item (`errSecItemNotFound`), so three call sites each guessed differently:
+  `db shell`/`db query` said the database was locked, opening the database
+  said the encryption key was missing and to run `db init` — even against a
+  database that already existed, contradicting its own hint one line below —
+  and `db unlock` asked whether `--passphrase` mode was ever used.
+  `SecretStore.get_key()` now raises a distinct `SecretUnavailableError` when
+  the keychain backend itself can tell a denied read apart from a routine
+  miss (e.g. a locked Linux secret service); every call site routes through
+  one existence-aware hint instead: `db init` only when no database file
+  exists yet, otherwise `db unlock` or the `MONEYBIN_DATABASE__ENCRYPTION_KEY`
+  env var — which needs no further keychain access, exactly what may be
+  unavailable (#419).
+
 - **An account with nothing to identify it now reads `Unnamed account`, not
   `Account <id>`.** `core.dim_accounts.display_name` ended its fallback chain
   with the account's grain key, which for an account imported before the

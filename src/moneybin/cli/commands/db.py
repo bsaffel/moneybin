@@ -63,11 +63,20 @@ def _load_encryption_key() -> Generator[str, None, None]:
     beyond the yield.
     """
     from moneybin.database import database_key_error_hint  # noqa: PLC0415
-    from moneybin.secrets import SecretNotFoundError, SecretStore  # noqa: PLC0415
+    from moneybin.secrets import (  # noqa: PLC0415
+        SecretNotFoundError,
+        SecretStore,
+        SecretUnavailableError,
+    )
 
     store = SecretStore()
     try:
         key = store.get_key("DATABASE__ENCRYPTION_KEY")
+    except SecretUnavailableError:
+        logger.error(
+            f"❌ OS keychain denied access to the key. {database_key_error_hint()}"
+        )
+        raise typer.Exit(1) from None
     except SecretNotFoundError:
         logger.error(f"❌ Key not found. {database_key_error_hint()}")
         raise typer.Exit(1) from None
@@ -238,12 +247,18 @@ def _run_duckdb_cli(
         logger.info("💡 Install from: https://duckdb.org/docs/installation/")
         raise typer.Exit(1)
 
-    from moneybin.secrets import SecretNotFoundError
+    from moneybin.database import database_key_error_hint
+    from moneybin.secrets import SecretNotFoundError, SecretUnavailableError
 
     try:
         init_script = _create_init_script(db_path)
+    except SecretUnavailableError:
+        logger.error(
+            f"❌ OS keychain denied access to the key. {database_key_error_hint()}"
+        )
+        raise typer.Exit(1) from None
     except SecretNotFoundError:
-        logger.error("❌ Database is locked — run 'moneybin db unlock' first")
+        logger.error(f"❌ Key not found. {database_key_error_hint()}")
         raise typer.Exit(1) from None
 
     try:
@@ -658,9 +673,24 @@ def db_unlock() -> None:
     try:
         salt_b64 = store.get_key(SALT_NAME)
     except SecretNotFoundError:
-        logger.error(
-            "❌ No passphrase salt found. Was this database created with --passphrase mode?"
-        )
+        if not settings.database.path.exists():
+            logger.error(
+                "❌ No passphrase salt found — no database exists yet. "
+                "Run 'moneybin db init --passphrase' to create one."
+            )
+        else:
+            # The database exists but the salt couldn't be read — genuinely
+            # ambiguous (see #419): could mean --passphrase mode was never
+            # used, or that this environment (sandboxed, headless, or CI)
+            # denies keychain access outright, which looks identical.
+            logger.error(
+                "❌ No passphrase salt found in keychain or env var, but "
+                "the database already exists. This can mean it wasn't "
+                "created with --passphrase mode, or that this environment "
+                "denies keychain access. If you know the raw encryption "
+                "key, set MONEYBIN_DATABASE__ENCRYPTION_KEY to open the "
+                "database directly, bypassing the salt entirely."
+            )
         raise typer.Exit(1) from None
 
     try:

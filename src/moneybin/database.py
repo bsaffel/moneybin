@@ -50,6 +50,7 @@ from moneybin.secrets import (
     SecretNotFoundError,
     SecretStorageUnavailableError,
     SecretStore,
+    SecretUnavailableError,
 )
 
 logger = logging.getLogger(__name__)
@@ -575,11 +576,18 @@ class Database:
         else:
             try:
                 encryption_key = store.get_key(_KEY_NAME)
+            except SecretUnavailableError as e:
+                # More specific than the branch below: the keychain backend
+                # itself reported the read as denied, not a routine miss.
+                raise DatabaseKeyError(
+                    "Cannot open database — the OS keychain denied the "
+                    "encryption-key read (locked or restricted), not "
+                    "because the key is missing."
+                ) from e
             except SecretNotFoundError as e:
                 raise DatabaseKeyError(
-                    f"Cannot open database — encryption key not found. "
-                    f"Run 'moneybin db init' to create a new database, or set "
-                    f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
+                    f"Cannot open database — encryption key not found in "
+                    f"keychain or env var MONEYBIN_{_KEY_NAME}."
                 ) from e
             if secret_store is None:
                 _cached_encryption_key = encryption_key
@@ -1163,21 +1171,32 @@ def invalidate_encryption_key_cache() -> None:
 
 
 def database_key_error_hint() -> str:
-    """Return the appropriate hint for a DatabaseKeyError.
+    """Return the appropriate hint for a keychain-backed secret read failure.
 
-    Checks whether the database file exists to distinguish first-run
-    (need ``db init``) from locked (need ``db unlock``).
+    Checks whether the database file exists to distinguish first-run (need
+    ``db init``) from an existing database whose key could not be read. The
+    latter is genuinely ambiguous on platforms with no distinguishing OS
+    signal: a denied keychain read and a missing key raise the identical
+    exception, since macOS reports both as "item not found" to a process the
+    sandbox denies (moneybin#419). The hint always includes a recovery path
+    that doesn't need further keychain access, since that's exactly what may
+    be unavailable.
 
     Returns:
         A hint string with the correct recovery command.
     """
     try:
         db_path = get_settings().database.path
-        if db_path.exists():
-            return "💡 Run 'moneybin db unlock' to unlock the database first"
-        return "💡 Run 'moneybin db init' to create the database first"
     except Exception:  # noqa: BLE001 — fallback if settings can't load
         return "💡 Run 'moneybin db init' to create the database"
+    if not db_path.exists():
+        return "💡 Run 'moneybin db init' to create the database first"
+    return (
+        "💡 Run 'moneybin db unlock' if the keychain is simply locked, or "
+        f"set MONEYBIN_{_KEY_NAME} if this environment (sandboxed, "
+        "headless, or CI) denies keychain access outright — a denied read "
+        "looks identical to a missing key"
+    )
 
 
 def _lock_error_message(db_path: "Path", max_wait: float) -> str:
