@@ -455,8 +455,10 @@ class SyncConfig(BaseModel):
 # and this ships in source — a wheel contains no dotenv to read it from.
 # connect-gsheet.md "Design rationale"; a wrong-field copy would land in
 # SyncConfig.oauth_client_id, which is the unrelated Auth0 client.
+# Must stay in MoneyBin's own Google Cloud project — the consent screen shows
+# that project's app name, so a borrowed client asks users to trust a stranger.
 GSHEET_PUBLIC_OAUTH_CLIENT_ID = (
-    "719646616923-nteho06cqo7lfprmtvmsnpk6842m5lfp.apps.googleusercontent.com"
+    "756678783976-ld203ch19knsc2th5b6sc7mm5tq3dtpd.apps.googleusercontent.com"
 )
 
 
