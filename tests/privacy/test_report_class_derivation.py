@@ -458,7 +458,7 @@ def test_declared_classes_match_derivation() -> None:
     ``_declaration_is_safe`` — **tier, then mask strength**, not class
     identity. Over-declaring is safe below CRITICAL except over ``FLOORED``
     (every other transform there is passthrough) and not automatically safe
-    at CRITICAL, where the four classes share a tier and differ in transform;
+    at CRITICAL, where the five classes share a tier and differ in transform;
     see that helper. Only a declaration
     that masks strictly more weakly than derivation requires an explicit,
     reasoned ``class_downgrades`` entry.
