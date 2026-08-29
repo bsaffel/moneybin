@@ -450,17 +450,28 @@ class SyncConfig(BaseModel):
     )
 
 
+# Public installed-app OAuth client. Native apps are public clients (RFC 8252)
+# and cannot hold a secret, so PKCE and the loopback redirect carry the security
+# and this ships in source — a wheel contains no dotenv to read it from.
+# connect-gsheet.md "Design rationale"; a wrong-field copy would land in
+# SyncConfig.oauth_client_id, which is the unrelated Auth0 client.
+GSHEET_PUBLIC_OAUTH_CLIENT_ID = (
+    "719646616923-nteho06cqo7lfprmtvmsnpk6842m5lfp.apps.googleusercontent.com"
+)
+
+
 class GSheetSettings(BaseModel):
     """Configuration for the Google Sheets connector."""
 
     model_config = ConfigDict(frozen=True)
 
     oauth_client_id: str = Field(
-        default="",
+        default=GSHEET_PUBLIC_OAUTH_CLIENT_ID,
         description=(
             "OAuth 2.0 client ID for the installed-app Google OAuth flow. "
-            "Empty disables the connector; set via "
-            "MONEYBIN_GSHEET__OAUTH_CLIENT_ID."
+            "Defaults to MoneyBin's public client; override with "
+            "MONEYBIN_GSHEET__OAUTH_CLIENT_ID to use your own Google Cloud "
+            "project. Empty disables the connector."
         ),
     )
     api_timeout_seconds: float = Field(
