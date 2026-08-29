@@ -1177,7 +1177,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one existence-aware hint instead: `db init` only when no database file
   exists yet, otherwise `db unlock` or the `MONEYBIN_DATABASE__ENCRYPTION_KEY`
   env var — which needs no further keychain access, exactly what may be
-  unavailable (#419).
+  unavailable (#419, PR #453).
 
 - **An account with nothing to identify it now reads `Unnamed account`, not
   `Account <id>`.** `core.dim_accounts.display_name` ended its fallback chain
