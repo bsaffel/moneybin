@@ -193,6 +193,6 @@ Files in `.claude/rules/` auto-load via `paths:` frontmatter — path-scoped loa
 | Rule | Covers |
 |------|--------|
 | `design-principles.md` | Durable path selection: one-way-door classifier, public-contract trigger list, the agent protocol, coherence rule. Depth — post-launch contract evolution, the milestone addressing scheme (`M{phase}{letter}.{n}` — append, don't reinvent), what it does NOT mean, the ADR bar: `.claude/references/design-principles-depth.md` |
-| `branching.md` | Branch prefix → PR label mapping, commit message style |
+| `branching.md` | Branch prefix → PR label mapping, commit message style; what you publish is a public surface — never put real account data in a branch name, commit message, or PR body |
 | `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |
 | `agent-experience.md` | Required agent-experience report whenever you interact with MoneyBin's MCP server in a session |

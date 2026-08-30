@@ -2222,6 +2222,25 @@ def test_propose_pair_refuses_an_account_absent_from_dim_accounts(
         svc.propose_pair(_PROV1, "no_such_acct")
 
 
+def test_propose_pair_does_not_echo_a_source_native_account_number(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """An unresolved ``account_id`` can be the institution's own key.
+
+    Staging projects ``COALESCE(links.account_id, a.account_id)``, so an account
+    that never resolved carries its source-native key here — on OFX that is
+    ``<ACCTID>``, a real account number. This refusal reaches the durable
+    ``cli_*.log`` and the MCP envelope, both of which outlive the call.
+    """
+    _seed_unrelated_pair(db)
+
+    with pytest.raises(UserError) as excinfo:
+        svc.propose_pair(_PROV1, "987654321098")
+
+    assert "987654321098" not in str(excinfo.value)
+    assert "****1098" in str(excinfo.value)
+
+
 def test_propose_pair_refuses_a_pair_already_queued_in_the_other_direction(
     svc: AccountLinksService, db: Database
 ) -> None:

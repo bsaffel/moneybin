@@ -34,6 +34,7 @@ from moneybin.services.identity_confirmation import (
     AccountLedgerFacts,
     AccountMergeFacts,
 )
+from moneybin.services.import_service import mask_embedded_account_number
 from moneybin.services.ledger_overlap import probe_ledger_overlap
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
@@ -616,9 +617,13 @@ class AccountLinksService:
             known = set()
         missing = [a for a in pair if a not in known]
         if missing:
+            # Masked because an unresolved ``account_id`` is the source-native
+            # key, which on OFX is the institution's ``<ACCTID>``. This refusal
+            # reaches the CLI log and the MCP envelope, both of which outlive
+            # the call that named it.
             raise UserError(
                 "No account in core.dim_accounts for "
-                f"{', '.join(repr(m) for m in missing)}.",
+                f"{', '.join(repr(mask_embedded_account_number(m)) for m in missing)}.",
                 code=error_codes.MUTATION_NOT_FOUND,
             )
 

@@ -8,18 +8,38 @@ description: "Branch prefix → PR label mapping, commit message style"
 
 `{type}/{kebab-case-summary}` — e.g., `feat/add-oauth-support`, `fix/null-pointer-auth`, `deps/bump-typer`.
 
-## Branch names are a public surface
+## What you publish is a public surface
 
 A branch name reaches origin, every PR URL, the reflog, and CI logs — all
-public. Never build one from real account data: an institution plus a last four
-is a linked pair, and a rename does not recall it. One such branch had to be
-force-deleted from origin with its history rewritten, and the worktree
-directory kept the name afterward.
+public. So does a commit message, a PR title or body, a review reply, and an
+issue comment. Never build one from real account data: an institution plus a
+last four is a linked pair, and neither a rename nor an edit recalls it. One
+such branch had to be force-deleted from origin with its history rewritten,
+and the worktree directory kept the name afterward. A PR body later had to be
+edited for the same reason, and the commit message it was drafted from still
+carries the value.
 
 Name the defect, not the account — `fix/cross-source-dedup-remediation`, never
 `fix/<bank>-<last-four>-…`. The same applies to worktree directory names, which
-the native mechanism derives from the branch. This rule file is public too:
-describe the shape, never paste the offending name as an example.
+the native mechanism derives from the branch.
+
+**A last four is not made safe by looking masked.** The `****NNNN` form is safe
+because the mask replaces digits that were there. A display label of the form
+`<Account Name> (...<last four>)` replaces nothing — the last four *is* the
+identifying content, and the label wrapped around it supplies the second half
+of the pair. AGENTS.md's "masked identifiers" allowance covers a value reduced
+to a mask, never a value that was only ever a last four.
+
+**Quoting the repo does not launder it.** A last four already sitting in a
+spec, a fixture filename, a CHANGELOG entry, or a test is still that account's
+last four when you copy it into a commit message or a PR body — it reaches a
+new audience that was not reading the source file. Cite `path:line` instead,
+or write the shape (`<label> (...<last4>)`). Prose you author is the surface
+this rule governs; a code change that must touch the literal is a different
+question, decided in the file it lives in.
+
+This rule file is public too: describe the shape, never paste the offending
+value as an example.
 
 ## Type → Label Mapping
 

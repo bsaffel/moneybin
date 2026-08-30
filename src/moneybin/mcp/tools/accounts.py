@@ -895,8 +895,8 @@ def accounts_links_run(
     id is the account absorbed and the second the one kept, whenever both sides
     are absorbable. When only one holds the accepted ``source_native`` link a
     merge re-points, that one is absorbed whichever way round it was passed.
-    Passing one id is an error, not a sweep: silently backfilling the whole book because the second id was
-    forgotten writes proposals nobody asked for.
+    Passing one id is an error, not a sweep: silently backfilling the whole
+    book because the second id was forgotten writes proposals nobody asked for.
 
     Neither form merges anything. Both write ``pending``
     ``app.account_link_decisions`` rows that still clear the same confirmation
