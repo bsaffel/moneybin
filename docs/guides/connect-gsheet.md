@@ -38,18 +38,22 @@ This opens your browser to Google's OAuth consent screen using the **Desktop app
 
 You only need to do this once per profile. `gsheet connect` will trigger `gsheet auth` automatically on first run if you skip this step.
 
-### Using your own Google OAuth client
+### You must register your own Google OAuth client
 
-MoneyBin ships a public client ID for its own Google Cloud project. Google requires a matching client secret in the code-for-token exchange even under PKCE, because Desktop clients have no signing certificate to attest with. That pair is not a confidential credential — [RFC 8252 §8.5](https://datatracker.ietf.org/doc/html/rfc8252#section-8.5) says a secret shipped to every user cannot be one — and it grants no access to your data on its own: a human still has to consent, and the scope is read-only.
+**This step is currently required.** MoneyBin ships a public client ID for its own Google Cloud project, but no client secret, and Google's Desktop clients need both: the client secret is required to exchange the authorization code for a token, even under PKCE, because a Desktop client has no signing certificate to attest with. Without it `gsheet auth` refuses up front rather than walking you through a consent screen that cannot complete. Whether MoneyBin should ship a secret alongside the ID — as `gcloud` and rclone do — is an open decision.
 
-What it does share is quota. Google rate-limits the Sheets API per client ID at roughly 10 queries per second across everyone using that credential, so a heavy shared load is felt by every user of it. To run on your own quota, register a **Desktop app** client in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) with the Sheets API enabled, then set both:
+Register a **Desktop app** client in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) with the Sheets API enabled, then set both:
 
 ```bash
 export MONEYBIN_GSHEET__OAUTH_CLIENT_ID="<your-client-id>.apps.googleusercontent.com"
 export MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET="<your-client-secret>"
 ```
 
-Set both or neither. With an ID and no secret, `gsheet auth` refuses before opening the browser rather than letting you consent to an exchange that cannot complete.
+Set both or neither — an ID without a secret is refused, and so is a secret without an ID.
+
+Export them somewhere your scheduled runs will see them, not just your interactive shell. The refresh grant needs the same pair as the initial exchange, so a `launchd`/`cron` `moneybin refresh` that starts without them fails once the cached access token ages out, roughly an hour after an authorization that looked fine.
+
+Running your own client also gives you your own quota. Google meters the Sheets API [per Cloud project](https://developers.google.com/workspace/sheets/api/limits) — 300 read requests per minute — with a separate 60-per-minute cap per user per project. The per-user cap means one heavy user cannot monopolize a shared credential, but the project ceiling is genuinely shared, which is why rclone is retiring its own shared client ID during 2026.
 
 ## Connect a sheet
 

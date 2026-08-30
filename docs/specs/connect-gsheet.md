@@ -567,11 +567,17 @@ Verify against the current `raw_import_log.sql` schema at implementation time. P
 
 ### Embedded credential: what it costs
 
-A desktop app cannot hold a confidential credential, so the shipped client ID
+A desktop app cannot hold a confidential credential, so any shipped client ID
 and secret are readable by anyone with the wheel or the repo. That is the
 accepted industry position for installed apps (RFC 8252 §8.5; `gcloud` and
 Thunderbird both ship one), not a MoneyBin shortcut. Two costs come with it,
 and the second is the one that actually bites.
+
+**Current state: the ID ships, the secret does not.** Google's Desktop clients
+require both, so the shipped ID alone cannot complete an authorization and
+`authorize()` refuses before opening a browser. Users register their own
+Desktop client today. Whether to ship the pair is an open decision, and the
+costs below are what it would buy and cost.
 
 **Impersonation (bounded).** Anyone holding the credential can render a consent
 screen carrying MoneyBin's name. It grants no data access on its own — a human
@@ -580,17 +586,22 @@ must still complete consent — and the read-only
 verification does **not** mitigate this: a phisher using the leaked ID gets our
 *verified* screen. Verification buys user confidence, not protection here.
 
-**Shared quota (the real ceiling).** Google rate-limits per client ID —
-default 10 queries/second — across every user of that credential. rclone,
-the most-cited example of this pattern, is **retiring its shared client ID
-during 2026** for exactly this reason and now tells users to create their own.
+**Shared quota (the real ceiling).** Google meters the Sheets API per Cloud
+project at 300 read requests/minute, with a separate 60/minute cap per user
+per project ([published limits](https://developers.google.com/workspace/sheets/api/limits)).
+The per-user cap bounds what any one user can draw, so the failure is
+aggregate contention against the 300/minute project ceiling rather than a
+single heavy user starving the rest. rclone, the most-cited example of this
+pattern, is **retiring its shared client ID during 2026** for exactly this
+reason and now tells users to create their own.
 
-**Consequence for us.** The embedded credential is correct for launch and is a
-scaling cliff, not a permanent foundation. `MONEYBIN_GSHEET__OAUTH_CLIENT_ID`
-and `MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET` are therefore load-bearing, not a
-power-user nicety: they are the documented remedy for anyone hitting throttling
-or unwilling to trust our project's identity, and must stay documented in the
-user-facing connect guide. Revisit before the shared client becomes the
+**Consequence for us.** An embedded credential would be a scaling cliff, not a
+permanent foundation. `MONEYBIN_GSHEET__OAUTH_CLIENT_ID` and
+`MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET` are therefore load-bearing, not a
+power-user nicety: today they are the only way to authorize at all, and after
+any embed decision they remain the documented remedy for anyone hitting
+throttling or unwilling to trust our project's identity. They must stay
+documented in the user-facing connect guide. Revisit before the shared client becomes the
 bottleneck; the durable alternatives are per-user client IDs (costs the
 one-click promise) or a server-side broker (costs local-first, since tokens
 would transit our infrastructure).

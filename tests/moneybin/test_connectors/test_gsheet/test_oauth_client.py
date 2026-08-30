@@ -471,15 +471,41 @@ def test_google_oauth_authorize_refuses_before_browser_when_secret_missing(
     from_config.assert_not_called()
 
 
+def test_google_oauth_refresh_names_the_missing_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refresh without the secret must name the cause, not fail generically.
+
+    google-auth raises a generic RefreshError when client_secret is None, and
+    the connector's broad handler turns that into "See application logs for
+    detail." A scheduled `refresh` started without the exported variable would
+    then fail with an error naming nothing, while is_authorized() still says
+    true.
+    """
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "refresh-abc",
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+    })
+    from google.oauth2 import credentials as credentials_module
+
+    constructor = MagicMock()
+    monkeypatch.setattr(credentials_module, "Credentials", constructor)
+    client = GoogleOAuthClient(store, _make_settings(client_secret=None))
+
+    with pytest.raises(GSheetAuthError, match="OAUTH_CLIENT_SECRET"):
+        client.get_access_token()
+
+    constructor.assert_not_called()
+
+
 def test_google_oauth_refresh_sends_configured_client_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The refresh grant needs the secret for the same reason the exchange does.
 
-    google-auth puts client_secret into the refresh body unconditionally and
-    urlencodes it, so None is transmitted as the literal string "None" and
-    Google answers invalid_client. Authorizing would succeed and every pull
-    after the access token's first hour would fail.
+    google-auth refuses locally when client_secret is None, so a connector that
+    authorized successfully would still fail every pull once the cached access
+    token aged out.
     """
     store = _store_with({
         GSHEET_REFRESH_TOKEN_KEY: "refresh-abc",
