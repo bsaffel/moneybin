@@ -133,17 +133,29 @@ _READ_ONLY_PREFIXES = re.compile(
 # whole tree, so a write buried in a CTE or a semicolon-separated second
 # statement is still caught (`SELECT 1; DROP TABLE x` verified).
 #
+# Only 8 of these are reachable nested inside a CTE under sqlglot's own
+# grammar (verified): Insert, Update, Delete, Create, Drop, Attach, Detach,
+# Merge. TruncateTable, Alter, and Copy are NOT — `WITH x AS (TRUNCATE TABLE
+# y) SELECT 1 FROM x` (and the ALTER/COPY equivalents) is a sqlglot
+# `ParseError`, so those three can only ever appear as a bare top-level
+# statement, which `_READ_ONLY_PREFIXES` above already refuses before this
+# check runs. They stay in the tuple as defense-in-depth against that prefix
+# check ever loosening, not because this check currently reaches them.
+#
 # `EXPORT DATABASE`, `IMPORT DATABASE`, and bare `REPLACE INTO` have no
-# dedicated sqlglot node for the duckdb dialect (`REPLACE INTO` isn't even
-# valid DuckDB syntax — only `INSERT OR REPLACE INTO`, which parses as
-# `exp.Insert`) and are not covered here. That's safe: each is a top-level-only
-# statement DuckDB's own grammar refuses anywhere but the start of a query
-# (verified: `WITH x AS (SELECT 1) EXPORT DATABASE 'dir'` is a DuckDB parser
-# error, not a valid nested form), so `_READ_ONLY_PREFIXES` above already
-# refuses it as a bare statement before this check would run. The same holds
-# for DDL sqlglot falls back to a generic `exp.Command` for (e.g. `ALTER
-# SEQUENCE ... RESTART`, `DROP TYPE`, `CREATE TYPE ... AS ENUM`) — verified
-# each is likewise rejected by DuckDB when following `WITH x AS (SELECT 1)`.
+# dedicated sqlglot node for the duckdb dialect at all (`REPLACE INTO` isn't
+# even valid DuckDB syntax — only `INSERT OR REPLACE INTO`, which parses as
+# `exp.Insert`) and are not in this tuple. That's safe for the same structural
+# reason: each is a top-level-only statement DuckDB's own grammar refuses
+# anywhere but the start of a query (verified: `WITH x AS (SELECT 1) EXPORT
+# DATABASE 'dir'` is a DuckDB parser error, not a valid nested form) — a bare
+# occurrence is refused above by `_READ_ONLY_PREFIXES`, and a WITH-prefixed
+# attempt fails to parse at all, which this function defers to the caller
+# (see the `except SqlParseError` below) and `execute_sql_query`'s own parse
+# then reports as `sql_invalid_query`. The same holds for DDL sqlglot falls
+# back to a generic `exp.Command` for (e.g. `ALTER SEQUENCE ... RESTART`,
+# `DROP TYPE`, `CREATE TYPE ... AS ENUM`) — verified each is likewise rejected
+# by DuckDB when following `WITH x AS (SELECT 1)`.
 _WRITE_EXPRESSION_TYPES = (
     exp.Insert,
     exp.Update,
@@ -160,7 +172,7 @@ _WRITE_EXPRESSION_TYPES = (
 
 
 def _contains_write_operation(tree: exp.Expr) -> bool:
-    return next(tree.find_all(*_WRITE_EXPRESSION_TYPES), None) is not None
+    return any(tree.find_all(*_WRITE_EXPRESSION_TYPES))
 
 
 def validate_read_only_query(sql: str) -> str | None:
@@ -205,7 +217,11 @@ def validate_read_only_query(sql: str) -> str | None:
 
     # A parse error here is not this gate's to report: return None and let the
     # caller's own parse surface it with its own error code. Both remaining
-    # checks need the parsed tree, so parse once (cached) and reuse it.
+    # checks need the parsed tree, so parse once here and reuse it for both —
+    # `execute_sql_query` parses again on its own (unstripped) copy of the
+    # query text, a separate `parse_cached` cache entry whenever the query
+    # carries leading/trailing whitespace; this only dedupes the two checks
+    # in this function.
     try:
         tree = parse_cached(stripped)
     except SqlParseError:

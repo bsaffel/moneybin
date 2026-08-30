@@ -585,6 +585,83 @@ def test_real_write_keyword_still_rejected_alongside_string_literal() -> None:
     assert "Write operations" in error
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        pytest.param("WITH x AS (CREATE TABLE y (a INT)) SELECT 1 FROM x", id="create"),
+        pytest.param("WITH x AS (DROP TABLE y) SELECT 1 FROM x", id="drop"),
+        pytest.param("WITH x AS (ATTACH 'y.db' AS y) SELECT 1 FROM x", id="attach"),
+        pytest.param("WITH x AS (DETACH y) SELECT 1 FROM x", id="detach"),
+        pytest.param(
+            "WITH x AS (MERGE INTO t USING s ON t.id = s.id "
+            "WHEN MATCHED THEN UPDATE SET x = s.x) SELECT 1 FROM x",
+            id="merge",
+        ),
+    ],
+)
+def test_write_type_nested_in_cte_is_independently_isolated(sql: str) -> None:
+    """Each AST write-node type the guard checks is exercised on its own.
+
+    A bare top-level write statement (e.g. ``DROP TABLE t``) is already
+    refused by the read-only-prefix check before the AST write check ever
+    runs, so a fixture using only bare statements would still pass even with
+    the corresponding entry deleted from ``_WRITE_EXPRESSION_TYPES`` — the
+    "fixture trips two guards, isolates neither" trap this repo's testing.md
+    documents. Nesting each write inside a CTE forces the prefix check to
+    pass, so only the structural write check can be what refuses it.
+
+    INSERT and UPDATE already have their own CTE-nested tests above.
+    TruncateTable, Alter, and Copy are absent here because DuckDB's own
+    grammar (via sqlglot) refuses to parse any of them as a CTE body at all —
+    verified, each raises a ``ParseError`` rather than reaching this check in
+    either a bare or nested position, so no isolating fixture is
+    constructible for them; they stay in the checked tuple purely as
+    defense-in-depth (see the module comment on `_WRITE_EXPRESSION_TYPES`).
+    """
+    error = validate_read_only_query(sql)
+    assert error is not None
+    assert "Write operations" in error
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        pytest.param("EXPORT DATABASE 'dir'", id="export-bare"),
+        pytest.param("IMPORT DATABASE 'dir'", id="import-bare"),
+        pytest.param(
+            "REPLACE INTO core.fct_transactions VALUES (1)", id="replace-bare"
+        ),
+        pytest.param(
+            "WITH x AS (SELECT 1) EXPORT DATABASE 'dir'", id="export-with-prefixed"
+        ),
+        pytest.param(
+            "WITH x AS (SELECT 1) IMPORT DATABASE 'dir'", id="import-with-prefixed"
+        ),
+        pytest.param(
+            "WITH x AS (SELECT 1) REPLACE INTO core.fct_transactions VALUES (1)",
+            id="replace-with-prefixed",
+        ),
+    ],
+)
+def test_keywords_with_no_dedicated_ast_node_are_still_refused(
+    sql: str, populated_db: Database
+) -> None:
+    """EXPORT/IMPORT DATABASE and bare REPLACE INTO are refused end to end.
+
+    These three have no dedicated sqlglot node for the duckdb dialect, so
+    `_WRITE_EXPRESSION_TYPES` deliberately doesn't name them (see the module
+    comment). Pins that the rest of the pipeline still refuses every shape
+    regardless: a bare statement fails the read-only-prefix check, and a
+    WITH-prefixed attempt is a genuine DuckDB syntax error (a CTE body must be
+    a SELECT) that fails to parse — `validate_read_only_query` defers a parse
+    failure to the caller, and `execute_sql_query`'s own parse then raises
+    `sql_invalid_query`.
+    """
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(populated_db, sql, max_rows=10)
+    assert ei.value.code == error_codes.SQL_INVALID_QUERY
+
+
 def test_audit_log_export_action_query_executes(populated_db: Database) -> None:
     """``... WHERE action LIKE 'export%'`` against ``app.audit_log`` returns rows.
 
