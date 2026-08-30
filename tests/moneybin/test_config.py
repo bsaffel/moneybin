@@ -217,3 +217,35 @@ def test_gsheet_oauth_client_id_ships_embedded_by_default() -> None:
     assert settings.gsheet.oauth_client_id == GSHEET_PUBLIC_OAUTH_CLIENT_ID
     assert GSHEET_PUBLIC_OAUTH_CLIENT_ID.endswith(".apps.googleusercontent.com")
     assert settings.sync.oauth_client_id is None
+
+
+def test_gsheet_oauth_client_secret_defaults_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No secret ships yet, so the connector must not invent one."""
+    from moneybin.config import MoneyBinSettings
+
+    monkeypatch.delenv("MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET", raising=False)
+
+    assert MoneyBinSettings().gsheet.oauth_client_secret is None
+
+
+def test_gsheet_oauth_client_secret_override_lands_on_gsheet_not_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The override configures the Sheets desktop client, not Auth0.
+
+    SyncConfig carries a same-named oauth_client_secret; a wrong-field edit
+    would populate that instead and leave the Sheets exchange unauthenticated.
+    """
+    from moneybin.config import MoneyBinSettings
+
+    expected = "desktop-secret"
+    monkeypatch.setenv("MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET", expected)
+
+    settings = MoneyBinSettings()
+
+    secret = settings.gsheet.oauth_client_secret
+    assert secret is not None
+    assert secret.get_secret_value() == expected
+    assert settings.sync.oauth_client_secret is None

@@ -402,3 +402,40 @@ def test_google_oauth_refresh_downgrade_clears_capability_cache(
         call.args == (GSHEET_WRITE_ACCESS_TOKEN_KEY, "downgraded-access")
         for call in store.set_key.call_args_list
     )
+
+
+def test_google_oauth_authorize_sends_configured_client_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Desktop-app client's code->token exchange needs the client secret.
+
+    Consent succeeds and Google returns an authorization code, then the
+    exchange fails when client_secret is empty, so the configured value has to
+    reach the client config the flow is built from.
+    """
+    creds = MagicMock(
+        refresh_token="refresh-xyz",  # noqa: S106  # test credential
+        token="access-xyz",  # noqa: S106  # test credential
+        expiry=None,
+        granted_scopes=[GOOGLE_SHEETS_READ_SCOPE],
+        scopes=[GOOGLE_SHEETS_READ_SCOPE],
+    )
+    flow = MagicMock()
+    flow.run_local_server.return_value = creds
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    from_config = MagicMock(return_value=flow)
+    monkeypatch.setattr(InstalledAppFlow, "from_client_config", from_config)
+    expected = "fake-desktop-secret"
+    settings = MoneyBinSettings.model_validate({
+        "gsheet": {
+            "oauth_client_id": "fake-client-id.apps.googleusercontent.com",
+            "oauth_client_secret": expected,
+        }
+    })
+    client = GoogleOAuthClient(_store_with({}), settings)
+
+    client.authorize()
+
+    client_config = from_config.call_args.args[0]
+    assert client_config["installed"]["client_secret"] == expected

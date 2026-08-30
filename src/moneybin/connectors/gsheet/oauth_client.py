@@ -131,12 +131,19 @@ class GoogleOAuthClient:
         # don't have google-auth-oauthlib installed (e.g. minimal CI jobs).
         from google_auth_oauthlib.flow import InstalledAppFlow
 
+        client_secret = self._settings.gsheet.oauth_client_secret
         client_config = {
             "installed": {
                 "client_id": client_id,
-                # PKCE-only flow: no client secret required for an installed
-                # app. google-auth-oauthlib accepts an empty string here.
-                "client_secret": "",
+                # Google's Desktop clients require the secret in the
+                # code->token exchange even under PKCE — an empty string fails
+                # the exchange *after* a successful consent, so the browser
+                # looks like it worked. RFC 8252 s8.5: a secret shipped to
+                # every user is not confidential; PKCE and the loopback
+                # redirect carry the security.
+                "client_secret": (
+                    client_secret.get_secret_value() if client_secret else ""
+                ),
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
                 # 127.0.0.1, not "localhost": on hosts where localhost
