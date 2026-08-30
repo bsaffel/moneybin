@@ -69,6 +69,8 @@ Set both or neither. A secret belongs to the client ID it was issued with, so se
 
 Export them somewhere your scheduled runs will see them, not just your interactive shell. The refresh grant needs the same pair as the initial exchange, so a `launchd`/`cron` `moneybin refresh` that starts without them fails once the cached access token ages out, roughly an hour after an authorization that looked fine.
 
+Switching between the shipped client and your own — in either direction — means authorizing again. Google issues a refresh token to one specific client and will not honor it for another, so MoneyBin records which client obtained each grant and refuses to reuse it under a different one. `gsheet auth` reports such a grant as unauthorized and walks you through consent again, rather than reporting success and then failing an hour later when the cached access token ages out and the refresh is rejected.
+
 Your own client also gives you your own quota, which is the main reason to bother — see [Why MoneyBin ships a client secret](#why-moneybin-ships-a-client-secret) above for the numbers.
 
 ## Connect a sheet

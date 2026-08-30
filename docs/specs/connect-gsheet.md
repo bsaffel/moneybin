@@ -472,7 +472,7 @@ Downstream `fct_transactions`, `core.bridge_*`, reports, and balances automatica
 | `raw.import_log` | One row per pull. `source_type='gsheet'`, `source_origin=<connection_id>`, `source_file='gsheet://<spreadsheet_id>/<gid>'`, `format_name='gsheet:<workbook>/<sheet>'`, `format_source='gsheet'`. |
 | `raw.tabular_accounts` | Accounts inferred from multi-account sheets land here as today, with `source_type='gsheet'`. |
 | `app.audit_log` | `GSheetConnectionsRepo` emits paired audit rows on every mutation. New `entity_type='gsheet_connection'`. |
-| `SecretStore` (keyring) | New keys: `gsheet:refresh_token`, `gsheet:access_token`, `gsheet:access_token_expires_at`. Single identity per profile in v1. |
+| `SecretStore` (keyring) | New keys: `gsheet:refresh_token`, `gsheet:access_token`, `gsheet:access_token_expires_at`, `gsheet:granted_scopes`, `gsheet:client_id` (plus the `gsheet:write_*` twin of each). `gsheet:client_id` records which OAuth client obtained the grant, because Google will not refresh a token under a different client than issued it. Single identity per profile in v1. |
 
 ### Possible small extension to `raw.import_log`
 
@@ -853,6 +853,7 @@ flowchart LR
 
 **Failures:**
 16. OAuth refresh token revoked → `GSheetAuthError`, status='auth_expired', other connections unaffected.
+16a. Configured OAuth client changed since the grant was issued (including a grant stored before `gsheet:client_id` existed) → `is_authorized()` is False and authorization re-runs. Refusing here is the point: the stored refresh token belongs to the previous client, so Google rejects it, and without this check `gsheet auth` reports `already_authorized` and the failure surfaces only once the cached access token expires.
 17. Sheet unshared (403) → status='unreachable', refresh continues.
 18. Rate limit (429) → 3x retry with backoff, success or skip.
 19. Per-row validation failure → bad rows rejected, good rows ingested, `import_log.status='partial'`.

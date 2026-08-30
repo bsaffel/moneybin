@@ -786,6 +786,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   §8.5, Google's own installed-app documentation, and rclone's 2026 retirement
   of its shared client — are written up in `docs/guides/connect-gsheet.md`
   under "Why MoneyBin ships a client secret" (#475).
+- **A Google Sheets grant is now bound to the client that obtained it.**
+  Google issues a refresh token to one specific OAuth client, so a grant
+  obtained under your own client cannot be refreshed under MoneyBin's shipped
+  one, or the reverse. MoneyBin records the issuing client alongside each grant
+  and refuses to reuse it under a different one: `gsheet auth` reports the
+  grant as unauthorized and re-runs consent. Previously it reported
+  `already_authorized`, served the cached access token until it aged out, and
+  only then failed with "OAuth token refresh failed. See application logs for
+  detail." Grants stored before this release record no issuing client, so each
+  needs one `moneybin gsheet connect` to re-authorize (#475).
 - **`--help` no longer lists commands that aren't built yet.** Twelve
   whole-command placeholders — `budget delete/set`, `sync key rotate`, `sync
   schedule set/show/remove`, `transactions categorize ml apply/status/train`,

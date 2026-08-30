@@ -16,7 +16,9 @@ from moneybin.connectors.gsheet.errors import GSheetAuthError
 from moneybin.connectors.gsheet.oauth_client import (
     GOOGLE_SHEETS_READ_SCOPE,
     GOOGLE_SHEETS_WRITE_SCOPE,
+    GSHEET_CLIENT_ID_KEY,
     GSHEET_GRANTED_SCOPES_KEY,
+    GSHEET_WRITE_CLIENT_ID_KEY,
     GSHEET_WRITE_GRANTED_SCOPES_KEY,
     GoogleOAuthClient,
 )
@@ -97,8 +99,11 @@ def test_fake_oauth_implements_oauth_credentials_provider_protocol() -> None:
 # -- GoogleOAuthClient --------------------------------------------------------
 
 
+_CONFIGURED_CLIENT_ID = "fake-client-id.apps.googleusercontent.com"
+
+
 def _make_settings(
-    client_id: str = "fake-client-id.apps.googleusercontent.com",
+    client_id: str = _CONFIGURED_CLIENT_ID,
     client_secret: str | None = "fake-client-secret",  # noqa: S107  # test credential
 ) -> MoneyBinSettings:
     """Build a settings instance with a configured gsheet client id and secret.
@@ -130,13 +135,21 @@ def _store_with(values: dict[str, str | None]) -> MagicMock:
 
 
 def test_google_oauth_is_authorized_true_when_refresh_token_present() -> None:
-    store = _store_with({GSHEET_REFRESH_TOKEN_KEY: "refresh-abc"})
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "refresh-abc",
+        GSHEET_CLIENT_ID_KEY: _CONFIGURED_CLIENT_ID,
+    })
     client = GoogleOAuthClient(store, _make_settings())
     assert client.is_authorized() is True
 
 
 def test_google_oauth_legacy_refresh_token_is_readonly_not_write_capable() -> None:
-    store = _store_with({GSHEET_REFRESH_TOKEN_KEY: "refresh-abc"})
+    # Legacy here means pre-*scopes* metadata; a grant with no recorded issuer
+    # is a separate case that now requires re-authorization entirely.
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "refresh-abc",
+        GSHEET_CLIENT_ID_KEY: _CONFIGURED_CLIENT_ID,
+    })
     client = GoogleOAuthClient(store, _make_settings())
 
     assert client.is_authorized(require_write=False) is True
@@ -157,6 +170,7 @@ def test_google_oauth_get_access_token_returns_cached_when_unexpired() -> None:
     store = _store_with({
         GSHEET_ACCESS_TOKEN_KEY: "cached-access",
         GSHEET_ACCESS_TOKEN_EXPIRES_KEY: str(future),
+        GSHEET_CLIENT_ID_KEY: _CONFIGURED_CLIENT_ID,
     })
     client = GoogleOAuthClient(store, _make_settings())
 
@@ -192,8 +206,10 @@ def test_google_oauth_revoke_deletes_all_grant_keys() -> None:
         GSHEET_WRITE_ACCESS_TOKEN_KEY,
         GSHEET_WRITE_ACCESS_TOKEN_EXPIRES_KEY,
         GSHEET_WRITE_GRANTED_SCOPES_KEY,
+        GSHEET_CLIENT_ID_KEY,
+        GSHEET_WRITE_CLIENT_ID_KEY,
     }
-    assert store.delete_key.call_count == 8
+    assert store.delete_key.call_count == 10
 
 
 def test_google_oauth_revoke_survives_missing_keys() -> None:
@@ -202,7 +218,7 @@ def test_google_oauth_revoke_survives_missing_keys() -> None:
     client = GoogleOAuthClient(store, _make_settings())
     # Should not raise even when every key is already gone.
     client.revoke()
-    assert store.delete_key.call_count == 8
+    assert store.delete_key.call_count == 10
 
 
 def test_google_oauth_cached_read_token_is_rejected_for_write() -> None:
@@ -230,6 +246,8 @@ def test_google_oauth_write_grant_never_serves_a_read_request() -> None:
         GSHEET_WRITE_ACCESS_TOKEN_KEY: "write-access",
         GSHEET_WRITE_ACCESS_TOKEN_EXPIRES_KEY: str(future),
         GSHEET_WRITE_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_WRITE_SCOPE,
+        GSHEET_CLIENT_ID_KEY: _CONFIGURED_CLIENT_ID,
+        GSHEET_WRITE_CLIENT_ID_KEY: _CONFIGURED_CLIENT_ID,
     })
     client = GoogleOAuthClient(store, _make_settings())
 
@@ -391,6 +409,7 @@ def test_google_oauth_refresh_downgrade_clears_capability_cache(
     store = _store_with({
         GSHEET_WRITE_REFRESH_TOKEN_KEY: "write-refresh",
         GSHEET_WRITE_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_WRITE_SCOPE,
+        GSHEET_WRITE_CLIENT_ID_KEY: _CONFIGURED_CLIENT_ID,
     })
     creds = MagicMock()
     creds.token = "downgraded-access"  # noqa: S105  # test credential
@@ -489,6 +508,7 @@ def test_google_oauth_refresh_names_the_missing_secret(
     store = _store_with({
         GSHEET_REFRESH_TOKEN_KEY: "refresh-abc",
         GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+        GSHEET_CLIENT_ID_KEY: _CONFIGURED_CLIENT_ID,
     })
     from google.oauth2 import credentials as credentials_module
 
@@ -514,6 +534,7 @@ def test_google_oauth_refresh_sends_configured_client_secret(
     store = _store_with({
         GSHEET_REFRESH_TOKEN_KEY: "refresh-abc",
         GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+        GSHEET_CLIENT_ID_KEY: _CONFIGURED_CLIENT_ID,
     })
     creds = MagicMock(
         token="access-xyz",  # noqa: S106  # test credential
@@ -577,6 +598,7 @@ def test_google_oauth_is_authorized_false_when_client_secret_missing() -> None:
     store = _store_with({
         GSHEET_REFRESH_TOKEN_KEY: "refresh-abc",
         GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+        GSHEET_CLIENT_ID_KEY: _CONFIGURED_CLIENT_ID,
     })
     client = GoogleOAuthClient(store, _make_settings(client_secret=None))
 
@@ -705,3 +727,104 @@ def test_google_oauth_is_authorized_write_false_with_the_shipped_client(
     client = GoogleOAuthClient(store, MoneyBinSettings.model_validate({}))
 
     assert client.is_authorized(require_write=True) is False
+
+
+# -- Grants are bound to the client that issued them ---------------------------
+
+_OTHER_CLIENT_ID = "someone-elses-client.apps.googleusercontent.com"
+
+
+def test_is_authorized_false_when_the_grant_came_from_another_client() -> None:
+    """A refresh token Google issued to a different client cannot be refreshed."""
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "refresh-from-the-old-client",
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+        GSHEET_CLIENT_ID_KEY: _OTHER_CLIENT_ID,
+    })
+    client = GoogleOAuthClient(store, _make_settings())
+
+    assert client.is_authorized() is False
+
+
+def test_is_authorized_false_when_the_grant_records_no_issuing_client() -> None:
+    """A grant stored before issuer tracking has an unknowable issuer.
+
+    Treating it as a match is what let a stale grant report
+    already_authorized and then fail opaquely at refresh time.
+    """
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "refresh-from-before-issuer-tracking",
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+    })
+    client = GoogleOAuthClient(store, _make_settings())
+
+    assert client.is_authorized() is False
+
+
+def test_is_authorized_true_when_the_grant_matches_the_configured_client() -> None:
+    """Guard rail: the issuer check must not reject a matching grant."""
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "refresh-from-this-client",
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+        GSHEET_CLIENT_ID_KEY: "fake-client-id.apps.googleusercontent.com",
+    })
+    client = GoogleOAuthClient(store, _make_settings())
+
+    assert client.is_authorized() is True
+
+
+def test_get_access_token_refuses_a_grant_from_another_client() -> None:
+    """The still-valid cached token must not paper over a changed client.
+
+    Serving it would keep pulls working right up until the cache expires,
+    which is exactly the delayed, unexplained failure being fixed.
+    """
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "refresh-from-the-old-client",
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+        GSHEET_CLIENT_ID_KEY: _OTHER_CLIENT_ID,
+        GSHEET_ACCESS_TOKEN_KEY: "cached-and-still-valid",
+        GSHEET_ACCESS_TOKEN_EXPIRES_KEY: str(int(time.time()) + 3600),
+    })
+    client = GoogleOAuthClient(store, _make_settings())
+
+    with pytest.raises(GSheetAuthError, match="different OAuth client"):
+        client.get_access_token()
+
+
+def test_authorize_persists_the_issuing_client_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without this the next run cannot tell which client issued the grant."""
+    store = _store_with({})
+    creds = MagicMock(
+        refresh_token="new-refresh",  # noqa: S106  # test credential
+        token="new-access",  # noqa: S106  # test credential
+        expiry=None,
+        granted_scopes=[GOOGLE_SHEETS_READ_SCOPE],
+        scopes=[GOOGLE_SHEETS_READ_SCOPE],
+    )
+    flow = MagicMock()
+    flow.run_local_server.return_value = creds
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    monkeypatch.setattr(
+        InstalledAppFlow, "from_client_config", MagicMock(return_value=flow)
+    )
+
+    GoogleOAuthClient(store, _make_settings()).authorize(require_write=False)
+
+    store.set_key.assert_any_call(
+        GSHEET_CLIENT_ID_KEY, "fake-client-id.apps.googleusercontent.com"
+    )
+
+
+def test_revoke_clears_the_persisted_issuing_client_ids() -> None:
+    """A leftover issuer would outlive the grant it describes."""
+    store = _store_with({})
+
+    GoogleOAuthClient(store, _make_settings()).revoke()
+
+    cleared = {call.args[0] for call in store.delete_key.call_args_list}
+    assert GSHEET_CLIENT_ID_KEY in cleared
+    assert GSHEET_WRITE_CLIENT_ID_KEY in cleared
