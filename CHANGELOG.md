@@ -779,7 +779,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   client ID is still refused by name. The reasoning and its sources — RFC 8252
   §8.5, Google's own installed-app documentation, and rclone's 2026 retirement
   of its shared client — are written up in `docs/guides/connect-gsheet.md`
-  under "Why MoneyBin ships a client secret".
+  under "Why MoneyBin ships a client secret" (#475).
 - **`--help` no longer lists commands that aren't built yet.** Twelve
   whole-command placeholders — `budget delete/set`, `sync key rotate`, `sync
   schedule set/show/remove`, `transactions categorize ml apply/status/train`,
