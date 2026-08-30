@@ -40,7 +40,7 @@ coverage catalog.
 
 ## Coverage
 
-Counted from the map on 2026-08-14, it contains:
+Counted from the map on 2026-08-30, it contains:
 
 - 50 non-exempt capability rows covering all 50 standard MCP tools. `reports`
   serves two capabilities — the catalog read and report execution — under one

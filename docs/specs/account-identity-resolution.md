@@ -969,6 +969,17 @@ Guard-2 free-text resolution):
   `account_link_decisions`: `pending` (awaiting review) → `accepted` (merged onto
   the named candidate) / `rejected` (declined pairing — not re-proposed) /
   `reversed` (a prior decision undone; re-resolution re-proposes).
+
+  "Not re-proposed" binds the *proposer*, not the user. A rejection is the
+  answer to a signal the resolver raised, so the resolver must not raise it
+  again — that is what stops a queue from re-asking a question already
+  answered. `propose_pair` is the user asking, and it re-proposes a rejected
+  pair deliberately: the named-pair form exists for the duplicate no signal
+  reaches, and a past "no" to the resolver's guess is not a standing veto on
+  the user's own knowledge. Treating it as one would leave a real duplicate
+  with no recovery at all, since nothing else can name that pair. Only a
+  `pending` or `accepted` decision blocks, because those are live rather than
+  answered.
 - **Inline discovery.** `import_confirm` / sync results report *"N account-link(s)
   need review"* and point at the queue — exactly how `matches run` ends with *"Run
   review when ready."* The primary, least-astonishing discovery path: you're told
