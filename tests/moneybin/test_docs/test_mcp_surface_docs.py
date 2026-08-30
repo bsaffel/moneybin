@@ -6,6 +6,8 @@ import ast
 import json
 import re
 import warnings
+from bisect import bisect_right
+from functools import cache
 from hashlib import sha256
 from inspect import getdoc
 from pathlib import Path
@@ -160,9 +162,6 @@ def _snapshot_tool_schemas() -> dict[str, dict[str, object]]:
     }
 
 
-STANDARD_TOOL_SCHEMAS = _snapshot_tool_schemas()
-
-
 def _schema_string_literals(value: object) -> set[str]:
     if isinstance(value, dict):
         literals: set[str] = set()
@@ -182,6 +181,10 @@ def _schema_string_literals(value: object) -> set[str]:
     return set()
 
 
+STANDARD_TOOL_SCHEMAS = _snapshot_tool_schemas()
+STANDARD_SCHEMA_LITERALS = frozenset(_schema_string_literals(STANDARD_TOOL_SCHEMAS))
+
+
 BASELINE_TOOL_NAMES = frozenset(
     str(tool["name"]) for tool in json.loads(BASELINE_SNAPSHOT.read_text())["tools"]
 )
@@ -198,6 +201,14 @@ HISTORICAL_RESOURCE_URIS = frozenset(
 REGISTERED_RESOURCE_URIS = frozenset(
     re.findall(r'@mcp\.resource\("([^"]+)"\)', RESOURCES.read_text())
 )
+
+
+@cache
+def _mcp_contract_name_pattern(names: frozenset[str]) -> re.Pattern[str]:
+    alternatives = "|".join(
+        re.escape(name) for name in sorted(names, key=len, reverse=True)
+    )
+    return re.compile(rf"(?<![A-Za-z0-9_])({alternatives})(?![A-Za-z0-9_])")
 
 
 def _current_public_mcp_docs() -> tuple[Path, ...]:
@@ -241,14 +252,27 @@ def _identifier_is_qualified_or_data_value(
     )
 
 
-def _markdown_heading_breadcrumb(text: str, offset: int) -> tuple[str, ...]:
+@cache
+def _markdown_headings(
+    text: str,
+) -> tuple[tuple[int, ...], tuple[tuple[str, ...], ...]]:
     headings: list[tuple[int, str]] = []
-    for match in re.finditer(r"(?m)^(#{1,6})[ \t]+([^\n]+)$", text[:offset]):
+    offsets: list[int] = []
+    breadcrumbs: list[tuple[str, ...]] = []
+    for match in re.finditer(r"(?m)^(#{1,6})[ \t]+([^\n]+)$", text):
         level = len(match.group(1))
         while headings and headings[-1][0] >= level:
             headings.pop()
         headings.append((level, match.group(2)))
-    return tuple(title for _, title in headings)
+        offsets.append(match.start())
+        breadcrumbs.append(tuple(title for _, title in headings))
+    return tuple(offsets), tuple(breadcrumbs)
+
+
+def _markdown_heading_breadcrumb(text: str, offset: int) -> tuple[str, ...]:
+    offsets, breadcrumbs = _markdown_headings(text)
+    index = bisect_right(offsets, offset) - 1
+    return breadcrumbs[index] if index >= 0 else ()
 
 
 def _markdown_table_column_header(text: str, offset: int) -> str | None:
@@ -1061,32 +1085,36 @@ def _mcp_contract_violations(
         REGISTERED_RESOURCE_URIS if resource_uris is None else resource_uris
     )
     registered_prompts = frozenset() if prompt_names is None else prompt_names
-    schema_literals = frozenset(_schema_string_literals(schemas))
+    schema_literals = (
+        STANDARD_SCHEMA_LITERALS
+        if schemas is STANDARD_TOOL_SCHEMAS
+        else frozenset(_schema_string_literals(schemas))
+    )
     retired_names = (BASELINE_TOOL_NAMES | HISTORICAL_TOOL_NAMES) - schemas.keys()
 
     prospective_names = PROSPECTIVE_MCP_NAMES - schemas.keys()
-    for name in sorted(retired_names | prospective_names):
-        pattern = rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])"
-        for match in re.finditer(pattern, text):
-            requires_closed_world_context = (
-                name in AMBIGUOUS_RETIRED_MCP_NAMES or name in schema_literals
+    names = frozenset(retired_names | prospective_names)
+    for match in _mcp_contract_name_pattern(names).finditer(text):
+        name = match.group(1)
+        requires_closed_world_context = (
+            name in AMBIGUOUS_RETIRED_MCP_NAMES or name in schema_literals
+        )
+        is_unambiguous = (
+            name in UNAMBIGUOUS_RETIRED_MCP_NAMES
+            and not _identifier_is_qualified_or_data_value(text, match)
+            and not _identifier_has_non_mcp_context(text, match)
+        )
+        is_mcp = (
+            _closed_world_presentation_kind(text, match) == "tool"
+            and _identifier_is_contract_subject(text, match)
+            if requires_closed_world_context
+            else _contextual_identifier_is_mcp(text, match)
+        )
+        if is_unambiguous or is_mcp:
+            violations.add(
+                f"{path}:{_line_number(text, match.start())}: "
+                f"unregistered MCP identifier {name!r}"
             )
-            is_unambiguous = (
-                name in UNAMBIGUOUS_RETIRED_MCP_NAMES
-                and not _identifier_is_qualified_or_data_value(text, match)
-                and not _identifier_has_non_mcp_context(text, match)
-            )
-            is_mcp = (
-                _closed_world_presentation_kind(text, match) == "tool"
-                and _identifier_is_contract_subject(text, match)
-                if requires_closed_world_context
-                else _contextual_identifier_is_mcp(text, match)
-            )
-            if is_unambiguous or is_mcp:
-                violations.add(
-                    f"{path}:{_line_number(text, match.start())}: "
-                    f"unregistered MCP identifier {name!r}"
-                )
 
     for match in MCP_LABELLED_IDENTIFIER_PATTERN.finditer(text):
         token = match.group(1).strip()
