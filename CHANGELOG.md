@@ -791,6 +791,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **Google Sheets connects with no setup.** MoneyBin now ships the OAuth client
+  secret alongside its public client ID, so `moneybin gsheet auth` completes on
+  a bare install. Google's Desktop clients require both halves, and a wheel
+  carries no dotenv to read a user-supplied secret from — so shipping only the
+  ID meant every user first registered their own Desktop client in the Google
+  Cloud Console, the 15 minutes of setup this connector chose OAuth to avoid. A
+  credential shipped to every user is not confidential (RFC 8252 §8.5); PKCE
+  and the loopback redirect carry the security: Google delivers an
+  authorization code only to a redirect URI the client registered, and a
+  Desktop client may register only loopback, so a mailed consent link delivers
+  the code to the victim's own machine rather than the sender's. The shipped
+  client declares `spreadsheets.readonly` alone, and MoneyBin now refuses to
+  request write access while running on it — exporting *to* a sheet needs your
+  own client, as it always has — which keeps Google's unverified-app warning
+  meaningful on any screen that asks to edit your spreadsheets. The shared
+  client draws on one Google project's quota of 300 read requests per minute,
+  so `MONEYBIN_GSHEET__OAUTH_CLIENT_ID` and
+  `MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET` remain supported and are the
+  documented remedy for anyone throttled, or unwilling to trust MoneyBin's
+  project identity on the consent screen. Setting a secret without its own
+  client ID is still refused by name. The reasoning and its sources — RFC 8252
+  §8.5, Google's own installed-app documentation, and rclone's 2026 retirement
+  of its shared client — are written up in `docs/guides/connect-gsheet.md`
+  under "Why MoneyBin ships a client secret" (#475).
+- **A Google Sheets grant is now bound to the client that obtained it.**
+  Google issues a refresh token to one specific OAuth client, so a grant
+  obtained under your own client cannot be refreshed under MoneyBin's shipped
+  one, or the reverse. MoneyBin records the issuing client alongside each grant
+  and refuses to reuse it under a different one: `gsheet auth` reports the
+  grant as unauthorized and re-runs consent. Previously it reported
+  `already_authorized`, served the cached access token until it aged out, and
+  only then failed with "OAuth token refresh failed. See application logs for
+  detail." Grants stored before this release record no issuing client, so each
+  needs one `moneybin gsheet connect` to re-authorize (#475).
+
 - **Every table the CLI prints is now built the same way.** Twelve commands
   rendered rows through five different idioms — a shared Rich helper for three,
   and a hand-padded f-string per command for the rest, each with its own guessed
@@ -1327,11 +1362,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET` is now required alongside
   `MONEYBIN_GSHEET__OAUTH_CLIENT_ID`, and both the authorization and refresh
   grants refuse by name when either is missing rather than failing somewhere
-  less legible. Registering your own Desktop app client is required today;
-  `docs/guides/connect-gsheet.md` covers it. The refresh grant carried the same
-  defect and would have failed about an hour after an authorization that looked
-  healthy. Setting only the secret is refused too, because it pairs your secret
-  with MoneyBin's embedded client ID, which Google never issued it for. And
+  less legible. `docs/guides/connect-gsheet.md` covers bringing your own client.
+  The refresh grant carried the same defect and would have failed about an hour
+  after an authorization that looked healthy. Setting only the secret is
+  refused too, because it pairs your secret with MoneyBin's embedded client ID,
+  which Google never issued it for. And
   `gsheet auth` no longer reports an existing connection as authorized when
   either variable is missing: it re-authorizes and names the gap instead of
   succeeding now and failing at the next refresh. (#456)
