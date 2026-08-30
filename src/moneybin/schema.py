@@ -197,9 +197,9 @@ def _apply_comments(
     table_snapshot: dict[tuple[str, str], str | None],
     column_snapshot: dict[tuple[str, str, str], str | None],
 ) -> None:
-    """Parse SQL with sqlglot and apply table and column comments to DuckDB catalog.
+    """Apply a pre-derived table and column comment plan to DuckDB's catalog.
 
-    sqlglot attaches SQL comments to adjacent AST nodes during parsing:
+    The plan preserves comments sqlglot attached to adjacent AST nodes:
 
     - A ``/* description */`` block comment immediately before ``CREATE TABLE``
       is attached to the ``Create`` expression and applied as
