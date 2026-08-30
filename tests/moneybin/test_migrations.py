@@ -20,9 +20,8 @@ from moneybin.migrations import (
 )
 from tests.moneybin.test_cli.test_message_hygiene import names_an_internal_dependency
 
-pytestmark = pytest.mark.fresh_db
 
-
+@pytest.mark.fresh_db
 class TestMigrationSchema:
     """Verify migration tracking tables are created by init_schemas."""
 

@@ -24,8 +24,6 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V048__create_raw_exchange_rates import migrate
 from tests.moneybin.migration_helpers import run_migration
 
-pytestmark = pytest.mark.fresh_db
-
 
 def _insert_rate(
     db: Database,
