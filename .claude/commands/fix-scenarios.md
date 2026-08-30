@@ -101,7 +101,7 @@ non-zero CI exit and as per-scenario PASS/FAIL lines in the pytest-json-report a
    uv run pytest tests/scenarios/_runner_tests/ -v
    ```
 
-10. **Verify** with the full pre-commit checklist:
+10. **Verify** with the gates a scenario fix needs:
     ```
     make check test
     ```

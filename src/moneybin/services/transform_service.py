@@ -269,7 +269,7 @@ class TransformService:
         ``str(e)``) because SQLMesh error messages can embed file paths and
         SQL fragments containing user data.
         """
-        logger.info("Running SQLMesh transforms")
+        logger.info("Running transforms")
 
         t0 = time.monotonic()
         try:
@@ -330,8 +330,7 @@ class TransformService:
                 # PII patterns there. Coherent with the match/categorize steps
                 # in refresh.py, which already log {exc} + exc_info.
                 logger.warning(
-                    f"SQLMesh transforms failed after {elapsed:.2f}s: "
-                    f"{error_type}: {e}",
+                    f"Transforms failed after {elapsed:.2f}s: {error_type}: {e}",
                     exc_info=True,
                 )
                 return ApplyResult(
@@ -357,7 +356,7 @@ class TransformService:
                 )
 
             elapsed = time.monotonic() - t0
-            logger.info(f"SQLMesh transforms completed in {elapsed:.2f}s")
+            logger.info(f"Transforms completed in {elapsed:.2f}s")
             return ApplyResult(applied=True, duration_seconds=elapsed)
         finally:
             # Guarded because this is a `finally`: an unguarded raise here does

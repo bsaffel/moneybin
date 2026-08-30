@@ -19,7 +19,7 @@ from moneybin.config import set_current_profile
 from moneybin.errors import classify_user_error
 from moneybin.observability import setup_observability
 from moneybin.services.mutation_context import operation
-from moneybin.utils.user_config import ensure_default_profile
+from moneybin.utils.user_config import ensure_default_profile, get_default_profile
 
 if TYPE_CHECKING:
     from moneybin.database import Database
@@ -344,9 +344,12 @@ def sqlmesh_command(
     shadowing the imported ``operation`` context manager.
 
     Args:
-        label: Verb-noun describing the action (e.g. ``"SQLMesh plan"``).
+        label: Verb-noun describing the action (e.g. ``"Seed materialization"``).
             Used in the leading ``⚙️ {label}…`` and trailing
-            ``❌ {label} failed`` lines.
+            ``❌ {label} failed`` lines, so it reaches the user verbatim and
+            names the action in their vocabulary, never a dependency (req 17).
+            The message guard cannot catch a violation here — the string lives
+            at the call site, which is neither ``logger.*`` nor ``typer.echo``.
         success: Custom success message after ``✅ ``. Defaults to
             ``f"{label} completed"``.
     """
@@ -428,11 +431,16 @@ def resolve_profile() -> None:
         profile_name = env_profile
         source = "MONEYBIN_PROFILE env var"
     else:
+        # Which of the two things `ensure_default_profile` does is decided by
+        # whether config.yaml already names an active profile — the same check
+        # it makes first. Reading it here is what lets the banner name the
+        # source that actually resolved instead of listing both (req 19).
+        configured = get_default_profile()
         try:
             profile_name = ensure_default_profile()
         except KeyboardInterrupt:
             raise typer.Abort() from None
-        source = "config.yaml or first-run wizard"
+        source = "config.yaml" if configured else "the first-run wizard"
 
     try:
         set_current_profile(profile_name)

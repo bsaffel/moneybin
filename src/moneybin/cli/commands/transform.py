@@ -15,7 +15,7 @@ from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import handle_cli_errors, sqlmesh_command
 from moneybin.database import sqlmesh_context
 
-app = typer.Typer(help="Run data transformations using SQLMesh", no_args_is_help=True)
+app = typer.Typer(help="Run data transformations", no_args_is_help=True)
 logger = logging.getLogger(__name__)
 
 
@@ -27,7 +27,7 @@ def transform_plan(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
-    """Preview pending SQLMesh changes (and optionally apply them).
+    """Preview pending transform changes (and optionally apply them).
 
     Shows which models would be rebuilt based on changes since the last run.
     Use --apply to apply the plan immediately.
@@ -69,7 +69,7 @@ def transform_plan(
     if not plan.has_changes:
         logger.info("No pending changes")
         return
-    logger.info("Pending SQLMesh changes:")
+    logger.info("Pending transform changes:")
     if plan.directly_modified:
         logger.info(f"  Directly modified: {', '.join(plan.directly_modified)}")
     if plan.indirectly_modified:
@@ -86,7 +86,7 @@ def transform_apply(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
-    """Apply all pending SQLMesh changes.
+    """Apply all pending transform changes.
 
     Equivalent to 'moneybin transform plan --apply'. Rebuilds only changed
     models since the last run.
@@ -125,15 +125,15 @@ def transform_apply(
             raise typer.Exit(1)
         return
     if result.applied:
-        logger.info(f"✅ SQLMesh transforms applied in {result.duration_seconds:.2f}s")
+        logger.info(f"✅ Transforms applied in {result.duration_seconds:.2f}s")
     else:
-        logger.error(f"❌ SQLMesh transforms failed: {result.error}")
+        logger.error(f"❌ Transforms failed: {result.error}")
         raise typer.Exit(1)
 
 
 @app.command("seed")
 def transform_seed() -> None:
-    """Materialize SQLMesh seed models and propagate to app tables.
+    """Materialize seed models and propagate to app tables.
 
     Re-runs the seed step in isolation — useful after editing a seed CSV
     or restoring deleted defaults. ``moneybin db init`` and ``moneybin
@@ -194,7 +194,7 @@ def transform_status(
     if quiet:
         return
     if not status.initialized:
-        logger.info("No SQLMesh environment initialized yet")
+        logger.info("No transform environment initialized yet")
         logger.info("💡 Run 'moneybin transform apply' to initialize")
         return
     logger.info(f"Environment: {status.environment}")
@@ -254,7 +254,7 @@ def transform_audit(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
-    """Run data quality assertions defined in SQLMesh models."""
+    """Run data quality assertions defined in transform models."""
     from moneybin.cli.output import render_or_json  # noqa: PLC0415
     from moneybin.database import get_database  # noqa: PLC0415
     from moneybin.protocol.envelope import build_envelope  # noqa: PLC0415
