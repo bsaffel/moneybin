@@ -1277,8 +1277,8 @@ class AccountResolver:
         Institution is **evidence here, never a precondition.** Keying the rung
         on a shared institution made the whole rung unreachable for an account
         that has none, and one of the two channels routinely mints exactly that:
-        a tabular export names its account only in a label ("Daily Expense
-        (...1789)"), which yields a last four and no institution. The account it
+        a tabular export names its account only in a label ("Everyday Spending
+        (...7777)"), which yields a last four and no institution. The account it
         minted was invisible to every last-four comparison, so the cross-source
         twin the review queue exists to surface never appeared and both copies
         of the same ledger counted toward spending and net worth.
@@ -1343,10 +1343,10 @@ class AccountResolver:
         A reissue is sequential by definition — the old number stops, the
         replacement starts — and the signal never checked that. It fired on a
         shared institution plus a last four that differed, which in an
-        established book is every pair of cards at one bank: a user with three
-        Wells Fargo accounts got a proposal for each pair, and the two Chase
-        cards they had deliberately kept apart were proposed against each other
-        while both were still open. Each proposal's own evidence contradicted it
+        established book is every pair of cards at one bank: three accounts at
+        one institution draw a proposal for each pair, and two cards at another
+        that were deliberately kept apart are proposed against each other while
+        both are still open. Each proposal's own evidence contradicted it
         — zero matched transactions over a period both ledgers covered — and a
         queue that fills with self-refuting proposals teaches the user to
         dismiss the queue, which is the whole trust budget "magic stays visible"

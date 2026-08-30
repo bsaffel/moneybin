@@ -1724,21 +1724,21 @@ def test_a_coincidental_last_four_does_not_suppress_the_genuine_name_match(
     _seed_dim_account(
         db,
         account_id="tabular_source",
-        display_name="Daily Expense",
+        display_name="Everyday Spending",
         institution_name=None,
-        last_four="1789",
+        last_four="7777",
     )
     _seed_dim_account(
         db,
         account_id="four_digit_collision",
         display_name="Vacation Fund",
         institution_name="ALLY",
-        last_four="1789",
+        last_four="7777",
     )
     _seed_dim_account(
         db,
         account_id="genuine_twin",
-        display_name="Daily Expense",
+        display_name="Everyday Spending",
         institution_name="CHASE",
         last_four=None,
     )
@@ -1765,21 +1765,21 @@ def test_a_corroborated_last_four_still_stands_alone(db: Database) -> None:
     _seed_dim_account(
         db,
         account_id="chase_source",
-        display_name="Daily Expense",
+        display_name="Everyday Spending",
         institution_name="CHASE",
-        last_four="1789",
+        last_four="7777",
     )
     _seed_dim_account(
         db,
         account_id="chase_twin",
         display_name="Vacation Fund",
         institution_name="CHASE",
-        last_four="1789",
+        last_four="7777",
     )
     _seed_dim_account(
         db,
         account_id="namesake_elsewhere",
-        display_name="Daily Expense",
+        display_name="Everyday Spending",
         institution_name="ALLY",
         last_four=None,
     )
@@ -1806,7 +1806,7 @@ def test_the_last_four_rung_is_capped_like_its_siblings(db: Database) -> None:
     _seed_dim_account(
         db,
         account_id="filler_source",
-        display_name="Daily Expense",
+        display_name="Everyday Spending",
         institution_name=None,
         last_four="0000",
     )
@@ -1841,7 +1841,7 @@ def test_the_cap_keeps_the_corroborated_match_over_bare_collisions(
     _seed_dim_account(
         db,
         account_id="chase_filler_source",
-        display_name="Daily Expense",
+        display_name="Everyday Spending",
         institution_name="CHASE",
         last_four="0000",
     )
@@ -1891,7 +1891,7 @@ def test_a_bare_last_four_does_not_suppress_the_reissue_sweep(db: Database) -> N
     _seed_dim_account(
         db,
         account_id="tabular_coincidence",
-        display_name="Daily Expense",
+        display_name="Everyday Spending",
         institution_name=None,
         last_four="5678",
     )
@@ -2832,8 +2832,8 @@ def test_same_last_four_proposes_when_the_candidate_states_no_institution(
 ) -> None:
     """The cross-source twin an aggregator CSV mints must still reach the queue.
 
-    A tabular export names its account only as a label ("Daily Expense
-    (...1789)"), so the account it mints carries an exact last four and no
+    A tabular export names its account only as a label ("Everyday Spending
+    (...7777)"), so the account it mints carries an exact last four and no
     resolved institution. Keying the last-four rung on a shared institution made
     that account invisible to the proposer, and the duplicate double-counted
     every transaction it held.
@@ -2842,14 +2842,14 @@ def test_same_last_four_proposes_when_the_candidate_states_no_institution(
     _seed_dim_account(
         db,
         account_id="from_csv",
-        last_four="1789",
+        last_four="7777",
         institution_name=None,
-        display_name="…1789",
+        display_name="…7777",
     )
     resolver = AccountResolver(db, actor="system")
 
     resolved = resolver.resolve(
-        _src(source_type="ofx", source_account_key="ofx-1789", last_four="1789")
+        _src(source_type="ofx", source_account_key="ofx-7777", last_four="7777")
     )
 
     assert resolved.outcome == "pending_review"
@@ -2869,14 +2869,14 @@ def test_same_last_four_proposes_when_the_source_states_no_institution(
     _seed_dim_account(
         db,
         account_id="from_ofx",
-        last_four="1789",
+        last_four="7777",
         institution_name="Wells Fargo",
         institution_slug="wells_fargo",
     )
     resolver = AccountResolver(db, actor="system")
 
     resolved = resolver.resolve(
-        _src(source_account_key="csv-1789", last_four="1789", institution=None)
+        _src(source_account_key="csv-7777", last_four="7777", institution=None)
     )
 
     assert resolved.outcome == "pending_review"
@@ -2900,14 +2900,14 @@ def test_the_same_last_four_at_two_stated_institutions_stays_distinct(
     _seed_dim_account(
         db,
         account_id="at_chase",
-        last_four="4267",
+        last_four="1212",
         institution_name="chase",
-        display_name="Chase credit card …4267",
+        display_name="Chase credit card …1212",
     )
     resolver = AccountResolver(db, actor="system")
 
     resolved = resolver.resolve(
-        _src(source_account_key="wf-4267", institution="wells_fargo")
+        _src(source_account_key="wf-1212", institution="wells_fargo")
     )
 
     assert resolved.outcome == "minted_new"
@@ -3147,7 +3147,7 @@ def test_a_reissue_survives_while_the_provisional_has_no_ledger_yet(
     _seed_dim_account(
         db,
         account_id="reissued_old",
-        display_name="WF Checking 4267",
+        display_name="WF Checking 1234",
         institution_name="wells_fargo",
         last_four="1234",
     )

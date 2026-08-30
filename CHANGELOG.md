@@ -1288,7 +1288,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unrelated pairs, and each failure had its own cause.
 
   The last-four rung required the source to carry a resolved institution. A
-  tabular export names its account only inside a label — `Daily Expense (...)`
+  tabular export names its account only inside a label — `Everyday Spending (...)`
   — and no institution is parsed from it, so the account it minted had an exact
   last four and no institution, invisible to every last-four comparison. The
   OFX copy of the same account minted separately, both counted toward spending

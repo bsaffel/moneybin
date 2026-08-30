@@ -397,7 +397,7 @@ signal reliability:
    it.** Two accounts that state different banks are still vetoed, but a pair
    where either side names none is proposed under `last_four` rather than
    dropped. Requiring a resolved institution silently excluded the tabular path,
-   which names its account only inside a label (`Daily Expense (...1789)`) and
+   which names its account only inside a label (`Everyday Spending (...7777)`) and
    parses no institution from it: the twin it minted carried an exact last four,
    matched nothing, and both copies counted toward spending and net worth with
    no proposal to merge them. The two signals stay distinct so the queue can
