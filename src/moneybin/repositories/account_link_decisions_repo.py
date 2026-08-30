@@ -12,14 +12,13 @@ reject / reverse them.
 
 from __future__ import annotations
 
-import json
-from typing import Any
+from collections.abc import Callable
+from typing import Any, ClassVar
 
-import duckdb
-
-from moneybin.repositories.base import BaseRepo
+from moneybin.database import Database
+from moneybin.repositories.base import LinkDecisionsRepoBase
 from moneybin.services.audit_service import AuditEvent
-from moneybin.tables import ACCOUNT_LINK_DECISIONS
+from moneybin.tables import ACCOUNT_LINK_DECISIONS, TableRef
 
 _ACCOUNT_LINK_DECISIONS_COLUMNS = (
     "decision_id",
@@ -37,14 +36,6 @@ _ACCOUNT_LINK_DECISIONS_COLUMNS = (
     "reversed_by",
 )
 
-# Columns stored as JSON-encoded text. Reads decode them so the audit
-# before/after payload carries nested JSON, not a doubly-encoded string
-# (AuditService json.dumps the whole payload). Writes json.dumps once.
-_JSON_COLUMNS = frozenset({"match_signals"})
-
-# Pre-quoted column list for multi-row SELECT (security.md: identifiers quoted).
-_COLS = ", ".join(f'"{c}"' for c in _ACCOUNT_LINK_DECISIONS_COLUMNS)
-
 # The frozen display names arrived in V051, and `get_database(read_only=True)`
 # skips migrations — so the first read after an upgrade can land on a table that
 # never got them. The same list with literal NULLs in their place, positions
@@ -56,37 +47,36 @@ _PRE_V051_COLS = ", ".join(
 )
 
 
-def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
-    """Map a fetched row to a column → value dict, decoding JSON columns."""
-    out: dict[str, Any] = {}
-    for col, val in zip(_ACCOUNT_LINK_DECISIONS_COLUMNS, row, strict=True):
-        if col in _JSON_COLUMNS and isinstance(val, str):
-            out[col] = json.loads(val)
-        else:
-            out[col] = val
-    return out
+def _refresh_account_link_pending_gauge(db: Database) -> None:
+    """Avoid a repository-to-service import cycle until the gauge is needed."""
+    from moneybin.services.account_resolver import (  # noqa: PLC0415 — repo→service import must stay lazy
+        refresh_account_link_pending_gauge,
+    )
+
+    refresh_account_link_pending_gauge(db)
 
 
-class AccountLinkDecisionsRepo(BaseRepo):
+class AccountLinkDecisionsRepo(LinkDecisionsRepoBase):
     """Audited CRUD over ``app.account_link_decisions``."""
 
-    repository = "account_link_decisions"
-
-    table_ref = ACCOUNT_LINK_DECISIONS
-    pk_columns = ("decision_id",)
-
-    def refresh_pending_gauge(self) -> None:
-        """Re-read the account-link queue depth after an undo restored rows to it."""
-        from moneybin.services.account_resolver import (  # noqa: PLC0415 — repo→service import must stay lazy
-            refresh_account_link_pending_gauge,
-        )
-
-        refresh_account_link_pending_gauge(self._db)
+    repository: ClassVar[str] = "account_link_decisions"
+    table_ref: ClassVar[TableRef] = ACCOUNT_LINK_DECISIONS
+    pk_columns: ClassVar[tuple[str, ...]] = ("decision_id",)
+    columns: ClassVar[tuple[str, ...]] = _ACCOUNT_LINK_DECISIONS_COLUMNS
+    json_columns: ClassVar[frozenset[str]] = frozenset({"match_signals"})
+    action_prefix: ClassVar[str] = "account_link_decision"
+    pending_order_by: ClassVar[tuple[str, ...]] = (
+        "provisional_account_id",
+        "decision_id",
+    )
+    pending_gauge_hook: ClassVar[Callable[[Database], None] | None] = (
+        _refresh_account_link_pending_gauge
+    )
 
     # Resolved on first read, then cached for the connection's lifetime.
     _has_v051_columns: bool | None = None
 
-    def _cols_sql(self) -> str:
+    def _columns_sql(self) -> str:
         """SELECT column list, degrading to NULLs on a pre-V051 table.
 
         A read-only open skips migrations, so an upgraded database whose first
@@ -106,29 +96,17 @@ class AccountLinkDecisionsRepo(BaseRepo):
                 "AND column_name = 'provisional_display_name'"
             ).fetchone()
             self._has_v051_columns = row is not None
-        return _COLS if self._has_v051_columns else _PRE_V051_COLS
+        return super()._columns_sql() if self._has_v051_columns else _PRE_V051_COLS
 
     def _fetch_row(self, decision_id: str) -> dict[str, Any] | None:
         # Not BaseRepo._fetch_one: it quotes every column as an identifier, and
         # the pre-V051 projection carries `NULL AS ...` expressions instead.
         row = self._db.execute(
-            f"SELECT {self._cols_sql()} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
+            f"SELECT {self._columns_sql()} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
             'WHERE "decision_id" = ?',
             [decision_id],
         ).fetchone()
-        return None if row is None else _decode_row(row)
-
-    def fetch_by_id(self, decision_id: str) -> dict[str, Any] | None:
-        """Read one decoded decision row by id, or None when absent. Read-only.
-
-        Returns None when the table does not yet exist (``CatalogException``
-        guard), matching ``count_pending``/``history`` so a fresh DB yields a
-        clean not-found rather than a raw catalog error.
-        """
-        try:
-            return self._fetch_row(decision_id)
-        except duckdb.CatalogException:
-            return None
+        return None if row is None else self._decode_row(row)
 
     def insert(
         self,
@@ -150,35 +128,21 @@ class AccountLinkDecisionsRepo(BaseRepo):
         ``decided_at`` is stamped ``CURRENT_TIMESTAMP``; ``match_signals`` is stored
         as JSON. The caller supplies ``decision_id`` (a fresh truncated UUID).
         """
-        with self._transaction(in_outer_txn=in_outer_txn):
-            self._db.execute(
-                f"""
-                INSERT INTO {ACCOUNT_LINK_DECISIONS.full_name} (
-                    decision_id, provisional_account_id, candidate_account_id,
-                    confidence_score, match_signals, status, decided_by,
-                    match_reason, decided_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """,  # noqa: S608  # TableRef + parameterized values
-                [
-                    decision_id,
-                    provisional_account_id,
-                    candidate_account_id,
-                    confidence_score,
-                    json.dumps(match_signals),
-                    status,
-                    decided_by,
-                    match_reason,
-                ],
-            )
-            after = self._fetch_row(decision_id)
-            return self._emit_audit(
-                action="account_link_decision.insert",
-                target=(*self._audit_target, decision_id),
-                before=None,
-                after=self._serialize_for_audit(after),
-                actor=actor,
-                parent_audit_id=parent_audit_id,
-            )
+        return self._insert_decision(
+            values={
+                "decision_id": decision_id,
+                "provisional_account_id": provisional_account_id,
+                "candidate_account_id": candidate_account_id,
+                "confidence_score": confidence_score,
+                "match_signals": match_signals,
+                "status": status,
+                "decided_by": decided_by,
+                "match_reason": match_reason,
+            },
+            actor=actor,
+            parent_audit_id=parent_audit_id,
+            in_outer_txn=in_outer_txn,
+        )
 
     def update_status(
         self,
@@ -206,119 +170,15 @@ class AccountLinkDecisionsRepo(BaseRepo):
         legitimate value (nothing named the account); omission is not a choice
         the signature offers.
         """
-        with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._require(
-                self._fetch_row(decision_id), "decision_id", decision_id
-            )
-            self._db.execute(
-                f"""
-                UPDATE {ACCOUNT_LINK_DECISIONS.full_name}
-                SET status = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP,
-                    provisional_display_name = ?, candidate_display_name = ?
-                WHERE decision_id = ?
-                """,  # noqa: S608  # TableRef + parameterized values
-                [
-                    status,
-                    decided_by,
-                    provisional_display_name,
-                    candidate_display_name,
-                    decision_id,
-                ],
-            )
-            after = self._fetch_row(decision_id)
-            return self._emit_audit(
-                action="account_link_decision.update_status",
-                target=(*self._audit_target, decision_id),
-                before=self._serialize_for_audit(before),
-                after=self._serialize_for_audit(after),
-                actor=actor,
-                parent_audit_id=parent_audit_id,
-            )
-
-    def reverse(
-        self,
-        decision_id: str,
-        *,
-        reversed_by: str,
-        actor: str,
-        parent_audit_id: str | None = None,
-        in_outer_txn: bool = False,
-    ) -> AuditEvent:
-        """Reverse a decision (sets ``reversed_at``/``reversed_by``, status reversed).
-
-        Captures the full prior row in ``before``. Raises ``ValueError`` when no
-        decision with this id exists, when it is already reversed — re-reversing
-        would overwrite the original reversal's audit trail
-        (``reversed_at``/``reversed_by``) — or when it is still ``pending``: a
-        pending row has no accept/reject decision yet to undo, so reversing it
-        would silently dequeue a review item with no decision ever recorded.
-        """
-        with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._require(
-                self._fetch_row(decision_id), "decision_id", decision_id
-            )
-            if before["status"] not in ("accepted", "rejected"):
-                raise ValueError(
-                    "account_link_decisions.reverse: cannot reverse decision "
-                    f"{decision_id} with status {before['status']!r}; only "
-                    "accepted/rejected decisions can be reversed"
-                )
-            self._db.execute(
-                f"""
-                UPDATE {ACCOUNT_LINK_DECISIONS.full_name}
-                SET reversed_at = CURRENT_TIMESTAMP, reversed_by = ?,
-                    status = 'reversed'
-                WHERE decision_id = ?
-                """,  # noqa: S608  # TableRef + parameterized values
-                [reversed_by, decision_id],
-            )
-            after = self._fetch_row(decision_id)
-            return self._emit_audit(
-                action="account_link_decision.reverse",
-                target=(*self._audit_target, decision_id),
-                before=self._serialize_for_audit(before),
-                after=self._serialize_for_audit(after),
-                actor=actor,
-                parent_audit_id=parent_audit_id,
-            )
-
-    def list_pending(self) -> list[dict[str, Any]]:
-        """Return all pending, non-reversed decisions ordered for review grouping.
-
-        Returns ``status='pending'`` rows with ``reversed_at IS NULL``, decoded
-        via ``_decode_row``, ordered ``provisional_account_id, decision_id`` so
-        callers can group proposals by the provisional account under review.
-        Returns an empty list when the table does not yet exist
-        (``CatalogException`` guard), matching ``count_pending``/``history``.
-        Read-only — no audit emitted.
-        """
-        try:
-            rows = self._db.execute(
-                f"SELECT {self._cols_sql()} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
-                "WHERE status = 'pending' AND reversed_at IS NULL "
-                "ORDER BY provisional_account_id, decision_id",
-            ).fetchall()
-        except duckdb.CatalogException:
-            return []
-        return [_decode_row(r) for r in rows]
-
-    def history(self, *, limit: int | None = 50) -> list[dict[str, Any]]:
-        """All decisions (any status) newest-first by ``decided_at``. Read-only.
-
-        Returns an empty list when the table does not yet exist
-        (``CatalogException`` guard). A negative ``limit`` is clamped to 0 —
-        DuckDB rejects a negative LIMIT (``BinderException``). No audit emitted.
-        """
-        if limit is not None:
-            limit = max(limit, 0)
-        limit_clause = "LIMIT ?" if limit is not None else ""
-        params = [limit] if limit is not None else []
-        try:
-            rows = self._db.execute(
-                f"SELECT {self._cols_sql()} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef + parameterized limit
-                f"ORDER BY decided_at DESC NULLS LAST, decision_id DESC {limit_clause}",
-                params,
-            ).fetchall()
-        except duckdb.CatalogException:
-            return []
-        return [_decode_row(r) for r in rows]
+        return self._update_status(
+            decision_id,
+            status=status,
+            decided_by=decided_by,
+            actor=actor,
+            extra_values={
+                "provisional_display_name": provisional_display_name,
+                "candidate_display_name": candidate_display_name,
+            },
+            parent_audit_id=parent_audit_id,
+            in_outer_txn=in_outer_txn,
+        )

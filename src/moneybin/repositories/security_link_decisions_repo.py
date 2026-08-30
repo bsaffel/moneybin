@@ -12,13 +12,12 @@ this table flows through this repo, which pairs the write with an
 
 from __future__ import annotations
 
-import json
 import uuid
+from collections.abc import Callable
 from typing import Any, ClassVar
 
-import duckdb
-
-from moneybin.repositories.base import BaseRepo
+from moneybin.database import Database
+from moneybin.repositories.base import LinkDecisionsRepoBase
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import SECURITY_LINK_DECISIONS, TableRef
 
@@ -40,61 +39,29 @@ _SECURITY_LINK_DECISIONS_COLUMNS = (
     "reversed_by",
 )
 
-# Columns stored as JSON-encoded text. Reads decode them so the audit
-# before/after payload carries nested JSON, not a doubly-encoded string
-# (AuditService json.dumps the whole payload). Writes json.dumps once.
-_JSON_COLUMNS = frozenset({"match_signals"})
 
-# Pre-quoted column list for multi-row SELECT (security.md: identifiers quoted).
-_COLS = ", ".join(f'"{c}"' for c in _SECURITY_LINK_DECISIONS_COLUMNS)
+def _refresh_security_link_pending_gauge(db: Database) -> None:
+    """Avoid a repository-to-service import cycle until the gauge is needed."""
+    from moneybin.services.security_resolver import (  # noqa: PLC0415 — repo→service import must stay lazy
+        refresh_security_link_pending_gauge,
+    )
 
-
-def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
-    """Map a fetched row to a column → value dict, decoding JSON columns."""
-    out: dict[str, Any] = {}
-    for col, val in zip(_SECURITY_LINK_DECISIONS_COLUMNS, row, strict=True):
-        if col in _JSON_COLUMNS and isinstance(val, str):
-            out[col] = json.loads(val)
-        else:
-            out[col] = val
-    return out
+    refresh_security_link_pending_gauge(db)
 
 
-class SecurityLinkDecisionsRepo(BaseRepo):
+class SecurityLinkDecisionsRepo(LinkDecisionsRepoBase):
     """Audited CRUD over ``app.security_link_decisions``."""
 
     repository: ClassVar[str] = "security_link_decisions"
     table_ref: ClassVar[TableRef] = SECURITY_LINK_DECISIONS
     pk_columns: ClassVar[tuple[str, ...]] = ("decision_id",)
-
-    def refresh_pending_gauge(self) -> None:
-        """Re-read the security-link queue depth after an undo restored rows to it."""
-        from moneybin.services.security_resolver import (  # noqa: PLC0415 — repo→service import must stay lazy
-            refresh_security_link_pending_gauge,
-        )
-
-        refresh_security_link_pending_gauge(self._db)
-
-    def _fetch_row(self, decision_id: str) -> dict[str, Any] | None:
-        return self._fetch_one(
-            SECURITY_LINK_DECISIONS,
-            _SECURITY_LINK_DECISIONS_COLUMNS,
-            "decision_id",
-            decision_id,
-            decode=_decode_row,
-        )
-
-    def fetch_by_id(self, decision_id: str) -> dict[str, Any] | None:
-        """Read one decoded decision row by id, or None when absent. Read-only.
-
-        Returns None when the table does not yet exist (``CatalogException``
-        guard), matching ``count_pending``/``list_pending``/``history`` so a
-        fresh DB yields a clean not-found rather than a raw catalog error.
-        """
-        try:
-            return self._fetch_row(decision_id)
-        except duckdb.CatalogException:
-            return None
+    columns: ClassVar[tuple[str, ...]] = _SECURITY_LINK_DECISIONS_COLUMNS
+    json_columns: ClassVar[frozenset[str]] = frozenset({"match_signals"})
+    action_prefix: ClassVar[str] = "security_link_decision"
+    pending_order_by: ClassVar[tuple[str, ...]] = ("ref_value", "decision_id")
+    pending_gauge_hook: ClassVar[Callable[[Database], None] | None] = (
+        _refresh_security_link_pending_gauge
+    )
 
     def insert(
         self,
@@ -123,40 +90,25 @@ class SecurityLinkDecisionsRepo(BaseRepo):
         when omitted, not the literal string ``"null"``).
         """
         resolved_id = decision_id if decision_id is not None else uuid.uuid4().hex[:12]
-        with self._transaction(in_outer_txn=in_outer_txn):
-            self._db.execute(
-                f"""
-                INSERT INTO {SECURITY_LINK_DECISIONS.full_name} (
-                    decision_id, ref_kind, ref_value, source_type,
-                    provider_ticker, provider_name, candidate_security_id,
-                    confidence_score, match_signals, status, decided_by,
-                    match_reason, decided_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """,  # noqa: S608  # TableRef + parameterized values
-                [
-                    resolved_id,
-                    ref_kind,
-                    ref_value,
-                    source_type,
-                    provider_ticker,
-                    provider_name,
-                    candidate_security_id,
-                    confidence_score,
-                    json.dumps(match_signals) if match_signals is not None else None,
-                    status,
-                    decided_by,
-                    match_reason,
-                ],
-            )
-            after = self._fetch_row(resolved_id)
-            return self._emit_audit(
-                action="security_link_decision.insert",
-                target=(*self._audit_target, resolved_id),
-                before=None,
-                after=self._serialize_for_audit(after),
-                actor=actor,
-                parent_audit_id=parent_audit_id,
-            )
+        return self._insert_decision(
+            values={
+                "decision_id": resolved_id,
+                "ref_kind": ref_kind,
+                "ref_value": ref_value,
+                "source_type": source_type,
+                "provider_ticker": provider_ticker,
+                "provider_name": provider_name,
+                "candidate_security_id": candidate_security_id,
+                "confidence_score": confidence_score,
+                "match_signals": match_signals,
+                "status": status,
+                "decided_by": decided_by,
+                "match_reason": match_reason,
+            },
+            actor=actor,
+            parent_audit_id=parent_audit_id,
+            in_outer_txn=in_outer_txn,
+        )
 
     def update_status(
         self,
@@ -177,104 +129,22 @@ class SecurityLinkDecisionsRepo(BaseRepo):
         (accepted/rejected) state — this repo refuses to merge silently, so an
         already-decided row never re-decides itself.
         """
-        with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._require(
-                self._fetch_row(decision_id), "decision_id", decision_id
+        before = self._require(self._fetch_row(decision_id), "decision_id", decision_id)
+        if before["status"] != "pending" or status not in ("accepted", "rejected"):
+            raise ValueError(
+                "security_link_decisions.update_status: cannot transition "
+                f"decision {decision_id} from {before['status']!r} to "
+                f"{status!r}; only pending -> accepted/rejected is allowed"
             )
-            if before["status"] != "pending" or status not in (
-                "accepted",
-                "rejected",
-            ):
-                raise ValueError(
-                    "security_link_decisions.update_status: cannot transition "
-                    f"decision {decision_id} from {before['status']!r} to "
-                    f"{status!r}; only pending -> accepted/rejected is allowed"
-                )
-            self._db.execute(
-                f"""
-                UPDATE {SECURITY_LINK_DECISIONS.full_name}
-                SET status = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP
-                WHERE decision_id = ?
-                """,  # noqa: S608  # TableRef + parameterized values
-                [status, decided_by, decision_id],
-            )
-            after = self._fetch_row(decision_id)
-            return self._emit_audit(
-                action="security_link_decision.update_status",
-                target=(*self._audit_target, decision_id),
-                before=self._serialize_for_audit(before),
-                after=self._serialize_for_audit(after),
-                actor=actor,
-                parent_audit_id=parent_audit_id,
-            )
-
-    def reverse(
-        self,
-        decision_id: str,
-        *,
-        reversed_by: str,
-        actor: str,
-        parent_audit_id: str | None = None,
-        in_outer_txn: bool = False,
-    ) -> AuditEvent:
-        """Reverse a decision (sets ``reversed_at``/``reversed_by``, status reversed).
-
-        Captures the full prior row in ``before``. Raises ``ValueError`` when no
-        decision with this id exists, when it is already reversed — re-reversing
-        would overwrite the original reversal's audit trail
-        (``reversed_at``/``reversed_by``) — or when it is still ``pending``: a
-        pending row has no accept/reject decision yet to undo, so reversing it
-        would silently dequeue a review item with no decision ever recorded.
-        """
-        with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._require(
-                self._fetch_row(decision_id), "decision_id", decision_id
-            )
-            if before["status"] not in ("accepted", "rejected"):
-                raise ValueError(
-                    "security_link_decisions.reverse: cannot reverse decision "
-                    f"{decision_id} with status {before['status']!r}; only "
-                    "accepted/rejected decisions can be reversed"
-                )
-            self._db.execute(
-                f"""
-                UPDATE {SECURITY_LINK_DECISIONS.full_name}
-                SET reversed_at = CURRENT_TIMESTAMP, reversed_by = ?,
-                    status = 'reversed'
-                WHERE decision_id = ?
-                """,  # noqa: S608  # TableRef + parameterized values
-                [reversed_by, decision_id],
-            )
-            after = self._fetch_row(decision_id)
-            return self._emit_audit(
-                action="security_link_decision.reverse",
-                target=(*self._audit_target, decision_id),
-                before=self._serialize_for_audit(before),
-                after=self._serialize_for_audit(after),
-                actor=actor,
-                parent_audit_id=parent_audit_id,
-            )
-
-    def list_pending(self) -> list[dict[str, Any]]:
-        """Return all pending, non-reversed decisions ordered for review grouping.
-
-        Returns ``status='pending'`` rows with ``reversed_at IS NULL``, decoded
-        via ``_decode_row``, ordered ``ref_value, decision_id`` so callers can
-        group proposals by the ambiguous provider ref under review (the
-        security-link analog of ``AccountLinkDecisionsRepo.list_pending``'s
-        ``provisional_account_id`` grouping). Returns an empty list when the
-        table does not yet exist (``CatalogException`` guard), matching
-        ``count_pending``/``history``. Read-only — no audit emitted.
-        """
-        try:
-            rows = self._db.execute(
-                f"SELECT {_COLS} FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
-                "WHERE status = 'pending' AND reversed_at IS NULL "
-                "ORDER BY ref_value, decision_id",
-            ).fetchall()
-        except duckdb.CatalogException:
-            return []
-        return [_decode_row(r) for r in rows]
+        return self._update_status(
+            decision_id,
+            status=status,
+            decided_by=decided_by,
+            actor=actor,
+            before=before,
+            parent_audit_id=parent_audit_id,
+            in_outer_txn=in_outer_txn,
+        )
 
     def list_rejected(self) -> list[dict[str, Any]]:
         """Return all rejected, non-reversed decisions (the never-re-propose set).
@@ -287,44 +157,10 @@ class SecurityLinkDecisionsRepo(BaseRepo):
         proposal. Returns an empty list when the table does not yet exist
         (``CatalogException`` guard). Read-only — no audit emitted.
         """
-        try:
-            rows = self._db.execute(
-                f"SELECT {_COLS} FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
-                "WHERE status = 'rejected' AND reversed_at IS NULL "
-                "ORDER BY ref_value, decision_id",
-            ).fetchall()
-        except duckdb.CatalogException:
-            return []
-        return [_decode_row(r) for r in rows]
+        return self._list_with_status(
+            status="rejected", order_by=("ref_value", "decision_id")
+        )
 
     def count_pending(self) -> int:
         """Pending-decision count for the review sweep (fresh DB -> 0)."""
-        try:
-            row = self._db.execute(
-                f"SELECT COUNT(*) FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant
-                "WHERE status = 'pending'"
-            ).fetchone()
-        except duckdb.CatalogException:
-            return 0
-        return int(row[0]) if row else 0
-
-    def history(self, *, limit: int | None = 50) -> list[dict[str, Any]]:
-        """All decisions (any status) newest-first by ``decided_at``. Read-only.
-
-        Returns an empty list when the table does not yet exist
-        (``CatalogException`` guard). A negative ``limit`` is clamped to 0 —
-        DuckDB rejects a negative LIMIT (``BinderException``). No audit emitted.
-        """
-        if limit is not None:
-            limit = max(limit, 0)
-        limit_clause = "LIMIT ?" if limit is not None else ""
-        params = [limit] if limit is not None else []
-        try:
-            rows = self._db.execute(
-                f"SELECT {_COLS} FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef + parameterized limit
-                f"ORDER BY decided_at DESC NULLS LAST, decision_id DESC {limit_clause}",
-                params,
-            ).fetchall()
-        except duckdb.CatalogException:
-            return []
-        return [_decode_row(r) for r in rows]
+        return self._count_pending()

@@ -18,11 +18,13 @@ rather than per-method discipline:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any, ClassVar, cast
 
+import duckdb
 from sqlglot import exp
 
 from moneybin import error_codes
@@ -71,6 +73,9 @@ class BaseRepo:
     #: engine builds its WHERE clause from these.
     pk_columns: ClassVar[tuple[str, ...]]
 
+    #: Abstract repository bases opt out of concrete-table metadata validation.
+    abstract: ClassVar[bool] = False
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Fail at class-definition time if a repo omits required metadata.
 
@@ -80,6 +85,8 @@ class BaseRepo:
         path — fail fast at import instead.
         """
         super().__init_subclass__(**kwargs)
+        if cls.__dict__.get("abstract", False):
+            return
         for attr, why in (
             ("repository", "the app_mutation_audit_emitted_total metric label"),
             ("table_ref", "the owned app.* table (undo targeting + dispatch)"),
@@ -400,3 +407,222 @@ class BaseRepo:
             f"UPDATE {self.table_ref.full_name} SET {set_sql} WHERE {where}",  # noqa: S608  # TableRef + sqlglot-quoted columns; values parameterized
             [before[c] for c in set_cols] + where_params,
         )
+
+
+class LinkDecisionsRepoBase(BaseRepo):
+    """Shared audited mechanics for link-decision review queues.
+
+    Concrete queues provide their table shape, action prefix, review ordering,
+    and optional pending-gauge refresher. Domain-specific decision input and
+    transition validation remain on the concrete repositories.
+    """
+
+    abstract: ClassVar[bool] = True
+    columns: ClassVar[tuple[str, ...]]
+    json_columns: ClassVar[frozenset[str]]
+    action_prefix: ClassVar[str]
+    pending_order_by: ClassVar[tuple[str, ...]]
+    pending_gauge_hook: ClassVar[Callable[[Database], None] | None] = None
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Treat concrete decision queues as concrete while keeping this base abstract."""
+        cls.abstract = False
+        super().__init_subclass__(**kwargs)
+
+    def refresh_pending_gauge(self) -> None:
+        """Refresh this queue's metric after an undo restores decision rows."""
+        hook = type(self).pending_gauge_hook
+        if hook is not None:
+            hook(self._db)
+
+    def _decode_row(self, row: tuple[Any, ...]) -> dict[str, Any]:
+        """Map a fetched decision row to values, decoding declared JSON columns."""
+        out: dict[str, Any] = {}
+        for column, value in zip(self.columns, row, strict=True):
+            out[column] = (
+                json.loads(value)
+                if column in self.json_columns and isinstance(value, str)
+                else value
+            )
+        return out
+
+    def _columns_sql(self) -> str:
+        """Quoted projection for this queue's full-row reads."""
+        return ", ".join(quote_ident(column) for column in self.columns)
+
+    def _fetch_row(self, decision_id: str) -> dict[str, Any] | None:
+        """Read one decoded decision row by its stable queue key."""
+        return self._fetch_one(
+            self.table_ref,
+            self.columns,
+            "decision_id",
+            decision_id,
+            decode=self._decode_row,
+        )
+
+    def fetch_by_id(self, decision_id: str) -> dict[str, Any] | None:
+        """Read one decision row, treating an uninitialized queue as empty."""
+        try:
+            return self._fetch_row(decision_id)
+        except duckdb.CatalogException:
+            return None
+
+    def _insert_decision(
+        self,
+        *,
+        values: Mapping[str, Any],
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Insert one decision and its paired audit row from concrete queue values."""
+        decision_id = str(values["decision_id"])
+        columns = tuple(values) + ("decided_at",)
+        column_sql = ", ".join(quote_ident(column) for column in columns)
+        placeholders = ", ".join("?" for _ in values)
+        encoded_values = [
+            json.dumps(value)
+            if column in self.json_columns and value is not None
+            else value
+            for column, value in values.items()
+        ]
+        with self._transaction(in_outer_txn=in_outer_txn):
+            self._db.execute(
+                f"INSERT INTO {self.table_ref.full_name} ({column_sql}) "  # noqa: S608  # TableRef + code-supplied quoted columns; values parameterized
+                f"VALUES ({placeholders}, CURRENT_TIMESTAMP)",
+                encoded_values,
+            )
+            after = self._fetch_row(decision_id)
+            return self._emit_audit(
+                action=f"{self.action_prefix}.insert",
+                target=(*self._audit_target, decision_id),
+                before=None,
+                after=self._serialize_for_audit(after),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
+    def _update_status(
+        self,
+        decision_id: str,
+        *,
+        status: str,
+        decided_by: str,
+        actor: str,
+        extra_values: Mapping[str, Any] | None = None,
+        before: dict[str, Any] | None = None,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Stamp a queue decision's status and optional queue-specific fields."""
+        assignments = {
+            "status": status,
+            "decided_by": decided_by,
+            **(extra_values or {}),
+        }
+        set_sql = ", ".join(f"{quote_ident(column)} = ?" for column in assignments)
+        with self._transaction(in_outer_txn=in_outer_txn):
+            resolved_before = (
+                before
+                if before is not None
+                else self._require(
+                    self._fetch_row(decision_id), "decision_id", decision_id
+                )
+            )
+            self._db.execute(
+                f"UPDATE {self.table_ref.full_name} SET {set_sql}, "  # noqa: S608  # TableRef + code-supplied quoted columns; values parameterized
+                "decided_at = CURRENT_TIMESTAMP WHERE decision_id = ?",
+                [*assignments.values(), decision_id],
+            )
+            after = self._fetch_row(decision_id)
+            return self._emit_audit(
+                action=f"{self.action_prefix}.update_status",
+                target=(*self._audit_target, decision_id),
+                before=self._serialize_for_audit(resolved_before),
+                after=self._serialize_for_audit(after),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
+    def reverse(
+        self,
+        decision_id: str,
+        *,
+        reversed_by: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Reverse an accepted or rejected decision with a paired audit row."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._require(
+                self._fetch_row(decision_id), "decision_id", decision_id
+            )
+            if before["status"] not in ("accepted", "rejected"):
+                raise ValueError(
+                    f"{self.table_ref.name}.reverse: cannot reverse decision "
+                    f"{decision_id} with status {before['status']!r}; only "
+                    "accepted/rejected decisions can be reversed"
+                )
+            self._db.execute(
+                f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + parameterized values
+                "SET reversed_at = CURRENT_TIMESTAMP, reversed_by = ?, "
+                "status = 'reversed' WHERE decision_id = ?",
+                [reversed_by, decision_id],
+            )
+            after = self._fetch_row(decision_id)
+            return self._emit_audit(
+                action=f"{self.action_prefix}.reverse",
+                target=(*self._audit_target, decision_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
+    def _list_with_status(
+        self, *, status: str, order_by: tuple[str, ...]
+    ) -> list[dict[str, Any]]:
+        """Read non-reversed decisions with one declared status and ordering."""
+        order_sql = ", ".join(quote_ident(column) for column in order_by)
+        try:
+            rows = self._db.execute(
+                f"SELECT {self._columns_sql()} FROM {self.table_ref.full_name} "  # noqa: S608  # TableRef + code-supplied quoted columns; values parameterized
+                "WHERE status = ? AND reversed_at IS NULL "
+                f"ORDER BY {order_sql}",
+                [status],
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+        return [self._decode_row(row) for row in rows]
+
+    def list_pending(self) -> list[dict[str, Any]]:
+        """Read active review items in this queue's declared grouping order."""
+        return self._list_with_status(status="pending", order_by=self.pending_order_by)
+
+    def _count_pending(self) -> int:
+        """Return pending queue depth, treating an uninitialized queue as empty."""
+        try:
+            row = self._db.execute(
+                f"SELECT COUNT(*) FROM {self.table_ref.full_name} "  # noqa: S608  # TableRef constant
+                "WHERE status = 'pending'"
+            ).fetchone()
+        except duckdb.CatalogException:
+            return 0
+        return int(row[0]) if row else 0
+
+    def history(self, *, limit: int | None = 50) -> list[dict[str, Any]]:
+        """Read decisions newest-first, with a deterministic tie-breaker."""
+        if limit is not None:
+            limit = max(limit, 0)
+        limit_clause = "LIMIT ?" if limit is not None else ""
+        params = [limit] if limit is not None else []
+        try:
+            rows = self._db.execute(
+                f"SELECT {self._columns_sql()} FROM {self.table_ref.full_name} "  # noqa: S608  # TableRef + code-supplied quoted columns; values parameterized
+                f"ORDER BY decided_at DESC NULLS LAST, decision_id DESC {limit_clause}",
+                params,
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+        return [self._decode_row(row) for row in rows]
