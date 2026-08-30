@@ -30,11 +30,23 @@ MODEL (
    account, what a person sees in their bank's app, and the only PER-ACCOUNT
    name Plaid sends: official_name is a shared product label ("Ultimate
    Rewards®" covers both of a household's cards). dim_accounts names the
-   account by it, the same rung a spreadsheet's Account column feeds. Passed
-   through unmasked, like official_name beside it, because both are structured
-   API fields rather than the free text a spreadsheet's Account column is —
-   Plaid puts the number in `mask` and nowhere else, so there is no pasted
-   account number here for an importer to have masked. */
+   account by it, the same rung a spreadsheet's Account column feeds.
+
+   Passed through unmasked, like official_name beside it, while the tabular
+   path masks the label its importer writes. That asymmetry is deliberate and
+   is about the two fields, not about trusting one source over the other: a
+   sheet's "Account" column is a heading that routinely holds the account
+   number itself, so masking is what makes it safe to show. This is a name
+   field whose entire purpose is to be shown, and a name is what the holder
+   expects to read back.
+
+   The bound is worth stating plainly rather than assuming: SyncAccount.name
+   is unconstrained free text — no length limit, unlike `mask` — so nothing
+   here enforces that Plaid keeps the number in `mask` alone. A holder who
+   named an account after its number would see that number in their own
+   labels, and it would reach an MCP caller unmasked. Accepted: it is their
+   own string, and masking a name field to cover it would mangle every real
+   name the rung exists to surface. */
 SELECT
   COALESCE(links.account_id, a.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
   a.account_id AS source_account_key,
