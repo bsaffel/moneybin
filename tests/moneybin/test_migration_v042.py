@@ -38,8 +38,6 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V042__widen_security_link_ref_kinds import migrate
 from tests.moneybin.migration_helpers import run_migration
 
-pytestmark = pytest.mark.fresh_db
-
 _OLD_SHAPE = """
 CREATE TABLE app.security_links (
     link_id VARCHAR NOT NULL,

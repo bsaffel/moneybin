@@ -18,8 +18,6 @@ from moneybin.sql.migrations.V033__add_transaction_categories_source_type import
 )
 from tests.moneybin.migration_helpers import column_exists, column_info, run_migration
 
-pytestmark = pytest.mark.fresh_db
-
 _PRE_V033_DDL = """
     CREATE TABLE app.transaction_categories (
         transaction_id VARCHAR PRIMARY KEY,

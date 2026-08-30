@@ -26,8 +26,6 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V034__add_investment_tables import migrate
 from tests.moneybin.migration_helpers import column_exists, run_migration
 
-pytestmark = pytest.mark.fresh_db
-
 
 def _table_exists(db: Database, schema: str, table: str) -> bool:
     row = db.execute(

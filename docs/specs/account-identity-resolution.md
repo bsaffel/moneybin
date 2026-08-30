@@ -1,6 +1,8 @@
 # Cross-Source Account Identity Resolution
 
-> Last updated: 2026-08-29
+> Last updated: 2026-08-29 — last-four rung no longer requires an
+> institution; the reissue signal requires sequential ledgers (#450);
+> accounts_created reports the stored display name (#446)
 > Status: implemented (architecture M1S.1–.6 + the capture/bind-first
 > corrections M1S.7–.9, all shipped — see [§Decision 8](#decision-8--capture-mutable-labels-and-the-exporter-axis-m1s7-live-test-reconciliation));
 > the full-scale live re-validation this spec was written to unblock (5-account
@@ -244,7 +246,9 @@ provisional_account_id TEXT  NOT NULL,     -- the just-minted source account und
 candidate_account_id   TEXT  NOT NULL,     -- an existing canonical account proposed as the same
 confidence_score       DECIMAL(5, 4),
 match_signals          TEXT,               -- JSON-encoded (per match_decisions convention):
-                                           --   which weak signal matched + its value (institution_last4 / name / institution_reissue)
+                                           --   which weak signal matched + its value
+                                           --   (institution_last4 / last_four / name /
+                                           --    institution_reissue / manual)
 status                 TEXT  NOT NULL,     -- pending | accepted | rejected | reversed
 decided_by             TEXT  NOT NULL,     -- auto | user
 match_reason           TEXT,
@@ -266,6 +270,7 @@ reversed_by            TEXT
 
 - **Candidate signals are not stored on `account_links`.** `institution_last4`
   (OFX `RIGHT(number,4)`, Plaid `mask`, tabular `account_number_masked`),
+  `last_four` (the same match where either side names no institution),
   `account_name`, and `institution_reissue` (same institution, both sides carry
   a last-four and they differ) are *weak signals* the resolver computes live and matches
   against **existing accounts' `last_four` / `institution_slug` / `display_name`
@@ -351,8 +356,10 @@ signal reliability:
    (`persistent_token`, scoped `full_number`)** — safe because step 1 just proved
    no existing account holds them, and it lets a later source bearing the same
    token / scoped number auto-adopt via step 1 instead of minting a duplicate.
-   Then look for existing accounts sharing `institution + last4` (when
-   institution is known), then fuzzy `account_name`, then the **reissue signal** — same
+   Then look for existing accounts sharing a **last four** — under
+   `institution_last4` (0.5) when both sides name the same institution, under
+   `last_four` (0.45) when either names none — then fuzzy `account_name`, then
+   the **reissue signal** — same
    institution where both sides carry a last-four and the two *differ*
    (`institution_reissue`, confidence 0.3) — querying `core.dim_accounts`. The
    reissue signal exists because a replacement card changes its last four by
@@ -385,7 +392,54 @@ signal reliability:
    `propose_existing()` backfill, where it would propose every same-issuer card
    against every other. Keeping the two separate is what lets backfill see a
    vetoed duplicate without drowning in pairwise noise — conflating them made a
-   duplicate the backfill queue used to surface silently invisible:
+   duplicate the backfill queue used to surface silently invisible.
+   Institution is **evidence on the last-four rung, never a precondition for
+   it.** Two accounts that state different banks are still vetoed, but a pair
+   where either side names none is proposed under `last_four` rather than
+   dropped. Requiring a resolved institution silently excluded the tabular path,
+   which names its account only inside a label (`Daily Expense (...1789)`) and
+   parses no institution from it: the twin it minted carried an exact last four,
+   matched nothing, and both copies counted toward spending and net worth with
+   no proposal to merge them. The two signals stay distinct so the queue can
+   tell "both sides named this bank" from "one side named nothing".
+
+   The reissue signal additionally requires the two ledgers to be
+   **sequential**, which is what a reissue means. Shared institution plus a
+   differing last four is, in an established book, every pair of cards at one
+   bank; without a sequence check the signal proposed pairs that ran
+   concurrently for months, each carrying its own refutation in zero matched
+   transactions over a shared period. A proposal is dropped only when **both**
+   halves of that refutation hold: the ledgers overlap by more than
+   `_REISSUE_MAX_CONCURRENT_DAYS` (30, roughly one statement cycle), *and*
+   `probe_ledger_overlap` finds zero matched transactions across a period both
+   ledgers populated. Only *positive* concurrency drops it — an account with
+   no published ledger keeps its proposal, which is the import-time state the
+   signal was written for.
+
+   The transaction half is not redundant with the date half, and dropping on
+   the dates alone inverts the signal on the case that matters most. A true
+   cross-source twin — one account arriving from two sources — overlaps by
+   construction and holds the same rows, so a date-only drop would withhold
+   exactly the duplicate this queue exists to surface and leave it
+   double-counting. `LedgerOverlap.measurable` carries the other edge: a
+   `comparable` count of zero means no shared period was available to compare,
+   which is absence of evidence rather than evidence of absence, and keeps the
+   proposal.
+
+   The same reading governs an unstated **currency**, which is why this drop
+   passes `unstated_currency_matches=True` to the probe. The probe's default is
+   to treat a one-sided silence as a mismatch, and that default is priced for
+   the caller that *shows* the count: an undercount there weakens the evidence
+   printed beside a proposal that still appears. A caller that suppresses on
+   zero matches inverts the price — the same undercount becomes proof of a
+   disagreement that never happened. A tabular export leaving the column blank
+   beside a feed that states `USD` is precisely the cross-source pair this
+   queue exists to surface, so silence must not refute it. Two *stated* and
+   differing currencies still do: a nominal amount is not a sum of money until
+   a currency names it.
+
+   The pass then branches on how many candidates survived:
+
    - **0 candidates** → done: a new standalone account. Its `last_four` /
      institution / name (captured per Decision 7) become candidate signals for
      *future* imports.
@@ -425,10 +479,25 @@ since it must compute candidates *before* an account exists to compare against.
 Fixing it for the reissue pass alone would leave two candidate-source semantics
 inside one function.
 
+**Manual recovery, until then.** `AccountLinksService.propose_pair` — the
+two-id form of `accounts links run` / `accounts_links_run` — queues the pair
+under signal `manual`, and its existence check reads `app.account_links` as
+well as `core.dim_accounts` (`AccountResolver.knows_account_id`), the same rule
+the binding ladder applies for the same reason. So both halves of the
+one-batch reissue above are nameable the moment the batch ends, without waiting
+for a refresh. This does not close the gap: nothing *proposes* the pair, and a
+duplicate nobody notices stays unnoticed. It only means the recovery exists
+once someone does notice, which is why the surfaces that announce a created
+account or flag a mirrored pair (the import hint, the
+`duplicate_account_overlap` doctor finding) name this form rather than the
+sweep alone.
+
 `institution` is **best-effort metadata**, never a required input: when unknown
-(a bare CSV), the `institution+last4` candidate rung simply doesn't fire and
-resolution falls through to name / mint-new. Thresholds reuse `MatchingSettings`
-(`high_confidence_threshold`, `review_threshold`) — no parallel knobs.
+(a bare CSV), the last-four rung above still fires and the pair surfaces under
+`last_four` rather than `institution_last4`. Silence is not contradiction —
+only two *stated* and differing institutions drop a pair. Thresholds reuse
+`MatchingSettings` (`high_confidence_threshold`, `review_threshold`) — no
+parallel knobs.
 
 **⚠ Reconciled (Decision 8): the strong-ref auto-adopt (step 1) is valid only
 for an upstream-*stable* native key** (OFX `ACCTID`, Plaid token). A CSV/aggregator
@@ -884,16 +953,34 @@ Guard-2 free-text resolution):
     reason silence does — a statement that fills its currency column only on
     foreign rows leaves the domestic ones empty, not NULL.
   - **`confidence_score` is not a review surface.** Its value is fixed per
-    signal (0.5 `institution_last4`, 0.4 `name`, 0.3 `institution_reissue`), so
-    it restates `signal` in a less legible form; no input moves it. The column
-    remains as the audit record of what was written when the proposal was
-    created, and is no longer projected onto any surface — the review queue,
-    the decision history, and the import gate's `account_proposals` all carry
-    `signal` plus the measured overlap instead.
+    signal — 0.5 `institution_last4` and `legacy_pdf_identity`, 0.45
+    `last_four`, 0.4 `name`, 0.3 `institution_reissue`, 0.2 `institution`, 0.1
+    `fallback` — so it restates `signal` in a less legible form; no input moves
+    it. The corroborated and bare last-four rungs are the pair that shows why
+    the number adds nothing a reader wants: 0.5 against 0.45 is the whole
+    difference between "both sides named this bank" and "one side named
+    nothing", which `signal` says outright. A `manual` proposal carries no
+    score at all — `propose_pair` writes NULL because nothing was measured, and
+    any number there would read as a measurement that never happened. The
+    column remains as the audit record of what was written when the proposal
+    was created, and is no longer projected onto any surface — the review
+    queue, the decision history, and the import gate's `account_proposals` all
+    carry `signal` plus the measured overlap instead.
 - **Status lifecycle.** `account_links`: `accepted` (live) / `reversed` (undone).
   `account_link_decisions`: `pending` (awaiting review) → `accepted` (merged onto
   the named candidate) / `rejected` (declined pairing — not re-proposed) /
   `reversed` (a prior decision undone; re-resolution re-proposes).
+
+  "Not re-proposed" binds the *proposer*, not the user. A rejection is the
+  answer to a signal the resolver raised, so the resolver must not raise it
+  again — that is what stops a queue from re-asking a question already
+  answered. `propose_pair` is the user asking, and it re-proposes a rejected
+  pair deliberately: the named-pair form exists for the duplicate no signal
+  reaches, and a past "no" to the resolver's guess is not a standing veto on
+  the user's own knowledge. Treating it as one would leave a real duplicate
+  with no recovery at all, since nothing else can name that pair. Only a
+  `pending` or `accepted` decision blocks, because those are live rather than
+  answered.
 - **Inline discovery.** `import_confirm` / sync results report *"N account-link(s)
   need review"* and point at the queue — exactly how `matches run` ends with *"Run
   review when ready."* The primary, least-astonishing discovery path: you're told

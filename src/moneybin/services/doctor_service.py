@@ -2323,7 +2323,10 @@ class DoctorService:
                     "matches on institution+last-four and name similarity, not "
                     "on the transaction overlap this check measures, so a pair "
                     "flagged here may raise no proposal at all — that is the "
-                    "same binding failure that produced the split"
+                    "same binding failure that produced the split. For that "
+                    "residue, name the pair yourself with `moneybin accounts "
+                    "links run <account_id> <candidate_account_id>`, which "
+                    "queues the same reviewable proposal from the ids above"
                 ),
                 affected_ids=[
                     f"{a}:{b} ({round(float(ratio) * 100)}% overlap)"

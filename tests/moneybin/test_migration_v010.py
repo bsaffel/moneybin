@@ -31,8 +31,6 @@ from tests.moneybin.migration_helpers import (
     run_migration,
 )
 
-pytestmark = pytest.mark.fresh_db
-
 
 def _reset_to_pre_v010_state(db: Database) -> None:
     """Reverse the V010 end-state so the migration has work to do.

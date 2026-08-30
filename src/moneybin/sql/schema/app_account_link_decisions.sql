@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS app.account_link_decisions (
     provisional_account_id VARCHAR NOT NULL,   -- the just-minted source account under review
     candidate_account_id VARCHAR NOT NULL,     -- an existing canonical account proposed as the same
     confidence_score DECIMAL(5, 4),            -- weak-signal confidence 0.0000 to 1.0000
-    match_signals JSON,                        -- which weak signal fired + its value (institution_last4 / name / institution_reissue)
+    match_signals JSON,                        -- which weak signal fired + its value (institution_last4 / last_four / name / institution_reissue / manual)
     status VARCHAR NOT NULL                    -- pending, accepted, rejected, reversed
         CHECK (status IN ('pending', 'accepted', 'rejected', 'reversed')),
     decided_by VARCHAR NOT NULL                -- domain actor: auto or user (human OR agent ratification)

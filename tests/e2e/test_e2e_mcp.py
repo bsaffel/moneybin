@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+import pytest_asyncio
 
 from tests.e2e.conftest import (
+    _MONEYBIN_BIN,  # pyright: ignore[reportPrivateUsage]  # resolved E2E entrypoint
     FAST_ARGON2_ENV,
     make_workflow_env,
     seed_pending_match,
@@ -35,48 +38,62 @@ def _server_env(mcp_env: dict[str, str]) -> dict[str, str]:
     return {**os.environ, **FAST_ARGON2_ENV, **mcp_env}
 
 
+def _server_params(env: dict[str, str]) -> Any:
+    """Use the active test venv's entrypoint, without per-server uv resolution."""
+    from mcp.client.stdio import StdioServerParameters
+
+    if not _MONEYBIN_BIN.exists():
+        pytest.fail(
+            f"moneybin entrypoint not found at {_MONEYBIN_BIN}. "
+            "Run `uv sync` to populate the venv before running E2E tests."
+        )
+    return StdioServerParameters(
+        command=str(_MONEYBIN_BIN),
+        args=["mcp", "serve"],
+        env=env,
+    )
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def mcp_server_tools(
+    mcp_env: dict[str, str],
+) -> AsyncIterator[tuple[str, set[str]]]:
+    """Boot the immutable standard registry once for registration-only assertions."""
+    from mcp import ClientSession
+    from mcp.client.stdio import stdio_client
+
+    async with stdio_client(_server_params(_server_env(mcp_env))) as (read, write):
+        async with ClientSession(read, write) as session:
+            initialized = await session.initialize()
+            tools = await session.list_tools()
+            server_tools = (
+                initialized.serverInfo.name,
+                {tool.name for tool in tools.tools},
+            )
+    yield server_tools
+
+
 class TestMCPServerBoot:
     """Verify the MCP server starts, registers tools, and responds to protocol requests."""
 
     async def test_server_initializes_and_lists_tools(
-        self, mcp_env: dict[str, str]
+        self, mcp_server_tools: tuple[str, set[str]]
     ) -> None:
         """MCP server boots on an encrypted DB and reports registered tools."""
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        server_name, tool_names = mcp_server_tools
+        assert server_name == "MoneyBin"
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607 — uv is on PATH in dev environments
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(mcp_env),
-        )
+        from moneybin.mcp.surface import STANDARD_TOOL_NAMES
 
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                result = await session.initialize()
-
-                # Server should identify itself
-                assert result.serverInfo.name == "MoneyBin"
-
-                # List tools — core namespaces should be registered
-                tools_result = await session.list_tools()
-                tool_names = [t.name for t in tools_result.tools]
-
-                from moneybin.mcp.surface import STANDARD_TOOL_NAMES
-
-                assert set(tool_names) == STANDARD_TOOL_NAMES
+        assert tool_names == STANDARD_TOOL_NAMES
 
     async def test_server_invokes_tool(self, mcp_env: dict[str, str]) -> None:
         """MCP server can invoke a tool and return a valid response envelope."""
         from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.stdio import stdio_client
         from mcp.types import TextContent
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607 — uv is on PATH in dev environments
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(mcp_env),
-        )
+        server_params = _server_params(_server_env(mcp_env))
 
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -97,52 +114,41 @@ class TestMCPServerBoot:
                 assert "actions" in envelope
                 assert envelope["summary"]["sensitivity"] == "medium"
 
-    async def test_accounts_v2_tools_registered(self, mcp_env: dict[str, str]) -> None:
+    async def test_accounts_v2_tools_registered(
+        self, mcp_server_tools: tuple[str, set[str]]
+    ) -> None:
         """All v2 accounts namespace tools are registered on the server.
 
         The narrow write tools (rename/include/archive/unarchive) were folded
         into ``accounts_set``; confirm both that ``accounts_set`` is present
         and that the removed names are gone.
         """
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        _, tool_names = mcp_server_tools
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(mcp_env),
-        )
+        standard_accounts_tools = {
+            "accounts",
+            "accounts_set",
+            "accounts_balances",
+            "accounts_balance_assert",
+        }
+        assert standard_accounts_tools <= tool_names
 
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools_result = await session.list_tools()
-                tool_names = {t.name for t in tools_result.tools}
-
-                standard_accounts_tools = {
-                    "accounts",
-                    "accounts_set",
-                    "accounts_balances",
-                    "accounts_balance_assert",
-                }
-                assert standard_accounts_tools <= tool_names
-
-                # Legacy narrow boundaries are folded into the standard tools.
-                for removed in (
-                    "accounts_get",
-                    "accounts_summary",
-                    "accounts_balance_history",
-                    "accounts_balance_reconcile",
-                    "accounts_balance_assertions",
-                    "accounts_balance_assertion_delete",
-                    "accounts_rename",
-                    "accounts_include",
-                    "accounts_archive",
-                    "accounts_unarchive",
-                ):
-                    assert removed not in tool_names, (
-                        f"{removed} should be folded into accounts_set"
-                    )
+        # Legacy narrow boundaries are folded into the standard tools.
+        for removed in (
+            "accounts_get",
+            "accounts_summary",
+            "accounts_balance_history",
+            "accounts_balance_reconcile",
+            "accounts_balance_assertions",
+            "accounts_balance_assertion_delete",
+            "accounts_rename",
+            "accounts_include",
+            "accounts_archive",
+            "accounts_unarchive",
+        ):
+            assert removed not in tool_names, (
+                f"{removed} should be folded into accounts_set"
+            )
 
     async def test_accounts_balance_assertions_view_invocable(
         self, mcp_env: dict[str, str]
@@ -155,14 +161,10 @@ class TestMCPServerBoot:
         on a fresh DB and returns an empty assertions list.
         """
         from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.stdio import stdio_client
         from mcp.types import TextContent
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(mcp_env),
-        )
+        server_params = _server_params(_server_env(mcp_env))
 
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -187,100 +189,63 @@ class TestReportsTool:
     """Generic report catalog/runner smoke tests."""
 
     async def test_generic_reports_tool_registered(
-        self, mcp_env: dict[str, str]
+        self, mcp_server_tools: tuple[str, set[str]]
     ) -> None:
         """The generic reports boundary replaces every per-report tool."""
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        _, tool_names = mcp_server_tools
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(mcp_env),
-        )
-
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools_result = await session.list_tools()
-                tool_names = {t.name for t in tools_result.tools}
-
-                assert "reports" in tool_names
-                assert "reports_networth" not in tool_names
-                assert "reports_networth_history" not in tool_names
+        assert "reports" in tool_names
+        assert "reports_networth" not in tool_names
+        assert "reports_networth_history" not in tool_names
 
     async def test_per_report_tools_are_not_registered(
-        self, mcp_env: dict[str, str]
+        self, mcp_server_tools: tuple[str, set[str]]
     ) -> None:
         """Report additions do not consume MCP tool slots."""
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        _, tool_names = mcp_server_tools
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(mcp_env),
-        )
+        removed = {
+            "reports_spending",
+            "reports_cashflow",
+            "reports_recurring",
+            "reports_merchants",
+            "reports_large_transactions",
+            "reports_balance_drift",
+        }
+        assert not removed & tool_names
 
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools_result = await session.list_tools()
-                tool_names = {t.name for t in tools_result.tools}
-
-                removed = {
-                    "reports_spending",
-                    "reports_cashflow",
-                    "reports_recurring",
-                    "reports_merchants",
-                    "reports_large_transactions",
-                    "reports_balance_drift",
-                }
-                assert not removed & tool_names
-
-                # reports_uncategorized removed — use transactions_categorize_pending instead
-                assert "reports_uncategorized" not in tool_names
-                # v1 tools removed
-                assert "reports_spending_summary" not in tool_names
-                assert "reports_spending_by_category" not in tool_names
+        # reports_uncategorized removed — use transactions_categorize_pending instead
+        assert "reports_uncategorized" not in tool_names
+        # v1 tools removed
+        assert "reports_spending_summary" not in tool_names
+        assert "reports_spending_by_category" not in tool_names
 
 
 class TestCurationTools:
     """Consolidated curation boundaries are registered."""
 
-    async def test_curation_tools_registered(self, mcp_env: dict[str, str]) -> None:
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+    async def test_curation_tools_registered(
+        self, mcp_server_tools: tuple[str, set[str]]
+    ) -> None:
+        _, tool_names = mcp_server_tools
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(mcp_env),
-        )
-
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools_result = await session.list_tools()
-                tool_names = {t.name for t in tools_result.tools}
-
-                expected = {
-                    "transactions_create",
-                    "transactions_annotate",
-                    "import_labels_set",
-                    "system_audit",
-                }
-                missing = expected - tool_names
-                assert not missing, f"Missing curation tools: {missing}"
-                removed = {
-                    "transactions_notes_add",
-                    "transactions_notes_edit",
-                    "transactions_notes_delete",
-                    "transactions_tags_set",
-                    "transactions_tags_rename",
-                    "transactions_splits_set",
-                }
-                assert not removed & tool_names
+        expected = {
+            "transactions_create",
+            "transactions_annotate",
+            "import_labels_set",
+            "system_audit",
+        }
+        missing = expected - tool_names
+        assert not missing, f"Missing curation tools: {missing}"
+        removed = {
+            "transactions_notes_add",
+            "transactions_notes_edit",
+            "transactions_notes_delete",
+            "transactions_tags_set",
+            "transactions_tags_rename",
+            "transactions_splits_set",
+        }
+        assert not removed & tool_names
 
 
 class TestNamespaceResources:
@@ -294,13 +259,9 @@ class TestNamespaceResources:
     async def test_schema_resource_registered(self, mcp_env: dict[str, str]) -> None:
         """moneybin://schema resource is registered on the server."""
         from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.stdio import stdio_client
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(mcp_env),
-        )
+        server_params = _server_params(_server_env(mcp_env))
 
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -327,42 +288,27 @@ class TestMatchesTools:
         home = tmp_path_factory.mktemp("e2e_matches")
         return make_workflow_env(home, "matches-test")
 
-    async def test_matches_tools_registered(self, matches_env: dict[str, str]) -> None:
+    async def test_matches_tools_registered(
+        self, mcp_server_tools: tuple[str, set[str]]
+    ) -> None:
         """Match review uses the standard normalized review boundaries."""
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
-
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(matches_env),
-        )
-
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools_result = await session.list_tools()
-                tool_names = {t.name for t in tools_result.tools}
-                assert {"reviews", "reviews_decide"} <= tool_names
-                assert "transactions_matches_pending" not in tool_names
-                assert "transactions_matches_set" not in tool_names
+        _, tool_names = mcp_server_tools
+        assert {"reviews", "reviews_decide"} <= tool_names
+        assert "transactions_matches_pending" not in tool_names
+        assert "transactions_matches_set" not in tool_names
 
     async def test_reviews_returns_seeded_match(
         self, matches_env: dict[str, str]
     ) -> None:
         """Reviews returns a seeded pending match."""
         from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.stdio import stdio_client
         from mcp.types import TextContent
 
         seeded_match_id = "e2e_pending_match_001"
         seed_pending_match(matches_env, seeded_match_id)
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(matches_env),
-        )
+        server_params = _server_params(_server_env(matches_env))
 
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -387,17 +333,13 @@ class TestMatchesTools:
     ) -> None:
         """reviews_decide accepts a pending match and returns accepted status."""
         from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.stdio import stdio_client
         from mcp.types import TextContent
 
         seeded_match_id = "e2e_set_match_001"
         seed_pending_match(matches_env, seeded_match_id)
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(matches_env),
-        )
+        server_params = _server_params(_server_env(matches_env))
 
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -430,7 +372,7 @@ class TestMatchesTools:
     ) -> None:
         """Reviews history returns decisions with decided_at timestamps."""
         from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.stdio import stdio_client
         from mcp.types import TextContent
 
         # History excludes pending — accept the match first so it's a decision.
@@ -438,11 +380,7 @@ class TestMatchesTools:
         # A second match left pending must NOT surface in history (pins the
         # get_match_log pending-exclusion at the MCP layer).
         seed_pending_match(matches_env, "e2e_hist_pending_002")
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(matches_env),
-        )
+        server_params = _server_params(_server_env(matches_env))
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
@@ -488,14 +426,10 @@ class TestMatchesTools:
         `error.code`, and `error.hint`. This exercises the path that broke.
         """
         from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.stdio import stdio_client
         from mcp.types import TextContent
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(matches_env),
-        )
+        server_params = _server_params(_server_env(matches_env))
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
@@ -518,24 +452,13 @@ class TestMatchesTools:
         )
 
     async def test_legacy_match_boundaries_are_not_registered(
-        self, matches_env: dict[str, str]
+        self, mcp_server_tools: tuple[str, set[str]]
     ) -> None:
         """Legacy match boundaries do not consume standard-registry slots."""
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
-
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(matches_env),
-        )
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools = {t.name for t in (await session.list_tools()).tools}
-                assert {"reviews", "reviews_decide"} <= tools
-                assert "transactions_matches_run" not in tools
-                assert "transactions_matches_history" not in tools
+        _, tool_names = mcp_server_tools
+        assert {"reviews", "reviews_decide"} <= tool_names
+        assert "transactions_matches_run" not in tool_names
+        assert "transactions_matches_history" not in tool_names
 
 
 class TestMCPServeTransportGate:
@@ -552,9 +475,7 @@ class TestMCPServeTransportGate:
         import asyncio
 
         proc = await asyncio.create_subprocess_exec(
-            "uv",  # noqa: S607 — uv is on PATH in dev environments
-            "run",
-            "moneybin",
+            str(_MONEYBIN_BIN),
             "mcp",
             "serve",
             "--transport",
@@ -609,14 +530,10 @@ class TestMCPFirstRunSetup:
         stdout stream would blow up the SDK transport before call_tool() returns.
         """
         from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.stdio import stdio_client
         from mcp.types import TextContent
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607 — uv is on PATH in dev environments
-            args=["run", "moneybin", "mcp", "serve"],
-            env=unconfigured_env,
-        )
+        server_params = _server_params(unconfigured_env)
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
@@ -647,7 +564,7 @@ class TestMCPFirstRunSetup:
         the middleware is no longer active (self._configured is True).
         """
         from mcp import ClientSession, types
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.stdio import stdio_client
         from mcp.shared.context import RequestContext
         from mcp.types import TextContent
 
@@ -662,11 +579,7 @@ class TestMCPFirstRunSetup:
                 action="accept", content={"value": "e2e-first-run"}
             )
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607 — uv is on PATH in dev environments
-            args=["run", "moneybin", "mcp", "serve"],
-            env=unconfigured_env,
-        )
+        server_params = _server_params(unconfigured_env)
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(
                 read, write, elicitation_callback=elicit_cb
@@ -716,15 +629,11 @@ class TestMCPFirstRunSetup:
         hang or kill the transport, not return an error.
         """
         from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.stdio import stdio_client
         from mcp.shared.exceptions import McpError
         from pydantic import AnyUrl
 
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607 — uv is on PATH in dev environments
-            args=["run", "moneybin", "mcp", "serve"],
-            env=unconfigured_env,
-        )
+        server_params = _server_params(unconfigured_env)
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()

@@ -9,8 +9,6 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V045__create_app_user_reports import migrate
 from tests.moneybin.migration_helpers import run_migration
 
-pytestmark = pytest.mark.fresh_db
-
 #: The columns a save must supply; everything else carries a default.
 _REQUIRED = (
     "report_id",

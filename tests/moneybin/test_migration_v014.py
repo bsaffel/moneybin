@@ -22,8 +22,6 @@ from moneybin.sql.migrations.V014__add_category_id_columns import migrate
 from tests.moneybin.db_helpers import create_core_tables
 from tests.moneybin.migration_helpers import run_migration
 
-pytestmark = pytest.mark.fresh_db
-
 
 @pytest.fixture()
 def v014_db(db: Database) -> Database:
