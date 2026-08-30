@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-08-30 -->
 # Google Sheets
 
 Connect a Google Sheet as a live data source. MoneyBin authenticates once via direct OAuth, then every `moneybin refresh` re-pulls the sheet's current state — additions, edits, and deletions all flow through. Tiller-style ledger sheets participate in the full matching and categorization pipeline; any other sheet lands as queryable JSON with an auto-generated typed view.
@@ -16,7 +16,7 @@ This is the first entry in the `connect-*` family. Future siblings — Airtable,
 **This is not:**
 
 - A two-way sync. MoneyBin only reads from your sheet (`spreadsheets.readonly` OAuth scope); it never writes back.
-- An aggregator integration like Plaid. MoneyBin's client speaks Google's API directly — no moneybin-sync mediation, no shared client secret.
+- An aggregator integration like Plaid. MoneyBin's client speaks Google's API directly — no moneybin-sync mediation, and no third party ever sees your refresh token.
 - A schema designer. You bring your sheet's shape; MoneyBin detects it. If you want to restructure, do it in the sheet and run `gsheet reconnect`.
 
 ## `_link` vs `_connect` — which family is this?
@@ -34,9 +34,26 @@ The verb predicts the trust model. You should never need a qualifier to know whi
 moneybin gsheet auth
 ```
 
-This opens your browser to Google's OAuth consent screen using the **Desktop app** PKCE flow — no shared client secret is bundled with MoneyBin, and no third party sees your refresh token. On consent, the token lands in your local `SecretStore` (keychain or passphrase-derived key, same as every other MoneyBin secret).
+This opens your browser to Google's OAuth consent screen using the **Desktop app** PKCE flow. No third party sees your refresh token: on consent it lands in your local `SecretStore` (keychain or passphrase-derived key, same as every other MoneyBin secret).
 
 You only need to do this once per profile. `gsheet connect` will trigger `gsheet auth` automatically on first run if you skip this step.
+
+### You must register your own Google OAuth client
+
+**This step is currently required.** MoneyBin ships a public client ID for its own Google Cloud project, but no client secret, and Google's Desktop clients need both: the client secret is required to exchange the authorization code for a token, even under PKCE, because a Desktop client has no signing certificate to attest with. Without it `gsheet auth` refuses up front rather than walking you through a consent screen that cannot complete. Whether MoneyBin should ship a secret alongside the ID — as `gcloud` and rclone do — is an open decision.
+
+Register a **Desktop app** client in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) with the Sheets API enabled, then set both:
+
+```bash
+export MONEYBIN_GSHEET__OAUTH_CLIENT_ID="<your-client-id>.apps.googleusercontent.com"
+export MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET="<your-client-secret>"
+```
+
+Set both. Neither half works alone, and `gsheet auth` refuses both states by name rather than letting them fail at the token exchange: with only the ID there is no secret to exchange the code with, and with only the secret the client ID falls back to MoneyBin's embedded value, which Google never issued your secret for.
+
+Export them somewhere your scheduled runs will see them, not just your interactive shell. The refresh grant needs the same pair as the initial exchange, so a `launchd`/`cron` `moneybin refresh` that starts without them fails once the cached access token ages out, roughly an hour after an authorization that looked fine.
+
+Running your own client also gives you your own quota. Google meters the Sheets API [per Cloud project](https://developers.google.com/workspace/sheets/api/limits) — 300 read requests per minute — with a separate 60-per-minute cap per user per project. The per-user cap means one heavy user cannot monopolize a shared credential, but the project ceiling is genuinely shared, which is why rclone is retiring its own shared client ID during 2026.
 
 ## Connect a sheet
 

@@ -17,7 +17,7 @@ import logging
 import time
 from dataclasses import dataclass
 
-from moneybin.config import MoneyBinSettings
+from moneybin.config import GSHEET_PUBLIC_OAUTH_CLIENT_ID, MoneyBinSettings
 from moneybin.connectors.gsheet.errors import GSheetAuthError
 from moneybin.secrets import (
     GSHEET_ACCESS_TOKEN_EXPIRES_KEY,
@@ -90,6 +90,13 @@ class GoogleOAuthClient:
     # OAuthCredentialsProvider protocol -----------------------------------
     def is_authorized(self, *, require_write: bool = False) -> bool:
         """Return whether a persisted refresh grant satisfies the capability."""
+        # A grant the next refresh cannot use is not an authorized state: the
+        # CLI and MCP auth paths would report already_authorized and leave the
+        # missing variable to surface as a generic failure at refresh time.
+        try:
+            self._oauth_client_credentials()
+        except GSheetAuthError:
+            return False
         keys = _WRITE_KEYS if require_write else _READ_KEYS
         try:
             self._secrets.get_key(keys.refresh)
@@ -118,14 +125,47 @@ class GoogleOAuthClient:
             return cached
         return self._refresh_access_token(grant, require_write=require_write)
 
-    def authorize(self, *, require_write: bool = False) -> OAuthGrant:
-        """Establish or incrementally upgrade the persisted OAuth grant."""
+    def _oauth_client_credentials(self) -> tuple[str, str]:
+        """Return the configured client id and secret, or refuse by name.
+
+        Both grants need both values, and both fail unhelpfully without them:
+        the browser flow only fails *after* the user has already consented,
+        and google-auth's refresh raises a generic error naming no cause. So
+        the refusal happens here, before either can start.
+        """
         client_id = self._settings.gsheet.oauth_client_id
         if not client_id:
             raise GSheetAuthError(
                 "Google Sheets OAuth client ID is not configured. Set "
-                "MONEYBIN_GSHEET__OAUTH_CLIENT_ID before running `gsheet connect`."
+                "MONEYBIN_GSHEET__OAUTH_CLIENT_ID. See "
+                "docs/guides/connect-gsheet.md."
             )
+        client_secret = self._settings.gsheet.oauth_client_secret
+        if not client_secret:
+            raise GSheetAuthError(
+                "Google Sheets OAuth client secret is not configured. Google's "
+                "Desktop clients require it alongside the client ID for both "
+                "the authorization exchange and later token refreshes. Set "
+                "MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET. See "
+                "docs/guides/connect-gsheet.md."
+            )
+        # Google issues each secret for one specific client ID, and MoneyBin
+        # ships none for the embedded one. So a secret set without its own ID
+        # is a mismatched pair by construction, and Google only says so after
+        # the user has consented.
+        if client_id == GSHEET_PUBLIC_OAUTH_CLIENT_ID:
+            raise GSheetAuthError(
+                "Google Sheets OAuth client secret is set, but the client ID is "
+                "still MoneyBin's embedded one, which has no secret. A secret "
+                "belongs to the client ID it was issued with, so set your own "
+                "MONEYBIN_GSHEET__OAUTH_CLIENT_ID alongside it. See "
+                "docs/guides/connect-gsheet.md."
+            )
+        return client_id, client_secret.get_secret_value()
+
+    def authorize(self, *, require_write: bool = False) -> OAuthGrant:
+        """Establish or incrementally upgrade the persisted OAuth grant."""
+        client_id, client_secret = self._oauth_client_credentials()
 
         # Import lazily so the connector is importable in environments that
         # don't have google-auth-oauthlib installed (e.g. minimal CI jobs).
@@ -134,9 +174,11 @@ class GoogleOAuthClient:
         client_config = {
             "installed": {
                 "client_id": client_id,
-                # PKCE-only flow: no client secret required for an installed
-                # app. google-auth-oauthlib accepts an empty string here.
-                "client_secret": "",
+                # Google's Desktop clients require the secret in the
+                # code->token exchange even under PKCE. RFC 8252 §8.5: a
+                # secret shipped to every user is not confidential; PKCE and
+                # the loopback redirect carry the security.
+                "client_secret": client_secret,
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
                 # 127.0.0.1, not "localhost": on hosts where localhost
@@ -279,12 +321,11 @@ class GoogleOAuthClient:
                 "`moneybin gsheet connect` to authorize."
             ) from exc
 
-        client_id = self._settings.gsheet.oauth_client_id
-        if not client_id:
-            raise GSheetAuthError(
-                "Google Sheets OAuth client ID is not configured. Set "
-                "MONEYBIN_GSHEET__OAUTH_CLIENT_ID."
-            )
+        # Google's refresh grant needs the secret too, and google-auth refuses
+        # locally without it (Credentials._perform_refresh_token raises a
+        # RefreshError naming no cause), which this method's broad handler
+        # would flatten into "See application logs for detail."
+        client_id, client_secret = self._oauth_client_credentials()
 
         # Lazy import for the same reason as authorize().
         from google.auth.transport.requests import Request
@@ -295,7 +336,7 @@ class GoogleOAuthClient:
             refresh_token=refresh_token,
             token_uri="https://oauth2.googleapis.com/token",  # noqa: S106  # Google OAuth endpoint URL, not a credential
             client_id=client_id,
-            client_secret=None,
+            client_secret=client_secret,
             scopes=sorted(grant.scopes),
         )
         try:

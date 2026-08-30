@@ -1206,6 +1206,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **Google Sheets authorization fails up front instead of after a consent
+  screen that could never complete.** `gsheet auth` sent an empty client
+  secret in the code→token exchange, so Google returned an authorization code
+  and then rejected the exchange 63ms later: the browser looked like it had
+  worked, no token was stored, and the error said only "See application logs
+  for detail." Google's Desktop clients require the secret even under PKCE —
+  only Android, iOS and Chrome clients are exempt, because they bind to a
+  signing certificate instead. MoneyBin ships the client ID but no secret, so
+  `MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET` is now required alongside
+  `MONEYBIN_GSHEET__OAUTH_CLIENT_ID`, and both the authorization and refresh
+  grants refuse by name when either is missing rather than failing somewhere
+  less legible. Registering your own Desktop app client is required today;
+  `docs/guides/connect-gsheet.md` covers it. The refresh grant carried the same
+  defect and would have failed about an hour after an authorization that looked
+  healthy. Setting only the secret is refused too, because it pairs your secret
+  with MoneyBin's embedded client ID, which Google never issued it for. And
+  `gsheet auth` no longer reports an existing connection as authorized when
+  either variable is missing: it re-authorizes and names the gap instead of
+  succeeding now and failing at the next refresh. (#456)
 - **An import now announces a new account under the name you will find it by.**
   A first-contact import mints the account without asking and reports what it
   created, and the MCP tool tells the agent to relay that to the user — but the
@@ -1245,16 +1264,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   env var — which needs no further keychain access, exactly what may be
   unavailable (#419, PR #453).
 
-- **Google Sheets connects without a Google Cloud Console detour.** The
-  connector shipped without an OAuth client of its own, so `moneybin gsheet
-  auth` on a fresh install refused outright — "Google Sheets OAuth client ID is
-  not configured" — until you registered your own Google Cloud project, roughly
-  the fifteen minutes of console clicking the feature had been designed to
-  spare you. MoneyBin now ships its own public client ID, which is how desktop
-  OAuth is meant to work: an installed app cannot keep a secret, so the
-  security rests on PKCE and a loopback redirect rather than on the identifier
-  being hidden. Point `MONEYBIN_GSHEET__OAUTH_CLIENT_ID` at your own project to
-  use its API quota instead, or set it empty to disable the connector. (#452)
+- **Google Sheets ships its own OAuth client ID.** The connector shipped
+  without an OAuth client of its own, so `moneybin gsheet auth` on a fresh
+  install refused outright — "Google Sheets OAuth client ID is not configured"
+  — until you registered your own Google Cloud project. MoneyBin now ships its
+  own public client ID: a native app cannot keep a shipped credential
+  confidential, so the security rests on PKCE and a loopback redirect rather
+  than on the identifier being hidden. Point
+  `MONEYBIN_GSHEET__OAUTH_CLIENT_ID` at your own project to use its API quota
+  instead, or set it empty to disable the connector. This does not yet remove
+  the Google Cloud Console step — Google's Desktop clients also require a
+  client secret, which MoneyBin does not ship; see the #456 entry above.
+  (#452)
 - **An account with nothing to identify it now reads `Unnamed account`, not
   `Account <id>`.** `core.dim_accounts.display_name` ended its fallback chain
   with the account's grain key, which for an account imported before the
