@@ -265,6 +265,7 @@ def probe_ledger_overlap(
     account_id: str,
     against_account_id: str,
     window_days: int = DEFAULT_POSTING_LAG_DAYS,
+    unstated_currency_matches: bool = False,
 ) -> LedgerOverlap:
     """Count how many of ``account_id``'s transactions ``against_account_id`` holds.
 
@@ -299,6 +300,16 @@ def probe_ledger_overlap(
     fills its currency column only on foreign rows: an empty string is silence,
     and silence already means unstated here.
 
+    ``unstated_currency_matches`` re-prices the asymmetry above for a caller
+    that reads this count as a *refutation* rather than as evidence to show.
+    The undercount a one-sided silence produces is affordable while it only
+    weakens a ratio printed beside a proposal that still appears; a caller that
+    suppresses on ``matched == 0`` turns the same undercount into proof of a
+    disagreement that never happened, and the pair silently goes on
+    double-counting. Set it and an unstated side matches any counterpart, which
+    leaves the invariant that matters untouched: two *stated* and differing
+    currencies never describe the same transaction, so they still refuse.
+
     Returns an unmeasurable overlap — rather than raising — when ``core`` is not
     yet materialized, which is a first import before any transform.
     """
@@ -306,7 +317,10 @@ def probe_ledger_overlap(
         row = db.execute(
             f"""
             WITH against AS (
-                SELECT transaction_date, amount, currency_code
+                SELECT
+                    transaction_date,
+                    amount,
+                    NULLIF(UPPER(TRIM(currency_code)), '') AS currency_code
                 FROM {FCT_TRANSACTIONS.full_name}
                 WHERE account_id = ?
             ),
@@ -319,7 +333,7 @@ def probe_ledger_overlap(
                     probe.transaction_id,
                     probe.transaction_date,
                     probe.amount,
-                    probe.currency_code
+                    NULLIF(UPPER(TRIM(probe.currency_code)), '') AS currency_code
                 FROM {FCT_TRANSACTIONS.full_name} AS probe, span
                 WHERE probe.account_id = ?
                   AND span.lo IS NOT NULL
@@ -334,11 +348,14 @@ def probe_ledger_overlap(
                     FROM comparable AS c
                     JOIN against AS a
                       ON a.amount = c.amount
-                     AND NULLIF(UPPER(TRIM(a.currency_code)), '')
-                         IS NOT DISTINCT FROM
-                         NULLIF(UPPER(TRIM(c.currency_code)), '')
                      AND ABS(DATE_DIFF('day', a.transaction_date, c.transaction_date))
                          <= CAST(? AS INTEGER)
+                     AND (
+                         a.currency_code IS NOT DISTINCT FROM c.currency_code
+                         OR (CAST(? AS BOOLEAN)
+                             AND (a.currency_code IS NULL
+                                  OR c.currency_code IS NULL))
+                     )
                     GROUP BY c.transaction_id
                 )),
                 (SELECT MIN(transaction_date) FROM comparable),
@@ -350,6 +367,7 @@ def probe_ledger_overlap(
                 window_days,
                 window_days,
                 window_days,
+                unstated_currency_matches,
             ],
         ).fetchone()
     except duckdb.CatalogException:

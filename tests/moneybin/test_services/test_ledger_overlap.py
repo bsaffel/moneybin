@@ -260,6 +260,83 @@ def test_two_ledgers_of_unknown_currency_still_match(core_db: Database) -> None:
     assert (overlap.comparable, overlap.matched) == (2, 2)
 
 
+def test_a_one_sided_currency_matches_only_when_the_caller_asks_it_to(
+    core_db: Database,
+) -> None:
+    """One side stating a currency and the other saying nothing is the seam.
+
+    Both readings are defensible and the caller picks, because the cost of
+    being wrong is not the same for both of them. A caller that *shows* this
+    count can afford the undercount — the proposal still appears, only its
+    evidence reads weaker. A caller that suppresses on ``matched == 0`` cannot:
+    the same undercount becomes proof of a disagreement that never happened,
+    and a real duplicate silently goes on double-counting.
+
+    Asserting both readings over one fixture is what makes this a test rather
+    than a restatement — if the flag stopped reaching the query, the two halves
+    would agree and the test would fail.
+    """
+    for day, amount in ((3, "-12.00"), (7, "-40.50")):
+        _insert_txn(
+            core_db,
+            account_id=_TWIN,
+            txn_date=date(2026, 5, day),
+            amount=amount,
+            currency="USD",
+        )
+        _insert_txn(
+            core_db, account_id=_SURVIVOR, txn_date=date(2026, 5, day), amount=amount
+        )
+
+    strict = probe_ledger_overlap(
+        core_db, account_id=_TWIN, against_account_id=_SURVIVOR
+    )
+    lenient = probe_ledger_overlap(
+        core_db,
+        account_id=_TWIN,
+        against_account_id=_SURVIVOR,
+        unstated_currency_matches=True,
+    )
+
+    assert (strict.comparable, strict.matched) == (2, 0)
+    assert (lenient.comparable, lenient.matched) == (2, 2)
+
+
+def test_two_stated_currencies_still_disagree_however_the_caller_reads_silence(
+    core_db: Database,
+) -> None:
+    """Relaxing silence must not relax a stated contradiction.
+
+    USD and EUR rows are not the same transaction however equal their amounts
+    look, and that is the invariant the currency predicate exists for. A
+    caller opting out of the silence reading opts out of nothing else.
+    """
+    for day, amount in ((3, "-12.00"), (7, "-40.50")):
+        _insert_txn(
+            core_db,
+            account_id=_TWIN,
+            txn_date=date(2026, 5, day),
+            amount=amount,
+            currency="USD",
+        )
+        _insert_txn(
+            core_db,
+            account_id=_SURVIVOR,
+            txn_date=date(2026, 5, day),
+            amount=amount,
+            currency="EUR",
+        )
+
+    overlap = probe_ledger_overlap(
+        core_db,
+        account_id=_TWIN,
+        against_account_id=_SURVIVOR,
+        unstated_currency_matches=True,
+    )
+
+    assert (overlap.comparable, overlap.matched) == (2, 0)
+
+
 def test_the_same_currency_spelled_in_two_cases_still_matches(
     core_db: Database,
 ) -> None:

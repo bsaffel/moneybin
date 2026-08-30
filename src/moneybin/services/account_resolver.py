@@ -1320,9 +1320,20 @@ class AccountResolver:
         means the probe found no shared period to compare, which is absence of
         evidence, not evidence of absence. Only a period both ledgers populated
         and still agreed on nothing refutes a reissue.
+
+        ``unstated_currency_matches`` is the other half. The probe's default
+        reading treats a one-sided silence as a mismatch, which is affordable
+        where the count is *shown* beside a proposal and only costly where it
+        is read as a refutation — here. A tabular export leaving the column
+        blank beside a feed that states USD would otherwise score zero on a
+        ledger it agrees with row for row, and this drop would read that as the
+        pair disagreeing. Two stated and differing currencies still refute.
         """
         overlap = probe_ledger_overlap(
-            self._db, account_id=account_id, against_account_id=other_account_id
+            self._db,
+            account_id=account_id,
+            against_account_id=other_account_id,
+            unstated_currency_matches=True,
         )
         return overlap.measurable and overlap.matched == 0
 

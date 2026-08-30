@@ -2615,22 +2615,44 @@ def test_core_passes_the_unnamed_terminal_label_through_untouched(
 
 
 def _seed_txn(
-    db: Database, *, account_id: str, txn_date: date, amount: str = "-10.00"
+    db: Database,
+    *,
+    account_id: str,
+    txn_date: date,
+    amount: str = "-10.00",
+    currency: str | None = None,
 ) -> None:
     """Insert one core.fct_transactions row so an account has a dated ledger."""
     db.execute(
         "INSERT INTO core.fct_transactions "
-        "(transaction_id, account_id, transaction_date, amount) VALUES (?, ?, ?, ?)",
-        [f"{account_id}-{txn_date.isoformat()}-{amount}", account_id, txn_date, amount],
+        "(transaction_id, account_id, transaction_date, amount, currency_code) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [
+            f"{account_id}-{txn_date.isoformat()}-{amount}",
+            account_id,
+            txn_date,
+            amount,
+            currency,
+        ],
     )
 
 
 def _seed_ledger(
-    db: Database, *, account_id: str, first: date, last: date, amount: str = "-10.00"
+    db: Database,
+    *,
+    account_id: str,
+    first: date,
+    last: date,
+    amount: str = "-10.00",
+    currency: str | None = None,
 ) -> None:
     """Give an account a ledger spanning ``first``..``last`` (two rows)."""
-    _seed_txn(db, account_id=account_id, txn_date=first, amount=amount)
-    _seed_txn(db, account_id=account_id, txn_date=last, amount=amount)
+    _seed_txn(
+        db, account_id=account_id, txn_date=first, amount=amount, currency=currency
+    )
+    _seed_txn(
+        db, account_id=account_id, txn_date=last, amount=amount, currency=currency
+    )
 
 
 def test_same_last_four_proposes_when_the_candidate_states_no_institution(
@@ -2806,6 +2828,106 @@ def test_a_concurrent_span_holding_the_same_rows_still_proposes_the_pair(
     assert proposal is not None
     assert [c.account_id for c in proposal.candidates] == ["twin_csv"]
     assert proposal.candidates[0].signal == "institution_reissue"
+
+
+def test_a_twin_only_one_source_states_a_currency_for_still_proposes_the_pair(
+    db: Database,
+) -> None:
+    """Unstated currency is silence, and silence must not read as disagreement.
+
+    ``probe_ledger_overlap`` compares currency NULL-safely, which costs a true
+    twin its evidence exactly where one source states a currency and the other
+    leaves it blank. That price is affordable for the human-facing ratio, where
+    an undercount only weakens the evidence shown beside a proposal that still
+    appears. As the auto-suppress veto this drop reads, the same undercount
+    inverts: zero matched rows becomes proof of a disagreement that never
+    happened, and the proposal disappears instead of arriving weak.
+
+    A tabular export leaving the column blank beside a feed that states USD is
+    the cross-source pair this proposer exists to surface, so it is the pair
+    the veto must not manufacture evidence against.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="twin_stated",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="twin_unstated",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="5678",
+    )
+    _seed_ledger(
+        db,
+        account_id="twin_stated",
+        first=date(2025, 1, 2),
+        last=date(2025, 12, 30),
+        currency="USD",
+    )
+    _seed_ledger(
+        db,
+        account_id="twin_unstated",
+        first=date(2025, 1, 2),
+        last=date(2025, 12, 30),
+        currency=None,
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("twin_stated")
+
+    assert proposal is not None
+    assert [c.account_id for c in proposal.candidates] == ["twin_unstated"]
+    assert proposal.candidates[0].signal == "institution_reissue"
+
+
+def test_two_stated_and_differing_currencies_still_refute_the_reissue(
+    db: Database,
+) -> None:
+    """The veto keeps working on the disagreement it was written for.
+
+    A nominal amount is not a sum of money until a currency names it, so equal
+    amounts in USD and EUR are not the same transaction however alike they
+    look. Relaxing the probe for *silence* must not relax it for a stated
+    contradiction — otherwise the concurrency drop this pair belongs to stops
+    firing at all.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="usd_card",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="eur_card",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="5678",
+    )
+    _seed_ledger(
+        db,
+        account_id="usd_card",
+        first=date(2025, 1, 2),
+        last=date(2025, 12, 30),
+        currency="USD",
+    )
+    _seed_ledger(
+        db,
+        account_id="eur_card",
+        first=date(2025, 1, 2),
+        last=date(2025, 12, 30),
+        currency="EUR",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    assert resolver.propose_existing("usd_card") is None
 
 
 def test_a_sequential_ledger_still_proposes_the_reissue(db: Database) -> None:

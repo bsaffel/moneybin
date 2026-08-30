@@ -93,8 +93,8 @@ records 59,577 bytes of serialized metadata, SHA-256
 the 90,734-byte frozen baseline, SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`: a
 -31,157-byte (-34.3%) delta. Both figures are the snapshot's own `total_bytes`
-and `sha256`, so a registry change moves them and the docs suite checks them. It advertises zero output schemas and has
-`contract_passed: true`.
+and `sha256`, so a registry change moves them and the docs suite checks them.
+It advertises zero output schemas and has `contract_passed: true`.
 
 This ADR remains **Proposed**. `promotion_ready: false`: context budget and
 host-native deferral are both `not_observed`. Generic clients receive all 50

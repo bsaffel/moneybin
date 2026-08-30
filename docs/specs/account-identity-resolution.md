@@ -425,6 +425,18 @@ signal reliability:
    which is absence of evidence rather than evidence of absence, and keeps the
    proposal.
 
+   The same reading governs an unstated **currency**, which is why this drop
+   passes `unstated_currency_matches=True` to the probe. The probe's default is
+   to treat a one-sided silence as a mismatch, and that default is priced for
+   the caller that *shows* the count: an undercount there weakens the evidence
+   printed beside a proposal that still appears. A caller that suppresses on
+   zero matches inverts the price — the same undercount becomes proof of a
+   disagreement that never happened. A tabular export leaving the column blank
+   beside a feed that states `USD` is precisely the cross-source pair this
+   queue exists to surface, so silence must not refute it. Two *stated* and
+   differing currencies still do: a nominal amount is not a sum of money until
+   a currency names it.
+
    The pass then branches on how many candidates survived:
 
    - **0 candidates** → done: a new standalone account. Its `last_four` /

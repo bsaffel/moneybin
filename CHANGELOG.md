@@ -1256,7 +1256,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   every row, so dropping on the dates alone would have silently withheld the
   pair and left it double-counting. Only positive concurrency drops it: an
   account with no published ledger, or no comparable period to measure, keeps
-  its proposal, which is the import-time state the signal was written for.
+  its proposal, which is the import-time state the signal was written for. An
+  unstated currency counts as silence here for the same reason: the overlap
+  probe normally reads a one-sided blank as a mismatch, which is affordable
+  where the count is only shown beside a proposal and inverts where it
+  suppresses one — a tabular export leaving the column empty beside a feed
+  that states USD would otherwise score zero against a ledger it agrees with
+  row for row, and the drop would read that as disagreement. Two stated and
+  differing currencies still refute.
 
   Ledger overlap now also states the posting-lag tolerance it matched within, on
   every surface that reports it. "345 of 346" otherwise reads as exact-date
