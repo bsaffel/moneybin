@@ -145,12 +145,13 @@ WITH accepted_native_links AS (
      same-key row at #2 is also excluded — silently losing the transaction.
      Filtering pre-rank lets the valid row take #1. Corrected pinned rows are
      excluded only when an accepted legacy self-map proves the same canonical
-     account, file, origin, and transaction content and no app state references
-     their gold id. A corrected row already in an accepted dedup group is also
-     retained: its gold id may be anchored by another source. Unreversed
-     terminal transfer endpoints are also retained because bridge_transfers
-     requires both rows and rejected decisions prevent re-proposal. Duplicate
-     content is paired by occurrence, so a reused path remains visible. */
+     account, file, and origin with either a stable source ID or identical
+     content and no app state references their gold id. A corrected row already
+     in an accepted dedup group is also retained: its gold id may be anchored by
+     another source. Unreversed terminal transfer endpoints are also retained
+     because bridge_transfers requires both rows and rejected decisions prevent
+     re-proposal. ID-less duplicate content is paired by occurrence, so a reused
+     path remains visible. */
   WHERE
     deleted_from_source_at IS NULL
     AND NOT EXISTS(
@@ -162,12 +163,21 @@ WITH accepted_native_links AS (
         AND legacy.source_file IS NOT DISTINCT FROM corrected.source_file
         AND legacy.source_type = corrected.source_type
         AND legacy.source_origin IS NOT DISTINCT FROM corrected.source_origin
-        AND legacy.transaction_date = corrected.transaction_date
-        AND legacy.amount = corrected.amount
-        AND legacy.description IS NOT DISTINCT FROM corrected.description
-        AND legacy.original_date_str IS NOT DISTINCT FROM corrected.original_date_str
-        AND legacy.source_transaction_id IS NOT DISTINCT FROM corrected.source_transaction_id
-        AND legacy.occurrence = corrected.occurrence
+        AND (
+          (
+            NOT legacy.source_transaction_id IS NULL
+            AND legacy.source_transaction_id = corrected.source_transaction_id
+          )
+          OR (
+            legacy.source_transaction_id IS NULL
+            AND corrected.source_transaction_id IS NULL
+            AND legacy.transaction_date = corrected.transaction_date
+            AND legacy.amount = corrected.amount
+            AND legacy.description IS NOT DISTINCT FROM corrected.description
+            AND legacy.original_date_str IS NOT DISTINCT FROM corrected.original_date_str
+            AND legacy.occurrence = corrected.occurrence
+          )
+        )
       WHERE
         corrected.transaction_id = t.transaction_id
         AND NOT EXISTS(

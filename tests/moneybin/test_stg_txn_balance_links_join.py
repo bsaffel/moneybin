@@ -295,6 +295,75 @@ def test_stg_tabular_transactions_keeps_distinct_source_transaction_ids(
 
 
 @pytest.mark.slow
+def test_stg_tabular_transactions_retires_corrected_stable_source_id(
+    db: Database,
+) -> None:
+    """A corrected stable source ID does not double-count when content changes.
+
+    The production change this catches is requiring content equality even when
+    both rows carry the same upstream transaction identifier.
+    """
+    canonical_id = "canonical-stable-source-id-01"
+    native_key = "native-stable-source-id-01"
+    source_file = "stable-source-id-statement.csv"
+    source_origin = "stable-source-id-test"
+
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, source_transaction_id, transaction_date,
+             amount, description, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES
+            ('canonical-stable-source-id-01:source-001', ?, 'source-001',
+             DATE '2024-01-15', -50.00, 'Original purchase', ?, 'csv', ?,
+             'legacy-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('native-stable-source-id-01:source-001', ?, 'source-001',
+             DATE '2024-01-16', -55.00, 'Corrected purchase', ?, 'csv', ?,
+             'corrected-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [
+            canonical_id,
+            source_file,
+            source_origin,
+            native_key,
+            source_file,
+            source_origin,
+        ],
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-stable-source-id-legacy",
+        account_id=canonical_id,
+        ref_value=canonical_id,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-stable-source-id-native",
+        account_id=canonical_id,
+        ref_value=native_key,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        """
+        SELECT source_account_key, source_transaction_id
+        FROM prep.stg_tabular__transactions
+        WHERE source_file = ?
+        """,
+        [source_file],
+    ).fetchall()
+
+    assert rows == [(canonical_id, "source-001")]
+
+
+@pytest.mark.slow
 def test_stg_tabular_transactions_keeps_distinct_original_date_strings(
     db: Database,
 ) -> None:
