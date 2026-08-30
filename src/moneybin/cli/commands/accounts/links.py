@@ -577,10 +577,10 @@ def links_history(
 @app.command("run")
 def links_run(
     account_id: str | None = typer.Argument(
-        None, help="One side of a pair to propose (requires CANDIDATE_ACCOUNT_ID)"
+        None, help="Account absorbed on accept (requires CANDIDATE_ACCOUNT_ID)"
     ),
     candidate_account_id: str | None = typer.Argument(
-        None, help="The other side of the pair (requires ACCOUNT_ID)"
+        None, help="Account kept on accept (requires ACCOUNT_ID)"
     ),
     output: OutputFormat = output_option,
 ) -> None:
@@ -592,7 +592,9 @@ def links_run(
 
     With two account ids, proposes exactly that pair — the escape hatch for a
     duplicate no signal reaches, where nothing matches but you know it is one
-    account. Neither form merges: both write proposals for `accounts links set`.
+    account. Order is direction: the first id is absorbed and the second kept,
+    whenever both are absorbable. Neither form merges: both write proposals for
+    `accounts links set`.
     """
     if (account_id is None) != (candidate_account_id is None):
         typer.echo(

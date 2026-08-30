@@ -875,7 +875,7 @@ def accounts_links_history(
     )
 
 
-@mcp_tool(read_only=False)
+@mcp_tool(read_only=False, idempotent=False)
 def accounts_links_run(
     account_id: str | None = None,
     candidate_account_id: str | None = None,
@@ -891,8 +891,11 @@ def accounts_links_run(
     With both ids, proposes exactly that pair under signal ``manual`` and no
     confidence score. This is the escape hatch for a duplicate no signal
     reaches — different last four, different institution, nothing in common but
-    the user's knowledge that it is one account. Passing one id is an error, not
-    a sweep: silently backfilling the whole book because the second id was
+    the user's knowledge that it is one account. Order is direction: the first
+    id is the account absorbed and the second the one kept, whenever both sides
+    are absorbable. When only one holds the accepted ``source_native`` link a
+    merge re-points, that one is absorbed whichever way round it was passed.
+    Passing one id is an error, not a sweep: silently backfilling the whole book because the second id was
     forgotten writes proposals nobody asked for.
 
     Neither form merges anything. Both write ``pending``
@@ -900,8 +903,9 @@ def accounts_links_run(
     gate; revert is via ``app.audit_log`` (no undo tool yet; deferred to M1L).
 
     Args:
-        account_id: One side of a pair to propose. Requires candidate_account_id.
-        candidate_account_id: The other side. Requires account_id.
+        account_id: The account to absorb — merged away if the proposal is
+            accepted. Requires candidate_account_id.
+        candidate_account_id: The account to keep. Requires account_id.
 
     Returns:
         Envelope with ``data.new_proposals`` (pending decisions written) and

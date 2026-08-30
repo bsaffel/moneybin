@@ -1,5 +1,5 @@
 {
-  "sha256": "90fbfccca9e80add63bb1627cbfa06975ebf8e2ee1fec5fc0dfe3b734826a991",
+  "sha256": "e4ab65de81ffe8b8b63f1448ab7b151b46924d9155e7b3f64d8f72da4397a4f6",
   "tool_count": 50,
   "tools": [
     {
@@ -335,11 +335,11 @@
       "total_bytes": 1069
     },
     {
-      "annotation_bytes": 90,
+      "annotation_bytes": 91,
       "definition": {
         "annotations": {
           "destructiveHint": false,
-          "idempotentHint": true,
+          "idempotentHint": false,
           "openWorldHint": false,
           "readOnlyHint": false
         },
@@ -357,7 +357,7 @@
                 }
               ],
               "default": null,
-              "description": "One side of a pair to propose. Requires candidate_account_id."
+              "description": "The account to absorb \u2014 merged away if the proposal is\naccepted. Requires candidate_account_id."
             },
             "candidate_account_id": {
               "anyOf": [
@@ -369,7 +369,7 @@
                 }
               ],
               "default": null,
-              "description": "The other side. Requires account_id."
+              "description": "The account to keep. Requires account_id."
             }
           },
           "type": "object"
@@ -382,11 +382,11 @@
         "name": "accounts_links_run"
       },
       "description_bytes": 810,
-      "input_schema_bytes": 350,
+      "input_schema_bytes": 395,
       "name": "accounts_links_run",
       "other_bytes": 60,
       "output_schema_bytes": 0,
-      "total_bytes": 1366
+      "total_bytes": 1412
     },
     {
       "annotation_bytes": 90,
@@ -5088,5 +5088,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 59531
+  "total_bytes": 59577
 }

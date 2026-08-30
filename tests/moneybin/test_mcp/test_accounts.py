@@ -1943,3 +1943,23 @@ async def test_links_run_refuses_a_half_named_pair_rather_than_sweeping() -> Non
     assert response.error is not None
     assert response.error.code == "mutation_invalid_input"
     assert "candidate_account_id" in response.error.message
+
+
+async def test_links_run_does_not_promise_a_safe_retry() -> None:
+    """The pair form refuses a pair it already proposed, so retrying is not free.
+
+    The sweep half is safely repeatable — it skips pairs already decided. The
+    pair half is not: a second call for the same pair raises
+    MUTATION_CONSTRAINT_VIOLATION, because writing the same proposal twice must
+    fail rather than converge. An agent whose await timed out (the sync body
+    runs to completion regardless) would retry on the strength of
+    ``idempotentHint`` and get an error instead of the decision id it already
+    wrote, so the hint must not claim otherwise.
+    """
+    srv = FastMCP("test")
+    register_accounts_tools(srv)
+
+    tool = next(t for t in await srv._list_tools() if t.name == "accounts_links_run")  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    assert tool.annotations is not None
+    assert tool.annotations.idempotentHint is False

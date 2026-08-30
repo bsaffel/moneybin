@@ -1532,6 +1532,171 @@ def test_a_coincidental_namesake_does_not_suppress_the_genuine_reissue(
     assert ("unrelated_namesake", "name") in surfaced, surfaced
 
 
+def test_a_coincidental_last_four_does_not_suppress_the_genuine_name_match(
+    db: Database,
+) -> None:
+    """A bare ``last_four`` hit runs beside the name pass, not instead of it.
+
+    The tabular path mints an account with an exact last four and no resolved
+    institution, so nothing contradicts a four-digit collision at some other
+    bank. When that collision is all the last-four rung finds, returning it and
+    stopping drops the name pass — and with it the genuine twin, whose last four
+    is simply unknown. That is the miss this rung was widened to fix, reappearing
+    one rung lower: before the widening, a source with no institution skipped the
+    rung entirely and the name pass caught the twin.
+
+    Only a corroborated ``institution_last4`` pair — both sides naming the same
+    bank — is strong enough to stand alone.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="tabular_source",
+        display_name="Daily Expense",
+        institution_name=None,
+        last_four="1789",
+    )
+    _seed_dim_account(
+        db,
+        account_id="four_digit_collision",
+        display_name="Vacation Fund",
+        institution_name="ALLY",
+        last_four="1789",
+    )
+    _seed_dim_account(
+        db,
+        account_id="genuine_twin",
+        display_name="Daily Expense",
+        institution_name="CHASE",
+        last_four=None,
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("tabular_source")
+
+    assert proposal is not None
+    surfaced = {(c.account_id, c.signal) for c in proposal.candidates}
+    assert ("four_digit_collision", "last_four") in surfaced, surfaced
+    assert ("genuine_twin", "name") in surfaced, surfaced
+
+
+def test_a_corroborated_last_four_still_stands_alone(db: Database) -> None:
+    """Both sides naming the same bank is near-certain, so it short-circuits.
+
+    The companion to the test above: widening the rung must not cost the
+    short-circuit where it was earned. A shared institution plus a shared last
+    four is the strongest weak signal there is, and adding a weaker name guess
+    beside it would only give the reviewer a second, worse answer to the same
+    question.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="chase_source",
+        display_name="Daily Expense",
+        institution_name="CHASE",
+        last_four="1789",
+    )
+    _seed_dim_account(
+        db,
+        account_id="chase_twin",
+        display_name="Vacation Fund",
+        institution_name="CHASE",
+        last_four="1789",
+    )
+    _seed_dim_account(
+        db,
+        account_id="namesake_elsewhere",
+        display_name="Daily Expense",
+        institution_name="ALLY",
+        last_four=None,
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("chase_source")
+
+    assert proposal is not None
+    surfaced = {(c.account_id, c.signal) for c in proposal.candidates}
+    assert surfaced == {("chase_twin", "institution_last4")}, surfaced
+
+
+def test_the_last_four_rung_is_capped_like_its_siblings(db: Database) -> None:
+    """A placeholder last four shared across the book cannot flood the queue.
+
+    Requiring a shared institution used to bound this rung implicitly. Without
+    that requirement, one account stating a filler value like ``0000`` proposes
+    against every account stating the same filler — one pending decision each,
+    which is the self-refuting queue ``_drop_concurrent_reissues`` exists to
+    prevent. The sibling rungs cap at ``_FALLBACK_CANDIDATE_CAP``; so does this
+    one.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="filler_source",
+        display_name="Daily Expense",
+        institution_name=None,
+        last_four="0000",
+    )
+    for index in range(_FALLBACK_CANDIDATE_CAP + 10):
+        _seed_dim_account(
+            db,
+            account_id=f"filler_{index:03d}",
+            display_name=f"Unrelated {index:03d}",
+            institution_name=None,
+            last_four="0000",
+        )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("filler_source")
+
+    assert proposal is not None
+    by_last_four = [c for c in proposal.candidates if c.signal == "last_four"]
+    assert len(by_last_four) == _FALLBACK_CANDIDATE_CAP, len(by_last_four)
+
+
+def test_the_cap_keeps_the_corroborated_match_over_bare_collisions(
+    db: Database,
+) -> None:
+    """A cap that drops the one real twin is worse than no cap at all.
+
+    ``ORDER BY account_id`` is not a relevance order: a corroborated
+    ``institution_last4`` pair can sort anywhere among the bare collisions, and
+    here it deliberately sorts last. Ordering by corroboration before truncating
+    is what makes the bound safe.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="chase_filler_source",
+        display_name="Daily Expense",
+        institution_name="CHASE",
+        last_four="0000",
+    )
+    for index in range(_FALLBACK_CANDIDATE_CAP + 10):
+        _seed_dim_account(
+            db,
+            account_id=f"filler_{index:03d}",
+            display_name=f"Unrelated {index:03d}",
+            institution_name=None,
+            last_four="0000",
+        )
+    _seed_dim_account(
+        db,
+        account_id="zz_chase_twin",
+        display_name="Vacation Fund",
+        institution_name="CHASE",
+        last_four="0000",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("chase_filler_source")
+
+    assert proposal is not None
+    surfaced = {(c.account_id, c.signal) for c in proposal.candidates}
+    assert ("zz_chase_twin", "institution_last4") in surfaced, surfaced
+
+
 def test_mint_claims_full_number_strong_ref_for_later_adopt(db: Database) -> None:
     """A minted account claims its scoped full_number so a later source adopts it.
 

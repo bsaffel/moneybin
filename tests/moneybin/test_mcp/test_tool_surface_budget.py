@@ -156,7 +156,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # tools never owed: accepting a match can reverse a transfer the user
     # accepted, and an agent that cannot read that from the description
     # reports the reversal as a clean accept. Registry-wide the consolidation
-    # still stands at -34.4% — 59,531 bytes against the baseline's 90,734, both
+    # still stands at -34.3% — 59,577 bytes against the baseline's 90,734, both
     # readable as `total_bytes` in the two fixtures this test loads. (The figure
     # has drifted twice before — recorded as -38.0%, then -37.0% — because
     # nothing fails when a comment goes stale. Recompute it from the fixtures

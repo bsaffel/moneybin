@@ -391,7 +391,7 @@ signal reliability:
    `propose_existing()` backfill, where it would propose every same-issuer card
    against every other. Keeping the two separate is what lets backfill see a
    vetoed duplicate without drowning in pairwise noise — conflating them made a
-   duplicate the backfill queue used to surface silently invisible:
+   duplicate the backfill queue used to surface silently invisible.
    Institution is **evidence on the last-four rung, never a precondition for
    it.** Two accounts that state different banks are still vetoed, but a pair
    where either side names none is proposed under `last_four` rather than
@@ -412,6 +412,8 @@ signal reliability:
    one statement cycle). Only *positive* concurrency drops it — an account with
    no published ledger keeps its proposal, which is the import-time state the
    signal was written for.
+
+   The pass then branches on how many candidates survived:
 
    - **0 candidates** → done: a new standalone account. Its `last_four` /
      institution / name (captured per Decision 7) become candidate signals for

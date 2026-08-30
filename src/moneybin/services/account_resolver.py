@@ -1103,8 +1103,19 @@ class AccountResolver:
         )
         try:
             out: list[_Candidate] = list(pending_candidates)
-            out.extend(self._last_four_candidates(src, exclude_account_id))
-            if out:
+            last_four_candidates = self._last_four_candidates(src, exclude_account_id)
+            out.extend(last_four_candidates)
+            # Only a *corroborated* last four stands alone. Both sides naming
+            # the same bank is near-certain, so a weaker name guess beside it
+            # would just give the reviewer a second, worse answer. A bare
+            # `last_four` hit is a four-digit coincidence until something
+            # corroborates it — and since the rung stopped requiring an
+            # institution, returning on one suppresses the name pass for exactly
+            # the institution-less sources the widening was meant to help. The
+            # twin it hides is the one whose own last four is simply unknown.
+            if pending_candidates or any(
+                c.signal == "institution_last4" for c in last_four_candidates
+            ):
                 return _dedupe_candidates(out, legacy_candidates)
             name_rows = self._db.execute(
                 f"SELECT account_id, display_name, last_four, institution_slug "  # noqa: S608  # TableRef + parameterized values
@@ -1224,7 +1235,13 @@ class AccountResolver:
                     confidence=0.5 if shared_institution else 0.45,
                 )
             )
-        return candidates
+        # Corroboration decides who survives the cap, not `ORDER BY
+        # account_id`: an `institution_last4` pair is the one near-certain match
+        # in this list, and a book full of filler collisions would otherwise
+        # crowd it out on id order alone. The sort is stable, so ties keep that
+        # id order.
+        candidates.sort(key=lambda c: c.signal != "institution_last4")
+        return candidates[:_FALLBACK_CANDIDATE_CAP]
 
     def _drop_concurrent_reissues(
         self, candidates: list[_Candidate], *, account_id: str
