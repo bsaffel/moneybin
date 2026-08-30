@@ -8,7 +8,9 @@ Also covers the core boundary those views feed: the three-branch union into
 from __future__ import annotations
 
 import uuid
+from collections.abc import Generator
 from decimal import Decimal
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -237,28 +239,435 @@ def _link_account(
     )
 
 
-@pytest.mark.slow
-def test_stg_securities_resolves_and_normalizes(db: Database) -> None:
+@pytest.fixture(scope="module")
+def plaid_investment_cases(
+    tmp_path_factory: pytest.TempPathFactory,
+    request: pytest.FixtureRequest,
+) -> Generator[Database, None, None]:
+    """One real encrypted-DB plan over this module's namespaced fixture cases."""
+    secret_store = MagicMock()
+    secret_store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    db_path = tmp_path_factory.mktemp("plaid_investment_cases") / "test.duckdb"
+    database = Database(
+        db_path,
+        secret_store=secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
+    request.addfinalizer(database.close)
     _raw_security(
-        db,
+        database,
+        security_id="mb21_security_normalized",
         security_type="fixed income",
         iso_currency_code=None,
         unofficial_currency_code="BTC",
+        source_file="mb21_security_normalized",
+        source_origin="mb21_security_normalized",
     )
-    _link_security(db, "sec_1", "cat000000001")
-    with sqlmesh_context(db) as ctx:
+    _link_security(database, "mb21_security_normalized", "cat000000001")
+    _raw_security(
+        database,
+        security_id="mb21_security_unresolved",
+        source_file="mb21_security_unresolved",
+        source_origin="mb21_security_unresolved",
+    )
+    _raw_security(
+        database,
+        security_id="mb21_security_reversed",
+        source_file="mb21_security_reversed",
+        source_origin="mb21_security_reversed",
+    )
+    _link_security(database, "mb21_security_reversed", "cat000000002")
+    _link_security(
+        database,
+        "mb21_security_reversed",
+        "cat000000999",
+        status="reversed",
+    )
+    _raw_holding(
+        database,
+        account_id="mb21_holding_resolved_account",
+        security_id="mb21_holding_resolved_security",
+        source_file="mb21_holding_resolved",
+        source_origin="mb21_holding_resolved",
+    )
+    _link_account(
+        database,
+        "mb21_holding_resolved_account",
+        "mb21_canonical_account",
+        "mb21_holding_resolved",
+    )
+    _link_security(
+        database,
+        "mb21_holding_resolved_security",
+        "cat000000003",
+    )
+    _raw_holding(
+        database,
+        account_id="mb21_holding_unresolved_security_account",
+        security_id="mb21_holding_unresolved_security",
+        source_file="mb21_holding_unresolved_security",
+        source_origin="mb21_holding_unresolved_security",
+    )
+    _link_account(
+        database,
+        "mb21_holding_unresolved_security_account",
+        "mb21_canonical_account_unresolved_security",
+        "mb21_holding_unresolved_security",
+    )
+    _raw_holding(
+        database,
+        account_id="mb21_holding_unresolved_account",
+        security_id="mb21_holding_unresolved_account_security",
+        source_file="mb21_holding_unresolved_account",
+        source_origin="mb21_holding_unresolved_account",
+    )
+    _link_security(
+        database,
+        "mb21_holding_unresolved_account_security",
+        "cat000000004",
+    )
+    _raw_holding(
+        database,
+        account_id="mb21_holding_repull_account",
+        security_id="mb21_holding_repull_security",
+        source_file="mb21_holding_repull",
+        source_origin="mb21_holding_repull",
+        quantity="10.0",
+    )
+    _raw_holding(
+        database,
+        account_id="mb21_holding_repull_account",
+        security_id="mb21_holding_repull_security",
+        source_file="mb21_holding_repull",
+        source_origin="mb21_holding_repull",
+        quantity="12.0",
+    )
+    _raw_holding(
+        database,
+        account_id="mb21_holding_snapshots_account",
+        security_id="mb21_holding_snapshots_security",
+        source_file="mb21_holding_snapshots_1",
+        source_origin="mb21_holding_snapshots",
+        quantity="10.0",
+    )
+    _raw_holding(
+        database,
+        account_id="mb21_holding_snapshots_account",
+        security_id="mb21_holding_snapshots_security",
+        source_file="mb21_holding_snapshots_2",
+        source_origin="mb21_holding_snapshots",
+        extracted_at="2026-07-09 12:00:00",
+        quantity="11.0",
+    )
+    _raw_investment_txn(
+        database,
+        investment_transaction_id="mb21_txn_flip",
+        account_id="mb21_txn_flip_account",
+        security_id="mb21_txn_flip_security",
+        source_file="mb21_txn_flip",
+        source_origin="mb21_txn_flip",
+    )
+    _raw_investment_txn(
+        database,
+        investment_transaction_id="mb21_txn_deposit",
+        account_id="mb21_txn_deposit_account",
+        security_id=None,
+        quantity=None,
+        price=None,
+        amount="-500.00",
+        investment_transaction_type="cash",
+        investment_transaction_subtype="deposit",
+        source_file="mb21_txn_deposit",
+        source_origin="mb21_txn_deposit",
+    )
+    _raw_investment_txn(
+        database,
+        investment_transaction_id="mb21_txn_unresolved",
+        account_id="mb21_txn_unresolved_account",
+        security_id="mb21_txn_unresolved_security",
+        source_file="mb21_txn_unresolved",
+        source_origin="mb21_txn_unresolved",
+    )
+    _link_account(
+        database,
+        "mb21_txn_unresolved_account",
+        "mb21_canonical_txn_unresolved",
+        "mb21_txn_unresolved",
+    )
+    _raw_investment_txn(
+        database,
+        investment_transaction_id="mb21_txn_resolved",
+        account_id="mb21_txn_resolved_account",
+        security_id="mb21_txn_resolved_security",
+        source_file="mb21_txn_resolved",
+        source_origin="mb21_txn_resolved",
+    )
+    _link_account(
+        database,
+        "mb21_txn_resolved_account",
+        "mb21_canonical_txn_resolved",
+        "mb21_txn_resolved",
+    )
+    _link_security(database, "mb21_txn_resolved_security", "cat000000005")
+    _raw_investment_txn(
+        database,
+        investment_transaction_id="mb21_txn_datetime",
+        transaction_datetime="2026-07-05 14:30:00",
+        source_file="mb21_txn_datetime",
+        source_origin="mb21_txn_datetime",
+    )
+    _raw_investment_txn(
+        database,
+        investment_transaction_id="mb21_txn_date_fallback",
+        transaction_datetime=None,
+        source_file="mb21_txn_datetime",
+        source_origin="mb21_txn_datetime",
+    )
+    _raw_investment_txn(
+        database,
+        investment_transaction_id="mb21_txn_basis_unknown",
+        quantity="6.0",
+        amount="0",
+        investment_transaction_type="transfer",
+        investment_transaction_subtype="stock distribution",
+        source_file="mb21_txn_basis_unknown",
+        source_origin="mb21_txn_basis_unknown",
+    )
+    _raw_holding(
+        database,
+        account_id="mb21_holding_reversed_account",
+        security_id="mb21_holding_reversed_security",
+        source_file="mb21_holding_reversed",
+        source_origin="mb21_holding_reversed",
+    )
+    _link_account(
+        database,
+        "mb21_holding_reversed_account",
+        "mb21_canonical_holding_reversed",
+        "mb21_holding_reversed",
+    )
+    _link_security(database, "mb21_holding_reversed_security", "cat000000006")
+    _link_security(
+        database,
+        "mb21_holding_reversed_security",
+        "cat000000999",
+        status="reversed",
+    )
+    for transaction_id, subtype, quantity, amount in (
+        ("mb21_cash_transfer_out_zero", "send", "0", "100.00"),
+        ("mb21_cash_transfer_in_zero", "transfer", "0", "-100.00"),
+        ("mb21_cash_transfer_out_null", "send", None, "100.00"),
+        ("mb21_cash_transfer_in_null", "transfer", None, "-100.00"),
+    ):
+        _raw_investment_txn(
+            database,
+            investment_transaction_id=transaction_id,
+            security_id=None,
+            quantity=quantity,
+            amount=amount,
+            investment_transaction_type="transfer",
+            investment_transaction_subtype=subtype,
+            source_file="mb21_cash_transfers",
+            source_origin="mb21_cash_transfers",
+        )
+    for transaction_id, subtype, amount in (
+        ("mb21_underivable_lieu", "merger", "-100.00"),
+        ("mb21_underivable_transfer", "transfer", "100.00"),
+    ):
+        _raw_investment_txn(
+            database,
+            investment_transaction_id=transaction_id,
+            quantity="0",
+            amount=amount,
+            investment_transaction_type="transfer",
+            investment_transaction_subtype=subtype,
+            source_file="mb21_underivable_transfers",
+            source_origin="mb21_underivable_transfers",
+        )
+    for transaction_id, type_, subtype in (
+        ("mb21_cash_dividend", "cash", "dividend"),
+        ("mb21_cash_interest", "cash", "interest"),
+        ("mb21_cash_gain", "cash", "long-term capital gain"),
+        ("mb21_cash_deposit_qty", "cash", "deposit"),
+        ("mb21_cash_withdrawal", "cash", "withdrawal"),
+        ("mb21_cash_fee", "fee", "management fee"),
+        ("mb21_cash_return", "fee", "return of principal"),
+    ):
+        _raw_investment_txn(
+            database,
+            investment_transaction_id=transaction_id,
+            security_id=None,
+            quantity="0",
+            price=None,
+            amount="-25.00",
+            investment_transaction_type=type_,
+            investment_transaction_subtype=subtype,
+            source_file="mb21_cash_quantity",
+            source_origin="mb21_cash_quantity",
+        )
+    _raw_investment_txn(
+        database,
+        investment_transaction_id="mb21_short_leg",
+        quantity="1.0",
+        investment_transaction_type="buy",
+        investment_transaction_subtype="buy to cover",
+        source_file="mb21_short_leg",
+        source_origin="mb21_short_leg",
+    )
+    for transaction_id, type_, subtype, security_id, quantity in (
+        ("mb21_lifecycle_cancel", "cancel", "buy", "sec_1", "10.0"),
+        ("mb21_lifecycle_credit", "cash", "pending credit", None, None),
+        ("mb21_lifecycle_debit", "cash", "pending debit", None, None),
+        ("mb21_lifecycle_request", "transfer", "request", "sec_1", "10.0"),
+    ):
+        _raw_investment_txn(
+            database,
+            investment_transaction_id=transaction_id,
+            security_id=security_id,
+            quantity=quantity,
+            investment_transaction_type=type_,
+            investment_transaction_subtype=subtype,
+            source_file="mb21_lifecycle",
+            source_origin="mb21_lifecycle",
+        )
+    for index, (quantity, amount) in enumerate((
+        ("100.0", "0"),
+        ("-50.0", "0"),
+        ("0.0", "0"),
+        (None, "0"),
+        ("100.0", "12.34"),
+    )):
+        _raw_investment_txn(
+            database,
+            investment_transaction_id=f"mb21_split_{index}",
+            security_id="mb21_split_security",
+            quantity=quantity,
+            amount=amount,
+            investment_transaction_type="transfer",
+            investment_transaction_subtype="split",
+            source_file="mb21_split",
+            source_origin="mb21_split",
+        )
+    _link_security(database, "mb21_split_security", "cat000000007")
+    _raw_investment_txn(
+        database,
+        investment_transaction_id="mb21_unmapped_security",
+        investment_transaction_type="buy",
+        investment_transaction_subtype="quantum entanglement",
+        source_file="mb21_unmapped_security",
+        source_origin="mb21_unmapped_security",
+    )
+    _raw_investment_txn(
+        database,
+        investment_transaction_id="mb21_unmapped_cash",
+        security_id=None,
+        quantity=None,
+        investment_transaction_type="cash",
+        investment_transaction_subtype="mystery credit",
+        source_file="mb21_unmapped_cash",
+        source_origin="mb21_unmapped_cash",
+    )
+    taxonomy_cases = (
+        ("buy", "buy", "1"),
+        ("buy", "contribution", "1"),
+        ("buy", "dividend reinvestment", "1"),
+        ("buy", "interest reinvestment", "1"),
+        ("buy", "long-term capital gain reinvestment", "1"),
+        ("buy", "short-term capital gain reinvestment", "1"),
+        ("buy", "assignment", "1"),
+        ("buy", "buy to cover", "1"),
+        ("sell", "sell", "-1"),
+        ("sell", "sell short", "-1"),
+        ("sell", "exercise", "-1"),
+        ("sell", "distribution", "-1"),
+        ("transfer", "assignment", "1"),
+        ("transfer", "exercise", "1"),
+        ("transfer", "expire", "-1"),
+        ("transfer", "stock distribution", "6"),
+        ("transfer", "transfer", "5"),
+        ("transfer", "transfer", "-5"),
+        ("transfer", "send", "-5"),
+        ("transfer", "merger", "5"),
+        ("transfer", "spin off", "5"),
+        ("transfer", "trade", "-5"),
+        ("transfer", "adjustment", "1"),
+        ("cash", "contribution", None),
+        ("cash", "deposit", None),
+        ("cash", "withdrawal", None),
+        ("cash", "dividend", None),
+        ("cash", "qualified dividend", None),
+        ("cash", "non-qualified dividend", None),
+        ("cash", "interest", None),
+        ("cash", "interest receivable", None),
+        ("cash", "long-term capital gain", None),
+        ("cash", "short-term capital gain", None),
+        ("cash", "unqualified gain", None),
+        ("fee", "account fee", None),
+        ("fee", "legal fee", None),
+        ("fee", "management fee", None),
+        ("fee", "transfer fee", None),
+        ("fee", "trust fee", None),
+        ("fee", "fund fee", None),
+        ("fee", "miscellaneous fee", None),
+        ("fee", "margin expense", None),
+        ("fee", "tax", None),
+        ("fee", "tax withheld", None),
+        ("fee", "non-resident tax", None),
+        ("fee", "return of principal", None),
+        ("fee", "adjustment", None),
+        ("cash", "loan payment", None),
+        ("cash", "rebalance", None),
+    )
+    for index, (type_, subtype, quantity) in enumerate(taxonomy_cases):
+        _raw_investment_txn(
+            database,
+            investment_transaction_id=f"mb21_taxonomy_{index}",
+            security_id=None if quantity is None else "mb21_taxonomy_security",
+            quantity=quantity,
+            amount="10.00",
+            investment_transaction_type=type_,
+            investment_transaction_subtype=subtype,
+            source_file="mb21_taxonomy",
+            source_origin="mb21_taxonomy",
+        )
+    for index, (type_, subtype) in enumerate((
+        ("BUY", "BUY"),
+        ("wormhole", "quantum entanglement"),
+        (None, None),
+        ("cash", None),
+    )):
+        _raw_investment_txn(
+            database,
+            investment_transaction_id=f"mb21_closed_{index}",
+            investment_transaction_type=type_,
+            investment_transaction_subtype=subtype,
+            source_file="mb21_closed",
+            source_origin="mb21_closed",
+        )
+    with sqlmesh_context(database) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
-        """
-        SELECT security_id, source_security_key, exchange, security_type, currency_code
-        FROM prep.stg_plaid__securities
-        """
-    ).fetchone()
-    assert row == ("cat000000001", "sec_1", "XNAS", "bond", "BTC")
+    yield database
 
 
 @pytest.mark.slow
-def test_stg_securities_unresolved_yields_null_security_id(db: Database) -> None:
+def test_stg_securities_resolves_and_normalizes(
+    plaid_investment_cases: Database,
+) -> None:
+    row = plaid_investment_cases.execute(
+        """
+        SELECT security_id, source_security_key, exchange, security_type, currency_code
+        FROM prep.stg_plaid__securities
+        WHERE source_security_key = 'mb21_security_normalized'
+        """
+    ).fetchone()
+    assert row == ("cat000000001", "mb21_security_normalized", "XNAS", "bond", "BTC")
+
+
+@pytest.mark.slow
+def test_stg_securities_unresolved_yields_null_security_id(
+    plaid_investment_cases: Database,
+) -> None:
     """A security with no app.security_links binding resolves to NULL, never sec_1.
 
     Unlike accounts (which fall back to their source-native id when unresolved),
@@ -266,197 +675,200 @@ def test_stg_securities_unresolved_yields_null_security_id(db: Database) -> None
     security_id column would be silently treated as a real catalog entry
     downstream. source_security_key still carries the provider id for audit.
     """
-    _raw_security(db)
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
-        "SELECT security_id, source_security_key, security_type FROM prep.stg_plaid__securities"
+    row = plaid_investment_cases.execute(
+        """
+        SELECT security_id, source_security_key, security_type
+        FROM prep.stg_plaid__securities
+        WHERE source_security_key = 'mb21_security_unresolved'
+        """
     ).fetchone()
-    assert row == (None, "sec_1", "equity")
+    assert row == (None, "mb21_security_unresolved", "equity")
 
 
 @pytest.mark.slow
-def test_stg_securities_reversed_link_does_not_resolve(db: Database) -> None:
+def test_stg_securities_reversed_link_does_not_resolve(
+    plaid_investment_cases: Database,
+) -> None:
     """Coexisting accepted and reversed links: only accepted row resolves canonical_id.
 
     app.security_links is append-only. When a link is reversed, both the original
     accepted row and the new reversed row coexist. The view must join ONLY on
     status = 'accepted' to avoid fan-out (one raw security × two links = two rows).
     """
-    _raw_security(db)
-    # Insert both accepted and reversed links for the same (ref, source_type, ref_kind)
-    _link_security(db, "sec_1", "cat000000001", status="accepted")
-    _link_security(db, "sec_1", "cat000000999", status="reversed")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = db.execute(
-        "SELECT security_id, source_security_key FROM prep.stg_plaid__securities"
+    rows = plaid_investment_cases.execute(
+        """
+        SELECT security_id, source_security_key
+        FROM prep.stg_plaid__securities
+        WHERE source_security_key = 'mb21_security_reversed'
+        """
     ).fetchall()
     # Must emit exactly one row, bound to the accepted link's canonical_id
-    assert rows == [("cat000000001", "sec_1")]
+    assert rows == [("cat000000002", "mb21_security_reversed")]
 
 
 @pytest.mark.slow
-def test_stg_holdings_resolves_both_ids(db: Database) -> None:
-    _raw_holding(db)
-    _link_security(db, "sec_1", "cat000000001")
-    _link_account(db, "acc_1", "canonical_acc")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
+def test_stg_holdings_resolves_both_ids(
+    plaid_investment_cases: Database,
+) -> None:
+    row = plaid_investment_cases.execute(
         """
         SELECT account_id, source_account_key, security_id, source_security_key,
                currency_code, transactions_window_start
         FROM prep.stg_plaid__investment_holdings
+        WHERE source_file = 'mb21_holding_resolved'
         """
     ).fetchone()
     assert row is not None
-    assert row[0] == "canonical_acc"
-    assert row[1] == "acc_1"
-    assert row[2] == "cat000000001"
-    assert row[3] == "sec_1"
+    assert row[0] == "mb21_canonical_account"
+    assert row[1] == "mb21_holding_resolved_account"
+    assert row[2] == "cat000000003"
+    assert row[3] == "mb21_holding_resolved_security"
     assert row[4] == "USD"
     assert str(row[5]) == "2024-07-08"
 
 
 @pytest.mark.slow
 def test_stg_holdings_unresolved_security_yields_null_but_account_resolves(
-    db: Database,
+    plaid_investment_cases: Database,
 ) -> None:
     """Only the account is bound; security_id must stay NULL, not fall back to sec_1."""
-    _raw_holding(db)
-    _link_account(db, "acc_1", "canonical_acc")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
+    row = plaid_investment_cases.execute(
         """
         SELECT account_id, source_account_key, security_id, source_security_key
         FROM prep.stg_plaid__investment_holdings
+        WHERE source_file = 'mb21_holding_unresolved_security'
         """
     ).fetchone()
-    assert row == ("canonical_acc", "acc_1", None, "sec_1")
+    assert row == (
+        "mb21_canonical_account_unresolved_security",
+        "mb21_holding_unresolved_security_account",
+        None,
+        "mb21_holding_unresolved_security",
+    )
 
 
 @pytest.mark.slow
 def test_stg_holdings_unresolved_account_falls_back_to_source_native(
-    db: Database,
+    plaid_investment_cases: Database,
 ) -> None:
     """Accounts keep the accounts precedent: unresolved falls back to the native id."""
-    _raw_holding(db)
-    _link_security(db, "sec_1", "cat000000001")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
-        "SELECT account_id, source_account_key FROM prep.stg_plaid__investment_holdings"
+    row = plaid_investment_cases.execute(
+        """
+        SELECT account_id, source_account_key
+        FROM prep.stg_plaid__investment_holdings
+        WHERE source_file = 'mb21_holding_unresolved_account'
+        """
     ).fetchone()
-    assert row == ("acc_1", "acc_1")
+    assert row == ("mb21_holding_unresolved_account", "mb21_holding_unresolved_account")
 
 
 @pytest.mark.slow
-def test_stg_holdings_same_source_file_repull_does_not_duplicate(db: Database) -> None:
+def test_stg_holdings_same_source_file_repull_does_not_duplicate(
+    plaid_investment_cases: Database,
+) -> None:
     """Re-pulling the same snapshot (same source_file) upserts in place, not duplicates.
 
     raw.plaid_investment_holdings' PK is (account_id, security_id, source_origin,
     source_file); the view must trust that PK rather than re-deduping on top of it.
     """
-    _raw_holding(db, quantity="10.0")
-    _raw_holding(db, quantity="12.0")  # same PK -> upsert, not a second row
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = db.execute(
-        "SELECT quantity FROM prep.stg_plaid__investment_holdings"
+    rows = plaid_investment_cases.execute(
+        """
+        SELECT quantity FROM prep.stg_plaid__investment_holdings
+        WHERE source_file = 'mb21_holding_repull'
+        """
     ).fetchall()
     assert rows == [(Decimal("12.0"),)]
 
 
 @pytest.mark.slow
-def test_stg_holdings_distinct_snapshots_both_preserved(db: Database) -> None:
+def test_stg_holdings_distinct_snapshots_both_preserved(
+    plaid_investment_cases: Database,
+) -> None:
     """Two distinct snapshots (different source_file) must both survive, never collapsed to latest."""
-    _raw_holding(db, source_file="sync_j1", quantity="10.0")
-    _raw_holding(
-        db, source_file="sync_j2", quantity="11.0", extracted_at="2026-07-09 12:00:00"
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = db.execute(
-        "SELECT quantity FROM prep.stg_plaid__investment_holdings ORDER BY quantity"
+    rows = plaid_investment_cases.execute(
+        """
+        SELECT quantity FROM prep.stg_plaid__investment_holdings
+        WHERE source_origin = 'mb21_holding_snapshots'
+        ORDER BY quantity
+        """
     ).fetchall()
     assert rows == [(Decimal("10.0"),), (Decimal("11.0"),)]
 
 
 @pytest.mark.slow
-def test_stg_holdings_reversed_security_link_does_not_resolve(db: Database) -> None:
+def test_stg_holdings_reversed_security_link_does_not_resolve(
+    plaid_investment_cases: Database,
+) -> None:
     """Coexisting accepted and reversed security links: only accepted resolves canonical_id.
 
     Holdings join app.security_links on status = 'accepted' to resolve security_id.
     When both accepted and reversed rows coexist for the same ref, the join must
     emit only one row (not fan out).
     """
-    _raw_holding(db)
-    _link_account(db, "acc_1", "canonical_acc")
-    # Insert both accepted and reversed links for the same (ref, source_type, ref_kind)
-    _link_security(db, "sec_1", "cat000000001", status="accepted")
-    _link_security(db, "sec_1", "cat000000999", status="reversed")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = db.execute(
-        "SELECT account_id, security_id, source_account_key, source_security_key "
-        "FROM prep.stg_plaid__investment_holdings"
+    rows = plaid_investment_cases.execute(
+        """
+        SELECT account_id, security_id, source_account_key, source_security_key
+        FROM prep.stg_plaid__investment_holdings
+        WHERE source_file = 'mb21_holding_reversed'
+        """
     ).fetchall()
     # Must emit exactly one row: accepted link resolves security_id, account resolves
-    assert rows == [("canonical_acc", "cat000000001", "acc_1", "sec_1")]
+    assert rows == [
+        (
+            "mb21_canonical_holding_reversed",
+            "cat000000006",
+            "mb21_holding_reversed_account",
+            "mb21_holding_reversed_security",
+        )
+    ]
 
 
 # ── prep.stg_plaid__investment_transactions ─────────────────────────────────
 
 
 @pytest.mark.slow
-def test_stg_investment_txns_flips_amount_not_quantity(db: Database) -> None:
+def test_stg_investment_txns_flips_amount_not_quantity(
+    plaid_investment_cases: Database,
+) -> None:
     """The sign flip lives HERE and nowhere else: Plaid + = cash out → ledger −.
 
     quantity is NEVER flipped at any layer — Plaid already signs it per the
     ledger convention (+ acquire, − dispose).
     """
-    _raw_investment_txn(db)
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
+    row = plaid_investment_cases.execute(
         """
         SELECT amount, quantity, type, provider_type, provider_subtype, ledger_include
         FROM prep.stg_plaid__investment_transactions
+        WHERE investment_transaction_id = 'mb21_txn_flip'
         """
     ).fetchone()
     assert row == (Decimal("-2145.50"), Decimal("10.0"), "buy", "buy", "buy", True)
 
 
 @pytest.mark.slow
-def test_stg_investment_txns_cash_deposit_lands_positive(db: Database) -> None:
+def test_stg_investment_txns_cash_deposit_lands_positive(
+    plaid_investment_cases: Database,
+) -> None:
     """The other half of the flip: Plaid sends cash IN as a negative amount.
 
     A deposit must land positive in the ledger. Together with the buy case above
     this pins the flip to exactly one application — a double flip would make every
     buy look like income and every deposit like a withdrawal.
     """
-    _raw_investment_txn(
-        db,
-        security_id=None,
-        quantity=None,
-        price=None,
-        amount="-500.00",
-        investment_transaction_type="cash",
-        investment_transaction_subtype="deposit",
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
-        "SELECT type, amount, quantity, security_id "
-        "FROM prep.stg_plaid__investment_transactions"
+    row = plaid_investment_cases.execute(
+        """
+        SELECT type, amount, quantity, security_id
+        FROM prep.stg_plaid__investment_transactions
+        WHERE investment_transaction_id = 'mb21_txn_deposit'
+        """
     ).fetchone()
     assert row == ("deposit", Decimal("500.00"), None, None)
 
 
 @pytest.mark.slow
-def test_stg_investment_txns_security_id_is_null_passthrough(db: Database) -> None:
+def test_stg_investment_txns_security_id_is_null_passthrough(
+    plaid_investment_cases: Database,
+) -> None:
     """An unbound security yields NULL security_id — never the provider id.
 
     Mirrors stg_plaid__securities / __investment_holdings: a provider id in the
@@ -464,37 +876,37 @@ def test_stg_investment_txns_security_id_is_null_passthrough(db: Database) -> No
     continue` guard and corrupt basis. The account keeps its source-native
     fallback (the accounts precedent); the security does not.
     """
-    _raw_investment_txn(db)
-    _link_account(db, "acc_1", "canonical_acc")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
+    row = plaid_investment_cases.execute(
         """
         SELECT account_id, source_account_key, security_id, source_security_key
         FROM prep.stg_plaid__investment_transactions
+        WHERE investment_transaction_id = 'mb21_txn_unresolved'
         """
     ).fetchone()
-    assert row == ("canonical_acc", "acc_1", None, "sec_1")
+    assert row == (
+        "mb21_canonical_txn_unresolved",
+        "mb21_txn_unresolved_account",
+        None,
+        "mb21_txn_unresolved_security",
+    )
 
 
 @pytest.mark.slow
-def test_stg_investment_txns_resolves_both_ids(db: Database) -> None:
+def test_stg_investment_txns_resolves_both_ids(
+    plaid_investment_cases: Database,
+) -> None:
     """With both links accepted, canonical ids resolve and provider keys persist."""
-    _raw_investment_txn(db)
-    _link_account(db, "acc_1", "canonical_acc")
-    _link_security(db, "sec_1", "cat000000001")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
+    row = plaid_investment_cases.execute(
         """
         SELECT account_id, security_id, currency_code, description, event_group_id,
                original_acquisition_date, fees, price
         FROM prep.stg_plaid__investment_transactions
+        WHERE investment_transaction_id = 'mb21_txn_resolved'
         """
     ).fetchone()
     assert row == (
-        "canonical_acc",
-        "cat000000001",
+        "mb21_canonical_txn_resolved",
+        "cat000000005",
         "USD",
         "AAPL BUY",  # TRIM()ed
         None,  # GOLDEN-GATED: pairing disabled until Sandbox goldens land
@@ -505,31 +917,33 @@ def test_stg_investment_txns_resolves_both_ids(db: Database) -> None:
 
 
 @pytest.mark.slow
-def test_trade_date_prefers_transaction_datetime(db: Database) -> None:
-    _raw_investment_txn(db, transaction_datetime="2026-07-05 14:30:00")
-    _raw_investment_txn(
-        db, investment_transaction_id="itx_2", transaction_datetime=None
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+def test_trade_date_prefers_transaction_datetime(
+    plaid_investment_cases: Database,
+) -> None:
     rows = dict(
-        db.execute(
-            "SELECT investment_transaction_id, trade_date "
-            "FROM prep.stg_plaid__investment_transactions"
+        plaid_investment_cases.execute(
+            """
+            SELECT investment_transaction_id, trade_date
+            FROM prep.stg_plaid__investment_transactions
+            WHERE source_file = 'mb21_txn_datetime'
+            """
         ).fetchall()
     )
-    assert str(rows["itx_1"]) == "2026-07-05"  # datetime::DATE preferred
-    assert str(rows["itx_2"]) == "2026-07-06"  # falls back to posting date
+    assert str(rows["mb21_txn_datetime"]) == "2026-07-05"  # datetime::DATE preferred
+    assert str(rows["mb21_txn_date_fallback"]) == "2026-07-06"  # falls back
 
 
 @pytest.mark.slow
-def test_settlement_date_is_the_plaid_posting_date(db: Database) -> None:
+def test_settlement_date_is_the_plaid_posting_date(
+    plaid_investment_cases: Database,
+) -> None:
     """Plaid's `date` is the POSTING date; it becomes settlement_date, not trade_date."""
-    _raw_investment_txn(db, transaction_datetime="2026-07-05 14:30:00")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
-        "SELECT trade_date, settlement_date FROM prep.stg_plaid__investment_transactions"
+    row = plaid_investment_cases.execute(
+        """
+        SELECT trade_date, settlement_date
+        FROM prep.stg_plaid__investment_transactions
+        WHERE investment_transaction_id = 'mb21_txn_datetime'
+        """
     ).fetchone()
     assert row is not None
     assert str(row[0]) == "2026-07-05"
@@ -537,24 +951,22 @@ def test_settlement_date_is_the_plaid_posting_date(db: Database) -> None:
 
 
 @pytest.mark.slow
-def test_basis_unknown_transfer_maps_amount_to_null(db: Database) -> None:
-    _raw_investment_txn(
-        db,
-        amount="0",
-        quantity="6.0",
-        investment_transaction_type="transfer",
-        investment_transaction_subtype="stock distribution",
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
-        "SELECT type, amount FROM prep.stg_plaid__investment_transactions"
+def test_basis_unknown_transfer_maps_amount_to_null(
+    plaid_investment_cases: Database,
+) -> None:
+    row = plaid_investment_cases.execute(
+        """
+        SELECT type, amount FROM prep.stg_plaid__investment_transactions
+        WHERE investment_transaction_id = 'mb21_txn_basis_unknown'
+        """
     ).fetchone()
     assert row == ("transfer_in", None)  # NULL, never a false zero-basis lot
 
 
 @pytest.mark.slow
-def test_cash_only_transfer_direction_from_amount_sign(db: Database) -> None:
+def test_cash_only_transfer_direction_from_amount_sign(
+    plaid_investment_cases: Database,
+) -> None:
     """Cash-only transfer/{send, transfer} legs have no security to key on.
 
     Direction must come from the (already-flipped-elsewhere) amount sign, not
@@ -567,40 +979,45 @@ def test_cash_only_transfer_direction_from_amount_sign(db: Database) -> None:
     quantity: deposit/withdrawal are cash-only types, and Plaid's literal 0 is
     not a share movement.
     """
-    cases = [
-        ("itx_0", "send", "0", "100.00"),  # Plaid cash OUT -> withdrawal
-        ("itx_1", "transfer", "0", "-100.00"),  # Plaid cash IN -> deposit
-        ("itx_2", "send", None, "100.00"),  # same direction, quantity NULL
-        ("itx_3", "transfer", None, "-100.00"),  # same direction, quantity NULL
-    ]
-    for txn_id, psub, qty, amount in cases:
-        _raw_investment_txn(
-            db,
-            investment_transaction_id=txn_id,
-            security_id=None,
-            quantity=qty,
-            amount=amount,
-            investment_transaction_type="transfer",
-            investment_transaction_subtype=psub,
-        )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
     rows = {
         r[0]: (r[1], r[2], r[3], r[4])
-        for r in db.execute(
-            "SELECT investment_transaction_id, type, amount, quantity, ledger_include "
-            "FROM prep.stg_plaid__investment_transactions"
+        for r in plaid_investment_cases.execute(
+            """
+            SELECT investment_transaction_id, type, amount, quantity, ledger_include
+            FROM prep.stg_plaid__investment_transactions
+            WHERE source_file = 'mb21_cash_transfers'
+            """
         ).fetchall()
     }
-    assert rows["itx_0"] == ("withdrawal", Decimal("-100.00"), None, True)
-    assert rows["itx_1"] == ("deposit", Decimal("100.00"), None, True)
-    assert rows["itx_2"] == ("withdrawal", Decimal("-100.00"), None, True)
-    assert rows["itx_3"] == ("deposit", Decimal("100.00"), None, True)
+    assert rows["mb21_cash_transfer_out_zero"] == (
+        "withdrawal",
+        Decimal("-100.00"),
+        None,
+        True,
+    )
+    assert rows["mb21_cash_transfer_in_zero"] == (
+        "deposit",
+        Decimal("100.00"),
+        None,
+        True,
+    )
+    assert rows["mb21_cash_transfer_out_null"] == (
+        "withdrawal",
+        Decimal("-100.00"),
+        None,
+        True,
+    )
+    assert rows["mb21_cash_transfer_in_null"] == (
+        "deposit",
+        Decimal("100.00"),
+        None,
+        True,
+    )
 
 
 @pytest.mark.slow
 def test_security_bearing_zero_quantity_transfer_routes_to_review(
-    db: Database,
+    plaid_investment_cases: Database,
 ) -> None:
     """A security-bearing transfer with no share delta has NO derivable direction.
 
@@ -616,33 +1033,32 @@ def test_security_bearing_zero_quantity_transfer_routes_to_review(
     So the model refuses, exactly as it refuses on splits: no ledger event, a
     review_reason instead.
     """
-    for txn_id, psub, amount in (
-        ("itx_lieu", "merger", "-100.00"),  # Plaid credit: cash IN
-        ("itx_xfer", "transfer", "100.00"),  # Plaid debit: cash OUT
-    ):
-        _raw_investment_txn(
-            db,
-            investment_transaction_id=txn_id,
-            quantity="0",  # Plaid ships 0, never NULL
-            amount=amount,
-            investment_transaction_type="transfer",
-            investment_transaction_subtype=psub,
-        )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
     rows = {
         r[0]: (r[1], r[2], r[3])
-        for r in db.execute(
-            "SELECT investment_transaction_id, type, ledger_include, review_reason "
-            "FROM prep.stg_plaid__investment_transactions"
+        for r in plaid_investment_cases.execute(
+            """
+            SELECT investment_transaction_id, type, ledger_include, review_reason
+            FROM prep.stg_plaid__investment_transactions
+            WHERE source_file = 'mb21_underivable_transfers'
+            """
         ).fetchall()
     }
-    assert rows["itx_lieu"] == ("other", False, "transfer_direction_underivable")
-    assert rows["itx_xfer"] == ("other", False, "transfer_direction_underivable")
+    assert rows["mb21_underivable_lieu"] == (
+        "other",
+        False,
+        "transfer_direction_underivable",
+    )
+    assert rows["mb21_underivable_transfer"] == (
+        "other",
+        False,
+        "transfer_direction_underivable",
+    )
 
 
 @pytest.mark.slow
-def test_cash_only_legs_carry_no_ledger_quantity(db: Database) -> None:
+def test_cash_only_legs_carry_no_ledger_quantity(
+    plaid_investment_cases: Database,
+) -> None:
     """Plaid ships `quantity = 0` (not NULL) on a cash-only leg; the ledger wants NULL.
 
     core.fct_investment_transactions.quantity is contracted as "Signed units:
@@ -652,97 +1068,41 @@ def test_cash_only_legs_carry_no_ledger_quantity(db: Database) -> None:
     that keys on `quantity IS NULL` (prep.int_plaid__opening_positions does), and
     renders "0.00000000 shares" on a dividend where the schema promised NULL.
     """
-    cases = [
-        ("itx_div", "cash", "dividend"),
-        ("itx_int", "cash", "interest"),
-        ("itx_cgd", "cash", "long-term capital gain"),
-        ("itx_dep", "cash", "deposit"),
-        ("itx_wdr", "cash", "withdrawal"),
-        ("itx_fee", "fee", "management fee"),
-        ("itx_roc", "fee", "return of principal"),
-    ]
-    for txn_id, ptype, psub in cases:
-        _raw_investment_txn(
-            db,
-            investment_transaction_id=txn_id,
-            security_id=None,
-            quantity="0",  # Plaid's cash-only representation
-            price=None,
-            amount="-25.00",
-            investment_transaction_type=ptype,
-            investment_transaction_subtype=psub,
-        )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = db.execute(
-        "SELECT investment_transaction_id, type, quantity "
-        "FROM prep.stg_plaid__investment_transactions ORDER BY 1"
+    rows = plaid_investment_cases.execute(
+        "SELECT investment_transaction_id, type, quantity FROM prep.stg_plaid__investment_transactions WHERE source_file = 'mb21_cash_quantity' ORDER BY 1"
     ).fetchall()
-    assert len(rows) == len(cases)
+    assert len(rows) == 7
     for txn_id, type_, quantity in rows:
         assert quantity is None, f"{txn_id} ({type_}) carries quantity {quantity!r}"
 
 
 @pytest.mark.slow
-def test_short_leg_quantity_is_nulled(db: Database) -> None:
+def test_short_leg_quantity_is_nulled(plaid_investment_cases: Database) -> None:
     """`other` rows never carry a ledger quantity -- MoneyBin models no shorts.
 
     buy/buy to cover ships a real Plaid quantity (e.g. +1.0), but the engine
     has no short-position model; a nonzero quantity on an `other` row would
     masquerade as a lot-affecting one.
     """
-    _raw_investment_txn(
-        db,
-        quantity="1.0",
-        investment_transaction_type="buy",
-        investment_transaction_subtype="buy to cover",
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
+    row = plaid_investment_cases.execute(
         "SELECT type, quantity, provider_subtype "
-        "FROM prep.stg_plaid__investment_transactions"
+        "FROM prep.stg_plaid__investment_transactions "
+        "WHERE investment_transaction_id = 'mb21_short_leg'"
     ).fetchone()
     assert row == ("other", None, "buy to cover")
 
 
 @pytest.mark.slow
-def test_lifecycle_rows_excluded_entirely(db: Database) -> None:
-    _raw_investment_txn(
-        db, investment_transaction_type="cancel", investment_transaction_subtype="buy"
-    )
-    _raw_investment_txn(
-        db,
-        investment_transaction_id="itx_2",
-        investment_transaction_type="cash",
-        investment_transaction_subtype="pending credit",
-        security_id=None,
-        quantity=None,
-    )
-    _raw_investment_txn(
-        db,
-        investment_transaction_id="itx_3",
-        investment_transaction_type="cash",
-        investment_transaction_subtype="pending debit",
-        security_id=None,
-        quantity=None,
-    )
-    _raw_investment_txn(
-        db,
-        investment_transaction_id="itx_4",
-        investment_transaction_type="transfer",
-        investment_transaction_subtype="request",
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
-        "SELECT COUNT(*) FROM prep.stg_plaid__investment_transactions"
+def test_lifecycle_rows_excluded_entirely(plaid_investment_cases: Database) -> None:
+    row = plaid_investment_cases.execute(
+        "SELECT COUNT(*) FROM prep.stg_plaid__investment_transactions "
+        "WHERE source_file = 'mb21_lifecycle'"
     ).fetchone()
     assert row is not None and row[0] == 0
 
 
 @pytest.mark.slow
-def test_every_split_routes_to_review(db: Database) -> None:
+def test_every_split_routes_to_review(plaid_investment_cases: Database) -> None:
     """GOLDEN-GATED: EVERY split routes to review — no shape is exempt.
 
     Plaid reports a share DELTA; the engine reads a MULTIPLIER. Whether the
@@ -750,45 +1110,23 @@ def test_every_split_routes_to_review(db: Database) -> None:
     settle, so v1 computes nothing. A wrong multiplier silently destroys the
     basis of every open lot; a surfaced gap does not.
     """
-    shapes = [
-        ("100.0", "0"),  # forward split, in-kind
-        ("-50.0", "0"),  # reverse split
-        ("0.0", "0"),  # zero delta
-        (None, "0"),  # no quantity at all
-        ("100.0", "12.34"),  # cash-in-lieu accompanying the split
-    ]
-    for i, (qty, amt) in enumerate(shapes):
-        _raw_investment_txn(
-            db,
-            investment_transaction_id=f"itx_{i}",
-            investment_transaction_type="transfer",
-            investment_transaction_subtype="split",
-            quantity=qty,
-            amount=amt,
-        )
-    _link_security(db, "sec_1", "cat000000001")  # even a fully-bound security
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = db.execute(
+    rows = plaid_investment_cases.execute(
         "SELECT type, ledger_include, review_reason "
-        "FROM prep.stg_plaid__investment_transactions"
+        "FROM prep.stg_plaid__investment_transactions "
+        "WHERE source_file = 'mb21_split'"
     ).fetchall()
-    assert len(rows) == len(shapes)
+    assert len(rows) == 5
     assert all(r == ("split", False, "split_underivable") for r in rows), rows
 
 
 @pytest.mark.slow
-def test_unmapped_security_bearing_subtype_routes_to_review(db: Database) -> None:
-    _raw_investment_txn(
-        db,
-        investment_transaction_type="buy",
-        investment_transaction_subtype="quantum entanglement",
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
+def test_unmapped_security_bearing_subtype_routes_to_review(
+    plaid_investment_cases: Database,
+) -> None:
+    row = plaid_investment_cases.execute(
         "SELECT ledger_include, review_reason, type, subtype, provider_subtype "
-        "FROM prep.stg_plaid__investment_transactions"
+        "FROM prep.stg_plaid__investment_transactions "
+        "WHERE investment_transaction_id = 'mb21_unmapped_security'"
     ).fetchone()
     # type/subtype stay inside the closed vocabulary — the raw Plaid string is
     # preserved only in provider_subtype, never leaked into `type`/`subtype`.
@@ -796,25 +1134,19 @@ def test_unmapped_security_bearing_subtype_routes_to_review(db: Database) -> Non
 
 
 @pytest.mark.slow
-def test_unmapped_cash_only_subtype_defaults_to_other(db: Database) -> None:
-    _raw_investment_txn(
-        db,
-        security_id=None,
-        quantity=None,
-        investment_transaction_type="cash",
-        investment_transaction_subtype="mystery credit",
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
+def test_unmapped_cash_only_subtype_defaults_to_other(
+    plaid_investment_cases: Database,
+) -> None:
+    row = plaid_investment_cases.execute(
         "SELECT ledger_include, review_reason, type, subtype "
-        "FROM prep.stg_plaid__investment_transactions"
+        "FROM prep.stg_plaid__investment_transactions "
+        "WHERE investment_transaction_id = 'mb21_unmapped_cash'"
     ).fetchone()
     assert row == (True, None, "other", None)
 
 
 @pytest.mark.slow
-def test_taxonomy_mapping_full_table(db: Database) -> None:
+def test_taxonomy_mapping_full_table(plaid_investment_cases: Database) -> None:
     """Parametrized over the spec's taxonomy table — every branch, one plan."""
     # (plaid_type, plaid_subtype, qty) -> (type, subtype, ledger_include)
     expectations = {
@@ -884,54 +1216,30 @@ def test_taxonomy_mapping_full_table(db: Database) -> None:
         ("cash", "loan payment", None): ("other", None, True),
         ("cash", "rebalance", None): ("other", None, True),
     }
-    for i, (ptype, psub, qty) in enumerate(expectations):
-        cash_only = qty is None
-        _raw_investment_txn(
-            db,
-            investment_transaction_id=f"itx_{i}",
-            security_id=None if cash_only else "sec_1",
-            quantity=qty,
-            amount="10.00",
-            investment_transaction_type=ptype,
-            investment_transaction_subtype=psub,
-        )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
     rows = {
         r[0]: (r[1], r[2], r[3])
-        for r in db.execute(
+        for r in plaid_investment_cases.execute(
             "SELECT investment_transaction_id, type, subtype, ledger_include "
-            "FROM prep.stg_plaid__investment_transactions"
+            "FROM prep.stg_plaid__investment_transactions "
+            "WHERE source_file = 'mb21_taxonomy'"
         ).fetchall()
     }
     for i, (key, expected) in enumerate(expectations.items()):
-        assert rows[f"itx_{i}"] == expected, f"taxonomy mismatch for {key}"
+        assert rows[f"mb21_taxonomy_{i}"] == expected, f"taxonomy mismatch for {key}"
 
 
 @pytest.mark.slow
-def test_taxonomy_emits_only_closed_vocabulary(db: Database) -> None:
+def test_taxonomy_emits_only_closed_vocabulary(
+    plaid_investment_cases: Database,
+) -> None:
     """No Plaid string may ever leak into the closed `type` / `subtype` columns.
 
     Adversarial inputs: casing, whitespace-free garbage, and NULL type/subtype.
     """
-    garbage = [
-        ("BUY", "BUY"),  # upper-case provider strings still map
-        ("wormhole", "quantum entanglement"),  # both unknown, security-bearing
-        (None, None),  # both NULL
-        ("cash", None),  # NULL subtype
-    ]
-    for i, (ptype, psub) in enumerate(garbage):
-        _raw_investment_txn(
-            db,
-            investment_transaction_id=f"itx_{i}",
-            investment_transaction_type=ptype,
-            investment_transaction_subtype=psub,
-        )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = db.execute(
+    rows = plaid_investment_cases.execute(
         "SELECT investment_transaction_id, type, subtype "
-        "FROM prep.stg_plaid__investment_transactions ORDER BY 1"
+        "FROM prep.stg_plaid__investment_transactions "
+        "WHERE source_file = 'mb21_closed' ORDER BY 1"
     ).fetchall()
     valid_types = {
         "buy",
@@ -960,7 +1268,7 @@ def test_taxonomy_emits_only_closed_vocabulary(db: Database) -> None:
         "interest",
         "capital_gain",
     }
-    assert len(rows) == len(garbage)
+    assert len(rows) == 4
     for txn_id, ttype, subtype in rows:
         assert ttype in valid_types, f"{txn_id}: leaked type {ttype!r}"
         assert subtype in valid_subtypes, f"{txn_id}: leaked subtype {subtype!r}"
@@ -975,9 +1283,22 @@ def test_taxonomy_emits_only_closed_vocabulary(db: Database) -> None:
 # case gets its own security_id so ONE sqlmesh plan covers all of them.
 
 
-@pytest.fixture
-def bootstrap_cases(db: Database) -> Database:
+@pytest.fixture(scope="module")
+def bootstrap_cases(
+    tmp_path_factory: pytest.TempPathFactory,
+    request: pytest.FixtureRequest,
+) -> Generator[Database, None, None]:
     """The spec's reconciliation cases A–H plus the no-gap and guard cases."""
+    secret_store = MagicMock()
+    secret_store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    db_path = tmp_path_factory.mktemp("plaid_investment_bootstrap") / "test.duckdb"
+    db = Database(
+        db_path,
+        secret_store=secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
+    request.addfinalizer(db.close)
     # A: pre-window buy, untouched. 100 shares @ 2021-03-11, basis 1000.
     _raw_holding(db, security_id="sec_a", quantity="100", cost_basis="1000.00")
     _raw_lot(
@@ -1145,9 +1466,202 @@ def bootstrap_cases(db: Database) -> Database:
     )
     # NULL held quantity: unknowable position → review, never a silent drop.
     _raw_holding(db, security_id="sec_nq", quantity=None, cost_basis="100.00")
+    _raw_holding(
+        db,
+        security_id="mb21_sold_anchor",
+        source_file="mb21_sold_out",
+        source_origin="mb21_sold_out",
+        quantity="5",
+        cost_basis="50.00",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="mb21_sold_out",
+        security_id="mb21_sold_out",
+        transaction_date="2025-01-15",
+        quantity="-10",
+        amount="-1000.00",
+        investment_transaction_type="sell",
+        investment_transaction_subtype="sell",
+        source_file="mb21_sold_out",
+        source_origin="mb21_sold_out",
+    )
+    _raw_holdings_receipt(
+        db,
+        source_origin="mb21_liquidated",
+        source_file="mb21_liquidated",
+        extracted_at="2026-07-08 13:00:00",
+        holdings_count=0,
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="mb21_liquidated",
+        security_id="mb21_liquidated",
+        transaction_date="2026-07-06",
+        quantity="-10",
+        amount="-1000.00",
+        investment_transaction_type="sell",
+        investment_transaction_subtype="sell",
+        source_file="mb21_liquidated",
+        source_origin="mb21_liquidated",
+    )
+    _raw_holding(db, security_id="mb21_window", quantity="50", cost_basis="500.00")
+    _raw_lot(
+        db,
+        "mb21_window",
+        0,
+        original_purchase_datetime="2024-07-08 00:00:00",
+        quantity="50",
+        cost_basis="500.00",
+    )
+    _raw_holding(db, security_id="mb21_prorate", quantity="130", cost_basis="3333.33")
+    _raw_lot(
+        db,
+        "mb21_prorate",
+        0,
+        original_purchase_datetime="2019-01-01 00:00:00",
+        quantity="30",
+        cost_basis="333.33",
+    )
+    _raw_lot(
+        db,
+        "mb21_prorate",
+        1,
+        original_purchase_datetime="2020-01-01 00:00:00",
+        quantity="100",
+        cost_basis="3000.00",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="mb21_prorate_transfer",
+        security_id="mb21_prorate",
+        transaction_date="2025-01-05",
+        quantity="60",
+        amount="0",
+        investment_transaction_type="transfer",
+        investment_transaction_subtype="transfer",
+    )
+    _raw_holding(db, security_id="mb21_tie", quantity="1", cost_basis="150.02")
+    _raw_lot(
+        db,
+        "mb21_tie",
+        0,
+        original_purchase_datetime="2021-01-01 00:00:00",
+        quantity="2",
+        cost_basis="300.03",
+    )
+    for security_id in ("mb21_id_x", "mb21_id_y"):
+        _raw_holding(db, security_id=security_id, quantity="100", cost_basis="1000.00")
+        _raw_lot(
+            db,
+            security_id,
+            0,
+            original_purchase_datetime="2021-03-11 00:00:00",
+            quantity="100",
+            cost_basis="1000.00",
+        )
+    _raw_holding(db, security_id="mb21_shared", quantity="20", cost_basis="200.00")
+    for index in (0, 1):
+        _raw_lot(
+            db,
+            "mb21_shared",
+            index,
+            institution_lot_id="LOT_SHARED",
+            original_purchase_datetime="2021-01-01 00:00:00",
+            quantity="10",
+            cost_basis="100.00",
+        )
+    for account_id, security_id, origin, quantity, basis in (
+        (
+            "mb21_institution_a",
+            "mb21_institution_p",
+            "mb21_institution_one",
+            "100",
+            "1000.00",
+        ),
+        (
+            "mb21_institution_b",
+            "mb21_institution_q",
+            "mb21_institution_two",
+            "40",
+            "500.00",
+        ),
+    ):
+        _raw_holding(
+            db,
+            account_id=account_id,
+            security_id=security_id,
+            source_origin=origin,
+            quantity=quantity,
+            cost_basis=basis,
+        )
+        _raw_lot(
+            db,
+            security_id,
+            0,
+            account_id=account_id,
+            source_origin=origin,
+            original_purchase_datetime="2021-03-11 00:00:00",
+            quantity=quantity,
+            cost_basis=basis,
+        )
+        _link_security(db, security_id, "cat000000007")
+    _raw_holding(
+        db, security_id="mb21_canonical_bound", quantity="100", cost_basis="1000.00"
+    )
+    _raw_lot(
+        db,
+        "mb21_canonical_bound",
+        0,
+        original_purchase_datetime="2021-03-11 00:00:00",
+        quantity="100",
+        cost_basis="1000.00",
+    )
+    _raw_holding(
+        db, security_id="mb21_canonical_unbound", quantity="10", cost_basis="100.00"
+    )
+    _raw_lot(
+        db,
+        "mb21_canonical_unbound",
+        0,
+        original_purchase_datetime="2021-03-11 00:00:00",
+        quantity="10",
+        cost_basis="100.00",
+    )
+    _link_account(db, "acc_1", "mb21_canonical_account")
+    _link_security(db, "mb21_canonical_bound", "cat000000008")
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="mb21_absent_buy",
+        account_id="mb21_absent_account",
+        security_id="mb21_absent_security",
+        transaction_date="2025-01-10",
+        source_file="mb21_absent_1",
+        source_origin="mb21_absent",
+    )
+    _raw_holding(
+        db,
+        account_id="mb21_absent_account",
+        security_id="mb21_absent_security",
+        source_file="mb21_absent_1",
+        source_origin="mb21_absent",
+        quantity="10",
+        cost_basis="1980.00",
+    )
+    _raw_holding(
+        db,
+        account_id="mb21_absent_account",
+        security_id="mb21_absent_other",
+        source_file="mb21_absent_2",
+        source_origin="mb21_absent",
+        extracted_at="2026-08-01 12:00:00",
+        quantity="1",
+        cost_basis="1.00",
+    )
+    _link_security(db, "mb21_absent_security", "cat0000000d3")
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
-    return db
+    yield db
 
 
 def _opening(db: Database, security_id: str) -> list[tuple[object, ...]]:
@@ -1223,7 +1737,9 @@ def test_case_e_split_and_guards_route_to_review(bootstrap_cases: Database) -> N
 
 
 @pytest.mark.slow
-def test_sold_out_prewindow_position_routes_to_review(db: Database) -> None:
+def test_sold_out_prewindow_position_routes_to_review(
+    bootstrap_cases: Database,
+) -> None:
     """A fully-sold pre-window position has no holdings row in any snapshot.
 
     Plaid never reports closed positions. Without an explicit check it reaches
@@ -1231,33 +1747,18 @@ def test_sold_out_prewindow_position_routes_to_review(db: Database) -> None:
     int_plaid__opening_positions) nor stg_plaid__opening_lot_review, and becomes
     a silent zero-basis oversold disposal instead of a visible gap.
     """
-    # Establishes transactions_window_start=2024-07-08 for this account/item via an
-    # unrelated held security; sec_gone itself has NO holdings row anywhere.
-    _raw_holding(db, security_id="sec_other", quantity="5", cost_basis="50.00")
-    _raw_investment_txn(
-        db,
-        investment_transaction_id="itx_gone_sell",
-        security_id="sec_gone",
-        transaction_date="2025-01-15",  # in-window
-        quantity="-10",
-        amount="-1000.00",
-        investment_transaction_type="sell",
-        investment_transaction_subtype="sell",
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    assert _opening(db, "sec_gone") == []  # nothing to bootstrap -- no basis data
+    assert _opening(bootstrap_cases, "mb21_sold_out") == []
     reasons = dict(
-        db.execute(
+        bootstrap_cases.execute(
             "SELECT source_security_key, reason FROM prep.stg_plaid__opening_lot_review"
         ).fetchall()
     )
-    assert reasons["sec_gone"] == "sold_out_prewindow"
-    assert "sec_other" not in reasons  # the held position bootstraps normally
+    assert reasons["mb21_sold_out"] == "sold_out_prewindow"
+    assert "mb21_sold_anchor" not in reasons
 
 
 def test_account_liquidated_before_first_snapshot_routes_to_review(
-    db: Database,
+    bootstrap_cases: Database,
 ) -> None:
     """An account whose FIRST snapshot is EMPTY still flags its disposals.
 
@@ -1271,25 +1772,12 @@ def test_account_liquidated_before_first_snapshot_routes_to_review(
     can never cover. The receipt is the only evidence the item reported, so the
     window is read from there.
     """
-    _raw_holdings_receipt(db, holdings_count=0)  # item reported; holds NOTHING
-    _raw_investment_txn(
-        db,
-        investment_transaction_id="itx_liquidated_sell",
-        security_id="sec_gone",
-        transaction_date="2026-07-06",  # in-window (window opens 2024-07-08)
-        quantity="-10",
-        amount="-1000.00",
-        investment_transaction_type="sell",
-        investment_transaction_subtype="sell",
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
     reasons = dict(
-        db.execute(
+        bootstrap_cases.execute(
             "SELECT source_security_key, reason FROM prep.stg_plaid__opening_lot_review"
         ).fetchall()
     )
-    assert reasons["sec_gone"] == "sold_out_prewindow"
+    assert reasons["mb21_liquidated"] == "sold_out_prewindow"
 
 
 @pytest.mark.slow
@@ -1354,20 +1842,28 @@ def test_bootstrap_ids_stable_across_rebuild_and_later_snapshots(
     _raw_holding(
         bootstrap_cases,
         security_id="sec_a",
-        quantity="0",  # the position was sold off after first connect
+        quantity="0",
         cost_basis="0",
-        source_file="sync_j2",
+        source_file="mb21_bootstrap_later",
         extracted_at="2026-08-01 12:00:00",
     )
     with sqlmesh_context(bootstrap_cases) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
     after = _opening(bootstrap_cases, "sec_a")
-    assert len(after) == 1  # re-sync seeds no second opening lot
-    assert before == after  # id, quantity, basis and both dates all frozen
+    assert len(after) == 1
+    assert before == after
+    assert after[0][:4] == (
+        Decimal("100"),
+        Decimal("-1000.00"),
+        "2021-03-11",
+        "2024-07-07",
+    )
 
 
 @pytest.mark.slow
-def test_lot_dated_exactly_on_the_window_start_is_not_drawn(db: Database) -> None:
+def test_lot_dated_exactly_on_the_window_start_is_not_drawn(
+    bootstrap_cases: Database,
+) -> None:
     """The pre-window test is STRICT (< W), and that boundary is load-bearing.
 
     Plaid's transaction window is inclusive of W, so a lot dated exactly on W belongs
@@ -1375,25 +1871,16 @@ def test_lot_dated_exactly_on_the_window_start_is_not_drawn(db: Database) -> Non
     claim its basis a second time the moment that transaction shows up. The gap opens
     as basis_incomplete instead: conservative, and visible.
     """
-    _raw_holding(db, security_id="sec_w", quantity="50", cost_basis="500.00")
-    _raw_lot(
-        db,
-        "sec_w",
-        0,
-        original_purchase_datetime="2024-07-08 00:00:00",  # exactly W
-        quantity="50",
-        cost_basis="500.00",
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = _opening(db, "sec_w")
+    rows = _opening(bootstrap_cases, "mb21_window")
     assert len(rows) == 1
     # A `<=` boundary would emit (50, -500.00, "2024-07-08") — the double-count.
     assert rows[0][:3] == (Decimal("50"), None, "2024-07-07")
 
 
 @pytest.mark.slow
-def test_boundary_lot_prorates_basis_and_full_draws_stay_exact(db: Database) -> None:
+def test_boundary_lot_prorates_basis_and_full_draws_stay_exact(
+    bootstrap_cases: Database,
+) -> None:
     """Spec case H: several pre-window lots, non-uniform basis, drawn oldest-first.
 
     The gap falls short of the eligible lots' total (an in-window ACATS transfer_in
@@ -1403,43 +1890,16 @@ def test_boundary_lot_prorates_basis_and_full_draws_stay_exact(db: Database) -> 
     so `basis * drawn / qty` detours through DOUBLE; only the boundary row may pay
     that, never a full draw.
     """
-    _raw_holding(db, security_id="sec_h", quantity="130", cost_basis="3333.33")
-    _raw_lot(
-        db,
-        "sec_h",
-        0,
-        original_purchase_datetime="2019-01-01 00:00:00",
-        quantity="30",
-        cost_basis="333.33",  # an odd basis: float noise would show up here
-    )
-    _raw_lot(
-        db,
-        "sec_h",
-        1,
-        original_purchase_datetime="2020-01-01 00:00:00",
-        quantity="100",
-        cost_basis="3000.00",
-    )
-    _raw_investment_txn(
-        db,
-        investment_transaction_id="itx_h_xfer",
-        security_id="sec_h",
-        transaction_date="2025-01-05",
-        quantity="60",
-        amount="0",
-        investment_transaction_type="transfer",
-        investment_transaction_subtype="transfer",
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = _opening(db, "sec_h")  # gap = 130 - 60 = 70
+    rows = _opening(bootstrap_cases, "mb21_prorate")  # gap = 130 - 60 = 70
     assert len(rows) == 2  # 30 drawn in full, 40 of 100 drawn from the boundary lot
     assert rows[0][:3] == (Decimal("30"), Decimal("-333.33"), "2019-01-01")
     assert rows[1][:3] == (Decimal("40"), Decimal("-1200.00"), "2020-01-01")
 
 
 @pytest.mark.slow
-def test_boundary_lot_prorates_a_half_cent_tie_up(db: Database) -> None:
+def test_boundary_lot_prorates_a_half_cent_tie_up(
+    bootstrap_cases: Database,
+) -> None:
     """DECIMAL / DECIMAL in DuckDB returns DOUBLE.
 
     A cast straight from that DOUBLE to DECIMAL(18,2) truncates a half-cent tie
@@ -1452,25 +1912,16 @@ def test_boundary_lot_prorates_a_half_cent_tie_up(db: Database) -> None:
     correct -150.02. Verified by reverting the round-trip cast locally: this test
     goes RED (-150.01 != -150.02) without it, GREEN with it restored.
     """
-    _raw_holding(db, security_id="sec_tie", quantity="1", cost_basis="150.02")
-    _raw_lot(
-        db,
-        "sec_tie",
-        0,
-        original_purchase_datetime="2021-01-01 00:00:00",
-        quantity="2",
-        cost_basis="300.03",
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = _opening(db, "sec_tie")  # gap = 1 - 0 = 1; boundary draws 1 of 2
+    rows = _opening(
+        bootstrap_cases, "mb21_tie"
+    )  # gap = 1 - 0 = 1; boundary draws 1 of 2
     assert len(rows) == 1
     assert rows[0][:3] == (Decimal("1"), Decimal("-150.02"), "2021-01-01")
 
 
 @pytest.mark.slow
 def test_bootstrap_id_cannot_collide_across_securities_in_one_account(
-    db: Database,
+    bootstrap_cases: Database,
 ) -> None:
     """Two securities, one account, identical lot shape — ids MUST still differ.
 
@@ -1480,28 +1931,19 @@ def test_bootstrap_id_cannot_collide_across_securities_in_one_account(
     collapses them onto one canonical security_id the derived lot_ids collide
     into a PRIMARY KEY violation. The id must be (origin, account, security)-scoped.
     """
-    for sec in ("sec_x", "sec_y"):
-        _raw_holding(db, security_id=sec, quantity="100", cost_basis="1000.00")
-        _raw_lot(
-            db,
-            sec,
-            0,  # same lot_index → same positional lot_key fallback
-            original_purchase_datetime="2021-03-11 00:00:00",
-            quantity="100",
-            cost_basis="1000.00",  # same basis, same date, same account
-        )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    ids = db.execute(
+    ids = bootstrap_cases.execute(
         "SELECT source_security_key, investment_transaction_id "
-        "FROM prep.stg_plaid__opening_lots ORDER BY 1"
+        "FROM prep.stg_plaid__opening_lots "
+        "WHERE source_security_key IN ('mb21_id_x', 'mb21_id_y') ORDER BY 1"
     ).fetchall()
     assert len(ids) == 2
     assert ids[0][1] != ids[1][1]
 
 
 @pytest.mark.slow
-def test_shared_institution_lot_id_still_yields_distinct_ids(db: Database) -> None:
+def test_shared_institution_lot_id_still_yields_distinct_ids(
+    bootstrap_cases: Database,
+) -> None:
     """Two lots sharing a broker institution_lot_id still get distinct ids.
 
     Same date, same basis, only the institution_lot_id shared. Pre-fix, lot_key
@@ -1512,22 +1954,9 @@ def test_shared_institution_lot_id_still_yields_distinct_ids(db: Database) -> No
     grain) and collapsing both onto one engine lot_id (cost_basis.py's
     by_lot_id dict keeps only one; app.lot_selections becomes ambiguous).
     """
-    _raw_holding(db, security_id="sec_shared", quantity="20", cost_basis="200.00")
-    for idx in (0, 1):
-        _raw_lot(
-            db,
-            "sec_shared",
-            idx,
-            institution_lot_id="LOT_SHARED",  # SAME broker id on both lots
-            original_purchase_datetime="2021-01-01 00:00:00",  # SAME date
-            quantity="10",
-            cost_basis="100.00",  # SAME basis
-        )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = db.execute(
+    rows = bootstrap_cases.execute(
         "SELECT quantity, amount, investment_transaction_id "
-        "FROM prep.stg_plaid__opening_lots WHERE source_security_key = 'sec_shared' "
+        "FROM prep.stg_plaid__opening_lots WHERE source_security_key = 'mb21_shared' "
         "ORDER BY investment_transaction_id"
     ).fetchall()
     assert len(rows) == 2  # both lots drawn in full; gap = 20, two lots of 10 each
@@ -1537,91 +1966,34 @@ def test_shared_institution_lot_id_still_yields_distinct_ids(db: Database) -> No
 
 
 @pytest.mark.slow
-def test_same_security_at_two_institutions_does_not_fan_out(db: Database) -> None:
+def test_same_security_at_two_institutions_does_not_fan_out(
+    bootstrap_cases: Database,
+) -> None:
     """One canonical security bound from two items must not double the rows."""
-    _raw_holding(
-        db,
-        account_id="acc_1",
-        security_id="sec_p",
-        source_origin="item_1",
-        quantity="100",
-        cost_basis="1000.00",
-    )
-    _raw_lot(
-        db,
-        "sec_p",
-        0,
-        account_id="acc_1",
-        source_origin="item_1",
-        original_purchase_datetime="2021-03-11 00:00:00",
-        quantity="100",
-        cost_basis="1000.00",
-    )
-    _raw_holding(
-        db,
-        account_id="acc_2",
-        security_id="sec_q",
-        source_origin="item_2",
-        quantity="40",
-        cost_basis="500.00",
-    )
-    _raw_lot(
-        db,
-        "sec_q",
-        0,
-        account_id="acc_2",
-        source_origin="item_2",
-        original_purchase_datetime="2022-06-01 00:00:00",
-        quantity="40",
-        cost_basis="500.00",
-    )
-    # Both provider refs resolve to the SAME canonical security.
-    _link_security(db, "sec_p", "cat000000001")
-    _link_security(db, "sec_q", "cat000000001")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = db.execute(
+    rows = bootstrap_cases.execute(
         "SELECT source_security_key, security_id, quantity, investment_transaction_id "
-        "FROM prep.stg_plaid__opening_lots ORDER BY 1"
+        "FROM prep.stg_plaid__opening_lots "
+        "WHERE source_security_key IN ('mb21_institution_p', 'mb21_institution_q') "
+        "ORDER BY 1"
     ).fetchall()
     assert len(rows) == 2  # exactly one row per (account, security) — no fan-out
-    assert rows[0][:3] == ("sec_p", "cat000000001", Decimal("100"))
-    assert rows[1][:3] == ("sec_q", "cat000000001", Decimal("40"))
+    assert rows[0][:3] == ("mb21_institution_p", "cat000000007", Decimal("100"))
+    assert rows[1][:3] == ("mb21_institution_q", "cat000000007", Decimal("40"))
     assert rows[0][3] != rows[1][3]
 
 
 @pytest.mark.slow
-def test_bootstrap_resolves_canonical_ids(db: Database) -> None:
+def test_bootstrap_resolves_canonical_ids(bootstrap_cases: Database) -> None:
     """Canonical account/security ids resolve; the security has NO provider fallback."""
-    _raw_holding(db, security_id="sec_a", quantity="100", cost_basis="1000.00")
-    _raw_lot(
-        db,
-        "sec_a",
-        0,
-        original_purchase_datetime="2021-03-11 00:00:00",
-        quantity="100",
-        cost_basis="1000.00",
-    )
-    _raw_holding(db, security_id="sec_u", quantity="10", cost_basis="100.00")
-    _raw_lot(
-        db,
-        "sec_u",
-        0,
-        original_purchase_datetime="2021-03-11 00:00:00",
-        quantity="10",
-        cost_basis="100.00",
-    )
-    _link_account(db, "acc_1", "canonical_acc")
-    _link_security(db, "sec_a", "cat000000001")  # sec_u is deliberately unbound
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = db.execute(
+    rows = bootstrap_cases.execute(
         "SELECT source_security_key, account_id, source_account_key, security_id "
-        "FROM prep.stg_plaid__opening_lots ORDER BY 1"
+        "FROM prep.stg_plaid__opening_lots "
+        "WHERE source_security_key IN ('mb21_canonical_bound', 'mb21_canonical_unbound') "
+        "ORDER BY 1"
     ).fetchall()
     assert rows == [
-        ("sec_a", "canonical_acc", "acc_1", "cat000000001"),
-        ("sec_u", "canonical_acc", "acc_1", None),  # NULL, never 'sec_u'
+        ("mb21_canonical_bound", "mb21_canonical_account", "acc_1", "cat000000008"),
+        ("mb21_canonical_unbound", "mb21_canonical_account", "acc_1", None),
     ]
 
 
@@ -1639,7 +2011,7 @@ def test_bootstrap_resolves_canonical_ids(db: Database) -> None:
 
 @pytest.mark.slow
 def test_plaid_rows_flow_to_lots_and_gains_through_unchanged_engine(
-    db: Database,
+    core_ledger: Database,
 ) -> None:
     """Both Plaid branches reach the engine: bootstrap opens lots, the sell consumes them.
 
@@ -1647,36 +2019,14 @@ def test_plaid_rows_flow_to_lots_and_gains_through_unchanged_engine(
     land as POSITIVE proceeds. A second flip anywhere in core would make the
     proceeds negative and the buy-side basis an income.
     """
-    _raw_holding(db, security_id="sec_c", quantity="40", cost_basis="400.00")
-    _raw_lot(
-        db,
-        "sec_c",
-        0,
-        original_purchase_datetime="2021-03-11 00:00:00",
-        quantity="40",
-        cost_basis="400.00",
-    )
-    _raw_investment_txn(
-        db,
-        investment_transaction_id="itx_c_sell",
-        security_id="sec_c",
-        transaction_date="2025-02-01",
-        quantity="-60",
-        amount="-6000.00",
-        investment_transaction_type="sell",
-        investment_transaction_subtype="sell",
-    )
-    _link_security(db, "sec_c", "cat0000000c1")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
     # bootstrap seeded (case C): the held position is anchored to the snapshot
-    holding = db.execute(
+    holding = core_ledger.execute(
         "SELECT quantity, cost_basis FROM core.dim_holdings "
         "WHERE security_id = 'cat0000000c1'"
     ).fetchall()
     assert holding == [(Decimal("40"), Decimal("400.00"))]
     # the in-window sell consumed the residual (unknown-basis) shares first
-    gain = db.execute(
+    gain = core_ledger.execute(
         "SELECT quantity, proceeds, basis_incomplete FROM core.fct_realized_gains "
         "WHERE security_id = 'cat0000000c1'"
     ).fetchall()
@@ -1684,42 +2034,30 @@ def test_plaid_rows_flow_to_lots_and_gains_through_unchanged_engine(
 
 
 @pytest.mark.slow
-def test_provider_columns_carried_and_manual_rows_null(db: Database) -> None:
+def test_provider_columns_carried_and_manual_rows_null(core_ledger: Database) -> None:
     """Provider fidelity reaches core; the manual branch carries NULLs, never blanks."""
-    _raw_investment_txn(db)  # plaid buy
-    _manual_investment_txn(db)
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
     rows = {
         r[0]: (r[1], r[2], r[3], r[4])
-        for r in db.execute(
+        for r in core_ledger.execute(
             "SELECT investment_transaction_id, provider_type, provider_subtype, "
-            "source_type, amount FROM core.fct_investment_transactions"
+            "source_type, amount FROM core.fct_investment_transactions "
+            "WHERE investment_transaction_id IN "
+            "('mb21_provider_plaid', 'mb21_provider_manual')"
         ).fetchall()
     }
-    assert rows["itx_1"] == ("buy", "buy", "plaid", Decimal("-2145.50"))
-    assert rows["manual_1"] == (None, None, "manual", Decimal("-100.00"))
+    assert rows["mb21_provider_plaid"] == ("buy", "buy", "plaid", Decimal("-2145.50"))
+    assert rows["mb21_provider_manual"] == (None, None, "manual", Decimal("-100.00"))
 
 
 @pytest.mark.slow
-def test_dim_holdings_reconciles_against_newest_snapshot_only(db: Database) -> None:
-    _raw_investment_txn(db, transaction_date="2025-01-10")  # in-window buy of 10
-    _raw_holding(db, quantity="10", cost_basis="2000.00")  # first snapshot
-    _raw_holding(
-        db,
-        quantity="10",
-        cost_basis="1980.00",  # NEWEST snapshot
-        source_file="sync_j2",
-        extracted_at="2026-08-01 12:00:00",
-    )
-    _link_security(db, "sec_1", "cat000000001")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
+def test_dim_holdings_reconciles_against_newest_snapshot_only(
+    core_ledger: Database,
+) -> None:
+    row = core_ledger.execute(
         """
         SELECT quantity, cost_basis, provider_reported_quantity,
                provider_reported_cost_basis, provider_reported_as_of::VARCHAR
-        FROM core.dim_holdings WHERE security_id = 'cat000000001'
+        FROM core.dim_holdings WHERE security_id = 'cat0000000d1'
         """
     ).fetchone()
     # Ledger-derived figures come from the engine, never from the broker's claim.
@@ -1734,7 +2072,7 @@ def test_dim_holdings_reconciles_against_newest_snapshot_only(db: Database) -> N
 
 @pytest.mark.slow
 def test_same_day_second_pull_wins_on_extracted_at_not_holdings_date(
-    db: Database,
+    core_ledger: Database,
 ) -> None:
     """Two pulls on one UTC day TIE on holdings_date — extracted_at breaks the tie.
 
@@ -1742,46 +2080,22 @@ def test_same_day_second_pull_wins_on_extracted_at_not_holdings_date(
     The newer snapshot is deliberately named EARLIER alphabetically, so a
     `holdings_date DESC, source_file DESC` ordering would pick the stale one.
     """
-    _raw_investment_txn(db, transaction_date="2025-01-10")
-    _raw_holding(db, quantity="10", cost_basis="2000.00", source_file="sync_b")
-    _raw_holding(
-        db,
-        quantity="10",
-        cost_basis="1975.00",  # same calendar day, six hours later
-        source_file="sync_a",
-        extracted_at="2026-07-08 18:00:00",
-    )
-    _link_security(db, "sec_1", "cat000000001")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
+    row = core_ledger.execute(
         "SELECT provider_reported_cost_basis, provider_reported_as_of::VARCHAR "
-        "FROM core.dim_holdings WHERE security_id = 'cat000000001'"
+        "FROM core.dim_holdings WHERE security_id = 'cat0000000d2'"
     ).fetchone()
     assert row == (Decimal("1975.00"), "2026-07-08 18:00:00")
 
 
 @pytest.mark.slow
-def test_position_absent_from_newest_snapshot_shows_null(db: Database) -> None:
-    _raw_investment_txn(db, transaction_date="2025-01-10")
-    _raw_holding(db, quantity="10", cost_basis="1980.00")
-    # newest snapshot omits the position entirely (sold elsewhere / feed stopped)
-    _raw_holding(
-        db,
-        security_id="sec_other",
-        quantity="1",
-        cost_basis="1.00",
-        source_file="sync_j2",
-        extracted_at="2026-08-01 12:00:00",
-    )
-    _link_security(db, "sec_1", "cat000000001")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
+def test_position_absent_from_newest_snapshot_shows_null(
+    bootstrap_cases: Database,
+) -> None:
+    row = bootstrap_cases.execute(
         """
         SELECT quantity, provider_reported_quantity, provider_reported_cost_basis,
                provider_reported_value, provider_reported_as_of
-        FROM core.dim_holdings WHERE security_id = 'cat000000001'
+        FROM core.dim_holdings WHERE security_id = 'cat0000000d3'
         """
     ).fetchone()
     # NULL is itself the reconciliation signal — never a stale survivor.
@@ -1790,7 +2104,7 @@ def test_position_absent_from_newest_snapshot_shows_null(db: Database) -> None:
 
 @pytest.mark.slow
 def test_item_reporting_zero_holdings_nulls_the_claim_and_surfaces_the_phantom(
-    db: Database,
+    core_ledger: Database,
 ) -> None:
     """An item whose newest pull returns ZERO holdings: the claim goes NULL, doctor warns.
 
@@ -1807,36 +2121,24 @@ def test_item_reporting_zero_holdings_nulls_the_claim_and_surfaces_the_phantom(
     Keyed on the receipt, the empty pull IS the newest snapshot: no holdings row
     joins to it, the claim is NULL, and the lot the ledger never closed surfaces.
     """
-    _raw_investment_txn(db, transaction_date="2025-01-10")  # in-window buy of 10
-    _raw_holding(db, quantity="10", cost_basis="1980.00")  # sync_j1 confirms it
-    _link_security(db, "sec_1", "cat000000001")
-    # sync_j2: the account is liquidated. The item reported — and reported
-    # nothing. Zero holdings rows; the receipt is the only evidence of the pull.
-    _raw_holdings_receipt(
-        db,
-        source_file="sync_j2",
-        extracted_at="2026-08-01 12:00:00",
-        holdings_count=0,
-    )
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    row = db.execute(
+    row = core_ledger.execute(
         """
         SELECT quantity, provider_reported_quantity, provider_reported_as_of
-        FROM core.dim_holdings WHERE security_id = 'cat000000001'
+        FROM core.dim_holdings WHERE security_id = 'cat0000000d4'
         """
     ).fetchone()
     # NULL, not the stale 10 from the superseded sync_j1 snapshot.
     assert row == (Decimal("10"), None, None)
 
-    result = DoctorService(db)._run_investment_phantom_holdings()  # pyright: ignore[reportPrivateUsage]
+    result = DoctorService(core_ledger)._run_investment_phantom_holdings()  # pyright: ignore[reportPrivateUsage]
     assert result.status == "warn"
-    assert result.affected_ids == ["acc_1:cat000000001"]
+    assert result.affected_ids == ["mb21_zero_account:cat0000000d4"]
 
 
 @pytest.mark.slow
-def test_two_institutions_holding_one_security_do_not_fan_out(db: Database) -> None:
+def test_two_institutions_holding_one_security_do_not_fan_out(
+    core_ledger: Database,
+) -> None:
     """One canonical security at two items: two positions, each with its own claim.
 
     prep.stg_plaid__securities emits one row per (security_id, source_origin), so
@@ -1844,48 +2146,35 @@ def test_two_institutions_holding_one_security_do_not_fan_out(db: Database) -> N
     reconciliation join must key on (account_id, security_id) and aggregate to
     exactly one provider-reported row per position.
     """
-    for account, security, origin, qty, basis in (
-        ("acc_1", "sec_p", "item_1", "10", "1000.00"),
-        ("acc_2", "sec_q", "item_2", "40", "4000.00"),
-    ):
-        _raw_investment_txn(
-            db,
-            investment_transaction_id=f"itx_{security}",
-            account_id=account,
-            security_id=security,
-            source_origin=origin,
-            transaction_date="2025-01-10",
-            quantity=qty,
-            amount=basis,  # Plaid positive = cash out
-        )
-        _raw_holding(
-            db,
-            account_id=account,
-            security_id=security,
-            source_origin=origin,
-            quantity=qty,
-            cost_basis=basis,
-        )
-        # Both provider refs resolve to the SAME canonical security.
-        _link_security(db, security, "cat000000001")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-    rows = db.execute(
+    rows = core_ledger.execute(
         """
         SELECT account_id, quantity, provider_reported_quantity,
                provider_reported_cost_basis
-        FROM core.dim_holdings WHERE security_id = 'cat000000001' ORDER BY account_id
+        FROM core.dim_holdings WHERE security_id = 'cat0000000d5' ORDER BY account_id
         """
     ).fetchall()
     assert rows == [
-        ("acc_1", Decimal("10"), Decimal("10"), Decimal("1000.00")),
-        ("acc_2", Decimal("40"), Decimal("40"), Decimal("4000.00")),
+        ("mb21_multi_a", Decimal("10"), Decimal("10"), Decimal("1000.00")),
+        ("mb21_multi_b", Decimal("40"), Decimal("40"), Decimal("4000.00")),
     ]
 
 
-@pytest.fixture
-def core_ledger(db: Database) -> Database:
+@pytest.fixture(scope="module")
+def core_ledger(
+    tmp_path_factory: pytest.TempPathFactory,
+    request: pytest.FixtureRequest,
+) -> Generator[Database, None, None]:
     """One plan over every branch that reaches (or is kept out of) the ledger."""
+    secret_store = MagicMock()
+    secret_store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    db_path = tmp_path_factory.mktemp("plaid_investment_core") / "test.duckdb"
+    db = Database(
+        db_path,
+        secret_store=secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
+    request.addfinalizer(db.close)
     _raw_investment_txn(db, investment_transaction_id="itx_buy")
     _raw_investment_txn(
         db,
@@ -1949,9 +2238,155 @@ def core_ledger(db: Database) -> Database:
     _link_security(db, "sec_1", "cat000000001")
     _link_security(db, "sec_t", "cat000000002")
     _link_security(db, "sec_boot", "cat000000003")
+    _raw_holding(
+        db,
+        account_id="mb21_flow_account",
+        security_id="mb21_flow_security",
+        source_file="mb21_flow",
+        source_origin="mb21_flow",
+        quantity="40",
+        cost_basis="400.00",
+    )
+    _raw_lot(
+        db,
+        "mb21_flow_security",
+        0,
+        account_id="mb21_flow_account",
+        source_file="mb21_flow",
+        source_origin="mb21_flow",
+        original_purchase_datetime="2021-03-11 00:00:00",
+        quantity="40",
+        cost_basis="400.00",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="mb21_flow_sell",
+        account_id="mb21_flow_account",
+        security_id="mb21_flow_security",
+        transaction_date="2025-02-01",
+        quantity="-60",
+        amount="-6000.00",
+        investment_transaction_type="sell",
+        investment_transaction_subtype="sell",
+        source_file="mb21_flow",
+        source_origin="mb21_flow",
+    )
+    _link_security(db, "mb21_flow_security", "cat0000000c1")
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="mb21_provider_plaid",
+        account_id="mb21_provider_account",
+        security_id="mb21_provider_security",
+        source_file="mb21_provider",
+        source_origin="mb21_provider",
+    )
+    _manual_investment_txn(
+        db,
+        source_transaction_id="mb21_provider_manual",
+        import_id="mb21_provider",
+        account_id="mb21_provider_manual_account",
+        security_id="mb21_provider_manual_security",
+        investment_transaction_id="mb21_provider_manual",
+    )
+    for prefix, canonical, second_file, second_basis, second_at in (
+        (
+            "mb21_reconcile",
+            "cat0000000d1",
+            "mb21_reconcile_2",
+            "1980.00",
+            "2026-08-01 12:00:00",
+        ),
+        (
+            "mb21_same_day",
+            "cat0000000d2",
+            "mb21_same_day_a",
+            "1975.00",
+            "2026-07-08 18:00:00",
+        ),
+    ):
+        account_id = f"{prefix}_account"
+        security_id = f"{prefix}_security"
+        _raw_investment_txn(
+            db,
+            investment_transaction_id=f"{prefix}_buy",
+            account_id=account_id,
+            security_id=security_id,
+            transaction_date="2025-01-10",
+            source_file=f"{prefix}_1",
+            source_origin=prefix,
+        )
+        _raw_holding(
+            db,
+            account_id=account_id,
+            security_id=security_id,
+            source_file=f"{prefix}_1" if prefix == "mb21_reconcile" else f"{prefix}_b",
+            source_origin=prefix,
+            quantity="10",
+            cost_basis="2000.00",
+        )
+        _raw_holding(
+            db,
+            account_id=account_id,
+            security_id=security_id,
+            source_file=second_file,
+            source_origin=prefix,
+            quantity="10",
+            cost_basis=second_basis,
+            extracted_at=second_at,
+        )
+        _link_security(db, security_id, canonical)
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="mb21_zero_buy",
+        account_id="mb21_zero_account",
+        security_id="mb21_zero_security",
+        transaction_date="2025-01-10",
+        source_file="mb21_zero_1",
+        source_origin="mb21_zero",
+    )
+    _raw_holding(
+        db,
+        account_id="mb21_zero_account",
+        security_id="mb21_zero_security",
+        source_file="mb21_zero_1",
+        source_origin="mb21_zero",
+        quantity="10",
+        cost_basis="1980.00",
+    )
+    _raw_holdings_receipt(
+        db,
+        source_origin="mb21_zero",
+        source_file="mb21_zero_2",
+        extracted_at="2026-08-01 12:00:00",
+        holdings_count=0,
+    )
+    _link_security(db, "mb21_zero_security", "cat0000000d4")
+    for account_id, security_id, origin, quantity, basis in (
+        ("mb21_multi_a", "mb21_multi_p", "mb21_multi_one", "10", "1000.00"),
+        ("mb21_multi_b", "mb21_multi_q", "mb21_multi_two", "40", "4000.00"),
+    ):
+        _raw_investment_txn(
+            db,
+            investment_transaction_id=f"{security_id}_buy",
+            account_id=account_id,
+            security_id=security_id,
+            source_origin=origin,
+            transaction_date="2025-01-10",
+            quantity=quantity,
+            amount=basis,
+        )
+        _raw_holding(
+            db,
+            account_id=account_id,
+            security_id=security_id,
+            source_origin=origin,
+            quantity=quantity,
+            cost_basis=basis,
+        )
+        _link_security(db, security_id, "cat0000000d5")
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
-    return db
+    yield db
 
 
 @pytest.mark.slow
