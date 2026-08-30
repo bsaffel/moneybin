@@ -47,24 +47,22 @@ class TestDbKeySubgroup:
         runner: CliRunner,
         action: str,
         tmp_path: Path,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Stub sub-commands stay invocable and exit 1 with a message.
 
-        Read from the log rather than ``result.output``: the message is
-        emitted by the shared ``_not_implemented`` helper, which logs, and
-        ``setup_logging(cli_mode=True)`` — installed by the root app, not by
-        this sub-app — is what routes it to stderr for a real user.
+        Read from ``result.output``: the shared ``_not_implemented`` helper
+        writes with ``typer.echo(err=True)``, straight to stderr, so the message
+        does not depend on ``setup_logging(cli_mode=True)`` — installed by the
+        root app, not by this sub-app — to reach a real user.
         """
         argv = ["key", action]
         if action == "import":
             argv.append(str(tmp_path / "envelope.bin"))
 
-        with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.stubs"):
-            result = runner.invoke(db_app, argv)
+        result = runner.invoke(db_app, argv)
 
         assert result.exit_code == 1
-        assert "not yet implemented" in caplog.text.lower()
+        assert "not yet implemented" in result.output.lower()
 
     @pytest.mark.unit
     def test_old_rotate_key_no_longer_exists(self, runner: CliRunner) -> None:
@@ -142,7 +140,6 @@ class TestDbKeyRotateSecrets:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         import contextlib
-        import logging
 
         import duckdb
 

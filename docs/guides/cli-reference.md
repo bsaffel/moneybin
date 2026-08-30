@@ -320,7 +320,7 @@ Categorization workflow. Engines: deterministic rules + merchant mappings (local
 | `transactions categorize auto accept <proposal-id>` | Accept one auto-rule proposal. | `--all` |
 | `transactions categorize auto rules` | List rules created from auto-proposals. | — |
 | `transactions categorize auto stats` | Auto-rule activity summary. | — |
-| `transactions categorize ml status` / `train` / `apply` | ML-assisted categorization (stub). | — |
+| `transactions categorize ml status` / `train` / `apply` 🚧 | ML-assisted categorization (stub). | — |
 
 **Related guides:** [`categorization.md`](categorization.md).
 

@@ -878,8 +878,8 @@ def db_key_export(
 ) -> None:
     """Export the encryption key to an encrypted envelope (not yet implemented)."""
     del out
-    # Exits 1, unlike the stubs that only log: this command shipped that way
-    # and MB-37 preserves exit codes. The message is shared so both stub
+    # Exits 1, unlike the stubs that exit 0: this command shipped that way and
+    # the milestone preserves exit codes. The message is shared so both stub
     # families read identically.
     _not_implemented("encryption key export")
     raise typer.Exit(1)

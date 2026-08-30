@@ -9,7 +9,6 @@ trio, which predates the helper and inlines its own message.
 """
 
 import ast
-import logging
 from pathlib import Path
 
 import click
@@ -218,33 +217,43 @@ def test_exit_one_stub_keeps_its_exit_code(path: str) -> None:
     assert result.exit_code == 1, result.output
 
 
-def test_stub_message_survives_a_warning_log_level(
+@pytest.mark.parametrize("level", ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+def test_stub_message_survives_every_supported_log_level(
+    capsys: pytest.CaptureFixture[str],
     caplog: pytest.LogCaptureFixture,
+    level: str,
 ) -> None:
-    """A supported log level must not turn a stub into a silent no-op.
+    """No supported log level may turn a stub into a silent no-op.
 
-    ``WARNING`` is one of ``LoggingConfig.level``'s five supported values. An
-    INFO-level stub message is dropped there, and the three ``db key`` stubs
-    then exit 1 having printed nothing — a bare failure code with no reason.
-    Those three explained themselves unconditionally before req 31 moved them
-    onto the shared helper, so this is the regression that move would cause.
+    All five of ``LoggingConfig.level``'s values must show it, not just the
+    default. ``ERROR`` and ``CRITICAL`` drop a WARNING record outright, and the
+    three ``db key`` stubs then exit 1 having printed nothing — a bare failure
+    code with no reason, which is the whole of what req 32 forbids. Those three
+    explained themselves through an unconditional ``typer.echo`` before req 31
+    moved them onto the shared helper, so a logger-backed helper regresses
+    exactly the range they were previously immune to.
+
+    Setting the level is what makes this a guard rather than a tautology: the
+    helper writes with ``typer.echo(err=True)`` and ignores it, so the
+    parameters all pass — but they fail at ``ERROR``/``CRITICAL`` the moment
+    anyone routes the message back through a logger.
 
     Calls the helper rather than a command: ``setup_logging(cli_mode=True)``
-    rebuilds the root handlers during ``runner.invoke`` and drops caplog's, so
-    an end-to-end assertion here would read empty whatever the level. That
-    every stub reaches this helper is what the parametrized end-to-end tests
-    above establish; this one owns the level the helper emits at.
+    rebuilds the root handlers during ``runner.invoke``. That every stub reaches
+    this helper is what the parametrized end-to-end tests above establish; this
+    one owns the channel the helper emits on.
     """
-    with caplog.at_level(logging.WARNING, logger="moneybin.cli.commands.stubs"):
+    with caplog.at_level(level, logger="moneybin.cli.commands.stubs"):
         _not_implemented("scheduled sync")
 
-    assert "not yet implemented" in caplog.text.lower(), (
-        "the stub message is dropped when the log level is WARNING"
+    err = capsys.readouterr().err
+    assert "not yet implemented" in err.lower(), (
+        f"the stub message is dropped when the log level is {level}"
     )
-    assert "moneybin --help" in caplog.text, (
-        "the stub's next action is dropped when the log level is WARNING"
+    assert "moneybin --help" in err, (
+        f"the stub's next action is dropped when the log level is {level}"
     )
-    assert "scheduled sync" in caplog.text, (
+    assert "scheduled sync" in err, (
         "the stub message no longer names the feature it stands in for"
     )
 
@@ -279,6 +288,12 @@ IDENTIFIER_EXEMPT_HELP = frozenset({"logs"})
 
 SRC_ROOT = Path(moneybin.__file__).parent
 
+# Constructors whose fields a renderer prints verbatim, making their string
+# arguments user-facing even though the construction site emits nothing itself.
+# `system doctor` prints `InvariantResult.name` and `.detail` straight to the
+# terminal (`cli/commands/system/doctor.py:118-120`).
+RENDERED_VERBATIM_CARRIERS = frozenset({"InvariantResult"})
+
 
 @pytest.mark.parametrize("path", sorted(_walk_commands()))
 def test_help_text_names_no_internal_dependency(path: str) -> None:
@@ -297,35 +312,57 @@ def test_help_text_names_no_internal_dependency(path: str) -> None:
     )
 
 
-def _user_facing_strings(module: Path) -> list[str]:
-    """Return every string literal this module passes to a user-facing call.
+def _user_facing_strings(module: Path) -> list[tuple[str, bool]]:
+    """Return this module's user-facing string literals, each tagged by channel.
+
+    The flag is ``True`` when the string reaches the user only if the module's
+    logger does — which is what the console denylist can silence. A
+    ``typer.echo`` or ``InvariantResult`` string is written whatever the logging
+    config says, so it is tagged ``False`` and stays in scope for every module.
 
     Comments and internal docstrings are out of scope — requirement 17 is
     about what the user reads, not what a contributor reads.
 
-    Known blind spot: a message assembled in a local variable and then logged
-    reaches the user but not this scan. Widening to arbitrary dataflow needs
-    more than the AST; the ``--help`` test above and the guides check below
-    cover the surfaces where that has actually happened.
+    Two known blind spots, both narrower than they look:
+
+    - A message assembled in a local variable and then logged reaches the user
+      but not this scan. Widening to arbitrary dataflow needs more than the AST.
+    - Text raised on an exception (``raise RuntimeError(f"...")``) reaches the
+      user through the CLI error path, and this scan never visits those call
+      sites at all.
+
+    ``InvariantResult`` is scanned because it is neither: ``system doctor``
+    prints its ``name`` and ``detail`` verbatim
+    (``cli/commands/system/doctor.py:118-120``), so it is a user-facing call by
+    the same standard as ``logger.warning`` — it just renders one layer later.
+    It is listed by name rather than matched structurally because a rule like
+    "every dataclass whose fields get echoed" is not decidable from one module's
+    AST.
     """
     tree = ast.parse(module.read_text())
-    emitted: list[str] = []
+    emitted: list[tuple[str, bool]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         target = node.func
-        if isinstance(target, ast.Attribute):
+        if isinstance(target, ast.Name):
+            # A rendered-verbatim carrier, not a call that emits on its own.
+            if target.id not in RENDERED_VERBATIM_CARRIERS:
+                continue
+            via_logger = False
+        elif isinstance(target, ast.Attribute):
             called = target.attr
             owner = getattr(target.value, "id", "")
+            is_log = owner == "logger" and called in {"info", "warning", "error"}
+            is_echo = owner == "typer" and called in {"echo", "secho"}
+            if not (is_log or is_echo):
+                continue
+            via_logger = is_log
         else:
-            continue
-        is_log = owner == "logger" and called in {"info", "warning", "error"}
-        is_echo = owner == "typer" and called in {"echo", "secho"}
-        if not (is_log or is_echo):
             continue
         for argument in ast.walk(node):
             if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-                emitted.append(argument.value)
+                emitted.append((argument.value, via_logger))
     return emitted
 
 
@@ -364,12 +401,18 @@ def test_runtime_messages_name_no_internal_dependency() -> None:
     reads one stderr stream, and the services behind a command write to it on
     the same terms. A CLI-only scan passes while ``transform apply`` prints
     "Running SQLMesh transforms" directly above "Transforms applied".
+
+    The console denylist exempts a module's *logger* strings only. A
+    ``typer.echo`` or ``InvariantResult`` string is written whatever the logging
+    config says, so suppressing a prefix must not take those out of scope —
+    otherwise adding one prefix silently stops guarding two other channels.
     """
     offenders: list[str] = []
     for module in sorted(SRC_ROOT.rglob("*.py")):
-        if not _reaches_the_console(module):
-            continue
-        for text in _user_facing_strings(module):
+        logger_visible = _reaches_the_console(module)
+        for text, via_logger in _user_facing_strings(module):
+            if via_logger and not logger_visible:
+                continue
             if names_an_internal_dependency(text):
                 offenders.append(f"{module.relative_to(SRC_ROOT)}: {text!r}")
 

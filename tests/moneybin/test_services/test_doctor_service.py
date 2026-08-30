@@ -770,7 +770,7 @@ def test_run_all_returns_expected_invariants(
     # unreported holdings, phantom holdings) + 4 investment price checks
     # (M1J.3 C.2: price disagreement, unpriced holdings, stale prices,
     # unmapped price source)
-    # + sqlmesh_model_presence (registered-but-unbuilt models) +
+    # + transform_model_presence (registered-but-unbuilt models) +
     # currency_integrity (M1K.1 Req 6: unknown-currency rows, then merely-mixed
     # currency) + profile_settings audit coverage (M1K.1 Req 4) + user_reports
     # audit coverage (M2P.2) + duplicate_account_overlap (one account imported
@@ -783,7 +783,7 @@ def test_run_all_returns_expected_invariants(
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
     assert "bridge_transfers_balanced" in names
-    assert "sqlmesh_model_presence" in names
+    assert "transform_model_presence" in names
     assert "dedup_reconciliation" in names
     assert "duplicate_account_overlap" in names
     assert "unproposed_cross_source_duplicates" in names
@@ -969,7 +969,7 @@ def test_sqlmesh_discovery_failure_emits_skipped_invariant(
     svc = DoctorService(doctor_db)
     report = svc.run_all()
     skipped = next(
-        (r for r in report.invariants if r.name == "sqlmesh_audits_unavailable"), None
+        (r for r in report.invariants if r.name == "transform_audits_unavailable"), None
     )
     assert skipped is not None
     assert skipped.status == "skipped"
@@ -2554,7 +2554,7 @@ def test_missing_registered_model_fails_an_invariant(
     svc = DoctorService(doctor_db)
 
     report = svc.run_all()
-    result = next(r for r in report.invariants if r.name == "sqlmesh_model_presence")
+    result = next(r for r in report.invariants if r.name == "transform_model_presence")
 
     assert result.status == "fail"
     # The fixture DB builds only a handful of core tables, so most of the
@@ -2588,7 +2588,7 @@ def test_unreadable_catalog_reports_unavailable_not_a_fresh_profile(
     monkeypatch.setattr("moneybin.services.doctor_service.model_presence", _raise)
 
     report = DoctorService(doctor_db).run_all()
-    result = next(r for r in report.invariants if r.name == "sqlmesh_model_presence")
+    result = next(r for r in report.invariants if r.name == "transform_model_presence")
 
     assert result.status == "skipped"
     assert result.detail is not None
@@ -2626,7 +2626,7 @@ def test_model_presence_passes_when_every_registered_model_exists(
     svc = DoctorService(doctor_db)
 
     result = next(
-        r for r in svc.run_all().invariants if r.name == "sqlmesh_model_presence"
+        r for r in svc.run_all().invariants if r.name == "transform_model_presence"
     )
 
     assert result.status == "pass"

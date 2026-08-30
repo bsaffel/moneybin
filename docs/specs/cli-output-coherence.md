@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-ready
+in-progress
 
 ## Milestone
 
@@ -256,8 +256,16 @@ Numbered, each independently testable.
 
     **Audit state at spec time.** Two of F3's four leaks are already gone:
     the `transactions_get returned …` line and the `accounts_links_run:`
-    prefix no longer appear. One survives, and it sits **below the CLI
-    layer** — `src/moneybin/services/merchant_links_service.py:301` logs
+    prefix no longer appear. Two survive. The second was missed by the audit
+    and by the first automated guard alike, because both looked only at
+    `logger.*` and `typer.echo` arguments: `system doctor` prints
+    `InvariantResult.name` verbatim
+    (`src/moneybin/cli/commands/system/doctor.py:118-120`), so
+    `name="sqlmesh_model_presence"` reached the user as a compound snake_case
+    identifier through a constructor, one rendering layer away from any call
+    this requirement's scan visits. Requirement 17 renames it; the scan now
+    reads `InvariantResult` fields for exactly this reason. The first sits
+    **below the CLI layer** — `src/moneybin/services/merchant_links_service.py:301` logs
     `merchant_links_run: bound={n} conflicts={n}`, which is a compound
     snake_case identifier *and* two `key=value` fragments, and it reaches the
     user through the log handler. Closing it means editing a service, so this
@@ -290,7 +298,27 @@ Numbered, each independently testable.
     `services/transform_service.py` (start, failure, completion),
     `database.py`, `seeds.py`, `services/doctor_service.py`, and
     `sqlmesh_registry.py`. Contributor-facing prose — comments, module
-    docstrings, the `sqlmesh_registry` module name — is out of scope.
+    docstrings, the `sqlmesh_registry` module name, the private
+    `_run_sqlmesh_model_presence` method — is out of scope.
+
+    **Those seven were not the whole set, and the shortfall was structural.**
+    Three further strings live in `migrations.py`'s `sqlmesh_state_assessment`,
+    which returns them for `db migrate` to log one call away; six more are
+    `InvariantResult` `name` and `detail` fields that `system doctor` prints
+    verbatim. Neither family is an argument to a `logger.*` or `typer.echo`
+    call, so the hand audit and the first automated guard missed both by the
+    same mechanism rather than by carelessness. A message is in scope because
+    the user reads it, not because of the call it is written at.
+
+    **Residual, deliberately out of scope: exception text.** `RuntimeError`
+    and `ImportRefreshError` messages name SQLMesh at
+    `services/import_service.py:1886` and `:5725`,
+    `services/transform_service.py:311`, and `mcp/tools/import_tools.py:425`.
+    Whether these are user-facing prose or a contributor-facing crash report
+    depends on which are rendered and which reach a traceback, and that is a
+    decision about the CLI's error contract rather than about vocabulary.
+    Requirement 17 does not cover them; the guard's docstring names the gap so
+    a reader does not mistake its scan for a stronger guarantee.
 18. `refresh` emits one `render_note` per pipeline stage naming the stage and its
     observable outcome, including stages whose outcome is zero. A run that changed
     nothing and a run that recategorized 400 transactions are distinguishable from
@@ -427,17 +455,24 @@ Numbered, each independently testable.
      user. Both stub families share one message: two shapes for one situation
      is the coherence failure "one way to do each thing" forbids.
 
-     **One record, at `WARNING`.** `WARNING` is one of `LoggingConfig.level`'s
-     five supported values, and an INFO-level stub message is dropped there —
-     which would leave the three `db key` stubs exiting `1` having printed
-     nothing, a bare failure code with no reason. Those three explained
-     themselves unconditionally through `typer.echo(..., err=True)` before
-     requirement 31 moved them onto the shared helper, so INFO would have made
-     them worse than it found them. The next action rides in the same record
-     rather than a second one, because splitting it would drop exactly the half
-     this requirement demands. Residual: at `ERROR` and `CRITICAL` the message
-     is still suppressed. That is the level a user sets to see only failures,
-     and closing it would need the two message shapes requirement 32 forbids.
+     **One message, level-independent.** The shared helper writes with
+     `typer.echo(..., err=True)`, so no `LoggingConfig.level` can suppress it.
+     A logger cannot carry this message: `ERROR` and `CRITICAL` are two of the
+     five supported values and both drop a `WARNING` record, which would leave
+     the three `db key` stubs exiting `1` having printed nothing — a bare
+     failure code with no reason, which is the whole of what this requirement
+     forbids. Those three explained themselves through an unconditional
+     `typer.echo(..., err=True)` before requirement 31 moved them onto the
+     shared helper, so a logger-backed helper would have regressed exactly the
+     range they were immune to. Routing every stub the same way closes that for
+     all twelve and still leaves one message shape, which is what requirement 32
+     asks for; special-casing `db key` is what would have produced two. The next
+     action rides in the same call rather than a second one, because splitting
+     it would drop exactly the half this requirement demands.
+
+     The cost is that stub invocations no longer reach the log file —
+     `.claude/rules/cli.md` already accepts that for a line a `typer.echo`
+     carries.
 33. Exit codes are unchanged. The tree carries **two** policies, and this spec
     records rather than unifies them: stubs routed through `stubs.py` exit `0`
     (the reasoning is in its docstring — `1` means "ran and failed"), while the

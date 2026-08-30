@@ -771,15 +771,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and `db key rotate` work. Nothing is removed: every one of them is still
   invocable and keeps its exit code, so a script calling `sync key rotate`
   today behaves exactly as before — it just no longer appears in the menu of
-  things MoneyBin claims to do. They now report "not yet implemented" as a
-  single `WARNING`, which means the three `db key` placeholders no longer exit
-  `1` silently when `MONEYBIN_LOGGING__LEVEL=WARNING` (#457).
+  things MoneyBin claims to do. They now report "not yet implemented" on stderr
+  at every `MONEYBIN_LOGGING__LEVEL`, so the three `db key` placeholders can no
+  longer exit `1` with no output — previously they printed nothing at
+  `WARNING`, and would have printed nothing at `ERROR` or `CRITICAL` (#457).
 - **Messages name transforms, not the library that runs them.** Help text,
   option descriptions, progress lines, and migration warnings said "SQLMesh" —
   a dependency you did not choose and cannot act on. They now say "transform".
-  `moneybin logs sqlmesh` is unchanged: that one is a log-file name you type,
-  not vocabulary. The profile banner also names the single source that actually
-  resolved your profile instead of listing candidates (#457).
+  `system doctor` follows: two check names it printed verbatim are now
+  `transform_model_presence` and `transform_audits_unavailable`, so a script
+  matching the old names needs updating. `moneybin logs sqlmesh` is unchanged:
+  that one is a log-file name you type, not vocabulary. `db migrate` also no
+  longer reports the transform engine's internal state-schema number as though
+  it were your MoneyBin version. The profile banner names the single source
+  that actually resolved your profile instead of listing candidates (#457).
 - **Account-merge candidates carry measured ledger overlap instead of a
   constant `confidence`.** An import that offers to merge a file into an
   account you already have returned a `confidence` on every candidate — a

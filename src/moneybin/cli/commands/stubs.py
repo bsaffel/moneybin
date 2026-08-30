@@ -5,9 +5,7 @@ breaking a script that already calls the path. Stubs are hidden from ``--help``
 (cli-output-coherence req 31) so the CLI never advertises what it cannot do.
 """
 
-import logging
-
-logger = logging.getLogger(__name__)
+import typer
 
 __all__ = ["_not_implemented"]
 
@@ -25,16 +23,22 @@ def _not_implemented(feature: str) -> None:
     it for "intentional no-op pending implementation" would collide with
     that meaning and force scripts to distinguish stubs from real
     failures via stderr text. The "ran but unimplemented" signal is
-    delivered via the logged message (which `setup_logging(cli_mode=True)`
-    routes to stderr) rather than the exit code.
+    delivered by the message below rather than the exit code.
 
-    Emitted at WARNING, and as one record rather than two: `WARNING` is a
-    supported `LoggingConfig.level`, and at INFO this message would vanish
-    there — leaving the `db key` stubs, which exit 1, reporting a bare
-    failure code with no reason. Splitting the next action into a second
-    INFO record would lose exactly the half req 32 requires.
+    Written with `typer.echo(err=True)`, not `logger.warning`, so the message is
+    level-independent. `ERROR` and `CRITICAL` are supported `LoggingConfig.level`
+    values that drop a WARNING record entirely, which would leave the `db key`
+    trio — the stubs that exit 1 — reporting a bare failure code with no reason,
+    the exact gap req 32 exists to close. Those three reached the user through an
+    unconditional `typer.echo` before this spec, so routing them onto a logger
+    would have been a regression for a level range they were immune to.
+
+    The cost is that stub invocations no longer reach the log file. That is the
+    tradeoff `.claude/rules/cli.md` already accepts for a line a `typer.echo`
+    carries, and it applies to every stub rather than special-casing `db key`.
     """
-    logger.warning(
+    typer.echo(
         f"⚠️  This command is not yet implemented. Support for {feature} is "
-        "planned — run `moneybin --help` for what works today."
+        "planned — run `moneybin --help` for what works today.",
+        err=True,
     )

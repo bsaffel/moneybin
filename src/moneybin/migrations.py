@@ -693,15 +693,15 @@ def sqlmesh_state_assessment(db: Database) -> tuple[str | None, bool]:
     schema_version, sqlmesh_version, sqlglot_version = state
     if schema_version < SCHEMA_VERSION:
         return (
-            f"Transform state schema (v{schema_version}) is behind this MoneyBin "
-            f"version (v{SCHEMA_VERSION}). "
+            f"Transform state schema (v{schema_version}) is behind the schema "
+            f"this install supports (v{SCHEMA_VERSION}). "
             "Run `moneybin db migrate apply` to migrate the state.",
             True,
         )
     if schema_version > SCHEMA_VERSION:
         return (
-            f"Transform state schema (v{schema_version}) is ahead of this MoneyBin "
-            f"version (v{SCHEMA_VERSION}). Upgrade MoneyBin to match.",
+            f"Transform state schema (v{schema_version}) is ahead of the schema "
+            f"this install supports (v{SCHEMA_VERSION}). Upgrade MoneyBin to match.",
             False,
         )
 
