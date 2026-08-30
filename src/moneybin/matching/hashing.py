@@ -3,7 +3,7 @@
 Gold keys are SHA-256 hashes truncated to 16 hex characters (64 bits),
 consistent with the content-hash ID strategy used elsewhere in MoneyBin.
 
-Unmatched records: SHA-256(source_type|source_transaction_id|account_id)
+Unmatched records: SHA-256(source_type|source_origin|source_account_key|source_transaction_id)
 Matched groups: SHA-256(sorted pipe-delimited contributing tuples)
 """
 
@@ -11,10 +11,13 @@ import hashlib
 
 
 def gold_key_unmatched(
-    source_type: str, source_transaction_id: str, account_id: str
+    source_type: str,
+    source_origin: str,
+    source_account_key: str,
+    source_transaction_id: str,
 ) -> str:
     """Generate a gold key for an unmatched (single-source) record."""
-    raw = f"{source_type}|{source_transaction_id}|{account_id}"
+    raw = f"{source_type}|{source_origin}|{source_account_key}|{source_transaction_id}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 

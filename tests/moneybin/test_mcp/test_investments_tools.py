@@ -957,18 +957,28 @@ class TestInvestmentsRecord:
         _add_security(security_id="sec_1", ticker="AAPL")
         import moneybin.services.investment_service as svc_mod
 
-        # Patch the per-row gold-key fn to raise mid-batch — the injection point
-        # for a simulated infra failure inside the write transaction.
-        real = svc_mod._predict_investment_gold_key  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        # Patch the canonical per-row gold-key function to raise mid-batch — the
+        # injection point for a simulated infra failure inside the write transaction.
+        real = svc_mod.gold_key_unmatched
         calls = {"n": 0}
 
-        def _boom(source_transaction_id: str, account_id: str) -> str:
+        def _boom(
+            source_type: str,
+            source_origin: str,
+            source_account_key: str,
+            source_transaction_id: str,
+        ) -> str:
             calls["n"] += 1
             if calls["n"] == 2:  # fail on the second row's insert
                 raise RuntimeError("simulated infra failure mid-batch")
-            return real(source_transaction_id, account_id)
+            return real(
+                source_type,
+                source_origin,
+                source_account_key,
+                source_transaction_id,
+            )
 
-        monkeypatch.setattr(svc_mod, "_predict_investment_gold_key", _boom)
+        monkeypatch.setattr(svc_mod, "gold_key_unmatched", _boom)
 
         def _buy(day: str, amount: str) -> dict[str, object]:
             return {
