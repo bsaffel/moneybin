@@ -220,6 +220,40 @@ class TestAccountSettingsModel:
         with pytest.raises(ValueError, match="account_subtype"):
             AccountSettings(account_id="a", account_subtype="x" * 33)
 
+    @pytest.mark.unit
+    def test_free_text_is_trimmed_before_it_is_stored(self) -> None:
+        """Padding here becomes padding inside a rendered account name.
+
+        ``core.dim_accounts`` reads each of these columns with no ``TRIM`` while
+        the mint report's Python mirror trims, so one stray space from a caller
+        split the announced name from the stored one. Normalizing at this
+        boundary is what keeps both readers on the same string.
+        """
+        s = AccountSettings(
+            account_id="acct_abc",
+            display_name="  Joint Checking  ",
+            official_name="  PLATINUM CHECKING  ",
+            account_subtype="  checking  ",
+            holder_category="  personal  ",
+        )
+        assert s.display_name == "Joint Checking"
+        assert s.official_name == "PLATINUM CHECKING"
+        assert s.account_subtype == "checking"
+        assert s.holder_category == "personal"
+
+    @pytest.mark.unit
+    def test_whitespace_only_free_text_is_rejected_like_an_empty_string(self) -> None:
+        """A blank is not a value. ``""`` already raised; ``"  "`` slipped past.
+
+        The gap mattered because a non-NULL blank wins the model's ``COALESCE``
+        outright: the account was named by an empty subtype instead of by the
+        one its own source stated.
+        """
+        with pytest.raises(ValueError, match="account_subtype"):
+            AccountSettings(account_id="a", account_subtype="   ")
+        with pytest.raises(ValueError, match="display_name"):
+            AccountSettings(account_id="a", display_name="   ")
+
 
 @pytest.fixture()
 def test_db(db: Database) -> Database:

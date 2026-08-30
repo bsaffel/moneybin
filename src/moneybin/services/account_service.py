@@ -170,6 +170,22 @@ def suggest_holder_category(value: str) -> str | None:
 
 _LAST_FOUR_RE = re.compile(r"^[0-9]{4}$")
 
+#: Free-text settings fields normalized before validation. ``core.dim_accounts``
+#: reads every one of them with no ``TRIM``, so padding stored here is padding
+#: rendered inside an account's name -- while the Python mirror
+#: (``services/account_display_name.py::_stated``) trims, which is exactly how
+#: the announced name and the stored one come to disagree. Normalizing once at
+#: this boundary keeps both readers on the same string instead of asking each to
+#: defend itself. ``last_four`` and ``currency_code`` are absent because their
+#: patterns are anchored and reject padding outright; a whitespace-only value
+#: strips to ``""`` and fails the same length check ``""`` already failed.
+_TRIMMED_SETTING_FIELDS = (
+    "display_name",
+    "official_name",
+    "account_subtype",
+    "holder_category",
+)
+
 # Bucket label for a NULL account_type or account_subtype in summary() to represent accounts with
 # NULL account_subtype. MCP/CLI consumers see this string in the dict keys.
 _UNSET_LABEL = "<unset>"
@@ -212,9 +228,13 @@ class AccountSettings:
         }
 
     def __post_init__(self) -> None:
-        """Validate string lengths and formats at construction."""
+        """Normalize free text, then validate string lengths and formats."""
         if not self.account_id:
             raise ValueError("account_id is required")
+        for field_name in _TRIMMED_SETTING_FIELDS:
+            value: str | None = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(self, field_name, value.strip())
         if self.display_name is not None:
             if not 1 <= len(self.display_name) <= 80:
                 raise ValueError("display_name must be 1-80 characters")

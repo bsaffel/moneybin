@@ -498,6 +498,45 @@ def test_mint_is_announced_under_the_name_it_will_actually_carry(
     assert settings == ("Joint Checking",)
 
 
+def test_padded_metadata_is_normalized_before_it_is_announced_or_stored(
+    db: Database,
+) -> None:
+    """A caller's stray space reaches the name unless something trims it.
+
+    ``account_metadata`` arrives as a raw dict — the MCP parameter hands it to
+    the service verbatim, with no CLI-side strip in between — and its two
+    fields failed differently. ``display_name`` was padded on both sides at
+    once, so nothing *disagreed* and the account was simply named with the
+    padding. ``account_subtype`` was the worse half: the mint report's mirror
+    trims it (``account_display_name._stated``) while ``dim_accounts``
+    COALESCEs the stored column with no ``TRIM``, so the two readers split.
+    Normalizing once at the settings boundary closes both.
+    """
+    result = ImportService(db).import_file(
+        _STANDARD_CSV,
+        account_name="WF Checking",
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+        account_bindings={"wf-checking": "new"},
+        account_metadata={
+            "wf-checking": {
+                "display_name": "  Joint Checking  ",
+                "account_subtype": "  savings  ",
+            }
+        },
+    )
+
+    assert [a.display_name for a in result.accounts_created] == ["Joint Checking"]
+    minted = _minted_account_id(db, "wf-checking")
+    settings = db.execute(
+        "SELECT display_name, account_subtype FROM app.account_settings"
+        " WHERE account_id=?",
+        [minted],
+    ).fetchone()
+    assert settings == ("Joint Checking", "savings")
+
+
 def test_account_metadata_rejects_unknown_field_before_any_write(
     db: Database,
 ) -> None:

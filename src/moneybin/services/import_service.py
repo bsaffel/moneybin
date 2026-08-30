@@ -271,11 +271,13 @@ def _created_account(
     if resolved.outcome != "minted_new":
         return None
     settings = settings or {}
-    if display_name := settings.get("display_name"):
+    if display_name := (settings.get("display_name") or "").strip():
         # The caller's own chosen name, which `_capture_new_account_metadata`
         # also writes to `app.account_settings` — masking the announcement of a
         # name they typed and will see everywhere else would only make the two
-        # disagree.
+        # disagree. Stripped for that same reason: AccountSettings normalizes
+        # before the write, so announcing the raw string would announce padding
+        # the stored name does not carry.
         return CreatedAccount(account_id=resolved.account_id, display_name=display_name)
     if src.name_facts is not None:
         return CreatedAccount(

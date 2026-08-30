@@ -267,6 +267,17 @@ def test_caller_supplied_settings_reach_the_reported_name() -> None:
         }).display_name()
         == "Chase credit card …1098"
     )
+    # Padding a caller supplies is trimmed here and, because AccountSettings
+    # now trims before the write, in app.account_settings too — the two halves
+    # of one normalization. This side alone was the divergence: the model
+    # COALESCEs that stored column with no TRIM.
+    assert (
+        facts.with_settings({
+            "account_subtype": "  credit card  ",
+            "last_four": "1098",
+        }).display_name()
+        == "Chase credit card …1098"
+    )
 
 
 def test_settings_that_state_nothing_leave_the_derived_facts_alone() -> None:
