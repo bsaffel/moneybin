@@ -774,6 +774,95 @@ def test_stg_tabular_transactions_keeps_corrected_transfer_endpoints(
 
 
 @pytest.mark.slow
+def test_stg_tabular_transactions_keeps_corrected_dedup_secondary(
+    db: Database,
+) -> None:
+    """An upgrade keeps a corrected twin referenced by an accepted dedup decision."""
+    canonical_id = "canonical-upgrade-dedup-01"
+    native_key = "native-upgrade-dedup-01"
+    source_id = "dedup-secondary"
+    source_file = "upgrade-dedup-statement.csv"
+    source_origin = "upgrade-dedup-test"
+    corrected_source_id = f"{native_key}:{source_id}"
+    legacy_source_id = f"{canonical_id}:{source_id}"
+
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, source_transaction_id, transaction_date,
+             amount, description, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES (?, ?, ?, DATE '2024-01-15', -50.00, 'Test purchase', ?, 'csv', ?,
+                'corrected-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [corrected_source_id, native_key, source_id, source_file, source_origin],
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-upgrade-dedup-native",
+        account_id=canonical_id,
+        ref_value=native_key,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            match_status, match_reason, decided_by, decided_at
+        ) VALUES ('upgrade-dedup-pair', ?, 'csv', ?, ?, 'csv', ?, ?, 0.95, '{}',
+                  'dedup', '3', 'accepted', NULL, 'user', CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [
+            legacy_source_id,
+            source_origin,
+            corrected_source_id,
+            source_origin,
+            canonical_id,
+        ],
+    )
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, source_transaction_id, transaction_date,
+             amount, description, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES (?, ?, ?, DATE '2024-01-15', -50.00, 'Test purchase', ?, 'csv', ?,
+                'legacy-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [legacy_source_id, canonical_id, source_id, source_file, source_origin],
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-upgrade-dedup-legacy",
+        account_id=canonical_id,
+        ref_value=canonical_id,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    retained = db.execute(
+        """
+        SELECT source_account_key
+        FROM prep.stg_tabular__transactions
+        WHERE source_account_key = ? AND source_transaction_id = ?
+        """,
+        [native_key, source_id],
+    ).fetchall()
+
+    assert retained == [(native_key,)]
+
+
+@pytest.mark.slow
 def test_stg_tabular_transactions_does_not_cross_suppress_a_reused_path(
     db: Database,
 ) -> None:
