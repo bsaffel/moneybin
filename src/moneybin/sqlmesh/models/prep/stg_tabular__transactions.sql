@@ -46,6 +46,13 @@ WITH accepted_native_links AS (
 ), corrected_pinned AS (
   SELECT
     t.transaction_id,
+    SUBSTRING(
+      SHA256(
+        t.source_type || '|' || t.source_origin || '|' || t.account_id || '|' || t.transaction_id
+      ),
+      1,
+      16
+    ) AS gold_transaction_id,
     link.account_id AS canonical_account_id,
     t.source_file,
     t.source_type,
@@ -78,6 +85,30 @@ WITH accepted_native_links AS (
         AND legacy_self_map.source_type = t.source_type
         AND legacy_self_map.source_origin IS NOT DISTINCT FROM t.source_origin
     )
+), curated_transaction_ids AS (
+  SELECT
+    transaction_id
+  FROM app.transaction_categories
+  UNION
+  SELECT
+    transaction_id
+  FROM app.transaction_notes
+  UNION
+  SELECT
+    transaction_id
+  FROM app.transaction_tags
+  UNION
+  SELECT
+    transaction_id
+  FROM app.transaction_splits
+  UNION
+  SELECT
+    transaction_id
+  FROM app.categorization_decisions
+  UNION
+  SELECT
+    new_transaction_id AS transaction_id
+  FROM app.transaction_id_aliases
 ), ranked AS (
   SELECT
     transaction_id,
@@ -114,8 +145,10 @@ WITH accepted_native_links AS (
      same-key row at #2 is also excluded — silently losing the transaction.
      Filtering pre-rank lets the valid row take #1. Corrected pinned rows are
      excluded only when an accepted legacy self-map proves the same canonical
-     account, file, origin, and transaction content; duplicate content is
-     paired by occurrence, so a reused path remains visible. */
+     account, file, origin, and transaction content and no app state references
+     their gold id. A corrected row already in an accepted dedup group is also
+     retained: its gold id may be anchored by another source. Duplicate content
+     is paired by occurrence, so a reused path remains visible. */
   WHERE
     deleted_from_source_at IS NULL
     AND NOT EXISTS(
@@ -135,6 +168,33 @@ WITH accepted_native_links AS (
         AND legacy.occurrence = corrected.occurrence
       WHERE
         corrected.transaction_id = t.transaction_id
+        AND NOT EXISTS(
+          SELECT
+            1
+          FROM curated_transaction_ids AS curation
+          WHERE
+            curation.transaction_id = corrected.gold_transaction_id
+        )
+        AND NOT EXISTS(
+          SELECT
+            1
+          FROM app.match_decisions AS match
+          WHERE
+            match.match_status = 'accepted'
+            AND match.reversed_at IS NULL
+            AND match.match_type = 'dedup'
+            AND match.account_id = corrected.canonical_account_id
+            AND (
+              (
+                match.source_type_a = corrected.source_type
+                AND match.source_transaction_id_a = corrected.transaction_id
+              )
+              OR (
+                match.source_type_b = corrected.source_type
+                AND match.source_transaction_id_b = corrected.transaction_id
+              )
+            )
+        )
         AND corrected.source_file IS NOT DISTINCT FROM t.source_file
         AND corrected.source_type = t.source_type
         AND corrected.source_origin IS NOT DISTINCT FROM t.source_origin

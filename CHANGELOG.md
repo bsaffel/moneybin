@@ -1206,7 +1206,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `gsheet auth` no longer reports an existing connection as authorized when
   either variable is missing: it re-authorizes and names the gap instead of
   succeeding now and failing at the next refresh. (#456)
-- **Re-importing a file pinned before #438 no longer double-counts its transactions (#442, PR #459).** Staging keeps the legacy transaction IDs that existing notes and categorizations reference, while safely suppressing only an exact corrected re-import twin; raw import history is never deleted.
+- **Re-importing a file pinned before #438 no longer double-counts its transactions (#442, PR #459).** Staging keeps the legacy transaction IDs and safely suppresses only an exact, uncurated corrected re-import twin; raw import history is never deleted. A corrected twin that already has transaction curation remains visible, preventing its app state from becoming orphaned.
 - **`sql_query` no longer refuses a read-only `SELECT` for a write keyword
   that isn't actually a write.** `SELECT 'export' AS probe` was rejected as
   though it were a real `EXPORT` statement — one character away,

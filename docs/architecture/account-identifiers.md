@@ -143,14 +143,19 @@ Before the source-native key rule above, `--account-id` overwrote
 never collide with their corrected replacements: re-importing that same file
 inserts a second copy beside them and the statement is counted twice.
 
-Re-import the file normally. Staging retains the pre-fix raw row as the
-authoritative copy and suppresses its corrected twin from the derived ledger.
-No raw rows are deleted and the legacy `transaction_id` remains the gold id, so
-notes, tags, splits, and categorizations remain attached. Suppression is scoped
-to the same canonical account, source file, source origin, and transaction
-content (including the raw date string and source transaction ID when supplied),
-pairing repeated identical rows one-for-one. A path reused for another account therefore retains
-both accounts' transactions. If the legacy self-map
+Re-import using the same recorded source-file provenance. Staging retains the
+pre-fix raw row as the authoritative copy and suppresses its uncurated corrected
+twin from the derived ledger. No raw rows are deleted. If app state already
+references the corrected twin, both rows remain visible rather than orphaning
+the note, tag, split, categorization, review decision, or alias target.
+Suppression is scoped to the same canonical account, source file, source origin,
+and transaction content (including the raw date string and source transaction ID
+when supplied), pairing repeated identical rows one-for-one. A path reused for
+another account therefore retains both accounts' transactions. The CLI preserves
+the path spelling it receives, so re-importing through a different relative path
+or symlink is not yet recognized as the same document; durable document identity
+is tracked by the [Document–Account Binding](../specs/document-account-binding.md)
+spec. If the legacy self-map
 was later reversed by an account merge, it cannot prove which later native row
 is its replacement, so staging retains both rather than risk losing a reused
 path's transaction.

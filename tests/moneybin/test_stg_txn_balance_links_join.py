@@ -508,6 +508,147 @@ def test_stg_tabular_transactions_preserves_legacy_transaction_curation(
 
 
 @pytest.mark.slow
+def test_stg_tabular_transactions_keeps_curated_corrected_duplicates(
+    db: Database,
+) -> None:
+    """An upgrade never hides a corrected duplicate with existing app curation."""
+    canonical_id = "canonical-upgrade-curation-01"
+    native_key = "native-upgrade-curation-01"
+    source_file = "upgrade-curation-statement.csv"
+    source_origin = "upgrade-curation-test"
+    source_ids = ["category", "note", "tag", "split", "decision"]
+
+    for source_id in source_ids:
+        db.execute(
+            """
+            INSERT INTO raw.tabular_transactions
+                (transaction_id, account_id, source_transaction_id, transaction_date,
+                 amount, description, source_file, source_type, source_origin,
+                 import_id, extracted_at, loaded_at)
+            VALUES (?, ?, ?, DATE '2024-01-15', -50.00, 'Test purchase', ?,
+                    'csv', ?, 'corrected-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,  # noqa: S608  # test fixture
+            [
+                f"{native_key}:{source_id}",
+                native_key,
+                source_id,
+                source_file,
+                source_origin,
+            ],
+        )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-upgrade-curation-native",
+        account_id=canonical_id,
+        ref_value=native_key,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    corrected_ids = dict(
+        db.execute(
+            """
+            SELECT source_transaction_id, transaction_id
+            FROM prep.int_transactions__matched
+            WHERE account_id = ?
+            """,
+            [canonical_id],
+        ).fetchall()
+    )
+    corrected_source_ids = {
+        source_id: f"{native_key}:{source_id}" for source_id in source_ids
+    }
+    assert set(corrected_ids) == set(corrected_source_ids.values())
+    db.execute(
+        """
+        INSERT INTO app.transaction_categories (transaction_id, category)
+        VALUES (?, 'Food')
+        """,  # noqa: S608  # test fixture
+        [corrected_ids[corrected_source_ids["category"]]],
+    )
+    db.execute(
+        """
+        INSERT INTO app.transaction_notes (note_id, transaction_id, text, author)
+        VALUES ('note-upgrade-curation', ?, 'Keep this note', 'test')
+        """,  # noqa: S608  # test fixture
+        [corrected_ids[corrected_source_ids["note"]]],
+    )
+    db.execute(
+        """
+        INSERT INTO app.transaction_tags (transaction_id, tag, applied_by)
+        VALUES (?, 'keep', 'test')
+        """,  # noqa: S608  # test fixture
+        [corrected_ids[corrected_source_ids["tag"]]],
+    )
+    db.execute(
+        """
+        INSERT INTO app.transaction_splits
+            (split_id, transaction_id, amount, created_by)
+        VALUES ('split-upgrade-curation', ?, -50.00, 'test')
+        """,  # noqa: S608  # test fixture
+        [corrected_ids[corrected_source_ids["split"]]],
+    )
+    db.execute(
+        """
+        INSERT INTO app.categorization_decisions
+            (decision_id, transaction_id, attempt_number, status, category_revision)
+        VALUES ('decision-upgrade-curation', ?, 1, 'pending', 0)
+        """,  # noqa: S608  # test fixture
+        [corrected_ids[corrected_source_ids["decision"]]],
+    )
+
+    for source_id in source_ids:
+        db.execute(
+            """
+            INSERT INTO raw.tabular_transactions
+                (transaction_id, account_id, source_transaction_id, transaction_date,
+                 amount, description, source_file, source_type, source_origin,
+                 import_id, extracted_at, loaded_at)
+            VALUES (?, ?, ?, DATE '2024-01-15', -50.00, 'Test purchase', ?,
+                    'csv', ?, 'legacy-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,  # noqa: S608  # test fixture
+            [
+                f"{canonical_id}:{source_id}",
+                canonical_id,
+                source_id,
+                source_file,
+                source_origin,
+            ],
+        )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-upgrade-curation-legacy",
+        account_id=canonical_id,
+        ref_value=canonical_id,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    retained_ids = {
+        row[0]
+        for row in db.execute(
+            """
+            SELECT transaction_id
+            FROM core.fct_transactions
+            WHERE transaction_id IN (?, ?, ?, ?, ?)
+            """,
+            [
+                corrected_ids[corrected_source_ids[source_id]]
+                for source_id in source_ids
+            ],
+        ).fetchall()
+    }
+
+    assert retained_ids == set(corrected_ids.values())
+
+
+@pytest.mark.slow
 def test_stg_tabular_transactions_does_not_cross_suppress_a_reused_path(
     db: Database,
 ) -> None:
