@@ -1,5 +1,6 @@
 """Tests for schema initialization and inline-comment application."""
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -46,6 +47,24 @@ def test_comment_plan_cache_reparses_when_schema_file_changes(tmp_path: Path) ->
         "CREATE TABLE app.second_table (\n  id TEXT -- Second identifier.\n);\n"
     )
     sql_path.touch()
+    second = schema._comment_plan(sql_path)  # pyright: ignore[reportPrivateUsage]  # cache invalidation under test
+
+    assert first != second
+    assert second[0].table_name == "second_table"
+
+
+def test_comment_plan_cache_reparses_when_content_changes_with_same_mtime(
+    tmp_path: Path,
+) -> None:
+    """Metadata-preserving schema replacement must not retain stale comments."""
+    sql_path = tmp_path / "comments.sql"
+    sql_path.write_text("CREATE TABLE app.first_table (\n  id TEXT\n);\n")
+    schema._COMMENT_PLAN_CACHE.clear()  # pyright: ignore[reportPrivateUsage]  # cache internals under test
+    first = schema._comment_plan(sql_path)  # pyright: ignore[reportPrivateUsage]  # cache invalidation under test
+    stat = sql_path.stat()
+    sql_path.write_text("CREATE TABLE app.second_table (\n  id TEXT\n);\n")
+    os.utime(sql_path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
     second = schema._comment_plan(sql_path)  # pyright: ignore[reportPrivateUsage]  # cache invalidation under test
 
     assert first != second

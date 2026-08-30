@@ -23,6 +23,7 @@ the ``ColumnDef`` expression and applied as ``COMMENT ON COLUMN``.
 
 import logging
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 import duckdb
@@ -64,7 +65,7 @@ class _CommentPlan:
 
 # Schema DDL is static for a given installed build, while init_schemas runs on
 # each write open. Keep its parse result until the source file's mtime changes.
-_COMMENT_PLAN_CACHE: dict[tuple[Path, int], tuple[_CommentPlan, ...]] = {}
+_COMMENT_PLAN_CACHE: dict[tuple[Path, int, str], tuple[_CommentPlan, ...]] = {}
 
 
 # Cross-cutting (non-provider-owned) DDL files resolved against ``_SQL_DIR``.
@@ -179,14 +180,19 @@ def _derive_comment_plan(sql: str) -> tuple[_CommentPlan, ...]:
     return tuple(plans)
 
 
-def _comment_plan(sql_path: Path) -> tuple[_CommentPlan, ...]:
+def _comment_plan(sql_path: Path, sql: str | None = None) -> tuple[_CommentPlan, ...]:
     """Return a parsed comment plan, refreshing it when the DDL changes."""
-    cache_key = (sql_path, sql_path.stat().st_mtime_ns)
+    sql = sql if sql is not None else sql_path.read_text()
+    cache_key = (
+        sql_path,
+        sql_path.stat().st_mtime_ns,
+        sha256(sql.encode()).hexdigest(),
+    )
     cached = _COMMENT_PLAN_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    plan = _derive_comment_plan(sql_path.read_text())
+    plan = _derive_comment_plan(sql)
     _COMMENT_PLAN_CACHE[cache_key] = plan
     return plan
 
@@ -334,7 +340,9 @@ def init_schemas(
         sql = sql_path.read_text()
         conn.execute(sql)
         executed += 1
-        _apply_comments(conn, _comment_plan(sql_path), table_snapshot, column_snapshot)
+        _apply_comments(
+            conn, _comment_plan(sql_path, sql), table_snapshot, column_snapshot
+        )
         logger.debug(f"Executed {sql_path.name}")
 
     logger.debug(f"Executed {executed} schema files")
