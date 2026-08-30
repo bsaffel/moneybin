@@ -24,7 +24,7 @@ on:
 # Cancel superseded runs on the same ref so rapid pushes (common with agents)
 # don't pile up behind stale runs. Mirrors scenarios.yml.
 concurrency:
-  group: ci-${{ github.ref }}-${{ github.event_name }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}-${{ inputs.record_durations }}
   cancel-in-progress: true
 
 jobs:
