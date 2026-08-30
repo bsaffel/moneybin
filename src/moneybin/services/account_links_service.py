@@ -34,7 +34,6 @@ from moneybin.services.identity_confirmation import (
     AccountLedgerFacts,
     AccountMergeFacts,
 )
-from moneybin.services.import_service import mask_embedded_account_number
 from moneybin.services.ledger_overlap import probe_ledger_overlap
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
@@ -598,6 +597,14 @@ class AccountLinksService:
         from moneybin.services.account_resolver import (  # noqa: PLC0415  # circular at module level
             AccountResolver,
             refresh_account_link_pending_gauge,
+        )
+
+        # Deferred so this module does not become a second eager path onto
+        # import_service's graph. It is on the CLI cold path today only through
+        # inbox_service, and a module-level import here would keep it there
+        # even after that one is deferred. Only the refusal below needs it.
+        from moneybin.services.import_service import (  # noqa: PLC0415  # cold-start hygiene
+            mask_embedded_account_number,
         )
 
         if account_id == candidate_account_id:

@@ -50,3 +50,36 @@ def test_cli_main_import_does_not_load_heavy_deps() -> None:
         "moneybin.cli.main triggered eager import of heavy modules: "
         f"{loaded}. Defer the import inside the command function body."
     )
+
+
+def test_account_links_service_does_not_eagerly_load_import_service() -> None:
+    """``AccountLinksService`` must not be a second eager path onto that graph.
+
+    ``import_service`` sits on the CLI cold path today through
+    ``import_inbox`` → ``inbox_service``, so a module-level import here costs
+    nothing measurable *right now* — which is exactly why it would survive
+    review and then quietly defeat the deferral of that other path. Only
+    ``propose_pair``'s refusal branch needs ``mask_embedded_account_number``.
+
+    Scoped to this one module rather than to ``cli.main`` on purpose: a
+    ``cli.main`` assertion would fail for the pre-existing ``inbox_service``
+    path and so could never go green, which makes it a guard that proves
+    nothing about this module.
+    """
+    snippet = (
+        "import sys\n"
+        "import moneybin.services.account_links_service  # noqa: F401\n"
+        "print('LOADED:' + str('moneybin.services.import_service' in sys.modules))\n"
+    )
+    result = subprocess.run(  # noqa: S603 — controlled snippet, not user input
+        [sys.executable, "-c", snippet],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.strip() == "LOADED:False", (
+        "moneybin.services.account_links_service eagerly imported "
+        "moneybin.services.import_service. Defer it into the method that "
+        "needs it (see propose_pair)."
+    )
