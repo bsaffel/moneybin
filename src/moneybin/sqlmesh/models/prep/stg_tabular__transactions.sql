@@ -14,6 +14,7 @@ WITH accepted_native_links AS (
     status = 'accepted' AND ref_kind = 'source_native'
 ), legacy_pinned AS (
   SELECT
+    t.transaction_id,
     t.account_id AS canonical_account_id,
     t.source_file,
     t.source_type,
@@ -46,6 +47,7 @@ WITH accepted_native_links AS (
 ), corrected_pinned AS (
   SELECT
     t.transaction_id,
+    t.account_id AS source_account_key,
     SUBSTRING(
       SHA256(
         t.source_type || '|' || t.source_origin || '|' || t.account_id || '|' || t.transaction_id
@@ -85,6 +87,79 @@ WITH accepted_native_links AS (
         AND legacy_self_map.source_type = t.source_type
         AND legacy_self_map.source_origin IS NOT DISTINCT FROM t.source_origin
     )
+), stable_legacy_pinned AS (
+  SELECT
+    t.transaction_id,
+    t.account_id AS canonical_account_id,
+    t.source_file,
+    t.source_type,
+    t.source_origin,
+    NULLIF(TRIM(t.source_transaction_id), '') AS source_transaction_id
+  FROM raw.tabular_transactions AS t
+  JOIN app.account_links AS legacy_self_map
+    ON legacy_self_map.ref_kind = 'source_native'
+    AND legacy_self_map.account_id = t.account_id
+    AND legacy_self_map.ref_value = t.account_id
+    AND legacy_self_map.source_type = t.source_type
+    AND legacy_self_map.source_origin IS NOT DISTINCT FROM t.source_origin
+    AND legacy_self_map.status = 'accepted'
+  WHERE
+    t.deleted_from_source_at IS NULL
+    AND NOT NULLIF(TRIM(t.source_transaction_id), '') IS NULL
+), stable_corrected_pinned AS (
+  SELECT
+    t.transaction_id,
+    t.account_id AS source_account_key,
+    SUBSTRING(
+      SHA256(
+        t.source_type || '|' || t.source_origin || '|' || t.account_id || '|' || t.transaction_id
+      ),
+      1,
+      16
+    ) AS gold_transaction_id,
+    link.account_id AS canonical_account_id,
+    t.source_file,
+    t.source_type,
+    t.source_origin,
+    NULLIF(TRIM(t.source_transaction_id), '') AS source_transaction_id
+  FROM raw.tabular_transactions AS t
+  JOIN accepted_native_links AS link
+    ON link.source_type = t.source_type
+    AND link.source_origin = t.source_origin
+    AND link.ref_value = t.account_id
+  WHERE
+    t.deleted_from_source_at IS NULL
+    AND t.account_id <> link.account_id
+    AND NOT NULLIF(TRIM(t.source_transaction_id), '') IS NULL
+    AND NOT EXISTS(
+      SELECT
+        1
+      FROM app.account_links AS legacy_self_map
+      WHERE
+        legacy_self_map.ref_kind = 'source_native'
+        AND legacy_self_map.account_id = t.account_id
+        AND legacy_self_map.ref_value = t.account_id
+        AND legacy_self_map.source_type = t.source_type
+        AND legacy_self_map.source_origin IS NOT DISTINCT FROM t.source_origin
+    )
+), stable_source_id_pairs AS MATERIALIZED (
+  SELECT
+    legacy.transaction_id AS legacy_transaction_id,
+    legacy.canonical_account_id AS legacy_source_account_key,
+    corrected.transaction_id AS corrected_transaction_id,
+    corrected.source_account_key AS corrected_source_account_key,
+    corrected.source_file,
+    corrected.source_type,
+    corrected.source_origin,
+    corrected.canonical_account_id,
+    corrected.gold_transaction_id
+  FROM stable_legacy_pinned AS legacy
+  JOIN stable_corrected_pinned AS corrected
+    ON legacy.canonical_account_id = corrected.canonical_account_id
+    AND legacy.source_file IS NOT DISTINCT FROM corrected.source_file
+    AND legacy.source_type = corrected.source_type
+    AND legacy.source_origin IS NOT DISTINCT FROM corrected.source_origin
+    AND legacy.source_transaction_id = corrected.source_transaction_id
 ), curated_transaction_ids AS (
   SELECT
     transaction_id
@@ -113,6 +188,48 @@ WITH accepted_native_links AS (
   SELECT
     UNNEST(sample_txn_ids) AS transaction_id
   FROM app.proposed_rules
+), protected_corrected_match_endpoints AS (
+  SELECT
+    match.account_id,
+    match.source_type_a AS source_type,
+    match.source_transaction_id_a AS transaction_id
+  FROM app.match_decisions AS match
+  WHERE
+    match.match_status IN ('pending', 'accepted', 'rejected')
+    AND match.reversed_at IS NULL
+    AND match.match_type IN ('dedup', 'transfer')
+  UNION
+  SELECT
+    CASE
+      WHEN match.match_type = 'dedup'
+      THEN match.account_id
+      ELSE match.account_id_b
+    END AS account_id,
+    match.source_type_b AS source_type,
+    match.source_transaction_id_b AS transaction_id
+  FROM app.match_decisions AS match
+  WHERE
+    match.match_status IN ('pending', 'accepted', 'rejected')
+    AND match.reversed_at IS NULL
+    AND match.match_type IN ('dedup', 'transfer')
+), replaceable_stable_source_id_pairs AS MATERIALIZED (
+  SELECT
+    pair.legacy_transaction_id,
+    pair.legacy_source_account_key,
+    pair.corrected_transaction_id,
+    pair.corrected_source_account_key,
+    pair.source_file,
+    pair.source_type,
+    pair.source_origin
+  FROM stable_source_id_pairs AS pair
+  LEFT JOIN curated_transaction_ids AS curation
+    ON curation.transaction_id = pair.gold_transaction_id
+  LEFT JOIN protected_corrected_match_endpoints AS endpoint
+    ON endpoint.account_id = pair.canonical_account_id
+    AND endpoint.source_type = pair.source_type
+    AND endpoint.transaction_id = pair.corrected_transaction_id
+  WHERE
+    curation.transaction_id IS NULL AND endpoint.transaction_id IS NULL
 ), ranked AS (
   SELECT
     transaction_id,
@@ -147,14 +264,12 @@ WITH accepted_native_links AS (
   /* Exclude soft-deleted rows BEFORE ranking: a soft-deleted row with a newer
      loaded_at would rank #1 and then be dropped by the outer filter, while a valid
      same-key row at #2 is also excluded — silently losing the transaction.
-     Filtering pre-rank lets the valid row take #1. Corrected pinned rows are
-     excluded only when an accepted legacy self-map proves the same canonical
-     account, file, and origin with either a stable source ID or identical
-     content and no app state references their gold id. A corrected row already
-     in an accepted dedup group is also retained: its gold id may be anchored by
-     another source. Unreversed terminal transfer endpoints are also retained
-     because bridge_transfers requires both rows and rejected decisions prevent
-     re-proposal. ID-less duplicate content is paired by occurrence, so a reused
+     Filtering pre-rank lets the valid row take #1. A stable source ID retains
+     the corrected values under the legacy source-account key, preserving the
+     legacy gold id. ID-less duplicate content instead keeps the legacy row and
+     suppresses its corrected twin only when no app state references that twin.
+     Both pairing paths retain the corrected row when curation or terminal match
+     state references it. Duplicate content is paired by occurrence, so a reused
      path remains visible. */
   WHERE
     deleted_from_source_at IS NULL
@@ -167,21 +282,13 @@ WITH accepted_native_links AS (
         AND legacy.source_file IS NOT DISTINCT FROM corrected.source_file
         AND legacy.source_type = corrected.source_type
         AND legacy.source_origin IS NOT DISTINCT FROM corrected.source_origin
-        AND (
-          (
-            NOT legacy.source_transaction_id IS NULL
-            AND legacy.source_transaction_id = corrected.source_transaction_id
-          )
-          OR (
-            legacy.source_transaction_id IS NULL
-            AND corrected.source_transaction_id IS NULL
-            AND legacy.transaction_date = corrected.transaction_date
-            AND legacy.amount = corrected.amount
-            AND legacy.description IS NOT DISTINCT FROM corrected.description
-            AND legacy.original_date_str IS NOT DISTINCT FROM corrected.original_date_str
-            AND legacy.occurrence = corrected.occurrence
-          )
-        )
+        AND NULLIF(TRIM(legacy.source_transaction_id), '') IS NULL
+        AND NULLIF(TRIM(corrected.source_transaction_id), '') IS NULL
+        AND legacy.transaction_date = corrected.transaction_date
+        AND legacy.amount = corrected.amount
+        AND legacy.description IS NOT DISTINCT FROM corrected.description
+        AND legacy.original_date_str IS NOT DISTINCT FROM corrected.original_date_str
+        AND legacy.occurrence = corrected.occurrence
       WHERE
         corrected.transaction_id = t.transaction_id
         AND NOT EXISTS(
@@ -196,7 +303,7 @@ WITH accepted_native_links AS (
             1
           FROM app.match_decisions AS match
           WHERE
-            match.match_status IN ('accepted', 'rejected')
+            match.match_status IN ('pending', 'accepted', 'rejected')
             AND match.reversed_at IS NULL
             AND match.match_type IN ('dedup', 'transfer')
             AND (
@@ -237,11 +344,22 @@ WITH accepted_native_links AS (
         AND corrected.original_date_str IS NOT DISTINCT FROM t.original_date_str
         AND corrected.source_transaction_id IS NOT DISTINCT FROM t.source_transaction_id
     )
+    AND NOT EXISTS(
+      SELECT
+        1
+      FROM replaceable_stable_source_id_pairs AS pair
+      WHERE
+        pair.legacy_transaction_id = t.transaction_id
+        AND pair.legacy_source_account_key = t.account_id
+        AND pair.source_file IS NOT DISTINCT FROM t.source_file
+        AND pair.source_type = t.source_type
+        AND pair.source_origin IS NOT DISTINCT FROM t.source_origin
+    )
 )
 SELECT
   COALESCE(links.account_id, ranked.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
-  ranked.account_id AS source_account_key,
-  ranked.transaction_id,
+  COALESCE(identity.legacy_source_account_key, ranked.account_id) AS source_account_key,
+  COALESCE(identity.legacy_transaction_id, ranked.transaction_id) AS transaction_id,
   ranked.transaction_date,
   ranked.post_date,
   ranked.amount,
@@ -267,6 +385,12 @@ SELECT
   ranked.extracted_at,
   ranked.loaded_at
 FROM ranked
+LEFT JOIN replaceable_stable_source_id_pairs AS identity
+  ON identity.corrected_transaction_id = ranked.transaction_id
+  AND identity.corrected_source_account_key = ranked.account_id
+  AND identity.source_file IS NOT DISTINCT FROM ranked.source_file
+  AND identity.source_type = ranked.source_type
+  AND identity.source_origin IS NOT DISTINCT FROM ranked.source_origin
 LEFT JOIN app.account_links AS links
   ON links.status = 'accepted'
   AND links.ref_kind = 'source_native'

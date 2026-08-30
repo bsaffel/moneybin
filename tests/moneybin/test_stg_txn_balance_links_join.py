@@ -12,6 +12,9 @@ these tests). Then materialize via sqlmesh and assert the projected columns.
 
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
+
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
@@ -295,13 +298,13 @@ def test_stg_tabular_transactions_keeps_distinct_source_transaction_ids(
 
 
 @pytest.mark.slow
-def test_stg_tabular_transactions_retires_corrected_stable_source_id(
+def test_stg_tabular_transactions_projects_corrected_stable_source_id_values(
     db: Database,
 ) -> None:
-    """A corrected stable source ID does not double-count when content changes.
+    """A corrected stable source ID keeps the legacy identity and new values.
 
-    The production change this catches is requiring content equality even when
-    both rows carry the same upstream transaction identifier.
+    The production change this catches is projecting the legacy row's stale
+    values after the corrected source ID has been retired.
     """
     canonical_id = "canonical-stable-source-id-01"
     native_key = "native-stable-source-id-01"
@@ -353,14 +356,98 @@ def test_stg_tabular_transactions_retires_corrected_stable_source_id(
 
     rows = db.execute(
         """
-        SELECT source_account_key, source_transaction_id
+        SELECT
+            source_account_key,
+            transaction_id,
+            source_transaction_id,
+            transaction_date,
+            amount,
+            description
         FROM prep.stg_tabular__transactions
         WHERE source_file = ?
         """,
         [source_file],
     ).fetchall()
 
-    assert rows == [(canonical_id, "source-001")]
+    assert rows == [
+        (
+            canonical_id,
+            "canonical-stable-source-id-01:source-001",
+            "source-001",
+            date(2024, 1, 16),
+            Decimal("-55.00"),
+            "Corrected purchase",
+        )
+    ]
+
+
+@pytest.mark.slow
+def test_stg_tabular_transactions_does_not_pair_blank_source_ids(
+    db: Database,
+) -> None:
+    """Blank source IDs use content identity instead of a stable-ID pairing."""
+    canonical_id = "canonical-blank-source-id-01"
+    native_key = "native-blank-source-id-01"
+    source_file = "blank-source-id-statement.csv"
+    source_origin = "blank-source-id-test"
+
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, source_transaction_id, transaction_date,
+             amount, description, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES
+            ('canonical-blank-source-id-01:legacy-001', ?, ' ',
+             DATE '2024-01-15', -50.00, 'Legacy purchase', ?, 'csv', ?,
+             'legacy-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('native-blank-source-id-01:corrected-001', ?, ' ',
+             DATE '2024-01-16', -55.00, 'Corrected purchase', ?, 'csv', ?,
+             'corrected-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [
+            canonical_id,
+            source_file,
+            source_origin,
+            native_key,
+            source_file,
+            source_origin,
+        ],
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-blank-source-id-legacy",
+        account_id=canonical_id,
+        ref_value=canonical_id,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-blank-source-id-native",
+        account_id=canonical_id,
+        ref_value=native_key,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        """
+        SELECT source_account_key, transaction_id
+        FROM prep.stg_tabular__transactions
+        WHERE source_file = ?
+        ORDER BY transaction_id
+        """,
+        [source_file],
+    ).fetchall()
+
+    assert rows == [
+        (canonical_id, "canonical-blank-source-id-01:legacy-001"),
+        (native_key, "native-blank-source-id-01:corrected-001"),
+    ]
 
 
 @pytest.mark.slow
@@ -738,7 +825,7 @@ def test_stg_tabular_transactions_keeps_curated_corrected_duplicates(
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("match_status", ["accepted", "rejected"])
+@pytest.mark.parametrize("match_status", ["pending", "accepted", "rejected"])
 def test_stg_tabular_transactions_keeps_corrected_transfer_endpoints(
     db: Database,
     match_status: str,
@@ -884,7 +971,7 @@ def test_stg_tabular_transactions_keeps_corrected_transfer_endpoints(
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("match_status", ["accepted", "rejected"])
+@pytest.mark.parametrize("match_status", ["pending", "accepted", "rejected"])
 def test_stg_tabular_transactions_keeps_corrected_dedup_secondary(
     db: Database,
     match_status: str,
