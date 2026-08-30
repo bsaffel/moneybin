@@ -131,9 +131,19 @@ def usable_source_label(label: str | None) -> str | None:
     show without making it a name: ``****1098`` identifies the account strictly
     worse than ``Test Bank …1098`` does. Requiring one letter is what keeps the
     top rung for labels a person wrote.
+
+    ``UNNAMED_ACCOUNT_LABEL`` holds letters and is still not a name: it is this
+    ladder's own terminal arm, the one string that says nothing could name the
+    account. It reaches a source label by an ordinary route, because
+    ``reports.*`` publish it as ``account_name`` and a MoneyBin export can be
+    re-imported. Promoting it would hand ``is_a_name`` a label it must discard,
+    leaving the account unresolvable by what it displays — strictly worse than
+    the institution-derived name the fallthrough gives it.
     """
     stated = _stated(label)
     if stated is None or not _has_letter(stated):
+        return None
+    if stated == UNNAMED_ACCOUNT_LABEL:
         return None
     return stated
 

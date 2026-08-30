@@ -16,7 +16,9 @@ from moneybin.services.account_display_name import (
     account_category,
     derive_display_name,
     derived_last_four,
+    usable_source_label,
 )
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 
 
 @pytest.mark.parametrize(
@@ -300,4 +302,29 @@ def test_settings_that_state_nothing_leave_the_derived_facts_alone() -> None:
     assert (
         facts.with_settings({"last_four": "  ", "account_subtype": ""}).display_name()
         == "Chase depository …4242"
+    )
+
+
+def test_the_unnamed_sentinel_is_not_a_usable_source_label() -> None:
+    """The mirror rejects the sentinel for the reason the model does.
+
+    ``usable_source_label`` asked only whether a label holds a letter, and the
+    sentinel holds several. It is the ladder's own terminal arm, so a label
+    equal to it says the source could not name the account either -- and
+    ``is_a_name`` will discard it downstream, leaving the account unresolvable
+    by the name it displays. Falling through to the institution-derived name is
+    the better answer, and it is what the SQL arm now does too.
+    """
+    assert usable_source_label(UNNAMED_ACCOUNT_LABEL) is None
+    assert usable_source_label(f"  {UNNAMED_ACCOUNT_LABEL}  ") is None
+    # A real name that merely resembles it is still the user's name.
+    assert usable_source_label("Unnamed account 2") == "Unnamed account 2"
+    assert (
+        derive_display_name(
+            source_label=UNNAMED_ACCOUNT_LABEL,
+            institution_name="Test Bank",
+            category="checking",
+            last_four="1098",
+        )
+        == "Test Bank checking …1098"
     )

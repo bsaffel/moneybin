@@ -288,6 +288,7 @@ SELECT
     CASE
       WHEN REGEXP_MATCHES(w.account_label, '\p{L}')
       AND NOT REGEXP_MATCHES(w.account_label, '[0-9]{4}')
+      AND w.account_label <> 'Unnamed account'
       THEN w.account_label || ' …' || COALESCE(s.last_four, w.last_four_derived)
     END /* The name a person wrote — a sheet's Account column, --account-name, or
        Plaid's per-account name — outranks every label assembled below it. It is
@@ -313,8 +314,19 @@ SELECT
        name, and "****1098" identifies the account strictly worse than
        "Test Bank …1098" does. Mirrored by
        services/account_display_name.py::usable_source_label, which the mint
-       report derives through before any of this has run. */,
-    CASE WHEN REGEXP_MATCHES(w.account_label, '\p{L}') THEN w.account_label END,
+       report derives through before any of this has run.
+       'Unnamed account' is excluded from both label arms because it is this
+       ladder's own terminal arm — the one string that says nothing could name
+       the account — and it reaches a source label by an ordinary route, since
+       reports.* publish it as account_name and an export can be re-imported.
+       It holds letters, so the test above cannot tell it apart. Promoting it
+       would hand is_a_name a label it must discard, leaving the account
+       unresolvable by the name it displays while the institution-derived
+       fallthrough below would have named it. */,
+    CASE
+      WHEN REGEXP_MATCHES(w.account_label, '\p{L}') AND w.account_label <> 'Unnamed account'
+      THEN w.account_label
+    END,
     w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type) || ' …' || COALESCE(s.last_four, w.last_four_derived),
     w.institution_name || ' …' || COALESCE(s.last_four, w.last_four_derived),
     w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type),
@@ -327,7 +339,7 @@ SELECT
        IS the institution's own account number, and the dim cannot tell that
        case apart (see grain_key above). Naming no account at all beats naming
        one with a number, and this column feeds reports.* as account_name. */
-  ) AS display_name, /* Resolved display label: user override → the source's own account label when it holds a letter → institution+subtype-or-type+last4 → institution+last4 → institution+subtype-or-type → institution → subtype-or-type+last4 → subtype-or-type → last4 alone → the literal 'Unnamed account' terminal, so it is never NULL and never an id. The subtype is preferred over the type because 'checking' reads to a human where the canonical 'depository' does not. A last four outranks the category it sits beside at every level: 'checking' is shared by every checking account, while the last four is what tells two of them apart, and it is already published in its own column and printed as confirm evidence. */
+  ) AS display_name, /* Resolved display label: user override → the source's own account label when it holds a letter and is not the 'Unnamed account' sentinel → institution+subtype-or-type+last4 → institution+last4 → institution+subtype-or-type → institution → subtype-or-type+last4 → subtype-or-type → last4 alone → the literal 'Unnamed account' terminal, so it is never NULL and never an id. The subtype is preferred over the type because 'checking' reads to a human where the canonical 'depository' does not. A last four outranks the category it sits beside at every level: 'checking' is shared by every checking account, while the last four is what tells two of them apart, and it is already published in its own column and printed as confirm evidence. */
   COALESCE(s.official_name, w.official_name) AS official_name, /* Institution's formal account name: user override (app.account_settings) else Plaid official_name */
   COALESCE(s.last_four, w.last_four_derived) AS last_four, /* Last 4 of account number: user-set app.account_settings.last_four, else derived per source (OFX source_account_key digits, Plaid mask, tabular account_number/masked). Never the full number. */
   COALESCE(s.account_subtype, w.account_subtype) AS account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...): user override else Plaid subtype */

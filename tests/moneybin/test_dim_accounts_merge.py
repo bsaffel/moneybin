@@ -587,3 +587,77 @@ def test_a_label_alone_names_an_account_with_no_number(db: Database) -> None:
     ).fetchone()
     assert row is not None, "account missing from core.dim_accounts"
     assert row[0] == "Vacation Fund"
+
+
+def test_a_non_latin_label_names_the_account_through_real_duckdb(
+    db: Database,
+) -> None:
+    r"""The letter test is Unicode-aware in the model, not only in the mirror.
+
+    ``\p{L}`` replaced ``[A-Za-z]`` here after a review round found the ASCII
+    class silently discarding every non-Latin label — the account fell to its
+    institution-derived name and the label a person wrote was dropped. The
+    Python mirror pins that with non-Latin fixtures; this module's own contract
+    is that the two ladders never drift, and until now nothing ran the branch
+    against real DuckDB, whose regex dialect is the reason the class had to
+    change in the first place.
+
+    Discriminating on purpose: with ``[A-Za-z]`` restored, both label arms miss
+    and this account renders "Test Bank savings …1111".
+    """
+    _insert_tabular_account(
+        db,
+        native_key="tab-label-non-latin",
+        account_name="Row With A Non-Latin Label",
+        account_label="储蓄账户",
+        institution_name="Test Bank",
+        account_type="SAVINGS",
+        account_number="4001111",
+        extracted_at="2024-03-01 00:00:00",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        ["tab-label-non-latin"],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "储蓄账户 …1111"
+
+
+def test_the_unnamed_sentinel_is_never_promoted_as_a_source_label(
+    db: Database,
+) -> None:
+    """The one string that means "no name" must not be taken for one.
+
+    ``UNNAMED_ACCOUNT_LABEL`` is this ladder's own terminal arm, and
+    ``is_a_name`` rejects it precisely because it compares equal to itself
+    across unrelated accounts. It reaches ``account_label`` by an ordinary
+    route: ``reports.*`` publish it as ``account_name``, so re-importing a
+    MoneyBin export puts the literal in the Account column. Promoting it would
+    hand ``resolve_strict`` and the merge matcher a name they must then discard,
+    leaving the account unresolvable by what it displays — strictly worse than
+    the institution-derived name it would otherwise have carried.
+    """
+    _insert_tabular_account(
+        db,
+        native_key="tab-label-sentinel",
+        account_name="Row Whose Label Says Nothing Names It",
+        account_label=UNNAMED_ACCOUNT_LABEL,
+        institution_name="Test Bank",
+        account_type="SAVINGS",
+        account_number="4001111",
+        extracted_at="2024-03-01 00:00:00",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        ["tab-label-sentinel"],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "Test Bank savings …1111"
