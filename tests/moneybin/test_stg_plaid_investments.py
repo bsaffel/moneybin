@@ -239,22 +239,30 @@ def _link_account(
     )
 
 
+def _module_database(
+    tmp_path_factory: pytest.TempPathFactory,
+    request: pytest.FixtureRequest,
+    name: str,
+) -> Database:
+    secret_store = MagicMock()
+    secret_store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    db = Database(
+        tmp_path_factory.mktemp(name) / "test.duckdb",
+        secret_store=secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
+    request.addfinalizer(db.close)
+    return db
+
+
 @pytest.fixture(scope="module")
 def plaid_investment_cases(
     tmp_path_factory: pytest.TempPathFactory,
     request: pytest.FixtureRequest,
 ) -> Generator[Database, None, None]:
     """One real encrypted-DB plan over this module's namespaced fixture cases."""
-    secret_store = MagicMock()
-    secret_store.get_key.return_value = "test-encryption-key-for-unit-tests"
-    db_path = tmp_path_factory.mktemp("plaid_investment_cases") / "test.duckdb"
-    database = Database(
-        db_path,
-        secret_store=secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    request.addfinalizer(database.close)
+    database = _module_database(tmp_path_factory, request, "plaid_investment_cases")
     _raw_security(
         database,
         security_id="mb21_security_normalized",
@@ -1069,7 +1077,9 @@ def test_cash_only_legs_carry_no_ledger_quantity(
     renders "0.00000000 shares" on a dividend where the schema promised NULL.
     """
     rows = plaid_investment_cases.execute(
-        "SELECT investment_transaction_id, type, quantity FROM prep.stg_plaid__investment_transactions WHERE source_file = 'mb21_cash_quantity' ORDER BY 1"
+        "SELECT investment_transaction_id, type, quantity "
+        "FROM prep.stg_plaid__investment_transactions "
+        "WHERE source_file = 'mb21_cash_quantity' ORDER BY 1"
     ).fetchall()
     assert len(rows) == 7
     for txn_id, type_, quantity in rows:
@@ -1289,16 +1299,7 @@ def bootstrap_cases(
     request: pytest.FixtureRequest,
 ) -> Generator[Database, None, None]:
     """The spec's reconciliation cases A–H plus the no-gap and guard cases."""
-    secret_store = MagicMock()
-    secret_store.get_key.return_value = "test-encryption-key-for-unit-tests"
-    db_path = tmp_path_factory.mktemp("plaid_investment_bootstrap") / "test.duckdb"
-    db = Database(
-        db_path,
-        secret_store=secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    request.addfinalizer(db.close)
+    db = _module_database(tmp_path_factory, request, "plaid_investment_bootstrap")
     # A: pre-window buy, untouched. 100 shares @ 2021-03-11, basis 1000.
     _raw_holding(db, security_id="sec_a", quantity="100", cost_basis="1000.00")
     _raw_lot(
@@ -1607,28 +1608,42 @@ def bootstrap_cases(
         )
         _link_security(db, security_id, "cat000000007")
     _raw_holding(
-        db, security_id="mb21_canonical_bound", quantity="100", cost_basis="1000.00"
+        db,
+        account_id="mb21_canonical_account_source",
+        security_id="mb21_canonical_bound",
+        quantity="100",
+        cost_basis="1000.00",
     )
     _raw_lot(
         db,
         "mb21_canonical_bound",
         0,
+        account_id="mb21_canonical_account_source",
         original_purchase_datetime="2021-03-11 00:00:00",
         quantity="100",
         cost_basis="1000.00",
     )
     _raw_holding(
-        db, security_id="mb21_canonical_unbound", quantity="10", cost_basis="100.00"
+        db,
+        account_id="mb21_canonical_account_source",
+        security_id="mb21_canonical_unbound",
+        quantity="10",
+        cost_basis="100.00",
     )
     _raw_lot(
         db,
         "mb21_canonical_unbound",
         0,
+        account_id="mb21_canonical_account_source",
         original_purchase_datetime="2021-03-11 00:00:00",
         quantity="10",
         cost_basis="100.00",
     )
-    _link_account(db, "acc_1", "mb21_canonical_account")
+    _link_account(
+        db,
+        "mb21_canonical_account_source",
+        "mb21_canonical_account",
+    )
     _link_security(db, "mb21_canonical_bound", "cat000000008")
     _raw_investment_txn(
         db,
@@ -1973,7 +1988,8 @@ def test_same_security_at_two_institutions_does_not_fan_out(
     rows = bootstrap_cases.execute(
         "SELECT source_security_key, security_id, quantity, investment_transaction_id "
         "FROM prep.stg_plaid__opening_lots "
-        "WHERE source_security_key IN ('mb21_institution_p', 'mb21_institution_q') "
+        "WHERE source_security_key IN "
+        "('mb21_institution_p', 'mb21_institution_q') "
         "ORDER BY 1"
     ).fetchall()
     assert len(rows) == 2  # exactly one row per (account, security) — no fan-out
@@ -1992,8 +2008,18 @@ def test_bootstrap_resolves_canonical_ids(bootstrap_cases: Database) -> None:
         "ORDER BY 1"
     ).fetchall()
     assert rows == [
-        ("mb21_canonical_bound", "mb21_canonical_account", "acc_1", "cat000000008"),
-        ("mb21_canonical_unbound", "mb21_canonical_account", "acc_1", None),
+        (
+            "mb21_canonical_bound",
+            "mb21_canonical_account",
+            "mb21_canonical_account_source",
+            "cat000000008",
+        ),
+        (
+            "mb21_canonical_unbound",
+            "mb21_canonical_account",
+            "mb21_canonical_account_source",
+            None,
+        ),
     ]
 
 
@@ -2165,16 +2191,7 @@ def core_ledger(
     request: pytest.FixtureRequest,
 ) -> Generator[Database, None, None]:
     """One plan over every branch that reaches (or is kept out of) the ledger."""
-    secret_store = MagicMock()
-    secret_store.get_key.return_value = "test-encryption-key-for-unit-tests"
-    db_path = tmp_path_factory.mktemp("plaid_investment_core") / "test.duckdb"
-    db = Database(
-        db_path,
-        secret_store=secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    request.addfinalizer(db.close)
+    db = _module_database(tmp_path_factory, request, "plaid_investment_core")
     _raw_investment_txn(db, investment_transaction_id="itx_buy")
     _raw_investment_txn(
         db,
