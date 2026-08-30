@@ -1869,3 +1869,41 @@ class MatchApplier:
             src_attempted=categorized_by,
         ).inc()
         return WriteOutcome(written=False, skipped_reason="lower_priority_source")
+
+    def write_categorizations(
+        self, categorizations: list[dict[str, object]]
+    ) -> set[str]:
+        """Apply engine categorizations as one guarded, audited batch."""
+        if not categorizations:
+            return set()
+        prepared: list[dict[str, object]] = []
+        for categorization in categorizations:
+            categorized_by = str(categorization["categorized_by"])
+            if categorized_by not in SOURCE_PRIORITY:
+                raise ValueError(
+                    f"Unknown categorized_by={categorized_by!r}; "
+                    f"must be one of {sorted(SOURCE_PRIORITY)}"
+                )
+            prepared.append({
+                **categorization,
+                "category_id": resolve_category_id(
+                    self._db,
+                    str(categorization["category"]),
+                    cast("str | None", categorization["subcategory"]),
+                ),
+            })
+        written = self._tx_categories.upsert_guarded_many(prepared, actor="system")
+        for categorization in prepared:
+            transaction_id = str(categorization["transaction_id"])
+            if transaction_id in written:
+                continue
+            existing = self._db.execute(
+                f"SELECT categorized_by FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef + parameterized value
+                "WHERE transaction_id = ?",
+                [transaction_id],
+            ).fetchone()
+            CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL.labels(
+                src_existing=existing[0] if existing else "unknown",
+                src_attempted=str(categorization["categorized_by"]),
+            ).inc()
+        return written

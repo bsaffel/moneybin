@@ -81,15 +81,18 @@ def test_block_sanitizes_reader_command_to_friendly_name(tmp_path: Path) -> None
     """
     db_path = tmp_path / "status.duckdb"
     db_path.touch()
-    with patch(
-        "moneybin.mcp.tools.system.find_blocking_processes",
-        return_value=[
-            {
-                "pid": 9999,
-                "command": "python",
-                "cmdline": "/home/alice/secret/run.py --token abc123",
-            }
-        ],
+    with (
+        _holding_write_lock(db_path),
+        patch(
+            "moneybin.mcp.tools.system.find_blocking_processes",
+            return_value=[
+                {
+                    "pid": 9999,
+                    "command": "python",
+                    "cmdline": "/home/alice/secret/run.py --token abc123",
+                }
+            ],
+        ),
     ):
         block = _database_connections_block(db_path)
     assert len(block["readers"]) == 1
@@ -125,18 +128,26 @@ def test_block_omits_stale_lock_file_when_no_writer_holds(tmp_path: Path) -> Non
     assert block["writers"] == []
 
 
-def test_block_reports_readers_from_lsof(tmp_path: Path) -> None:
+def test_block_reports_readers_from_lsof_when_diagnosing_a_writer(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "status.duckdb"
     db_path.touch()
-    # No lock file -> no writers; lsof returns one reader.
-    with patch(
-        "moneybin.mcp.tools.system.find_blocking_processes",
-        return_value=[
-            {"pid": 9999, "command": "python", "cmdline": "moneybin reports spending"}
-        ],
+    with (
+        _holding_write_lock(db_path),
+        patch(
+            "moneybin.mcp.tools.system.find_blocking_processes",
+            return_value=[
+                {
+                    "pid": 9999,
+                    "command": "python",
+                    "cmdline": "moneybin reports spending",
+                }
+            ],
+        ),
     ):
         block = _database_connections_block(db_path)
-    assert block["writers"] == []
+    assert len(block["writers"]) == 1
     assert len(block["readers"]) == 1
     assert block["readers"][0]["pid"] == 9999
 
@@ -198,6 +209,17 @@ def test_block_returns_empty_when_no_lock_file_and_no_lsof_output(
     ):
         block = _database_connections_block(db_path)
     assert block == {"writers": [], "readers": []}
+
+
+def test_block_defers_lsof_when_no_writer_holds_lock(tmp_path: Path) -> None:
+    """Healthy status avoids the expensive process enumeration subprocess."""
+    db_path = tmp_path / "status.duckdb"
+    db_path.touch()
+    with patch("moneybin.mcp.tools.system.find_blocking_processes") as find_processes:
+        block = _database_connections_block(db_path)
+
+    assert block == {"writers": [], "readers": []}
+    find_processes.assert_not_called()
 
 
 def test_block_tolerates_corrupted_lock_file_while_held(tmp_path: Path) -> None:

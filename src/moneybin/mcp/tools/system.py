@@ -269,8 +269,12 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
         # back to no writer entry — the lock-file payload is best-effort
         # observability, not a correctness contract.
 
+    # Process inspection takes roughly half a second on a healthy machine.
+    # The lock probe above is sufficient to establish a healthy status; only
+    # enumerate processes when diagnosing the live writer that needs a holder.
     readers: list[dict[str, Any]] = []
-    for proc in find_blocking_processes(resolved):
+    processes = find_blocking_processes(resolved) if writers else []
+    for proc in processes:
         if writer_pid is not None and proc["pid"] == writer_pid:
             continue  # Avoid double-listing the writer as a reader
         readers.append({

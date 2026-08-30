@@ -11,6 +11,7 @@ import json
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from prometheus_client import REGISTRY
 
 from moneybin.database import Database
@@ -221,6 +222,94 @@ def test_upsert_guarded_overwrites_lower_priority_existing(db: Database) -> None
         ["txn6"],
     ).fetchone()
     assert row == ("B", "rule")
+
+
+def test_upsert_guarded_many_preserves_precedence_and_row_grain_audits(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One batched engine write retains each changed row's undo image."""
+    repo = TransactionCategoriesRepo(db)
+    repo.set(
+        "protected",
+        category="Dining",
+        subcategory=None,
+        category_id=None,
+        categorized_by="user",
+        actor="cli",
+    )
+    repo.upsert_guarded(
+        "replaceable",
+        category="Old",
+        subcategory=None,
+        category_id=None,
+        categorized_by="ai",
+        merchant_id=None,
+        rule_id=None,
+        confidence=None,
+        actor="system",
+    )
+
+    database_calls = 0
+    execute = db.execute
+
+    def count_execute(*args: object, **kwargs: object) -> object:
+        nonlocal database_calls
+        database_calls += 1
+        return execute(*args, **kwargs)
+
+    monkeypatch.setattr(db, "execute", count_execute)
+    written = repo.upsert_guarded_many(
+        [
+            {
+                "transaction_id": "protected",
+                "category": "Blocked",
+                "subcategory": None,
+                "category_id": None,
+                "categorized_by": "rule",
+                "merchant_id": None,
+                "rule_id": "r1",
+                "confidence": 1.0,
+                "source_type": "internal",
+            },
+            {
+                "transaction_id": "replaceable",
+                "category": "New",
+                "subcategory": None,
+                "category_id": None,
+                "categorized_by": "rule",
+                "merchant_id": None,
+                "rule_id": "r1",
+                "confidence": 1.0,
+                "source_type": "internal",
+            },
+            {
+                "transaction_id": "new",
+                "category": "Fresh",
+                "subcategory": None,
+                "category_id": None,
+                "categorized_by": "rule",
+                "merchant_id": "m1",
+                "rule_id": "r1",
+                "confidence": 1.0,
+                "source_type": "internal",
+            },
+        ],
+        actor="system",
+    )
+
+    assert written == {"replaceable", "new"}
+    # One read of the before image, one guarded multi-row upsert, and one read
+    # of after images; the matching row-grain audit insert is one direct
+    # multi-row connection write. Per-record persistence would make nine
+    # wrapper calls for this three-row batch.
+    assert database_calls == 3
+    assert db.execute(
+        "SELECT category FROM app.transaction_categories WHERE transaction_id = 'protected'"
+    ).fetchone() == ("Dining",)
+    for transaction_id in written:
+        audit = _audit_rows_for(db, transaction_id)[-1]
+        assert audit[0] == "category.set"
+        assert json.loads(audit[5])["transaction_id"] == transaction_id
 
 
 # ---------------------------------------------------------------------------
