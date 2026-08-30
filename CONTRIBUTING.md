@@ -145,9 +145,11 @@ The full rule is in [`.claude/rules/testing.md`](.claude/rules/testing.md).
 make check test
 ```
 
-Runs Ruff format, Ruff lint, Pyright, and unit tests. CI runs the same checks
-plus integration, e2e, and scenarios. SQL changes also need
-`uv run sqlmesh -p src/moneybin/sqlmesh format`.
+Runs Ruff format, Ruff lint, Pyright, and unit tests — the floor for any change.
+Size the run past that by blast radius: a diff touching shared primitives, data
+shapes, or migrations also runs `make test-integration` and `make test-scenarios`,
+and SQL changes run `make format-sql`. The full rule is under "Pre-commit gate"
+in [`AGENTS.md`](AGENTS.md). CI runs every category regardless.
 
 ### 6. Commit and PR
 
