@@ -182,6 +182,7 @@ def render_rows(
     rows: Iterable[Sequence[object]],
     *,
     money: Mapping[str, Money] | None = None,
+    total_columns: int | None = None,
 ) -> None:
     """Render ``rows`` as a table to stdout (requirement 2).
 
@@ -189,6 +190,11 @@ def render_rows(
     Declared columns are formatted by :func:`format_money`, right-aligned
     (requirement 13), and coloured from their kind (requirement 14). Every
     other column prints its value as-is.
+
+    ``total_columns`` is the width of the full projection when ``columns`` is a
+    narrowed view of it, and produces the result-framing line beneath the table
+    (requirement 10). A caller with no column policy leaves it ``None`` and
+    frames nothing.
 
     **One line per record, always** (requirement 35). This renderer never
     deduplicates, merges, or suppresses a row. `reports networth` currently
@@ -227,6 +233,12 @@ def render_rows(
     for row in rows:
         table.add_row(*_cells(columns, row, declared))
     console.print(table)
+    if total_columns is not None and total_columns > len(columns):
+        # stdout, and reachable under `-q` (this renderer takes no such
+        # parameter): both are load-bearing. `moneybin reports spending >
+        # report.txt` has to capture the disclosure with the table it describes,
+        # or the file records a truncated result that reads as a whole one.
+        typer.echo(f"{len(columns)} of {total_columns} columns shown — --wide for all")
 
 
 def render_summary(

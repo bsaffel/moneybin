@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
@@ -13,6 +15,41 @@ from moneybin.reports._framework.contract import (
 )
 from moneybin.reports.definitions._shared import SPENDING_COMPARES, resolve_window
 from moneybin.tables import REPORTS_SPENDING_TREND
+
+#: The comparison a caller gets without asking. Named once because the runner
+#: signature and the default column set below both need it, and a drift between
+#: them would render one comparison while the view was asked for another.
+DEFAULT_COMPARE = "yoy"
+
+#: The columns each comparison is *about*. The view returns all three regardless
+#: (see the runner), so this is the one place `compare` has an observable
+#: effect — before this, passing it changed nothing a caller could see.
+_COMPARISON_COLUMNS: Mapping[str, tuple[str, ...]] = {
+    "mom": ("mom_pct",),
+    "yoy": ("yoy_pct",),
+    "trailing": ("trailing_3mo_avg",),
+}
+
+
+def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
+    """Requirement 6: the month, the category, the spend, and the comparison asked for.
+
+    Parameter-aware because `compare` selects among columns the projection
+    always carries — a static tuple would either show all three comparisons,
+    which does not fit 80 characters, or pick one and ignore the parameter.
+
+    Reads the mapping defensively rather than indexing it: the runner has
+    already rejected an unknown `compare` by the time this runs, and a
+    `KeyError` raised from the render path would take down a table whose rows
+    are already computed and correct.
+    """
+    compare = parameters.get("compare") or DEFAULT_COMPARE
+    comparison = _COMPARISON_COLUMNS.get(
+        str(compare), _COMPARISON_COLUMNS[DEFAULT_COMPARE]
+    )
+    # `currency_code` is part of the grain: without it two rows differing only
+    # in currency read as one month's category counted twice.
+    return ("year_month", "category", "currency_code", "total_spend", *comparison)
 
 
 @report(
@@ -138,6 +175,7 @@ from moneybin.tables import REPORTS_SPENDING_TREND
         "(total_spend / prev_year_spend); a percentage change reveals no "
         "absolute dollar amount",
     },
+    default_columns=_default_columns,
 )
 def spending_trend(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
@@ -145,7 +183,7 @@ def spending_trend(
     from_month: str | None = None,
     to_month: str | None = None,
     category: str | None = None,
-    compare: str = "yoy",
+    compare: str = DEFAULT_COMPARE,
 ) -> ReportQuery:
     """Monthly spending trend with MoM, YoY, and 3-month-trailing deltas.
 
@@ -160,8 +198,9 @@ def spending_trend(
         from_month: Lower bound (inclusive) as 'YYYY-MM'.
         to_month: Upper bound (inclusive) as 'YYYY-MM'.
         category: Filter to a specific category text. None returns all.
-        compare: yoy | mom | trailing — caller-side intent only; the view
-            returns all three comparison columns regardless.
+        compare: yoy | mom | trailing — selects which comparison the text
+            table shows by default. The view returns all three columns
+            regardless, so JSON, MCP, and --wide are unaffected.
 
     Examples:
         reports(report_id="core:spending", parameters={"category": "Groceries"})
@@ -169,7 +208,8 @@ def spending_trend(
     """
     # Validate so agents see the allowed values and can't pass arbitrary strings;
     # the view returns all three comparison columns regardless, so `compare` has
-    # no effect on the SQL below (caller-side intent only — the raise is reachable).
+    # no effect on the SQL below — it selects the text table's default columns
+    # (`_default_columns`), and the raise is reachable.
     if compare not in SPENDING_COMPARES:
         raise ValueError(f"Unknown compare: {compare}")
     from_month, to_month, period, hint = resolve_window(

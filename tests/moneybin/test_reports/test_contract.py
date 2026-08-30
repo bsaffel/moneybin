@@ -490,6 +490,59 @@ def test_duplicate_output_column_names_are_rejected() -> None:
         replace(_build_spec(), columns=(_COLUMNS[0], _COLUMNS[0]))
 
 
+# --- Default column sets (requirement 6) ---
+
+
+def test_a_report_declares_no_default_column_set_by_default() -> None:
+    """Undeclared is a legal state — an extension keeps working without it.
+
+    Requirement 6 makes the field optional precisely so a report defined
+    outside this repo renders exactly as it did before the field existed, and
+    opts in when its author is ready.
+    """
+    assert _build_spec().default_columns is None
+
+
+def test_a_default_column_naming_no_declared_output_is_refused() -> None:
+    """A default set can only name columns the report actually returns.
+
+    Caught at construction rather than at render time because the failure is
+    otherwise invisible until someone runs the report: the resolver drops an
+    unrecognised name, so a typo silently narrows the table by one column and
+    the framing line reports the narrower count as if it were intended.
+    """
+    with pytest.raises(ValueError, match="net_worth"):
+        replace(_build_spec(), default_columns=("value", "net_worth"))
+
+
+def test_an_empty_default_column_set_is_refused() -> None:
+    """A table with no columns is not a narrower answer — it is no answer.
+
+    ``None`` already spells *undeclared*, so an empty tuple can only be a
+    mistake, and one whose rendered form (an empty table plus `0 of 9 columns
+    shown`) reads as a report that returned nothing.
+    """
+    with pytest.raises(ValueError, match="default_columns"):
+        replace(_build_spec(), default_columns=())
+
+
+def test_a_callable_default_column_set_is_taken_on_trust() -> None:
+    """A parameter-aware default cannot be checked without its parameters.
+
+    Requirement 6 admits a callable because `cash_flow` selects its columns
+    from `by`, and no construction-time check can know what that will be. The
+    guarantee moves to requirement 9's width contract, which resolves every
+    in-tree report against every legal parameter combination.
+    """
+
+    def _always_value(parameters: Mapping[str, object]) -> tuple[str, ...]:
+        return ("value",)
+
+    spec = replace(_build_spec(), default_columns=_always_value)
+
+    assert callable(spec.default_columns)
+
+
 def test_report_spec_defensively_freezes_classes() -> None:
     classes = dict(_CLASSES)
     spec = _build_spec(classes=classes)

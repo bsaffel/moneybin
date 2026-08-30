@@ -195,6 +195,17 @@ def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
         "no-data, currency-mismatch), never the drift or balance values themselves",
     },
     on_converted=_rebucket_status,
+    # Requirement 6: which accounts disagree with their statements, by how
+    # much, and how badly. `drift_pct` earns its place beside `drift` because
+    # a $40 drift means one thing on a $200 balance and another on $40,000.
+    # The two balances it is computed from are one `--wide` away.
+    default_columns=(
+        "account_name",
+        "currency_code",
+        "drift",
+        "drift_pct",
+        "status",
+    ),
 )
 def balance_drift(
     db: Database,

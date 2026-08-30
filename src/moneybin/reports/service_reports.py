@@ -517,6 +517,17 @@ NETWORTH_REPORT = ServiceReportSpec(
     executor=_execute_networth,
     validator=_validate_networth_parameters,
     on_converted=_restate_networth_total,
+    # Requirement 6, for `reports run core:networth`. The `reports networth`
+    # command renders the headline figures as a summary block instead and picks
+    # its own columns for the account table; this is the generic table view of
+    # the same rows, so it leads with what identifies a row — the account — and
+    # leaves the per-currency totals to `--wide`.
+    default_columns=(
+        "balance_date",
+        "currency_code",
+        "account_name",
+        "account_balance",
+    ),
 )
 
 NETWORTH_HISTORY_REPORT = ServiceReportSpec(
@@ -564,6 +575,17 @@ NETWORTH_HISTORY_REPORT = ServiceReportSpec(
     ),
     executor=_execute_networth_history,
     validator=_validate_networth_history_parameters,
+    # Requirement 6: the whole projection, which already fits 80 characters.
+    # Declared rather than left to the extension fallback so a sixth column
+    # added later narrows the default and says so, instead of silently
+    # widening the table past the bar this spec sets.
+    default_columns=(
+        "period",
+        "currency_code",
+        "net_worth",
+        "change_abs",
+        "change_pct",
+    ),
 )
 
 SERVICE_REPORTS: tuple[ServiceReportSpec, ...] = (

@@ -180,6 +180,7 @@ Every command that **reads but does not mutate** state MUST accept:
 
 - `-o, --output {text,json}` — output format. `text` is human-readable, `json` is machine-readable. The `json` branch must serialize the same data the text branch displays.
 - `-q, --quiet` — suppress informational output (status lines, progress, `✅`). Result rows are NEVER suppressed by `-q` — they are the data.
+- `--wide` — on a command whose text table renders a declared subset of its columns, restore the full projection. Text-only: `--output json` always carries every column. A command that renders everything by default does not need it.
 - `--json-fields` — comma-separated field projection for `--output json` (e.g. `--json-fields id,date,amount`). Only applies when `--output json` is active; silently ignored otherwise. Added progressively as each read-only command is extended — declare as `json_fields: str | None = json_fields_option` and pass to `render_or_json(json_fields=json_fields)`. Commands that implement it MUST enumerate available field names in their `--help` text (e.g. `"Available fields: id, date, amount, description, category, account_id"`).
 
 `db query` extends `--output` to `text|json|csv|markdown|box` since DuckDB's CLI supports all five natively.
@@ -223,6 +224,15 @@ meaning off the raw number: `spending_trend.total_spend` is `SUM(ABS(amount))`,
 so colouring on sign alone would render spending as green income. Pass the
 declaration as `render_rows(..., money={"amount": Money("flow")})`; a report
 declares it on its `OutputColumn` instead and the framework passes it through.
+
+**Narrowed tables.** A report declares `default_columns` on `@report` — the
+columns a text reader sees before `--wide` — and the generated command resolves
+it against the result. When anything is omitted, `render_rows` prints one
+result-framing line to **stdout** beneath the table (`4 of 11 columns shown —
+--wide for all`), which `-q` never suppresses: routing it to stderr or silencing
+it would let a redirected file record a truncated table that reads as whole.
+Pass `total_columns=` to `render_rows` to get that line; leave it out and
+nothing is framed.
 
 **Colour** is defined once, semantically, as `render.Style` — no colour literal
 belongs at a call site — and is emitted only when stdout is a TTY and `NO_COLOR`

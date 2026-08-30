@@ -516,6 +516,62 @@ def test_render_rows_does_not_auto_highlight_a_bare_number(
     assert "\x1b[" not in capsys.readouterr().out
 
 
+# --- Result framing (requirement 10) ---
+
+
+def test_render_rows_names_the_columns_it_omitted(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 10: silent truncation is prohibited.
+
+    The line states the count and the flag that recovers the rest, so a reader
+    who wants the omitted columns learns both that there are some and how to
+    see them without consulting `--help`.
+    """
+    render_rows(["year_month"], [("2026-08",)], total_columns=9)
+
+    assert "1 of 9 columns shown — --wide for all" in capsys.readouterr().out
+
+
+def test_the_framing_line_shares_the_stream_carrying_the_table(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 10: the framing rides stdout, with the result it describes.
+
+    `moneybin reports spending > report.txt` must capture the disclosure along
+    with the table. Routing it to stderr would let the redirected file record a
+    truncated result with nothing in it saying so, which is the silent
+    truncation this requirement forbids arriving by another route.
+    """
+    render_rows(["year_month"], [("2026-08",)], total_columns=9)
+
+    captured = capsys.readouterr()
+    assert "columns shown" in captured.out
+    assert "columns shown" not in captured.err
+
+
+def test_no_framing_line_when_every_column_is_shown(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A complete result frames nothing — there is no omission to disclose."""
+    render_rows(["year_month", "net"], [("2026-08", 1)], total_columns=2)
+
+    assert "columns shown" not in capsys.readouterr().out
+
+
+def test_an_undeclared_total_frames_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The commands with no column policy print no framing line.
+
+    `accounts list` and its siblings render every column they build, so there
+    is nothing for them to declare and nothing to disclose.
+    """
+    render_rows(["account"], [("Checking",)])
+
+    assert "columns shown" not in capsys.readouterr().out
+
+
 # --- render_summary (requirement 3) ---
 
 

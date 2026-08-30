@@ -499,6 +499,41 @@ column holds money. For in-repo reports it is not optional in practice: a
 guard fails any column classed `TXN_AMOUNT` or `BALANCE` that declares no kind
 (`tests/moneybin/test_cli/test_render.py`).
 
+### Choosing which columns a text reader sees first
+
+`@report` carries an optional `default_columns` — the columns the CLI's text
+table renders before `--wide`. A report with more than a handful of columns
+does not fit an 80-column terminal, and the wrapped result is unreadable.
+
+Declare either a **tuple of column names**, or a **callable** taking the
+report's effective parameters as a mapping and returning one. Use the callable
+only when a parameter changes which of the *same* columns matter; when a
+parameter changes which columns the query returns, a tuple is enough, because
+the resolver drops any name the result does not carry. The declaration also
+orders the table, so the SQL projection does not have to.
+
+```python
+@report(
+    ...,
+    default_columns=("txn_date", "account_name", "description", "amount"),
+)
+```
+
+The callable is read defensively — take the mapping, not keyword arguments, and
+read it with `.get`, since a caller may omit any optional parameter.
+
+Three things this field never touches. `--output json` and the MCP result carry
+the full projection either way; `--wide` restores every column; and when
+anything is omitted the CLI prints `4 of 11 columns shown — --wide for all`
+beneath the table, so a narrowed view is never a silent one.
+
+Omitting the field is legal and leaves the report rendering its **first six**
+columns. Six is a fixed count rather than a measured fit: `OutputColumn` carries
+no display width, so "the columns that fit 80" cannot be answered without
+measuring runtime values, which would make the column set vary with the data.
+The 80-column guarantee is contract-tested for in-repo reports and best-effort
+for an extension until it declares its own set.
+
 Full rationale, including why the field is not called `kind` — `ReportSemantics.kind`
 already exists at report level and cannot describe two columns of one result —
 is in [`cli-output-coherence.md`](cli-output-coherence.md) requirement 12.

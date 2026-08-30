@@ -56,7 +56,92 @@ def test_doctor_exits_0_when_all_pass(
     mock_svc_cls.return_value.run_all.return_value = _PASSING_REPORT
     result = runner.invoke(app, ["system", "doctor"])
     assert result.exit_code == 0
-    assert "✅" in result.output
+    assert "all passing" in result.output
+
+
+# --- Quiet on success (requirements 20-22) ---
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_a_fully_passing_run_prints_only_its_summary(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """Requirement 20: a passing invariant is not news.
+
+    Five ✅ lines are five lines a reader has to rule out, and the run that
+    matters is the one where a ❌ sits among them. On a clean run the summary
+    already says everything the roll did.
+    """
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _PASSING_REPORT
+    result = runner.invoke(app, ["system", "doctor"])
+
+    assert result.exit_code == 0
+    assert "✅" not in result.output
+    assert "fct_transactions_fk_integrity" not in result.output
+    assert "5 invariants checked" in result.output
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_a_failing_invariant_prints_its_name_and_detail(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """Requirement 22: the failure path is unchanged in content."""
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _FAILING_REPORT
+    result = runner.invoke(app, ["system", "doctor"])
+
+    assert "❌ fct_transactions_sign_convention — 1 violation(s)" in result.output
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_a_passing_invariant_is_hidden_beside_a_failing_one(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """Requirement 20, in the case it exists for: one ❌ among four ✅."""
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _FAILING_REPORT
+    result = runner.invoke(app, ["system", "doctor"])
+
+    assert "fct_transactions_fk_integrity" not in result.output
+    assert "dedup_reconciliation" not in result.output
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_a_warning_is_never_hidden(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """A warn is not a pass, so the rule that hides a pass does not reach it.
+
+    The summary counts warnings but does not name them, so suppressing the
+    line would leave a reader knowing one exists and unable to see which. That
+    is the silent masking the rest of this spec exists to prevent, arriving
+    through the flag meant to reduce noise.
+    """
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _FAILING_REPORT
+    result = runner.invoke(app, ["system", "doctor"])
+
+    assert "categorization_coverage — 80% uncategorized" in result.output
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_verbose_restores_the_full_roll(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """Requirement 21: --verbose is how an operator sees what actually ran."""
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _PASSING_REPORT
+    result = runner.invoke(app, ["system", "doctor", "--verbose"])
+
+    assert result.exit_code == 0
+    assert result.output.count("✅") == 5
+    assert "fct_transactions_fk_integrity" in result.output
 
 
 @patch("moneybin.cli.commands.system.doctor.get_database")

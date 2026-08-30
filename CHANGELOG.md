@@ -791,6 +791,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **`system doctor` stops narrating its successes.** Every run printed a ✅ line
+  per invariant, so the one ❌ that mattered sat in a block of nine lines saying
+  nothing was wrong. A clean run now prints just its summary; a run with
+  problems prints only the invariants that have one. Warnings and skipped
+  checks still print — the summary counts them without naming them, so hiding
+  either would leave you knowing something was off and unable to see what.
+  `--verbose` shows the full roll, alongside the affected transaction IDs it
+  already showed. `--output json` is unchanged and still carries every
+  invariant.
+
+- **A report's table fits your terminal, and says what it left out.** Six of the
+  eight built-in reports returned nine to fourteen columns and printed all of
+  them, so an 80-column terminal wrapped every row into an unreadable block —
+  `large-transactions` alone needed 243 characters. Each report now declares the
+  columns that answer it, and prints those. `--wide` restores the rest, and when
+  anything is omitted the table is followed by `4 of 13 columns shown — --wide
+  for all`, so a narrowed view is never a silent one. That line prints to stdout
+  with the table and survives `-q`: redirecting a report to a file has to capture
+  the disclosure along with the data.
+
+  `--output json` and every MCP caller keep the full projection — the column
+  choice is a text-rendering decision, and `--json-fields` remains the JSON
+  caller's own filter. The currency column stays visible in every default set:
+  amounts are aggregated per currency, so two rows differing only in a hidden
+  `currency_code` would read as one row counted twice.
+
+  `reports spending --compare` now changes what you see. It validated its
+  argument and then ignored it — the view returns all three comparisons
+  regardless — so `--compare mom` was documented as intent and observable
+  nowhere. It selects which comparison the table shows by default.
+
 - **Every table the CLI prints is now built the same way.** Twelve commands
   rendered rows through five different idioms — a shared Rich helper for three,
   and a hand-padded f-string per command for the rest, each with its own guessed

@@ -121,6 +121,16 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
         exclusions=("transfers", "archived accounts"),
         provenance=("reports.merchant_activity",),
     ),
+    # Requirement 6: who is being paid, how much, how often, how recently.
+    # `total_inflow` / `total_outflow` decompose the spend and `avg_amount` /
+    # `median_amount` characterise it — all reachable with `--wide`.
+    default_columns=(
+        "merchant_normalized",
+        "currency_code",
+        "total_spend",
+        "txn_count",
+        "last_seen",
+    ),
 )
 def merchant_activity(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL

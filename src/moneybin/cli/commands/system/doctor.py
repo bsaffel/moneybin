@@ -26,7 +26,10 @@ verbose_option: bool = typer.Option(
     False,
     "--verbose",
     "-V",
-    help="Show affected transaction IDs for each failing invariant.",
+    help=(
+        "Show every invariant that ran, not just the ones that need attention, "
+        "plus the affected transaction IDs for each failing one."
+    ),
 )
 
 full_option: bool = typer.Option(
@@ -114,6 +117,14 @@ def doctor_command(
         return
 
     for result in report.invariants:
+        # Requirement 20: a passing invariant is not news, and five ✅ lines are
+        # five a reader has to rule out before finding the one ❌ among them.
+        # Suppressed by status rather than by "not failing": a warn or a skip is
+        # not a pass, the summary counts them without naming them, and hiding
+        # one would leave a reader knowing something is off and unable to see
+        # what. `--verbose` restores the whole roll (requirement 21).
+        if result.status == "pass" and not verbose:
+            continue
         icon = status_icon.get(result.status, "?")
         line = f"{icon} {result.name}"
         if result.detail:

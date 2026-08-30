@@ -144,6 +144,17 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
         "interval_days_stddev (both non-amount); same window "
         "partition-key artifact",
     },
+    # Requirement 6: what recurs, how often, what it costs a year, and whether
+    # it is still running. `annualized_cost` rather than `avg_amount` because
+    # the question this report answers is what the subscription costs, and a
+    # monthly average understates a yearly renewal by twelve.
+    default_columns=(
+        "merchant_normalized",
+        "currency_code",
+        "cadence",
+        "annualized_cost",
+        "status",
+    ),
 )
 def recurring_subscriptions(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL

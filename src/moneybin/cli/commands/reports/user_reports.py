@@ -26,6 +26,7 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
     render_or_json,
+    wide_option,
 )
 from moneybin.cli.render import render_rows
 from moneybin.cli.utils import handle_cli_errors
@@ -144,6 +145,7 @@ def reports_run(
     display_currency: str | None = display_currency_option,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    wide: bool = wide_option,
 ) -> None:
     """Run one registered report by ID or name."""
     from moneybin.cli.report_params import parse_report_parameters
@@ -154,6 +156,7 @@ def reports_run(
     from moneybin.reports._framework.cli_register import (
         money_columns,
         render_report_result,
+        visible_columns,
     )
 
     # Parity with the `reports` MCP tool, which validates `ge=1`. `--limit 0`
@@ -171,7 +174,8 @@ def reports_run(
             # scope that has one. `run` reaches built-ins too, so without it a
             # report would render its amounts one way through `reports spending`
             # and another through `reports run spending`.
-            money = money_columns(catalog.resolve(handle))
+            spec = catalog.resolve(handle)
+            money = money_columns(spec)
             result = catalog.execute(
                 db,
                 report_id=handle,
@@ -180,8 +184,19 @@ def reports_run(
                 display_currency=display_currency,
                 home_currency=profile_home_currency(db),
             )
+            # Resolved inside the database scope for the same reason `money` is:
+            # a user-tier spec is built from a row, and this is the only scope
+            # holding the connection that builds it.
+            columns = visible_columns(
+                spec, result.columns, parameters=parameters, wide=wide
+            )
     render_report_result(
-        result, output, cli_actor="reports_run", money=money, quiet=quiet
+        result,
+        output,
+        cli_actor="reports_run",
+        money=money,
+        quiet=quiet,
+        columns=columns,
     )
 
 

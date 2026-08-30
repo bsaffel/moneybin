@@ -14,7 +14,7 @@ parameter name takes down the whole reports command group at import.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import typer
@@ -27,6 +27,7 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
     render_or_json,
+    wide_option,
 )
 from moneybin.cli.render import Money, render_note, render_rows
 from moneybin.cli.utils import handle_cli_errors
@@ -73,6 +74,17 @@ def _cli_signature(spec: ReportSpec) -> inspect.Signature:
             "quiet",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             default=quiet_option,
+            annotation=bool,
+        )
+    )
+    # Injected on every report, including one whose default set is its whole
+    # projection: the flag is then a no-op, which is cheaper than a signature
+    # that varies per report and a `--help` where the option comes and goes.
+    params.append(
+        inspect.Parameter(
+            "wide",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            default=wide_option,
             annotation=bool,
         )
     )
@@ -140,6 +152,54 @@ def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> No
         render_note(f"💡 {action}", quiet=quiet)
 
 
+#: Columns an undeclared report shows before ``--wide``. A fixed count rather
+#: than a computed fit: ``OutputColumn`` carries no display width, so "the
+#: columns that fit 80" is not answerable without measuring runtime values,
+#: which would make an extension's column set vary with its data. Requirement
+#: 9's 80-column guarantee is therefore contract-tested for in-tree reports and
+#: best-effort for an extension until one declares its own set — requirement
+#: 10's framing line discloses the omission either way.
+EXTENSION_DEFAULT_COLUMN_COUNT = 6
+
+
+def visible_columns(
+    spec: RegisteredReport,
+    result_columns: Sequence[str],
+    *,
+    parameters: Mapping[str, Any],
+    wide: bool,
+) -> tuple[str, ...]:
+    """The columns this result renders as text (requirements 6, 7).
+
+    Resolves the report's own declaration against the columns the result
+    actually carries. The declaration orders the table — an author putting the
+    identifying column first must not have to reorder the SQL projection, which
+    ``--wide``, ``--output json``, and every MCP caller also read.
+
+    A declared name absent from ``result_columns`` is dropped rather than
+    rendered empty: a `cash_flow` grouped by account returns no ``category``,
+    and the result is the authority on what exists. A declaration matching
+    nothing at all fails open to the whole result — requirement 6 makes that a
+    spec violation, caught by the width contract test rather than at a user's
+    terminal, and an empty table under ``0 of 9 columns shown`` reads as a
+    report that returned nothing.
+    """
+    if wide:
+        return tuple(result_columns)
+    declared = spec.default_columns
+    if declared is None:
+        names: Sequence[str] = [
+            column.name for column in spec.columns[:EXTENSION_DEFAULT_COLUMN_COUNT]
+        ]
+    elif callable(declared):
+        names = declared(parameters)
+    else:
+        names = declared
+    available = set(result_columns)
+    visible = tuple(name for name in names if name in available)
+    return visible or tuple(result_columns)
+
+
 def money_columns(spec: RegisteredReport) -> dict[str, Money]:
     """Build the renderer's money declarations from a report's own columns.
 
@@ -162,6 +222,7 @@ def render_report_result(
     cli_actor: str,
     money: Mapping[str, Money] | None = None,
     quiet: bool = False,
+    columns: Sequence[str] | None = None,
 ) -> None:
     """Render one report result as a table or the JSON envelope.
 
@@ -172,15 +233,20 @@ def render_report_result(
     ``money`` carries the report's own column declarations, from
     :func:`money_columns`. Both callers resolve it from the spec, so one report
     renders its amounts identically whichever command ran it.
+
+    ``columns`` is the text branch's narrowed view, from
+    :func:`visible_columns`. It never reaches the JSON envelope — requirement 8
+    keeps that projection whole, filtered only by ``--json-fields``.
     """
+    visible = list(result.columns if columns is None else columns)
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
         if result.records:
             rows: list[tuple[object, ...]] = [
-                tuple(record.get(column) for column in result.columns)
+                tuple(record.get(column) for column in visible)
                 for record in result.records
             ]
-            render_rows(result.columns, rows, money=money)
+            render_rows(visible, rows, money=money, total_columns=len(result.columns))
         echo_report_notes(result, quiet=quiet)
 
     render_or_json(
@@ -210,6 +276,9 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
         # Reaches the next-step hints in `echo_report_notes` and nothing else —
         # the table is data (requirement 5) and JSON output has no notes.
         quiet: bool = bool(kwargs.pop("quiet", False))
+        # Popped for the same reason as `display_currency`: a framework option
+        # the runner never declared and would reject as unknown.
+        wide: bool = bool(kwargs.pop("wide", False))
         # Popped before `kwargs` becomes `parameters`: display conversion is the
         # framework's, not the runner's, so a runner would reject it as unknown.
         display_currency: str | None = kwargs.pop("display_currency", None)
@@ -239,6 +308,9 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                 cli_actor=cli_actor,
                 money=money_columns(spec),
                 quiet=quiet,
+                columns=visible_columns(
+                    spec, result.columns, parameters=kwargs, wide=wide
+                ),
             )
 
     _impl.__name__ = spec.name
