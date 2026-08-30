@@ -588,6 +588,10 @@ def test_real_write_keyword_still_rejected_alongside_string_literal() -> None:
 @pytest.mark.parametrize(
     "sql",
     [
+        pytest.param(
+            "WITH x AS (INSERT INTO y VALUES (1)) SELECT 1 FROM x", id="insert"
+        ),
+        pytest.param("WITH x AS (DELETE FROM y) SELECT 1 FROM x", id="delete"),
         pytest.param("WITH x AS (CREATE TABLE y (a INT)) SELECT 1 FROM x", id="create"),
         pytest.param("WITH x AS (DROP TABLE y) SELECT 1 FROM x", id="drop"),
         pytest.param("WITH x AS (ATTACH 'y.db' AS y) SELECT 1 FROM x", id="attach"),
@@ -610,7 +614,8 @@ def test_write_type_nested_in_cte_is_independently_isolated(sql: str) -> None:
     documents. Nesting each write inside a CTE forces the prefix check to
     pass, so only the structural write check can be what refuses it.
 
-    INSERT and UPDATE already have their own CTE-nested tests above.
+    UPDATE already has its own CTE-nested test above
+    (``test_real_write_keyword_still_rejected_alongside_string_literal``).
     TruncateTable, Alter, and Copy are absent here because DuckDB's own
     grammar (via sqlglot) refuses to parse any of them as a CTE body at all —
     verified, each raises a ``ParseError`` rather than reaching this check in
