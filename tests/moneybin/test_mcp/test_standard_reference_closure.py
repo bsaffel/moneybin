@@ -7,6 +7,7 @@ import importlib
 import inspect
 import json
 import re
+from functools import cache
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -64,10 +65,20 @@ async def _live_callback_names() -> set[str]:
     return callbacks
 
 
+@cache
 def _known_tool_names() -> frozenset[str]:
     payload = json.loads(_BASELINE.read_text())
     baseline = {row["name"] for row in payload["tools"]}
     return frozenset(baseline | set(STANDARD_TOOL_NAMES))
+
+
+def test_known_tool_names_reads_the_baseline_once_per_process() -> None:
+    _known_tool_names.cache_clear()
+
+    _known_tool_names()
+    _known_tool_names()
+
+    assert _known_tool_names.cache_info().misses == 1
 
 
 def _tool_references(text: str) -> set[str]:
