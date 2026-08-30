@@ -208,12 +208,12 @@ def transactions_list(
 
         rows: list[tuple[object, ...]] = []
         for t in result.transactions:
-            desc = (
-                t.description[:49] + "…" if len(t.description) > 50 else t.description
-            )
             rows.append((
                 t.transaction_date,
-                desc,
+                # Unclipped: `render_rows` folds an overlong value rather than
+                # eliding it, and a raw bank description carries the detail that
+                # separates two similar charges at the end.
+                t.description,
                 # Unformatted: `render_rows` stringifies it through
                 # `format_money`, which is the only place text output does so.
                 t.amount,

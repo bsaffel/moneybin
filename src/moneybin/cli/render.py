@@ -314,14 +314,24 @@ def _as_decimal(value: object) -> Decimal | None:
     — and an unparseable string renders as absent rather than raising
     ``InvalidOperation`` out of the render layer, where the traceback would
     name neither the column nor the report that declared it.
+
+    A non-finite value is rejected for that same reason, one step earlier than
+    it would otherwise surface. ``Decimal("NaN")`` parses without complaint and
+    only raises when something *orders* it, which both callers do —
+    ``format_money`` at ``amount < 0`` and ``style_for`` at ``amount > 0`` — so
+    catching it at construction covers both rather than each separately. An
+    infinity does not raise at all; it formats under ``,.2f`` as the word
+    ``Infinity``, which a money column would print signed and coloured as
+    though it were an amount.
     """
     if value is None or value == "" or isinstance(value, bool):
         return None
     if isinstance(value, Decimal):
-        return value
+        return value if value.is_finite() else None
     if isinstance(value, int | float | str):
         try:
-            return Decimal(str(value))
+            parsed = Decimal(str(value))
         except InvalidOperation:
             return None
+        return parsed if parsed.is_finite() else None
     return None

@@ -102,6 +102,35 @@ def test_a_masked_money_cell_prints_its_mask_rather_than_a_dash() -> None:
     assert format_money("****1098", "balance") == "****1098"
 
 
+def test_a_non_finite_money_cell_renders_absent_rather_than_crashing() -> None:
+    """A NaN never reaches the reader — the comparison that would print it raises.
+
+    `format_money` branches on `amount < 0`, and ordering a `Decimal("NaN")`
+    raises `InvalidOperation` rather than returning False. That is not a
+    `UserError`, so it leaves `handle_cli_errors` as a raw traceback and takes
+    the whole command down over one cell. An infinity is quieter and worse: it
+    orders fine and formats under `,.2f` as the word `Infinity`, so the money
+    column prints `+Infinity` in income green and calls it an amount.
+
+    Neither is one, so both take the route the unparseable cases already take.
+    The check belongs in `_as_decimal` rather than in `format_money`, because
+    `style_for` orders the same value and would raise identically.
+    """
+    for value in (float("nan"), Decimal("NaN"), float("inf"), Decimal("-Infinity")):
+        assert format_money(value, "flow") == "-"
+        assert Money("flow").style_for(value) is Style.NEUTRAL
+
+
+def test_a_non_finite_money_cell_that_arrived_as_text_still_prints_itself() -> None:
+    """Where the two rules meet, *text is not an amount* is the outer one.
+
+    A column holding the string `"nan"` was handed text rather than a number
+    that went non-finite in transit, so it prints what it was given for the
+    same reason `"n/a"` and a `****1098` mask do.
+    """
+    assert format_money("nan", "flow") == "nan"
+
+
 def test_format_money_renders_a_missing_amount_as_a_dash() -> None:
     """A NULL money cell is absent, not zero — rendering 0.00 would invent data.
 

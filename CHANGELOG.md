@@ -1249,6 +1249,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **A non-finite amount no longer crashes a report, or prices as though it were
+  a number.** A `NaN` in a money column left `format_money` through
+  `amount < 0` as a raw `decimal.InvalidOperation` traceback rather than a
+  clean CLI error, because ordering a `Decimal("NaN")` raises instead of
+  returning false; an infinity did not raise at all and printed as the signed,
+  coloured word `Infinity`. The same value in the currency converter was
+  quieter and worse — `NaN` times a rate is `NaN`, so it converted without
+  complaint and reached the reader labelled in the display currency, a
+  conversion that never happened. Both `_as_decimal` helpers now refuse a
+  non-finite value the way they already refuse unparseable text: the renderer
+  prints it absent, and the converter segments and says why. Reachable from any
+  report whose money column is backed by a float computation, including the
+  out-of-repo `@report` extensions `docs/specs/extension-contracts.md`
+  addresses (#470).
+
+- **`transactions list` no longer clips a long description.** The command cut
+  the description to 49 characters and appended an ellipsis before the value
+  reached the renderer, so it fired on a wide terminal too — and a raw bank
+  description carries the detail that separates two similar charges at the
+  end. It folds now, like every other value this renderer prints (#470).
+
 - **A withheld amount no longer prints as an absent one.** A money column
   carrying a whole-masking privacy class (`ROUTING_NUMBER`,
   `COMPOSITE_IDENTIFIER`, `UNRESOLVED`) reaches the renderer already replaced
