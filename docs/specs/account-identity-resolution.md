@@ -480,9 +480,11 @@ account or flag a mirrored pair (the import hint, the
 sweep alone.
 
 `institution` is **best-effort metadata**, never a required input: when unknown
-(a bare CSV), the `institution+last4` candidate rung simply doesn't fire and
-resolution falls through to name / mint-new. Thresholds reuse `MatchingSettings`
-(`high_confidence_threshold`, `review_threshold`) — no parallel knobs.
+(a bare CSV), the last-four rung above still fires and the pair surfaces under
+`last_four` rather than `institution_last4`. Silence is not contradiction —
+only two *stated* and differing institutions drop a pair. Thresholds reuse
+`MatchingSettings` (`high_confidence_threshold`, `review_threshold`) — no
+parallel knobs.
 
 **⚠ Reconciled (Decision 8): the strong-ref auto-adopt (step 1) is valid only
 for an upstream-*stable* native key** (OFX `ACCTID`, Plaid token). A CSV/aggregator
