@@ -774,7 +774,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   No value is ever elided to make a row fit: a name too wide for the terminal
   wraps, because a resolved account name ends in the masked last four and
-  clipping it removes exactly the digits that tell two candidates apart.
+  clipping it removes exactly the digits that tell two candidates apart
+  (#470).
 
 - **Amounts print with thousands separators and a sign that means something.**
   Every money column now declares what its number *is* — a signed flow, a
@@ -786,13 +787,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   worth keeps its minus: "balances unsigned" only ever meant no decorative `+`
   on a positive position. Colour is redundant with the sign glyph and appears
   only on a terminal with `NO_COLOR` unset, so piping or redirecting output
-  loses nothing.
+  loses nothing (#470).
 
 - **`transactions matches` stops reporting an unscored match as `0.00`.** An
   exact-id match records no confidence score; the two match tables printed that
   as zero, which reads as the engine having compared the pair and found nothing
   in common. It now prints `-`, matching what the merchant and security link
-  queues already did.
+  queues already did (#470).
 
 - **`--help` no longer lists commands that aren't built yet.** Twelve
   whole-command placeholders — `budget delete/set`, `sync key rotate`, `sync
