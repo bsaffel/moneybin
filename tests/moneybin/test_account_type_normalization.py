@@ -20,6 +20,10 @@ materialize via sqlmesh, assert the projected dim columns.
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+from unittest.mock import MagicMock
+
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
@@ -55,6 +59,7 @@ def _ofx_account(
     institution_org: str = "Vocab Bank",
     institution_fid: str = "fid-v",
     routing_number: str | None = "111000025",
+    source_origin: str,
 ) -> None:
     db.execute(
         """
@@ -63,14 +68,25 @@ def _ofx_account(
              institution_fid, source_file, source_type, source_origin,
              extracted_at, loaded_at)
         VALUES (?, ?, ?, ?, ?, '/tmp/v.ofx', 'ofx',
-                'vocab_ofx', '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
+                ?, '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
         """,  # noqa: S608  # test fixture
-        [native_key, routing_number, account_type, institution_org, institution_fid],
+        [
+            native_key,
+            routing_number,
+            account_type,
+            institution_org,
+            institution_fid,
+            source_origin,
+        ],
     )
 
 
 def _tabular_account(
-    db: Database, *, native_key: str, account_type: str | None
+    db: Database,
+    *,
+    native_key: str,
+    account_type: str | None,
+    source_origin: str,
 ) -> None:
     db.execute(
         """
@@ -79,10 +95,10 @@ def _tabular_account(
              source_file, source_type, source_origin, import_id,
              extracted_at, loaded_at)
         VALUES (?, 'Vocab Acct', ?, 'Vocab Bank', '/tmp/v.csv', 'csv',
-                'vocab_tab', 'imp-v-001', '2024-01-01'::TIMESTAMP,
+                ?, 'imp-v-001', '2024-01-01'::TIMESTAMP,
                 '2024-01-01'::TIMESTAMP)
         """,  # noqa: S608  # test fixture
-        [native_key, account_type],
+        [native_key, account_type, source_origin],
     )
 
 
@@ -93,6 +109,211 @@ def _dim_type(db: Database, account_id: str) -> tuple[str | None, str | None]:
     ).fetchone()
     assert row is not None, f"no core.dim_accounts row for {account_id!r}"
     return row[0], row[1]
+
+
+def _case_id(name: str) -> str:
+    return f"mb21_account_type_{name}"
+
+
+def _case_origin(name: str) -> str:
+    return f"mb21_account_type_{name}_origin"
+
+
+def _plaid_account(
+    db: Database,
+    *,
+    native_key: str,
+    account_type: str | None,
+    account_subtype: str | None = None,
+    institution_name: str | None = "Vocab Bank",
+    mask: str = "4242",
+    official_name: str | None = "Vocab Account",
+    source_origin: str,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.plaid_accounts
+            (account_id, account_type, account_subtype, institution_name, mask,
+             official_name, source_file, source_type, source_origin,
+             extracted_at, loaded_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'plaid://mb21-account-type', 'plaid', ?,
+                '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [
+            native_key,
+            account_type,
+            account_subtype,
+            institution_name,
+            mask,
+            official_name,
+            source_origin,
+        ],
+    )
+
+
+@pytest.fixture(scope="module")
+def account_type_cases_template(
+    tmp_path_factory: pytest.TempPathFactory,
+    request: pytest.FixtureRequest,
+) -> Path:
+    """One materialization over independently namespaced account-type cases."""
+    secret_store = MagicMock()
+    secret_store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    db = Database(
+        tmp_path_factory.mktemp("account_type_normalization") / "test.duckdb",
+        secret_store=secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
+    request.addfinalizer(db.close)
+
+    for raw_value in (
+        "CHECKING",
+        "SAVINGS",
+        "MONEYMRKT",
+        "CD",
+        "CREDITLINE",
+        "CREDITCARD",
+    ):
+        name = f"ofx_{raw_value.lower()}"
+        native = _case_id(f"{name}_native")
+        origin = _case_origin(name)
+        _ofx_account(
+            db, native_key=native, account_type=raw_value, source_origin=origin
+        )
+        _link(
+            db,
+            link_id=_case_id(f"{name}_link"),
+            account_id=_case_id(name),
+            ref_value=native,
+            source_type="ofx",
+            source_origin=origin,
+        )
+
+    for name, account_type in (
+        ("tabular_credit_card", "credit_card"),
+        ("tabular_unmapped", "Christmas Club"),
+        ("tabular_generic_credit", "credit"),
+    ):
+        native = _case_id(f"{name}_native")
+        origin = _case_origin(name)
+        _tabular_account(
+            db, native_key=native, account_type=account_type, source_origin=origin
+        )
+        _link(
+            db,
+            link_id=_case_id(f"{name}_link"),
+            account_id=_case_id(name),
+            ref_value=native,
+            source_type="csv",
+            source_origin=origin,
+        )
+
+    for name, suffix in (("typeless_a", "4242"), ("typeless_b", "7080")):
+        # ``dim_accounts`` derives last_four only from a numeric native account id.
+        # Keep that real input shape while the source origin and canonical id isolate
+        # this template case from every other row.
+        native = f"200111111111{suffix}"
+        origin = _case_origin(name)
+        _ofx_account(db, native_key=native, account_type=None, source_origin=origin)
+        _link(
+            db,
+            link_id=_case_id(f"{name}_link"),
+            account_id=_case_id(name),
+            ref_value=native,
+            source_type="ofx",
+            source_origin=origin,
+        )
+
+    for name, account_type, institution_org, institution_fid, routing_number in (
+        ("opaque_org", "CREDITCARD", "B1", "10898", "111000025"),
+        ("unknown_fid", "CHECKING", "SOME CREDIT UNION", "99999", "111000025"),
+        ("legacy_empty_type", "", "Vocab Bank", "fid-v", "111000025"),
+        ("legacy_empty_routing", "CREDITCARD", "Vocab Bank", "fid-v", ""),
+        ("subtype_override", "SAVINGS", "Vocab Bank", "fid-v", "111000025"),
+    ):
+        # The Chase display assertion needs the provider's numeric suffix in its
+        # native id; the source origin and canonical id still namespace this case.
+        native = "ofx-b1-4242" if name == "opaque_org" else _case_id(f"{name}_native")
+        origin = _case_origin(name)
+        _ofx_account(
+            db,
+            native_key=native,
+            account_type=account_type,
+            institution_org=institution_org,
+            institution_fid=institution_fid,
+            routing_number=routing_number,
+            source_origin=origin,
+        )
+        _link(
+            db,
+            link_id=_case_id(f"{name}_link"),
+            account_id=_case_id(name),
+            ref_value=native,
+            source_type="ofx",
+            source_origin=origin,
+        )
+
+    db.execute(
+        """
+        INSERT INTO app.account_settings (account_id, account_subtype, updated_at)
+        VALUES (?, 'money market', CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [_case_id("subtype_override")],
+    )
+
+    for name, account_type, account_subtype, institution_name, official_name in (
+        ("plaid_unmapped", "crypto_wallet", None, "Novel Bank", "Novel"),
+        ("plaid_null", None, None, "Untyped Bank", "Untyped"),
+        ("plaid_blank_empty", "credit", "", "", ""),
+        ("plaid_blank_spaces", "credit", "   ", "   ", "   "),
+    ):
+        native = _case_id(f"{name}_native")
+        origin = _case_origin(name)
+        _plaid_account(
+            db,
+            native_key=native,
+            account_type=account_type,
+            account_subtype=account_subtype,
+            institution_name=institution_name,
+            official_name=official_name,
+            source_origin=origin,
+        )
+        _link(
+            db,
+            link_id=_case_id(f"{name}_link"),
+            account_id=_case_id(name),
+            ref_value=native,
+            source_type="plaid",
+            source_origin=origin,
+        )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    db.close()
+    return db.path
+
+
+@pytest.fixture()
+def account_type_cases(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+    account_type_cases_template: Path,
+) -> Database:
+    """An isolated planned snapshot for one account-type assertion case."""
+    path = tmp_path / "test.duckdb"
+    shutil.copy(account_type_cases_template, path)
+    secret_store = MagicMock()
+    secret_store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    db = Database(
+        path,
+        secret_store=secret_store,
+        no_auto_upgrade=True,
+        assume_initialized=True,
+        read_only=False,
+    )
+    request.addfinalizer(db.close)
+    return db
 
 
 @pytest.mark.slow
@@ -110,72 +331,49 @@ def _dim_type(db: Database, account_id: str) -> tuple[str | None, str | None]:
     ],
 )
 def test_ofx_account_type_normalizes_to_canonical_vocabulary(
-    db: Database, raw_value: str, expected_type: str, expected_subtype: str
+    account_type_cases: Database,
+    raw_value: str,
+    expected_type: str,
+    expected_subtype: str,
 ) -> None:
     """OFX <ACCTTYPE> spellings collapse to the canonical set, keeping detail in subtype."""
-    native = f"ofx-{raw_value.lower()}"
-    canonical = f"canon-{raw_value.lower()}"[:15]
-    _ofx_account(db, native_key=native, account_type=raw_value)
-    _link(
-        db,
-        link_id=f"lnk-{raw_value.lower()}"[:12],
-        account_id=canonical,
-        ref_value=native,
-        source_type="ofx",
-        source_origin="vocab_ofx",
+    assert _dim_type(account_type_cases, _case_id(f"ofx_{raw_value.lower()}")) == (
+        expected_type,
+        expected_subtype,
     )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    assert _dim_type(db, canonical) == (expected_type, expected_subtype)
 
 
 @pytest.mark.slow
-def test_tabular_free_text_account_type_normalizes(db: Database) -> None:
+def test_tabular_free_text_account_type_normalizes(
+    account_type_cases: Database,
+) -> None:
     """A CSV column mapping writes free text; it must land in the canonical set too."""
-    _tabular_account(db, native_key="tab-cc", account_type="credit_card")
-    _link(
-        db,
-        link_id="lnk-tab-cc",
-        account_id="canon-tab-cc",
-        ref_value="tab-cc",
-        source_type="csv",
-        source_origin="vocab_tab",
+    assert _dim_type(account_type_cases, _case_id("tabular_credit_card")) == (
+        "credit",
+        "credit card",
     )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    assert _dim_type(db, "canon-tab-cc") == ("credit", "credit card")
 
 
 @pytest.mark.slow
-def test_unmapped_account_type_is_null_not_guessed(db: Database) -> None:
+def test_unmapped_account_type_is_null_not_guessed(
+    account_type_cases: Database,
+) -> None:
     """An unrecognized spelling yields NULL type, preserving the original in subtype.
 
     NULL is the honest answer and it is also the useful one: the dim's merge
     skips NULLs, so a stronger source can still supply the type. Defaulting to
     'other' would out-rank that real value on recency.
     """
-    _tabular_account(db, native_key="tab-weird", account_type="Christmas Club")
-    _link(
-        db,
-        link_id="lnk-tab-wd",
-        account_id="canon-tab-wd",
-        ref_value="tab-weird",
-        source_type="csv",
-        source_origin="vocab_tab",
+    assert _dim_type(account_type_cases, _case_id("tabular_unmapped")) == (
+        None,
+        "christmas club",
     )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    assert _dim_type(db, "canon-tab-wd") == (None, "christmas club")
 
 
 @pytest.mark.slow
-def test_typeless_accounts_stay_distinguishable_by_last_four(db: Database) -> None:
+def test_typeless_accounts_stay_distinguishable_by_last_four(
+    account_type_cases: Database,
+) -> None:
     """Two typeless accounts at one institution must not share a display_name.
 
     The COALESCE chain assumed account_type was always present: with it NULL,
@@ -183,27 +381,11 @@ def test_typeless_accounts_stay_distinguishable_by_last_four(db: Database) -> No
     falls through to the bare institution name, so every card at one bank
     renders identically. last_four is what distinguishes them.
     """
-    for native, canonical, link in (
-        ("2001111111114242", "canon-typeless-a", "lnk-tl-a"),
-        ("2001111111117080", "canon-typeless-b", "lnk-tl-b"),
-    ):
-        _ofx_account(db, native_key=native, account_type=None)
-        _link(
-            db,
-            link_id=link,
-            account_id=canonical,
-            ref_value=native,
-            source_type="ofx",
-            source_origin="vocab_ofx",
-        )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    rows = db.execute(
+    rows = account_type_cases.execute(
         "SELECT account_id, display_name FROM core.dim_accounts "
-        "WHERE account_id IN ('canon-typeless-a', 'canon-typeless-b') "
-        "ORDER BY account_id"
+        "WHERE account_id IN (?, ?) "
+        "ORDER BY account_id",
+        [_case_id("typeless_a"), _case_id("typeless_b")],
     ).fetchall()
     names = [r[1] for r in rows]
 
@@ -218,7 +400,7 @@ def test_typeless_accounts_stay_distinguishable_by_last_four(db: Database) -> No
 
 @pytest.mark.slow
 def test_opaque_ofx_org_code_resolves_to_a_readable_institution_name(
-    db: Database,
+    account_type_cases: Database,
 ) -> None:
     """<ORG> is a routing code, not a name — resolve the display name by FID.
 
@@ -226,28 +408,9 @@ def test_opaque_ofx_org_code_resolves_to_a_readable_institution_name(
     (3000). Aliasing <ORG> straight through showed users "B1" in a column
     documented as the human-readable institution name.
     """
-    _ofx_account(
-        db,
-        native_key="ofx-b1-4242",
-        account_type="CREDITCARD",
-        institution_org="B1",
-        institution_fid="10898",
-    )
-    _link(
-        db,
-        link_id="lnk-b1-1",
-        account_id="canon-b1-4242",
-        ref_value="ofx-b1-4242",
-        source_type="ofx",
-        source_origin="vocab_ofx",
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    row = db.execute(
+    row = account_type_cases.execute(
         "SELECT institution_name, display_name FROM core.dim_accounts WHERE account_id = ?",
-        ["canon-b1-4242"],
+        [_case_id("opaque_org")],
     ).fetchone()
     assert row is not None
     assert row[0] == "Chase", f"expected the FID to resolve a name, got {row[0]!r}"
@@ -255,37 +418,20 @@ def test_opaque_ofx_org_code_resolves_to_a_readable_institution_name(
 
 
 @pytest.mark.slow
-def test_unknown_fid_falls_back_to_the_raw_org(db: Database) -> None:
+def test_unknown_fid_falls_back_to_the_raw_org(account_type_cases: Database) -> None:
     """An institution absent from the registry keeps its <ORG> — never blank."""
-    _ofx_account(
-        db,
-        native_key="ofx-unknown-1",
-        account_type="CHECKING",
-        institution_org="SOME CREDIT UNION",
-        institution_fid="99999",
-    )
-    _link(
-        db,
-        link_id="lnk-unk-1",
-        account_id="canon-unknown-1",
-        ref_value="ofx-unknown-1",
-        source_type="ofx",
-        source_origin="vocab_ofx",
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    row = db.execute(
+    row = account_type_cases.execute(
         "SELECT institution_name FROM core.dim_accounts WHERE account_id = ?",
-        ["canon-unknown-1"],
+        [_case_id("unknown_fid")],
     ).fetchone()
     assert row is not None
     assert row[0] == "SOME CREDIT UNION"
 
 
 @pytest.mark.slow
-def test_legacy_empty_string_account_type_normalizes_to_null(db: Database) -> None:
+def test_legacy_empty_string_account_type_normalizes_to_null(
+    account_type_cases: Database,
+) -> None:
     """Rows imported before the extractor fix hold '', not NULL.
 
     The extractor now writes NULL for an absent <ACCTTYPE>, but raw rows
@@ -293,24 +439,13 @@ def test_legacy_empty_string_account_type_normalizes_to_null(db: Database) -> No
     treat those as absent too, or the subtype fallback (LOWER(account_type))
     just relocates the empty string into account_subtype.
     """
-    _ofx_account(db, native_key="ofx-legacy-empty", account_type="")
-    _link(
-        db,
-        link_id="lnk-legacy-1",
-        account_id="canon-legacy-em",
-        ref_value="ofx-legacy-empty",
-        source_type="ofx",
-        source_origin="vocab_ofx",
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    assert _dim_type(db, "canon-legacy-em") == (None, None)
+    assert _dim_type(account_type_cases, _case_id("legacy_empty_type")) == (None, None)
 
 
 @pytest.mark.slow
-def test_unmapped_plaid_type_resolves_to_null_not_a_default(db: Database) -> None:
+def test_unmapped_plaid_type_resolves_to_null_not_a_default(
+    account_type_cases: Database,
+) -> None:
     """An unrecognized Plaid type must resolve to NULL, like every other source.
 
     A non-NULL default looks safer than NULL here and is not. core.fct_balances
@@ -321,30 +456,9 @@ def test_unmapped_plaid_type_resolves_to_null_not_a_default(db: Database) -> Non
     test_plaid_null_account_type_dropped — this test pins the staging half so a
     future "helpful" fallback cannot reintroduce it from above.
     """
-    db.execute(
-        """
-        INSERT INTO raw.plaid_accounts
-            (account_id, account_type, account_subtype, institution_name, mask,
-             official_name, source_file, source_type, source_origin,
-             extracted_at, loaded_at)
-        VALUES ('plaid-novel', 'crypto_wallet', NULL, 'Novel Bank', '4242',
-                'Novel', 'plaid://novel', 'plaid', 'novel_inst',
-                '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
-        """  # noqa: S608  # test fixture
+    account_type, account_subtype = _dim_type(
+        account_type_cases, _case_id("plaid_unmapped")
     )
-    _link(
-        db,
-        link_id="lnk-plaid-nv",
-        account_id="canon-plaid-nv",
-        ref_value="plaid-novel",
-        source_type="plaid",
-        source_origin="novel_inst",
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    account_type, account_subtype = _dim_type(db, "canon-plaid-nv")
     assert account_type is None, (
         f"expected NULL, got {account_type!r} — a non-NULL default lets "
         "fct_balances sign an unsignable balance as an asset"
@@ -356,7 +470,9 @@ def test_unmapped_plaid_type_resolves_to_null_not_a_default(db: Database) -> Non
 
 
 @pytest.mark.slow
-def test_mapped_alias_without_a_finer_subtype_stays_null(db: Database) -> None:
+def test_mapped_alias_without_a_finer_subtype_stays_null(
+    account_type_cases: Database,
+) -> None:
     """A registry hit with no finer subtype must yield NULL, not the raw alias.
 
     `CREDIT` maps to account_type 'credit' with a blank account_subtype, so
@@ -365,52 +481,25 @@ def test_mapped_alias_without_a_finer_subtype_stays_null(db: Database) -> None:
     by recency alone, a later generic import would then silently downgrade an
     existing 'credit card' to 'credit' and regress display_name.
     """
-    _tabular_account(db, native_key="tab-generic", account_type="credit")
-    _link(
-        db,
-        link_id="lnk-tab-gen",
-        account_id="canon-tab-gen",
-        ref_value="tab-generic",
-        source_type="csv",
-        source_origin="vocab_tab",
+    assert _dim_type(account_type_cases, _case_id("tabular_generic_credit")) == (
+        "credit",
+        None,
     )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    assert _dim_type(db, "canon-tab-gen") == ("credit", None)
 
 
 @pytest.mark.slow
-def test_display_name_honors_a_user_subtype_override(db: Database) -> None:
+def test_display_name_honors_a_user_subtype_override(
+    account_type_cases: Database,
+) -> None:
     """display_name must render the same subtype the subtype column reports.
 
     The output column is COALESCE(s.account_subtype, w.account_subtype), but the
     display chain read only the pre-override merged value — so overriding the
     subtype without also setting a display_name made the two disagree.
     """
-    _ofx_account(db, native_key="ofx-override-1", account_type="SAVINGS")
-    _link(
-        db,
-        link_id="lnk-ovr-1",
-        account_id="canon-override-1",
-        ref_value="ofx-override-1",
-        source_type="ofx",
-        source_origin="vocab_ofx",
-    )
-    db.execute(
-        """
-        INSERT INTO app.account_settings (account_id, account_subtype, updated_at)
-        VALUES ('canon-override-1', 'money market', CURRENT_TIMESTAMP)
-        """  # noqa: S608  # test fixture
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    row = db.execute(
+    row = account_type_cases.execute(
         "SELECT account_subtype, display_name FROM core.dim_accounts WHERE account_id = ?",
-        ["canon-override-1"],
+        [_case_id("subtype_override")],
     ).fetchone()
     assert row is not None
     assert row[0] == "money market"
@@ -420,7 +509,7 @@ def test_display_name_honors_a_user_subtype_override(db: Database) -> None:
 
 
 @pytest.mark.slow
-def test_genuinely_null_plaid_type_stays_null(db: Database) -> None:
+def test_genuinely_null_plaid_type_stays_null(account_type_cases: Database) -> None:
     """A NULL Plaid account_type is distinct from an unmapped one — both stay NULL.
 
     `SyncAccount.account_type` is `str | None`, so NULL is reachable rather than
@@ -429,30 +518,7 @@ def test_genuinely_null_plaid_type_stays_null(db: Database) -> None:
     asset. Pairs with test_unmapped_plaid_type_resolves_to_null_not_a_default:
     the two inputs differ, the required outcome does not.
     """
-    db.execute(
-        """
-        INSERT INTO raw.plaid_accounts
-            (account_id, account_type, account_subtype, institution_name, mask,
-             official_name, source_file, source_type, source_origin,
-             extracted_at, loaded_at)
-        VALUES ('plaid-untyped', NULL, NULL, 'Untyped Bank', '7777',
-                'Untyped', 'plaid://untyped', 'plaid', 'untyped_inst',
-                '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
-        """  # noqa: S608  # test fixture
-    )
-    _link(
-        db,
-        link_id="lnk-plaid-un",
-        account_id="canon-plaid-un",
-        ref_value="plaid-untyped",
-        source_type="plaid",
-        source_origin="untyped_inst",
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    account_type, _ = _dim_type(db, "canon-plaid-un")
+    account_type, _ = _dim_type(account_type_cases, _case_id("plaid_null"))
     assert account_type is None, (
         f"expected NULL, got {account_type!r} — fct_balances would then sign an "
         "unsignable balance as a positive asset"
@@ -460,7 +526,9 @@ def test_genuinely_null_plaid_type_stays_null(db: Database) -> None:
 
 
 @pytest.mark.slow
-def test_legacy_empty_string_routing_number_normalizes_to_null(db: Database) -> None:
+def test_legacy_empty_string_routing_number_normalizes_to_null(
+    account_type_cases: Database,
+) -> None:
     """routing_number has the same legacy-'' failure mode as account_type.
 
     A credit-card statement's <CCACCTFROM> never carries <BANKID>, so pre-fix
@@ -471,24 +539,9 @@ def test_legacy_empty_string_routing_number_normalizes_to_null(db: Database) -> 
     NULL and lets the stale '' win permanently. Verified live: both real Chase
     cards carried routing_number='' in core.dim_accounts before this guard.
     """
-    _ofx_account(
-        db, native_key="ofx-legacy-rn", account_type="CREDITCARD", routing_number=""
-    )
-    _link(
-        db,
-        link_id="lnk-legacy-rn",
-        account_id="canon-legacy-rn",
-        ref_value="ofx-legacy-rn",
-        source_type="ofx",
-        source_origin="vocab_ofx",
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    row = db.execute(
+    row = account_type_cases.execute(
         "SELECT routing_number FROM core.dim_accounts WHERE account_id = ?",
-        ["canon-legacy-rn"],
+        [_case_id("legacy_empty_routing")],
     ).fetchone()
     assert row is not None
     assert row[0] is None, f"expected NULL, got {row[0]!r} — the '' leak persists"
@@ -496,7 +549,9 @@ def test_legacy_empty_string_routing_number_normalizes_to_null(db: Database) -> 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("blank", ["", "   "])
-def test_blank_plaid_text_fields_normalize_to_null(db: Database, blank: str) -> None:
+def test_blank_plaid_text_fields_normalize_to_null(
+    account_type_cases: Database, blank: str
+) -> None:
     """Blank Plaid text columns must reach core as NULL, not ''.
 
     `COALESCE` only replaces NULL, so a '' subtype short-circuits the registry
@@ -504,34 +559,11 @@ def test_blank_plaid_text_fields_normalize_to_null(db: Database, blank: str) -> 
     in display_name's concat, yielding a malformed leading-space label. Same
     empty-string-vs-NULL class this PR fixes for OFX, on the Plaid side.
     """
-    db.execute(
-        """
-        INSERT INTO raw.plaid_accounts
-            (account_id, account_type, account_subtype, institution_name, mask,
-             official_name, source_file, source_type, source_origin,
-             extracted_at, loaded_at)
-        VALUES ('plaid-blank', 'credit', ?, ?, '4242', ?,
-                'plaid://blank', 'plaid', 'blank_inst',
-                '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
-        """,  # noqa: S608  # test fixture
-        [blank, blank, blank],
-    )
-    _link(
-        db,
-        link_id="lnk-plaid-bl",
-        account_id="canon-plaid-bl",
-        ref_value="plaid-blank",
-        source_type="plaid",
-        source_origin="blank_inst",
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    row = db.execute(
+    name = "plaid_blank_empty" if blank == "" else "plaid_blank_spaces"
+    row = account_type_cases.execute(
         "SELECT account_subtype, institution_name, official_name, display_name "
         "FROM core.dim_accounts WHERE account_id = ?",
-        ["canon-plaid-bl"],
+        [_case_id(name)],
     ).fetchone()
     assert row is not None
     assert row[0] is None, f"blank subtype survived as {row[0]!r}"
