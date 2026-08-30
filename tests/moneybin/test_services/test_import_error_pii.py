@@ -354,6 +354,15 @@ def test_a_duplicated_metadata_referent_is_not_echoed_in_full(
         # the two spellings of one number must not disclose to different depths.
         ("CC00 BANK 1234 5678 9012", "…9012"),
         ("CC00BANK123456789012", "…9012"),
+        # Two identifiers in one label. The refusal above keys on a digit
+        # surviving *outside* the mask, and here none does: both runs mask
+        # cleanly and the label ends in an ordinary word, so nothing said the
+        # remainder was still an identifier and both tails reached the name --
+        # eight digits from two distinct numbers, twice what this rung may
+        # disclose. How many identifiers were masked is the other half of the
+        # same question, and a label naming two of them is not a name under
+        # either half.
+        ("Primary 123456789 Secondary 987654321 account", "…4321"),
         # A bare trailing four-digit group is the masked last-four banks print,
         # and parse_account_label lifts it out into `last_four` — so the label
         # arrives already stripped and there is nothing left for the mask to

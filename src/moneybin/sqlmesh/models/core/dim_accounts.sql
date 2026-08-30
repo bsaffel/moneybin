@@ -287,7 +287,7 @@ SELECT
     s.display_name,
     CASE
       WHEN REGEXP_MATCHES(w.account_label, '\p{L}')
-      AND NOT REGEXP_MATCHES(w.account_label, '[0-9]{4}')
+      AND NOT REGEXP_MATCHES(w.account_label, '\p{Nd}{4}')
       AND w.account_label <> 'Unnamed account'
       THEN w.account_label || ' …' || COALESCE(s.last_four, w.last_four_derived)
     END /* The name a person wrote — a sheet's Account column, --account-name, or
@@ -307,6 +307,12 @@ SELECT
        what the masker left of a longer number, and "Checking ****5678" joined
        with "…9012" publishes eight digits of a twelve-digit one. A year inside
        a name cannot be told from a number's tail, so neither is joined.
+       \p{Nd} rather than [0-9], so a run written in another script counts as
+       one too: the importer's masker keeps whatever digits it matched, so a
+       non-Latin account number reaches this column masked to four non-ASCII
+       digits that [0-9]{4} read as none at all. The Python mirror spells this
+       \d, which is already that category, while RE2 reads \d as ASCII -- the
+       two sides mirror each other here only under different source.
        The bare arm below is that case and the no-last-four one.
        The letter test is what keeps this rung for names. An Account column
        mapped straight from the account number is ordinary in a hand-rolled

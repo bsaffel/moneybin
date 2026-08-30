@@ -151,6 +151,33 @@ def test_a_label_that_already_shows_four_digits_is_not_given_four_more() -> None
     )
 
 
+def test_a_four_digit_run_is_recognized_in_any_script() -> None:
+    r"""The digit guard is Unicode-aware for the same reason the letter test is.
+
+    ``_has_letter`` was widened to ``\p{L}`` after ASCII ``[A-Za-z]`` was found
+    silently discarding every non-Latin label. The guard beside it kept
+    ``[0-9]`` and had the same blind spot pointing the other way:
+    ``mask_embedded_account_number`` builds its token out of whatever digits it
+    matched, and Python's ``\d`` is Unicode, so an Arabic-Indic account number
+    masks to ``****٦٧٨٩`` -- which ``[0-9]{4}`` reads as carrying no digits at
+    all. The ladder then appended its own last four beside that residue, which
+    is the eight-digit double disclosure this guard exists to prevent.
+
+    Mirrors ``NOT REGEXP_MATCHES(account_label, '\p{Nd}{4}')``. The SQL spelling
+    cannot be ``\d{4}``: DuckDB's RE2 reads ``\d`` as ASCII ``[0-9]``, so the
+    two sides would have gone on disagreeing under source that looked matched.
+    """
+    assert (
+        derive_display_name(
+            source_label="Primary ****٦٧٨٩ account",
+            institution_name="Test Bank",
+            category="checking",
+            last_four="6789",
+        )
+        == "Primary ****٦٧٨٩ account"
+    )
+
+
 def test_a_label_alone_names_an_account_with_no_last_four() -> None:
     """The discriminator is added when there is one, never invented.
 

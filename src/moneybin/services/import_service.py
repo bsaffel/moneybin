@@ -243,10 +243,21 @@ def _authored_label_parts(label: str) -> tuple[str, str, str | None]:
     code from a real word. Collapsing to the mask is also what the same number
     unspaced already did, so the two spellings stop disclosing to different
     depths.
+
+    Refuses it again when the mask fired more than once, because a label naming
+    two identifiers discloses both of their tails and no digit has to survive
+    outside a token for that to happen: "Primary 123456789 Secondary 987654321
+    account" masks to two clean tokens and ends in an ordinary word, so the
+    residue test above finds nothing wrong with eight digits drawn from two
+    distinct numbers. Both halves ask the one question -- is what is left still
+    an identifier -- and a label that had to mask two of them is not a name
+    under either.
     """
     masked = mask_embedded_account_number(label)
-    if masked != label and any(ch.isdigit() for ch in _MASK_TOKEN.sub(" ", masked)):
-        masked = _MASK_TOKEN.findall(masked)[-1]
+    if masked != label:
+        tokens = _MASK_TOKEN.findall(masked)
+        if len(tokens) > 1 or any(ch.isdigit() for ch in _MASK_TOKEN.sub(" ", masked)):
+            masked = tokens[-1]
     clean_name, last_four = parse_account_label(masked)
     return (mask_embedded_account_number(clean_name), clean_name, last_four)
 

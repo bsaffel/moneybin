@@ -1282,6 +1282,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   passed when it was written. A stored blank loads as the absent value it
   always meant (#446).
 
+  The name a person wrote is masked before it can become a display name, and
+  two gaps let that mask publish more of an account number than the four digits
+  every masked surface already shows. A label carrying *two* long identifiers
+  masked both and then kept both — eight digits, drawn from two distinct
+  numbers — because the guard asked only whether a digit had survived outside a
+  mask, never how many masks there were. Separately, a four-digit run written
+  in a non-Latin script was invisible to the "this label already shows four
+  digits" test, so MoneyBin appended its own last four beside one and published
+  eight again. Both are closed, the second in the SQL model and its Python
+  mirror together (#446).
+
 - **`sql_query` no longer refuses a read-only `SELECT` for a write keyword
   that isn't actually a write.** `SELECT 'export' AS probe` was rejected as
   though it were a real `EXPORT` statement — one character away,

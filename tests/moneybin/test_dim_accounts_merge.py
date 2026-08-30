@@ -306,8 +306,8 @@ def dim_accounts_cases_template(
         )
 
         for native_key, number in (
-            ("tab-label-a", "4001111"),
-            ("tab-label-b", "4002222"),
+            (_case_id("shared_label_a_native"), "4001111"),
+            (_case_id("shared_label_b_native"), "4002222"),
         ):
             _insert_tabular_account(
                 db,
@@ -323,7 +323,7 @@ def dim_accounts_cases_template(
 
         _insert_tabular_account(
             db,
-            native_key="tab-label-no-number",
+            native_key=_case_id("label_no_number_native"),
             account_name="Vacation Fund",
             account_label="Vacation Fund",
             institution_name="Test Bank",
@@ -335,7 +335,7 @@ def dim_accounts_cases_template(
 
         _insert_tabular_account(
             db,
-            native_key="tab-label-non-latin",
+            native_key=_case_id("label_non_latin_native"),
             account_name="Row With A Non-Latin Label",
             account_label="储蓄账户",
             institution_name="Test Bank",
@@ -347,7 +347,7 @@ def dim_accounts_cases_template(
 
         _insert_tabular_account(
             db,
-            native_key="tab-label-sentinel",
+            native_key=_case_id("label_sentinel_native"),
             account_name="Row Whose Label Says Nothing Names It",
             account_label=UNNAMED_ACCOUNT_LABEL,
             institution_name="Test Bank",
@@ -355,6 +355,18 @@ def dim_accounts_cases_template(
             account_number="4001111",
             extracted_at="2024-03-01 00:00:00",
             source_origin=_case_id("label_sentinel_origin"),
+        )
+
+        _insert_tabular_account(
+            db,
+            native_key=_case_id("label_unicode_digits_native"),
+            account_name="Row Whose Masked Tail Is Not Latin",
+            account_label="Primary ****٦٧٨٩ account",
+            institution_name="Test Bank",
+            account_type="SAVINGS",
+            account_number="4001111",
+            extracted_at="2024-03-01 00:00:00",
+            source_origin=_case_id("label_unicode_digits_origin"),
         )
 
         with sqlmesh_context(db) as ctx:
@@ -649,8 +661,8 @@ def test_two_accounts_sharing_one_label_keep_distinct_names(
         str(row[0])
         for row in dim_accounts_cases.execute(
             "SELECT display_name FROM core.dim_accounts "
-            "WHERE account_id IN ('tab-label-a', 'tab-label-b') "
-            "ORDER BY account_id"
+            "WHERE account_id IN (?, ?) ORDER BY account_id",
+            [_case_id("shared_label_a_native"), _case_id("shared_label_b_native")],
         ).fetchall()
     ]
     assert names == ["HOUSEHOLD CHECKING …1111", "HOUSEHOLD CHECKING …2222"], names
@@ -668,7 +680,7 @@ def test_a_label_alone_names_an_account_with_no_number(
     """
     row = dim_accounts_cases.execute(
         "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
-        ["tab-label-no-number"],
+        [_case_id("label_no_number_native")],
     ).fetchone()
     assert row is not None, "account missing from core.dim_accounts"
     assert row[0] == "Vacation Fund"
@@ -693,7 +705,7 @@ def test_a_non_latin_label_names_the_account_through_real_duckdb(
     """
     row = dim_accounts_cases.execute(
         "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
-        ["tab-label-non-latin"],
+        [_case_id("label_non_latin_native")],
     ).fetchone()
     assert row is not None, "account missing from core.dim_accounts"
     assert row[0] == "储蓄账户 …1111"
@@ -716,7 +728,33 @@ def test_the_unnamed_sentinel_is_never_promoted_as_a_source_label(
     """
     row = dim_accounts_cases.execute(
         "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
-        ["tab-label-sentinel"],
+        [_case_id("label_sentinel_native")],
     ).fetchone()
     assert row is not None, "account missing from core.dim_accounts"
     assert row[0] == "Test Bank savings …1111"
+
+
+@pytest.mark.slow
+def test_a_masked_tail_in_another_script_takes_no_second_last_four(
+    dim_accounts_cases: Database,
+) -> None:
+    r"""The model's digit guard reads any script's digits, not only ASCII.
+
+    Companion to the non-Latin *letter* case above, and the same drift caught
+    pointing the other way. ``mask_embedded_account_number`` builds its token
+    from whatever ``\d`` matched, and Python's ``\d`` is Unicode, so an
+    Arabic-Indic account number reaches ``account_label`` masked to
+    ``****٦٧٨٩``. ``[0-9]{4}`` saw no digits there and the with-last-four arm
+    fired anyway, joining ``…1111`` onto a residue that already showed four --
+    eight digits of two numbers, the disclosure the guard is there to stop.
+
+    The two sides had to move together and could not move alike: DuckDB's RE2
+    reads ``\d`` as ASCII, so only ``\p{Nd}`` mirrors Python's ``\d`` here.
+    That is what this test runs against real DuckDB to prove.
+    """
+    row = dim_accounts_cases.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        [_case_id("label_unicode_digits_native")],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "Primary ****٦٧٨٩ account"

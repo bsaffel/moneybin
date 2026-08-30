@@ -68,8 +68,14 @@ def _has_letter(text: str) -> bool:
 #: ``Checking ****5678`` joined with ``…9012`` publishes eight digits of a
 #: twelve-digit number, well past what the last-four convention allows. A year
 #: inside a name is indistinguishable from a number's tail, so neither one is
-#: joined. Mirrors the model's ``NOT REGEXP_MATCHES(account_label, '[0-9]{4}')``.
-_HAS_FOUR_DIGIT_RUN = re.compile(r"[0-9]{4}")
+#: joined. Python's ``\d`` is the Unicode decimal category, so a run written in
+#: another script counts as one: the masker builds its token out of whatever
+#: ``\d`` matched, and ``[0-9]{4}`` read the resulting ``****٦٧٨٩`` as carrying
+#: no digits at all and joined a second four onto it. Mirrors the model's
+#: ``NOT REGEXP_MATCHES(account_label, '\p{Nd}{4}')``, which cannot be spelled
+#: ``\d{4}`` there: DuckDB's RE2 reads that as ASCII ``[0-9]``, so identical
+#: source would have left the two sides disagreeing.
+_HAS_FOUR_DIGIT_RUN = re.compile(r"\d{4}")
 
 
 @lru_cache(maxsize=1)
