@@ -1,10 +1,12 @@
 # Cross-Source Account Identity Resolution
 
-> Last updated: 2026-08-10
+> Last updated: 2026-08-29 — last-four rung no longer requires an
+> institution; the reissue signal requires sequential ledgers (#450);
+> accounts_created reports the stored display name (#446)
 > Status: implemented (architecture M1S.1–.6 + the capture/bind-first
 > corrections M1S.7–.9, all shipped — see [§Decision 8](#decision-8--capture-mutable-labels-and-the-exporter-axis-m1s7-live-test-reconciliation));
 > the full-scale live re-validation this spec was written to unblock (5-account
-> / 279-row WF persona, [§Testing](#testing)) has not yet been re-run — tracked
+> / 279-row one-bank persona, [§Testing](#testing)) has not yet been re-run — tracked
 > as follow-up enrichment, not a capability gap
 > Address: M1S (Ingestion Core)
 > Type: Feature
@@ -32,23 +34,23 @@ Today each loader mints its **own** `account_id`, so one real account becomes on
 `account_link` / `canonical_account` / account-alias concept anywhere in `src/`,
 `src/moneybin/sqlmesh/`, or `docs/specs/`).
 
-Live test on real Wells Fargo data: the same 5 WF accounts imported as **both**
-`.qfx` (279 txns) and `.csv` (279 exact twins). Expected cross-source dedup to
-collapse to 279; got **558**, every row `source_count = 1`. Verified root-cause
+Live test: one bank's accounts imported as **both**
+`.qfx` and `.csv` exact twins. Expected cross-source dedup to collapse to the
+single-source count; got **double**, every row `source_count = 1`. Verified root-cause
 chain:
 
-- `core.fct_transactions` carried **10 distinct `account_id`s for 5 real
-  accounts** (5 ofx + 5 csv). The cross-source dedup blocking join requires
+- `core.fct_transactions` carried **two distinct `account_id`s per real
+  account** (one ofx + one csv). The cross-source dedup blocking join requires
   `a.account_id = b.account_id` (`src/moneybin/matching/scoring.py`, the
   self-join `ON a.account_id = b.account_id`), so it produced **zero** candidate
   pairs. PR #250's exact-key auto-merge
   ([`matching-exact-key-dedup.md`](matching-exact-key-dedup.md)) is correct but
   **can never fire** on real cross-source data — the pairs never reach scoring.
-- `core.dim_accounts` held only the **5 OFX** ids; the **CSV `account_id`s were
-  0-of-5 present** in the dimension — the CSV transactions were *orphaned* from
+- `core.dim_accounts` held only the **OFX** ids; the **CSV `account_id`s were
+  wholly absent** in the dimension — the CSV transactions were *orphaned* from
   the account dimension (an independent integrity bug: net-worth / reports
   mis-state the CSV side).
-- Account-number masking (`****4267`) collapsed the 10 ids to 5 *displays*, which
+- Account-number masking (`****1212`) collapsed the 10 ids to 5 *displays*, which
   is why this looked like "the same 5 accounts" on every read surface.
 
 The **proximate bug** is `ImportService._resolve_account_via_matcher`
@@ -90,7 +92,7 @@ and [§Decision 7](#decision-7--import-time-ux--ax-detect--confirm--remember)).
 label is not a reliable remembered key — a rename mints a duplicate — so
 Decision 8 demotes it to a Tier-B suggestion anchored on last4. The per-format
 note above also understates aggregator exports: Monarch/Tiller account labels
-often embed the last4 (`Daily Expense (...1789)`). Decision 8's capture table is
+often embed the last4 (`Everyday Spending (...7777)`). Decision 8's capture table is
 authoritative.
 
 ## Identity evidence
@@ -244,7 +246,9 @@ provisional_account_id TEXT  NOT NULL,     -- the just-minted source account und
 candidate_account_id   TEXT  NOT NULL,     -- an existing canonical account proposed as the same
 confidence_score       DECIMAL(5, 4),
 match_signals          TEXT,               -- JSON-encoded (per match_decisions convention):
-                                           --   which weak signal matched + its value (institution_last4 / name / institution_reissue)
+                                           --   which weak signal matched + its value
+                                           --   (institution_last4 / last_four / name /
+                                           --    institution_reissue / manual)
 status                 TEXT  NOT NULL,     -- pending | accepted | rejected | reversed
 decided_by             TEXT  NOT NULL,     -- auto | user
 match_reason           TEXT,
@@ -266,6 +270,7 @@ reversed_by            TEXT
 
 - **Candidate signals are not stored on `account_links`.** `institution_last4`
   (OFX `RIGHT(number,4)`, Plaid `mask`, tabular `account_number_masked`),
+  `last_four` (the same match where either side names no institution),
   `account_name`, and `institution_reissue` (same institution, both sides carry
   a last-four and they differ) are *weak signals* the resolver computes live and matches
   against **existing accounts' `last_four` / `institution_slug` / `display_name`
@@ -351,8 +356,10 @@ signal reliability:
    (`persistent_token`, scoped `full_number`)** — safe because step 1 just proved
    no existing account holds them, and it lets a later source bearing the same
    token / scoped number auto-adopt via step 1 instead of minting a duplicate.
-   Then look for existing accounts sharing `institution + last4` (when
-   institution is known), then fuzzy `account_name`, then the **reissue signal** — same
+   Then look for existing accounts sharing a **last four** — under
+   `institution_last4` (0.5) when both sides name the same institution, under
+   `last_four` (0.45) when either names none — then fuzzy `account_name`, then
+   the **reissue signal** — same
    institution where both sides carry a last-four and the two *differ*
    (`institution_reissue`, confidence 0.3) — querying `core.dim_accounts`. The
    reissue signal exists because a replacement card changes its last four by
@@ -385,7 +392,54 @@ signal reliability:
    `propose_existing()` backfill, where it would propose every same-issuer card
    against every other. Keeping the two separate is what lets backfill see a
    vetoed duplicate without drowning in pairwise noise — conflating them made a
-   duplicate the backfill queue used to surface silently invisible:
+   duplicate the backfill queue used to surface silently invisible.
+   Institution is **evidence on the last-four rung, never a precondition for
+   it.** Two accounts that state different banks are still vetoed, but a pair
+   where either side names none is proposed under `last_four` rather than
+   dropped. Requiring a resolved institution silently excluded the tabular path,
+   which names its account only inside a label (`Everyday Spending (...7777)`) and
+   parses no institution from it: the twin it minted carried an exact last four,
+   matched nothing, and both copies counted toward spending and net worth with
+   no proposal to merge them. The two signals stay distinct so the queue can
+   tell "both sides named this bank" from "one side named nothing".
+
+   The reissue signal additionally requires the two ledgers to be
+   **sequential**, which is what a reissue means. Shared institution plus a
+   differing last four is, in an established book, every pair of cards at one
+   bank; without a sequence check the signal proposed pairs that ran
+   concurrently for months, each carrying its own refutation in zero matched
+   transactions over a shared period. A proposal is dropped only when **both**
+   halves of that refutation hold: the ledgers overlap by more than
+   `_REISSUE_MAX_CONCURRENT_DAYS` (30, roughly one statement cycle), *and*
+   `probe_ledger_overlap` finds zero matched transactions across a period both
+   ledgers populated. Only *positive* concurrency drops it — an account with
+   no published ledger keeps its proposal, which is the import-time state the
+   signal was written for.
+
+   The transaction half is not redundant with the date half, and dropping on
+   the dates alone inverts the signal on the case that matters most. A true
+   cross-source twin — one account arriving from two sources — overlaps by
+   construction and holds the same rows, so a date-only drop would withhold
+   exactly the duplicate this queue exists to surface and leave it
+   double-counting. `LedgerOverlap.measurable` carries the other edge: a
+   `comparable` count of zero means no shared period was available to compare,
+   which is absence of evidence rather than evidence of absence, and keeps the
+   proposal.
+
+   The same reading governs an unstated **currency**, which is why this drop
+   passes `unstated_currency_matches=True` to the probe. The probe's default is
+   to treat a one-sided silence as a mismatch, and that default is priced for
+   the caller that *shows* the count: an undercount there weakens the evidence
+   printed beside a proposal that still appears. A caller that suppresses on
+   zero matches inverts the price — the same undercount becomes proof of a
+   disagreement that never happened. A tabular export leaving the column blank
+   beside a feed that states `USD` is precisely the cross-source pair this
+   queue exists to surface, so silence must not refute it. Two *stated* and
+   differing currencies still do: a nominal amount is not a sum of money until
+   a currency names it.
+
+   The pass then branches on how many candidates survived:
+
    - **0 candidates** → done: a new standalone account. Its `last_four` /
      institution / name (captured per Decision 7) become candidate signals for
      *future* imports.
@@ -394,8 +448,8 @@ signal reliability:
      Imports never reach this rung: the Decision 7 gate answers every candidate
      before `resolve()` runs, so the queue's producers are the backfill link
      service and sync. **Never auto-merge on `institution+last4` or name**
-     (Plaid's mask≠number warning + last4-collision risk — two distinct WF
-     accounts could share `4267`).
+     (Plaid's mask≠number warning + last4-collision risk — two distinct
+     accounts at one institution could share `1212`).
 
 | Outcome | signal | action | resulting state |
 |---|---|---|---|
@@ -425,10 +479,25 @@ since it must compute candidates *before* an account exists to compare against.
 Fixing it for the reissue pass alone would leave two candidate-source semantics
 inside one function.
 
+**Manual recovery, until then.** `AccountLinksService.propose_pair` — the
+two-id form of `accounts links run` / `accounts_links_run` — queues the pair
+under signal `manual`, and its existence check reads `app.account_links` as
+well as `core.dim_accounts` (`AccountResolver.knows_account_id`), the same rule
+the binding ladder applies for the same reason. So both halves of the
+one-batch reissue above are nameable the moment the batch ends, without waiting
+for a refresh. This does not close the gap: nothing *proposes* the pair, and a
+duplicate nobody notices stays unnoticed. It only means the recovery exists
+once someone does notice, which is why the surfaces that announce a created
+account or flag a mirrored pair (the import hint, the
+`duplicate_account_overlap` doctor finding) name this form rather than the
+sweep alone.
+
 `institution` is **best-effort metadata**, never a required input: when unknown
-(a bare CSV), the `institution+last4` candidate rung simply doesn't fire and
-resolution falls through to name / mint-new. Thresholds reuse `MatchingSettings`
-(`high_confidence_threshold`, `review_threshold`) — no parallel knobs.
+(a bare CSV), the last-four rung above still fires and the pair surfaces under
+`last_four` rather than `institution_last4`. Silence is not contradiction —
+only two *stated* and differing institutions drop a pair. Thresholds reuse
+`MatchingSettings` (`high_confidence_threshold`, `review_threshold`) — no
+parallel knobs.
 
 **⚠ Reconciled (Decision 8): the strong-ref auto-adopt (step 1) is valid only
 for an upstream-*stable* native key** (OFX `ACCTID`, Plaid token). A CSV/aggregator
@@ -884,16 +953,34 @@ Guard-2 free-text resolution):
     reason silence does — a statement that fills its currency column only on
     foreign rows leaves the domestic ones empty, not NULL.
   - **`confidence_score` is not a review surface.** Its value is fixed per
-    signal (0.5 `institution_last4`, 0.4 `name`, 0.3 `institution_reissue`), so
-    it restates `signal` in a less legible form; no input moves it. The column
-    remains as the audit record of what was written when the proposal was
-    created, and is no longer projected onto any surface — the review queue,
-    the decision history, and the import gate's `account_proposals` all carry
-    `signal` plus the measured overlap instead.
+    signal — 0.5 `institution_last4` and `legacy_pdf_identity`, 0.45
+    `last_four`, 0.4 `name`, 0.3 `institution_reissue`, 0.2 `institution`, 0.1
+    `fallback` — so it restates `signal` in a less legible form; no input moves
+    it. The corroborated and bare last-four rungs are the pair that shows why
+    the number adds nothing a reader wants: 0.5 against 0.45 is the whole
+    difference between "both sides named this bank" and "one side named
+    nothing", which `signal` says outright. A `manual` proposal carries no
+    score at all — `propose_pair` writes NULL because nothing was measured, and
+    any number there would read as a measurement that never happened. The
+    column remains as the audit record of what was written when the proposal
+    was created, and is no longer projected onto any surface — the review
+    queue, the decision history, and the import gate's `account_proposals` all
+    carry `signal` plus the measured overlap instead.
 - **Status lifecycle.** `account_links`: `accepted` (live) / `reversed` (undone).
   `account_link_decisions`: `pending` (awaiting review) → `accepted` (merged onto
   the named candidate) / `rejected` (declined pairing — not re-proposed) /
   `reversed` (a prior decision undone; re-resolution re-proposes).
+
+  "Not re-proposed" binds the *proposer*, not the user. A rejection is the
+  answer to a signal the resolver raised, so the resolver must not raise it
+  again — that is what stops a queue from re-asking a question already
+  answered. `propose_pair` is the user asking, and it re-proposes a rejected
+  pair deliberately: the named-pair form exists for the duplicate no signal
+  reaches, and a past "no" to the resolver's guess is not a standing veto on
+  the user's own knowledge. Treating it as one would leave a real duplicate
+  with no recovery at all, since nothing else can name that pair. Only a
+  `pending` or `accepted` decision blocks, because those are live rather than
+  answered.
 - **Inline discovery.** `import_confirm` / sync results report *"N account-link(s)
   need review"* and point at the queue — exactly how `matches run` ends with *"Run
   review when ready."* The primary, least-astonishing discovery path: you're told
@@ -913,8 +1000,8 @@ Guard-2 free-text resolution):
 ## Decision 6 — AX: a stable non-PII handle to pin account identity
 
 The opaque canonical `account_id` **is** the agent-reachable, stable, non-PII
-handle the masked `****4267` could never be (the session's top AX finding: today
-there is no unmasked agent handle, and `****4267` is ambiguous across sources).
+handle the masked `****1212` could never be (the session's top AX finding: today
+there is no unmasked agent handle, and `****1212` is ambiguous across sources).
 
 - `accounts(view="resolve", query=...)` / `accounts(view="detail", reference=...)`
   return the canonical id; agents pass it to
@@ -978,8 +1065,9 @@ nothing is not a question: on a fresh book there is no second answer available,
 and gating it made a first import of N files cost N confirms that each had one
 legal answer — confirm volume scaling with items instead of with uncertainty.
 Those imports proceed, and every surface names the accounts they created
-(`accounts_created`: the opaque id plus the source's own label, on the CLI, in
-the `import_files` per-file rows, and in the `import_confirm` result). This is
+(`accounts_created`: the opaque id plus the label `core.dim_accounts` stores for
+that account, on the CLI, in the `import_files` per-file rows, and in the
+`import_confirm` result). This is
 what keeps "magic stays visible" true: the two recoveries — rename with
 `accounts set`, merge with `accounts links run` — are named alongside it. Both
 are reachable from either surface; the agent proposes a merge through
@@ -1031,7 +1119,7 @@ enabled for its `actor_kind` (both defined in M1H,
 [`smart-import-confirmation.md`](smart-import-confirmation.md) §"Agent autonomy &
 recovery"). Leaving the proposal for the account-link queue is no longer an
 option: the import stops until it is answered. The agent
-never disambiguates a masked `****4267` — it names the account positionally instead.
+never disambiguates a masked `****1212` — it names the account positionally instead.
 
 An import that minted returns `accounts_created` on the result — per file in
 `import_files`, top-level in `import_confirm` — plus one `actions[]` entry naming
@@ -1039,6 +1127,53 @@ the recoveries. The rows carry `{account_id, display_name}` and never the
 `source_account_key`, so nothing there is masked; the action names no account,
 because `actions[]` is prose the redaction pass does not classify. The agent's
 obligation is to tell the user an account came into existence.
+
+**`display_name` is the stored name, derived, not read back.** The label is the
+one `core.dim_accounts.display_name` will carry — the source's own account
+label, then institution, then subtype-or-type, then last four, in the model's
+own COALESCE order — built at mint time by
+`services/account_display_name.py` from the same `seeds.institutions` and
+`seeds.account_type_map` CSVs the model joins. Derived rather than queried
+because nothing has refreshed when the report is built, and `import_confirm`
+never refreshes at all; agreement between the two derivations is pinned by an
+integration test that imports on all three channels with a real refresh. Four
+consequences follow, and each replaces an earlier design that shipped (#446):
+
+- **Not the source's raw identity fields.** `<ORG>` is a routing code for
+  issuers that publish one (`B1` = Chase), and the file's account-type spelling
+  is the raw vocabulary the type map normalizes. A label built from those named
+  an account the user could not then find, and — carrying no per-account
+  discriminator — two distinct accounts returned one identical string.
+- **The file's own account name is the top derived rung.** A sheet's Account
+  column, `--account-name`, and Plaid's per-account `name` are the only names a
+  person authored, and `moneybin accounts` already prints institution and type
+  in their own columns beside the name — so they outrank the institution and
+  type an assembled label would spend itself on. A label with no digits of its
+  own still appends the last four, exactly as every arm below it does: a chosen
+  name is not a unique one, Plaid sends the institution's own per-account name,
+  and a household's two checking accounts routinely carry the same product name
+  from their bank. Naming both of them that would reinstate the collision above,
+  and `AccountService.resolve_strict` then raises `AmbiguousAccountError` for a
+  name reference that resolved before. A label already holding a four-digit run
+  takes nothing more: four digits is the last-four unit, so such a label either
+  states the account's own or is what the masker left of a longer number, and
+  `Checking ****5678` joined with `…9012` publishes eight digits of a
+  twelve-digit one. A year inside a name cannot be told from a number's tail,
+  so neither is joined.
+  The importer writes the display-safe form to `raw.tabular_accounts.
+  account_label` (trailing last-four token stripped, embedded account numbers
+  masked) and the model reads that column; nothing masks in SQL. A label
+  carrying no letter is the account number under the name column's heading, and
+  the rung stands down for it.
+- **A synthesized name never earns that rung.** An import with no authored name
+  still needs a key and builds a placeholder from the filename. That names the
+  upload, so `account_label` stays NULL and the account is named from its bank
+  fields — otherwise renaming a file would rename the account.
+- **A caller's `account_metadata` refines the rest.** `last_four` and
+  `account_subtype` reach `app.account_settings`, which the model COALESCEs
+  ahead of everything derived, so the report folds them in rather than
+  announcing the pre-override label. `display_name` there is the explicit user
+  override and outranks even the source's label.
 
 **`proposal_ref` — the referent that survives the mask.** `source_account_key`
 is an `ACCOUNT_IDENTIFIER` (CRITICAL), so the MCP envelope masks it: the caller
@@ -1181,7 +1316,7 @@ change the architecture (canonical surrogate + two tables + ladder).
    `account_bindings`, never exercising the bridge.
 2. **A mutable CSV label is treated as a hard key.** The CSV `source_native` ref
    is `slugify(account_name)`. An aggregator account label is user-mutable
-   upstream (renaming "Daily Expense" → "Fun Money" in Monarch); the slug then
+   upstream (renaming "Everyday Spending" → "Fun Money" in Monarch); the slug then
    misses and the resolver **mints a duplicate** instead of re-associating.
 3. **The exporter name masquerades as the institution.** For a tabular import
    the per-account `institution` is resolved from `matched_format.
@@ -1203,7 +1338,7 @@ All identity signals collapse into three tiers by how much trust each earns:
   key (a CSV/aggregator account label) is **explicitly excluded** — it never
   auto-adopts (failure mode 2).
 - **Tier B — weak signals, one review bar.** Filename-parsed name/last4, the
-  account-column value (`Daily Expense (...1789)`), a user-typed `account_name`,
+  account-column value (`Everyday Spending (...7777)`), a user-typed `account_name`,
   a masked-number column. **All parsed uniformly, all feed candidates into one
   confirm/mapping step, none auto-binds.** last4 corroborates and makes a
   candidate recognizable; it is never a key (Plaid's mask≠number rule).
@@ -1233,13 +1368,13 @@ collapse onto, by construction.
 The full number / `full_number` `ref_value` is CRITICAL/PII: derive `RIGHT(·,4)`
 inside the model and expose only the last 4; never surface the full number in
 `dim`. `display_name`'s last4 fragment reads the same derived value (fixes the
-bare-"WF CHECKING" display regression).
+bare-"TESTBANK CHECKING" display regression).
 
 ### The account-label parser (Tier B)
 
 One parser extracts `(name, last_four)` from every Tier-B string — the
 account-column value, the filename, a typed name — tolerant of the common last4
-forms (`(...1789)`, `····1789`, `x1789`, "ending 1789"). Its output feeds the
+forms (`(...7777)`, `····7777`, `x7777`, "ending 7777"). Its output feeds the
 candidate pass (name + last4) and the new-account capture. Filename seeds a
 *proposal* but is never a *remember* key (timestamped exports drift).
 
@@ -1251,7 +1386,7 @@ suggestion + display:
 
 - exact (label + last4) → idempotent silent re-adopt.
 - last4 same, label changed → **re-association suggestion** (the rename case:
-  "Fun Money (...1789)" ↔ "Daily Expense (...1789)"); confirm updates the
+  "Fun Money (...7777)" ↔ "Everyday Spending (...7777)"); confirm updates the
   remembered label. Never a silent merge, never a new mint.
 - label same, last4 changed → surface as suspicious (a reused name pointing at a
   different account).
@@ -1295,18 +1430,18 @@ A single-account file with no caller-supplied identity (no `--account-name`/`--a
 
 ## Idempotency, reverse-order imports, correction
 
-Worked through the WF case (`institution="WF"`, checking …4267/…1789/…9940,
-savings …5585/…7070):
+Worked through a one-bank case (`institution="TESTBANK"`, three checking
+accounts and two savings):
 
 - **Re-import** the same `.qfx` → `source_native` mapping hit → same canonical id.
   No new account, no doubled txns.
 - **Reverse order (CSV before OFX).** CSV imports first: no strong ref → mint
-  `C1` + accepted `source_native`(csv)→C1; `last_four`(4267)/institution captured
+  `C1` + accepted `source_native`(csv)→C1; `last_four`(1212)/institution captured
   on `C1`. OFX of the same account imports: its scoped `full_number` has no
   accepted mapping yet, but OFX's last4 matches `C1`'s captured `last_four` →
   **pending decision** (last4-only, never auto-merge) → confirmed **at import**
-  (the OFX `import_confirm` proposes "this looks like your existing WF checking
-  …4267") or later in the queue → on accept, OFX's mapping re-points to `C1`; both
+  (the OFX `import_confirm` proposes "this looks like your existing checking
+  …1212") or later in the queue → on accept, OFX's mapping re-points to `C1`; both
   sources share `C1`; the 279 twins dedup. (Real last4 collision → user rejects →
   two distinct accounts.)
 - **Correction** — `accounts links undo` reverses a decision (audited);
@@ -1442,15 +1577,17 @@ nobody. Registering it means declaring the tier in the same change.
   states no identity and still asks. CLI + MCP parity.
 - **Scenario** (`tests/scenarios/test_account_identity_cross_source.py`,
   `make test-scenarios` — data-shape change): `account-identity-cross-source`
-  proves the regression fix with a representative 2-account fixture — 2 WF
-  accounts imported as 2 `.qfx` + 2 `.csv` twins (12 raw rows across 4 source
-  accounts), bound onto the qfx-minted canonical accounts, resolve to **2
+  proves the regression fix with a representative 2-account fixture — 2
+  same-institution accounts imported as 2 `.qfx` + 2 `.csv` twins (12 raw rows
+  across 4 source accounts), bound onto the qfx-minted canonical accounts,
+  resolve to **2
   canonical accounts** and **6 `core.fct_transactions` rows at
   `source_count = 2`** (the import-validation live test, now reproducible). The
   hand-derived counts make over/under-merge detectable per the
-  scenario-expectations rule. Scaling this to the full 5-account / 279-row WF
-  persona (which needs a twin generator) is tracked as follow-up enrichment, not
-  a capability gap — the collapse mechanism is identical at any N.
+  scenario-expectations rule. Scaling this to the full 5-account / 279-row
+  one-bank persona (which needs a twin generator) is tracked as follow-up
+  enrichment, not a capability gap — the collapse mechanism is identical at
+  any N.
 - **Scenario** (reissue + document identity): the same file proves a reissued
   card reaches the review queue through a real import — the fixture's last four
   differs from the original, so `institution_last4` is structurally unable to
@@ -1508,8 +1645,8 @@ scope.)
   unifies (noted in [`matching-exact-key-dedup.md`](matching-exact-key-dedup.md)).
 - **Account merge** — the deferred `account-management.md` operation, now a link
   re-point.
-- **The Ingestion-Complete validation gate** — the 5-WF re-import test (279 @
-  `source_count = 2`) resumes once M1S lands.
+- **The Ingestion-Complete validation gate** — the 5-account re-import test
+  (279 @ `source_count = 2`) resumes once M1S lands.
 
 ## Out of scope
 
@@ -1524,11 +1661,11 @@ scope.)
 
 ## Deidentified worked example (fixture seed)
 
-Real WF case — names faithful, numbers real-but-public: 5 accounts — checking
-…4267 (244 txns), …1789 (6), …9940 (16); savings …5585 (7), …7070 (6). Each
+Synthetic one-bank case — 5 accounts: checking …1212, …7777, …3030; savings
+…4040, …5050. Each
 imported as `.qfx` and `.csv` produced two `account_id`s sharing the same masked
-`****<last4>` display. The bridge that should link them: `institution="WF"` +
-`last4` (OFX `RIGHT(number,4)` == Plaid `mask` == the `4267` in the CSV's
-`"WF CHECKING 4267"` name). **Collision risk to design against:** two distinct WF
-accounts could share a last4 → that pair must go to the review queue, never
-auto-merge.
+`****<last4>` display. The bridge that should link them:
+`institution="TESTBANK"` + `last4` (OFX `RIGHT(number,4)` == Plaid `mask` ==
+the `1212` in the CSV's `"TESTBANK CHECKING 1212"` name). **Collision risk to
+design against:** two distinct accounts at one institution could share a last4
+→ that pair must go to the review queue, never auto-merge.

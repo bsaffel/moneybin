@@ -3051,6 +3051,42 @@ def test_mirrored_accounts_at_one_institution_warn(
 
 
 @pytest.mark.unit
+def test_the_overlap_finding_publishes_a_recovery_for_the_case_it_predicts(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The finding already warns the sweep may propose nothing — so it must not stop there.
+
+    This check measures transaction overlap; identity resolution matches on
+    institution, last four and name. The detail says so itself, which means it
+    names a remedy it knows can come back empty. The two-id form of
+    ``accounts links run`` is what covers exactly that residue, and a finding
+    that ends at the sweep leaves the user holding a confirmed duplicate and no
+    next command.
+    """
+    import re
+
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+
+    result = _overlap_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.detail is not None
+    assert re.search(r"`moneybin accounts links run <[^>]+> <[^>]+>`", result.detail), (
+        f"no two-id form published in {result.detail!r}"
+    )
+    assert_published_commands_resolve(result.detail)
+
+
+@pytest.mark.unit
 def test_mirrored_accounts_at_different_institutions_pass(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

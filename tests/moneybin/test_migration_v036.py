@@ -5,15 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import pytest
-
 from moneybin.database import Database
 from moneybin.sql.migrations.V036__rename_iso_currency_code_to_currency_code import (
     migrate,
 )
 from tests.moneybin.migration_helpers import column_exists, insert_rows, run_migration
-
-pytestmark = pytest.mark.fresh_db
 
 _ROWS: list[tuple[str, str | None]] = [
     ("acct_checking01", "USD"),

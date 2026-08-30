@@ -20,6 +20,7 @@ from typing import Any, Literal, Protocol, cast
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.matching.hashing import gold_key_unmatched
 from moneybin.mcp.write_contracts import (
     AnnotationRequest,
     NoteAdd,
@@ -105,26 +106,6 @@ def _state_digest(value: object) -> str:
     """Hash live preflight state without exposing annotation contents."""
     encoded = json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
-
-
-def _predict_manual_gold_key(source_transaction_id: str, account_id: str) -> str:
-    """Pre-compute the gold ``transaction_id`` the SQLMesh pipeline will assign.
-
-    Mirrors the unmatched-row branch of ``int_transactions__matched`` after the
-    ADR-015 / RD-2 re-key, which hashes the immutable source identity (NOT the
-    mutable canonical ``account_id``):
-    ``SUBSTRING(SHA256(source_type||'|'||source_origin||'|'||source_account_key||'|'||source_transaction_id), 1, 16)``.
-    For manual rows ``source_origin='user'`` and ``source_account_key`` is the
-    stored ``account_id``. Manual rows are exempt from the matcher (spec Req 6 /
-    Task 8) so this branch is the only one they hit. If either side of this hash
-    drifts from the SQL, the pre-attached user-category row will silently fail to
-    join in ``core.fct_transactions``.
-    """
-    raw = (
-        f"{_MANUAL_SOURCE_TYPE}|{_MANUAL_SOURCE_ORIGIN}|"
-        f"{account_id}|{source_transaction_id}"
-    )
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1124,8 +1105,11 @@ class TransactionService:
         try:
             for entry in prepared:
                 source_transaction_id = "manual_" + uuid.uuid4().hex[:12]
-                transaction_id = _predict_manual_gold_key(
-                    source_transaction_id, entry["account_id"]
+                transaction_id = gold_key_unmatched(
+                    _MANUAL_SOURCE_TYPE,
+                    _MANUAL_SOURCE_ORIGIN,
+                    entry["account_id"],
+                    source_transaction_id,
                 )
                 # Persist the predicted ``transaction_id`` alongside the source
                 # id so the doctor ``orphan_app_state`` audit can join on it to
@@ -1133,7 +1117,7 @@ class TransactionService:
                 # row in the window between ``transactions_create`` and the
                 # next ``refresh_run`` (which materializes the row in
                 # ``core.fct_transactions``). Migration V026 added the column;
-                # the hash here mirrors ``_predict_manual_gold_key`` exactly.
+                # The canonical helper mirrors the SQLMesh unmatched-row hash.
                 self._db.conn.execute(
                     f"""
                     INSERT INTO {MANUAL_TRANSACTIONS.full_name} (

@@ -281,7 +281,7 @@ def test_inbox_drain_json_pending_is_medium_sensitivity(
                         "candidates": [
                             {
                                 "account_id": "9f8e7d6c5b4a",
-                                "display_name": "Wells Fargo Checking ••9940",
+                                "display_name": "Wells Fargo Checking ••3030",
                             }
                         ],
                     }

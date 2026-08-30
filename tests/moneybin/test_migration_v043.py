@@ -24,8 +24,6 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V043__create_app_security_price_overrides import migrate
 from tests.moneybin.migration_helpers import run_migration
 
-pytestmark = pytest.mark.fresh_db
-
 
 def _insert_override(
     db: Database,

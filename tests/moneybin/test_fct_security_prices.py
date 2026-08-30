@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -104,6 +107,7 @@ def _insert_manual_trade(
     quantity: str | None = "10",
     currency_code: str = "USD",
     txn_type: str = "buy",
+    origin: str = "item_1",
     created_at: str | None = None,
 ) -> None:
     """A manual ledger event — the trade-implied price's real upstream mechanism.
@@ -114,14 +118,15 @@ def _insert_manual_trade(
     db.execute(
         """
         INSERT INTO raw.manual_investment_transactions (
-            source_transaction_id, import_id, account_id, security_id,
+            source_transaction_id, source_origin, import_id, account_id, security_id,
             security_ref, type, trade_date, quantity, price, amount, fees,
             created_by, investment_transaction_id, currency_code, created_at
-        ) VALUES (?, 'imp_1', 'acc_1', ?, 'VTI', ?, ?::DATE, ?, ?, -1000.00, 0.00,
+        ) VALUES (?, ?, 'imp_1', 'acc_1', ?, 'VTI', ?, ?::DATE, ?, ?, -1000.00, 0.00,
                   'test', ?, ?, COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
         """,  # noqa: S608  # test fixture, not executing user SQL
         [
             txn_id,
+            origin,
             security_id,
             txn_type,
             trade_date,
@@ -134,37 +139,352 @@ def _insert_manual_trade(
     )
 
 
-@pytest.mark.slow
-def test_one_row_per_security_date_currency(db: Database) -> None:
-    """Two Plaid connections reporting the same security-date collapse to one row."""
-    _insert_price(db, key="sec_vti", close="214.55", origin="item_a")
-    _insert_price(db, key="sec_vti", close="214.60", origin="item_b")
-    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
+@pytest.fixture(scope="module")
+def security_price_cases_template(
+    tmp_path_factory: pytest.TempPathFactory,
+    request: pytest.FixtureRequest,
+) -> Path:
+    """One encrypted, planned baseline over the independent price-resolution cases."""
+    secret_store = MagicMock()
+    secret_store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    db = Database(
+        tmp_path_factory.mktemp("fct_security_prices") / "test.duckdb",
+        secret_store=secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
+    request.addfinalizer(db.close)
+
+    # Every provider key, canonical ID, and origin is case-scoped so the one plan
+    # builds independent grains rather than allowing one scenario to satisfy another.
+    _insert_price(db, key="mb21_one_row_key", close="214.55", origin="mb21_one_row_a")
+    _insert_price(db, key="mb21_one_row_key", close="214.60", origin="mb21_one_row_b")
+    _accept_link(db, key="mb21_one_row_key", canonical_id="mb21_one_row_security")
+
+    _insert_price(
+        db,
+        key="mb21_stable_key",
+        close="214.55",
+        origin="mb21_stable_b",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _insert_price(
+        db,
+        key="mb21_stable_key",
+        close="214.60",
+        origin="mb21_stable_a",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _accept_link(db, key="mb21_stable_key", canonical_id="mb21_stable_security")
+
+    _insert_price(
+        db,
+        key="mb21_split_fresh_a",
+        close="2000.00",
+        origin="mb21_split_fresh",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _insert_price(
+        db,
+        key="mb21_split_fresh_b",
+        close="200.00",
+        origin="mb21_split_fresh",
+        extracted_at="2026-07-15 10:00:00",
+    )
+    _accept_link(db, key="mb21_split_fresh_a", canonical_id="mb21_split_fresh_security")
+    _accept_link(db, key="mb21_split_fresh_b", canonical_id="mb21_split_fresh_security")
+
+    _insert_price(
+        db,
+        key="mb21_split_withhold_a",
+        close="2000.00",
+        origin="mb21_split_withhold",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _insert_price(
+        db,
+        key="mb21_split_withhold_b",
+        close="200.00",
+        origin="mb21_split_withhold",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _accept_link(
+        db, key="mb21_split_withhold_a", canonical_id="mb21_split_withhold_security"
+    )
+    _accept_link(
+        db, key="mb21_split_withhold_b", canonical_id="mb21_split_withhold_security"
+    )
+
+    _insert_price(
+        db,
+        key="mb21_same_ref_key",
+        close="220.00",
+        quote_currency="USD",
+        origin="mb21_same_ref",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _insert_price(
+        db,
+        key="mb21_same_ref_key",
+        close="205.00",
+        quote_currency="usd",
+        origin="mb21_same_ref",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _accept_link(db, key="mb21_same_ref_key", canonical_id="mb21_same_ref_security")
+
+    _insert_price(
+        db,
+        key="mb21_adjusted_key",
+        close="107.25",
+        basis="split_adjusted",
+        origin="mb21_adjusted",
+    )
+    _accept_link(db, key="mb21_adjusted_key", canonical_id="mb21_adjusted_security")
+
+    _insert_price(
+        db,
+        key="mb21_dates_key",
+        close="214.55",
+        origin="mb21_dates",
+        price_date="2026-07-15",
+    )
+    _insert_price(
+        db,
+        key="mb21_dates_key",
+        close="215.10",
+        origin="mb21_dates",
+        price_date="2026-07-16",
+    )
+    _accept_link(db, key="mb21_dates_key", canonical_id="mb21_dates_security")
+
+    _insert_price(
+        db,
+        key="mb21_currency_fresh_key",
+        close="210.00",
+        quote_currency="usd",
+        origin="mb21_currency_fresh",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _insert_price(
+        db,
+        key="mb21_currency_fresh_key",
+        close="215.00",
+        quote_currency="USD",
+        origin="mb21_currency_fresh",
+        extracted_at="2026-07-15 10:00:00",
+    )
+    _accept_link(
+        db,
+        key="mb21_currency_fresh_key",
+        canonical_id="mb21_currency_fresh_security",
+    )
+
+    _insert_price(
+        db,
+        key="mb21_currency_close_key",
+        close="220.00",
+        quote_currency="USD",
+        origin="mb21_currency_close",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _insert_price(
+        db,
+        key="mb21_currency_close_key",
+        close="205.00",
+        quote_currency="usd",
+        origin="mb21_currency_close",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _accept_link(
+        db,
+        key="mb21_currency_close_key",
+        canonical_id="mb21_currency_close_security",
+    )
+
+    _seed_security(db, security_id="mb21_override_security")
+    _insert_price(
+        db,
+        key="mb21_override_key",
+        close="214.55",
+        origin="mb21_override",
+        extracted_at="2026-07-20 10:00:00",
+    )
+    _accept_link(db, key="mb21_override_key", canonical_id="mb21_override_security")
+    _insert_override(
+        db,
+        security_id="mb21_override_security",
+        close="300.00",
+        updated_at="2026-07-15 08:00:00",
+    )
+
+    _seed_security(db, security_id="mb21_override_dates_security")
+    _insert_override(
+        db,
+        security_id="mb21_override_dates_security",
+        close="300.00",
+        price_date="2026-07-15",
+    )
+    _insert_price(
+        db,
+        key="mb21_override_dates_key",
+        close="214.55",
+        origin="mb21_override_dates",
+        price_date="2026-07-16",
+    )
+    _accept_link(
+        db,
+        key="mb21_override_dates_key",
+        canonical_id="mb21_override_dates_security",
+    )
+
+    _seed_security(db, security_id="mb21_feedless_security")
+    _insert_override(db, security_id="mb21_feedless_security", close="42.50")
+
+    _seed_security(db, security_id="mb21_trade_security")
+    _insert_manual_trade(
+        db,
+        txn_id="mb21_trade_buy",
+        security_id="mb21_trade_security",
+        price="137.25",
+        origin="mb21_trade",
+    )
+
+    _seed_security(db, security_id="mb21_provider_trade_security")
+    _insert_price(
+        db,
+        key="mb21_provider_trade_key",
+        close="214.55",
+        origin="mb21_provider_trade",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _accept_link(
+        db,
+        key="mb21_provider_trade_key",
+        canonical_id="mb21_provider_trade_security",
+    )
+    _insert_manual_trade(
+        db,
+        txn_id="mb21_provider_trade_buy",
+        security_id="mb21_provider_trade_security",
+        price="137.25",
+        origin="mb21_provider_trade",
+        created_at="2026-07-20 09:00:00",
+    )
+
+    _seed_security(db, security_id="mb21_fills_security")
+    _insert_manual_trade(
+        db,
+        txn_id="mb21_fill_a",
+        security_id="mb21_fills_security",
+        price="250.00",
+        origin="mb21_fills",
+        created_at="2026-07-15 09:00:00",
+    )
+    _insert_manual_trade(
+        db,
+        txn_id="mb21_fill_b",
+        security_id="mb21_fills_security",
+        price="240.00",
+        origin="mb21_fills",
+        created_at="2026-07-15 09:00:00",
+    )
+
+    _seed_security(db, security_id="mb21_zero_security")
+    _insert_manual_trade(
+        db,
+        txn_id="mb21_zero_dividend",
+        security_id="mb21_zero_security",
+        price="0",
+        txn_type="reinvest",
+        origin="mb21_zero",
+    )
+
+    _seed_security(db, security_id="mb21_dividend_security")
+    _insert_manual_trade(
+        db,
+        txn_id="mb21_dividend_buy",
+        security_id="mb21_dividend_security",
+        price="290.00",
+        trade_date="2026-07-15",
+        txn_type="buy",
+        origin="mb21_dividend",
+    )
+    _insert_manual_trade(
+        db,
+        txn_id="mb21_dividend_rate",
+        security_id="mb21_dividend_security",
+        price="0.91",
+        trade_date="2026-07-16",
+        txn_type="dividend",
+        origin="mb21_dividend",
+    )
+
+    _insert_manual_trade(
+        db,
+        txn_id="mb21_unbound_trade",
+        security_id=None,
+        price="137.25",
+        origin="mb21_unbound",
+    )
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
+    db.close()
+    return db.path
+
+
+@pytest.fixture()
+def security_price_cases(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+    security_price_cases_template: Path,
+) -> Database:
+    """An isolated, writable copy of the shared planned baseline."""
+    path = tmp_path / "test.duckdb"
+    shutil.copy(security_price_cases_template, path)
+    secret_store = MagicMock()
+    secret_store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    db = Database(
+        path,
+        secret_store=secret_store,
+        no_auto_upgrade=True,
+        assume_initialized=True,
+        read_only=False,
+    )
+    request.addfinalizer(db.close)
+    return db
+
+
+@pytest.mark.slow
+def test_one_row_per_security_date_currency(security_price_cases: Database) -> None:
+    """Two Plaid connections reporting the same security-date collapse to one row."""
+    db = security_price_cases
 
     row = db.execute(
         "SELECT security_id, quote_currency, source_type, price_basis, updated_at "
-        "FROM core.fct_security_prices"
+        "FROM core.fct_security_prices WHERE security_id = 'mb21_one_row_security'"
     ).fetchone()
     # Full-row shape check — the four given tests otherwise only ever assert on
     # `close`/COUNT, which would miss a bug that swapped or dropped one of the
     # model's other declared output columns.
     assert row is not None
     security_id, quote_currency, source, price_basis, updated_at = row
-    assert security_id == "canonvti0000001"
+    assert security_id == "mb21_one_row_security"
     assert quote_currency == "USD"
     assert source == "plaid"
     assert price_basis == "raw"
     assert updated_at is not None
 
-    rows = db.execute("SELECT COUNT(*) FROM core.fct_security_prices").fetchall()
+    rows = db.execute(
+        "SELECT COUNT(*) FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_one_row_security'"
+    ).fetchall()
     assert rows[0][0] == 1
 
 
 @pytest.mark.slow
-def test_winner_is_stable_across_rebuilds(db: Database) -> None:
+def test_winner_is_stable_across_rebuilds(security_price_cases: Database) -> None:
     """The pick is deterministic — source_origin breaks the tie extracted_at leaves.
 
     Without that key a rebuild can return a different close from identical inputs,
@@ -179,37 +499,28 @@ def test_winner_is_stable_across_rebuilds(db: Database) -> None:
     214.60. Inserting the winner first, or making it the cheaper row, would let
     those mutants pass by coincidence.
     """
-    _insert_price(
-        db,
-        key="sec_vti",
-        close="214.55",
-        origin="item_b",
-        extracted_at="2026-07-15 09:00:00",
-    )
-    _insert_price(
-        db,
-        key="sec_vti",
-        close="214.60",
-        origin="item_a",
-        extracted_at="2026-07-15 09:00:00",
-    )
-    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
-
-    seen: list[Decimal] = []
-    for _ in range(2):
-        with sqlmesh_context(db) as ctx:
-            ctx.plan(auto_apply=True, no_prompts=True)
-        row = db.execute("SELECT close FROM core.fct_security_prices").fetchone()
-        assert row is not None
-        seen.append(row[0])
-
-    assert seen[0] == seen[1] == Decimal("214.6000000000"), (
+    db = security_price_cases
+    initial = db.execute(
+        "SELECT close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_stable_security'"
+    ).fetchone()
+    assert initial is not None
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rebuilt = db.execute(
+        "SELECT close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_stable_security'"
+    ).fetchone()
+    assert rebuilt is not None
+    assert initial == rebuilt == (Decimal("214.6000000000"),), (
         "item_a sorts first on source_origin, the only key not tied between the two"
     )
 
 
 @pytest.mark.slow
-def test_split_day_key_churn_resolves_by_freshness_not_key_sort(db: Database) -> None:
+def test_split_day_key_churn_resolves_by_freshness_not_key_sort(
+    security_price_cases: Database,
+) -> None:
     """A retired provider ref must not outrank its successor on the changeover day.
 
     app.security_links is N:1: Plaid retires a security_id on a corporate action and
@@ -227,33 +538,21 @@ def test_split_day_key_churn_resolves_by_freshness_not_key_sort(db: Database) ->
     fixture whose correct answer coincided with insertion or key order could not
     discriminate that at all.
     """
-    _insert_price(
-        db,
-        key="sec_a",
-        close="2000.00",
-        origin="item_1",
-        extracted_at="2026-07-15 09:00:00",
-    )
-    _insert_price(
-        db,
-        key="sec_b",
-        close="200.00",
-        origin="item_1",
-        extracted_at="2026-07-15 10:00:00",
-    )
-    _accept_link(db, key="sec_a", canonical_id="canonvti0000001")
-    _accept_link(db, key="sec_b", canonical_id="canonvti0000001")
+    db = security_price_cases
 
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    staged = db.execute("SELECT COUNT(*) FROM prep.stg_security_prices").fetchone()
+    staged = db.execute(
+        "SELECT COUNT(*) FROM prep.stg_security_prices "
+        "WHERE security_id = 'mb21_split_fresh_security'"
+    ).fetchone()
     assert staged is not None and staged[0] == 2, (
         "both provider refs must resolve to the one canonical security for this to "
         "exercise the core-layer tie-break rather than an upstream filter"
     )
 
-    rows = db.execute("SELECT close FROM core.fct_security_prices").fetchall()
+    rows = db.execute(
+        "SELECT close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_split_fresh_security'"
+    ).fetchall()
     assert rows == [(Decimal("200.0000000000"),)], (
         "the successor ref carries the fresher observation and the post-split close; "
         "the retired ref's pre-split 2000.00 must not win on key sort"
@@ -261,7 +560,9 @@ def test_split_day_key_churn_resolves_by_freshness_not_key_sort(db: Database) ->
 
 
 @pytest.mark.slow
-def test_split_day_key_churn_in_one_pull_withholds_the_grain(db: Database) -> None:
+def test_split_day_key_churn_in_one_pull_withholds_the_grain(
+    security_price_cases: Database,
+) -> None:
     """When both refs arrive in one sync, freshness cannot decide — so withhold the grain.
 
     test_split_day_key_churn_resolves_by_freshness_not_key_sort only resolves because its
@@ -278,33 +579,21 @@ def test_split_day_key_churn_in_one_pull_withholds_the_grain(db: Database) -> No
     key sort decide publishes 2000.00 — the exact wrong answer. A single-row result of ANY
     close means the guard is gone.
     """
-    _insert_price(
-        db,
-        key="sec_a",
-        close="2000.00",
-        origin="item_1",
-        extracted_at="2026-07-15 09:00:00",
-    )
-    _insert_price(
-        db,
-        key="sec_b",
-        close="200.00",
-        origin="item_1",
-        extracted_at="2026-07-15 09:00:00",
-    )
-    _accept_link(db, key="sec_a", canonical_id="canonvti0000001")
-    _accept_link(db, key="sec_b", canonical_id="canonvti0000001")
+    db = security_price_cases
 
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    staged = db.execute("SELECT COUNT(*) FROM prep.stg_security_prices").fetchone()
+    staged = db.execute(
+        "SELECT COUNT(*) FROM prep.stg_security_prices "
+        "WHERE security_id = 'mb21_split_withhold_security'"
+    ).fetchone()
     assert staged is not None and staged[0] == 2, (
         "both refs must resolve to the one canonical security for this to exercise the "
         "core-layer withhold rather than an upstream filter"
     )
 
-    resolved = db.execute("SELECT COUNT(*) FROM core.fct_security_prices").fetchone()
+    resolved = db.execute(
+        "SELECT COUNT(*) FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_split_withhold_security'"
+    ).fetchone()
     assert resolved is not None and resolved[0] == 0, (
         "a freshness-tied conflict between two provider refs is unresolvable — the grain "
         "must withhold, not settle the split by key sort"
@@ -312,7 +601,9 @@ def test_split_day_key_churn_in_one_pull_withholds_the_grain(db: Database) -> No
 
 
 @pytest.mark.slow
-def test_same_pull_casing_duplicate_of_one_ref_still_resolves(db: Database) -> None:
+def test_same_pull_casing_duplicate_of_one_ref_still_resolves(
+    security_price_cases: Database,
+) -> None:
     """The same-pull withhold is scoped to DIFFERENT refs — one ref's casing dup is not a churn.
 
     Adversarial partner to test_split_day_key_churn_in_one_pull_withholds_the_grain: two
@@ -323,27 +614,11 @@ def test_same_pull_casing_duplicate_of_one_ref_still_resolves(db: Database) -> N
     that keyed on any close conflict — rather than a conflict spanning distinct provider
     refs — would wrongly blank this grain.
     """
-    _insert_price(
-        db,
-        key="sec_vti",
-        close="220.00",
-        quote_currency="USD",
-        extracted_at="2026-07-15 09:00:00",
-    )
-    _insert_price(
-        db,
-        key="sec_vti",
-        close="205.00",
-        quote_currency="usd",
-        extracted_at="2026-07-15 09:00:00",
-    )
-    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    db = security_price_cases
 
     rows = db.execute(
-        "SELECT quote_currency, close FROM core.fct_security_prices"
+        "SELECT quote_currency, close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_same_ref_security'"
     ).fetchall()
     assert rows == [("USD", Decimal("205.0000000000"))], (
         "one ref's casing duplicate must resolve by close, not withhold as a churn"
@@ -351,34 +626,34 @@ def test_same_pull_casing_duplicate_of_one_ref_still_resolves(db: Database) -> N
 
 
 @pytest.mark.slow
-def test_adjusted_rows_are_excluded_from_the_resolved_series(db: Database) -> None:
+def test_adjusted_rows_are_excluded_from_the_resolved_series(
+    security_price_cases: Database,
+) -> None:
     """An adjusted close stops being correct after the next corporate action.
 
     It stays visible in raw and staging; it is not eligible to value a holding.
     """
-    _insert_price(db, key="sec_vti", close="107.25", basis="split_adjusted")
-    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
+    db = security_price_cases
 
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    resolved = db.execute("SELECT COUNT(*) FROM core.fct_security_prices").fetchone()
+    resolved = db.execute(
+        "SELECT COUNT(*) FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_adjusted_security'"
+    ).fetchone()
     assert resolved is not None and resolved[0] == 0
-    staged = db.execute("SELECT COUNT(*) FROM prep.stg_security_prices").fetchone()
+    staged = db.execute(
+        "SELECT COUNT(*) FROM prep.stg_security_prices "
+        "WHERE security_id = 'mb21_adjusted_security'"
+    ).fetchone()
     assert staged is not None and staged[0] == 1, "adjusted rows stay visible upstream"
 
 
 @pytest.mark.slow
-def test_distinct_dates_are_distinct_rows(db: Database) -> None:
-    _insert_price(db, key="sec_vti", close="214.55", price_date="2026-07-15")
-    _insert_price(db, key="sec_vti", close="215.10", price_date="2026-07-16")
-    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+def test_distinct_dates_are_distinct_rows(security_price_cases: Database) -> None:
+    db = security_price_cases
 
     rows = db.execute(
-        "SELECT price_date, close FROM core.fct_security_prices ORDER BY price_date"
+        "SELECT price_date, close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_dates_security' ORDER BY price_date"
     ).fetchall()
     # Strengthened beyond the brief: a bare COUNT == 2 would also pass for a mutant
     # that returned two rows for the SAME date (e.g. a QUALIFY partition missing
@@ -391,7 +666,9 @@ def test_distinct_dates_are_distinct_rows(db: Database) -> None:
 
 
 @pytest.mark.slow
-def test_quote_currency_case_variants_resolve_deterministically(db: Database) -> None:
+def test_quote_currency_case_variants_resolve_deterministically(
+    security_price_cases: Database,
+) -> None:
     """A raw casing duplicate must not leave two winners or an unstable pick.
 
     raw.security_prices stores quote_currency exactly as the provider sent it, but
@@ -417,44 +694,34 @@ def test_quote_currency_case_variants_resolve_deterministically(db: Database) ->
     removed, `close` ascending coincidentally lands on the same value the
     correct model produces, so the mutant would pass silently.
     """
-    _insert_price(
-        db,
-        key="sec_vti",
-        close="210.00",
-        quote_currency="usd",
-        extracted_at="2026-07-15 09:00:00",
+    db = security_price_cases
+    staged = db.execute(
+        "SELECT COUNT(*) FROM prep.stg_security_prices "
+        "WHERE security_id = 'mb21_currency_fresh_security'"
+    ).fetchone()
+    assert staged is not None and staged[0] == 2, (
+        "both raw casing variants must reach staging for this to be a real "
+        "test of the core-layer tie-break, not a shortcut around it"
     )
-    _insert_price(
-        db,
-        key="sec_vti",
-        close="215.00",
-        quote_currency="USD",
-        extracted_at="2026-07-15 10:00:00",
-    )
-    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
 
-    seen: list[tuple[str, Decimal]] = []
-    for _ in range(2):
-        with sqlmesh_context(db) as ctx:
-            ctx.plan(auto_apply=True, no_prompts=True)
-
-        staged = db.execute("SELECT COUNT(*) FROM prep.stg_security_prices").fetchone()
-        assert staged is not None and staged[0] == 2, (
-            "both raw casing variants must reach staging for this to be a real "
-            "test of the core-layer tie-break, not a shortcut around it"
-        )
-
-        rows = db.execute(
-            "SELECT quote_currency, close FROM core.fct_security_prices"
-        ).fetchall()
-        assert len(rows) == 1, "the casing duplicate must collapse to one winner"
-        seen.append(rows[0])
-
-    assert seen[0] == seen[1] == ("USD", Decimal("215.0000000000"))
+    initial = db.execute(
+        "SELECT quote_currency, close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_currency_fresh_security'"
+    ).fetchall()
+    assert len(initial) == 1, "the casing duplicate must collapse to one winner"
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rebuilt = db.execute(
+        "SELECT quote_currency, close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_currency_fresh_security'"
+    ).fetchall()
+    assert initial == rebuilt == [("USD", Decimal("215.0000000000"))]
 
 
 @pytest.mark.slow
-def test_quote_currency_case_variant_close_is_the_final_tiebreak(db: Database) -> None:
+def test_quote_currency_case_variant_close_is_the_final_tiebreak(
+    security_price_cases: Database,
+) -> None:
     """A same-sync casing duplicate makes `close` the deciding ORDER BY key.
 
     Two casing duplicates that arrive in the *same* sync share an identical
@@ -474,39 +741,28 @@ def test_quote_currency_case_variant_close_is_the_final_tiebreak(db: Database) -
     coincidence, the same trap the sibling test's fresher-and-cheaper
     orientation fell into for extracted_at.
     """
-    _insert_price(
-        db,
-        key="sec_vti",
-        close="220.00",
-        quote_currency="USD",
-        extracted_at="2026-07-15 09:00:00",
-    )
-    _insert_price(
-        db,
-        key="sec_vti",
-        close="205.00",
-        quote_currency="usd",
-        extracted_at="2026-07-15 09:00:00",
-    )
-    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
+    db = security_price_cases
 
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    staged = db.execute("SELECT COUNT(*) FROM prep.stg_security_prices").fetchone()
+    staged = db.execute(
+        "SELECT COUNT(*) FROM prep.stg_security_prices "
+        "WHERE security_id = 'mb21_currency_close_security'"
+    ).fetchone()
     assert staged is not None and staged[0] == 2, (
         "both raw casing variants must reach staging for this to be a real "
         "test of the core-layer tie-break, not a shortcut around it"
     )
 
     rows = db.execute(
-        "SELECT quote_currency, close FROM core.fct_security_prices"
+        "SELECT quote_currency, close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_currency_close_security'"
     ).fetchall()
     assert rows == [("USD", Decimal("205.0000000000"))]
 
 
 @pytest.mark.slow
-def test_an_override_outranks_a_provider_close_on_the_same_date(db: Database) -> None:
+def test_an_override_outranks_a_provider_close_on_the_same_date(
+    security_price_cases: Database,
+) -> None:
     """A user mark beats every provider for its own (security, date, currency).
 
     Adversarial orientation: the provider row is inserted FIRST and carries the
@@ -515,21 +771,11 @@ def test_an_override_outranks_a_provider_close_on_the_same_date(db: Database) ->
     bucket and plaid's rank 2 wins; consulting freshness before rank also picks
     plaid. Either publishes 214.55 instead of the user's 300.00.
     """
-    _seed_security(db, security_id="canonvti0000001")
-    _insert_price(db, key="sec_vti", close="214.55", extracted_at="2026-07-20 10:00:00")
-    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
-    _insert_override(
-        db,
-        security_id="canonvti0000001",
-        close="300.00",
-        updated_at="2026-07-15 08:00:00",
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    db = security_price_cases
 
     rows = db.execute(
-        "SELECT source_type, close FROM core.fct_security_prices"
+        "SELECT source_type, close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_override_security'"
     ).fetchall()
     assert rows == [("override", Decimal("300.0000000000"))], (
         "the mark must win its own date despite the provider row being fresher"
@@ -537,7 +783,9 @@ def test_an_override_outranks_a_provider_close_on_the_same_date(db: Database) ->
 
 
 @pytest.mark.slow
-def test_an_override_does_not_suppress_a_close_on_another_date(db: Database) -> None:
+def test_an_override_does_not_suppress_a_close_on_another_date(
+    security_price_cases: Database,
+) -> None:
     """A mark is scoped to one date — it must not blank the rest of the series.
 
     This is the per-date half of "a later provider refresh never silently
@@ -546,19 +794,11 @@ def test_an_override_does_not_suppress_a_close_on_another_date(db: Database) -> 
     an override win its whole security rather than its own date emits one row here
     instead of two.
     """
-    _seed_security(db, security_id="canonvti0000001")
-    _insert_override(
-        db, security_id="canonvti0000001", close="300.00", price_date="2026-07-15"
-    )
-    _insert_price(db, key="sec_vti", close="214.55", price_date="2026-07-16")
-    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    db = security_price_cases
 
     rows = db.execute(
         "SELECT price_date, source_type, close FROM core.fct_security_prices "
-        "ORDER BY price_date"
+        "WHERE security_id = 'mb21_override_dates_security' ORDER BY price_date"
     ).fetchall()
     assert rows == [
         (date(2026, 7, 15), "override", Decimal("300.0000000000")),
@@ -567,7 +807,9 @@ def test_an_override_does_not_suppress_a_close_on_another_date(db: Database) -> 
 
 
 @pytest.mark.slow
-def test_an_override_resolves_for_a_security_no_feed_covers(db: Database) -> None:
+def test_an_override_resolves_for_a_security_no_feed_covers(
+    security_price_cases: Database,
+) -> None:
     """The feedless case the override path exists to serve.
 
     A restricted grant or private fund has no raw.security_prices row and no accepted
@@ -576,47 +818,44 @@ def test_an_override_resolves_for_a_security_no_feed_covers(db: Database) -> Non
     marks behind the provider join — or that applied a provider-derived floor to them
     — emits nothing here, taking manual valuation for feedless securities with it.
     """
-    _seed_security(db, security_id="privateco00001")
-    _insert_override(db, security_id="privateco00001", close="42.50")
+    db = security_price_cases
 
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    staged = db.execute("SELECT COUNT(*) FROM prep.stg_security_prices").fetchone()
+    staged = db.execute(
+        "SELECT COUNT(*) FROM prep.stg_security_prices "
+        "WHERE security_id = 'mb21_feedless_security'"
+    ).fetchone()
     assert staged is not None and staged[0] == 0, (
         "no provider observation exists — this must exercise the override branch alone"
     )
 
     rows = db.execute(
         "SELECT security_id, source_type, price_basis, close "
-        "FROM core.fct_security_prices"
+        "FROM core.fct_security_prices WHERE security_id = 'mb21_feedless_security'"
     ).fetchall()
-    assert rows == [("privateco00001", "override", "raw", Decimal("42.5000000000"))]
+    assert rows == [
+        ("mb21_feedless_security", "override", "raw", Decimal("42.5000000000"))
+    ]
 
 
 @pytest.mark.slow
-def test_a_trade_price_becomes_an_observation_on_its_trade_date(db: Database) -> None:
+def test_a_trade_price_becomes_an_observation_on_its_trade_date(
+    security_price_cases: Database,
+) -> None:
     """An executed trade is a raw observation by construction.
 
     Without this branch a restricted grant, pre-IPO holding, or private placement
     values at nothing forever, and the user is asked to re-enter by hand a number
     already recorded on the transaction.
     """
-    _seed_security(db, security_id="privateco00001")
-    _insert_manual_trade(
-        db, txn_id="buy_1", security_id="privateco00001", price="137.25"
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    db = security_price_cases
 
     rows = db.execute(
         "SELECT security_id, price_date, source_type, price_basis, close "
-        "FROM core.fct_security_prices"
+        "FROM core.fct_security_prices WHERE security_id = 'mb21_trade_security'"
     ).fetchall()
     assert rows == [
         (
-            "privateco00001",
+            "mb21_trade_security",
             date(2026, 7, 15),
             "trade_implied",
             "raw",
@@ -626,35 +865,28 @@ def test_a_trade_price_becomes_an_observation_on_its_trade_date(db: Database) ->
 
 
 @pytest.mark.slow
-def test_a_provider_close_outranks_a_trade_implied_price(db: Database) -> None:
+def test_a_provider_close_outranks_a_trade_implied_price(
+    security_price_cases: Database,
+) -> None:
     """An execution reflects one order's size and spread; the day's close beats it.
 
     Adversarial orientation: the trade is BOTH fresher and cheaper than the provider
     close, so a freshness-before-rank mutant and an ORDER BY falling through to
     `close` ascending both publish 137.25 instead of the correct 214.55.
     """
-    _seed_security(db, security_id="canonvti0000001")
-    _insert_price(db, key="sec_vti", close="214.55", extracted_at="2026-07-15 09:00:00")
-    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
-    _insert_manual_trade(
-        db,
-        txn_id="buy_1",
-        security_id="canonvti0000001",
-        price="137.25",
-        created_at="2026-07-20 09:00:00",
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    db = security_price_cases
 
     rows = db.execute(
-        "SELECT source_type, close FROM core.fct_security_prices"
+        "SELECT source_type, close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_provider_trade_security'"
     ).fetchall()
     assert rows == [("plaid", Decimal("214.5500000000"))]
 
 
 @pytest.mark.slow
-def test_two_same_day_fills_at_different_prices_still_resolve(db: Database) -> None:
+def test_two_same_day_fills_at_different_prices_still_resolve(
+    security_price_cases: Database,
+) -> None:
     """The same-pull withhold is a PROVIDER guard — partial fills must not trip it.
 
     Two fills of one security on one day share source_type, source_origin, and — set
@@ -668,27 +900,11 @@ def test_two_same_day_fills_at_different_prices_still_resolve(db: Database) -> N
     the MORE expensive fill: a model that dropped observation_key from the ORDER BY
     falls through to `close` ascending and publishes fill_b's 240.00 instead.
     """
-    _seed_security(db, security_id="canonvti0000001")
-    _insert_manual_trade(
-        db,
-        txn_id="fill_a",
-        security_id="canonvti0000001",
-        price="250.00",
-        created_at="2026-07-15 09:00:00",
-    )
-    _insert_manual_trade(
-        db,
-        txn_id="fill_b",
-        security_id="canonvti0000001",
-        price="240.00",
-        created_at="2026-07-15 09:00:00",
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    db = security_price_cases
 
     ledger = db.execute(
-        "SELECT COUNT(*) FROM core.fct_investment_transactions"
+        "SELECT COUNT(*) FROM core.fct_investment_transactions "
+        "WHERE security_id = 'mb21_fills_security'"
     ).fetchone()
     assert ledger is not None and ledger[0] == 2, (
         "both fills must reach the ledger for this to exercise the core-layer "
@@ -696,7 +912,8 @@ def test_two_same_day_fills_at_different_prices_still_resolve(db: Database) -> N
     )
 
     rows = db.execute(
-        "SELECT source_type, close FROM core.fct_security_prices"
+        "SELECT source_type, close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_fills_security'"
     ).fetchall()
     assert rows == [("trade_implied", Decimal("250.0000000000"))], (
         "two fills are not a provider key churn — the grain must resolve, not withhold"
@@ -704,7 +921,9 @@ def test_two_same_day_fills_at_different_prices_still_resolve(db: Database) -> N
 
 
 @pytest.mark.slow
-def test_a_zero_priced_ledger_event_never_becomes_a_close(db: Database) -> None:
+def test_a_zero_priced_ledger_event_never_becomes_a_close(
+    security_price_cases: Database,
+) -> None:
     """Zero is the value 'an unpriced holding is NULL, never zero' exists to refuse.
 
     raw.security_prices and app.security_price_overrides both CHECK (close > 0), but
@@ -718,29 +937,25 @@ def test_a_zero_priced_ledger_event_never_becomes_a_close(db: Database) -> None:
     refused by `type IN ('buy', 'sell', 'reinvest')` whatever its price, so it would
     leave `AND t.price > 0` free to be deleted with this test still green.
     """
-    _seed_security(db, security_id="privateco00001")
-    _insert_manual_trade(
-        db,
-        txn_id="stock_dividend_1",
-        security_id="privateco00001",
-        price="0",
-        txn_type="reinvest",
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    db = security_price_cases
 
     ledger = db.execute(
-        "SELECT COUNT(*) FROM core.fct_investment_transactions"
+        "SELECT COUNT(*) FROM core.fct_investment_transactions "
+        "WHERE security_id = 'mb21_zero_security'"
     ).fetchone()
     assert ledger is not None and ledger[0] == 1, "the ledger event must survive"
 
-    resolved = db.execute("SELECT COUNT(*) FROM core.fct_security_prices").fetchone()
+    resolved = db.execute(
+        "SELECT COUNT(*) FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_zero_security'"
+    ).fetchone()
     assert resolved is not None and resolved[0] == 0
 
 
 @pytest.mark.slow
-def test_a_dividend_rate_never_becomes_the_resolved_close(db: Database) -> None:
+def test_a_dividend_rate_never_becomes_the_resolved_close(
+    security_price_cases: Database,
+) -> None:
     """The headline fix, asserted on rows rather than on the SQL's vocabulary.
 
     A dividend carries a security AND a price — a per-share DISTRIBUTION RATE,
@@ -754,32 +969,11 @@ def test_a_dividend_rate_never_becomes_the_resolved_close(db: Database) -> None:
     dropped, reordered, or applied to the wrong CTE. This seeds both events and
     reads the resolved series.
     """
-    _seed_security(db, security_id="vti00000000001")
-    _insert_manual_trade(
-        db,
-        txn_id="buy_1",
-        security_id="vti00000000001",
-        price="290.00",
-        trade_date="2026-07-15",
-        txn_type="buy",
-    )
-    # Later than the buy, so if it were admitted it would win the date ordering
-    # and become the position's newest close — the exact failure being refused.
-    _insert_manual_trade(
-        db,
-        txn_id="div_1",
-        security_id="vti00000000001",
-        price="0.91",
-        trade_date="2026-07-16",
-        txn_type="dividend",
-    )
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    db = security_price_cases
 
     rows = db.execute(
         "SELECT price_date, close FROM core.fct_security_prices "
-        "WHERE security_id = 'vti00000000001' ORDER BY price_date"
+        "WHERE security_id = 'mb21_dividend_security' ORDER BY price_date"
     ).fetchall()
     assert rows == [(date(2026, 7, 15), Decimal("290.0000000000"))], (
         "the dividend's per-share rate is not a market close"
@@ -787,7 +981,9 @@ def test_a_dividend_rate_never_becomes_the_resolved_close(db: Database) -> None:
 
 
 @pytest.mark.slow
-def test_an_unbound_security_contributes_no_price(db: Database) -> None:
+def test_an_unbound_security_contributes_no_price(
+    security_price_cases: Database,
+) -> None:
     """A priced trade whose security never bound must not emit a NULL-keyed row.
 
     core.fct_investment_transactions.security_id is NULL in two situations, and only
@@ -805,19 +1001,18 @@ def test_an_unbound_security_contributes_no_price(db: Database) -> None:
     tell which staging branch a ledger row came from; the production shape is a Plaid
     buy whose SecurityResolver binding was never accepted.
     """
-    _insert_manual_trade(db, txn_id="unbound_1", security_id=None, price="137.25")
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    db = security_price_cases
 
     ledger = db.execute(
         "SELECT COUNT(*) FROM core.fct_investment_transactions "
-        "WHERE security_id IS NULL AND price > 0"
+        "WHERE source_origin = 'mb21_unbound' AND security_id IS NULL AND price > 0"
     ).fetchone()
     assert ledger is not None and ledger[0] == 1, (
         "the priced-but-unbound row must reach the ledger for this to isolate the "
         "NULL guard rather than the positivity filter"
     )
 
-    resolved = db.execute("SELECT COUNT(*) FROM core.fct_security_prices").fetchone()
+    resolved = db.execute(
+        "SELECT COUNT(*) FROM core.fct_security_prices WHERE security_id IS NULL"
+    ).fetchone()
     assert resolved is not None and resolved[0] == 0

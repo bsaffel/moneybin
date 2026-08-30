@@ -15,6 +15,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.render import render_rows
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.transactions import (
@@ -99,8 +100,10 @@ def transactions_notes_list(
         if not quiet:
             logger.info(f"No notes for {transaction_id}")
         return
-    for n in notes:
-        typer.echo(f"  [{n.note_id}] {n.created_at} {n.author}: {n.text}")
+    render_rows(
+        ["note id", "created", "author", "note"],
+        [(n.note_id, n.created_at, n.author, n.text) for n in notes],
+    )
 
 
 @app.command("edit")

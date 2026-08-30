@@ -43,7 +43,6 @@ Correctness contracts implemented here (see
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -58,6 +57,7 @@ from moneybin.investments.cost_basis import (
     AVERAGE_ELIGIBLE_SECURITY_TYPES,
     resolve_cost_basis_method,
 )
+from moneybin.matching.hashing import gold_key_unmatched
 from moneybin.metrics.registry import (
     INVESTMENT_EVENTS_RECORDED_TOTAL,
     PRICE_RESOLUTION_STATUS_TOTAL,
@@ -229,19 +229,6 @@ class SecurityResolutionError(UserError):
     ) -> None:
         """Store a user-safe message + code (``MUTATION_AMBIGUOUS`` on collision)."""
         super().__init__(message, code=code, hint=hint)
-
-
-def _predict_investment_gold_key(source_transaction_id: str, account_id: str) -> str:
-    """Content-hash the canonical ``investment_transaction_id`` at INSERT time.
-
-    Mirrors ``_predict_manual_gold_key`` in ``transaction_service`` — SHA256 over
-    the immutable source identity, truncated to 16 hex. The manual investment
-    staging model passes this id through unchanged (no matcher pipeline for
-    investments in v1), so the service is its sole author. Uniqueness rides on
-    the freshly-minted ``source_transaction_id``.
-    """
-    raw = f"{_SOURCE_TYPE}|{_SOURCE_ORIGIN}|{account_id}|{source_transaction_id}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 # ── Read-path result shapes ───────────────────────────────────────────────
@@ -1222,8 +1209,11 @@ class InvestmentService:
         multi-row / multi-event writes stay atomic.
         """
         source_transaction_id = "manual_" + uuid.uuid4().hex[:12]
-        investment_transaction_id = _predict_investment_gold_key(
-            source_transaction_id, account_id
+        investment_transaction_id = gold_key_unmatched(
+            _SOURCE_TYPE,
+            _SOURCE_ORIGIN,
+            account_id,
+            source_transaction_id,
         )
         self._db.conn.execute(
             f"""

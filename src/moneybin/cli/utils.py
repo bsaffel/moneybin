@@ -299,6 +299,21 @@ def parse_cli_decimal(value: str, flag: str) -> Decimal:
     return parsed
 
 
+def confidence_cell(confidence: float | None) -> str:
+    """One candidate's match score, or a dash when the signal carries none.
+
+    One helper because the three review queues — merchant links, security
+    links, transaction matches — all render this column, and a score that reads
+    one way in one queue and another way in the next is the drift the coherence
+    rule exists to stop.
+
+    A dash rather than ``0.00``: an exact-id match records no score, and a
+    printed zero reads as the engine having compared the pair and found nothing
+    in common — evidence against the link, where in fact none was gathered.
+    """
+    return f"{confidence:.2f}" if confidence is not None else "-"
+
+
 def emit_json(key: str, payload: object) -> None:
     """Emit a single-key JSON envelope to stdout.
 
@@ -311,23 +326,6 @@ def emit_json(key: str, payload: object) -> None:
     )
 
     typer.echo(json.dumps({key: payload}, indent=2, cls=PayloadEncoder))
-
-
-def render_rich_table(cols: list[str], rows: list[tuple[object, ...]]) -> None:
-    """Render ``rows`` as a Rich table to stdout, with headers ``cols``."""
-    from rich.console import Console  # noqa: PLC0415 — defer heavy import
-    from rich.table import Table  # noqa: PLC0415 — defer heavy import
-
-    # markup=False because every cell here is data, and much of it is
-    # user-authored — a report description, a merchant name, a transaction
-    # description. Rich reads `[...]` as a style tag, so a default console drops
-    # "spend [excluding rent]" down to "spend " and lets stored text steer the
-    # terminal's styling. No caller passes style tags in a cell.
-    console = Console(markup=False)
-    table = Table(*cols)
-    for row in rows:
-        table.add_row(*[str(v) if v is not None else "" for v in row])
-    console.print(table)
 
 
 @contextmanager

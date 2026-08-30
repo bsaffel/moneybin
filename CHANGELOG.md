@@ -11,6 +11,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **You can propose a merge for two accounts nothing automatic would pair.**
+  `accounts links run` and the newly registered `accounts_links_run` MCP tool
+  now accept two account ids and queue exactly that pair for review, under a
+  `manual` signal with no confidence score — nothing was measured, and a number
+  there would rank a bare assertion against real evidence. This is the escape
+  hatch for a duplicate no signal reaches: different last four, different
+  institution, nothing in common but your knowledge that it is one account.
+  Until now, surfacing such a pair took a code change to the resolver, which put
+  it out of reach of every surface.
+
+  With no ids, both surfaces still sweep every account for twins, exactly as
+  before. Naming only one id is an error rather than a sweep: silently
+  backfilling the whole book because the second id was forgotten writes
+  proposals nobody asked for. Neither form merges anything — both write pending
+  proposals that clear the same confirmation gate, so the pair still has to be
+  accepted by a human before any data moves. Registering the tool takes the
+  50-tool standard registry to ADR-016's hard maximum exactly — admitting
+  another tool now means retiring one. (#450)
+
+  Either id may name an account an import has only just created. Those live in
+  the link records before the next transform materializes them into
+  `core.dim_accounts`, and imports do not refresh by default — so checking the
+  materialized table alone would have refused the freshest half of every pair,
+  which is the half you are most likely to have just noticed. The places that
+  announce a duplicate now name this form too: the import's created-account
+  hint on both surfaces, and the `duplicate_account_overlap` doctor finding,
+  which measures transaction overlap and already warned that identity
+  resolution may propose nothing at all for the pair it just flagged.
+
 - **`moneybin --home <path>` picks the data directory.** Until now `MONEYBIN_HOME`
   was the only way to point MoneyBin at a different set of profiles, config and
   databases, and it appeared in no `--help` output — so the override was easy to
@@ -762,6 +791,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **Google Sheets connects with no setup.** MoneyBin now ships the OAuth client
+  secret alongside its public client ID, so `moneybin gsheet auth` completes on
+  a bare install. Google's Desktop clients require both halves, and a wheel
+  carries no dotenv to read a user-supplied secret from — so shipping only the
+  ID meant every user first registered their own Desktop client in the Google
+  Cloud Console, the 15 minutes of setup this connector chose OAuth to avoid. A
+  credential shipped to every user is not confidential (RFC 8252 §8.5); PKCE
+  and the loopback redirect carry the security: Google delivers an
+  authorization code only to a redirect URI the client registered, and a
+  Desktop client may register only loopback, so a mailed consent link delivers
+  the code to the victim's own machine rather than the sender's. The shipped
+  client declares `spreadsheets.readonly` alone, and MoneyBin now refuses to
+  request write access while running on it — exporting *to* a sheet needs your
+  own client, as it always has — which keeps Google's unverified-app warning
+  meaningful on any screen that asks to edit your spreadsheets. The shared
+  client draws on one Google project's quota of 300 read requests per minute,
+  so `MONEYBIN_GSHEET__OAUTH_CLIENT_ID` and
+  `MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET` remain supported and are the
+  documented remedy for anyone throttled, or unwilling to trust MoneyBin's
+  project identity on the consent screen. Setting a secret without its own
+  client ID is still refused by name. The reasoning and its sources — RFC 8252
+  §8.5, Google's own installed-app documentation, and rclone's 2026 retirement
+  of its shared client — are written up in `docs/guides/connect-gsheet.md`
+  under "Why MoneyBin ships a client secret" (#475).
+- **A Google Sheets grant is now bound to the client that obtained it.**
+  Google issues a refresh token to one specific OAuth client, so a grant
+  obtained under your own client cannot be refreshed under MoneyBin's shipped
+  one, or the reverse. MoneyBin records the issuing client alongside each grant
+  and refuses to reuse it under a different one: `gsheet auth` reports the
+  grant as unauthorized and re-runs consent. Previously it reported
+  `already_authorized`, served the cached access token until it aged out, and
+  only then failed with "OAuth token refresh failed. See application logs for
+  detail." Grants stored before this release record no issuing client, so each
+  needs one `moneybin gsheet connect` to re-authorize (#475).
+
+- **Every table the CLI prints is now built the same way.** Twelve commands
+  rendered rows through five different idioms — a shared Rich helper for three,
+  and a hand-padded f-string per command for the rest, each with its own guessed
+  column widths. They all go through one `render_rows` now, which sizes each
+  column to its widest value, so `accounts links history` no longer aligns only
+  the rows that fell back to ids. Two more renderers cover the other shapes a
+  command prints: `render_summary` for a labelled block like `reports networth`,
+  and `render_note` for the status lines `-q` silences. Result rows and
+  summaries have no way to be silenced — neither renderer accepts a quiet flag.
+
+  No value is ever elided to make a row fit: a name too wide for the terminal
+  wraps, because a resolved account name ends in the masked last four and
+  clipping it removes exactly the digits that tell two candidates apart
+  (#470).
+
+- **Amounts print with thousands separators and a sign that means something.**
+  Every money column now declares what its number *is* — a signed flow, a
+  positive magnitude like `SUM(ABS(amount))`, a change in one, or a balance —
+  and the renderer reads that declaration instead of guessing from the value.
+  `reports spending` no longer risks rendering spending as green income, and a
+  rise in spending reads as a rise in spending rather than as a gain. Negative
+  amounts carry `−` (U+2212), matching the rest of the product. A negative net
+  worth keeps its minus: "balances unsigned" only ever meant no decorative `+`
+  on a positive position. Colour is redundant with the sign glyph and appears
+  only on a terminal with `NO_COLOR` unset, so piping or redirecting output
+  loses nothing (#470).
+
+- **`transactions matches` stops reporting an unscored match as `0.00`.** An
+  exact-id match records no confidence score; the two match tables printed that
+  as zero, which reads as the engine having compared the pair and found nothing
+  in common. It now prints `-`, matching what the merchant and security link
+  queues already did (#470).
+
 - **`--help` no longer lists commands that aren't built yet.** Twelve
   whole-command placeholders — `budget delete/set`, `sync key rotate`, `sync
   schedule set/show/remove`, `transactions categorize ml apply/status/train`,
@@ -785,6 +882,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer reports the transform engine's internal state-schema number as though
   it were your MoneyBin version. The profile banner names the single source
   that actually resolved your profile instead of listing candidates (#457).
+- **Your file's own account name is now what MoneyBin calls the account.** A
+  spreadsheet's Account column, `--account-name`, and Plaid's per-account name
+  were read for matching and then discarded before the account was named, so a
+  sheet whose Account column named the account produced one called
+  `Unnamed account`, and a named account fell through to a bare last four. That
+  name now outranks the institution and account type MoneyBin would otherwise
+  assemble a label from — the account list already prints both in their own
+  columns, so the name is where the part it cannot show belongs — and keeps the
+  last four beside it (`Vacation Fund …1111`), because a name you chose is not
+  necessarily unique: two of a household's accounts are routinely given the
+  same product name by their bank. A name that already shows four digits of its own is left
+  exactly as it is, so nothing ever prints two separate pieces of one account
+  number. Account numbers embedded in the label are masked,
+  and one that ends the label becomes that account's last four in the form
+  every surface uses (`Checking 987654321098` → `Checking …1098`). A label
+  holding no letters at all is treated as an account number rather than a
+  name, so it keeps the assembled label instead.
+  A connected account takes the new name on the next `moneybin refresh`, since
+  its name was already in the raw table. A spreadsheet-sourced one takes it on
+  the next import of that file: the new column is deliberately not backfilled,
+  because the masking and last-four rules live in Python and a SQL backfill
+  would be a second copy of them. Refresh alone leaves those accounts named as
+  they are today. An explicit `moneybin accounts set --display-name` still
+  wins over everything (#446).
 - **Account-merge candidates carry measured ledger overlap instead of a
   constant `confidence`.** An import that offers to merge a file into an
   account you already have returned a `confidence` on every candidate — a
@@ -1110,8 +1231,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A Chase account read as `B1` and a Wells Fargo one as `WF`, because OFX
   files carry a short institution code where you'd expect a name. Those now
   resolve to `Chase` and `Wells Fargo`. Credit-card statements also no longer
-  come through untyped — a card that showed as `B1  …4387` now reads
-  `Chase credit card …4387`.
+  come through untyped — a card that showed as `B1  …4242` now reads
+  `Chase credit card …4242`.
 - **`core.dim_accounts.account_type` now uses one vocabulary for every
   source.** It previously carried whatever each source called things — OFX
   said `CHECKING`/`CREDITLINE`, Plaid said `depository`/`credit`, a
@@ -1122,8 +1243,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `investment`, `other` (`NULL` if the source spelling isn't recognized),
   with the finer distinction kept in `account_subtype` (`checking`,
   `savings`, `credit card`, ...). Account names are built from the subtype,
-  so they read `Wells Fargo checking …1789`, not `Wells Fargo depository
-  …1789`. Queries filtering on the old uppercase values need updating; run
+  so they read `Wells Fargo checking …7777`, not `Wells Fargo depository
+  …7777`. Queries filtering on the old uppercase values need updating; run
   `moneybin transform apply` to rebuild.
 - **`core.dim_accounts` gained an `institution_slug` column, and account
   matching now compares it instead of `institution_name` (#375).** OFX files
@@ -1187,6 +1308,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **A non-finite amount no longer crashes a report, or prices as though it were
+  a number.** A `NaN` in a money column left `format_money` through
+  `amount < 0` as a raw `decimal.InvalidOperation` traceback rather than a
+  clean CLI error, because ordering a `Decimal("NaN")` raises instead of
+  returning false; an infinity did not raise at all and printed as the signed,
+  coloured word `Infinity`. The same value in the currency converter was
+  quieter and worse — `NaN` times a rate is `NaN`, so it converted without
+  complaint and reached the reader labelled in the display currency, a
+  conversion that never happened. Both `_as_decimal` helpers now refuse a
+  non-finite value the way they already refuse unparseable text: the renderer
+  prints it absent, and the converter segments and says why. Reachable from any
+  report whose money column is backed by a float computation, including the
+  out-of-repo `@report` extensions `docs/specs/extension-contracts.md`
+  addresses (#470).
+
+- **`transactions list` no longer clips a long description.** The command cut
+  the description to 49 characters and appended an ellipsis before the value
+  reached the renderer, so it fired on a wide terminal too — and a raw bank
+  description carries the detail that separates two similar charges at the
+  end. It folds now, like every other value this renderer prints (#470).
+
+- **A withheld amount no longer prints as an absent one.** A money column
+  carrying a whole-masking privacy class (`ROUTING_NUMBER`,
+  `COMPOSITE_IDENTIFIER`, `UNRESOLVED`) reaches the renderer already replaced
+  by its `*****` sentinel. `format_money` read that as unparseable and printed
+  `-`, so the text table contradicted both its own masking and the
+  `--output json` result for the same query, and a reader could not tell a
+  withheld amount from a SQL NULL. Text in a money cell now prints itself —
+  matched by shape rather than against the sentinels in use today, so a new
+  mask cannot quietly start reading as absent. Non-numeric text in a money
+  column that was never a mask now shows through for the same reason, instead
+  of being reported as no data (#470).
+
+- **A `delta` money column with no `polarity` is rejected where it is
+  declared.** `OutputColumn` accepted the pair and only the text renderer
+  refused it — inside `money_columns`, which the generated CLI command reaches
+  after the report has already run and written its audit-log and metrics side
+  effects, and which a JSON or MCP caller never reaches at all. The same broken
+  declaration was therefore loud on one surface and silent on the others. It
+  now raises at construction, so an unrenderable report is unbuildable
+  everywhere at once. No in-repo report was affected; this closes the gap for
+  the out-of-repo authors `docs/specs/extension-contracts.md` addresses (#470).
+
+  The same guard now checks the declared values themselves. `money_kind` and
+  `polarity` are `Literal` types, which bind a type checker and nothing at
+  runtime, so an author running none got no signal from either wrong value —
+  and neither one fails loudly by itself. An unrecognized kind falls through
+  the renderer to an unsigned, uncoloured amount that reads as a deliberate
+  balance, and every polarity that is not `income` colours as `expense`, so
+  `polarity="up"` inverts a delta's colours rather than raising. A polarity on
+  any kind but `delta` is refused too, because nothing reads one there:
+  accepting it silently tells an author their column is polarized when the
+  rendered output will not be (#470).
+
+- **`-q/--quiet` now works on the report commands.** `reports networth`,
+  `networth-history`, `reports run`, and every generated built-in report
+  command accepted the flag and then dropped it, so their next-step hints
+  ("run `moneybin reports explain …`") printed regardless. Each forwards it
+  now. What `-q` still does not silence is any statement about how far the
+  numbers can be trusted — a truncated result, a degraded report, or a
+  currency conversion — because asking for less chatter is not a claim that
+  the truncation stopped (#470).
+
+- **`transactions categorize pending` formats its amounts like every other
+  table.** Its `amount` column printed raw (`-42.5`, left-aligned, no
+  separator) while the rest of the CLI moved to `−42.50` (#470).
+
 - **Google Sheets authorization fails up front instead of after a consent
   screen that could never complete.** `gsheet auth` sent an empty client
   secret in the code→token exchange, so Google returned an authorization code
@@ -1198,15 +1386,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET` is now required alongside
   `MONEYBIN_GSHEET__OAUTH_CLIENT_ID`, and both the authorization and refresh
   grants refuse by name when either is missing rather than failing somewhere
-  less legible. Registering your own Desktop app client is required today;
-  `docs/guides/connect-gsheet.md` covers it. The refresh grant carried the same
-  defect and would have failed about an hour after an authorization that looked
-  healthy. Setting only the secret is refused too, because it pairs your secret
-  with MoneyBin's embedded client ID, which Google never issued it for. And
+  less legible. `docs/guides/connect-gsheet.md` covers bringing your own client.
+  The refresh grant carried the same defect and would have failed about an hour
+  after an authorization that looked healthy. Setting only the secret is
+  refused too, because it pairs your secret with MoneyBin's embedded client ID,
+  which Google never issued it for. And
   `gsheet auth` no longer reports an existing connection as authorized when
   either variable is missing: it re-authorizes and names the gap instead of
   succeeding now and failing at the next refresh. (#456)
 - **Re-importing a file pinned before #438 no longer double-counts its transactions (#442, PR #459).** Staging keeps the legacy transaction IDs and safely suppresses only an exact, uncurated corrected re-import twin; raw import history is never deleted. A corrected twin that already has transaction curation remains visible, preventing its app state from becoming orphaned.
+- **An import now announces a new account under the name you will find it by.**
+  A first-contact import mints the account without asking and reports what it
+  created, and the MCP tool tells the agent to relay that to the user — but the
+  reported name was built separately from the one MoneyBin stores. OFX files
+  were announced by their raw `<ORG>` routing code and raw type spelling while
+  the account list showed a resolved institution, a normalized type and a last
+  four; two accounts at one institution each collapsed onto one string, so the
+  label could not tell apart the accounts it described.
+  `accounts_created[].display_name` — on the CLI, in `import_files` per-file
+  rows, and in `import_confirm` — is now the same resolved label
+  `moneybin accounts` shows, on every channel (#446).
+
+  Putting those two readers on one string meant trimming a setting on the way
+  in, and MoneyBin now judges a value *after* that trim rather than before.
+  `accounts set --subtype " checking "` used to be refused outright in a
+  non-interactive run, and the MCP tool used to store the canonical `checking`
+  while warning in the same breath that it had never heard of `  checking  `.
+  Separately, an account whose settings row still held a blank written before
+  that trim existed could no longer be read or changed at all: every settings
+  mutator loads the row first, and the row now failed the length check it had
+  passed when it was written. A stored blank loads as the absent value it
+  always meant (#446).
+
+  The name a person wrote is masked before it can become a display name, and
+  two gaps let that mask publish more of an account number than the four digits
+  every masked surface already shows. A label carrying *two* long identifiers
+  masked both and then kept both — eight digits, drawn from two distinct
+  numbers — because the guard asked only whether a digit had survived outside a
+  mask, never how many masks there were. Separately, a four-digit run written
+  in a non-Latin script was invisible to the "this label already shows four
+  digits" test, so MoneyBin appended its own last four beside one and published
+  eight again. Both are closed, the second across all three encodings of the
+  name ladder: the SQL model, its Python mirror, and the raw fallback that
+  answers before the first refresh (#446).
+
 - **`sql_query` no longer refuses a read-only `SELECT` for a write keyword
   that isn't actually a write.** `SELECT 'export' AS probe` was rejected as
   though it were a real `EXPORT` statement — one character away,
@@ -1218,6 +1441,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
    quoting style), a quoted identifier, or a `--` comment. This unblocks
    `... WHERE action LIKE 'export%'` against `app.audit_log`, the documented
    way to find an export's audit trail from the agent-safe SQL surface (#447).
+
+- **Account merge proposals key on the last four, not on the institution.** The
+  proposer both missed real cross-source duplicates and filed proposals for
+  unrelated pairs, and each failure had its own cause.
+
+  The last-four rung required the source to carry a resolved institution. A
+  tabular export names its account only inside a label — `Everyday Spending (...)`
+  — and no institution is parsed from it, so the account it minted had an exact
+  last four and no institution, invisible to every last-four comparison. The
+  OFX copy of the same account minted separately, both counted toward spending
+  and net worth, and nothing proposed the merge. Institution is now evidence
+  rather than a precondition: it still vetoes a pair that states two different
+  banks, but a pair where either side names none surfaces under a new
+  `last_four` signal, kept distinct from `institution_last4` so the queue can
+  tell "both sides named this bank" from "one side named nothing".
+
+  Separately, `institution_reissue` fired on a shared institution plus a last
+  four that differed — which, in an established book, is every pair of cards at
+  one bank. It never checked that the two ledgers were sequential, which is what
+  a reissue means, so it proposed pairs that ran side by side for months, each
+  carrying its own refutation in zero matched transactions over the period they
+  shared. A proposal is now dropped only when that whole refutation holds: the
+  two ledgers ran at once for longer than a statement cycle **and** shared no
+  transaction over a period both of them covered. Requiring the second half
+  matters most for the duplicate this queue exists to catch — one account
+  arriving from two sources overlaps in dates by construction and matches on
+  every row, so dropping on the dates alone would have silently withheld the
+  pair and left it double-counting. Only positive concurrency drops it: an
+  account with no published ledger, or no comparable period to measure, keeps
+  its proposal, which is the import-time state the signal was written for. An
+  unstated currency counts as silence here for the same reason: the overlap
+  probe normally reads a one-sided blank as a mismatch, which is affordable
+  where the count is only shown beside a proposal and inverts where it
+  suppresses one — a tabular export leaving the column empty beside a feed
+  that states USD would otherwise score zero against a ledger it agrees with
+  row for row, and the drop would read that as disagreement. Two stated and
+  differing currencies still refute.
+
+  Ledger overlap now also states the posting-lag tolerance it matched within, on
+  every surface that reports it. "345 of 346" otherwise reads as exact-date
+  agreement, a stronger claim than the probe makes and a different basis for
+  ratifying an irreversible merge. (#450)
 
 - **A denied keychain read is no longer reported as a missing key.** macOS
   reports a sandbox-denied keychain read identically to a genuinely absent
@@ -3223,7 +3488,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - Profile directories now created with `0o700` permissions (previously `0o755`), matching the `0o600` mode of the privacy event log and the privacy-sensitive nature of per-profile state (encrypted DB, secrets, daily events). (PR #192)
 
 ### Fixed
-- **Cross-format duplicates no longer double-count.** The same transaction imported from two formats of one account (e.g. Wells Fargo `.qfx` and `.csv`) now collapses into one `core.fct_transactions` row with `source_count=2` instead of two rows. Previously, OFX truncating descriptions differently from CSV pushed cross-format similarity below the auto-merge threshold, so exact duplicates (same account + exact amount + same day) never merged — importing 5 WF `.csv` twins of 5 already-loaded `.qfx` produced 558 rows instead of 279. Exact-key cross-source pairs now auto-merge regardless of description similarity, with a source-cardinality guard that keeps N genuinely-distinct same-key transactions paired 1:1 rather than over-collapsing. See [`docs/specs/matching-exact-key-dedup.md`](docs/specs/matching-exact-key-dedup.md).
+- **Cross-format duplicates no longer double-count.** The same transaction imported from two formats of one account (e.g. Wells Fargo `.qfx` and `.csv`) now collapses into one `core.fct_transactions` row with `source_count=2` instead of two rows. Previously, OFX truncating descriptions differently from CSV pushed cross-format similarity below the auto-merge threshold, so exact duplicates (same account + exact amount + same day) never merged — importing a set of `.csv` twins of already-loaded `.qfx` files produced double the expected rows. Exact-key cross-source pairs now auto-merge regardless of description similarity, with a source-cardinality guard that keeps N genuinely-distinct same-key transactions paired 1:1 rather than over-collapsing. See [`docs/specs/matching-exact-key-dedup.md`](docs/specs/matching-exact-key-dedup.md).
 - `moneybin mcp serve` no longer corrupts the MCP JSON-RPC stream when no profile is configured. Previously the first-run wizard wrote a welcome banner to stdout, producing a cascade of "is not valid JSON" parse errors in the host (e.g. Claude Desktop). The server now boots regardless and, on the first tool call, guides setup: elicitation-capable clients are asked for a profile name and the profile is created in place (no restart); tools-only clients receive a single `infra_setup_required` message pointing to `moneybin profile create`. See [`docs/specs/mcp-first-run-setup.md`](docs/specs/mcp-first-run-setup.md).
 - Every CLI and MCP entry point crashed at startup on databases created before PR #178 with `BinderException: Table "proposed_rules" does not have a column named "rule_id"`. The schema DDL (which runs before migrations) declared a `CREATE INDEX` on the V016-added `rule_id` column, binding against the pre-V016 table shape before V016 could add the column. The index now lives only in V016, where it belongs; V016 also commits the backfill before creating the index so DuckDB's "Cannot create index with outstanding updates" no longer blocks the upgrade path (same class as V010/V011, see PR #148).
 - Migration runner self-heals stuck failure rows when the migration body has changed. Previously, a `success=false` row in `app.schema_migrations` from a prior failure required manual deletion before the next attempt would run. The runner now hashes every migration body, and if a previously-failed migration's body has changed since the failure, the stale row is auto-cleared and the migration retries once. Push the fix, tell users to re-run — no manual cleanup. (PR #156)

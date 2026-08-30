@@ -109,7 +109,7 @@ def test_composite_identifier_masked_to_constant() -> None:
     the serialized JSON text, not the tail of any single signal value.
     """
     (masked,) = redact_records(
-        [{"n": '{"institution_last4": "9940"}'}],
+        [{"n": '{"institution_last4": "3030"}'}],
         {"n": DataClass.COMPOSITE_IDENTIFIER},
         consent=None,
     )

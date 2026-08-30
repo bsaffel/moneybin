@@ -7,7 +7,7 @@
 file: chase_card_unruled.pdf
 expected_outcome: transactions
 expected_metadata:
-  account_id: "4387"
+  account_id: "4242"
   period_start: "2024-12-23"
   period_end: "2025-01-22"
   opening_balance: "100.00"

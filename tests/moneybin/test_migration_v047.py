@@ -19,8 +19,6 @@ from moneybin.sql.migrations.V047__add_fitid_repaired_to_ofx_transactions import
 )
 from tests.moneybin.migration_helpers import column_exists, run_migration
 
-pytestmark = pytest.mark.fresh_db
-
 
 def _insert_pre_migration_row(
     db: Database,

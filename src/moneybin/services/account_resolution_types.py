@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import string
 from dataclasses import dataclass
-from typing import NotRequired, TypedDict, TypeGuard
+from typing import TYPE_CHECKING, NotRequired, TypedDict, TypeGuard
 
 from moneybin.services.ledger_overlap import LedgerOverlap
+
+if TYPE_CHECKING:  # import-time cycle: account_display_name reads the
+    # UNNAMED_ACCOUNT_LABEL defined below, so the edge back is annotation-only.
+    from moneybin.services.account_display_name import AccountNameFacts
 
 _ACCOUNT_IDENTIFIER_CHARACTERS = frozenset(string.ascii_letters + string.digits)
 
@@ -100,6 +104,7 @@ class AccountCandidateDict(TypedDict):
     signal: str
     overlap_matched: NotRequired[int]
     overlap_comparable: NotRequired[int]
+    overlap_window_days: NotRequired[int]
     overlap_window_start: NotRequired[str | None]
     overlap_window_end: NotRequired[str | None]
 
@@ -135,8 +140,8 @@ class AccountCandidate:
     account_id: str
     display_name: str
     confidence: float
-    # "legacy_pdf_identity" | "institution_last4" | "name" |
-    # "institution_reissue" | "institution" | "fallback". The first four fired
+    # "legacy_pdf_identity" | "institution_last4" | "last_four" | "name" |
+    # "institution_reissue" | "institution" | "fallback". The first five fired
     # on real evidence. The last two are the interactive import gate's
     # last-resort pick-list; never emitted on the backfill link queue.
     signal: str
@@ -214,6 +219,7 @@ class AccountProposal:
                 serialized.update({
                     "overlap_matched": candidate.overlap.matched,
                     "overlap_comparable": candidate.overlap.comparable,
+                    "overlap_window_days": candidate.overlap.window_days,
                     "overlap_window_start": (
                         candidate.overlap.window_start.isoformat()
                         if candidate.overlap.window_start is not None
@@ -270,6 +276,18 @@ class SourceAccount:
     dedup, which leaves nothing on record identifying THIS file. Carried here so
     the resolver can also link the derived key, and an unpinned re-import of the
     same file still recognises the account instead of asking or minting."""
+
+    name_facts: AccountNameFacts | None = None
+    """What ``core.dim_accounts`` will name this account by, if it mints one.
+
+    Never a resolution signal — the resolver ignores it. It rides here because
+    the mint report (``accounts_created``) is built long after the channel that
+    knows which institution spelling and which account-number column the model
+    will read. Distinct from ``account_name`` beside it, which is the file's raw
+    free-text label and feeds fuzzy matching: ``name_facts.source_label`` is the
+    display-safe form of that label, and is the top rung the model names by.
+    Left None only by callers that never report a mint (the sync path, the
+    resolver's own probes)."""
 
     explicit_account_id: str | None = None
     force_standalone: bool = False
@@ -334,7 +352,8 @@ class PendingLinkCandidate:
     decision_id: str
     candidate_account_id: str
     candidate_display_name: str
-    # "institution_last4" | "name" | "institution_reissue" — only these three.
+    # "institution_last4" | "last_four" | "name" | "institution_reissue" |
+    # "manual" (a caller named the pair; no signal fired) — only these five.
     # Narrower than _Candidate.signal: this reads persisted decision rows, and
     # the single insert site passes fallback=False, so the gate's last-resort
     # pick-list ("institution" / "fallback") is never written to review.

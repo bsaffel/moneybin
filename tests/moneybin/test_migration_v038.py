@@ -9,14 +9,10 @@ idempotent and needs no backfill.
 
 from __future__ import annotations
 
-import pytest
-
 from moneybin.database import Database
 from moneybin.sql.migrations.V038__add_iso_currency_code_to_plaid_balances import (
     migrate,
 )
-
-pytestmark = pytest.mark.fresh_db
 
 _NEW_COLUMNS = ["iso_currency_code", "unofficial_currency_code"]
 

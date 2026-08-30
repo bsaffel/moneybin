@@ -20,7 +20,7 @@ def test_autosaved_format_does_not_store_account_name_as_institution(
     import_answering_gate(
         svc,
         csv,
-        account_name="WF Checking (...4267)",
+        account_name="WF Checking (...1212)",
         confirm=True,
         actor_kind="human",
         save_format=True,
@@ -28,7 +28,7 @@ def test_autosaved_format_does_not_store_account_name_as_institution(
     )
     row = db.execute("SELECT institution_name FROM app.tabular_formats").fetchone()
     assert row is not None, "expected an auto-saved format row"
-    assert "4267" not in row[0] and "WF Checking" not in row[0], (
+    assert "1212" not in row[0] and "WF Checking" not in row[0], (
         f"account label leaked into format.institution_name: {row[0]!r}"
     )
 

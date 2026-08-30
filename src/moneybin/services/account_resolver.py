@@ -28,6 +28,7 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
     AccountCandidate,
     AccountProposal,
     ResolvedAccount,
@@ -35,6 +36,7 @@ from moneybin.services.account_resolution_types import (
     is_a_name,
     normalize_account_identifier,
 )
+from moneybin.services.ledger_overlap import fetch_ledger_spans, probe_ledger_overlap
 from moneybin.services.pdf_account_identity import legacy_pdf_identifier_key
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
@@ -46,6 +48,30 @@ from moneybin.tables import (
 from moneybin.utils import slugify
 
 logger = logging.getLogger(__name__)
+
+#: Any Unicode letter, the test that keeps the label rung for names rather than
+#: for masked account numbers. Named rather than inlined because the query below
+#: is an f-string, where the literal would have to be spelled ``\\p{{L}}`` —
+#: two escapes deep, in a pattern that must stay identical to the one in
+#: dim_accounts.sql and to ``account_display_name._has_letter``.
+_SQL_HAS_LETTER = r"\p{L}"
+
+#: A four-digit run in any script, the test that stops a label already stating
+#: an identifier from taking a second one. ``\p{Nd}`` rather than ``[0-9]``
+#: because the importer's masker keeps whatever digits it matched: a non-Latin
+#: account number reaches this column masked to four non-ASCII digits, which
+#: ``[0-9]{4}`` read as none at all, and the raw last four was appended on top
+#: of the mask. Named for the same reason ``_SQL_HAS_LETTER`` is -- the
+#: f-string below would spell it two escapes deep -- and it must stay identical
+#: to dim_accounts.sql, which cannot spell it ``\d{4}`` either: DuckDB's RE2
+#: reads that as ASCII, so only the mirror in ``account_display_name`` may.
+_SQL_HAS_FOUR_DIGIT_RUN = r"\p{Nd}{4}"
+
+#: The unnamed sentinel as a SQL literal, interpolated for the same reason
+#: ``_SQL_HAS_LETTER`` is: the label arms below must refuse exactly what
+#: dim_accounts.sql and ``account_display_name.usable_source_label`` refuse,
+#: and binding it to the constant is what keeps a rename from splitting them.
+_SQL_UNNAMED_LABEL = f"'{UNNAMED_ACCOUNT_LABEL}'"
 
 
 def refresh_account_link_pending_gauge(db: Database) -> None:
@@ -170,13 +196,16 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
     free-text label, classed ``ACCOUNT_IDENTIFIER`` because it can be a bare
     account number, and nothing downstream can tell a name from a number -- so
     returning it put a potentially unmasked account number into surfaces that
-    declare far less. What it answers with instead is *constructed*, the same
-    shape ``core.dim_accounts`` builds: institution name, then the last four
-    digits of ``account_number`` (or ``account_number_masked``) behind a
-    ``****``. Either half may be missing; an account with neither stays absent
-    rather than being named by its file. So an account whose only name lived in
-    that free-text label now reads as "Example Bank ****4521" -- worse prose
-    than the label it replaced, and a great deal safer.
+    declare far less. It answers with ``account_label`` instead: the same text
+    after the importer stripped the trailing last four and masked any embedded
+    number, which is the rung ``core.dim_accounts`` names by, so this answer and
+    the one on the far side of a refresh agree. Failing that it *constructs*
+    one, the same shape the model builds below its top rung: institution name,
+    then the last four digits of ``account_number`` (or
+    ``account_number_masked``) behind a ``****``. Either half may be missing; an
+    account with neither stays absent rather than being named by its file, so an
+    account whose only name lived in an unmasked label still reads as
+    "Example Bank ****4521".
 
     Both queries guard ``CatalogException`` so callers work before the core
     layer is materialized (a profile has decisions before its first SQLMesh
@@ -203,38 +232,99 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
         # recency alone would let such a row hide an older one that does name
         # the account, which is the bare-id rendering this resolver exists to
         # prevent.
+        #
+        # `resolved_label`, not `account_label`: DuckDB binds a window ORDER BY
+        # to a base COLUMN in preference to a same-named SELECT-list alias, so
+        # once raw.tabular_accounts gained a real account_label the first sort
+        # key silently became that column instead of the expression below --
+        # ranking every row equal and letting the nameless newest one win.
+        # Verified against DuckDB, and pinned by
+        # test_an_unnameable_raw_row_does_not_hide_an_older_nameable_one.
         raw_rows = db.execute(
             f"""
-            SELECT account_id, account_label FROM (
+            SELECT account_id, resolved_label FROM (
                 SELECT
                     link.account_id AS account_id,
-                    -- Same derivation core.dim_accounts uses for last_four_raw:
-                    -- strip to digits, and only speak if four survive. That is
-                    -- what keeps an alphanumeric PDF identifier ("ACCT-9Z", one
-                    -- digit) from ever reaching a caller -- the column is named
-                    -- "masked" but the PDF path stores a whole identifier in it.
-                    NULLIF(TRIM(
-                      COALESCE(raw.institution_name, '') ||
+                    COALESCE(
+                      -- The name a person wrote, already display-safe: the
+                      -- importer masks and strips it before writing. Top rung
+                      -- in core.dim_accounts too, letter test and last-four
+                      -- append included, so the pre-refresh answer and the
+                      -- post-refresh one agree.
+                      -- Two arms, exactly as dim_accounts has them: a label
+                      -- with no four-digit run of its own carries the last
+                      -- four, because a chosen name is not a unique one and
+                      -- two accounts sharing a product name would otherwise
+                      -- collide back onto one string. A label that already
+                      -- holds four digits takes nothing more -- joining
+                      -- "Checking ****5678" with "…9012" would publish eight
+                      -- digits of a twelve-digit number.
+                      -- Neither arm takes the unnamed sentinel. It holds
+                      -- letters, so the letter test alone reads it as a name,
+                      -- but it is this ladder's own terminal arm: a label equal
+                      -- to it says the source could not name the account
+                      -- either. A re-imported MoneyBin export carries it
+                      -- literally, and accepting it would answer
+                      -- "Unnamed account …1234" here while the refreshed
+                      -- dimension falls through to its institution rung.
+                      -- Falling through costs nothing even when nothing else
+                      -- names the account: the row drops out, and every caller
+                      -- substitutes the same sentinel for an absent id.
                       CASE
-                        WHEN LENGTH(
+                        WHEN REGEXP_MATCHES(raw.account_label, '{_SQL_HAS_LETTER}')
+                        AND NOT REGEXP_MATCHES(raw.account_label, '{_SQL_HAS_FOUR_DIGIT_RUN}')
+                        AND raw.account_label <> {_SQL_UNNAMED_LABEL}
+                        AND LENGTH(
                           REGEXP_REPLACE(
                             COALESCE(raw.account_number, raw.account_number_masked),
                             '[^0-9]', '', 'g'
                           )
                         ) >= 4
-                        THEN ' ****' || RIGHT(
+                        THEN raw.account_label || ' …' || RIGHT(
                           REGEXP_REPLACE(
                             COALESCE(raw.account_number, raw.account_number_masked),
                             '[^0-9]', '', 'g'
                           ),
                           4
                         )
-                        ELSE ''
-                      END
-                    ), '') AS account_label,
+                      END,
+                      -- The label with no last four to add, and the label that
+                      -- already states one. dim_accounts' bare arm covers the
+                      -- same two cases by falling through its own NULL.
+                      CASE
+                        WHEN REGEXP_MATCHES(raw.account_label, '{_SQL_HAS_LETTER}')
+                        AND raw.account_label <> {_SQL_UNNAMED_LABEL}
+                        THEN raw.account_label
+                      END,
+                      -- Same derivation core.dim_accounts uses for
+                      -- last_four_raw: strip to digits, and only speak if four
+                      -- survive. That is what keeps an alphanumeric PDF
+                      -- identifier ("ACCT-9Z", one digit) from ever reaching a
+                      -- caller -- the column is named "masked" but the PDF path
+                      -- stores a whole identifier in it.
+                      NULLIF(TRIM(
+                        COALESCE(raw.institution_name, '') ||
+                        CASE
+                          WHEN LENGTH(
+                            REGEXP_REPLACE(
+                              COALESCE(raw.account_number, raw.account_number_masked),
+                              '[^0-9]', '', 'g'
+                            )
+                          ) >= 4
+                          THEN ' ****' || RIGHT(
+                            REGEXP_REPLACE(
+                              COALESCE(raw.account_number, raw.account_number_masked),
+                              '[^0-9]', '', 'g'
+                            ),
+                            4
+                          )
+                          ELSE ''
+                        END
+                      ), '')
+                    ) AS resolved_label,
                     ROW_NUMBER() OVER (
                         PARTITION BY link.account_id
-                        ORDER BY account_label IS NOT NULL DESC,
+                        ORDER BY resolved_label IS NOT NULL DESC,
                                  raw.extracted_at DESC
                     ) AS rn
                 FROM {TABULAR_ACCOUNTS.full_name} AS raw
@@ -294,6 +384,16 @@ def _last_fours_disagree(
 # null last_four forced the review open — see _fallback_candidates: there any
 # omitted account is unpickable, so a long list is the lesser cost.
 _FALLBACK_CANDIDATE_CAP = 25
+
+# How long two ledgers may run at once before the reissue signal stops believing
+# one account replaced the other. A changeover is not instantaneous — a refund,
+# a final fee, or a charge that posts late lands on the retired number after the
+# replacement has started — so a few weeks of tail overlap is still the reissue
+# shape. Roughly one statement cycle, which is the period such stragglers arrive
+# in. Beyond it the two accounts were simply open together, which is the case
+# this bound exists to refuse: the live pairs that motivated it ran concurrently
+# for 76 to 362 days.
+_REISSUE_MAX_CONCURRENT_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -1092,37 +1192,19 @@ class AccountResolver:
         )
         try:
             out: list[_Candidate] = list(pending_candidates)
-            if (
-                src.last_four
-                and src.institution
-                and (target_inst := _institution_key(src.institution))
+            last_four_candidates = self._last_four_candidates(src, exclude_account_id)
+            out.extend(last_four_candidates)
+            # Only a *corroborated* last four stands alone. Both sides naming
+            # the same bank is near-certain, so a weaker name guess beside it
+            # would just give the reviewer a second, worse answer. A bare
+            # `last_four` hit is a four-digit coincidence until something
+            # corroborates it — and since the rung stopped requiring an
+            # institution, returning on one suppresses the name pass for exactly
+            # the institution-less sources the widening was meant to help. The
+            # twin it hides is the one whose own last four is simply unknown.
+            if pending_candidates or any(
+                c.signal == "institution_last4" for c in last_four_candidates
             ):
-                # Match on institution_slug, never institution_name: the name is
-                # for display, and the dim's per-field merge lets a later
-                # source win it outright. Both sides go through
-                # _institution_key so the spellings a source happens to carry
-                # meet the registry's curated slug. Fetch by exact last_four and
-                # compare in Python because the two sides still differ in case.
-                # An institution that normalizes to nothing (all punctuation) is
-                # skipped — it would match every other such row sharing
-                # last_four.
-                rows = self._db.execute(
-                    f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
-                    "WHERE last_four = ? AND account_id != ?",
-                    [src.last_four, exclude_account_id],
-                ).fetchall()
-                # confidence is informational only — weak signals always go to review.
-                out.extend(
-                    _Candidate(
-                        account_id=str(r[0]),
-                        signal="institution_last4",
-                        value=f"{target_inst}:{src.last_four}",
-                        confidence=0.5,
-                    )
-                    for r in rows
-                    if r[1] and _institution_key(str(r[1])) == target_inst
-                )
-            if out:
                 return _dedupe_candidates(out, legacy_candidates)
             name_rows = self._db.execute(
                 f"SELECT account_id, display_name, last_four, institution_slug "  # noqa: S608  # TableRef + parameterized values
@@ -1170,8 +1252,26 @@ class AccountResolver:
             # nothing to do with. Both are weak signals headed for the same
             # review queue; picking between them is the human's call.
             out.extend(_retyped_reissue_candidates(src, name_rows))
-            if not out and reissue:
-                out = self._reissue_candidates(src, exclude_account_id)
+            out = self._drop_concurrent_reissues(out, account_id=exclude_account_id)
+            # A bare `last_four` hit is not a signal that cleared: it matches
+            # on four digits alone, while this sweep matches same-institution
+            # accounts whose last four *differs*. The two are disjoint by
+            # construction, so letting the coincidence cancel the sweep loses
+            # the genuine replacement card — the same mistake the name pass
+            # made one rung up, once the rung stopped requiring an institution.
+            cleared = [c for c in out if c.signal != "last_four"]
+            if not cleared and reissue:
+                # Extend rather than replace: `out` may already hold the bare
+                # last-four hits this guard deliberately looks past, and the
+                # sweep is meant to add to them, not stand in for them. When
+                # `out` is empty — the only case that reached here before — the
+                # two are the same thing.
+                out.extend(
+                    self._drop_concurrent_reissues(
+                        self._reissue_candidates(src, exclude_account_id),
+                        account_id=exclude_account_id,
+                    )
+                )
             if not out and fallback:
                 out = self._fallback_candidates(src, exclude_account_id)
                 return _dedupe_candidates(legacy_candidates, out)
@@ -1179,6 +1279,152 @@ class AccountResolver:
         except duckdb.CatalogException:
             logger.debug("core.dim_accounts unavailable; using raw candidates only")
             return _dedupe_candidates(pending_candidates, legacy_candidates)
+
+    def _last_four_candidates(
+        self, src: SourceAccount, exclude_account_id: str
+    ) -> list[_Candidate]:
+        """Existing accounts stating the same last four — the strongest weak signal.
+
+        Institution is **evidence here, never a precondition.** Keying the rung
+        on a shared institution made the whole rung unreachable for an account
+        that has none, and one of the two channels routinely mints exactly that:
+        a tabular export names its account only in a label ("Everyday Spending
+        (...7777)"), which yields a last four and no institution. The account it
+        minted was invisible to every last-four comparison, so the cross-source
+        twin the review queue exists to surface never appeared and both copies
+        of the same ledger counted toward spending and net worth.
+
+        What institution still does is *contradict*. Two banks issuing the same
+        four digits is a collision, not a duplicate, so a pair that states two
+        different institutions is dropped. Silence is not contradiction: when
+        either side has no resolved institution the pair surfaces under
+        ``last_four`` instead of ``institution_last4``, because the queue must
+        be able to tell "both sides named this bank" from "one side named
+        nothing" — that is the difference between a near-certain twin and a
+        four-digit coincidence, and both are review-only either way.
+
+        Match on ``institution_slug``, never ``institution_name``: the name is
+        for display and the dim's per-field merge lets a later source win it
+        outright. Both sides go through ``_institution_key`` so the spellings a
+        source happens to carry meet the registry's curated slug, and the
+        comparison happens in Python because the two still differ in case. An
+        institution that normalizes to nothing (all punctuation) reads as
+        unstated rather than as a value that would match every other such row.
+        """
+        if not src.last_four:
+            return []
+        target_inst = _institution_key(src.institution) if src.institution else None
+        rows = self._db.execute(
+            f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            "WHERE last_four = ? AND account_id != ? ORDER BY account_id",
+            [src.last_four, exclude_account_id],
+        ).fetchall()
+        candidates: list[_Candidate] = []
+        for row in rows:
+            candidate_inst = _institution_key(str(row[1])) if row[1] else None
+            if target_inst and candidate_inst and target_inst != candidate_inst:
+                continue
+            shared_institution = target_inst is not None and candidate_inst is not None
+            # confidence is informational only — weak signals always go to review.
+            candidates.append(
+                _Candidate(
+                    account_id=str(row[0]),
+                    signal="institution_last4" if shared_institution else "last_four",
+                    value=(
+                        f"{target_inst}:{src.last_four}"
+                        if shared_institution
+                        else src.last_four
+                    ),
+                    confidence=0.5 if shared_institution else 0.45,
+                )
+            )
+        # Corroboration decides who survives the cap, not `ORDER BY
+        # account_id`: an `institution_last4` pair is the one near-certain match
+        # in this list, and a book full of filler collisions would otherwise
+        # crowd it out on id order alone. The sort is stable, so ties keep that
+        # id order.
+        candidates.sort(key=lambda c: c.signal != "institution_last4")
+        return candidates[:_FALLBACK_CANDIDATE_CAP]
+
+    def _drop_concurrent_reissues(
+        self, candidates: list[_Candidate], *, account_id: str
+    ) -> list[_Candidate]:
+        """Refuse a reissue proposal whose two ledgers demonstrably ran side by side.
+
+        A reissue is sequential by definition — the old number stops, the
+        replacement starts — and the signal never checked that. It fired on a
+        shared institution plus a last four that differed, which in an
+        established book is every pair of cards at one bank: three accounts at
+        one institution draw a proposal for each pair, and two cards at another
+        that were deliberately kept apart are proposed against each other while
+        both are still open. Each proposal's own evidence contradicted it
+        — zero matched transactions over a period both ledgers covered — and a
+        queue that fills with self-refuting proposals teaches the user to
+        dismiss the queue, which is the whole trust budget "magic stays visible"
+        is protecting.
+
+        Only *positive* concurrency drops a candidate. An account with no
+        published ledger keeps its proposal: at import time the provisional was
+        minted seconds ago and no transform has run, so silence there is the
+        normal state rather than an answer. That is what keeps the PDF
+        replacement-card case — the shape the signal was written for — working.
+
+        Overlapping spans alone are not that positive evidence, and reading
+        them as such inverts the signal on the case that matters most. A true
+        cross-source twin — one account arriving from two sources — covers the
+        same period by construction *and* holds the same rows, so a drop keyed
+        on the date ranges would withhold exactly the duplicate this queue
+        exists to surface and leave it double-counting. Both halves of the
+        original evidence have to hold: the ledgers ran together **and**
+        disagreed across a period both of them covered.
+        """
+        reissue_ids = [
+            c.account_id for c in candidates if c.signal == "institution_reissue"
+        ]
+        if not reissue_ids:
+            return candidates
+        spans = fetch_ledger_spans(self._db, [account_id, *reissue_ids])
+        own = spans.get(account_id)
+        if own is None:
+            return candidates
+        kept: list[_Candidate] = []
+        for candidate in candidates:
+            other = spans.get(candidate.account_id)
+            if (
+                candidate.signal == "institution_reissue"
+                and other is not None
+                and own.concurrent_with(
+                    other, tolerance_days=_REISSUE_MAX_CONCURRENT_DAYS
+                )
+                and self._ledgers_contradict(account_id, candidate.account_id)
+            ):
+                continue
+            kept.append(candidate)
+        return kept
+
+    def _ledgers_contradict(self, account_id: str, other_account_id: str) -> bool:
+        """Whether a period both ledgers cover holds none of the same transactions.
+
+        ``measurable`` is the half that keeps this honest: ``comparable == 0``
+        means the probe found no shared period to compare, which is absence of
+        evidence, not evidence of absence. Only a period both ledgers populated
+        and still agreed on nothing refutes a reissue.
+
+        ``unstated_currency_matches`` is the other half. The probe's default
+        reading treats a one-sided silence as a mismatch, which is affordable
+        where the count is *shown* beside a proposal and only costly where it
+        is read as a refutation — here. A tabular export leaving the column
+        blank beside a feed that states USD would otherwise score zero on a
+        ledger it agrees with row for row, and this drop would read that as the
+        pair disagreeing. Two stated and differing currencies still refute.
+        """
+        overlap = probe_ledger_overlap(
+            self._db,
+            account_id=account_id,
+            against_account_id=other_account_id,
+            unstated_currency_matches=True,
+        )
+        return overlap.measurable and overlap.matched == 0
 
     def _pending_pdf_candidates(
         self, src: SourceAccount, exclude_account_id: str

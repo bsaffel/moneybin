@@ -47,11 +47,30 @@ from moneybin.tables import REPORTS_CASH_FLOW
             "ISO 4217 currency these sums are denominated in; null means unknown.",
             DataClass.CURRENCY,
         ),
-        OutputColumn("inflow", "Sum of positive amounts.", DataClass.TXN_AMOUNT),
         OutputColumn(
-            "outflow", "Sum of negative amounts, kept negative.", DataClass.TXN_AMOUNT
+            "inflow",
+            "Sum of positive amounts.",
+            DataClass.TXN_AMOUNT,
+            # Positive by construction — the column name carries the direction,
+            # so the value does not need a `+` to say it again.
+            money_kind="magnitude",
         ),
-        OutputColumn("net", "Inflow plus outflow.", DataClass.TXN_AMOUNT),
+        OutputColumn(
+            "outflow",
+            "Sum of negative amounts, kept negative.",
+            DataClass.TXN_AMOUNT,
+            # Kept negative rather than absolute, so it is a signed flow and the
+            # `−` it renders is the model's own sign, not a decoration.
+            money_kind="flow",
+        ),
+        OutputColumn(
+            "net",
+            "Inflow plus outflow.",
+            DataClass.TXN_AMOUNT,
+            # The one column here whose sign is the answer: positive is a
+            # surplus for the period, negative a deficit.
+            money_kind="flow",
+        ),
         OutputColumn(
             "txn_count", "Non-transfer transaction count.", DataClass.AGGREGATE
         ),

@@ -24,7 +24,7 @@
 MoneyBin imports bank files (CSV, OFX/QFX/QBO, Excel, Parquet, selectable-text
 PDF), syncs Plaid-linked accounts, and connects Google Sheets — all into one
 AES-256-GCM-encrypted [DuckDB](https://duckdb.org) file. Query it three ways:
-the CLI, raw SQL, or a 49-tool MCP server for Claude, Cursor, VS Code, Gemini
+the CLI, raw SQL, or a 50-tool MCP server for Claude, Cursor, VS Code, Gemini
 CLI, Codex, and other clients. Every surface reads the same tables.
 
 <!-- markdownlint-disable MD033 -->
@@ -83,9 +83,17 @@ SQLMesh transforms completed in 4.00s
 ✅ Demo profile 'demo' ready (2 accounts, 995 transactions, 859 categorized).
 
 $ uv run moneybin reports networth
-Net worth as of 2025-12-27: 211413.05
-  Assets:      211413.05
-  Liabilities: 0.00
+USD as of 2025-12-27
+Net worth:   211,413.05
+Assets:      211,413.05
+Liabilities: 0.00
+Accounts:    2
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┓
+┃ account                   ┃    balance ┃ currency ┃ source  ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━┩
+│ Capital One credit card   │       0.00 │ USD      │ tabular │
+│ Chase Bank checking …0001 │ 211,413.05 │ USD      │         │
+└───────────────────────────┴────────────┴──────────┴─────────┘
 
 $ uv run moneybin sql query "
     SELECT category, COUNT(*) AS txns, SUM(amount) AS total

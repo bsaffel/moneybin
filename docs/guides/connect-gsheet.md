@@ -38,22 +38,40 @@ This opens your browser to Google's OAuth consent screen using the **Desktop app
 
 You only need to do this once per profile. `gsheet connect` will trigger `gsheet auth` automatically on first run if you skip this step.
 
-### You must register your own Google OAuth client
+### Why MoneyBin ships a client secret
 
-**This step is currently required.** MoneyBin ships a public client ID for its own Google Cloud project, but no client secret, and Google's Desktop clients need both: the client secret is required to exchange the authorization code for a token, even under PKCE, because a Desktop client has no signing certificate to attest with. Without it `gsheet auth` refuses up front rather than walking you through a consent screen that cannot complete. Whether MoneyBin should ship a secret alongside the ID — as `gcloud` and rclone do — is an open decision.
+MoneyBin ships a public client ID *and* the client secret Google issued for it, so `gsheet auth` works on a fresh install with nothing to configure. That is a deliberate choice, and worth understanding before you decide whether to keep it.
 
-Register a **Desktop app** client in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) with the Sheets API enabled, then set both:
+**Google's Desktop clients require both halves.** The secret is needed to exchange the authorization code for a token even under PKCE. Only Android, iOS and Chrome clients are exempt — they bind to a signing certificate, and desktop has no equivalent attestation. Google's [OAuth for installed apps](https://developers.google.com/identity/protocols/oauth2/native-app) documentation puts the exemption exactly there: the `client_secret` is "not applicable to requests from clients registered as Android, iOS, or Chrome applications."
+
+**A shipped secret is not a confidential secret.** This is the settled position for installed apps, not a MoneyBin shortcut. [RFC 8252 §8.5](https://datatracker.ietf.org/doc/html/rfc8252#section-8.5) puts it plainly: "Secrets that are statically included as part of an app distributed to multiple users should not be treated as confidential secrets, as one user may inspect their copy and learn the shared secret." The same section adds that it is "NOT RECOMMENDED for authorization servers to require client authentication of public native apps clients using a shared secret." Google says the same of its own flow — "it is assumed that these apps cannot keep secrets." PKCE and the loopback redirect are what carry the security; the client ID and secret identify the app, they do not authenticate you.
+
+**The alternative was worse.** A wheel carries no dotenv, so a user-supplied secret means every `pip install` begins with registering a Desktop client in the Google Cloud Console — the 15 minutes of setup this connector chose OAuth to avoid in the first place.
+
+What it costs, stated honestly:
+
+- **The consent screen carries MoneyBin's name.** Anyone holding the credential can render one — though that is further from a working phish than it sounds. Google delivers the authorization code only to a redirect URI registered for the client, and a Desktop client may register only loopback (`http://127.0.0.1:port`) or a custom scheme, so a mailed consent link delivers the code to the victim's own machine, not the sender's. The manual copy/paste flow that once let a remote attacker collect one has been [blocked for every client](https://developers.google.com/identity/protocols/oauth2/resources/oob-migration) since January 2023, explicitly because it "poses a remote phishing risk". What remains is a malicious app you install and run yourself — and an attacker already running code on your machine can read the stored refresh token directly, so the shipped credential adds nothing to their reach.
+- **MoneyBin never requests write access with this client.** Its consent screen declares `spreadsheets.readonly` and nothing else, which is what keeps a warning signal alive: Google shows an [unverified-app warning](https://support.google.com/cloud/answer/7454865) whenever an app requests a sensitive scope its consent screen does not declare. So a screen carrying MoneyBin's name that asks to *edit* your spreadsheets is never a legitimate one. That costs something real — exporting *to* a Google Sheet needs your own client (below), because requesting write here would declare the scope on the shared screen and spend the signal for everyone.
+- **The API quota is shared.** Google meters the Sheets API [per Cloud project](https://developers.google.com/workspace/sheets/api/limits) at 300 read requests per minute, with a separate 60-per-minute cap per user per project. The per-user cap stops any one user monopolizing it, but the project ceiling is genuinely shared.
+
+The shared client is a starting point, not a permanent foundation. rclone — the most-cited precedent for this pattern — now tells its users that "the shared client_id is being retired and will stop working during 2026" ([rclone Google Drive docs](https://rclone.org/drive/)). If you get throttled, or would rather not trust MoneyBin's project identity on the consent screen, bring your own client.
+
+### Bring your own Google OAuth client (optional)
+
+Reading a sheet needs none of this — the shipped client works. Exporting *to* a sheet does require your own client, because the shipped one is registered read-only and MoneyBin refuses to request write with it. Register your own **Desktop app** client in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) with the Sheets API enabled if you want a private quota, or would rather not trust MoneyBin's project identity on the consent screen. Then set both:
 
 ```bash
 export MONEYBIN_GSHEET__OAUTH_CLIENT_ID="<your-client-id>.apps.googleusercontent.com"
 export MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET="<your-client-secret>"
 ```
 
-Set both. Neither half works alone, and `gsheet auth` refuses both states by name rather than letting them fail at the token exchange: with only the ID there is no secret to exchange the code with, and with only the secret the client ID falls back to MoneyBin's embedded value, which Google never issued your secret for.
+Set both or neither. A secret belongs to the client ID it was issued with, so setting only the secret leaves it paired with MoneyBin's embedded ID, which Google never issued it for — `gsheet auth` refuses that by name rather than letting it fail at the token exchange, after you have already consented.
 
 Export them somewhere your scheduled runs will see them, not just your interactive shell. The refresh grant needs the same pair as the initial exchange, so a `launchd`/`cron` `moneybin refresh` that starts without them fails once the cached access token ages out, roughly an hour after an authorization that looked fine.
 
-Running your own client also gives you your own quota. Google meters the Sheets API [per Cloud project](https://developers.google.com/workspace/sheets/api/limits) — 300 read requests per minute — with a separate 60-per-minute cap per user per project. The per-user cap means one heavy user cannot monopolize a shared credential, but the project ceiling is genuinely shared, which is why rclone is retiring its own shared client ID during 2026.
+Switching between the shipped client and your own — in either direction — means authorizing again. Google issues a refresh token to one specific client and will not honor it for another, so MoneyBin records which client obtained each grant and refuses to reuse it under a different one. `gsheet auth` reports such a grant as unauthorized and walks you through consent again, rather than reporting success and then failing an hour later when the cached access token ages out and the refresh is rejected.
+
+Your own client also gives you your own quota, which is the main reason to bother — see [Why MoneyBin ships a client secret](#why-moneybin-ships-a-client-secret) above for the numbers.
 
 ## Connect a sheet
 

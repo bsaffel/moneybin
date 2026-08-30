@@ -7,12 +7,8 @@ it is idempotent and needs no backfill.
 
 from __future__ import annotations
 
-import pytest
-
 from moneybin.database import Database
 from moneybin.sql.migrations.V037__add_currency_code_to_ofx_tables import migrate
-
-pytestmark = pytest.mark.fresh_db
 
 # The pre-V037 shape of raw.ofx_transactions/raw.ofx_balances (no currency_code).
 _PRE_V037_TRANSACTIONS_DDL = """

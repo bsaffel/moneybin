@@ -198,3 +198,36 @@ def test_dim_accounts_carries_plaid_official_name_and_subtype(
     ).fetchall()
     # Fixture: Total Checking/checking, Total Savings/savings.
     assert rows == [("Total Checking", "checking"), ("Total Savings", "savings")]
+
+
+@pytest.mark.slow
+def test_dim_accounts_names_a_plaid_account_by_the_name_plaid_sent(
+    db_with_data: Database,
+) -> None:
+    """Plaid's per-account ``name`` is what the dimension names the account by.
+
+    ``official_name`` is the bank's product label, shared across accounts; the
+    fixture's two differ only by ``name`` and ``mask``, which is the collision
+    the label rung exists to break. A Plaid sync never goes through
+    ``_created_account``, so ``stg_plaid__accounts``' ``account_label``
+    projection is the only path that exercises the rung for Plaid data — no
+    mint-report parity test reaches this channel.
+
+    Narrow on purpose, and worth knowing how narrow: replacing that projection
+    with ``NULL::TEXT`` renders these as ``Chase checking …1234`` and ``Chase
+    savings …5678`` — institution plus the registry-normalized subtype — so the
+    assertion turns on Plaid's own capitalization. That is the whole distance
+    between the two ladders for this fixture, and it is enough to fail.
+    """
+    with sqlmesh_context(db_with_data) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db_with_data.execute(
+        """
+        SELECT display_name
+        FROM core.dim_accounts
+        WHERE source_type = 'plaid'
+        ORDER BY display_name
+        """
+    ).fetchall()
+    assert rows == [("Chase Checking …1234",), ("Chase Savings …5678",)]

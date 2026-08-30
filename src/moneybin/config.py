@@ -463,6 +463,21 @@ GSHEET_PUBLIC_OAUTH_CLIENT_ID = (
     "756678783976-ld203ch19knsc2th5b6sc7mm5tq3dtpd.apps.googleusercontent.com"
 )
 
+# The secret Google issued for the client ID above, shipped for the same reason
+# the ID is: a wheel carries no dotenv, so a user-supplied secret means every
+# `pip install` must first register a Desktop client — the 15 minutes of Cloud
+# Console setup this connector chose OAuth to avoid. Impersonation is bounded
+# mostly by Google: a Desktop client may register only a loopback redirect, so a
+# phished consent delivers the code to the victim's own machine. The bound we
+# own is scope — this client declares `spreadsheets.readonly` alone and
+# _oauth_client_credentials() refuses write with it, which is what keeps
+# Google's unverified-app warning meaningful. The real ceiling is
+# the shared 300 req/min project quota; anyone throttled sets their own pair via
+# MONEYBIN_GSHEET__OAUTH_CLIENT_ID / __OAUTH_CLIENT_SECRET, which stay the
+# documented remedy. See docs/specs/connect-gsheet.md, "Embedded credential:
+# what it costs".
+GSHEET_PUBLIC_OAUTH_CLIENT_SECRET = "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"  # noqa: S105  # public installed-app credential, not confidential (RFC 8252 §8.5)
+
 
 class GSheetSettings(BaseModel):
     """Configuration for the Google Sheets connector."""
@@ -479,13 +494,15 @@ class GSheetSettings(BaseModel):
         ),
     )
     oauth_client_secret: SecretStr | None = Field(
-        default=None,
+        default=SecretStr(GSHEET_PUBLIC_OAUTH_CLIENT_SECRET),
         description=(
             "OAuth 2.0 client secret for the installed-app Google OAuth flow. "
             "Google's Desktop clients require it in the code->token exchange "
             "even under PKCE; RFC 8252 §8.5 says a secret shipped to every "
-            "user is not confidential. Set with "
-            "MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET."
+            "user is not confidential. Defaults to MoneyBin's public client "
+            "secret; override with MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET "
+            "alongside your own MONEYBIN_GSHEET__OAUTH_CLIENT_ID. Empty "
+            "disables the connector."
         ),
     )
     api_timeout_seconds: float = Field(

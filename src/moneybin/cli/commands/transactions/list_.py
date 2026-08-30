@@ -17,7 +17,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import render_rich_table
+from moneybin.cli.render import Money, render_rows
 
 logger = logging.getLogger(__name__)
 
@@ -208,21 +208,25 @@ def transactions_list(
 
         rows: list[tuple[object, ...]] = []
         for t in result.transactions:
-            amt = t.amount
-            amount_str = f"{amt:,.2f}"
-            desc = (
-                t.description[:49] + "…" if len(t.description) > 50 else t.description
-            )
             rows.append((
                 t.transaction_date,
-                desc,
-                amount_str,
+                # Unclipped: `render_rows` folds an overlong value rather than
+                # eliding it, and a raw bank description carries the detail that
+                # separates two similar charges at the end.
+                t.description,
+                # Unformatted: `render_rows` stringifies it through
+                # `format_money`, which is the only place text output does so.
+                t.amount,
                 t.category or "",
                 t.account_id,
             ))
 
-        render_rich_table(
-            ["date", "description", "amount", "category", "account"], rows
+        render_rows(
+            ["date", "description", "amount", "category", "account"],
+            rows,
+            # A transaction amount is signed under the AGENTS.md convention —
+            # negative is an expense, positive is income — which is `flow`.
+            money={"amount": Money("flow")},
         )
 
         if result.next_cursor and not quiet:

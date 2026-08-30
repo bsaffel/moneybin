@@ -589,6 +589,36 @@ class TestAccountsSet:
         mock_service_class.return_value.settings_update.assert_not_called()
 
     @pytest.mark.unit
+    def test_set_padded_canonical_subtype_writes_without_refusing(
+        self, runner: CliRunner
+    ) -> None:
+        """The prompt has to judge the value the service will store.
+
+        Non-TTY without `--yes` refuses anything non-canonical outright, so
+        checking the untrimmed flag turns one stray space into a hard refusal
+        of a subtype MoneyBin recognizes.
+        """
+        from unittest.mock import MagicMock, patch
+
+        with (
+            patch("moneybin.cli.commands.accounts.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.AccountService"
+            ) as mock_service_class,
+        ):
+            mock_service = mock_service_class.return_value
+            mock_service.settings_update.return_value = (
+                MagicMock(account_subtype="checking"),
+                [],
+            )
+            result = runner.invoke(
+                app, ["accounts", "set", "acct_a", "--subtype", "  checking  "]
+            )
+        assert result.exit_code == 0, result.stderr
+        kwargs = mock_service.settings_update.call_args.kwargs
+        assert kwargs["account_subtype"] == "checking"
+
+    @pytest.mark.unit
     def test_set_unknown_subtype_with_yes_writes(self, runner: CliRunner) -> None:
         from unittest.mock import MagicMock, patch
 

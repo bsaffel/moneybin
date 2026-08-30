@@ -47,7 +47,7 @@ What this enables:
 | Decision | Reason |
 |---|---|
 | OAuth user-flow over service account | Better UX (one-click connect vs. 15 min of Google Cloud Console setup). Accept the verification path; pre-launch ship in "unverified" or "testing" mode. Aligns with the "Bias Toward UX/DX/AX" principle in AGENTS.md. |
-| PKCE with an embedded public client ID and a **user-supplied** client secret | Google's Desktop clients require `client_secret` in the code→token exchange even under PKCE — an empty value fails the exchange *after* a successful consent. RFC 8252 §8.5: a credential shipped to every user is not confidential; PKCE and the loopback redirect carry the security. Only Android/iOS/Chrome clients are exempt, because they bind to a signing certificate — desktop has no equivalent attestation. Only the ID ships today, so each user registers their own Desktop client — see "Embedded credential: what it costs". |
+| PKCE with an embedded public client ID **and** client secret | Google's Desktop clients require `client_secret` in the code→token exchange even under PKCE — an empty value fails the exchange *after* a successful consent. RFC 8252 §8.5: a credential shipped to every user is not confidential; PKCE and the loopback redirect carry the security. Only Android/iOS/Chrome clients are exempt, because they bind to a signing certificate — desktop has no equivalent attestation. Both halves ship, so a bare install authorizes with no setup; a user who wants their own quota or trust boundary overrides both — see "Embedded credential: what it costs". |
 | Live mirror + soft-delete + stable-key detection, no write-back v1 | Magic-by-default for sheets with stable ID columns; content-hash fallback still mirrors correctly via diff. Injecting a `_moneybin_id` into the source sheet is opt-in v2—v1 keeps read-only OAuth scope and avoids mutating user data. |
 | Reuse `raw.tabular_transactions` with `source_type='gsheet'` | Coherence per `design-principles.md` — gsheet IS a tabular source. Downstream (matching, categorization, reports) automatically picks up gsheet data with zero changes. One new column (`deleted_from_source_at`) supports the soft-delete contract. |
 | Strict drift refusal per-connection | Containment: a drifted sheet skips its pull but doesn't block other connections or the rest of `refresh_run`. User decides explicitly via `gsheet reconnect`. Prevents bad data from silently flowing through. |
@@ -72,7 +72,7 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-syn
 ### Connection lifecycle
 
 1. **Connect a sheet** via `moneybin gsheet connect <url>` (or `gsheet_connect` MCP). URL must include `/edit#gid=N` or `?gid=N` so the tab is unambiguous.
-2. **OAuth on first run.** Open browser to Google consent (PKCE flow, embedded public client ID and user-supplied client secret). Capture redirect on `localhost:<random-port>`. Store refresh token in `SecretStore` (keyring).
+2. **OAuth on first run.** Open browser to Google consent (PKCE flow, embedded public client ID and client secret). Capture redirect on `localhost:<random-port>`. Store refresh token in `SecretStore` (keyring).
 3. **Detection at connect time.** Fetch sheet headers + sample rows, run `extractors/tabular/` Stages 1–3 (format detect, read, column mapping). Produce mapping + confidence tier.
 4. **Confirmation gate.** High confidence + `--yes` flag → auto-confirm. Low confidence → refuse with actionable error. Medium → interactive confirmation (CLI prompt; MCP returns mapping for caller to accept). An inferred `negative_is_income` is always a separate whole-ledger sign decision: CLI requires explicit `--sign`; MCP elicits a real human confirmation and never exposes an agent-settable sign override. The final mapping shape and convention must agree: a single `amount` column rejects `split_debit_credit`, while a resolved debit/credit pair rejects either single-column convention. Both mismatches fail before connection insert/update or pull. Confidence bands are aligned to `ImportSettings.confidence` (`T_high=0.90`, `T_med=0.70` defaults; configurable via `MONEYBIN_IMPORT___CONFIDENCE__T_HIGH` / `__T_MED`). Realized by [`smart-import-confirmation.md`](smart-import-confirmation.md).
 5. **Pin the detection result.** Only after all confirmation gates pass, save `column_mapping`, `header_signature`, `date_format`, `sign_convention`, `number_format`, `skip_rows`, `skip_trailing_patterns` to `app.gsheet_connections`. The pinned mapping is the contract for subsequent pulls.
@@ -472,7 +472,7 @@ Downstream `fct_transactions`, `core.bridge_*`, reports, and balances automatica
 | `raw.import_log` | One row per pull. `source_type='gsheet'`, `source_origin=<connection_id>`, `source_file='gsheet://<spreadsheet_id>/<gid>'`, `format_name='gsheet:<workbook>/<sheet>'`, `format_source='gsheet'`. |
 | `raw.tabular_accounts` | Accounts inferred from multi-account sheets land here as today, with `source_type='gsheet'`. |
 | `app.audit_log` | `GSheetConnectionsRepo` emits paired audit rows on every mutation. New `entity_type='gsheet_connection'`. |
-| `SecretStore` (keyring) | New keys: `gsheet:refresh_token`, `gsheet:access_token`, `gsheet:access_token_expires_at`. Single identity per profile in v1. |
+| `SecretStore` (keyring) | New keys: `gsheet:refresh_token`, `gsheet:access_token`, `gsheet:access_token_expires_at`, `gsheet:granted_scopes`, `gsheet:client_id` (plus the `gsheet:write_*` twin of each). `gsheet:client_id` records which OAuth client obtained the grant, because Google will not refresh a token under a different client than issued it. Single identity per profile in v1. |
 
 ### Possible small extension to `raw.import_log`
 
@@ -556,7 +556,7 @@ Verify against the current `raw_import_log.sql` schema at implementation time. P
 
 ### Key Decisions (carried forward from brainstorm)
 
-1. **OAuth user-flow with PKCE, embedded public client ID and user-supplied client secret.** Pre-launch ships in "unverified" mode; M3H launches with Google verification complete. Tokens in `SecretStore`. See "Embedded credential: what it costs" below.
+1. **OAuth user-flow with PKCE, embedded public client ID and client secret.** Pre-launch ships in "unverified" mode; M3H launches with Google verification complete. Tokens in `SecretStore`. See "Embedded credential: what it costs" below.
 2. **Read-only OAuth scope.** `https://www.googleapis.com/auth/spreadsheets.readonly` only. Write-scope is a v2 opt-in for stable-ID write-back.
 3. **Reuse `raw.tabular_transactions`** with `source_type='gsheet'` and a single new `deleted_from_source_at` column.
 4. **Pluggable adapter Protocol**; v1 ships **two adapters** — `TransactionsAdapter` (integrated path) and `RawSeedAdapter` (catch-all escape hatch).
@@ -569,22 +569,51 @@ Verify against the current `raw_import_log.sql` schema at implementation time. P
 
 A desktop app cannot hold a confidential credential, so any shipped client ID
 and secret are readable by anyone with the wheel or the repo. That is the
-accepted industry position for installed apps (RFC 8252 §8.5; `gcloud` and
-Thunderbird both ship one), not a MoneyBin shortcut. Two costs come with it,
-and the second is the one that actually bites.
+accepted industry position for installed apps, not a MoneyBin shortcut.
+[RFC 8252 §8.5](https://datatracker.ietf.org/doc/html/rfc8252#section-8.5):
+"Secrets that are statically included as part of an app distributed to multiple
+users should not be treated as confidential secrets, as one user may inspect
+their copy and learn the shared secret" — and it is "NOT RECOMMENDED for
+authorization servers to require client authentication of public native apps
+clients using a shared secret." Google agrees about its own flow: "it is
+assumed that these apps cannot keep secrets"
+([OAuth for installed apps](https://developers.google.com/identity/protocols/oauth2/native-app)),
+which is also where the Android/iOS/Chrome exemption is stated — `client_secret`
+is "not applicable" only to those, leaving Desktop clients requiring it. Two
+costs come with it, and the second is the one that actually bites.
 
-**Current state: the ID ships, the secret does not.** Google's Desktop clients
-require both, so the shipped ID alone cannot complete an authorization and
-`authorize()` refuses before opening a browser. Users register their own
-Desktop client today. Whether to ship the pair is an open decision, and the
-costs below are what it would buy and cost.
+**Current state: both halves ship.** Google's Desktop clients require the pair,
+so shipping the ID alone left `authorize()` refusing before it opened a browser
+and forced every user to register their own Desktop client — the 15 minutes of
+Cloud Console setup this connector chose OAuth to avoid. The pair now ships and
+a bare install authorizes with no setup; the costs below are what that buys and
+what it costs. `MONEYBIN_GSHEET__OAUTH_CLIENT_ID` / `__OAUTH_CLIENT_SECRET`
+remain the override.
 
-**Impersonation (bounded).** Anyone holding the credential can render a consent
-screen carrying MoneyBin's name. It grants no data access on its own — a human
-must still complete consent — and the read-only
-`spreadsheets.readonly` scope caps what a successful phish can obtain. Google
-verification does **not** mitigate this: a phisher using the leaked ID gets our
-*verified* screen. Verification buys user confidence, not protection here.
+**Impersonation (bounded by Google, not by us).** Anyone holding the credential
+can render a consent screen carrying MoneyBin's name, but that is further from a
+working phish than it sounds. Google delivers the authorization code only to a
+redirect URI registered for the client, and a Desktop client may register only
+loopback (`http://127.0.0.1:port`) or a custom scheme, so a mailed consent link
+delivers the code to the victim's own machine. The manual copy/paste flow that
+once let a remote attacker collect one has been [blocked for every
+client](https://developers.google.com/identity/protocols/oauth2/resources/oob-migration)
+since 31 January 2023, explicitly because it "poses a remote phishing risk".
+What remains is a malicious app the user installs and runs locally — and an
+attacker already executing code on that machine can read the stored refresh
+token directly, so the shipped credential adds nothing to their reach.
+
+**Read-only by registration, not by habit.** The shipped client declares
+`spreadsheets.readonly` alone on its consent screen, and `_oauth_client_credentials()`
+refuses `require_write=True` while running on it, so exporting *to* a sheet
+requires the user's own client. Google shows its [unverified-app
+warning](https://support.google.com/cloud/answer/7454865) whenever an app
+requests a sensitive scope its consent screen does not declare, so a screen
+carrying MoneyBin's name that asks to *edit* spreadsheets is never legitimate.
+Requesting write with the shared client would declare that scope and spend the
+signal for every user. Google verification does **not** mitigate impersonation
+by itself: a phisher using the leaked ID gets our *verified* screen for the
+scopes we declared. Verification buys user confidence, not protection here.
 
 **Shared quota (the real ceiling).** Google meters the Sheets API per Cloud
 project at 300 read requests/minute, with a separate 60/minute cap per user
@@ -592,16 +621,16 @@ per project ([published limits](https://developers.google.com/workspace/sheets/a
 The per-user cap bounds what any one user can draw, so the failure is
 aggregate contention against the 300/minute project ceiling rather than a
 single heavy user starving the rest. rclone, the most-cited example of this
-pattern, is **retiring its shared client ID during 2026** for exactly this
-reason and now tells users to create their own.
+pattern, now tells users that "the shared client_id is being retired and will
+stop working during 2026" and that creating their own is "required rather than
+merely recommended" ([rclone Google Drive docs](https://rclone.org/drive/)).
 
-**Consequence for us.** An embedded credential would be a scaling cliff, not a
+**Consequence for us.** The embedded credential is a scaling cliff, not a
 permanent foundation. `MONEYBIN_GSHEET__OAUTH_CLIENT_ID` and
 `MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET` are therefore load-bearing, not a
-power-user nicety: today they are the only way to authorize at all, and after
-any embed decision they remain the documented remedy for anyone hitting
-throttling or unwilling to trust our project's identity. They must stay
-documented in the user-facing connect guide. Revisit before the shared client becomes the
+power-user nicety: they are the documented remedy for anyone hitting throttling
+or unwilling to trust our project's identity, and must stay documented in the
+user-facing connect guide. Revisit before the shared client becomes the
 bottleneck; the durable alternatives are per-user client IDs (costs the
 one-click promise) or a server-side broker (costs local-first, since tokens
 would transit our infrastructure).
@@ -824,6 +853,7 @@ flowchart LR
 
 **Failures:**
 16. OAuth refresh token revoked → `GSheetAuthError`, status='auth_expired', other connections unaffected.
+16a. Configured OAuth client changed since the grant was issued (including a grant stored before `gsheet:client_id` existed) → `is_authorized()` is False and authorization re-runs. Refusing here is the point: the stored refresh token belongs to the previous client, so Google rejects it, and without this check `gsheet auth` reports `already_authorized` and the failure surfaces only once the cached access token expires.
 17. Sheet unshared (403) → status='unreachable', refresh continues.
 18. Rate limit (429) → 3x retry with backoff, success or skip.
 19. Per-row validation failure → bad rows rejected, good rows ingested, `import_log.status='partial'`.

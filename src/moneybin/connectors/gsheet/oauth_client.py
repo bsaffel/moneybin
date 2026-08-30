@@ -17,7 +17,11 @@ import logging
 import time
 from dataclasses import dataclass
 
-from moneybin.config import GSHEET_PUBLIC_OAUTH_CLIENT_ID, MoneyBinSettings
+from moneybin.config import (
+    GSHEET_PUBLIC_OAUTH_CLIENT_ID,
+    GSHEET_PUBLIC_OAUTH_CLIENT_SECRET,
+    MoneyBinSettings,
+)
 from moneybin.connectors.gsheet.errors import GSheetAuthError
 from moneybin.secrets import (
     GSHEET_ACCESS_TOKEN_EXPIRES_KEY,
@@ -36,6 +40,8 @@ GOOGLE_SHEETS_READ_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonl
 GOOGLE_SHEETS_WRITE_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 GSHEET_GRANTED_SCOPES_KEY = "gsheet:granted_scopes"  # noqa: S105  # keyring metadata name, not a secret value
 GSHEET_WRITE_GRANTED_SCOPES_KEY = "gsheet:write_granted_scopes"  # noqa: S105  # keyring metadata name, not a secret value
+GSHEET_CLIENT_ID_KEY = "gsheet:client_id"
+GSHEET_WRITE_CLIENT_ID_KEY = "gsheet:write_client_id"
 
 # Refresh the access token slightly before it expires to avoid races.
 _REFRESH_LEEWAY_SECONDS = 60
@@ -46,6 +52,10 @@ class OAuthGrant:
     """Persisted Google authorization capabilities without exposing tokens."""
 
     scopes: frozenset[str]
+    # Google binds a refresh token to the client that obtained it, so a grant
+    # is only usable while that client is still the configured one. None means
+    # the grant predates this field and its issuer is unknowable.
+    client_id: str | None = None
 
     @property
     def can_write(self) -> bool:
@@ -59,6 +69,7 @@ class _CapabilityKeys:
     access: str
     expires: str
     scopes: str
+    client_id: str
 
 
 _READ_KEYS = _CapabilityKeys(
@@ -66,12 +77,14 @@ _READ_KEYS = _CapabilityKeys(
     GSHEET_ACCESS_TOKEN_KEY,
     GSHEET_ACCESS_TOKEN_EXPIRES_KEY,
     GSHEET_GRANTED_SCOPES_KEY,
+    GSHEET_CLIENT_ID_KEY,
 )
 _WRITE_KEYS = _CapabilityKeys(
     GSHEET_WRITE_REFRESH_TOKEN_KEY,
     GSHEET_WRITE_ACCESS_TOKEN_KEY,
     GSHEET_WRITE_ACCESS_TOKEN_EXPIRES_KEY,
     GSHEET_WRITE_GRANTED_SCOPES_KEY,
+    GSHEET_WRITE_CLIENT_ID_KEY,
 )
 
 
@@ -94,7 +107,7 @@ class GoogleOAuthClient:
         # CLI and MCP auth paths would report already_authorized and leave the
         # missing variable to surface as a generic failure at refresh time.
         try:
-            self._oauth_client_credentials()
+            self._oauth_client_credentials(require_write=require_write)
         except GSheetAuthError:
             return False
         keys = _WRITE_KEYS if require_write else _READ_KEYS
@@ -102,10 +115,10 @@ class GoogleOAuthClient:
             self._secrets.get_key(keys.refresh)
         except SecretNotFoundError:
             return False
-        return self._grant_satisfies(
-            self._persisted_grant(require_write=require_write),
-            require_write=require_write,
-        )
+        grant = self._persisted_grant(require_write=require_write)
+        if not self._grant_issuer_matches(grant):
+            return False
+        return self._grant_satisfies(grant, require_write=require_write)
 
     def get_access_token(self, *, require_write: bool = False) -> str:
         """Return a current token valid for the requested capability.
@@ -122,10 +135,15 @@ class GoogleOAuthClient:
             )
         cached = self._cached_access_token(require_write=require_write)
         if cached is not None:
+            # A cached token outlives the client that obtained it, so serving
+            # it would keep pulls working until it aged out and only then fail
+            # at refresh — the delayed, causeless failure this guard exists to
+            # replace with an actionable one.
+            self._require_matching_issuer(grant)
             return cached
         return self._refresh_access_token(grant, require_write=require_write)
 
-    def _oauth_client_credentials(self) -> tuple[str, str]:
+    def _oauth_client_credentials(self, *, require_write: bool) -> tuple[str, str]:
         """Return the configured client id and secret, or refuse by name.
 
         Both grants need both values, and both fail unhelpfully without them:
@@ -140,32 +158,61 @@ class GoogleOAuthClient:
                 "MONEYBIN_GSHEET__OAUTH_CLIENT_ID. See "
                 "docs/guides/connect-gsheet.md."
             )
+        # The shipped client declares only the read-only scope on its consent
+        # screen, and that is the sole reason an impersonated "edit your
+        # spreadsheets" screen looks wrong: Google shows its unverified-app
+        # warning for a sensitive scope the screen never declared. Requesting
+        # write here would force that scope onto the shared screen and spend
+        # the signal for everyone, so export runs on the user's own client.
+        if require_write and client_id == GSHEET_PUBLIC_OAUTH_CLIENT_ID:
+            raise GSheetAuthError(
+                "Google Sheets write access is not available with MoneyBin's "
+                "shipped OAuth client, which is registered for the read-only "
+                "scope alone. Set your own MONEYBIN_GSHEET__OAUTH_CLIENT_ID "
+                "and MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET to export to a "
+                "sheet. See docs/guides/connect-gsheet.md."
+            )
         client_secret = self._settings.gsheet.oauth_client_secret
         if not client_secret:
             raise GSheetAuthError(
-                "Google Sheets OAuth client secret is not configured. Google's "
-                "Desktop clients require it alongside the client ID for both "
-                "the authorization exchange and later token refreshes. Set "
-                "MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET. See "
+                "Google Sheets OAuth client secret is empty. Google's Desktop "
+                "clients require it alongside the client ID for both the "
+                "authorization exchange and later token refreshes, so an empty "
+                "MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET disables the connector. "
+                "Unset it to use MoneyBin's shipped client, or set it to your "
+                "own alongside MONEYBIN_GSHEET__OAUTH_CLIENT_ID. See "
                 "docs/guides/connect-gsheet.md."
             )
-        # Google issues each secret for one specific client ID, and MoneyBin
-        # ships none for the embedded one. So a secret set without its own ID
-        # is a mismatched pair by construction, and Google only says so after
-        # the user has consented.
-        if client_id == GSHEET_PUBLIC_OAUTH_CLIENT_ID:
+        # Google issues each secret for one specific client ID, so a half-set
+        # pair is a mismatch by construction, and Google only says so after the
+        # user has already consented. Both halves default to a shipped value,
+        # so both directions of the mistake reach here.
+        shipped_secret = client_secret.get_secret_value() == (
+            GSHEET_PUBLIC_OAUTH_CLIENT_SECRET
+        )
+        if client_id == GSHEET_PUBLIC_OAUTH_CLIENT_ID and not shipped_secret:
             raise GSheetAuthError(
                 "Google Sheets OAuth client secret is set, but the client ID is "
-                "still MoneyBin's embedded one, which has no secret. A secret "
-                "belongs to the client ID it was issued with, so set your own "
-                "MONEYBIN_GSHEET__OAUTH_CLIENT_ID alongside it. See "
+                "still MoneyBin's embedded one, which that secret was not issued "
+                "for. A secret belongs to the client ID it was issued with, so "
+                "set your own MONEYBIN_GSHEET__OAUTH_CLIENT_ID alongside it. See "
+                "docs/guides/connect-gsheet.md."
+            )
+        if client_id != GSHEET_PUBLIC_OAUTH_CLIENT_ID and shipped_secret:
+            raise GSheetAuthError(
+                "Google Sheets OAuth client ID is your own, but the client "
+                "secret is still MoneyBin's shipped one, which Google did not "
+                "issue for it. Set MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET to the "
+                "secret issued alongside your client ID. See "
                 "docs/guides/connect-gsheet.md."
             )
         return client_id, client_secret.get_secret_value()
 
     def authorize(self, *, require_write: bool = False) -> OAuthGrant:
         """Establish or incrementally upgrade the persisted OAuth grant."""
-        client_id, client_secret = self._oauth_client_credentials()
+        client_id, client_secret = self._oauth_client_credentials(
+            require_write=require_write
+        )
 
         # Import lazily so the connector is importable in environments that
         # don't have google-auth-oauthlib installed (e.g. minimal CI jobs).
@@ -239,7 +286,7 @@ class GoogleOAuthClient:
             creds, "scopes", None
         )
         granted_scopes = frozenset(raw_scopes or [requested_scope])
-        grant = OAuthGrant(scopes=granted_scopes)
+        grant = OAuthGrant(scopes=granted_scopes, client_id=client_id)
         if not self._grant_satisfies(grant, require_write=require_write):
             scope = "write scope" if require_write else "read-only scope"
             raise GSheetAuthError(
@@ -251,6 +298,7 @@ class GoogleOAuthClient:
         self._secrets.set_key(keys.refresh, refresh_token)
         self._secrets.set_key(keys.access, access_token)
         self._secrets.set_key(keys.scopes, " ".join(sorted(granted_scopes)))
+        self._secrets.set_key(keys.client_id, client_id)
         if expiry is not None:
             self._secrets.set_key(
                 keys.expires,
@@ -274,6 +322,8 @@ class GoogleOAuthClient:
             GSHEET_WRITE_ACCESS_TOKEN_KEY,
             GSHEET_WRITE_ACCESS_TOKEN_EXPIRES_KEY,
             GSHEET_WRITE_GRANTED_SCOPES_KEY,
+            GSHEET_CLIENT_ID_KEY,
+            GSHEET_WRITE_CLIENT_ID_KEY,
         ):
             try:
                 self._secrets.delete_key(key)
@@ -302,13 +352,31 @@ class GoogleOAuthClient:
         """Load capability metadata, treating pre-metadata grants as read-only."""
         keys = _WRITE_KEYS if require_write else _READ_KEYS
         try:
+            client_id: str | None = self._secrets.get_key(keys.client_id)
+        except SecretNotFoundError:
+            client_id = None
+        try:
             raw_scopes = self._secrets.get_key(keys.scopes)
         except SecretNotFoundError:
             scopes: set[str] = (
                 {GOOGLE_SHEETS_READ_SCOPE} if not require_write else set()
             )
-            return OAuthGrant(scopes=frozenset(scopes))
-        return OAuthGrant(scopes=frozenset(raw_scopes.split()))
+            return OAuthGrant(scopes=frozenset(scopes), client_id=client_id)
+        return OAuthGrant(scopes=frozenset(raw_scopes.split()), client_id=client_id)
+
+    def _grant_issuer_matches(self, grant: OAuthGrant) -> bool:
+        """Return whether the configured client is the one that got this grant."""
+        return grant.client_id == self._settings.gsheet.oauth_client_id
+
+    def _require_matching_issuer(self, grant: OAuthGrant) -> None:
+        """Refuse a grant the configured client cannot refresh."""
+        if self._grant_issuer_matches(grant):
+            return
+        raise GSheetAuthError(
+            "Google Sheets authorization was issued for a different OAuth "
+            "client, so refreshing it would fail. Re-authorize with "
+            "`moneybin gsheet connect`."
+        )
 
     def _refresh_access_token(self, grant: OAuthGrant, *, require_write: bool) -> str:
         """Use the persisted refresh token to mint a new access token."""
@@ -325,7 +393,10 @@ class GoogleOAuthClient:
         # locally without it (Credentials._perform_refresh_token raises a
         # RefreshError naming no cause), which this method's broad handler
         # would flatten into "See application logs for detail."
-        client_id, client_secret = self._oauth_client_credentials()
+        client_id, client_secret = self._oauth_client_credentials(
+            require_write=require_write
+        )
+        self._require_matching_issuer(grant)
 
         # Lazy import for the same reason as authorize().
         from google.auth.transport.requests import Request
@@ -359,7 +430,9 @@ class GoogleOAuthClient:
         raw_scopes = getattr(creds, "granted_scopes", None)
         if raw_scopes is None:
             raw_scopes = getattr(creds, "scopes", None)
-        refreshed_grant = OAuthGrant(scopes=frozenset(raw_scopes or ()))
+        refreshed_grant = OAuthGrant(
+            scopes=frozenset(raw_scopes or ()), client_id=client_id
+        )
         if not self._grant_satisfies(refreshed_grant, require_write=require_write):
             for cache_key in (keys.access, keys.expires):
                 try:
