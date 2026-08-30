@@ -311,6 +311,9 @@ jobs:
     needs: [changes]
     if: github.event_name == 'schedule' || inputs.record_durations
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-duration-recording-${{ github.ref }}
+      cancel-in-progress: false
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
