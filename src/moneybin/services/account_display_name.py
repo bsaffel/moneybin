@@ -44,9 +44,23 @@ _LAST_FOUR_PREFIX = "…"
 
 _NON_DIGITS = re.compile(r"[^0-9]")
 
-#: A label earns the top derived rung only if it holds a letter. Mirrors the
-#: model's ``REGEXP_MATCHES(account_label, '[A-Za-z]')``.
-_HAS_LETTER = re.compile(r"[A-Za-z]")
+
+def _has_letter(text: str) -> bool:
+    r"""Whether the label holds a letter in any script.
+
+    Mirrors the model's ``REGEXP_MATCHES(account_label, '\p{L}')``. Both sides
+    were ``[A-Za-z]``, which agreed with each other and was wrong together: a
+    label written in any non-Latin script — ``储蓄账户``, ``Сбережения`` — held
+    no "letter", so the rung dropped a name a person actually chose and named
+    the account by an assembled label instead.
+
+    ``str.isalpha`` is the exact Python spelling of ``\p{L}``: both are the
+    Unicode letter categories and nothing else, so ``²`` and ``Ⅳ`` fail on
+    both sides. A ``[^\W\d_]`` regex would have accepted those two and
+    reopened the drift this mirror exists to prevent.
+    """
+    return any(character.isalpha() for character in text)
+
 
 #: A label already carrying a four-digit group does not also take a last four.
 #: Four digits is the last-four unit, so such a label is either stating the
@@ -119,7 +133,7 @@ def usable_source_label(label: str | None) -> str | None:
     top rung for labels a person wrote.
     """
     stated = _stated(label)
-    if stated is None or not _HAS_LETTER.search(stated):
+    if stated is None or not _has_letter(stated):
         return None
     return stated
 

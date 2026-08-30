@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from moneybin.services.account_display_name import (
+    AccountNameFacts,
     account_category,
     derive_display_name,
     derived_last_four,
@@ -63,6 +64,16 @@ def test_every_arm_of_the_chain_matches_the_model(
         ("Retirement Plan 2024 Rewards", "Retirement Plan 2024 Rewards"),
         # Masked upstream and still a name, so the rung keeps it.
         ("Checking ****1098", "Checking ****1098"),
+        # A letter is a letter in every script. Both sides of the mirror tested
+        # [A-Za-z], so they agreed with each other and were wrong together: a
+        # label a person chose in a non-Latin script counted as "no letter" and
+        # was demoted to the assembled label, discarding the name outright.
+        ("储蓄账户", "储蓄账户 …4242"),
+        ("Сбережения", "Сбережения …4242"),
+        ("Ταμιευτήριο", "Ταμιευτήριο …4242"),
+        # Still not letters, in any script: the guard has to keep holding for
+        # the digits and mask characters it was written for.
+        ("Ⅳ", "Chase credit card …4242"),
         # No letter: an account number under a name's column heading.
         ("****1098", "Chase credit card …4242"),
         ("987654321098", "Chase credit card …4242"),
@@ -226,3 +237,56 @@ def test_the_last_four_is_digits_only_and_needs_four_of_them(
 ) -> None:
     """Mirrors the ``REGEXP_REPLACE(..., '[^0-9]', '')`` guard in every source arm."""
     assert derived_last_four(value) == expected
+
+
+def test_caller_supplied_settings_reach_the_reported_name() -> None:
+    """``account_metadata`` renames the account, so the report has to see it.
+
+    ``dim_accounts`` reads ``COALESCE(s.last_four, w.last_four_derived)`` and
+    ``COALESCE(s.account_subtype, w.account_subtype, ...)`` off
+    ``app.account_settings``, which this import is about to write. A caller who
+    passes either in ``account_metadata`` therefore changes the name the dim
+    will store — and reporting the pre-override label would reopen the same
+    two-readers split on the far side of a refresh that this module exists to
+    close, in a quieter form no last-four assertion elsewhere would catch.
+
+    Both fields at once, because each alone leaves the other's arm untested.
+    """
+    facts = AccountNameFacts(
+        source_label=None,
+        institution_name="Chase",
+        category="depository",
+        last_four="4242",
+    )
+
+    assert facts.display_name() == "Chase depository …4242"
+    assert (
+        facts.with_settings({
+            "account_subtype": "credit card",
+            "last_four": "1098",
+        }).display_name()
+        == "Chase credit card …1098"
+    )
+
+
+def test_settings_that_state_nothing_leave_the_derived_facts_alone() -> None:
+    """A blank override is not an override.
+
+    ``_stated`` is what stands between an empty ``account_metadata`` cell and a
+    name assembled from it. Without it a caller passing ``last_four=""`` would
+    strip the last four the raw row supplied, and the account would render one
+    rung lower here than ``dim_accounts`` renders it.
+    """
+    facts = AccountNameFacts(
+        source_label=None,
+        institution_name="Chase",
+        category="depository",
+        last_four="4242",
+    )
+
+    assert facts.with_settings(None).display_name() == "Chase depository …4242"
+    assert facts.with_settings({}).display_name() == "Chase depository …4242"
+    assert (
+        facts.with_settings({"last_four": "  ", "account_subtype": ""}).display_name()
+        == "Chase depository …4242"
+    )

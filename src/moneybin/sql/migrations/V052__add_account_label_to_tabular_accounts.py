@@ -35,12 +35,20 @@ def migrate(conn: object) -> None:
     """Add account_label to raw.tabular_accounts, NULL for every existing row."""
     logger.debug("V052: ADD COLUMN IF NOT EXISTS raw.tabular_accounts.account_label")
     conn.execute(  # type: ignore[union-attr]
-        "ALTER TABLE raw.tabular_accounts ADD COLUMN IF NOT EXISTS account_label VARCHAR"
+        """
+        ALTER TABLE raw.tabular_accounts
+        ADD COLUMN IF NOT EXISTS account_label VARCHAR
+        """
     )
     # Byte-identical to the comment in raw_tabular_accounts.sql. `_apply_comments`
     # re-runs that DDL's comments on every startup while this migration runs
     # once, so a divergent string here would be overwritten on the next open and
     # the catalog description would differ by which ran last.
+    #
+    # Concatenated rather than triple-quoted, unlike the DDL above: the quoted
+    # literal is the catalog description itself, so a line break inside it is
+    # stored verbatim and breaks that byte-identity. V044 and V050 split their
+    # COMMENT statements the same way for the same reason.
     conn.execute(  # type: ignore[union-attr]
         "COMMENT ON COLUMN raw.tabular_accounts.account_label IS "
         "'Display-safe form of account_name for core.dim_accounts.display_name: "

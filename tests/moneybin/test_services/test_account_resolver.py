@@ -577,8 +577,10 @@ def test_the_raw_fallback_names_an_account_by_its_own_label(db: Database) -> Non
 
     This resolver exists so one question has one answer, and ``dim_accounts``
     now names an account by the label its file carried ahead of anything it
-    assembles. Answering "Test Bank ****7777" here while the dim will say
-    "Everyday Spending" reopens the two-readers split on the far side of a refresh.
+    assembles -- and appends the last four to it, because a chosen name is not
+    a unique one. Answering a bare "Everyday Spending" here while the dim says
+    "Everyday Spending …7777" reopens the two-readers split on the far side of
+    a refresh, which is the defect this resolver exists to close.
     Seeded with an institution and a last four as well, so the assembled label
     is available and losing to the authored one is the thing being observed.
     """
@@ -600,7 +602,68 @@ def test_the_raw_fallback_names_an_account_by_its_own_label(db: Database) -> Non
         "'****7777', 'Test Bank', '/sheet.csv', 'csv', 'tiller', 'imp')"
     )
 
-    assert fetch_display_name(db, "acct_labelled") == "Everyday Spending"
+    assert fetch_display_name(db, "acct_labelled") == "Everyday Spending …7777"
+
+
+def test_the_raw_fallback_leaves_a_label_that_already_states_four_digits(
+    db: Database,
+) -> None:
+    """A label already carrying four digits takes nothing more.
+
+    Isolates the second arm on its own: the last four *is* available here, so
+    only the four-digit run in the label can be what suppresses the append.
+    Joining "Checking ****5678" with "…7777" would publish eight digits of one
+    number in a field the mask deliberately narrowed.
+    """
+    AccountLinksRepo(db).insert(
+        link_id="link_acct_digits",
+        account_id="acct_digits",
+        ref_kind="source_native",
+        ref_value="masked-label",
+        source_type="csv",
+        source_origin="tiller",
+        decided_by="auto",
+        actor="system",
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "
+        "(account_id, account_name, account_label, account_number_masked, "
+        "institution_name, source_file, source_type, source_origin, import_id) "
+        "VALUES ('masked-label', 'Checking ****5678', 'Checking ****5678', "
+        "'****7777', 'Test Bank', '/sheet.csv', 'csv', 'tiller', 'imp')"
+    )
+
+    assert fetch_display_name(db, "acct_digits") == "Checking ****5678"
+
+
+def test_the_raw_fallback_returns_a_bare_label_when_no_last_four_survives(
+    db: Database,
+) -> None:
+    """No four digits to add, so the label stands alone.
+
+    Isolates the fall-through: the label carries no digit run of its own, so
+    the append is suppressed only by the account number failing the same
+    four-surviving-digits test the assembled rung below applies.
+    """
+    AccountLinksRepo(db).insert(
+        link_id="link_acct_nodigits",
+        account_id="acct_nodigits",
+        ref_kind="source_native",
+        ref_value="no-digits",
+        source_type="csv",
+        source_origin="tiller",
+        decided_by="auto",
+        actor="system",
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "
+        "(account_id, account_name, account_label, account_number_masked, "
+        "institution_name, source_file, source_type, source_origin, import_id) "
+        "VALUES ('no-digits', 'Everyday Spending', 'Everyday Spending', "
+        "'ACCT-9Z', 'Test Bank', '/sheet.csv', 'csv', 'tiller', 'imp')"
+    )
+
+    assert fetch_display_name(db, "acct_nodigits") == "Everyday Spending"
 
 
 def test_no_candidate_mints_standalone(db: Database) -> None:

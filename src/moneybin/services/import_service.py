@@ -210,6 +210,25 @@ def mask_embedded_account_number(label: str) -> str:
     return _EMBEDDED_ACCOUNT_NUMBER.sub(_mask, label)
 
 
+def _authored_label_parts(label: str) -> tuple[str, str, str | None]:
+    """Return ``(display_label, clean_name, last_four)`` for an authored label.
+
+    Masks *before* parsing, which is the whole point of the helper. Lifting the
+    last-four token out first leaves a truncated number whose new tail is not
+    the account's: "Checking 1234 5678 9012 3456" loses 3456, and masking what
+    remains states "****9012" -- the middle of the number, in the position
+    every other surface fills with the last four. It also blocks the real one,
+    since a label already carrying four digits takes no append. Masking first
+    collapses the run to its true tail for the parser to lift.
+
+    Every authored-label site goes through here so the ordering cannot drift
+    back apart: one path derives the key, one takes --account-name, one reads
+    a sheet's Account column, and all three feed the same two consumers.
+    """
+    clean_name, last_four = parse_account_label(mask_embedded_account_number(label))
+    return (mask_embedded_account_number(clean_name), clean_name, last_four)
+
+
 def _mask_caller_keys(keys: Iterable[str]) -> str:
     """Render caller-supplied binding/metadata keys for a refusal message.
 
@@ -3343,7 +3362,7 @@ class ImportService:
         acct_id_to_name: dict[str, str] = {}
         # Parse each display label once: (clean_name, label_last4). Reused by the
         # resolver pass (clean name strips mask text → stronger fuzzy match) and
-        # by Stage 5's account_number_masked, so parse_account_label runs once.
+        # by Stage 5's account_number_masked, so _authored_label_parts runs once.
         label_parsed_by_key: dict[str, tuple[str, str | None]] = {}
         # last4 from the mapped account-number column — the authoritative fallback
         # when a label carries none (e.g. "Checking" alongside an "Account Number"
@@ -3439,10 +3458,11 @@ class ImportService:
             # supplied → no derived last4.
             if account_name:
                 display_name = account_name
-                clean_name, label_last4 = parse_account_label(account_name)
-                source_label_by_key[native_key] = mask_embedded_account_number(
-                    clean_name
-                )
+                (
+                    source_label_by_key[native_key],
+                    clean_name,
+                    label_last4,
+                ) = _authored_label_parts(account_name)
             else:
                 display_name = file_path.stem or native_key
                 clean_name, label_last4 = display_name, None
@@ -3477,9 +3497,12 @@ class ImportService:
             native_key = _label_account_key(account_name)
             account_ids = native_key
             acct_id_to_name[native_key] = account_name
-            clean_name, label_last4 = parse_account_label(account_name)
+            (
+                source_label_by_key[native_key],
+                clean_name,
+                label_last4,
+            ) = _authored_label_parts(account_name)
             label_parsed_by_key[native_key] = (clean_name, label_last4)
-            source_label_by_key[native_key] = mask_embedded_account_number(clean_name)
             if acct_num_col and acct_num_col in df.columns:
                 for value in df[acct_num_col].to_list():
                     if l4 := _last4_from_account_number(value):
@@ -3517,12 +3540,15 @@ class ImportService:
             for aid, name in zip(account_ids, raw_names, strict=True):
                 if aid not in acct_id_to_name:
                     acct_id_to_name[aid] = name
+            authored_parts = {
+                nk: _authored_label_parts(nm) for nk, nm in acct_id_to_name.items()
+            }
             label_parsed_by_key = {
-                nk: parse_account_label(nm) for nk, nm in acct_id_to_name.items()
+                nk: (clean, last4) for nk, (_, clean, last4) in authored_parts.items()
             }
             source_label_by_key.update({
-                nk: mask_embedded_account_number(parsed[0])
-                for nk, parsed in label_parsed_by_key.items()
+                nk: display
+                for nk, (display, _, _) in authored_parts.items()
                 if nk in authored_keys
             })
             if acct_num_col and acct_num_col in df.columns:

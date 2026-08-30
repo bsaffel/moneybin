@@ -801,9 +801,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`Checking 987654321098` → `Checking ****1098`), and a label holding no
   letters at all is treated as an account number rather than a name, so it
   keeps the assembled label instead.
-  Existing accounts take the new name on the next `moneybin refresh`; an
-  explicit `moneybin accounts set --display-name` still wins over everything
-  (#446).
+  A connected account takes the new name on the next `moneybin refresh`, since
+  its name was already in the raw table. A spreadsheet-sourced one takes it on
+  the next import of that file: the new column is deliberately not backfilled,
+  because the masking and last-four rules live in Python and a SQL backfill
+  would be a second copy of them. Refresh alone leaves those accounts named as
+  they are today. An explicit `moneybin accounts set --display-name` still
+  wins over everything (#446).
 - **Account-merge candidates carry measured ledger overlap instead of a
   constant `confidence`.** An import that offers to merge a file into an
   account you already have returned a `confidence` on every candidate — a

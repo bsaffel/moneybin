@@ -47,6 +47,13 @@ from moneybin.utils import slugify
 
 logger = logging.getLogger(__name__)
 
+#: Any Unicode letter, the test that keeps the label rung for names rather than
+#: for masked account numbers. Named rather than inlined because the query below
+#: is an f-string, where the literal would have to be spelled ``\\p{{L}}`` —
+#: two escapes deep, in a pattern that must stay identical to the one in
+#: dim_accounts.sql and to ``account_display_name._has_letter``.
+_SQL_HAS_LETTER = r"\p{L}"
+
 
 def refresh_account_link_pending_gauge(db: Database) -> None:
     """Set ACCOUNT_LINK_REVIEW_PENDING from the live review-queue depth.
@@ -222,10 +229,39 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
                     COALESCE(
                       -- The name a person wrote, already display-safe: the
                       -- importer masks and strips it before writing. Top rung
-                      -- in core.dim_accounts too, letter test included, so the
-                      -- pre-refresh answer and the post-refresh one agree.
+                      -- in core.dim_accounts too, letter test and last-four
+                      -- append included, so the pre-refresh answer and the
+                      -- post-refresh one agree.
+                      -- Two arms, exactly as dim_accounts has them: a label
+                      -- with no four-digit run of its own carries the last
+                      -- four, because a chosen name is not a unique one and
+                      -- two accounts sharing a product name would otherwise
+                      -- collide back onto one string. A label that already
+                      -- holds four digits takes nothing more -- joining
+                      -- "Checking ****5678" with "…9012" would publish eight
+                      -- digits of a twelve-digit number.
                       CASE
-                        WHEN REGEXP_MATCHES(raw.account_label, '[A-Za-z]')
+                        WHEN REGEXP_MATCHES(raw.account_label, '{_SQL_HAS_LETTER}')
+                        AND NOT REGEXP_MATCHES(raw.account_label, '[0-9]{{4}}')
+                        AND LENGTH(
+                          REGEXP_REPLACE(
+                            COALESCE(raw.account_number, raw.account_number_masked),
+                            '[^0-9]', '', 'g'
+                          )
+                        ) >= 4
+                        THEN raw.account_label || ' …' || RIGHT(
+                          REGEXP_REPLACE(
+                            COALESCE(raw.account_number, raw.account_number_masked),
+                            '[^0-9]', '', 'g'
+                          ),
+                          4
+                        )
+                      END,
+                      -- The label with no last four to add, and the label that
+                      -- already states one. dim_accounts' bare arm covers the
+                      -- same two cases by falling through its own NULL.
+                      CASE
+                        WHEN REGEXP_MATCHES(raw.account_label, '{_SQL_HAS_LETTER}')
                         THEN raw.account_label
                       END,
                       -- Same derivation core.dim_accounts uses for

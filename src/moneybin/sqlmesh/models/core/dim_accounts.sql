@@ -286,7 +286,7 @@ SELECT
   COALESCE(
     s.display_name,
     CASE
-      WHEN REGEXP_MATCHES(w.account_label, '[A-Za-z]')
+      WHEN REGEXP_MATCHES(w.account_label, '\p{L}')
       AND NOT REGEXP_MATCHES(w.account_label, '[0-9]{4}')
       THEN w.account_label || ' …' || COALESCE(s.last_four, w.last_four_derived)
     END /* The name a person wrote — a sheet's Account column, --account-name, or
@@ -314,7 +314,7 @@ SELECT
        "Test Bank …1098" does. Mirrored by
        services/account_display_name.py::usable_source_label, which the mint
        report derives through before any of this has run. */,
-    CASE WHEN REGEXP_MATCHES(w.account_label, '[A-Za-z]') THEN w.account_label END,
+    CASE WHEN REGEXP_MATCHES(w.account_label, '\p{L}') THEN w.account_label END,
     w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type) || ' …' || COALESCE(s.last_four, w.last_four_derived),
     w.institution_name || ' …' || COALESCE(s.last_four, w.last_four_derived),
     w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type),
