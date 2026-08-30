@@ -113,7 +113,7 @@ jobs:
           # tracing overhead than the default C tracer. Needs coverage >= 7.4.
           COVERAGE_CORE: sysmon
         run: |
-          uv run pytest tests/ -m unit -v \
+          uv run pytest tests/ -m unit -v -n logical \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
             --cov=src --cov-report= --durations=25
 
@@ -222,7 +222,8 @@ jobs:
       #
       # NOTE: expect one integration shard to run well long, and expect which
       # one to move between refreshes. `make update-test-durations` records on
-      # a dev machine under `-n auto`; CI gets 2 xdist workers, and the
+      # a dev machine under `-n auto`; CI explicitly uses all four logical
+      # vCPUs via `-n logical`, and the
       # local:CI cost ratio measured per test ranges 0.34x-1.41x, so
       # pytest-split's balance here is approximate. Combined with
       # --dist=loadscope pinning a module to one worker, a shard that lands
@@ -232,7 +233,7 @@ jobs:
       # read a lagging shard as a durations-file bug.
       - name: Test
         run: |
-          uv run pytest tests/ -m integration -v \
+          uv run pytest tests/ -m integration -v -n logical \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
             --durations=25
 
@@ -271,6 +272,6 @@ jobs:
       # measured). No coverage here, so no combine job.
       - name: Test
         run: |
-          uv run pytest tests/ -m e2e -v \
+          uv run pytest tests/ -m e2e -v -n logical \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
             --durations=25
