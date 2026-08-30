@@ -253,10 +253,9 @@ def _mutating_profile_template(  # pyright: ignore[reportUnusedFunction]  # pyte
 ) -> Path:
     """One-shot MONEYBIN_HOME with `e2e-template` profile created and DB initialized.
 
-    Built once per pytest session by running `moneybin profile create` against
-    a temp home. `make_workflow_env_fast` then copies this tree into each
-    mutating test's tmp_path — skipping the per-test `profile create` cost
-    (Argon2 key derivation + encrypted DB init + profile config write).
+    `make_workflow_env_fast` then copies this tree into each mutating test's
+    tmp_path — skipping the per-test `profile create` cost (Argon2 key
+    derivation + encrypted DB init + profile config write).
     """
     template_home = tmp_path_factory.mktemp("e2e_profile_template")
     env = base_env(template_home, _TEMPLATE_PROFILE_NAME)
@@ -266,6 +265,34 @@ def _mutating_profile_template(  # pyright: ignore[reportUnusedFunction]  # pyte
     if result.exit_code != 0:
         msg = f"Failed to build profile snapshot: {result.stderr}"
         raise AssertionError(msg)
+
+    return template_home
+
+
+@pytest.fixture(scope="session")
+def _transformed_profile_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture referenced by parameter name
+    _mutating_profile_template: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    """Snapshot with an imported account and one applied transform.
+
+    Tests that require a pre-materialized account copy this snapshot; generic
+    import workflows continue to copy `_mutating_profile_template` so they
+    retain an empty import history and account-identity state.
+    """
+    template_home = tmp_path_factory.mktemp("e2e_transformed_profile_template")
+    shutil.copytree(_mutating_profile_template, template_home, dirs_exist_ok=True)
+    env = base_env(template_home, _TEMPLATE_PROFILE_NAME)
+    env["MONEYBIN_IMPORT___INBOX_ROOT"] = str(template_home / "inbox-root")
+    fixture = FIXTURES_DIR / "multi_currency_eur.qfx"
+    run_cli(
+        "import",
+        "files",
+        str(fixture),
+        "--no-refresh",
+        env=env,
+    ).assert_success()
+    run_cli("transform", "apply", env=env, timeout=180).assert_success()
 
     return template_home
 
