@@ -2,6 +2,8 @@ name: CI
 
 on:
   workflow_call:
+  schedule:
+    - cron: "17 3 * * 6"
   push:
     branches: [main]
   pull_request:
@@ -47,7 +49,7 @@ jobs:
   checks:
     name: Checks
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -77,7 +79,7 @@ jobs:
   test-unit:
     name: Unit tests (shard ${{ matrix.group }})
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
       # Don't cancel sibling shards on one failure — surface every failing
@@ -100,6 +102,13 @@ jobs:
         run: |
           curl -fsSL https://install.duckdb.org | bash
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
+
+      - name: Restore CI test durations
+        uses: actions/cache/restore@v4
+        with:
+          path: .test_durations
+          key: ci-test-durations-v1-${{ github.run_id }}
+          restore-keys: ci-test-durations-v1-
 
       # pytest-split shards the unit suite across the matrix so wall-clock
       # scales with the number of free standard runners. strategy.job-total is
@@ -130,7 +139,7 @@ jobs:
   coverage:
     name: Coverage report
     needs: [changes, test-unit]
-    if: ${{ always() && needs.changes.outputs.code == 'true' }}
+    if: ${{ always() && needs.changes.outputs.code == 'true' && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -171,7 +180,7 @@ jobs:
   smoke-install:
     name: Clean-install smoke test
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -193,7 +202,7 @@ jobs:
   test-integration:
     name: Integration tests (shard ${{ matrix.group }})
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -215,22 +224,23 @@ jobs:
           curl -fsSL https://install.duckdb.org | bash
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
+      - name: Restore CI test durations
+        uses: actions/cache/restore@v4
+        with:
+          path: .test_durations
+          key: ci-test-durations-v1-${{ github.run_id }}
+          restore-keys: ci-test-durations-v1-
+
       # Shard the integration suite with pytest-split, same pattern as test-unit
       # and test-e2e. This was the workflow's critical path at ~12.5 min — more
       # than double any other job — so it, not Scenarios, set overall PR time.
       # 4-way brings it under the ~5 min Scenarios floor.
       #
-      # NOTE: expect one integration shard to run well long, and expect which
-      # one to move between refreshes. `make update-test-durations` records on
-      # a dev machine under `-n auto`; CI explicitly uses all four logical
-      # vCPUs via `-n logical`, and the
-      # local:CI cost ratio measured per test ranges 0.34x-1.41x, so
-      # pytest-split's balance here is approximate. Combined with
+      # One integration shard can still run long when its loadscope group is
+      # dominated by an expensive module. Combined with
       # --dist=loadscope pinning a module to one worker, a shard that lands
       # dominated by one expensive module (test_demo_service.py,
-      # test_stg_plaid_investments.py) can't parallelize out of it. Recording
-      # durations on a runner instead of locally is the fix; until then don't
-      # read a lagging shard as a durations-file bug.
+      # test_stg_plaid_investments.py) can't parallelize out of it.
       - name: Test
         run: |
           uv run pytest tests/ -m integration -v -n logical \
@@ -240,7 +250,7 @@ jobs:
   test-e2e:
     name: E2E tests (shard ${{ matrix.group }})
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -261,6 +271,13 @@ jobs:
         run: |
           curl -fsSL https://install.duckdb.org | bash
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
+
+      - name: Restore CI test durations
+        uses: actions/cache/restore@v4
+        with:
+          path: .test_durations
+          key: ci-test-durations-v1-${{ github.run_id }}
+          restore-keys: ci-test-durations-v1-
 
       # Shard the e2e suite with pytest-split, same pattern as test-unit.
       # 4-way took the worst e2e shard from 437s to 251s (measured, #396) --
@@ -275,3 +292,38 @@ jobs:
           uv run pytest tests/ -m e2e -v -n logical \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
             --durations=25
+
+  record-test-durations:
+    name: Record CI test durations
+    needs: [changes]
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Install DuckDB CLI
+        run: |
+          curl -fsSL https://install.duckdb.org | bash
+          echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
+
+      - name: Record durations on the CI runner
+        env:
+          MONEYBIN_DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
+        run: |
+          uv run pytest tests/ -m "unit or integration or e2e or scenarios" \
+            -n logical --store-durations
+
+      - name: Save CI test durations
+        uses: actions/cache/save@v4
+        with:
+          path: .test_durations
+          key: ci-test-durations-v1-${{ github.run_id }}

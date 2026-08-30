@@ -23,8 +23,9 @@ jobs:
     timeout-minutes: 10
     # 4-way pytest-split shard, matching ci.yml's unit and integration
     # matrices; `--splits` reads strategy.job-total, so it tracks this array.
-    # Balancing is by recorded time from `.test_durations`, not test count, so
-    # the shards hold uneven counts by design. Four rather than two because
+    # Balancing uses the CI-recorded `.test_durations` cache rather than test
+    # count, so the shards hold uneven counts by design. Four rather than two
+    # because
     # runner speed varies about 1.8x on identical work — shard 1 ran the same
     # 36 items in 320s and then 574s — and a 2-way split left only ~1.9x
     # headroom under timeout-minutes, thin enough that one slow runner
@@ -49,6 +50,13 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --all-extras
+
+      - name: Restore CI test durations
+        uses: actions/cache/restore@v4
+        with:
+          path: .test_durations
+          key: ci-test-durations-v1-${{ github.run_id }}
+          restore-keys: ci-test-durations-v1-
 
       - name: Run scenario suite
         env:
