@@ -1,6 +1,6 @@
 {
-  "sha256": "d9ef170b1b5868c90ca5a16a375def5a09435ffd529a1951770e63f06c2df0da",
-  "tool_count": 49,
+  "sha256": "e4ab65de81ffe8b8b63f1448ab7b151b46924d9155e7b3f64d8f72da4397a4f6",
+  "tool_count": 50,
   "tools": [
     {
       "annotation_bytes": 89,
@@ -333,6 +333,60 @@
       "other_bytes": 59,
       "output_schema_bytes": 0,
       "total_bytes": 1069
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Propose account merges: sweep for duplicates, or link two accounts by id. With no arguments, writes weak-signal merge proposals for every account in core.dim_accounts that has no pending proposal yet \u2014 cross-source twins minted separately \u2014 skipping pairs already decided in either direction. With both account_id and candidate_account_id, proposes exactly that pair under signal 'manual' with no confidence score: the escape hatch for a duplicate no signal reaches (different last four, different institution). Passing only one id is an error, not a sweep. Merges nothing \u2014 both forms write pending app.account_link_decisions rows that still clear the same confirmation gate. Read them with reviews(kind='account_links') and decide with identity_links_decide. Revert via app.audit_log; no undo tool yet.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The account to absorb \u2014 merged away if the proposal is\naccepted. Requires candidate_account_id."
+            },
+            "candidate_account_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The account to keep. Requires account_id."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_links_run"
+      },
+      "description_bytes": 810,
+      "input_schema_bytes": 395,
+      "name": "accounts_links_run",
+      "other_bytes": 60,
+      "output_schema_bytes": 0,
+      "total_bytes": 1412
     },
     {
       "annotation_bytes": 90,
@@ -5034,5 +5088,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 58164
+  "total_bytes": 59577
 }

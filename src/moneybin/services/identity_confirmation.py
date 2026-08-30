@@ -236,7 +236,8 @@ def _evidence_line(overlap: LedgerOverlap) -> str:
             f"{overlap.window_end.isoformat()}"
         )
     return (
-        f"{overlap.matched:,} of {overlap.comparable:,} of the absorbed "
+        f"{overlap.matched:,} of {overlap.comparable:,} (matched on amount "
+        f"within ±{overlap.window_days} days) of the absorbed "
         f"account's transactions{window} already appear in the surviving "
         "account's ledger."
     )

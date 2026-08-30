@@ -37,7 +37,7 @@ flowchart TD
     B -->|Yes| ADOPT[Adopt that account]
     B -->|No| C{Strong key already bound?<br/>same-source key · persistent token · scoped full number}
     C -->|Yes| AUTO[Auto-adopt silently]
-    C -->|No| D{Weak match?<br/>institution + last4 · fuzzy name}
+    C -->|No| D{Weak match?<br/>same last 4 · fuzzy name}
     D -->|Yes| REVIEW[Propose - you confirm<br/>never an auto-merge]
     D -->|No| F{Did the file name an account?}
     F -->|Yes| MINT[Create it, and say so<br/>in the import result]
@@ -54,10 +54,11 @@ flowchart TD
    that survives a relink, when `account_id` does not), or a full account number
    scoped by its routing/bank id. These are near-certain, so MoneyBin adopts
    silently.
-3. **Weak match → always a confirm.** A shared **institution + last 4 digits**,
-   or a **fuzzy name** match. Weak signals collide — two Wells Fargo accounts can
-   both end in `4267` — so MoneyBin *proposes* and waits. **It never merges two
-   accounts on a weak signal.**
+3. **Weak match → always a confirm.** A shared **last 4 digits** — corroborated
+   by a shared **institution** when both sides name one, and dropped outright
+   when they name two different ones — or a **fuzzy name** match. Weak signals
+   collide — two Wells Fargo accounts can both end in `4267` — so MoneyBin
+   *proposes* and waits. **It never merges two accounts on a weak signal.**
 4. **Nothing matched, but the file named an account.** An OFX `<ACCTID>`, a
    statement's issuer and last four, an account column in a spreadsheet — the
    file states an identity and nothing in your book resembles it. There is no

@@ -94,6 +94,9 @@ class ImportConfirmationAccountCandidate(TypedDict, total=False):
     signal: Annotated[str, DataClass.TXN_TYPE]
     overlap_matched: Annotated[int, DataClass.AGGREGATE]
     overlap_comparable: Annotated[int, DataClass.AGGREGATE]
+    #: Posting-lag tolerance, in days, that ``overlap_matched`` was counted at —
+    #: see ``LinkCandidateRow.overlap_window_days``.
+    overlap_window_days: Annotated[int, DataClass.AGGREGATE]
     overlap_window_start: Annotated[str | None, DataClass.TXN_DATE]
     overlap_window_end: Annotated[str | None, DataClass.TXN_DATE]
 
