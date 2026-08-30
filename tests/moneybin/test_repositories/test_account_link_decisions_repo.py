@@ -50,7 +50,7 @@ def _insert(repo: AccountLinkDecisionsRepo, **overrides: Any) -> Any:
         "provisional_account_id": "acct_prov_1",
         "candidate_account_id": "acct_cand_1",
         "confidence_score": 0.72,
-        "match_signals": {"signal": "institution_last4", "value": "4267"},
+        "match_signals": {"signal": "institution_last4", "value": "1212"},
         "status": "pending",
         "decided_by": "auto",
         "actor": "system",

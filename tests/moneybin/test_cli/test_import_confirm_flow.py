@@ -259,7 +259,7 @@ def test_tabular_sign_recoveries_preserve_confirmation_inputs() -> None:
         account_metadata={
             "minted card": {
                 "display_name": "Owner's Card",
-                "last_four": "4267",
+                "last_four": "1212",
             }
         },
     )
@@ -287,7 +287,7 @@ def test_tabular_sign_recoveries_preserve_confirmation_inputs() -> None:
             tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"
         } == {
             "minted card:display_name=Owner's Card",
-            "minted card:last_four=4267",
+            "minted card:last_four=1212",
         }
         assert "human_sign_confirmation" not in command
 
@@ -1907,7 +1907,7 @@ class TestImportConfirmCommand:
             account_metadata={
                 "minted card": {
                     "display_name": "Owner's Card",
-                    "last_four": "4267",
+                    "last_four": "1212",
                 }
             },
         )
@@ -1934,7 +1934,7 @@ class TestImportConfirmCommand:
             assert call_kwargs["account_metadata"] == {
                 "minted card": {
                     "display_name": "Owner's Card",
-                    "last_four": "4267",
+                    "last_four": "1212",
                 }
             }
             assert call_kwargs.get("sign") == expected_sign
@@ -2473,14 +2473,14 @@ class TestImportConfirmCommand:
                 "--account-meta",
                 "wf-checking:display_name=WF Checking",
                 "--account-meta",
-                "wf-checking:last_four=4267",
+                "wf-checking:last_four=1212",
             ],
         )
 
         assert result.exit_code == 0
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["account_metadata"] == {
-            "wf-checking": {"display_name": "WF Checking", "last_four": "4267"}
+            "wf-checking": {"display_name": "WF Checking", "last_four": "1212"}
         }
 
     def test_account_meta_invalid_format_exits(
@@ -2589,7 +2589,7 @@ class TestImportConfirmCommand:
                 "--account-meta",
                 "minted:display_name=Travel Card",
                 "--account-meta",
-                "minted:last_four=4267",
+                "minted:last_four=1212",
                 "--account-id",
                 "acct-explicit",
                 "--account-name",
@@ -2628,7 +2628,7 @@ class TestImportConfirmCommand:
             tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"
         } == {
             "minted:display_name=Travel Card",
-            "minted:last_four=4267",
+            "minted:last_four=1212",
         }
         assert "human_sign_confirmation" not in command
 

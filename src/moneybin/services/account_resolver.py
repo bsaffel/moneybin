@@ -170,13 +170,16 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
     free-text label, classed ``ACCOUNT_IDENTIFIER`` because it can be a bare
     account number, and nothing downstream can tell a name from a number -- so
     returning it put a potentially unmasked account number into surfaces that
-    declare far less. What it answers with instead is *constructed*, the same
-    shape ``core.dim_accounts`` builds: institution name, then the last four
-    digits of ``account_number`` (or ``account_number_masked``) behind a
-    ``****``. Either half may be missing; an account with neither stays absent
-    rather than being named by its file. So an account whose only name lived in
-    that free-text label now reads as "Example Bank ****4521" -- worse prose
-    than the label it replaced, and a great deal safer.
+    declare far less. It answers with ``account_label`` instead: the same text
+    after the importer stripped the trailing last four and masked any embedded
+    number, which is the rung ``core.dim_accounts`` names by, so this answer and
+    the one on the far side of a refresh agree. Failing that it *constructs*
+    one, the same shape the model builds below its top rung: institution name,
+    then the last four digits of ``account_number`` (or
+    ``account_number_masked``) behind a ``****``. Either half may be missing; an
+    account with neither stays absent rather than being named by its file, so an
+    account whose only name lived in an unmasked label still reads as
+    "Example Bank ****4521".
 
     Both queries guard ``CatalogException`` so callers work before the core
     layer is materialized (a profile has decisions before its first SQLMesh
@@ -203,38 +206,57 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
         # recency alone would let such a row hide an older one that does name
         # the account, which is the bare-id rendering this resolver exists to
         # prevent.
+        #
+        # `resolved_label`, not `account_label`: DuckDB binds a window ORDER BY
+        # to a base COLUMN in preference to a same-named SELECT-list alias, so
+        # once raw.tabular_accounts gained a real account_label the first sort
+        # key silently became that column instead of the expression below --
+        # ranking every row equal and letting the nameless newest one win.
+        # Verified against DuckDB, and pinned by
+        # test_an_unnameable_raw_row_does_not_hide_an_older_nameable_one.
         raw_rows = db.execute(
             f"""
-            SELECT account_id, account_label FROM (
+            SELECT account_id, resolved_label FROM (
                 SELECT
                     link.account_id AS account_id,
-                    -- Same derivation core.dim_accounts uses for last_four_raw:
-                    -- strip to digits, and only speak if four survive. That is
-                    -- what keeps an alphanumeric PDF identifier ("ACCT-9Z", one
-                    -- digit) from ever reaching a caller -- the column is named
-                    -- "masked" but the PDF path stores a whole identifier in it.
-                    NULLIF(TRIM(
-                      COALESCE(raw.institution_name, '') ||
+                    COALESCE(
+                      -- The name a person wrote, already display-safe: the
+                      -- importer masks and strips it before writing. Top rung
+                      -- in core.dim_accounts too, letter test included, so the
+                      -- pre-refresh answer and the post-refresh one agree.
                       CASE
-                        WHEN LENGTH(
-                          REGEXP_REPLACE(
-                            COALESCE(raw.account_number, raw.account_number_masked),
-                            '[^0-9]', '', 'g'
+                        WHEN REGEXP_MATCHES(raw.account_label, '[A-Za-z]')
+                        THEN raw.account_label
+                      END,
+                      -- Same derivation core.dim_accounts uses for
+                      -- last_four_raw: strip to digits, and only speak if four
+                      -- survive. That is what keeps an alphanumeric PDF
+                      -- identifier ("ACCT-9Z", one digit) from ever reaching a
+                      -- caller -- the column is named "masked" but the PDF path
+                      -- stores a whole identifier in it.
+                      NULLIF(TRIM(
+                        COALESCE(raw.institution_name, '') ||
+                        CASE
+                          WHEN LENGTH(
+                            REGEXP_REPLACE(
+                              COALESCE(raw.account_number, raw.account_number_masked),
+                              '[^0-9]', '', 'g'
+                            )
+                          ) >= 4
+                          THEN ' ****' || RIGHT(
+                            REGEXP_REPLACE(
+                              COALESCE(raw.account_number, raw.account_number_masked),
+                              '[^0-9]', '', 'g'
+                            ),
+                            4
                           )
-                        ) >= 4
-                        THEN ' ****' || RIGHT(
-                          REGEXP_REPLACE(
-                            COALESCE(raw.account_number, raw.account_number_masked),
-                            '[^0-9]', '', 'g'
-                          ),
-                          4
-                        )
-                        ELSE ''
-                      END
-                    ), '') AS account_label,
+                          ELSE ''
+                        END
+                      ), '')
+                    ) AS resolved_label,
                     ROW_NUMBER() OVER (
                         PARTITION BY link.account_id
-                        ORDER BY account_label IS NOT NULL DESC,
+                        ORDER BY resolved_label IS NOT NULL DESC,
                                  raw.extracted_at DESC
                     ) AS rn
                 FROM {TABULAR_ACCOUNTS.full_name} AS raw

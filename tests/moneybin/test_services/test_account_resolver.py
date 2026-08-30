@@ -30,9 +30,9 @@ def _src(**overrides: Any) -> SourceAccount:
         "source_type": "csv",
         "source_origin": "wells_fargo",
         "source_account_key": "wf-checking",
-        "account_name": "WF Checking 4267",
+        "account_name": "WF Checking 1212",
         "account_number": None,
-        "last_four": "4267",
+        "last_four": "1212",
         "institution": "wells_fargo",
         "persistent_token": None,
         "explicit_account_id": None,
@@ -280,8 +280,8 @@ def test_scoped_full_number_auto_adopts_ofx_then_csv(db: Database) -> None:
     ofx = resolver.resolve(
         _src(
             source_type="ofx",
-            source_account_key="ofx-4267",
-            account_number="wells_fargo:111000:4267",  # scoped composite
+            source_account_key="ofx-1212",
+            account_number="wells_fargo:111000:1212",  # scoped composite
             explicit_account_id="acct_ofx_1",
         )
     )
@@ -289,7 +289,7 @@ def test_scoped_full_number_auto_adopts_ofx_then_csv(db: Database) -> None:
         _src(
             source_type="csv",
             source_account_key="wf-checking",
-            account_number="wells_fargo:111000:4267",
+            account_number="wells_fargo:111000:1212",
         )
     )
     assert csv.account_id == ofx.account_id
@@ -570,6 +570,37 @@ def test_fetch_display_names_batches_without_losing_the_raw_fallback(
     batched = fetch_display_names(db, ["acct_pending_pdf", "acct_unknown"])
 
     assert batched == {"acct_pending_pdf": fetch_display_name(db, "acct_pending_pdf")}
+
+
+def test_the_raw_fallback_names_an_account_by_its_own_label(db: Database) -> None:
+    """The pre-refresh answer uses the same top rung ``dim_accounts`` does.
+
+    This resolver exists so one question has one answer, and ``dim_accounts``
+    now names an account by the label its file carried ahead of anything it
+    assembles. Answering "Test Bank ****7777" here while the dim will say
+    "Everyday Spending" reopens the two-readers split on the far side of a refresh.
+    Seeded with an institution and a last four as well, so the assembled label
+    is available and losing to the authored one is the thing being observed.
+    """
+    AccountLinksRepo(db).insert(
+        link_id="link_acct_labelled",
+        account_id="acct_labelled",
+        ref_kind="source_native",
+        ref_value="everyday-spending",
+        source_type="csv",
+        source_origin="tiller",
+        decided_by="auto",
+        actor="system",
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "
+        "(account_id, account_name, account_label, account_number_masked, "
+        "institution_name, source_file, source_type, source_origin, import_id) "
+        "VALUES ('everyday-spending', 'Everyday Spending (...7777)', 'Everyday Spending', "
+        "'****7777', 'Test Bank', '/sheet.csv', 'csv', 'tiller', 'imp')"
+    )
+
+    assert fetch_display_name(db, "acct_labelled") == "Everyday Spending"
 
 
 def test_no_candidate_mints_standalone(db: Database) -> None:
@@ -875,11 +906,11 @@ def test_institution_last4_writes_pending_never_merges(db: Database) -> None:
     _seed_dim_account(
         db,
         account_id=first.account_id,
-        last_four="4267",
+        last_four="1212",
         institution_name="wells_fargo",
     )
     second = resolver.resolve(
-        _src(source_type="ofx", source_account_key="ofx-4267", last_four="4267")
+        _src(source_type="ofx", source_account_key="ofx-1212", last_four="1212")
     )
     assert second.is_new is True
     assert second.account_id != first.account_id
@@ -906,14 +937,14 @@ def test_institution_last4_matches_across_case(db: Database) -> None:
     _seed_dim_account(
         db,
         account_id=first.account_id,
-        last_four="4267",
+        last_four="1212",
         institution_name="CHASE",  # raw OFX <ORG>, uppercase
     )
     second = resolver.resolve(
         _src(
             source_type="ofx",
-            source_account_key="ofx-4267",
-            last_four="4267",
+            source_account_key="ofx-1212",
+            last_four="1212",
             institution="chase",
         )
     )
@@ -930,7 +961,7 @@ def test_institution_last4_matches_across_case(db: Database) -> None:
 def test_renamed_csv_label_reassociates_via_last4_not_duplicate(db: Database) -> None:
     """Renamed Monarch account re-associates via last4, never mints a duplicate.
 
-    A Monarch account renamed Daily Expense (...1789) -> Fun Money (...1789)
+    A Monarch account renamed Everyday Spending (...7777) -> Fun Money (...7777)
     re-associates onto the original via a PENDING institution_last4 decision —
     not a duplicate mint that silently merges (Decision 8 mutable-label
     behavior). The renamed import has a different source_account_key (slug) so
@@ -941,9 +972,9 @@ def test_renamed_csv_label_reassociates_via_last4_not_duplicate(db: Database) ->
     first = resolver.resolve(
         _src(
             source_origin="monarch",
-            source_account_key="daily-expense-1789",
-            account_name="Daily Expense (...1789)",
-            last_four="1789",
+            source_account_key="everyday-spending-7777",
+            account_name="Everyday Spending (...7777)",
+            last_four="7777",
             institution="wells_fargo",
         )
     )
@@ -951,16 +982,16 @@ def test_renamed_csv_label_reassociates_via_last4_not_duplicate(db: Database) ->
     _seed_dim_account(
         db,
         account_id=first.account_id,
-        last_four="1789",
+        last_four="7777",
         institution_name="wells_fargo",
-        display_name="Daily Expense",
+        display_name="Everyday Spending",
     )
     renamed = resolver.resolve(
         _src(
             source_origin="monarch",
-            source_account_key="fun-money-1789",
-            account_name="Fun Money (...1789)",
-            last_four="1789",
+            source_account_key="fun-money-7777",
+            account_name="Fun Money (...7777)",
+            last_four="7777",
             institution="wells_fargo",
         )
     )
@@ -1082,7 +1113,7 @@ def test_institution_last4_skips_when_slug_is_empty(db: Database) -> None:
     _seed_dim_account(
         db,
         account_id=first.account_id,
-        last_four="4267",
+        last_four="1212",
         institution_name="@@@",  # slugifies to ''
     )
     second = resolver.resolve(
@@ -1104,16 +1135,16 @@ def test_find_candidates_prefers_institution_last4_over_name(db: Database) -> No
     _seed_dim_account(
         db,
         account_id="acct_ofx",
-        last_four="4267",
+        last_four="1212",
         institution_name="WELLS FARGO",
-        display_name="WF Checking 4267",
+        display_name="WF Checking 1212",
     )
     resolver = AccountResolver(db, actor="system")
     candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin candidate-pass precedence
         _src(
             institution="Wells Fargo",
-            last_four="4267",
-            account_name="WF Checking 4267",
+            last_four="1212",
+            account_name="WF Checking 1212",
         ),
         exclude_account_id="prov_new",
     )
@@ -1218,11 +1249,11 @@ def test_find_candidates_fallback_lists_all_when_institution_scope_empty(
     )
     resolver = AccountResolver(db, actor="system")
     # institution resolves to a slug that matches no dim account (WF vs the
-    # polluted "wf_checking_9940").
+    # polluted "wf_checking_3030").
     src = _src(
         account_name="Imported Statement",
         last_four="0000",
-        institution="wf_checking_9940",
+        institution="wf_checking_3030",
     )
     candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # exercise scope-empty fallthrough
         src, exclude_account_id="prov", fallback=True
@@ -1571,7 +1602,7 @@ def test_force_standalone_mints_despite_candidates(db: Database) -> None:
     _seed_dim_account(
         db,
         account_id=first.account_id,
-        last_four="4267",
+        last_four="1212",
         institution_name="wells_fargo",
     )
     # Same institution+last4 would normally propose a merge; force_standalone
@@ -1579,8 +1610,8 @@ def test_force_standalone_mints_despite_candidates(db: Database) -> None:
     second = resolver.resolve(
         _src(
             source_type="ofx",
-            source_account_key="ofx-4267",
-            last_four="4267",
+            source_account_key="ofx-1212",
+            last_four="1212",
             force_standalone=True,
         )
     )
@@ -1608,11 +1639,11 @@ def test_propose_force_standalone_reports_clean_new(db: Database) -> None:
     _seed_dim_account(
         db,
         account_id=first.account_id,
-        last_four="4267",
+        last_four="1212",
         institution_name="wells_fargo",
     )
     proposal = resolver.propose(
-        _src(source_account_key="ofx-4267", last_four="4267", force_standalone=True)
+        _src(source_account_key="ofx-1212", last_four="1212", force_standalone=True)
     )
     assert proposal.is_new is True
     assert proposal.candidates == ()
@@ -1652,12 +1683,12 @@ def test_propose_surfaces_weak_candidate_without_writing(db: Database) -> None:
     _seed_dim_account(
         db,
         account_id="wf_existing_01",
-        last_four="4267",
+        last_four="1212",
         institution_name="wells_fargo",
         display_name="WF Checking",
     )
     resolver = AccountResolver(db, actor="system")
-    src = _src()  # last_four="4267", institution="wells_fargo"
+    src = _src()  # last_four="1212", institution="wells_fargo"
     proposal = resolver.propose(src)
 
     assert isinstance(proposal, AccountProposal)
@@ -2128,15 +2159,15 @@ def test_name_signal_is_vetoed_when_both_last_fours_are_known_and_differ(
     _seed_dim_account(
         db,
         account_id="acct_other",
-        last_four="9940",
+        last_four="3030",
         institution_name="WELLS FARGO",
         institution_slug="wells_fargo",
-        display_name="WF Checking 4267",  # equals the source name: the veto is the only thing suppressing it
+        display_name="WF Checking 1212",  # equals the source name: the veto is the only thing suppressing it
     )
     resolver = AccountResolver(db, actor="system")
 
     candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin the veto on the candidate pass
-        _src(last_four="4267", account_name="WF Checking 4267"),
+        _src(last_four="1212", account_name="WF Checking 1212"),
         exclude_account_id="prov_new",
     )
 
@@ -2160,12 +2191,12 @@ def test_name_signal_survives_when_the_candidate_states_no_last_four(
         last_four=None,
         institution_name="WELLS FARGO",
         institution_slug="wells_fargo",
-        display_name="WF Checking 4267",
+        display_name="WF Checking 1212",
     )
     resolver = AccountResolver(db, actor="system")
 
     candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin the veto's own boundary
-        _src(last_four="4267", account_name="WF Checking 4267"),
+        _src(last_four="1212", account_name="WF Checking 1212"),
         exclude_account_id="prov_new",
     )
 
@@ -2180,15 +2211,15 @@ def test_name_signal_survives_when_the_source_states_no_last_four(
     _seed_dim_account(
         db,
         account_id="acct_other",
-        last_four="9940",
+        last_four="3030",
         institution_name="WELLS FARGO",
         institution_slug="wells_fargo",
-        display_name="WF Checking 4267",
+        display_name="WF Checking 1212",
     )
     resolver = AccountResolver(db, actor="system")
 
     candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin the veto's own boundary
-        _src(last_four=None, account_name="WF Checking 4267"),
+        _src(last_four=None, account_name="WF Checking 1212"),
         exclude_account_id="prov_new",
     )
 
@@ -2207,15 +2238,15 @@ def test_a_vetoed_name_match_resurfaces_as_the_reissue_signal(db: Database) -> N
     _seed_dim_account(
         db,
         account_id="acct_other",
-        last_four="9940",
+        last_four="3030",
         institution_name="WELLS FARGO",
         institution_slug="wells_fargo",
-        display_name="WF Checking 4267",
+        display_name="WF Checking 1212",
     )
     resolver = AccountResolver(db, actor="system")
 
     candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin the retype, not just the veto
-        _src(last_four="4267", account_name="WF Checking 4267"),
+        _src(last_four="1212", account_name="WF Checking 1212"),
         exclude_account_id="prov_new",
         reissue=True,
     )

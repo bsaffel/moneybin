@@ -993,9 +993,10 @@ def echo_accounts_created(accounts: Sequence[dict[str, str]]) -> None:
     recoveries are named because they are different commands — a wrong *name* is
     a rename, a wrong *identity* is a merge — and neither is guessable.
 
-    ``typer.echo``, not ``logger.info``: a display_name is whatever the source
-    file called the account (a CSV's account column, an OFX institution + type)
-    and can carry the holder's name, so it must not reach the log pipeline.
+    ``typer.echo``, not ``logger.info``: a display_name is the resolved account
+    label ``core.dim_accounts`` stores, which a user override can turn into
+    anything they typed — including the holder's name — so it must not reach the
+    log pipeline.
     """
     if not accounts:
         return

@@ -314,8 +314,8 @@ def test_masked_label_reaches_resolver_as_clean_name(
 ) -> None:
     """A masked label must reach the resolver as its cleaned name.
 
-    "Cash (...1789)" must arrive as "Cash"; otherwise the mask text sinks the
-    fuzzy-name ratio below threshold (SequenceMatcher("cash (...1789)", "cash")
+    "Cash (...7777)" must arrive as "Cash"; otherwise the mask text sinks the
+    fuzzy-name ratio below threshold (SequenceMatcher("cash (...7777)", "cash")
     ~= 0.44 < 0.6) and a duplicate is silently minted instead of surfacing the
     existing-account candidate. With no institution resolved, name is the only
     signal.
@@ -325,7 +325,7 @@ def test_masked_label_reaches_resolver_as_clean_name(
     with pytest.raises(ImportConfirmationRequiredError) as exc:
         svc.import_file(
             _STANDARD_CSV,
-            account_name="Cash (...1789)",
+            account_name="Cash (...7777)",
             refresh=False,
             confirm=True,
             actor_kind="human",
@@ -453,7 +453,7 @@ def test_new_binding_captures_account_metadata(
             "wf-checking": {
                 "display_name": "WF Checking",
                 "account_subtype": "checking",
-                "last_four": "4267",
+                "last_four": "1212",
                 "currency_code": "USD",
             }
         },
@@ -464,7 +464,7 @@ def test_new_binding_captures_account_metadata(
         "FROM app.account_settings WHERE account_id=?",
         [minted],
     ).fetchone()
-    assert row == ("WF Checking", "4267", "checking", "USD")
+    assert row == ("WF Checking", "1212", "checking", "USD")
 
 
 def test_mint_is_announced_under_the_name_it_will_actually_carry(
@@ -1855,7 +1855,7 @@ def test_the_channel_that_honors_a_signal_still_takes_it(db: Database) -> None:
     result = ImportService(db).import_file(
         _STANDARD_CSV,
         account_name="WF Checking",
-        account_metadata={"wf-checking": {"last_four": "4267"}},
+        account_metadata={"wf-checking": {"last_four": "1212"}},
         refresh=False,
         confirm=True,
         actor_kind="human",

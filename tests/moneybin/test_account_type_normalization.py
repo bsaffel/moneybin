@@ -184,8 +184,8 @@ def test_typeless_accounts_stay_distinguishable_by_last_four(db: Database) -> No
     renders identically. last_four is what distinguishes them.
     """
     for native, canonical, link in (
-        ("2001111111114387", "canon-typeless-a", "lnk-tl-a"),
-        ("2001111111113431", "canon-typeless-b", "lnk-tl-b"),
+        ("2001111111114242", "canon-typeless-a", "lnk-tl-a"),
+        ("2001111111117080", "canon-typeless-b", "lnk-tl-b"),
     ):
         _ofx_account(db, native_key=native, account_type=None)
         _link(
@@ -210,8 +210,8 @@ def test_typeless_accounts_stay_distinguishable_by_last_four(db: Database) -> No
     assert len(set(names)) == 2, (
         f"typeless accounts collided on display_name: {names!r}"
     )
-    assert "4387" in names[0], names[0]
-    assert "3431" in names[1], names[1]
+    assert "4242" in names[0], names[0]
+    assert "7080" in names[1], names[1]
     # And no double space where the absent type used to be interpolated.
     assert all("  " not in n for n in names), names
 
@@ -228,7 +228,7 @@ def test_opaque_ofx_org_code_resolves_to_a_readable_institution_name(
     """
     _ofx_account(
         db,
-        native_key="ofx-b1-4387",
+        native_key="ofx-b1-4242",
         account_type="CREDITCARD",
         institution_org="B1",
         institution_fid="10898",
@@ -236,8 +236,8 @@ def test_opaque_ofx_org_code_resolves_to_a_readable_institution_name(
     _link(
         db,
         link_id="lnk-b1-1",
-        account_id="canon-b1-4387",
-        ref_value="ofx-b1-4387",
+        account_id="canon-b1-4242",
+        ref_value="ofx-b1-4242",
         source_type="ofx",
         source_origin="vocab_ofx",
     )
@@ -247,11 +247,11 @@ def test_opaque_ofx_org_code_resolves_to_a_readable_institution_name(
 
     row = db.execute(
         "SELECT institution_name, display_name FROM core.dim_accounts WHERE account_id = ?",
-        ["canon-b1-4387"],
+        ["canon-b1-4242"],
     ).fetchone()
     assert row is not None
     assert row[0] == "Chase", f"expected the FID to resolve a name, got {row[0]!r}"
-    assert row[1] == "Chase credit card …4387", row[1]
+    assert row[1] == "Chase credit card …4242", row[1]
 
 
 @pytest.mark.slow

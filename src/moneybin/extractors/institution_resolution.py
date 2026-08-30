@@ -102,6 +102,36 @@ def slug_for_fid(fid: str | None) -> str | None:
     return _fid_to_slug().get(fid)
 
 
+@lru_cache(maxsize=1)
+def _fid_to_display_name() -> dict[str, str]:
+    """OFX FID → the institution's human-readable name, from the shared registry.
+
+    The display half of the same rows :func:`_fid_to_slug` indexes, and read the
+    same way for the same reason: ``core.dim_accounts`` resolves
+    ``institution_name`` by joining this CSV on ``<FID>``, so a Python copy of
+    the names would drift from the model's.
+    """
+    raw = resources.files("moneybin").joinpath(_REGISTRY_RESOURCE).read_text()
+    return {
+        row["fid"]: name
+        for row in csv.DictReader(io.StringIO(raw))
+        if row["fid"] and (name := (row["display_name"] or "").strip())
+    }
+
+
+def display_name_for_fid(fid: str | None) -> str | None:
+    """Human-readable institution name for an OFX ``<FID>``, or None if unregistered.
+
+    The display counterpart of :func:`slug_for_fid`, and the first arm of
+    ``dim_accounts``'s ``COALESCE(i.display_name, a.institution_org)``. Callers
+    fall back to the file's own ``<ORG>`` — which is a routing code for issuers
+    that publish one ("B1" = Chase) — exactly as the model does.
+    """
+    if not fid:
+        return None
+    return _fid_to_display_name().get(fid)
+
+
 def _institution_alias(value: str) -> str:
     """Registry lookup key: case and punctuation stripped entirely."""
     return re.sub(r"[^a-z0-9]", "", value.lower())

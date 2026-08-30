@@ -212,7 +212,7 @@ def test_csv_twin_gates_on_the_last4_bridge_for_every_actor(actor_kind: str) -> 
 @pytest.mark.scenarios
 @pytest.mark.slow
 def test_shared_last4_collision_surfaces_both_candidates_never_merges() -> None:
-    """Two distinct Wells-Fargo accounts sharing last4 '4267' are BOTH surfaced.
+    """Two distinct Wells-Fargo accounts sharing last4 '1212' are BOTH surfaced.
 
     A csv import carrying that last4 raises one proposal holding TWO
     institution_last4 candidates, never an auto-merge — the user disambiguates
@@ -225,17 +225,17 @@ def test_shared_last4_collision_surfaces_both_candidates_never_merges() -> None:
     )
     with scenario_env(scenario) as (db, _tmp, env):
         svc = ImportService(db)
-        import_answering_gate(svc, _FIXTURES / "wf_acct_a_4267.qfx", refresh=False)
-        import_answering_gate(svc, _FIXTURES / "wf_acct_b_4267.qfx", refresh=False)
-        acct_a = _ofx_canonical_id(db, "5114267")
-        acct_b = _ofx_canonical_id(db, "6224267")
+        import_answering_gate(svc, _FIXTURES / "wf_acct_a_1212.qfx", refresh=False)
+        import_answering_gate(svc, _FIXTURES / "wf_acct_b_1212.qfx", refresh=False)
+        acct_a = _ofx_canonical_id(db, "5111212")
+        acct_b = _ofx_canonical_id(db, "6221212")
         assert acct_a != acct_b
         run_step("transform", scenario.setup, db, env=env)
 
         proposal = _gated_proposal(
             svc,
             _FIXTURES / "wells_fargo_checking.csv",
-            account_name="WF (...4267)",
+            account_name="WF (...1212)",
             confirm=True,
             actor_kind="agent",
             refresh=False,

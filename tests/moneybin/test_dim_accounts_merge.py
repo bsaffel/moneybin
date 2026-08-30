@@ -89,19 +89,21 @@ def _insert_tabular_account(
     extracted_at: str,
     source_origin: str = "test_bank_tab",
     account_number: str | None = None,
+    account_label: str | None = None,
 ) -> None:
     db.execute(
         """
         INSERT INTO raw.tabular_accounts
-            (account_id, account_name, account_type, institution_name,
-             account_number, source_file, source_type, source_origin,
-             import_id, extracted_at, loaded_at)
-        VALUES (?, ?, ?, ?, ?, '/tmp/test.csv', 'csv', ?, 'imp-tab-001',
+            (account_id, account_name, account_label, account_type,
+             institution_name, account_number, source_file, source_type,
+             source_origin, import_id, extracted_at, loaded_at)
+        VALUES (?, ?, ?, ?, ?, ?, '/tmp/test.csv', 'csv', ?, 'imp-tab-001',
                 ?::TIMESTAMP, ?::TIMESTAMP)
         """,  # noqa: S608  # test fixture
         [
             native_key,
             account_name,
+            account_label,
             account_type,
             institution_name,
             account_number,
@@ -322,7 +324,7 @@ def test_last_four_derived_for_ofx_without_account_settings(db: Database) -> Non
     (OFX source_account_key) when no user-set app.account_settings row exists.
     """
     canonical_id = "canonofxlast401"
-    ofx_native = "123456784267"  # ACCTID ending 4267
+    ofx_native = "123456781212"  # ACCTID ending 1212
     _insert_ofx_account(
         db,
         native_key=ofx_native,
@@ -348,8 +350,8 @@ def test_last_four_derived_for_ofx_without_account_settings(db: Database) -> Non
         [canonical_id],
     ).fetchone()
     assert row is not None, "derived-last4 canonical row missing from core.dim_accounts"
-    assert row[0] == "4267", f"expected derived last_four 4267, got {row[0]!r}"
-    assert "4267" in row[1], f"display_name should include last4: {row[1]!r}"
+    assert row[0] == "1212", f"expected derived last_four 1212, got {row[0]!r}"
+    assert "1212" in row[1], f"display_name should include last4: {row[1]!r}"
 
 
 @pytest.mark.slow
@@ -519,3 +521,69 @@ def test_a_subtype_with_no_institution_still_keeps_its_last_four(
     ).fetchone()
     assert row is not None, "account missing from core.dim_accounts"
     assert row[0] == "checking …4521"
+
+
+def test_two_accounts_sharing_one_label_keep_distinct_names(db: Database) -> None:
+    """The account-label arm carries a last four for the reason every arm does.
+
+    The label is the one name a person chose, but choosing it does not make it
+    unique: Plaid sends the institution's own per-account name, and a
+    household's two checking accounts routinely carry one product name. An
+    arm that named both of them that would collide two accounts onto one
+    string — the defect the arm was added to fix — and
+    ``AccountService.resolve_strict`` raises ``AmbiguousAccountError`` on the
+    duplicate, refusing a name reference that resolved before.
+    """
+    for native_key, number in (("tab-label-a", "4001111"), ("tab-label-b", "4002222")):
+        _insert_tabular_account(
+            db,
+            native_key=native_key,
+            account_name="HOUSEHOLD CHECKING",
+            account_label="HOUSEHOLD CHECKING",
+            institution_name="Test Bank",
+            account_type="CHECKING",
+            account_number=number,
+            extracted_at="2024-03-01 00:00:00",
+        )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    names = [
+        str(row[0])
+        for row in db.execute(
+            "SELECT display_name FROM core.dim_accounts "
+            "WHERE account_id IN ('tab-label-a', 'tab-label-b') "
+            "ORDER BY account_id"
+        ).fetchall()
+    ]
+    assert names == ["HOUSEHOLD CHECKING …1111", "HOUSEHOLD CHECKING …2222"], names
+
+
+def test_a_label_alone_names_an_account_with_no_number(db: Database) -> None:
+    """The discriminator is appended when there is one, never invented.
+
+    SQL ``||`` yields NULL when any operand is NULL, so the with-last-four arm
+    simply does not fire for an account whose source stated no number, and the
+    bare arm below it names the account by what it does have.
+    """
+    _insert_tabular_account(
+        db,
+        native_key="tab-label-no-number",
+        account_name="Vacation Fund",
+        account_label="Vacation Fund",
+        institution_name="Test Bank",
+        account_type="SAVINGS",
+        account_number=None,
+        extracted_at="2024-03-01 00:00:00",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        ["tab-label-no-number"],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "Vacation Fund"

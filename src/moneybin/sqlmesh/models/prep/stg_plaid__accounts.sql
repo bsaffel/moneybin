@@ -24,7 +24,17 @@ MODEL (
 
    account_subtype is the other exception: Plaid's own subtype is finer than the
    registry's (401k, money market, mortgage), so it wins and the registry only
-   fills in when Plaid sent none. */
+   fills in when Plaid sent none.
+
+   account_label projects Plaid's `name` — the institution's own name for this
+   account, what a person sees in their bank's app, and the only PER-ACCOUNT
+   name Plaid sends: official_name is a shared product label ("Ultimate
+   Rewards®" covers both of a household's cards). dim_accounts names the
+   account by it, the same rung a spreadsheet's Account column feeds. Passed
+   through unmasked, like official_name beside it, because both are structured
+   API fields rather than the free text a spreadsheet's Account column is —
+   Plaid puts the number in `mask` and nowhere else, so there is no pasted
+   account number here for an importer to have masked. */
 SELECT
   COALESCE(links.account_id, a.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
   a.account_id AS source_account_key,
@@ -33,6 +43,7 @@ SELECT
   NULLIF(TRIM(a.institution_name), '') AS institution_name,
   NULL::TEXT AS institution_fid,
   NULLIF(TRIM(a.official_name), '') AS official_name,
+  NULLIF(TRIM(a.name), '') AS account_label,
   a.mask,
   COALESCE(
     NULLIF(TRIM(a.account_subtype), ''),

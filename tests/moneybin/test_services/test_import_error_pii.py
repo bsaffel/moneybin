@@ -333,14 +333,16 @@ def test_a_duplicated_metadata_referent_is_not_echoed_in_full(
         # Seven digits, and none of it an account number. Masking from the first
         # digit to the last would leave "****2024" — no name at all, which
         # defeats the field. The word between them is what keeps it whole.
-        ("401K Plan 2024 Rewards", "401K Plan 2024 Rewards"),
+        ("Retirement Plan 2024 Rewards", "Retirement Plan 2024 Rewards"),
         # A bare trailing four-digit group is the masked last-four banks print,
         # and parse_account_label lifts it out into `last_four` — so the label
         # arrives already stripped and there is nothing left for the mask to
         # find. Pinned because it is the boundary: one digit more and the mask
-        # has to act.
-        ("Checking 1789", "Checking"),
-        ("Savings 2024", "Savings"),
+        # has to act. The ladder then puts that same last four back in its
+        # canonical position, which is a round trip through the field the
+        # parser moved it to, not a second slice of the number.
+        ("Checking 7777", "Checking …7777"),
+        ("Savings 2024", "Savings …2024"),
     ],
 )
 def test_a_minted_accounts_display_name_masks_every_account_number_shape(
@@ -381,7 +383,7 @@ def test_a_minted_accounts_display_name_does_not_carry_an_account_number(
     documented as safe to show, and it reaches the terminal, the CLI/MCP
     ``accounts_created`` rows and the inbox drain unmasked. For tabular it is
     derived from the file's own account column via ``parse_account_label``,
-    which strips only a *recognized masked* last-four — ``(...1789)``, ``x1789``,
+    which strips only a *recognized masked* last-four — ``(...7777)``, ``x7777``,
     a bare trailing group. A genuinely unmasked full number matches none of
     those patterns and passed through whole, so the one shape that actually
     needed stripping was the one that survived.

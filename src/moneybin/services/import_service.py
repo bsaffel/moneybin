@@ -53,6 +53,11 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
+from moneybin.services.account_display_name import (
+    AccountNameFacts,
+    account_category,
+    derived_last_four,
+)
 from moneybin.services.account_resolution_types import (
     AccountProposalDict,
     ResolvedAccount,
@@ -107,10 +112,17 @@ class CreatedAccount:
     The visible half of "gate the merge, not the mint": a first-contact mint no
     longer stops the import, so the import has to say what it created. Both
     fields are safe to show — ``account_id`` is an opaque uuid4[:12], and
-    ``display_name`` is the source's own label for the account (the tabular
-    account column, ``<institution> <type>`` for OFX, or a PDF's labelled
-    account/product name with document-alias fallback), never its
-    ``source_account_key``, which is an account number on several channels.
+    ``display_name`` is the name ``core.dim_accounts`` stores for the account,
+    derived at mint time from the same seed registries the model joins, never
+    its ``source_account_key``, which is an account number on several channels.
+
+    Announcing the *stored* name is the contract, not a nicety. This row is the
+    only place a first-contact mint is disclosed, and the agent is told to
+    report it to the user; a name derived any other way sends them looking for
+    an account ``accounts`` answers to under a different one. That cuts both
+    ways: where the file named the account itself the model uses that name, so
+    this row shows it too, and where nothing can name the account both read
+    ``Unnamed account``.
     """
 
     account_id: str
@@ -140,7 +152,7 @@ class CreatedAccount:
 #
 # and stops at a gap that is neither, which is exactly a whitespace-delimited
 # alphabetic word: "Checking 1234 Savings 5678" stays two safe four-digit
-# tokens, and "401K Plan 2024 Rewards" keeps its name instead of collapsing to
+# tokens, and "Retirement Plan 2024 Rewards" keeps its name instead of collapsing to
 # "****2024".
 #
 # Every quantifier here must have exactly one way to match a given gap, because
@@ -177,7 +189,7 @@ def mask_embedded_account_number(label: str) -> str:
     """Mask an account number embedded in a derived account label.
 
     ``parse_account_label`` lifts out a *recognized masked* last-four —
-    ``(...1789)``, ``x1789``, a bare trailing group — so the shapes it leaves
+    ``(...7777)``, ``x7777``, a bare trailing group — so the shapes it leaves
     behind are the ones that matter, and grouping is what makes them dangerous:
     ``Checking 4111 1111 1111 1111`` loses only its final token and arrives as
     ``Checking 4111 1111 1111``, twelve digits of a card number in a field
@@ -219,27 +231,42 @@ def _created_account(
     src: SourceAccount,
     resolved: ResolvedAccount,
     *,
-    display_name: str | None = None,
+    settings: dict[str, str] | None = None,
 ) -> CreatedAccount | None:
     """The account this resolve minted, or None when it adopted an existing one.
 
     One definition of "created" for all three channels, so a new channel cannot
     report a different set than the one it bound.
 
-    ``display_name`` is the caller's ``account_metadata`` value when they
-    supplied one. It has to win: ``_capture_new_account_metadata`` writes it to
-    ``app.account_settings`` and ``dim_accounts`` COALESCEs that arm ahead of
-    everything derived, so reporting the source label would announce the mint
-    under a name the user then cannot find.
+    ``settings`` is the caller's ``account_metadata`` for this source account.
+    Its ``display_name`` wins outright: ``_capture_new_account_metadata`` writes
+    it to ``app.account_settings`` and ``dim_accounts`` COALESCEs that arm ahead
+    of everything derived. Its other fields refine the derivation below rather
+    than replacing it, in the same order the model reads them.
+
+    Everything else is derived from ``src.name_facts`` — the same facts, from
+    the same seed registries, that ``core.dim_accounts`` will name the account
+    by. It is *not* read back from ``core``: nothing has refreshed yet at this
+    point, and ``import_confirm`` never refreshes at all.
     """
     if resolved.outcome != "minted_new":
         return None
-    if display_name:
+    settings = settings or {}
+    if display_name := settings.get("display_name"):
         # The caller's own chosen name, which `_capture_new_account_metadata`
         # also writes to `app.account_settings` — masking the announcement of a
         # name they typed and will see everywhere else would only make the two
         # disagree.
         return CreatedAccount(account_id=resolved.account_id, display_name=display_name)
+    if src.name_facts is not None:
+        return CreatedAccount(
+            account_id=resolved.account_id,
+            display_name=src.name_facts.with_settings(settings).display_name(),
+        )
+    # No channel reaches here — all three state their facts. Kept so a future
+    # source that mints before it can state them announces the id under the
+    # file's own label rather than raising mid-import; masked, because that
+    # label can be a bare account number.
     return CreatedAccount(
         account_id=resolved.account_id,
         display_name=mask_embedded_account_number(src.account_name),
@@ -1013,6 +1040,37 @@ def _pdf_format_name(fp: dict[str, Any]) -> str:
     return f"{issuer_slug}_{digest}"
 
 
+def _pdf_account_type(decision: "RouteDecision") -> str | None:
+    """The account_type a PDF import stamps on ``raw.tabular_accounts``.
+
+    A ``negative_is_income`` recipe carries a "this is a credit card" verdict:
+    either human-confirmed on the deterministic rung (the ``--confirm`` sign
+    gate) or agent-authored via the bridge recipe, which reaches
+    ``_import_pdf_transactions`` through ``apply_pdf_bridge_response`` →
+    ``route_forced_recipe`` and does NOT run the sign gate. Either way
+    ``credit`` follows from the recipe's own convention — a fact about the
+    account, not a guess. prep normalizes it through ``seeds.account_type_map``
+    like every other source's spelling.
+
+    Tolerates a missing recipe rather than asserting one: ``_pdf_source_account``
+    also calls this, and it runs on a decision whose recipe the caller may not
+    have narrowed yet. A recipe-less decision has stated no convention, so the
+    document's own captured type is the answer.
+
+    It does NOT drive liability signing, despite the shared word: PDF balances
+    reach ``core.fct_balances`` through the tabular_balances CTE, which applies
+    no type-based negation at all (the ``IN ('credit','loan')`` negation is
+    scoped to plaid_balances). This value feeds ``display_name`` and the
+    ``accounts --type`` filter — which is why the mint report reads it here too,
+    from the one expression, rather than deriving a second answer.
+    """
+    if decision.recipe is not None and (
+        decision.recipe.sign_convention == "negative_is_income"
+    ):
+        return "credit"
+    return decision.metadata.account_type
+
+
 def _to_account_number_mask(raw: str | None) -> str | None:
     """Reduce a captured PDF account identifier to a last-4 display mask.
 
@@ -1652,6 +1710,19 @@ def _pdf_source_account(
         # institution+last4 signal and routes to name review rather than
         # inventing a strong match.
         last_four=derived.last_four,
+        # What core.dim_accounts will name this account, built from the three
+        # values _import_pdf_transactions writes to raw.tabular_accounts for it:
+        # the issuer, the recipe-implied account type, and the last-4 display
+        # mask. Not `derived.last_four`, which answers a different question (it
+        # is None for a digits-free token so the institution+last4 match cannot
+        # fire); the model reads the masked column and strips it to digits.
+        name_facts=AccountNameFacts(
+            institution_name=issuer or None,
+            category=account_category(_pdf_account_type(decision)),
+            last_four=derived_last_four(
+                _to_account_number_mask(decision.metadata.account_id)
+            ),
+        ),
         explicit_account_id=account_id_override,
         # Set even when no key is borrowed below; _teach_unpinned_key ignores it
         # once it equals source_account_key.
@@ -1732,7 +1803,10 @@ def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAcco
     ``source_account_key`` every downstream link and staging JOIN uses, so two
     entries sharing one cannot resolve to different accounts by design.
     """
-    from moneybin.extractors.institution_resolution import slug_for_fid
+    from moneybin.extractors.institution_resolution import (
+        display_name_for_fid,
+        slug_for_fid,
+    )
     from moneybin.extractors.ofx.extractor import none_if_blank, ofx_account_type
 
     accounts: list[SourceAccount] = []
@@ -1768,6 +1842,30 @@ def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAcco
                 # the FID and fall back to source_origin when the FID is
                 # unregistered.
                 institution=slug_for_fid(fid) or source_origin,
+                # What core.dim_accounts will name this account: the registry's
+                # display name for the FID, else the file's own <ORG> — the
+                # model's COALESCE(seeds.institutions.display_name,
+                # institution_org), and the extractor's `inst_org or
+                # source_origin` for the raw column it reads. Not
+                # `source_origin` on its own, which is a routing code ("B1" =
+                # Chase); not `<ACCTTYPE>` raw, which the type map normalizes;
+                # and last four by DIGITS, because the model strips non-digits
+                # before taking four.
+                # The <ORG> arm is deliberately not none_if_blank'd: the
+                # extractor stores `inst_org or source_origin` untrimmed, so a
+                # whitespace-only <ORG> is written, staging NULLIFs it, and the
+                # dim falls through to the type rung. Normalizing it here would
+                # reach source_origin instead and report a name the dim will
+                # not store. AccountNameFacts trims what it is given.
+                name_facts=AccountNameFacts(
+                    institution_name=(
+                        display_name_for_fid(fid)
+                        or (institution.organization if institution else None)
+                        or source_origin
+                    ),
+                    category=account_category(ofx_account_type(account)),
+                    last_four=derived_last_four(acctid),
+                ),
             )
         )
     return accounts
@@ -3230,10 +3328,6 @@ class ImportService:
             ),
             cli_override=None,  # no --institution flag on tabular yet
         )
-        # Stage 5 reassigns `institution` for the account_df flow; keep the
-        # resolved (format / filename) value for the auto-save block below so a
-        # saved format records its real institution rather than always "unknown".
-        resolved_institution = institution
         resolver = AccountResolver(
             self._db,
             actor="system",
@@ -3260,6 +3354,54 @@ class ImportService:
         # (Decision 8 exporter/institution split). Single-account keeps the
         # format/file institution unchanged.
         multi_acct_inst: dict[str, str | None] = {}
+        # Which institution_name Stage 5 will stamp on raw.tabular_accounts, and
+        # therefore the one core.dim_accounts names each account by. Decided here
+        # rather than at Stage 5 alone because the mint report has to state it in
+        # Phase 3, before any row is written — and two spellings of one
+        # expression is exactly how the reported name and the stored one drifted
+        # apart. `institution` — resolved from the format or the filename at
+        # Stage 1 — is the fallback for an unregistered import, whose
+        # matched_format is None.
+        per_account_inst = (
+            resolved.is_multi_account and not account_id and not account_name
+        )
+        shared_institution_name = (
+            matched_format.institution_name if matched_format else None
+        ) or institution
+
+        def raw_institution_name(native_key: str) -> str | None:
+            """The institution_name this account's raw row will carry."""
+            return (
+                multi_acct_inst.get(native_key)
+                if per_account_inst
+                else shared_institution_name
+            )
+
+        # The display-safe label Stage 5 stamps on raw.tabular_accounts, and so
+        # the top rung core.dim_accounts names each account by. Keyed by native
+        # key, and populated ONLY where a human authored the name — the file's
+        # account column or --account-name. The bare branch below synthesizes
+        # one from the filename, which names the upload rather than the account;
+        # promoting that would let renaming a file rename the account.
+        source_label_by_key: dict[str, str] = {}
+
+        def tabular_name_facts(
+            native_key: str, last_four: str | None
+        ) -> AccountNameFacts:
+            """Facts for the mint report; call after `multi_acct_inst` is filled.
+
+            No category: the tabular account_df writes account_type=None on every
+            row, so the model has neither a subtype nor a type to name this
+            account by. The last four comes from the same parse Stage 5 masks
+            into account_number_masked, re-derived here through the digit rule
+            the model applies to that column.
+            """
+            return AccountNameFacts(
+                source_label=source_label_by_key.get(native_key),
+                institution_name=raw_institution_name(native_key),
+                category=None,
+                last_four=derived_last_four(last_four),
+            )
 
         # Phase 1 — enumerate the source accounts this file presents (one per
         # native key) WITHOUT resolving, so the account-binding gate can run
@@ -3298,6 +3440,9 @@ class ImportService:
             if account_name:
                 display_name = account_name
                 clean_name, label_last4 = parse_account_label(account_name)
+                source_label_by_key[native_key] = mask_embedded_account_number(
+                    clean_name
+                )
             else:
                 display_name = file_path.stem or native_key
                 clean_name, label_last4 = display_name, None
@@ -3311,6 +3456,7 @@ class ImportService:
                     account_name=clean_name,
                     institution=institution,
                     last_four=label_last4,
+                    name_facts=tabular_name_facts(native_key, label_last4),
                     explicit_account_id=account_id,
                     # Deliberately does NOT teach this file's own content key the
                     # way the PDF channel teaches a borrowed document's digest.
@@ -3333,6 +3479,7 @@ class ImportService:
             acct_id_to_name[native_key] = account_name
             clean_name, label_last4 = parse_account_label(account_name)
             label_parsed_by_key[native_key] = (clean_name, label_last4)
+            source_label_by_key[native_key] = mask_embedded_account_number(clean_name)
             if acct_num_col and acct_num_col in df.columns:
                 for value in df[acct_num_col].to_list():
                     if l4 := _last4_from_account_number(value):
@@ -3346,22 +3493,38 @@ class ImportService:
                     account_name=clean_name,
                     institution=institution,
                     last_four=label_last4 or number_last4_by_key.get(native_key),
+                    name_facts=tabular_name_facts(
+                        native_key, label_last4 or number_last4_by_key.get(native_key)
+                    ),
                 )
             )
         elif (
             resolved.is_multi_account and acct_name_col and acct_name_col in df.columns
         ):
-            raw_names = [
-                str(v) if v is not None else "unknown"
-                for v in df[acct_name_col].to_list()
-            ]
+            account_cells = df[acct_name_col].to_list()
+            raw_names = [str(v) if v is not None else "unknown" for v in account_cells]
             account_ids = [slugify(name) for name in raw_names]
+            # Keys the file actually named. A blank cell arrives as NULL and is
+            # filled with "unknown" above so those rows still have a key to
+            # group on — but that filler reads exactly like a name someone
+            # typed, and the label rung is reserved for names someone did. Left
+            # out here, such an account is named from its bank fields instead.
+            authored_keys = {
+                aid
+                for aid, cell in zip(account_ids, account_cells, strict=True)
+                if cell is not None
+            }
             for aid, name in zip(account_ids, raw_names, strict=True):
                 if aid not in acct_id_to_name:
                     acct_id_to_name[aid] = name
             label_parsed_by_key = {
                 nk: parse_account_label(nm) for nk, nm in acct_id_to_name.items()
             }
+            source_label_by_key.update({
+                nk: mask_embedded_account_number(parsed[0])
+                for nk, parsed in label_parsed_by_key.items()
+                if nk in authored_keys
+            })
             if acct_num_col and acct_num_col in df.columns:
                 for aid, value in zip(
                     account_ids, df[acct_num_col].to_list(), strict=True
@@ -3390,6 +3553,11 @@ class ImportService:
                     last_four=(
                         label_parsed_by_key[native_key][1]
                         or number_last4_by_key.get(native_key)
+                    ),
+                    name_facts=tabular_name_facts(
+                        native_key,
+                        label_parsed_by_key[native_key][1]
+                        or number_last4_by_key.get(native_key),
                     ),
                 )
                 for native_key in acct_id_to_name
@@ -3420,6 +3588,9 @@ class ImportService:
                 account_name=placeholder_name,
                 institution=institution,
                 last_four=number_last4_by_key.get(native_key),
+                name_facts=tabular_name_facts(
+                    native_key, number_last4_by_key.get(native_key)
+                ),
             )
             source_accounts.append(bare_src)
             # This source has no identity signal at all, so its gate offers a
@@ -3484,9 +3655,7 @@ class ImportService:
                 observations=observations,
             )
             meta = metadata.get(src.source_account_key)
-            if minted := _created_account(
-                src, resolved_account, display_name=(meta or {}).get("display_name")
-            ):
+            if minted := _created_account(src, resolved_account, settings=meta):
                 created.append(minted)
             if not meta:
                 continue
@@ -3569,7 +3738,6 @@ class ImportService:
             raise ValueError(f"Transform failed: {type(e).__name__}") from e
 
         # Stage 5: Load — one account record per unique account
-        institution = matched_format.institution_name if matched_format else None
         unique_ids = sorted(acct_id_to_name.keys())
         # Reuse the Phase 1 parse (label_last4) with the account-number column as
         # fallback — same last4 the resolver saw, never a second parse pass.
@@ -3583,23 +3751,22 @@ class ImportService:
         # keeps the shared format/file institution (Decision 8). Single-account
         # uses the shared institution for its one row.
         #
-        # Fall back to resolved_institution (the filename/format value captured at
-        # Stage 1) because Stage 5 above clobbers `institution` to None for an
-        # unregistered import (no matched_format). Without it the account's dim row
-        # stores institution_name=NULL, and a later cross-source twin can't match it
-        # on (institution, last4) — breaking the CSV-first matching direction.
-        per_account_inst = (
-            resolved.is_multi_account and not account_id and not account_name
-        )
-        account_institutions = [
-            multi_acct_inst.get(aid)
-            if per_account_inst
-            else (institution or resolved_institution)
-            for aid in unique_ids
-        ]
+        # `raw_institution_name` holds both halves, decided in Phase 1 — it also
+        # feeds the mint report, which must state this value before this stage
+        # writes it. Its shared half falls back to `institution` (resolved from
+        # the format or the filename at Stage 1) because matched_format is
+        # None for an unregistered import. Without that fallback the account's
+        # dim row stores institution_name=NULL, and a later cross-source twin
+        # can't match it on (institution, last4) — breaking the CSV-first
+        # matching direction.
+        account_institutions = [raw_institution_name(aid) for aid in unique_ids]
         account_df = pl.DataFrame({
             "account_id": unique_ids,
             "account_name": [acct_id_to_name[aid] for aid in unique_ids],
+            # Decided in Phase 1 alongside the mint report, for the same reason
+            # institution_name is: dim_accounts names the account by this column
+            # and the report has to state that name before this stage writes it.
+            "account_label": [source_label_by_key.get(aid) for aid in unique_ids],
             "account_number": [None] * len(unique_ids),
             "account_number_masked": [acct_id_to_last4[aid] for aid in unique_ids],
             "account_type": [None] * len(unique_ids),
@@ -3687,7 +3854,7 @@ class ImportService:
                     # (account_name) must NEVER land here — a format describes a
                     # column layout, not an account (bug #5). "unknown" when no
                     # institution resolved; the exporter/format identity is `name`.
-                    institution_name=resolved_institution or "unknown",
+                    institution_name=institution or "unknown",
                     file_type=format_info.file_type,
                     delimiter=format_info.delimiter,
                     encoding=format_info.encoding,
@@ -5290,26 +5457,11 @@ class ImportService:
                 if decision.metadata.account_id
                 else None
             )
-            # A negative_is_income recipe carries a "this is a credit card" verdict:
-            # either human-confirmed on the deterministic rung (the --confirm sign
-            # gate) or agent-authored via the bridge recipe (this method is shared
-            # with apply_pdf_bridge_response → route_forced_recipe, which does NOT
-            # run the sign gate). Either way 'credit' follows from the recipe's own
-            # convention — a fact about the account, not a guess. prep normalizes it
-            # through seeds.account_type_map like every other source's spelling.
-            # It does NOT drive liability signing, despite the shared word: PDF
-            # balances reach core.fct_balances through the tabular_balances CTE,
-            # which applies no type-based negation at all (the IN ('credit','loan')
-            # negation is scoped to plaid_balances). This value feeds display_name
-            # and the `accounts --type` filter.
-            # on_conflict="ignore" below means a type Plaid/OFX already set is never
-            # clobbered. decision.recipe is narrowed non-None by the raise at the
-            # top of this method (mirrors sign_conv above).
-            account_type = (
-                "credit"
-                if decision.recipe.sign_convention == "negative_is_income"
-                else decision.metadata.account_type
-            )
+            # One expression, shared with the mint report `_pdf_source_account`
+            # builds — the report has to state the name this row will produce
+            # before the row exists. on_conflict="ignore" below means a type
+            # Plaid/OFX already set is never clobbered.
+            account_type = _pdf_account_type(decision)
             account_df = pl.DataFrame({
                 "account_id": [account_id],
                 "account_name": [source_account.account_name],

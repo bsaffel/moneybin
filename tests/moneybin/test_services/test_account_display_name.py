@@ -1,0 +1,228 @@
+"""The Python mirror of ``core.dim_accounts``'s display-name derivation.
+
+An import has to name a freshly-minted account before any transform has run —
+``import_confirm`` never refreshes at all — so the label cannot be read back
+from ``core``. It is derived instead, from the same seeds the SQL model joins.
+These tests pin the mirror arm by arm; ``tests/integration/
+test_mint_report_names.py`` pins that the mirror and the model agree.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from moneybin.services.account_display_name import (
+    account_category,
+    derive_display_name,
+    derived_last_four,
+)
+
+
+@pytest.mark.parametrize(
+    ("institution_name", "category", "last_four", "expected"),
+    [
+        ("Chase", "credit card", "4242", "Chase credit card …4242"),
+        ("Chase", None, "4242", "Chase …4242"),
+        ("Chase", "credit card", None, "Chase credit card"),
+        ("Chase", None, None, "Chase"),
+        (None, "checking", "7777", "checking …7777"),
+        (None, "checking", None, "checking"),
+        (None, None, "7777", "…7777"),
+        (None, None, None, "Unnamed account"),
+    ],
+)
+def test_every_arm_of_the_chain_matches_the_model(
+    institution_name: str | None,
+    category: str | None,
+    last_four: str | None,
+    expected: str,
+) -> None:
+    """One case per COALESCE arm in ``dim_accounts.sql``, in the model's order.
+
+    SQL ``||`` yields NULL when any operand is NULL, which is what makes the
+    chain a precedence ladder rather than a set of independent fragments — each
+    arm fires only when every fact it names is present.
+    """
+    assert (
+        derive_display_name(
+            institution_name=institution_name,
+            category=category,
+            last_four=last_four,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_label", "expected"),
+    [
+        ("Everyday Spending", "Everyday Spending …4242"),
+        # Already carries four digits, so it takes no more: joining "…4242" to
+        # a masked number's residue would publish eight digits of one number,
+        # and a year in a name reads exactly like that residue.
+        ("Retirement Plan 2024 Rewards", "Retirement Plan 2024 Rewards"),
+        # Masked upstream and still a name, so the rung keeps it.
+        ("Checking ****1098", "Checking ****1098"),
+        # No letter: an account number under a name's column heading.
+        ("****1098", "Chase credit card …4242"),
+        ("987654321098", "Chase credit card …4242"),
+        ("  ", "Chase credit card …4242"),
+        (None, "Chase credit card …4242"),
+    ],
+)
+def test_an_authored_label_outranks_every_assembled_name(
+    source_label: str | None, expected: str
+) -> None:
+    """The top derived rung, and the one condition that stands it down.
+
+    Everything below is assembled from bank fields the user never chose, and
+    ``moneybin accounts`` prints institution and type in their own columns
+    anyway — so a name a person wrote wins. A label with no letter is the
+    account number wearing the name column's hat: masking makes it safe to show
+    without making it a name, and ``****1098`` identifies the account strictly
+    worse than the assembled label does.
+
+    The label keeps the last four the rungs below it would have added, for the
+    reason the next test states.
+    """
+    assert (
+        derive_display_name(
+            source_label=source_label,
+            institution_name="Chase",
+            category="credit card",
+            last_four="4242",
+        )
+        == expected
+    )
+
+
+def test_two_accounts_sharing_one_label_are_told_apart_by_their_last_four() -> None:
+    """A label is chosen, not unique — so it cannot be the whole name.
+
+    Plaid sends the institution's own account name, and a household's two
+    checking accounts routinely carry one product name. Naming both of them
+    that is the exact defect this module exists to fix — a label no per-account
+    fact distinguishes — and ``AccountService.resolve_strict`` raises
+    ``AmbiguousAccountError`` on the duplicate, refusing a name reference that
+    resolved before the rung existed.
+    """
+    siblings = [
+        derive_display_name(
+            source_label="HOUSEHOLD CHECKING",
+            institution_name="Chase",
+            category="checking",
+            last_four=four,
+        )
+        for four in ("0000", "1111")
+    ]
+
+    assert len(set(siblings)) == 2, siblings
+
+
+def test_a_label_that_already_shows_four_digits_is_not_given_four_more() -> None:
+    """The discriminator must not become a second slice of the account number.
+
+    ``mask_embedded_account_number`` reduces a pasted number to its last four,
+    which is the whole disclosure the label is allowed. Appending the ladder's
+    own last four beside that residue puts ``****5678 …9012`` on screen —
+    eight digits of a twelve-digit number, in a field declared safe to show.
+    """
+    assert (
+        derive_display_name(
+            source_label="Checking ****5678",
+            institution_name=None,
+            category="checking",
+            last_four="9012",
+        )
+        == "Checking ****5678"
+    )
+
+
+def test_a_label_alone_names_an_account_with_no_last_four() -> None:
+    """The discriminator is added when there is one, never invented.
+
+    SQL ``||`` yields NULL when any operand is NULL, so the model's last-four
+    arm simply does not fire here and falls through to the bare label. An
+    account whose source stated no number is named by what it does have.
+    """
+    assert (
+        derive_display_name(
+            source_label="Vacation Fund",
+            institution_name="Chase",
+            category="savings",
+            last_four=None,
+        )
+        == "Vacation Fund"
+    )
+
+
+def test_an_authored_label_is_not_a_substitute_for_the_unnamed_terminal() -> None:
+    """A label with nothing nameable in it still leaves the account unnamed.
+
+    Guards the letter test against the reading that it merely reorders the
+    ladder: standing down has to fall through to the *whole* remaining chain,
+    terminal included, not to the label in a weaker position.
+    """
+    assert (
+        derive_display_name(
+            source_label="1098",
+            institution_name=None,
+            category=None,
+            last_four=None,
+        )
+        == "Unnamed account"
+    )
+
+
+def test_a_blank_fact_is_the_same_as_a_missing_one() -> None:
+    """Whitespace answers the ladder with silence, as ``NULLIF(TRIM(...), '')`` does."""
+    assert (
+        derive_display_name(institution_name="  ", category="", last_four=" ")
+        == "Unnamed account"
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_spelling", "expected"),
+    [
+        ("CREDITCARD", "credit card"),
+        ("CHECKING", "checking"),
+        ("SAVINGS", "savings"),
+        # The registry has no finer distinction than the canonical type here, so
+        # the model's COALESCE(subtype, type) falls through to the type itself.
+        ("DEPOSITORY", "depository"),
+        ("CREDIT", "credit"),
+        # Unregistered spellings keep their own word, lowercased — the staging
+        # model's ELSE branch. A guess at a canonical type would be worse.
+        ("Christmas Club", "christmas club"),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_the_category_comes_from_the_shared_type_map(
+    source_spelling: str | None, expected: str | None
+) -> None:
+    """``seeds/account_type_map.csv`` is read directly, so no second copy can drift."""
+    assert account_category(source_spelling) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("4738291056474242", "4242"),
+        ("****1234", "1234"),
+        ("1111", "1111"),
+        ("12-34", "1234"),
+        # Fewer than four digits survive: the model emits NULL rather than a
+        # short mask, so an alphanumeric PDF identifier never becomes a "last
+        # four" that looks like a bank's.
+        ("ACCT-9Z", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_the_last_four_is_digits_only_and_needs_four_of_them(
+    value: str | None, expected: str | None
+) -> None:
+    """Mirrors the ``REGEXP_REPLACE(..., '[^0-9]', '')`` guard in every source arm."""
+    assert derived_last_four(value) == expected
