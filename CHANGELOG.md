@@ -30,6 +30,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   50-tool standard registry to ADR-016's hard maximum exactly — admitting
   another tool now means retiring one. (#450)
 
+  Either id may name an account an import has only just created. Those live in
+  the link records before the next transform materializes them into
+  `core.dim_accounts`, and imports do not refresh by default — so checking the
+  materialized table alone would have refused the freshest half of every pair,
+  which is the half you are most likely to have just noticed. The places that
+  announce a duplicate now name this form too: the import's created-account
+  hint on both surfaces, and the `duplicate_account_overlap` doctor finding,
+  which measures transaction overlap and already warned that identity
+  resolution may propose nothing at all for the pair it just flagged.
+
 - **`moneybin --home <path>` picks the data directory.** Until now `MONEYBIN_HOME`
   was the only way to point MoneyBin at a different set of profiles, config and
   databases, and it appeared in no `--help` output — so the override was easy to

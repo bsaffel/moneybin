@@ -466,6 +466,19 @@ since it must compute candidates *before* an account exists to compare against.
 Fixing it for the reissue pass alone would leave two candidate-source semantics
 inside one function.
 
+**Manual recovery, until then.** `AccountLinksService.propose_pair` — the
+two-id form of `accounts links run` / `accounts_links_run` — queues the pair
+under signal `manual`, and its existence check reads `app.account_links` as
+well as `core.dim_accounts` (`AccountResolver.knows_account_id`), the same rule
+the binding ladder applies for the same reason. So both halves of the
+one-batch reissue above are nameable the moment the batch ends, without waiting
+for a refresh. This does not close the gap: nothing *proposes* the pair, and a
+duplicate nobody notices stays unnoticed. It only means the recovery exists
+once someone does notice, which is why the surfaces that announce a created
+account or flag a mirrored pair (the import hint, the
+`duplicate_account_overlap` doctor finding) name this form rather than the
+sweep alone.
+
 `institution` is **best-effort metadata**, never a required input: when unknown
 (a bare CSV), the `institution+last4` candidate rung simply doesn't fire and
 resolution falls through to name / mint-new. Thresholds reuse `MatchingSettings`

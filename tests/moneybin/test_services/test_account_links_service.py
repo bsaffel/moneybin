@@ -2212,7 +2212,7 @@ def test_propose_pair_refuses_an_account_that_is_the_same_on_both_sides(
         svc.propose_pair(_PROV1, _PROV1)
 
 
-def test_propose_pair_refuses_an_account_absent_from_dim_accounts(
+def test_propose_pair_refuses_an_account_this_database_has_never_seen(
     svc: AccountLinksService, db: Database
 ) -> None:
     """A typo'd id is named back to the caller rather than queued as a proposal."""
@@ -2220,6 +2220,36 @@ def test_propose_pair_refuses_an_account_absent_from_dim_accounts(
 
     with pytest.raises(UserError, match="no_such_acct"):
         svc.propose_pair(_PROV1, "no_such_acct")
+
+
+def test_propose_pair_accepts_an_account_the_dim_has_not_materialized_yet(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """An account an import just minted is nameable before the next transform.
+
+    ``core.dim_accounts`` is SQLMesh-materialized and imports default to not
+    refreshing, so an account created moments ago lives in ``app.account_links``
+    alone. That is precisely the duplicate this escape hatch exists to recover:
+    checking the dim by itself refuses the freshest half of every pair, which is
+    the half a person is most likely to have just noticed.
+    """
+    _seed_unrelated_pair(db)
+    fresh = "fresh_acct000"
+    _insert_link(
+        db, link_id="link_fresh_00", account_id=fresh, ref_value="native-ref-3"
+    )
+    assert db.execute(
+        "SELECT COUNT(*) FROM core.dim_accounts WHERE account_id = ?", [fresh]
+    ).fetchone() == (0,)
+
+    decision_id = svc.propose_pair(_PROV1, fresh)
+
+    row = db.execute(
+        "SELECT provisional_account_id, candidate_account_id, status "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
+        [decision_id],
+    ).fetchone()
+    assert row == (_PROV1, fresh, "pending")
 
 
 def test_propose_pair_does_not_echo_a_source_native_account_number(

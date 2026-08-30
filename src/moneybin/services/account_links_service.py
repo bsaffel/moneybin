@@ -586,14 +586,17 @@ class AccountLinksService:
         decision that dead-ends at accept.
 
         Raises ``UserError`` when both ids name one account
-        (MUTATION_INVALID_INPUT), either is absent from ``core.dim_accounts``
-        (MUTATION_NOT_FOUND), a pending or accepted decision already covers the
-        pair, or neither side can be absorbed (both
+        (MUTATION_INVALID_INPUT), either names no account this database knows —
+        ``AccountResolver.knows_account_id``, which reads the links table as
+        well as the dim so a just-imported account is nameable before the next
+        transform (MUTATION_NOT_FOUND) — a pending or accepted decision already
+        covers the pair, or neither side can be absorbed (both
         MUTATION_CONSTRAINT_VIOLATION). A *rejected* pair is re-proposable: a
         past answer is not a permanent veto, and a reject is the cheapest
         decision to make by mistake.
         """
         from moneybin.services.account_resolver import (  # noqa: PLC0415  # circular at module level
+            AccountResolver,
             refresh_account_link_pending_gauge,
         )
 
@@ -604,25 +607,21 @@ class AccountLinksService:
             )
 
         pair = [account_id, candidate_account_id]
-        try:
-            known = {
-                str(r[0])
-                for r in self._db.execute(
-                    f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant + parameterized values
-                    "WHERE account_id IN (?, ?)",
-                    pair,
-                ).fetchall()
-            }
-        except duckdb.CatalogException:
-            known = set()
-        missing = [a for a in pair if a not in known]
+        # Both arms, via the resolver: an account an import just minted is in
+        # app.account_links and not yet in the SQLMesh-materialized dim, and
+        # that freshly imported duplicate is the one this hatch exists to
+        # recover. knows_account_id also declines an id whose links are all
+        # reversed — already merged away — which the dim alone still answers
+        # "yes" for until the next transform.
+        resolver = AccountResolver(self._db, actor=self._actor)
+        missing = [a for a in pair if not resolver.knows_account_id(a)]
         if missing:
             # Masked because an unresolved ``account_id`` is the source-native
             # key, which on OFX is the institution's ``<ACCTID>``. This refusal
             # reaches the CLI log and the MCP envelope, both of which outlive
             # the call that named it.
             raise UserError(
-                "No account in core.dim_accounts for "
+                "No account in this database for "
                 f"{', '.join(repr(mask_embedded_account_number(m)) for m in missing)}.",
                 code=error_codes.MUTATION_NOT_FOUND,
             )

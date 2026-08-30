@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shlex
 from datetime import date
 from pathlib import Path
@@ -449,6 +450,49 @@ class TestImportFilesConfirmFlow:
             line for line in result.output.splitlines() if "--display-name" in line
         )
         assert "--display-name <name>" in hint
+
+    def test_the_merge_hint_names_the_recovery_for_a_pair_no_signal_finds(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """``accounts links run`` bare is a sweep, and a sweep misses the hard case.
+
+        It proposes only pairs a signal reaches. The duplicate someone spots on
+        an import is often the one that reaches none — a reissued card under a
+        different institution name, an export whose label and last four both
+        changed. Offering only the sweep sends that user to an empty queue and
+        stops there, so the hint has to name the two-id form as well.
+        """
+        from moneybin.cli.main import app as root_app
+        from tests.cli_command_helpers import moneybin_invocations
+
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(accounts_created=_MINTED),
+        )
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(app, ["files", str(csv_file), "--confirm"])
+
+        hint = next(
+            line for line in result.output.splitlines() if "accounts links run" in line
+        )
+        assert re.search(r"'moneybin accounts links run <[^>]+> <[^>]+>'", hint), (
+            f"no two-id form published in {hint!r}"
+        )
+        # Resolved rather than asserted as a literal, and scoped to this
+        # command: the sibling rename hint in the same line carries a required
+        # positional that placeholder-stripping removes, which the shared
+        # whole-message helper reads as an unregistered command.
+        pair_form = next(
+            args
+            for args in moneybin_invocations(hint)
+            if args[:3] == ["accounts", "links", "run"]
+        )
+        assert CliRunner().invoke(root_app, [*pair_form, "--help"]).exit_code == 0
 
     def test_an_import_that_created_nothing_says_nothing(
         self,
