@@ -18,6 +18,7 @@ from moneybin.migrations import (
     record_version,
     sqlmesh_state_assessment,
 )
+from tests.moneybin.test_cli.test_message_hygiene import names_an_internal_dependency
 
 pytestmark = pytest.mark.fresh_db
 
@@ -717,7 +718,11 @@ class TestSqlmeshStateAssessment:
 
         message, needs_migration = sqlmesh_state_assessment(MagicMock())
         assert message is not None
-        assert "SQLGlot" in message
+        assert "SQL parser" in message
+        # This message is logged verbatim by `db migrate status`/`apply`, and it
+        # is assembled from variables, so the AST scan in test_message_hygiene
+        # cannot see it. Requirement 17 holds here or nowhere.
+        assert not names_an_internal_dependency(message)
         # With the schema current, ctx.migrate() re-stamps the version row on a
         # SQLGlot mismatch (StateMigrator counts it as work), so it's repairable.
         assert needs_migration is True
@@ -741,5 +746,6 @@ class TestSqlmeshStateAssessment:
 
         message, needs_migration = sqlmesh_state_assessment(MagicMock())
         assert message is not None
-        assert "SQLMesh state" in message
+        assert "transform engine state" in message
+        assert not names_an_internal_dependency(message)
         assert needs_migration is True

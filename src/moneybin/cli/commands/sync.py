@@ -28,7 +28,7 @@ key_app = typer.Typer(
     help="Manage the sync server's encryption key",
     no_args_is_help=True,
 )
-app.add_typer(key_app, name="key")
+app.add_typer(key_app, name="key", hidden=True)
 logger = logging.getLogger(__name__)
 
 
@@ -338,10 +338,10 @@ def sync_pull(
         True,
         "--refresh/--no-refresh",
         help=(
-            "Run the post-load refresh pipeline (matching + SQLMesh apply + "
+            "Run the post-load refresh pipeline (matching + transforms + "
             "categorization) after a successful pull so core.* models "
             "(dim_accounts, etc.) reflect the new data before this command "
-            "returns. Default: on. Pass --no-refresh to defer; SQLMesh apply "
+            "returns. Default: on. Pass --no-refresh to defer; transforms "
             "dominates pull latency, so high-frequency callers should defer "
             "and run refresh on a separate schedule."
         ),
@@ -518,30 +518,30 @@ def sync_status(
             typer.echo(f"   💡 {c.guidance}")
 
 
-@key_app.command("rotate")
+@key_app.command("rotate", hidden=True)
 def sync_key_rotate() -> None:
     """Rotate E2E encryption key pair."""
-    _not_implemented("sync-overview.md")
+    _not_implemented("sync key rotation")
 
 
 # sync schedule subgroup
 schedule_app = typer.Typer(help="Manage scheduled sync jobs")
-app.add_typer(schedule_app, name="schedule")
+app.add_typer(schedule_app, name="schedule", hidden=True)
 
 
-@schedule_app.command("set")
+@schedule_app.command("set", hidden=True)
 def sync_schedule_set() -> None:
     """Install daily sync schedule."""
-    _not_implemented("sync-overview.md")
+    _not_implemented("scheduled sync")
 
 
-@schedule_app.command("show")
+@schedule_app.command("show", hidden=True)
 def sync_schedule_show() -> None:
     """Show current schedule details."""
-    _not_implemented("sync-overview.md")
+    _not_implemented("scheduled sync")
 
 
-@schedule_app.command("remove")
+@schedule_app.command("remove", hidden=True)
 def sync_schedule_remove() -> None:
     """Uninstall scheduled sync job."""
-    _not_implemented("sync-overview.md")
+    _not_implemented("scheduled sync")

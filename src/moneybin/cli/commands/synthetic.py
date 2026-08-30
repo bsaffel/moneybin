@@ -115,13 +115,13 @@ def _run_generate(
 
                 # Run SQLMesh transforms
                 if not skip_transform:
-                    logger.info("⚙️  Running SQLMesh to materialize pipeline...")
+                    logger.info("⚙️  Running transforms to materialize pipeline...")
                     try:
                         ImportService(db).run_transforms()
                     except Exception:  # noqa: BLE001 — SQLMesh failures are non-fatal here
                         logger.debug("SQLMesh transform failed", exc_info=True)
                         logger.warning(
-                            "⚠️  SQLMesh transforms failed — raw data is intact, "
+                            "⚠️  Transforms failed — raw data is intact, "
                             "run 'moneybin transform apply' manually"
                         )
 
@@ -158,7 +158,7 @@ def synthetic_generate(
         help="Seed for deterministic output (random if omitted)",
     ),
     skip_transform: bool = typer.Option(
-        False, "--skip-transform", help="Skip running SQLMesh after generation"
+        False, "--skip-transform", help="Skip running transforms after generation"
     ),
 ) -> None:
     """Generate synthetic financial data for a persona into a profile."""
@@ -178,7 +178,7 @@ def synthetic_reset(
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
     skip_transform: bool = typer.Option(
-        False, "--skip-transform", help="Skip running SQLMesh after regeneration"
+        False, "--skip-transform", help="Skip running transforms after regeneration"
     ),
 ) -> None:
     """Wipe a generated profile and regenerate from scratch."""
