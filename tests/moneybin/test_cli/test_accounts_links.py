@@ -272,6 +272,7 @@ class TestLinksPending:
         mock_count: MagicMock,
         mock_pending: MagicMock,
         mock_get_db: MagicMock,
+        wide_terminal: None,
     ) -> None:
         """This table is where a reviewer decides which proposal to open.
 
@@ -340,6 +341,7 @@ class TestLinksPending:
         mock_count: MagicMock,
         mock_pending: MagicMock,
         mock_get_db: MagicMock,
+        wide_terminal: None,
     ) -> None:
         """An unmeasurable probe must not render as evidence against the merge."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
@@ -1249,7 +1251,7 @@ class TestLinksHistory:
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.history")
     def test_history_names_the_accounts_rather_than_only_their_ids(
-        self, mock_history: MagicMock, mock_get_db: MagicMock
+        self, mock_history: MagicMock, mock_get_db: MagicMock, wide_terminal: None
     ) -> None:
         """Reading back what a merge did should not require an id lookup.
 
@@ -1282,15 +1284,18 @@ class TestLinksHistory:
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.history")
     def test_history_columns_stay_aligned_for_real_display_names(
-        self, mock_history: MagicMock, mock_get_db: MagicMock
+        self, mock_history: MagicMock, mock_get_db: MagicMock, wide_terminal: None
     ) -> None:
-        """Two resolved names plus an arrow must still fit the Merged column.
+        """Two resolved names plus an arrow must still leave the row aligned.
 
         ``dim_accounts`` builds a display name as institution + subtype + the
         masked last four, so a merge of two of them runs past a column sized for
-        one. Overflowing pushes every later column out of line on the rows that
-        have names at all — leaving the table aligned only where it fell back
-        to ids.
+        one. The hand-built table this replaced sized that column by hand:
+        overflowing pushed every later column out of line on the rows that had
+        names at all, leaving the table aligned only where it had fallen back
+        to ids. `render_rows` sizes each column to its widest value instead, so
+        the guard is that this command keeps using it rather than reacquiring a
+        guessed width.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_history.return_value = [
@@ -1312,14 +1317,14 @@ class TestLinksHistory:
 
         assert result.exit_code == 0
         lines = result.output.splitlines()
-        header = next(line for line in lines if "Merged" in line)
+        header = next(line for line in lines if "merged" in line)
         row = next(line for line in lines if "Example Bank checking" in line)
-        assert row.index("accepted") == header.index("Status")
+        assert row.index("accepted") == header.index("status")
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.history")
     def test_history_says_unnamed_rather_than_printing_an_id(
-        self, mock_history: MagicMock, mock_get_db: MagicMock
+        self, mock_history: MagicMock, mock_get_db: MagicMock, wide_terminal: None
     ) -> None:
         """A frozen "" is a decision, not a gap — it must not become an id.
 

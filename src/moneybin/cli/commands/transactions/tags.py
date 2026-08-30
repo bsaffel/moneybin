@@ -16,6 +16,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.render import render_rows
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.transactions import TagRenamePayload, TagsPayload
@@ -146,8 +147,7 @@ def transactions_tags_list(
         if not quiet:
             logger.info("No tags in use")
         return
-    for tag, count in rows:
-        typer.echo(f"  {tag}\t{count}")
+    render_rows(["tag", "transactions"], list(rows))
 
 
 @app.command("rename")

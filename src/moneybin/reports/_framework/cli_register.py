@@ -14,7 +14,7 @@ parameter name takes down the whole reports command group at import.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 import typer
@@ -28,14 +28,17 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors, render_rich_table
+from moneybin.cli.render import Money, render_note, render_rows
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.reports._framework.contract import ReportSpec
 
 if TYPE_CHECKING:
     # Type-only: importing `execute` here would pull sql_lineage → sqlglot into
-    # the CLI cold-start path, which this module exists to keep clear.
+    # the CLI cold-start path, which this module exists to keep clear. `catalog`
+    # is deferred for the same reason — it reaches `execute`.
+    from moneybin.reports._framework.catalog import RegisteredReport
     from moneybin.reports._framework.execute import CatalogReportResult
 
 
@@ -76,8 +79,17 @@ def _cli_signature(spec: ReportSpec) -> inspect.Signature:
     return inspect.Signature(params)
 
 
-def echo_report_notes(result: CatalogReportResult) -> None:
+def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> None:
     """Echo the envelope metadata the text path would otherwise drop.
+
+    ``quiet`` reaches the next-step hints and nothing else. Requirement 4 makes
+    ``-q`` the switch for an informational status line, and a hint is one: it
+    suggests a command to run next. The conversion disclosure and the two
+    warnings are not — they state how far the numbers above can be trusted, and
+    a flag asking for less chatter is not a claim that masking, truncation, or
+    a currency conversion stopped happening. Silencing those is the failure the
+    rest of this docstring describes, arriving through ``-q`` instead of
+    through the surface that skipped them.
 
     ``render_or_json`` renders the envelope on the JSON path only, so every
     text renderer of a report result has to say these three things itself.
@@ -100,7 +112,7 @@ def echo_report_notes(result: CatalogReportResult) -> None:
     # printed `*****` and said nothing — the silent masking that teaches a
     # reader to skip the warning that matters.
     if result.degraded and result.degraded_reason:
-        typer.echo(f"⚠️  {result.degraded_reason}", err=True)
+        render_note(f"⚠️  {result.degraded_reason}", warn=True)
     # Same gap, same surface: `truncated` rides the envelope to JSON and MCP
     # callers, so without this the text path renders a capped table that
     # reads as the whole answer — worse here than a masked cell, because
@@ -113,10 +125,10 @@ def echo_report_notes(result: CatalogReportResult) -> None:
     # saying nothing. `mcp.md` calls this a lower-bound total for the same
     # reason; counting the rest means running the query again without a cap.
     if result.truncated:
-        typer.echo(
+        render_note(
             f"⚠️  Showing the first {len(result.records):,} rows; more exist. "
             "Raise --limit or narrow the report to see the rest.",
-            err=True,
+            warn=True,
         )
     # Third instance of the same asymmetry, and the one that inverted its own
     # intent: `inspection_hint` deliberately names a CLI command — "Run
@@ -125,17 +137,41 @@ def echo_report_notes(result: CatalogReportResult) -> None:
     # rendered, not just that hint: a runner's own `actions` are next steps for
     # whoever called it, and the text path is a caller.
     for action in result.actions:
-        typer.echo(f"💡 {action}", err=True)
+        render_note(f"💡 {action}", quiet=quiet)
+
+
+def money_columns(spec: RegisteredReport) -> dict[str, Money]:
+    """Build the renderer's money declarations from a report's own columns.
+
+    Requirement 12: the kind is declared where the meaning is known — beside
+    the column, by its author — and the renderer never infers it from the
+    number. A report that declares nothing renders its amounts as plain text,
+    which is what an extension report does until it opts in.
+    """
+    return {
+        column.name: Money(column.money_kind, column.polarity)
+        for column in spec.columns
+        if column.money_kind is not None
+    }
 
 
 def render_report_result(
-    result: CatalogReportResult, output: OutputFormat, *, cli_actor: str
+    result: CatalogReportResult,
+    output: OutputFormat,
+    *,
+    cli_actor: str,
+    money: Mapping[str, Money] | None = None,
+    quiet: bool = False,
 ) -> None:
     """Render one report result as a table or the JSON envelope.
 
     Shared by every CLI report path — a built-in's generated command and
     ``reports run`` alike — so a saved report's output is not merely similar to a
     built-in's but produced by the same code.
+
+    ``money`` carries the report's own column declarations, from
+    :func:`money_columns`. Both callers resolve it from the spec, so one report
+    renders its amounts identically whichever command ran it.
     """
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
@@ -144,8 +180,8 @@ def render_report_result(
                 tuple(record.get(column) for column in result.columns)
                 for record in result.records
             ]
-            render_rich_table(result.columns, rows)
-        echo_report_notes(result)
+            render_rows(result.columns, rows, money=money)
+        echo_report_notes(result, quiet=quiet)
 
     render_or_json(
         result.to_envelope(),
@@ -171,9 +207,9 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
         )
 
         output: OutputFormat = kwargs.pop("output")
-        # quiet has nothing to silence here: the text renderer emits only the
-        # results table (no status chatter) and JSON output ignores it.
-        kwargs.pop("quiet", None)
+        # Reaches the next-step hints in `echo_report_notes` and nothing else —
+        # the table is data (requirement 5) and JSON output has no notes.
+        quiet: bool = bool(kwargs.pop("quiet", False))
         # Popped before `kwargs` becomes `parameters`: display conversion is the
         # framework's, not the runner's, so a runner would reject it as unknown.
         display_currency: str | None = kwargs.pop("display_currency", None)
@@ -197,7 +233,13 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                     display_currency=display_currency,
                     home_currency=profile_home_currency(db),
                 )
-            render_report_result(result, output, cli_actor=cli_actor)
+            render_report_result(
+                result,
+                output,
+                cli_actor=cli_actor,
+                money=money_columns(spec),
+                quiet=quiet,
+            )
 
     _impl.__name__ = spec.name
     _impl.__qualname__ = spec.name

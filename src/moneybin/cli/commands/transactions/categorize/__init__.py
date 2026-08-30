@@ -132,11 +132,13 @@ def categorize_pending(
         if not records:
             logger.info("No uncategorized transactions.")
             return
-        from moneybin.cli.utils import render_rich_table
+        from moneybin.cli.render import Money, render_rows  # noqa: PLC0415 — defer
 
         cols = list(records[0].keys())
         rows = [tuple(r.values()) for r in records]
-        render_rich_table(cols, rows)
+        # `priority_score` is deliberately absent: it is ABS(amount) * age_days,
+        # a ranking weight in no currency, and pricing it would read as one.
+        render_rows(cols, rows, money={"amount": Money("flow")})
 
     render_or_json(
         envelope, output, render_fn=_render_table, cli_actor="categorize_pending"

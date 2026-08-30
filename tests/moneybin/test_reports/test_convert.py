@@ -406,6 +406,31 @@ def test_one_unconvertible_row_segments_the_whole_result(saved_db: Database) -> 
     assert [record["currency_code"] for record in outcome.records] == ["EUR", "ZWL"]
 
 
+def test_a_non_finite_amount_segments_rather_than_being_priced(
+    saved_db: Database,
+) -> None:
+    """NaN times a rate is NaN, and nothing downstream would call that wrong.
+
+    ``_as_decimal`` passed a non-finite value straight through, so a DOUBLE-backed
+    column that divided by zero would price cleanly and reach the reader labelled
+    USD. A value that does not hold a number cannot be priced in another
+    currency, which is exactly the case this module already segments.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    service = CurrencyService(saved_db)
+
+    outcome = convert_records(
+        [_row(amount=Decimal("NaN"))],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+    )
+
+    assert outcome.display_currency is None
+    assert outcome.degraded_reason is not None
+
+
 def test_a_never_priced_pair_and_a_date_gap_give_different_remedies(
     saved_db: Database,
 ) -> None:

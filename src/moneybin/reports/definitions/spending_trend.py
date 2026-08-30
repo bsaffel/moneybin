@@ -51,17 +51,27 @@ from moneybin.tables import REPORTS_SPENDING_TREND
             "total_spend",
             "Absolute outflow in the month and category.",
             DataClass.TXN_AMOUNT,
+            # SUM(ABS(t.amount)) in the model: a positive absolute outflow, not
+            # income. Rendering it as a `flow` would sign it `+` and colour it
+            # green — spending reported as earnings.
+            money_kind="magnitude",
         ),
         OutputColumn("txn_count", "Outflow transaction count.", DataClass.AGGREGATE),
         OutputColumn(
             "prev_month_spend",
             "Spend in the previous calendar month.",
             DataClass.TXN_AMOUNT,
+            money_kind="magnitude",
         ),
         OutputColumn(
             "mom_delta",
             "Current spend minus previous-month spend.",
             DataClass.TXN_AMOUNT,
+            # A change in a spend magnitude, so the sign means direction rather
+            # than income/expense: positive is spending that *rose*, which is
+            # the unfavourable direction.
+            money_kind="delta",
+            polarity="expense",
         ),
         OutputColumn(
             "mom_pct",
@@ -72,11 +82,14 @@ from moneybin.tables import REPORTS_SPENDING_TREND
             "prev_year_spend",
             "Spend in the same calendar month one year earlier.",
             DataClass.TXN_AMOUNT,
+            money_kind="magnitude",
         ),
         OutputColumn(
             "yoy_delta",
             "Current spend minus same-month prior-year spend.",
             DataClass.TXN_AMOUNT,
+            money_kind="delta",
+            polarity="expense",
         ),
         OutputColumn(
             "yoy_pct",
@@ -87,6 +100,7 @@ from moneybin.tables import REPORTS_SPENDING_TREND
             "trailing_3mo_avg",
             "Rolling three-month average ending in the current month.",
             DataClass.TXN_AMOUNT,
+            money_kind="magnitude",
         ),
     ),
     semantics=ReportSemantics(

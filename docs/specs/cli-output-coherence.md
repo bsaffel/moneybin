@@ -96,6 +96,25 @@ Numbered, each independently testable.
    `render_rows`, `render_summary`, `render_note` — and no command in
    `src/moneybin/cli/` constructs a `rich.Table` or hand-formats an indented list
    directly.
+
+   **The hand-formatted set was larger than the audit found.** The audit named
+   the review queues and list commands below under "Files to Modify"; an AST
+   scan for an alignment format spec inside a `typer.echo` — the signature of a
+   hand-built column — returned **thirteen** modules. Eight of them are not in
+   that list: `db.py` (the `ps` process table, twice), `demo.py`, `fx.py`,
+   `import_cmd.py`, and four under `investments/` (`__init__.py`, `lots.py`,
+   `prices.py`, `securities.py`). They are the same defect and are in scope for
+   this requirement; they are excused only until the third pull request, by a
+   named set in `tests/moneybin/test_cli/test_render.py`
+   (`_AWAITING_RENDER_ROWS`) that is asserted by set equality in both
+   directions — a module acquiring the pattern fails, and a module that has
+   shed it must be removed from the list. The set reaches empty in the same
+   milestone.
+
+   The scan is the requirement's enforcement, not a one-off: two more guards
+   confine Rich to `render.py` and forbid `typer.secho` / `typer.style`
+   anywhere else, which is what makes "no second table idiom" and requirement
+   36's "no colour literal at a call site" checkable rather than reviewable.
 2. `render_rows` is the only way a command prints a collection of records. It
    emits a Rich table to **stdout**.
 3. `render_summary` is the only way a command prints a labelled scalar block
@@ -104,6 +123,17 @@ Numbered, each independently testable.
 4. `render_note` is the only way a command prints an informational status line. It
    emits to **stderr** and is suppressed by `-q/--quiet`. Result framing
    (requirement 10) is not a note and does not travel this path.
+
+    **A fidelity disclosure is not an informational status line.** `-q` reaches
+    a next-step hint — "run `moneybin reports explain …`" — because that is
+    chatter in the sense this requirement means. It does not reach the three
+    statements `echo_report_notes` makes about how far the numbers above can be
+    trusted: the truncation warning, the degraded-report warning, and the
+    applied-rates conversion disclosure. Asking for less chatter is not a claim
+    that masking, truncation, or a currency conversion stopped happening, and
+    `moneybin reports <x> -q > out.txt` must not capture a capped table that
+    reads as the whole answer. That is requirement 10's silent truncation
+    arriving through the quiet flag instead of through the stream split.
 5. Result data is never suppressed by `-q` (restates `cli.md`; asserted here
    because the renderers are now the enforcement point). The same guarantee
    covers any statement about what the result omits — see requirement 10.
@@ -172,6 +202,49 @@ Numbered, each independently testable.
 
 11. A single `format_money` is the only place amounts are stringified for text
     output. Thousands separators always; two decimal places always.
+
+    **Non-money numerics are not covered, and it shows.** This requirement and
+    the money kinds below reach only columns that declare a `money_kind`;
+    everything else reaches the table through `str()`. `reports spending`
+    therefore prints its ratio columns at full binary-float precision — cells
+    running to eighteen fractional digits (`0.009336226303145232`,
+    `0.024842005788199163`) — in a report whose money columns are now
+    formatted to two places.
+
+    **The visible cost is a table with two minus signs in it.** One row of
+    `reports spending` renders `mom_delta` as `−8.04` (U+2212, requirement 12)
+    and `mom_pct` as `-0.018468747846461304` (hyphen-minus) side by side,
+    because only the first column reaches `format_money`. Two glyphs one cell
+    apart is exactly the difference a reader is entitled to read as meaning.
+    Zero tells the same story — `0.00` in the money column, `0.0` in the ratio
+    column — and so does alignment: the ratio columns sit left while the money
+    columns sit right (requirement 13), so their digits never line up.
+
+    `reports networth-history` splits the same way for the same reason, but
+    only on the glyph and alignment halves: its `change_pct` is already
+    formatted to two places (`f"{...:.2%}"`), so it costs a hyphen-minus beside
+    `change_abs`'s U+2212 and a left-aligned column beside a right-aligned one,
+    without the runaway precision above. Fixing that one column's glyph alone
+    would be worse than leaving it: `mom_pct` would still print hyphen-minus,
+    and the reader would face two ratio columns disagreeing about the same
+    character with no rule saying which is right. Both wait on the percent
+    contract.
+
+    The same gap costs alignment in five more tables. `render_rows`
+    right-aligns a column only when it is declared money, so every non-money
+    numeric that a hand-built table used to right-align now sits left:
+    `conf` in the security-link and merchant-link queues, `score` in
+    `transactions matches`, the ledger overlap in `accounts links`, and the tag
+    counts in `transactions tags`. Requirement 13 covers amounts only, so this
+    is conformant — and it is the same left-versus-right split described above,
+    reproduced by the migration rather than inherited.
+
+    Both ratio columns are declared at
+    `src/moneybin/reports/definitions/spending_trend.py:77,95`.
+    No requirement in this spec fixes it; it is recorded here because the
+    milestone's own transcript surfaced it, and a percent contract (places,
+    and whether the column carries `%` or a ratio) is the natural companion to
+    the money contract rather than a second idiom invented later.
 12. Every money column declares a **money kind**, and the renderer never infers
     meaning from the raw number. Four kinds:
     - `flow` — signed under the AGENTS.md accounting convention (negative =
@@ -206,6 +279,16 @@ Numbered, each independently testable.
     unsigned, erasing the increase-versus-decrease distinction the column exists
     to convey.
 
+    **One column in the catalog the four kinds do not name.**
+    `balance_drift.drift` is asserted balance minus computed balance — a signed
+    discrepancy where *neither* direction is favourable. `flow` would paint a
+    positive drift green; `delta` demands a polarity that does not exist,
+    because drifting either way is equally wrong and only `drift_abs` beside it
+    says how wrong. It is declared `balance`, which is the right *rendering*
+    contract — signed, uncolored — while not literally being a position. Left
+    as a declared stretch rather than resolved by minting a fifth kind for one
+    column; revisit if a second such column appears.
+
     The kind is declared **per column**, as `money_kind` on `OutputColumn`. It is
     deliberately *not* named `kind`, because `ReportSemantics.kind` already exists
     with the values `position | flow | ratio | count | unknown`
@@ -216,13 +299,32 @@ Numbered, each independently testable.
     the same thing, so the distinct field name is load-bearing — a shared `kind`
     would read as one concept and rot into two.
 
-    For **extension reports**, `money_kind` is optional, defaulting to `flow`.
-    Requiring it would break every existing `@report` extension, since
-    `OutputColumn` has no such field today. `flow` is the safe default because it
-    renders *signed*: an unnecessary `+` on a magnitude column is cosmetic, while
-    a dropped `−` is a misread balance. Defaulting to `magnitude` would invert
-    that risk. `docs/specs/extension-contracts.md` documents the field and this
-    default alongside `DEFAULT_COLUMNS`.
+    For **extension reports**, `money_kind` is optional and has **no default
+    kind**. Requiring it would break every existing `@report` extension, since
+    `OutputColumn` had no such field; defaulting it would mean the renderer
+    deciding which columns hold amounts, which is the inference this
+    requirement exists to remove. An undeclared column is therefore not money
+    to the renderer and reaches the table through `str()` — exactly how it
+    rendered before the field existed, so nothing breaks and an extension opts
+    in per column.
+
+    An earlier draft of this requirement specified a `flow` default, on the
+    reasoning that a needless `+` is cosmetic while a dropped `−` is a misread.
+    That reasoning is sound about *which* default would be safer and silent
+    about the prior question: nothing tells the renderer that an undeclared
+    column is money at all. The only candidate signal, `DataClass`, answers a
+    privacy question — `TXN_AMOUNT` marks what must be masked, not what must be
+    formatted — and keying rendering to it would couple the two the moment one
+    of them moved. `docs/specs/extension-contracts.md` documents the optional
+    field alongside `DEFAULT_COLUMNS`.
+
+    Optional is not unchecked. `OutputColumn.__post_init__` refuses a
+    `money_kind` or `polarity` outside its declared set, and a polarity on any
+    kind but `delta`. Both are `Literal` types, which bind a type checker and
+    not the interpreter, so the extension author this field exists for gets no
+    runtime signal otherwise — and a wrong value is silent rather than loud: an
+    unrecognized kind renders unsigned and uncoloured, and `Money.style_for`
+    reads every polarity that is not `income` as `expense`.
 13. Amounts are right-aligned in `render_rows` columns.
 14. Color is driven by the money kind plus the value, never by the value alone.
     A `flow` colors `--pos-income` when positive and `--neg-expense` when
@@ -517,6 +619,23 @@ Numbered, each independently testable.
     design: the agent receives the token because it can act on it, the human
     receives the count because that is what they asked for. Neither surface
     gets the other's answer.
+
+    **The same defect is live in `reports networth`, from the other
+    direction.** `core:networth` declares three `actions`
+    (`src/moneybin/reports/service_reports.py:336-343`), each written as an MCP
+    call — a `reports` invocation carrying a report id and a date range, an
+    `accounts_balances` invocation carrying a view and an account reference,
+    and an `accounts` invocation carrying a closed-account flag. Read them at
+    that citation rather than here: quoting a tool call in a public doc binds
+    it to the live schema, and this is a note about the CLI's prose, not about
+    the MCP contract. `echo_report_notes` prints all three verbatim to a CLI
+    reader, who has no such commands to type. It is this requirement's rule
+    with the surfaces swapped:
+    there, a token the human cannot use; here, a call signature the human
+    cannot use. The fix is the same shape — the text branch renders the CLI
+    invocation or renders nothing — and it lands with this requirement rather
+    than as a separate cleanup, because one `actions` list serving two
+    vocabularies is the thing to remove.
 
 **Non-interference with data correctness (F0)**
 

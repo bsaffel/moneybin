@@ -23,7 +23,8 @@ import logging
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import render_rows
+from moneybin.cli.utils import confidence_cell, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
     SecurityLinksHistoryPayload,
@@ -89,21 +90,20 @@ def links_pending(
             f"[{group.source_type}] "
             f"— {len(group.candidates)} candidate(s) ──"
         )
-        typer.echo(
-            f"  {'Decision ID':<14} {'Candidate ID':<14} {'Ticker':<8} "
-            f"{'Conf':>5}  {'Reason':<20} {'Name'}"
+        render_rows(
+            ["decision id", "candidate id", "ticker", "conf", "reason", "name"],
+            [
+                (
+                    c.decision_id[:12],
+                    c.candidate_security_id[:12],
+                    c.candidate_ticker or "-",
+                    confidence_cell(c.confidence),
+                    c.match_reason or "-",
+                    c.candidate_name or "-",
+                )
+                for c in group.candidates
+            ],
         )
-        for c in group.candidates:
-            conf_str = f"{c.confidence:.2f}" if c.confidence is not None else "  -  "
-            typer.echo(
-                f"  {c.decision_id[:12]:<14} "
-                f"{c.candidate_security_id[:12]:<14} "
-                f"{(c.candidate_ticker or '-'):<8} "
-                f"{conf_str:>5}  "
-                f"{(c.match_reason or '-'):<20} "
-                f"{c.candidate_name or '-'}"
-            )
-    typer.echo()
 
 
 @app.command("set")
@@ -227,20 +227,26 @@ def links_history(
             logger.info("No security-link decisions found")
         return
 
-    typer.echo(
-        f"\n{'Decision ID':<14} {'Ref Value':<22} {'Candidate':<14} "
-        f"{'Status':<10} {'Decided By':<10} {'Reason':<20} {'Conf':>5}"
+    render_rows(
+        [
+            "decision id",
+            "ref value",
+            "candidate",
+            "status",
+            "decided by",
+            "reason",
+            "conf",
+        ],
+        [
+            (
+                d.decision_id[:12],
+                d.ref_value[:20],
+                d.candidate_security_id[:12],
+                d.status,
+                d.decided_by,
+                d.match_reason or "-",
+                confidence_cell(d.confidence),
+            )
+            for d in payload.decisions
+        ],
     )
-    typer.echo("-" * 100)
-    for d in payload.decisions:
-        conf_str = f"{d.confidence:.2f}" if d.confidence is not None else "  -  "
-        typer.echo(
-            f"{d.decision_id[:12]:<14} "
-            f"{d.ref_value[:20]:<22} "
-            f"{d.candidate_security_id[:12]:<14} "
-            f"{d.status:<10} "
-            f"{d.decided_by:<10} "
-            f"{(d.match_reason or '-'):<20} "
-            f"{conf_str:>5}"
-        )
-    typer.echo()

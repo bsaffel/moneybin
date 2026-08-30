@@ -27,7 +27,8 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors, render_rich_table
+from moneybin.cli.render import render_rows
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass
@@ -95,7 +96,7 @@ def reports_list(
             if not quiet:
                 logger.info("No reports match.")
             return
-        render_rich_table(
+        render_rows(
             # `name` leads: it is the handle `run`, `explain`, and `export` take,
             # and the only one a user typed. `report_id` stays because it is what
             # survives a rename and what breaks a cross-tier name collision.
@@ -142,7 +143,7 @@ def reports_run(
     ),
     display_currency: str | None = display_currency_option,
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001  # result rows are data, never suppressed
+    quiet: bool = quiet_option,
 ) -> None:
     """Run one registered report by ID or name."""
     from moneybin.cli.report_params import parse_report_parameters
@@ -150,7 +151,10 @@ def reports_run(
         get_report_catalog,
         profile_home_currency,
     )
-    from moneybin.reports._framework.cli_register import render_report_result
+    from moneybin.reports._framework.cli_register import (
+        money_columns,
+        render_report_result,
+    )
 
     # Parity with the `reports` MCP tool, which validates `ge=1`. `--limit 0`
     # otherwise slices to zero rows and reports `truncated: true` with a
@@ -162,6 +166,12 @@ def reports_run(
         with get_database(read_only=True) as db:
             catalog = get_report_catalog(db)
             parameters = parse_report_parameters(catalog, handle, param)
+            # Resolved here rather than inside the renderer: the catalog needs
+            # an open database to build a user-tier spec, and this is the only
+            # scope that has one. `run` reaches built-ins too, so without it a
+            # report would render its amounts one way through `reports spending`
+            # and another through `reports run spending`.
+            money = money_columns(catalog.resolve(handle))
             result = catalog.execute(
                 db,
                 report_id=handle,
@@ -170,7 +180,9 @@ def reports_run(
                 display_currency=display_currency,
                 home_currency=profile_home_currency(db),
             )
-    render_report_result(result, output, cli_actor="reports_run")
+    render_report_result(
+        result, output, cli_actor="reports_run", money=money, quiet=quiet
+    )
 
 
 def reports_explain(
@@ -205,7 +217,7 @@ def reports_explain(
         typer.echo(f"{explanation.report_id}  ({explanation.tier})")
         if explanation.description:
             typer.echo(explanation.description)
-        render_rich_table(
+        render_rows(
             ["column", "class", "origin", "upstream"],
             [
                 (

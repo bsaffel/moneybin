@@ -42,17 +42,23 @@ _SNAPSHOT_COLUMNS = (
         "net_worth",
         "Sum of included balances denominated in currency_code; totals rows only.",
         DataClass.BALANCE,
+        # A profile whose liabilities exceed its assets has a negative net
+        # worth, and `balance` is the kind that keeps the `−` while leaving a
+        # positive position undecorated.
+        money_kind="balance",
     ),
     OutputColumn(
         "total_assets",
         "Sum of positive balances in currency_code; totals rows only.",
         DataClass.BALANCE,
+        money_kind="balance",
     ),
     OutputColumn(
         "total_liabilities",
         "Sum of negative balances in currency_code, retained as negative; "
         "totals rows only.",
         DataClass.BALANCE,
+        money_kind="balance",
     ),
     OutputColumn(
         "account_count",
@@ -69,6 +75,7 @@ _SNAPSHOT_COLUMNS = (
         "account_balance",
         "Balance for the breakdown account.",
         DataClass.BALANCE,
+        money_kind="balance",
     ),
     OutputColumn(
         "observation_source",
@@ -124,11 +131,17 @@ _HISTORY_COLUMNS = (
         "net_worth",
         "Resolved transaction-adjusted period-end position in currency_code.",
         DataClass.BALANCE,
+        money_kind="balance",
     ),
     OutputColumn(
         "change_abs",
         "Current period-end net worth minus the prior period-end position.",
         DataClass.BALANCE,
+        # A change in a position rather than in a spend magnitude, and the one
+        # delta in the catalog whose favourable direction is up: net worth
+        # rising is the good news, so it reads as income rather than expense.
+        money_kind="delta",
+        polarity="income",
     ),
     OutputColumn(
         "change_pct",

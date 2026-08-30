@@ -314,16 +314,23 @@ def _as_decimal(value: Any) -> Decimal | None:
     ``decimal.Decimal``, but a service-backed report may have formatted one.
     ``bool`` is excluded even though it is an ``int`` — a true/false in a money
     column is a declaration bug, and pricing it would hide that.
+
+    A non-finite value is excluded for a sharper reason than the others: NaN
+    times a rate is NaN, so it prices without error and reaches the reader
+    under the display currency, claiming a conversion that never happened. It
+    is a value that does not hold a number, which is the case the caller
+    already segments and reports.
     """
     if isinstance(value, bool):
         return None
     if isinstance(value, Decimal):
-        return value
+        return value if value.is_finite() else None
     if isinstance(value, int | float | str):
         try:
-            return Decimal(str(value))
+            parsed = Decimal(str(value))
         except InvalidOperation:
             return None
+        return parsed if parsed.is_finite() else None
     return None
 
 

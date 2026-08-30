@@ -273,10 +273,16 @@ class TestReportsNetworth:
 
         assert result.exit_code == 0, result.stderr
         out = result.stdout + result.stderr
-        assert "USD: 12500.00" in out
-        assert "EUR: 800.00" in out
+        # One `render_summary` block per currency, each headed by its own code.
+        assert "USD as of" in out
+        assert "12,500.00" in out
+        assert "EUR as of" in out
+        assert "800.00" in out
         # 13300.00 is the blend; its absence is the assertion that matters.
+        # Both spellings, because `format_money` now separates thousands and a
+        # check for only the bare digits would stop catching the blend.
         assert "13300" not in out
+        assert "13,300" not in out
 
     @pytest.mark.unit
     def test_text_render_adds_up_segments_priced_in_one_currency(
@@ -329,12 +335,18 @@ class TestReportsNetworth:
 
         assert result.exit_code == 0, result.stderr
         out = result.stdout + result.stderr
-        assert "USD: 13380.00" in out
-        assert "Assets:      15880.00" in out
-        assert "Liabilities: -2500.00" in out
+        assert "USD as of" in out
+        assert "Net worth:   13,380.00" in out
+        assert "Assets:      15,880.00" in out
+        # U+2212, not a hyphen: liabilities are stored negative and
+        # `format_money` renders the minus the design system specifies.
+        assert "Liabilities: −2,500.00" in out
         assert "Accounts:    3" in out
         # The dollar share, printed alone, is what this test exists to catch.
+        # Both spellings — `format_money` separates thousands, so the bare-digit
+        # form alone would stop catching a regression.
         assert "12500.00" not in out
+        assert "12,500.00" not in out
 
     @pytest.mark.unit
     def test_text_render_says_why_a_conversion_fell_back(
@@ -399,9 +411,7 @@ class TestReportsNetworth:
 
         assert result.exit_code == 0, result.stderr
         out = result.stdout + result.stderr
-        breakdown = next(
-            line for line in out.splitlines() if line.lstrip().startswith("Checking")
-        )
+        breakdown = next(line for line in out.splitlines() if "Checking" in line)
         assert "None" not in breakdown
         assert UNKNOWN_CURRENCY in breakdown
 
@@ -583,7 +593,7 @@ class TestReportsNetworthHistory:
 
         assert result.exit_code == 0, result.stderr
         out = result.stdout + result.stderr
-        series = next(line for line in out.splitlines() if "1000.00" in line)
+        series = next(line for line in out.splitlines() if "1,000.00" in line)
         assert "None" not in series
         assert UNKNOWN_CURRENCY in series
 

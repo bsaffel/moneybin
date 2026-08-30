@@ -24,6 +24,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.render import render_rows
 from moneybin.cli.utils import emit_json as emit_json
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
@@ -31,6 +32,7 @@ from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountListPayload,
     AccountResolvePayload,
+    AccountSummary,
     AccountSummaryStats,
 )
 from moneybin.protocol.envelope import build_envelope
@@ -93,18 +95,25 @@ def accounts_list(
             cli_actor="accounts_list",
         )
         return
-    for acct in result.rows:
-        # Print the id beside the label nothing-can-name rows share. `set` takes
-        # an id and the resolvers refuse that label, so a row carrying only the
-        # label names an account the reader is then unable to act on.
-        display = (
-            acct.display_name
-            if is_a_name(acct.display_name)
-            else f"{UNNAMED_ACCOUNT_LABEL} ({acct.account_id})"
-        )
-        institution = acct.institution_name or ""
-        acct_type = acct.account_type or ""
-        typer.echo(f"  {display}  [{institution}]  {acct_type}")
+
+    def _display(acct: AccountSummary) -> str:
+        """The account's name, or the shared label plus the id to act on.
+
+        `set` takes an id and the resolvers refuse the unnamed label, so a row
+        carrying only the label names an account the reader is then unable to
+        do anything with.
+        """
+        if is_a_name(acct.display_name):
+            return acct.display_name
+        return f"{UNNAMED_ACCOUNT_LABEL} ({acct.account_id})"
+
+    render_rows(
+        ["account", "institution", "type"],
+        [
+            (_display(acct), acct.institution_name or "", acct.account_type or "")
+            for acct in result.rows
+        ],
+    )
 
 
 @app.command("summary")

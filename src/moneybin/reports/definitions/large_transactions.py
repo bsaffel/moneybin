@@ -100,7 +100,12 @@ def _blank_original_currency_analytics(
         OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
         OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
         OutputColumn("txn_date", "Transaction date.", DataClass.TXN_DATE),
-        OutputColumn("amount", "Signed transaction amount.", DataClass.TXN_AMOUNT),
+        OutputColumn(
+            "amount",
+            "Signed transaction amount.",
+            DataClass.TXN_AMOUNT,
+            money_kind="flow",
+        ),
         OutputColumn(
             "description", "Original transaction description.", DataClass.DESCRIPTION
         ),

@@ -78,6 +78,33 @@ def test_list_text_output_shows_columns() -> None:
 
 
 @pytest.mark.unit
+def test_list_does_not_elide_a_long_description() -> None:
+    """A description wider than the old 50-character cut folds instead of clipping.
+
+    `render_rows` declares `overflow="fold"` precisely so no value is dropped to
+    make a row fit, and every other command this renderer covers relies on it.
+    Cutting here reached the truncation before the renderer ever saw the value,
+    so it fired on a wide terminal too, and a raw bank description carries its
+    distinguishing detail at the end — the store, the reference, the autopay
+    marker — which is exactly what a trailing ellipsis removes.
+    """
+    description = "SQ *DOWNTOWN COFFEE ROASTERS LLC 4th and Pine AUTOPAY RENEWAL"
+    assert len(description) > 50, "the fixture must exceed the old cut to be a test"
+    txns = [_make_txn(description=description)]
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result(txns)
+            ):
+                result = runner.invoke(
+                    app, ["transactions", "list"], env={"COLUMNS": "250"}
+                )
+    assert result.exit_code == 0
+    assert "\u2026" not in result.output
+    assert description in result.output
+
+
+@pytest.mark.unit
 def test_list_json_output_returns_envelope() -> None:
     """--output json returns a ResponseEnvelope JSON object."""
     import json

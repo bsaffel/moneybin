@@ -791,6 +791,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **Every table the CLI prints is now built the same way.** Twelve commands
+  rendered rows through five different idioms — a shared Rich helper for three,
+  and a hand-padded f-string per command for the rest, each with its own guessed
+  column widths. They all go through one `render_rows` now, which sizes each
+  column to its widest value, so `accounts links history` no longer aligns only
+  the rows that fell back to ids. Two more renderers cover the other shapes a
+  command prints: `render_summary` for a labelled block like `reports networth`,
+  and `render_note` for the status lines `-q` silences. Result rows and
+  summaries have no way to be silenced — neither renderer accepts a quiet flag.
+
+  No value is ever elided to make a row fit: a name too wide for the terminal
+  wraps, because a resolved account name ends in the masked last four and
+  clipping it removes exactly the digits that tell two candidates apart
+  (#470).
+
+- **Amounts print with thousands separators and a sign that means something.**
+  Every money column now declares what its number *is* — a signed flow, a
+  positive magnitude like `SUM(ABS(amount))`, a change in one, or a balance —
+  and the renderer reads that declaration instead of guessing from the value.
+  `reports spending` no longer risks rendering spending as green income, and a
+  rise in spending reads as a rise in spending rather than as a gain. Negative
+  amounts carry `−` (U+2212), matching the rest of the product. A negative net
+  worth keeps its minus: "balances unsigned" only ever meant no decorative `+`
+  on a positive position. Colour is redundant with the sign glyph and appears
+  only on a terminal with `NO_COLOR` unset, so piping or redirecting output
+  loses nothing (#470).
+
+- **`transactions matches` stops reporting an unscored match as `0.00`.** An
+  exact-id match records no confidence score; the two match tables printed that
+  as zero, which reads as the engine having compared the pair and found nothing
+  in common. It now prints `-`, matching what the merchant and security link
+  queues already did (#470).
+
 - **`--help` no longer lists commands that aren't built yet.** Twelve
   whole-command placeholders — `budget delete/set`, `sync key rotate`, `sync
   schedule set/show/remove`, `transactions categorize ml apply/status/train`,
@@ -1216,6 +1249,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **A non-finite amount no longer crashes a report, or prices as though it were
+  a number.** A `NaN` in a money column left `format_money` through
+  `amount < 0` as a raw `decimal.InvalidOperation` traceback rather than a
+  clean CLI error, because ordering a `Decimal("NaN")` raises instead of
+  returning false; an infinity did not raise at all and printed as the signed,
+  coloured word `Infinity`. The same value in the currency converter was
+  quieter and worse — `NaN` times a rate is `NaN`, so it converted without
+  complaint and reached the reader labelled in the display currency, a
+  conversion that never happened. Both `_as_decimal` helpers now refuse a
+  non-finite value the way they already refuse unparseable text: the renderer
+  prints it absent, and the converter segments and says why. Reachable from any
+  report whose money column is backed by a float computation, including the
+  out-of-repo `@report` extensions `docs/specs/extension-contracts.md`
+  addresses (#470).
+
+- **`transactions list` no longer clips a long description.** The command cut
+  the description to 49 characters and appended an ellipsis before the value
+  reached the renderer, so it fired on a wide terminal too — and a raw bank
+  description carries the detail that separates two similar charges at the
+  end. It folds now, like every other value this renderer prints (#470).
+
+- **A withheld amount no longer prints as an absent one.** A money column
+  carrying a whole-masking privacy class (`ROUTING_NUMBER`,
+  `COMPOSITE_IDENTIFIER`, `UNRESOLVED`) reaches the renderer already replaced
+  by its `*****` sentinel. `format_money` read that as unparseable and printed
+  `-`, so the text table contradicted both its own masking and the
+  `--output json` result for the same query, and a reader could not tell a
+  withheld amount from a SQL NULL. Text in a money cell now prints itself —
+  matched by shape rather than against the sentinels in use today, so a new
+  mask cannot quietly start reading as absent. Non-numeric text in a money
+  column that was never a mask now shows through for the same reason, instead
+  of being reported as no data (#470).
+
+- **A `delta` money column with no `polarity` is rejected where it is
+  declared.** `OutputColumn` accepted the pair and only the text renderer
+  refused it — inside `money_columns`, which the generated CLI command reaches
+  after the report has already run and written its audit-log and metrics side
+  effects, and which a JSON or MCP caller never reaches at all. The same broken
+  declaration was therefore loud on one surface and silent on the others. It
+  now raises at construction, so an unrenderable report is unbuildable
+  everywhere at once. No in-repo report was affected; this closes the gap for
+  the out-of-repo authors `docs/specs/extension-contracts.md` addresses (#470).
+
+  The same guard now checks the declared values themselves. `money_kind` and
+  `polarity` are `Literal` types, which bind a type checker and nothing at
+  runtime, so an author running none got no signal from either wrong value —
+  and neither one fails loudly by itself. An unrecognized kind falls through
+  the renderer to an unsigned, uncoloured amount that reads as a deliberate
+  balance, and every polarity that is not `income` colours as `expense`, so
+  `polarity="up"` inverts a delta's colours rather than raising. A polarity on
+  any kind but `delta` is refused too, because nothing reads one there:
+  accepting it silently tells an author their column is polarized when the
+  rendered output will not be (#470).
+
+- **`-q/--quiet` now works on the report commands.** `reports networth`,
+  `networth-history`, `reports run`, and every generated built-in report
+  command accepted the flag and then dropped it, so their next-step hints
+  ("run `moneybin reports explain …`") printed regardless. Each forwards it
+  now. What `-q` still does not silence is any statement about how far the
+  numbers can be trusted — a truncated result, a degraded report, or a
+  currency conversion — because asking for less chatter is not a claim that
+  the truncation stopped (#470).
+
+- **`transactions categorize pending` formats its amounts like every other
+  table.** Its `amount` column printed raw (`-42.5`, left-aligned, no
+  separator) while the rest of the CLI moved to `−42.50` (#470).
+
 - **Google Sheets authorization fails up front instead of after a consent
   screen that could never complete.** `gsheet auth` sent an empty client
   secret in the code→token exchange, so Google returned an authorization code
