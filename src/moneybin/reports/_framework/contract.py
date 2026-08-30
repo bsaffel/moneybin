@@ -13,7 +13,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.tables import TableRef
@@ -135,6 +135,49 @@ class ParamSpec:
     data_class: DataClass
 
 
+type MoneyKind = Literal["flow", "magnitude", "delta", "balance"]
+"""What a money column's number means, so a renderer never has to guess.
+
+Deliberately not named ``kind``: :class:`ReportSemantics` already has one, with
+a different vocabulary and a different grain. That one is *report*-level, and
+`spending` carries a ``magnitude`` and a ``delta`` in the same result, so one
+report-level value cannot describe both columns. The two overlap in wording
+(``flow``, and ``position`` ≈ ``balance``) without being the same thing; a
+shared name would read as one concept and rot into two.
+
+- ``flow`` — signed under the AGENTS.md accounting convention (negative =
+  expense, positive = income).
+- ``magnitude`` — a positive absolute quantity whose polarity is carried by the
+  column rather than the value. `spending_trend.total_spend` is
+  ``SUM(ABS(t.amount))``: an outflow that happens to be positive.
+- ``delta`` — a signed *change in a magnitude*, where the sign means direction
+  rather than income/expense. `spending_trend.mom_delta` is
+  ``total_spend - prev_month_spend``, so positive means spending rose. Declares
+  a :data:`Polarity`, because that is what decides whether a rise is good.
+- ``balance`` — a position, not a movement.
+
+Optional on :class:`OutputColumn`. There is no default kind: an undeclared
+column is not money as far as the renderer is concerned, and reaches the table
+through ``str()``. Defaulting to a kind would mean guessing which columns hold
+amounts, which is the inference requirement 12 exists to remove — and the only
+available signal, :class:`~moneybin.privacy.taxonomy.DataClass`, answers a
+privacy question, not a rendering one. An extension keeps working undeclared,
+rendering exactly as it did before the field existed, and opts in per column.
+"""
+
+type Polarity = Literal["expense", "income"]
+"""Which direction is the favourable one for the quantity a ``delta`` measures.
+
+A rise in spending and a rise in income are both ``+``; only the declaration
+says which of them is good news.
+"""
+
+# Read off the aliases above rather than restated, so the runtime gate in
+# `OutputColumn.__post_init__` cannot drift from the type a contributor sees.
+_MONEY_KINDS: tuple[str, ...] = get_args(MoneyKind.__value__)
+_POLARITIES: tuple[str, ...] = get_args(Polarity.__value__)
+
+
 @dataclass(frozen=True, slots=True)
 class OutputColumn:
     """One named report output with its meaning and privacy class."""
@@ -142,6 +185,55 @@ class OutputColumn:
     name: str
     description: str
     data_class: DataClass
+    money_kind: MoneyKind | None = None
+    """How to render this column's amounts; ``None`` means it is not money."""
+    polarity: Polarity | None = None
+    """Required when ``money_kind`` is ``"delta"``; refused on the other kinds."""
+
+    def __post_init__(self) -> None:
+        """Reject an unrenderable declaration where it is written, not where it is read.
+
+        ``Money`` refuses the delta-without-polarity pair too, but that check
+        runs in the text renderer — ``money_columns(spec)``, which the generated
+        CLI command reaches only *after* ``catalog.execute(...)`` has run the
+        report and written its side effects — and a JSON or MCP caller never
+        reaches it at all. Enforcing it at construction makes the broken
+        contract unbuildable on every surface at once, which is what an
+        out-of-repo author reading ``docs/specs/extension-contracts.md`` needs
+        it to do.
+
+        The vocabulary is checked here for that reason and one more: a
+        ``Literal`` binds a type checker, and the author this contract is
+        written for may not run one. Neither wrong value fails on its own —
+        an unrecognized ``money_kind`` falls through the renderer to unsigned
+        and uncoloured, and ``Money.style_for`` reads every polarity that is
+        not ``"income"`` as expense, so ``polarity="up"`` inverts a delta's
+        colours instead of raising. A polarity on a non-delta is refused rather
+        than ignored because no kind but ``delta`` reads one, and silently
+        dropping it tells an author their column is polarized when the rendered
+        output will not be. ``Money`` is left alone: it is not part of the
+        extension surface, and every in-repo construction of one is a literal
+        pyright already checks.
+        """
+        if self.money_kind is not None and self.money_kind not in _MONEY_KINDS:
+            raise ValueError(
+                f"money column {self.name!r} declares an unknown money_kind "
+                f"{self.money_kind!r}; expected one of {', '.join(_MONEY_KINDS)}"
+            )
+        if self.polarity is not None and self.polarity not in _POLARITIES:
+            raise ValueError(
+                f"money column {self.name!r} declares an unknown polarity "
+                f"{self.polarity!r}; expected one of {', '.join(_POLARITIES)}"
+            )
+        if self.money_kind == "delta" and self.polarity is None:
+            raise ValueError(
+                f"money column {self.name!r} is a delta and must declare its polarity"
+            )
+        if self.money_kind != "delta" and self.polarity is not None:
+            raise ValueError(
+                f"money column {self.name!r} is not a delta, so its polarity "
+                f"{self.polarity!r} would be ignored rather than applied"
+            )
 
 
 @dataclass(frozen=True, slots=True)

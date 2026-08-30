@@ -92,6 +92,7 @@ class TestSecurityLinksPending:
         mock_count: MagicMock,
         mock_pending: MagicMock,
         mock_get_db: MagicMock,
+        wide_terminal: None,
     ) -> None:
         """Text output includes the ref, decision id, AND the candidate's ticker/name.
 

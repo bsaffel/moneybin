@@ -15,7 +15,7 @@ surface designed with the same rigor as the MCP and CLI surfaces.
 
 This spec defines that contributor-facing surface: three extension types, their trust postures, their registration mechanisms, their quality progression, and the guided-contribution skills shipped alongside. Together they answer: *how does someone who wants to extend MoneyBin do so, cleanly and predictably?*
 
-The operating MCP surface is one 49-tool standard registry. Generic clients
+The operating MCP surface is one 50-tool standard registry. Generic clients
 receive the full registry; capable hosts may optionally defer schemas from that
 same registry; reports never consume tool slots because they extend the
 `reports` catalog instead. Any
@@ -325,7 +325,7 @@ A Report is a single decorated **Python runner** over a `reports.*` view. The ru
 > SQL-backed and service-backed reports share one internal catalog and result
 > contract. Core and explicitly installed extension reports receive ergonomic
 > CLI commands that execute by stable catalog ID. The active generic `reports`
-> MCP contract consumes that same union in the 49-tool standard registry. The
+> MCP contract consumes that same union in the 50-tool standard registry. The
 > invariant is permanent: adding a report changes catalog and CLI surfaces,
 > never MCP tool count.
 
@@ -467,6 +467,41 @@ def cash_flow(
     params: list[Binding] = [Binding(from_month, DataClass.TXN_DATE)]
     return ReportQuery(sql, params, actions=[...], period=period)
 ```
+
+### Declaring what a money column means
+
+`OutputColumn` carries an optional `money_kind` naming what its number *is*, so
+the CLI's text renderer never infers meaning from the value. Four kinds, defined
+in `src/moneybin/reports/_framework/contract.py`:
+
+| Kind | The number is | Renders | Coloured |
+|---|---|---|---|
+| `flow` | signed under the accounting convention (negative = expense) | explicit `+` / `−` | by sign |
+| `magnitude` | a positive absolute quantity whose direction the column name carries, e.g. `SUM(ABS(amount))` | unsigned | never |
+| `delta` | a signed *change* in a magnitude, where the sign is direction | signed | against the declared `polarity` |
+| `balance` | a position rather than a movement | unsigned when non-negative, `−` retained when negative | never |
+
+`delta` additionally requires `polarity="expense"` or `polarity="income"`,
+naming which direction is the favourable one. A rise in spending and a rise in
+income are both `+`; only the declaration says which is good news, and the wrong
+default would paint a spending increase as income.
+
+`OutputColumn` checks both fields at construction and raises `ValueError` on a
+kind or polarity outside those sets, a `delta` with no polarity, or a polarity
+declared on any other kind. The `Literal` annotations bind a type checker, not
+the interpreter, and neither wrong value fails on its own: an unrecognized kind
+renders unsigned and uncoloured, and any polarity that is not `income` colours
+as `expense`.
+
+The field is **optional**, so an existing extension report keeps working
+unchanged and simply renders its amounts as plain text. Declare it when the
+column holds money. For in-repo reports it is not optional in practice: a
+guard fails any column classed `TXN_AMOUNT` or `BALANCE` that declares no kind
+(`tests/moneybin/test_cli/test_render.py`).
+
+Full rationale, including why the field is not called `kind` — `ReportSemantics.kind`
+already exists at report level and cannot describe two columns of one result —
+is in [`cli-output-coherence.md`](cli-output-coherence.md) requirement 12.
 
 How the parts map (introspection rules, `src/moneybin/reports/_framework/introspect.py`):
 

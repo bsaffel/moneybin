@@ -73,6 +73,7 @@ class TestToolRegistration:
             "accounts_set",
             "accounts_balances",
             "accounts_balance_assert",
+            "accounts_links_run",
         }
 
     @pytest.mark.unit

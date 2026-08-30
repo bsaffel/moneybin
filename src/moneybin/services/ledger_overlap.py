@@ -76,11 +76,82 @@ class LedgerOverlap:
     matched: int
     window_start: date | None
     window_end: date | None
+    window_days: int = DEFAULT_POSTING_LAG_DAYS
+    """The posting-lag tolerance ``matched`` was counted at, carried to the surface.
+
+    A reader shown "345 of 346" cannot tell whether that is exact-date agreement
+    or agreement within a window, and the two support very different
+    conclusions: at this width a measured control pair scored 0 of 346, while
+    requiring an exact date collapsed the true twin to 23%. The number is only
+    evidence once the tolerance travels with it.
+    """
 
     @property
     def measurable(self) -> bool:
         """Whether the two ledgers share a period this probe could compare at all."""
         return self.comparable > 0
+
+
+@dataclass(frozen=True)
+class LedgerSpan:
+    """The period one account's ledger covers, first row to last.
+
+    Coarser than :class:`LedgerOverlap` and answering a different question. The
+    overlap probe asks whether two accounts hold the *same rows*; this asks
+    whether they were *alive at the same time*. A merge proposal that claims one
+    account replaced another is making the second claim, and it can be refuted
+    without matching a single transaction.
+    """
+
+    first_date: date
+    last_date: date
+
+    def concurrent_with(self, other: LedgerSpan, *, tolerance_days: int) -> bool:
+        """Whether both ledgers ran at once for longer than ``tolerance_days``.
+
+        Deliberately asymmetric about what it proves. A pair that clears the
+        tolerance is positively concurrent — both accounts were posting
+        transactions over the same months, so neither replaced the other. A pair
+        that does not clear it has only failed to be concurrent, which is what
+        every sequential pair looks like and also what a pair with one thin
+        ledger looks like; the caller must not read it as evidence *for* a
+        merge.
+        """
+        shared = min(self.last_date, other.last_date) - max(
+            self.first_date, other.first_date
+        )
+        return shared.days > tolerance_days
+
+
+def fetch_ledger_spans(
+    db: Database, account_ids: Sequence[str]
+) -> dict[str, LedgerSpan]:
+    """First and last transaction date per account, for those that have any.
+
+    An account with no rows is **absent** from the result rather than mapped to
+    an empty span, so a caller cannot accidentally read "no ledger yet" as "a
+    ledger that overlaps nothing". At import time that is the normal state: the
+    account was minted seconds ago and no transform has published it.
+    """
+    ids = sorted({account_id for account_id in account_ids if account_id})
+    if not ids:
+        return {}
+    placeholders = ", ".join("?" * len(ids))
+    try:
+        rows = db.execute(
+            f"SELECT account_id, MIN(transaction_date), MAX(transaction_date) "  # noqa: S608  # TableRef constant + parameterized values
+            f"FROM {FCT_TRANSACTIONS.full_name} "
+            f"WHERE account_id IN ({placeholders}) GROUP BY account_id",
+            list(ids),
+        ).fetchall()
+    except duckdb.CatalogException:
+        logger.debug("core.fct_transactions unavailable; ledger spans unknown")
+        return {}
+    return {
+        str(row[0]): LedgerSpan(first_date=row[1], last_date=row[2])
+        for row in rows
+        if row[1] is not None and row[2] is not None
+    }
 
 
 @dataclass(frozen=True)
@@ -105,7 +176,7 @@ def probe_incoming_ledger_overlap(
     different currencies veto an otherwise matching incoming transaction.
     """
     if not transactions:
-        return _record_probe(LedgerOverlap(*_EMPTY_WINDOW_ROW))
+        return _record_probe(LedgerOverlap(*_EMPTY_WINDOW_ROW, window_days=window_days))
 
     # Callers pass one statement's extracted rows, not an unbounded ledger.
     values_sql = ", ".join(["(?, ?, ?, ?)"] * len(transactions))
@@ -175,6 +246,7 @@ def probe_incoming_ledger_overlap(
             matched=int(matched),
             window_start=start,
             window_end=end,
+            window_days=window_days,
         )
     )
 
@@ -193,6 +265,7 @@ def probe_ledger_overlap(
     account_id: str,
     against_account_id: str,
     window_days: int = DEFAULT_POSTING_LAG_DAYS,
+    unstated_currency_matches: bool = False,
 ) -> LedgerOverlap:
     """Count how many of ``account_id``'s transactions ``against_account_id`` holds.
 
@@ -227,6 +300,16 @@ def probe_ledger_overlap(
     fills its currency column only on foreign rows: an empty string is silence,
     and silence already means unstated here.
 
+    ``unstated_currency_matches`` re-prices the asymmetry above for a caller
+    that reads this count as a *refutation* rather than as evidence to show.
+    The undercount a one-sided silence produces is affordable while it only
+    weakens a ratio printed beside a proposal that still appears; a caller that
+    suppresses on ``matched == 0`` turns the same undercount into proof of a
+    disagreement that never happened, and the pair silently goes on
+    double-counting. Set it and an unstated side matches any counterpart, which
+    leaves the invariant that matters untouched: two *stated* and differing
+    currencies never describe the same transaction, so they still refuse.
+
     Returns an unmeasurable overlap — rather than raising — when ``core`` is not
     yet materialized, which is a first import before any transform.
     """
@@ -234,7 +317,10 @@ def probe_ledger_overlap(
         row = db.execute(
             f"""
             WITH against AS (
-                SELECT transaction_date, amount, currency_code
+                SELECT
+                    transaction_date,
+                    amount,
+                    NULLIF(UPPER(TRIM(currency_code)), '') AS currency_code
                 FROM {FCT_TRANSACTIONS.full_name}
                 WHERE account_id = ?
             ),
@@ -247,7 +333,7 @@ def probe_ledger_overlap(
                     probe.transaction_id,
                     probe.transaction_date,
                     probe.amount,
-                    probe.currency_code
+                    NULLIF(UPPER(TRIM(probe.currency_code)), '') AS currency_code
                 FROM {FCT_TRANSACTIONS.full_name} AS probe, span
                 WHERE probe.account_id = ?
                   AND span.lo IS NOT NULL
@@ -262,11 +348,14 @@ def probe_ledger_overlap(
                     FROM comparable AS c
                     JOIN against AS a
                       ON a.amount = c.amount
-                     AND NULLIF(UPPER(TRIM(a.currency_code)), '')
-                         IS NOT DISTINCT FROM
-                         NULLIF(UPPER(TRIM(c.currency_code)), '')
                      AND ABS(DATE_DIFF('day', a.transaction_date, c.transaction_date))
                          <= CAST(? AS INTEGER)
+                     AND (
+                         a.currency_code IS NOT DISTINCT FROM c.currency_code
+                         OR (CAST(? AS BOOLEAN)
+                             AND (a.currency_code IS NULL
+                                  OR c.currency_code IS NULL))
+                     )
                     GROUP BY c.transaction_id
                 )),
                 (SELECT MIN(transaction_date) FROM comparable),
@@ -278,6 +367,7 @@ def probe_ledger_overlap(
                 window_days,
                 window_days,
                 window_days,
+                unstated_currency_matches,
             ],
         ).fetchone()
     except duckdb.CatalogException:
@@ -289,6 +379,7 @@ def probe_ledger_overlap(
         matched=int(matched),
         window_start=start,
         window_end=end,
+        window_days=window_days,
     )
     # Counted here rather than at the two call sites so a third one cannot forget:
     # the failure this instruments is every probe going unmeasurable at once, and

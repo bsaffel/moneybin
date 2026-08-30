@@ -764,39 +764,29 @@ class TestLogsMutating:
 # ---------------------------------------------------------------------------
 # Accounts entity ops — write-path E2E coverage
 # ---------------------------------------------------------------------------
-# After Fix 3/4 (account-existence validation), mutators require the
-# account_id to be present in core.dim_accounts. We seed dim_accounts by
-# importing the sample OFX fixture and running transforms once in a
-# session-scoped template; tests copy that template via make_workflow_env_fast.
-# The imported account_id is 9876543210 (from tests/fixtures/sample_statement.qfx).
+# After Fix 3/4 (account-existence validation), mutators require an account in
+# core.dim_accounts. The shared transformed template provides one and tests
+# copy it through make_workflow_env_fast.
 # ---------------------------------------------------------------------------
 
-_SAMPLE_OFX = FIXTURES_DIR / "sample_statement.qfx"
-_OFX_ACCOUNT_ID = "9876543210"  # ACCTID from sample_statement.qfx
+_OFX_ACCOUNT_ID = "9876543210"  # ACCTID from multi_currency_eur.qfx
 
 
 @pytest.fixture(scope="module")
 def _accounts_with_data_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture
-    tmp_path_factory: pytest.TempPathFactory,
+    _transformed_profile_template: Path,
 ) -> Path:
-    """Module template: profile with sample OFX imported and transforms applied.
+    """Module template with a pre-materialized account.
 
     Provides a MONEYBIN_HOME where core.dim_accounts has at least one row.
     Account mutation tests copy this template via make_workflow_env_fast so
     they can call rename/archive/etc. without failing the _assert_account_exists
     check. Use _resolve_account_id(env) to look up the minted canonical id.
 
-    Uses _TEMPLATE_PROFILE_NAME ("e2e-template") so make_workflow_env_fast
-    resolves the correct active profile when copying.
+    The shared fixture keeps this module from rebuilding a profile, import, and
+    transform cycle independently.
     """
-    e2e_home = tmp_path_factory.mktemp("acct_data_template")
-    # Use the same profile name that make_workflow_env_fast resolves as active.
-    env = make_workflow_env(e2e_home, "e2e-template")
-    run_cli(
-        "import", "files", str(_SAMPLE_OFX), "--no-refresh", env=env
-    ).assert_success()
-    run_cli("transform", "apply", env=env, timeout=180).assert_success()
-    return e2e_home
+    return _transformed_profile_template
 
 
 def _resolve_account_id(env: dict[str, str]) -> str:
@@ -818,7 +808,7 @@ def _resolve_account_id(env: dict[str, str]) -> str:
 class TestAccountsEntityOps:
     """E2E lifecycle for accounts entity-op write commands.
 
-    Uses a pre-populated template (sample OFX imported + transforms applied)
+    Uses a pre-populated template (imported + transformed)
     so that core.dim_accounts is populated and _assert_account_exists passes.
     """
 
@@ -911,7 +901,7 @@ class TestAccountsEntityOps:
 class TestBalanceAssertions:
     """E2E lifecycle for accounts balance assert/list/delete commands.
 
-    Uses a pre-populated template (sample OFX imported + transforms applied)
+    Uses a pre-populated template (imported + transformed)
     so that core.dim_accounts is populated and _assert_account_exists passes.
     """
 

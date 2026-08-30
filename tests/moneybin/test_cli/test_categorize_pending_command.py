@@ -79,3 +79,27 @@ def test_categorize_pending_empty_result(
     result = runner.invoke(app, ["pending"])
 
     assert result.exit_code == 0, result.output
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.get_database")
+def test_categorize_pending_renders_amount_as_a_signed_flow(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """The queue's `amount` is a transaction amount, so it renders like one.
+
+    Undeclared, `_cells` falls back to `str()` and prints `-42.5` —
+    hyphen-minus, no separator, left-aligned — leaving one migrated command as
+    an exception to the contract the rest of this milestone establishes.
+    `priority_score` stays undeclared on purpose: it is `ABS(amount) *
+    age_days`, a ranking weight in no currency.
+    """
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.list_uncategorized_transactions.return_value = [_ROW]
+
+    result = runner.invoke(app, ["pending"], env={"COLUMNS": "250"})
+
+    assert result.exit_code == 0, result.output
+    assert "−42.50" in result.output
+    assert "-42.5" not in result.output

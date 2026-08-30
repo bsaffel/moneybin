@@ -1477,6 +1477,32 @@ def test_governing_spec_records_runtime_facts_without_promotion_claim() -> None:
     assert "ADR-016" in text
 
 
+def test_the_adr_restates_the_same_snapshot_as_the_governing_spec() -> None:
+    """The ADR duplicates the registry's measurements, so it must duplicate current ones.
+
+    Its "Current evidence" byte count and SHA-256 had no derivation and no
+    check, and drifted to values matching no fixture in the tree — while the
+    sentence around them kept being updated with each new tool count, so the
+    section came to assert a 50-tool registry against a measurement of a
+    smaller one. The governing spec's equivalent figures never drifted, because
+    the test above derives them from the snapshot. This does the same here: an
+    unverified duplicate is a duplicate that goes stale.
+    """
+    text = " ".join(ADR.read_text().split())
+    snapshot = json.loads(STANDARD_SNAPSHOT.read_text())
+    baseline_bytes = json.loads(BASELINE_SNAPSHOT.read_text())["total_bytes"]
+    delta = baseline_bytes - snapshot["total_bytes"]
+
+    for fact in (
+        f"{snapshot['tool_count']}-tool standard registry",
+        f"{snapshot['total_bytes']:,} bytes",
+        snapshot["sha256"],
+        f"-{delta:,}-byte",
+        f"(-{delta / baseline_bytes * 100:.1f}%)",
+    ):
+        assert fact in text, fact
+
+
 def test_client_compatibility_records_current_windsurf_headroom() -> None:
     text = " ".join(CLIENT_COMPATIBILITY_SPEC.read_text().split())
     index_row = next(

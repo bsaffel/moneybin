@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import typer
 
+from moneybin.cli.render import render_note
 from moneybin.errors import UserError
 from moneybin.privacy.introspection import derive_tier, extract_data_classes
 from moneybin.privacy.log import build_tool_call_event, write_privacy_event
@@ -121,19 +122,17 @@ def echo_applied_rates(
             # Requirement 10 wants that visible rather than smoothed over.
             else f"{rate.rate_date}, for {rate.requested_date}"
         )
-        typer.echo(
+        render_note(
             f"💱 Converted from {rate.from_currency} at {rate.rate} "
-            f"({priced_on}, {rate.source})",
-            err=True,
+            f"({priced_on}, {rate.source})"
         )
         return
     sources = sorted({rate.from_currency for rate in applied_rates})
-    typer.echo(
+    render_note(
         f"💱 Converted from {', '.join(sources)} using "
         f"{len(applied_rates)} stored rates; run "
         f"'moneybin fx rate <from> {currency_label(target_currency)} <date>' "
-        "for one of them, or --output json for all",
-        err=True,
+        "for one of them, or --output json for all"
     )
 
 

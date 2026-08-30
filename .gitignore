@@ -126,3 +126,4 @@ private/
 
 # Visual-companion brainstorm mockups (superpowers plugin)
 .superpowers/
+.test_durations

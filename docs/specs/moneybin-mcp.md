@@ -1,6 +1,6 @@
 # MoneyBin MCP
 
-> **Status:** in-progress — the 49-tool registry operates today; promotion is
+> **Status:** in-progress — the 50-tool registry operates today; promotion is
 > pending observed context-budget and host-native-deferral evidence.
 >
 > Companions: [`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md)
@@ -11,7 +11,7 @@
 ## Purpose
 
 This is the concrete current MCP contract. Generic clients receive the complete
-49-tool standard registry. Capable hosts may optionally defer schemas from that
+50-tool standard registry. Capable hosts may optionally defer schemas from that
 same registry without reconnect, packs, or profiles; names, annotations,
 approvals, allowlists, and audit identity do not change. The previous per-tool
 catalog is archived at
@@ -30,7 +30,7 @@ is the portion before the first underscore: `identity_*` belongs to Reviews,
 | System | `system_status`, `system_audit`, `system_audit_undo` |
 | Profile | `profile`, `profile_set` |
 | Reports | `reports` |
-| Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert` |
+| Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert`, `accounts_links_run` |
 | Investments | `investments`, `investments_record`, `investments_securities_set`, `investments_lots_select` |
 | Transactions | `transactions`, `transactions_create`, `transactions_annotate`, `transactions_categorize_assist`, `transactions_categorize_commit`, `transactions_categorize_run`, `transactions_categorize_rules`, `transactions_categorize_rules_set` |
 | Reviews | `reviews`, `reviews_decide`, `identity_links_decide` |
@@ -60,6 +60,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / maximum critical |
 | `accounts_balances` | `as_of`, `cursor`, `end`, `limit`, `reference`, `start`, `threshold`, `view` | Balance projection and reconciliation | Read / dynamic / maximum high / balance-derived |
 | `accounts_balance_assert` | `account`, `amount`, `as_of`, `confirmation_token`, `state` | Record a balance assertion | Audited write / maximum medium |
+| `accounts_links_run` | `account_id`, `candidate_account_id` | Propose account merges — sweep, or one named pair | Audited write / maximum low |
 | `investments` | `account`, `cursor`, `end`, `limit`, `open_only`, `security`, `start`, `view` | Holdings and ledger projection | Read / dynamic / maximum high / view-derived |
 | `investments_record` | `events` | Record an investment event | Audited write / maximum low |
 | `investments_securities_set` | `coingecko_id`, `cost_basis_method`, `currency_code`, `cusip`, `exchange`, `figi`, `is_cash_equivalent`, `isin`, `name`, `security_id`, `security_type`, `ticker` | Securities-catalog target state | Audited write / maximum low |
@@ -266,8 +267,8 @@ and confirmation contracts.
 
 ### Export delivery
 
-The 49-tool standard registry contains exactly two export-specific tools and
-stays below the 50-tool hard limit:
+The 50-tool standard registry contains exactly two export-specific tools and
+sits at the 50-tool hard limit exactly — admitting another means retiring one:
 
 - `export_run` publishes either the closed 13-table canonical bundle or one
   catalog report to a named local or Sheets destination. Every call supplies
@@ -344,7 +345,7 @@ secret material and hands-on operator territory; see
 `register_core_tools()` must exactly equal `STANDARD_TOOL_NAMES`; no hidden
 FastMCP aliases are allowed. Tests inventory the actual `tools/list` response,
 render coarse schemas, enforce description and metadata budgets, prove parity,
-and compare the deterministic 49-tool capture against the frozen baseline.
+and compare the deterministic 50-tool capture against the frozen baseline.
 
 The deterministic comparison passed, but `promotion_ready: false`: the context
 budget and host-native deferral are not observed. The governing spec and

@@ -272,6 +272,7 @@ class TestLinksPending:
         mock_count: MagicMock,
         mock_pending: MagicMock,
         mock_get_db: MagicMock,
+        wide_terminal: None,
     ) -> None:
         """This table is where a reviewer decides which proposal to open.
 
@@ -340,6 +341,7 @@ class TestLinksPending:
         mock_count: MagicMock,
         mock_pending: MagicMock,
         mock_get_db: MagicMock,
+        wide_terminal: None,
     ) -> None:
         """An unmeasurable probe must not render as evidence against the merge."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
@@ -393,6 +395,9 @@ class TestLinksPending:
         assert groups[0]["transactions"] == 346
         assert groups[0]["candidates"][0]["overlap_matched"] == 345
         assert groups[0]["candidates"][0]["overlap_comparable"] == 346
+        # The tolerance the ratio was measured at, so 345 of 346 is not read as
+        # exact-date agreement it never claimed to be.
+        assert groups[0]["candidates"][0]["overlap_window_days"] == 3
         assert "confidence" not in groups[0]["candidates"][0]
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
@@ -1172,6 +1177,73 @@ class TestLinksRun:
         assert "data" in parsed
         assert parsed["data"]["new_proposals"] == 7
 
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.propose_pair")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    def test_run_with_a_named_pair_proposes_only_that_pair(
+        self, mock_run: MagicMock, mock_propose: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """Two ids ask for one proposal, not a sweep of every account."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_propose.return_value = "dec_manual01"
+
+        result = runner.invoke(app, ["run", "acct_aaa00000", "acct_bbb00000"])
+
+        assert result.exit_code == 0
+        mock_propose.assert_called_once_with("acct_aaa00000", "acct_bbb00000")
+        mock_run.assert_not_called()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.propose_pair")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    def test_run_with_one_id_refuses_rather_than_sweeping(
+        self, mock_run: MagicMock, mock_propose: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """A single id is ambiguous, and the safe reading is not the sweep.
+
+        Silently backfilling every account because the second id was forgotten
+        would write proposals the caller never asked for.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+        result = runner.invoke(app, ["run", "acct_aaa00000"])
+
+        assert result.exit_code == 2
+        mock_run.assert_not_called()
+        mock_propose.assert_not_called()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.propose_pair")
+    def test_run_json_with_a_named_pair_carries_the_decision_id(
+        self, mock_propose: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """The caller can decide the proposal it just made without re-querying."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_propose.return_value = "dec_manual01"
+
+        result = runner.invoke(
+            app, ["run", "acct_aaa00000", "acct_bbb00000", "--output", "json"]
+        )
+
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["data"]["new_proposals"] == 1
+        assert parsed["data"]["decision_id"] == "dec_manual01"
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    def test_run_json_without_a_pair_names_no_decision(
+        self, mock_run: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """A sweep writes many proposals or none, so no single id identifies it."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_run.return_value = 4
+
+        result = runner.invoke(app, ["run", "--output", "json"])
+
+        assert result.exit_code == 0
+        assert json.loads(result.output)["data"]["decision_id"] is None
+
 
 class TestLinksHistory:
     """Tests for `accounts links history`."""
@@ -1179,7 +1251,7 @@ class TestLinksHistory:
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.history")
     def test_history_names_the_accounts_rather_than_only_their_ids(
-        self, mock_history: MagicMock, mock_get_db: MagicMock
+        self, mock_history: MagicMock, mock_get_db: MagicMock, wide_terminal: None
     ) -> None:
         """Reading back what a merge did should not require an id lookup.
 
@@ -1212,15 +1284,18 @@ class TestLinksHistory:
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.history")
     def test_history_columns_stay_aligned_for_real_display_names(
-        self, mock_history: MagicMock, mock_get_db: MagicMock
+        self, mock_history: MagicMock, mock_get_db: MagicMock, wide_terminal: None
     ) -> None:
-        """Two resolved names plus an arrow must still fit the Merged column.
+        """Two resolved names plus an arrow must still leave the row aligned.
 
         ``dim_accounts`` builds a display name as institution + subtype + the
         masked last four, so a merge of two of them runs past a column sized for
-        one. Overflowing pushes every later column out of line on the rows that
-        have names at all — leaving the table aligned only where it fell back
-        to ids.
+        one. The hand-built table this replaced sized that column by hand:
+        overflowing pushed every later column out of line on the rows that had
+        names at all, leaving the table aligned only where it had fallen back
+        to ids. `render_rows` sizes each column to its widest value instead, so
+        the guard is that this command keeps using it rather than reacquiring a
+        guessed width.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_history.return_value = [
@@ -1242,14 +1317,14 @@ class TestLinksHistory:
 
         assert result.exit_code == 0
         lines = result.output.splitlines()
-        header = next(line for line in lines if "Merged" in line)
+        header = next(line for line in lines if "merged" in line)
         row = next(line for line in lines if "Example Bank checking" in line)
-        assert row.index("accepted") == header.index("Status")
+        assert row.index("accepted") == header.index("status")
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.history")
     def test_history_says_unnamed_rather_than_printing_an_id(
-        self, mock_history: MagicMock, mock_get_db: MagicMock
+        self, mock_history: MagicMock, mock_get_db: MagicMock, wide_terminal: None
     ) -> None:
         """A frozen "" is a decision, not a gap — it must not become an id.
 
@@ -1345,3 +1420,23 @@ class TestLinksHistory:
 
         runner.invoke(app, ["history", "--limit", "10"])
         mock_history.assert_called_once_with(limit=10)
+
+
+def test_links_run_arity_error_is_logged_like_its_siblings(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A half-named pair reaches the console marker and the durable log.
+
+    The sibling usage errors in this command group go through
+    ``logger.error("❌ ...")``, which both marks the line as an error on the
+    console and writes it to ``cli_YYYY-MM-DD.log``. A bare ``typer.echo(...,
+    err=True)`` does neither, so the one usage error an agent is most likely to
+    hit would have been the only one leaving no trace. The check runs before
+    the database opens, so this exercises no writer lock.
+    """
+    with caplog.at_level(logging.ERROR):
+        result = runner.invoke(app, ["run", "ACC001"])
+
+    assert result.exit_code == 2
+    assert "❌" in caplog.text
+    assert "ambiguous" in caplog.text

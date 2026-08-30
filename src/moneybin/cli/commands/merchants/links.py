@@ -14,7 +14,8 @@ import logging
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import render_rows
+from moneybin.cli.utils import confidence_cell, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.merchants import (
     MerchantLinksHistoryPayload,
@@ -72,18 +73,18 @@ def links_pending(
             f"[{group.source_type}] "
             f"— {len(group.candidates)} candidate(s) ──"
         )
-        typer.echo(
-            f"  {'Decision ID':<14} {'Merchant ID':<14} {'Conf':>5}  {'Canonical Name'}"
+        render_rows(
+            ["decision id", "merchant id", "conf", "canonical name"],
+            [
+                (
+                    c.decision_id[:12],
+                    c.candidate_merchant_id[:12],
+                    confidence_cell(c.confidence),
+                    c.candidate_canonical_name or "-",
+                )
+                for c in group.candidates
+            ],
         )
-        for c in group.candidates:
-            conf_str = f"{c.confidence:.2f}" if c.confidence is not None else "  -  "
-            typer.echo(
-                f"  {c.decision_id[:12]:<14} "
-                f"{c.candidate_merchant_id[:12]:<14} "
-                f"{conf_str:>5}  "
-                f"{c.candidate_canonical_name or '-'}"
-            )
-    typer.echo()
 
 
 @app.command("set")
@@ -165,23 +166,29 @@ def links_history(
             logger.info("No merchant-link decisions found")
         return
 
-    typer.echo(
-        f"\n{'Decision ID':<14} {'Ref Value':<22} {'Candidate':<14} "
-        f"{'Status':<10} {'Decided By':<10} {'Signal':<18} {'Conf':>5}"
+    render_rows(
+        [
+            "decision id",
+            "ref value",
+            "candidate",
+            "status",
+            "decided by",
+            "signal",
+            "conf",
+        ],
+        [
+            (
+                d.decision_id[:12],
+                d.ref_value[:20],
+                d.candidate_merchant_id[:12],
+                d.status,
+                d.decided_by,
+                d.signal,
+                confidence_cell(d.confidence),
+            )
+            for d in payload.decisions
+        ],
     )
-    typer.echo("-" * 98)
-    for d in payload.decisions:
-        conf_str = f"{d.confidence:.2f}" if d.confidence is not None else "  -  "
-        typer.echo(
-            f"{d.decision_id[:12]:<14} "
-            f"{d.ref_value[:20]:<22} "
-            f"{d.candidate_merchant_id[:12]:<14} "
-            f"{d.status:<10} "
-            f"{d.decided_by:<10} "
-            f"{d.signal:<18} "
-            f"{conf_str:>5}"
-        )
-    typer.echo()
 
 
 @app.command("run")

@@ -15,8 +15,9 @@ Read tools (links):        accounts_links_pending, accounts_links_history
 Write tools (links):       accounts_links_set, accounts_links_run
 
 All tools delegate to AccountService / BalanceService / AccountLinksService — no
-business logic here. accounts links undo is deliberately NOT YET registered:
-deferred to the M1L audit-undo consumer.
+business logic here. Of the link tools only accounts_links_run is registered;
+the read pair is served through ``reviews``, and accounts links undo is
+deliberately NOT YET registered: deferred to the M1L audit-undo consumer.
 
 The granular callbacks named in ``_LEGACY_INTERNAL_CALLBACKS`` are internal
 helpers retained for standard-boundary composition and parity. They are never
@@ -480,18 +481,23 @@ def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
     existing accounts that may represent the same real-world account.
 
     For each candidate: decision_id, candidate_account_id, display name, the
-    matching signal that fired (institution_last4, name, or
-    institution_reissue — same bank, last four changed), and measured ledger
-    evidence — overlap_matched of overlap_comparable transactions already held
-    by both accounts over the period they share. overlap_comparable of 0 means
-    the two ledgers share no comparable period, not that they disagree. Each
-    group also carries how many transactions the merge would move. ref_value
-    (the raw native reference, which can be a full account number) is never
-    included.
+    matching signal that fired, and measured ledger evidence —
+    overlap_matched of overlap_comparable transactions already held by both
+    accounts over the period they share. A match is equal amount and currency
+    within overlap_window_days of posting lag, NOT an exact date; read the ratio
+    against that width. overlap_comparable of 0 means the two ledgers share no
+    comparable period, not that they disagree. Each group also carries how many
+    transactions the merge would move. ref_value (the raw native reference,
+    which can be a full account number) is never included.
 
-    Decide each group via accounts_links_set. accounts_links_run (backfill
-    discovery) and accounts links undo are not yet registered — deferred to
-    follow-up units M1S.5b and M1L respectively.
+    Signals: institution_last4 (same bank, same last four), last_four (same last
+    four, at least one side naming no bank), name (fuzzy display-name match),
+    institution_reissue (same bank, last four changed, ledgers sequential), and
+    manual (a caller asserted this pair; no signal fired).
+
+    Decide each group via accounts_links_set. Propose a pair no signal found
+    with accounts_links_run(account_id=..., candidate_account_id=...).
+    accounts links undo is not yet registered — deferred to M1L.
     """
     with get_database(read_only=True) as db:
         svc = AccountLinksService(db, actor="mcp")
@@ -869,30 +875,67 @@ def accounts_links_history(
     )
 
 
-def accounts_links_run() -> ResponseEnvelope[AccountLinksRunPayload]:
-    """Backfill account-link proposals for existing accounts in core.dim_accounts.
+@mcp_tool(read_only=False, idempotent=False)
+def accounts_links_run(
+    account_id: str | None = None,
+    candidate_account_id: str | None = None,
+) -> ResponseEnvelope[AccountLinksRunPayload]:
+    """Propose account merges: sweep for duplicates, or link two accounts by id.
 
-    Surfaces weak-candidate merge proposals for accounts that already exist but
-    have no pending proposal yet (e.g. accounts imported before the resolver
-    candidate-pass existed, or cross-source twins minted separately). Writes
-    ``pending`` ``app.account_link_decisions`` rows — the same shape the
-    import-time resolver writes.
+    With no arguments, surfaces weak-signal merge proposals for accounts that
+    already exist but have no pending proposal yet — cross-source twins minted
+    separately, or accounts imported before the resolver candidate-pass existed.
+    Skips pairs already decided in either direction and never double-proposes an
+    unordered pair within one sweep.
 
-    Skips pairs that already have a decision in either direction (any status)
-    and avoids double-proposing the same unordered pair within one run.
+    With both ids, proposes exactly that pair under signal ``manual`` and no
+    confidence score. This is the escape hatch for a duplicate no signal
+    reaches — different last four, different institution, nothing in common but
+    the user's knowledge that it is one account. Order is direction: the first
+    id is the account absorbed and the second the one kept, whenever both sides
+    are absorbable. When only one holds the accepted ``source_native`` link a
+    merge re-points, that one is absorbed whichever way round it was passed.
+    Passing one id is an error, not a sweep: silently backfilling the whole
+    book because the second id was forgotten writes proposals nobody asked for.
 
-    Mutation surface: writes ``app.account_link_decisions``. Revert is via the
-    audit log in ``app.audit_log`` (no undo tool yet; deferred to M1L).
-    Review new proposals with ``accounts_links_pending``.
+    Neither form merges anything. Both write ``pending``
+    ``app.account_link_decisions`` rows that still clear the same confirmation
+    gate; revert is via ``app.audit_log`` (no undo tool yet; deferred to M1L).
+
+    Args:
+        account_id: The account to absorb — merged away if the proposal is
+            accepted. Requires candidate_account_id.
+        candidate_account_id: The account to keep. Requires account_id.
 
     Returns:
-        Envelope with ``data.new_proposals`` — count of new pending decisions written.
+        Envelope with ``data.new_proposals`` (pending decisions written) and
+        ``data.decision_id`` (the pair form's new decision; None for a sweep).
     """
+    # Validate before opening the database. A half-named pair is a pure input
+    # error, and taking the single writer lock first turns it into a lock
+    # timeout that tells the caller nothing about what it actually got wrong.
+    # The CLI twin validates in this same order.
+    if (account_id is None) != (candidate_account_id is None):
+        raise UserError(
+            "Naming one account is ambiguous: pass both account_id and "
+            "candidate_account_id to propose that pair, or neither to sweep "
+            "every account for duplicates.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
     with get_database(read_only=False) as db:
-        new_proposals = AccountLinksService(db, actor="mcp").run()
+        svc = AccountLinksService(db, actor="mcp")
+        if account_id is None or candidate_account_id is None:
+            return build_envelope(
+                data=AccountLinksRunPayload(new_proposals=svc.run()),
+                actions=["Use reviews(kind='account_links') to review proposed merges"],
+            )
+        decision_id = svc.propose_pair(account_id, candidate_account_id)
     return build_envelope(
-        data=AccountLinksRunPayload(new_proposals=new_proposals),
-        actions=["Use reviews(kind='account_links') to review proposed merges"],
+        data=AccountLinksRunPayload(new_proposals=1, decision_id=decision_id),
+        actions=[
+            "Use reviews(kind='account_links') to see the proposal, then "
+            "identity_links_decide to accept or reject it"
+        ],
     )
 
 
@@ -1769,5 +1812,23 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         "Writes app.account_settings; revert by calling again with the prior "
         "values (no built-in undo). "
         "Amounts are in the currency named by `summary.display_currency`.",
+    )
+    register(
+        mcp,
+        accounts_links_run,
+        "accounts_links_run",
+        "Propose account merges: sweep for duplicates, or link two "
+        "accounts by id. With no arguments, writes weak-signal merge proposals "
+        "for every account in core.dim_accounts that has no pending proposal "
+        "yet — cross-source twins minted separately — skipping pairs already "
+        "decided in either direction. With both account_id and "
+        "candidate_account_id, proposes exactly that pair under signal "
+        "'manual' with no confidence score: the escape hatch for a duplicate "
+        "no signal reaches (different last four, different institution). "
+        "Passing only one id is an error, not a sweep. Merges nothing — both "
+        "forms write pending app.account_link_decisions rows that still clear "
+        "the same confirmation gate. Read them with "
+        "reviews(kind='account_links') and decide with identity_links_decide. "
+        "Revert via app.audit_log; no undo tool yet.",
     )
     register_accounts_coarse_writes(mcp)

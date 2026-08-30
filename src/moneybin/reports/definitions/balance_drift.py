@@ -119,18 +119,33 @@ def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
             "asserted_balance",
             "User-entered balance as of assertion_date.",
             DataClass.BALANCE,
+            money_kind="balance",
         ),
         OutputColumn(
             "computed_balance",
             "Independent transaction-derived position as of assertion_date.",
             DataClass.BALANCE,
+            money_kind="balance",
         ),
         OutputColumn(
             "drift",
             "Asserted balance minus computed balance.",
             DataClass.TXN_AMOUNT,
+            # `balance` for its rendering contract, not because a discrepancy is
+            # a position: signed, and uncoloured. This is the one column in the
+            # catalog the four kinds do not name. A `flow` would paint a
+            # positive drift green, and `delta` demands a favourable direction
+            # that does not exist here — drifting either way is equally wrong,
+            # and only `drift_abs` beside it says how wrong. Recorded rather
+            # than resolved by inventing a fifth kind for one column.
+            money_kind="balance",
         ),
-        OutputColumn("drift_abs", "Absolute balance drift.", DataClass.TXN_AMOUNT),
+        OutputColumn(
+            "drift_abs",
+            "Absolute balance drift.",
+            DataClass.TXN_AMOUNT,
+            money_kind="magnitude",
+        ),
         OutputColumn(
             "drift_pct",
             "Drift divided by asserted balance.",

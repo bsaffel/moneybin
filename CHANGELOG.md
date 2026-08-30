@@ -11,6 +11,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **You can propose a merge for two accounts nothing automatic would pair.**
+  `accounts links run` and the newly registered `accounts_links_run` MCP tool
+  now accept two account ids and queue exactly that pair for review, under a
+  `manual` signal with no confidence score — nothing was measured, and a number
+  there would rank a bare assertion against real evidence. This is the escape
+  hatch for a duplicate no signal reaches: different last four, different
+  institution, nothing in common but your knowledge that it is one account.
+  Until now, surfacing such a pair took a code change to the resolver, which put
+  it out of reach of every surface.
+
+  With no ids, both surfaces still sweep every account for twins, exactly as
+  before. Naming only one id is an error rather than a sweep: silently
+  backfilling the whole book because the second id was forgotten writes
+  proposals nobody asked for. Neither form merges anything — both write pending
+  proposals that clear the same confirmation gate, so the pair still has to be
+  accepted by a human before any data moves. Registering the tool takes the
+  50-tool standard registry to ADR-016's hard maximum exactly — admitting
+  another tool now means retiring one. (#450)
+
+  Either id may name an account an import has only just created. Those live in
+  the link records before the next transform materializes them into
+  `core.dim_accounts`, and imports do not refresh by default — so checking the
+  materialized table alone would have refused the freshest half of every pair,
+  which is the half you are most likely to have just noticed. The places that
+  announce a duplicate now name this form too: the import's created-account
+  hint on both surfaces, and the `duplicate_account_overlap` doctor finding,
+  which measures transaction overlap and already warned that identity
+  resolution may propose nothing at all for the pair it just flagged.
+
 - **`moneybin --home <path>` picks the data directory.** Until now `MONEYBIN_HOME`
   was the only way to point MoneyBin at a different set of profiles, config and
   databases, and it appeared in no `--help` output — so the override was easy to
@@ -796,6 +825,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   only then failed with "OAuth token refresh failed. See application logs for
   detail." Grants stored before this release record no issuing client, so each
   needs one `moneybin gsheet connect` to re-authorize (#475).
+
+- **Every table the CLI prints is now built the same way.** Twelve commands
+  rendered rows through five different idioms — a shared Rich helper for three,
+  and a hand-padded f-string per command for the rest, each with its own guessed
+  column widths. They all go through one `render_rows` now, which sizes each
+  column to its widest value, so `accounts links history` no longer aligns only
+  the rows that fell back to ids. Two more renderers cover the other shapes a
+  command prints: `render_summary` for a labelled block like `reports networth`,
+  and `render_note` for the status lines `-q` silences. Result rows and
+  summaries have no way to be silenced — neither renderer accepts a quiet flag.
+
+  No value is ever elided to make a row fit: a name too wide for the terminal
+  wraps, because a resolved account name ends in the masked last four and
+  clipping it removes exactly the digits that tell two candidates apart
+  (#470).
+
+- **Amounts print with thousands separators and a sign that means something.**
+  Every money column now declares what its number *is* — a signed flow, a
+  positive magnitude like `SUM(ABS(amount))`, a change in one, or a balance —
+  and the renderer reads that declaration instead of guessing from the value.
+  `reports spending` no longer risks rendering spending as green income, and a
+  rise in spending reads as a rise in spending rather than as a gain. Negative
+  amounts carry `−` (U+2212), matching the rest of the product. A negative net
+  worth keeps its minus: "balances unsigned" only ever meant no decorative `+`
+  on a positive position. Colour is redundant with the sign glyph and appears
+  only on a terminal with `NO_COLOR` unset, so piping or redirecting output
+  loses nothing (#470).
+
+- **`transactions matches` stops reporting an unscored match as `0.00`.** An
+  exact-id match records no confidence score; the two match tables printed that
+  as zero, which reads as the engine having compared the pair and found nothing
+  in common. It now prints `-`, matching what the merchant and security link
+  queues already did (#470).
+
 - **`--help` no longer lists commands that aren't built yet.** Twelve
   whole-command placeholders — `budget delete/set`, `sync key rotate`, `sync
   schedule set/show/remove`, `transactions categorize ml apply/status/train`,
@@ -1221,6 +1284,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **A non-finite amount no longer crashes a report, or prices as though it were
+  a number.** A `NaN` in a money column left `format_money` through
+  `amount < 0` as a raw `decimal.InvalidOperation` traceback rather than a
+  clean CLI error, because ordering a `Decimal("NaN")` raises instead of
+  returning false; an infinity did not raise at all and printed as the signed,
+  coloured word `Infinity`. The same value in the currency converter was
+  quieter and worse — `NaN` times a rate is `NaN`, so it converted without
+  complaint and reached the reader labelled in the display currency, a
+  conversion that never happened. Both `_as_decimal` helpers now refuse a
+  non-finite value the way they already refuse unparseable text: the renderer
+  prints it absent, and the converter segments and says why. Reachable from any
+  report whose money column is backed by a float computation, including the
+  out-of-repo `@report` extensions `docs/specs/extension-contracts.md`
+  addresses (#470).
+
+- **`transactions list` no longer clips a long description.** The command cut
+  the description to 49 characters and appended an ellipsis before the value
+  reached the renderer, so it fired on a wide terminal too — and a raw bank
+  description carries the detail that separates two similar charges at the
+  end. It folds now, like every other value this renderer prints (#470).
+
+- **A withheld amount no longer prints as an absent one.** A money column
+  carrying a whole-masking privacy class (`ROUTING_NUMBER`,
+  `COMPOSITE_IDENTIFIER`, `UNRESOLVED`) reaches the renderer already replaced
+  by its `*****` sentinel. `format_money` read that as unparseable and printed
+  `-`, so the text table contradicted both its own masking and the
+  `--output json` result for the same query, and a reader could not tell a
+  withheld amount from a SQL NULL. Text in a money cell now prints itself —
+  matched by shape rather than against the sentinels in use today, so a new
+  mask cannot quietly start reading as absent. Non-numeric text in a money
+  column that was never a mask now shows through for the same reason, instead
+  of being reported as no data (#470).
+
+- **A `delta` money column with no `polarity` is rejected where it is
+  declared.** `OutputColumn` accepted the pair and only the text renderer
+  refused it — inside `money_columns`, which the generated CLI command reaches
+  after the report has already run and written its audit-log and metrics side
+  effects, and which a JSON or MCP caller never reaches at all. The same broken
+  declaration was therefore loud on one surface and silent on the others. It
+  now raises at construction, so an unrenderable report is unbuildable
+  everywhere at once. No in-repo report was affected; this closes the gap for
+  the out-of-repo authors `docs/specs/extension-contracts.md` addresses (#470).
+
+  The same guard now checks the declared values themselves. `money_kind` and
+  `polarity` are `Literal` types, which bind a type checker and nothing at
+  runtime, so an author running none got no signal from either wrong value —
+  and neither one fails loudly by itself. An unrecognized kind falls through
+  the renderer to an unsigned, uncoloured amount that reads as a deliberate
+  balance, and every polarity that is not `income` colours as `expense`, so
+  `polarity="up"` inverts a delta's colours rather than raising. A polarity on
+  any kind but `delta` is refused too, because nothing reads one there:
+  accepting it silently tells an author their column is polarized when the
+  rendered output will not be (#470).
+
+- **`-q/--quiet` now works on the report commands.** `reports networth`,
+  `networth-history`, `reports run`, and every generated built-in report
+  command accepted the flag and then dropped it, so their next-step hints
+  ("run `moneybin reports explain …`") printed regardless. Each forwards it
+  now. What `-q` still does not silence is any statement about how far the
+  numbers can be trusted — a truncated result, a degraded report, or a
+  currency conversion — because asking for less chatter is not a claim that
+  the truncation stopped (#470).
+
+- **`transactions categorize pending` formats its amounts like every other
+  table.** Its `amount` column printed raw (`-42.5`, left-aligned, no
+  separator) while the rest of the CLI moved to `−42.50` (#470).
+
 - **Google Sheets authorization fails up front instead of after a consent
   screen that could never complete.** `gsheet auth` sent an empty client
   secret in the code→token exchange, so Google returned an authorization code
@@ -1251,6 +1381,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   quoting style), a quoted identifier, or a `--` comment. This unblocks
   `... WHERE action LIKE 'export%'` against `app.audit_log`, the documented
   way to find an export's audit trail from the agent-safe SQL surface (#447).
+
+- **Account merge proposals key on the last four, not on the institution.** The
+  proposer both missed real cross-source duplicates and filed proposals for
+  unrelated pairs, and each failure had its own cause.
+
+  The last-four rung required the source to carry a resolved institution. A
+  tabular export names its account only inside a label — `Daily Expense (...)`
+  — and no institution is parsed from it, so the account it minted had an exact
+  last four and no institution, invisible to every last-four comparison. The
+  OFX copy of the same account minted separately, both counted toward spending
+  and net worth, and nothing proposed the merge. Institution is now evidence
+  rather than a precondition: it still vetoes a pair that states two different
+  banks, but a pair where either side names none surfaces under a new
+  `last_four` signal, kept distinct from `institution_last4` so the queue can
+  tell "both sides named this bank" from "one side named nothing".
+
+  Separately, `institution_reissue` fired on a shared institution plus a last
+  four that differed — which, in an established book, is every pair of cards at
+  one bank. It never checked that the two ledgers were sequential, which is what
+  a reissue means, so it proposed pairs that ran side by side for months, each
+  carrying its own refutation in zero matched transactions over the period they
+  shared. A proposal is now dropped only when that whole refutation holds: the
+  two ledgers ran at once for longer than a statement cycle **and** shared no
+  transaction over a period both of them covered. Requiring the second half
+  matters most for the duplicate this queue exists to catch — one account
+  arriving from two sources overlaps in dates by construction and matches on
+  every row, so dropping on the dates alone would have silently withheld the
+  pair and left it double-counting. Only positive concurrency drops it: an
+  account with no published ledger, or no comparable period to measure, keeps
+  its proposal, which is the import-time state the signal was written for. An
+  unstated currency counts as silence here for the same reason: the overlap
+  probe normally reads a one-sided blank as a mismatch, which is affordable
+  where the count is only shown beside a proposal and inverts where it
+  suppresses one — a tabular export leaving the column empty beside a feed
+  that states USD would otherwise score zero against a ledger it agrees with
+  row for row, and the drop would read that as disagreement. Two stated and
+  differing currencies still refute.
+
+  Ledger overlap now also states the posting-lag tolerance it matched within, on
+  every surface that reports it. "345 of 346" otherwise reads as exact-date
+  agreement, a stronger claim than the probe makes and a different basis for
+  ratifying an irreversible merge. (#450)
 
 - **A denied keychain read is no longer reported as a missing key.** macOS
   reports a sandbox-denied keychain read identically to a genuinely absent

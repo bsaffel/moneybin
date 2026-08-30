@@ -54,7 +54,10 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
             DataClass.CURRENCY,
         ),
         OutputColumn(
-            "avg_amount", "Mean absolute recurring charge.", DataClass.TXN_AMOUNT
+            "avg_amount",
+            "Mean absolute recurring charge.",
+            DataClass.TXN_AMOUNT,
+            money_kind="magnitude",
         ),
         OutputColumn("cadence", "Inferred recurrence cadence.", DataClass.TXN_TYPE),
         OutputColumn(
@@ -83,6 +86,7 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
             "annualized_cost",
             "Estimated yearly cost from inferred cadence.",
             DataClass.TXN_AMOUNT,
+            money_kind="magnitude",
         ),
         OutputColumn(
             "confidence", "Recurrence confidence from 0 to 1.", DataClass.AGGREGATE
