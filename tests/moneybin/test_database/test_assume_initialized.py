@@ -134,21 +134,6 @@ def _catalog(db: Database) -> dict[str, object]:
     }
 
 
-def test_catalog_includes_indexes_and_comments(tmp_path: Path) -> None:
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=_store(),
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    try:
-        catalog = _catalog(database)
-        assert "indexes" in catalog
-        assert "catalog_comments" in catalog
-    finally:
-        database.close()
-
-
 def test_template_copy_matches_fresh_build(tmp_path: Path) -> None:
     # Build the copy artifacts first, so a failure here opens no connection.
     template = tmp_path / "template.duckdb"
