@@ -21,6 +21,8 @@ from moneybin.connectors.sync_models import (
 )
 from moneybin.database import Database
 from moneybin.extractors.plaid import PlaidExtractor
+from moneybin.services import sync_service
+from moneybin.services.refresh import RefreshResult
 from moneybin.services.sync_service import SyncService
 
 FIXTURE = (
@@ -82,8 +84,6 @@ def mock_investments_client(investments_sync_data: SyncDataResponse) -> MagicMoc
 @pytest.fixture
 def mock_sync_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep pull tests focused on sync orchestration, not SQLMesh execution."""
-    from moneybin.services import sync_service
-    from moneybin.services.refresh import RefreshResult
 
     def fake_refresh(_db: Database) -> RefreshResult:
         return RefreshResult(applied=True, duration_seconds=0.0)
