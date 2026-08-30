@@ -129,22 +129,25 @@ class SecurityLinkDecisionsRepo(LinkDecisionsRepoBase):
         (accepted/rejected) state — this repo refuses to merge silently, so an
         already-decided row never re-decides itself.
         """
-        before = self._require(self._fetch_row(decision_id), "decision_id", decision_id)
+        return self._update_status(
+            decision_id,
+            status=status,
+            decided_by=decided_by,
+            actor=actor,
+            parent_audit_id=parent_audit_id,
+            in_outer_txn=in_outer_txn,
+        )
+
+    def _validate_status_transition(
+        self, decision_id: str, before: dict[str, Any], status: str
+    ) -> None:
+        """Permit the security queue's sole pending-to-terminal transition."""
         if before["status"] != "pending" or status not in ("accepted", "rejected"):
             raise ValueError(
                 "security_link_decisions.update_status: cannot transition "
                 f"decision {decision_id} from {before['status']!r} to "
                 f"{status!r}; only pending -> accepted/rejected is allowed"
             )
-        return self._update_status(
-            decision_id,
-            status=status,
-            decided_by=decided_by,
-            actor=actor,
-            before=before,
-            parent_audit_id=parent_audit_id,
-            in_outer_txn=in_outer_txn,
-        )
 
     def list_rejected(self) -> list[dict[str, Any]]:
         """Return all rejected, non-reversed decisions (the never-re-propose set).

@@ -510,7 +510,6 @@ class LinkDecisionsRepoBase(BaseRepo):
         decided_by: str,
         actor: str,
         extra_values: Mapping[str, Any] | None = None,
-        before: dict[str, Any] | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> AuditEvent:
@@ -522,13 +521,10 @@ class LinkDecisionsRepoBase(BaseRepo):
         }
         set_sql = ", ".join(f"{quote_ident(column)} = ?" for column in assignments)
         with self._transaction(in_outer_txn=in_outer_txn):
-            resolved_before = (
-                before
-                if before is not None
-                else self._require(
-                    self._fetch_row(decision_id), "decision_id", decision_id
-                )
+            resolved_before = self._require(
+                self._fetch_row(decision_id), "decision_id", decision_id
             )
+            self._validate_status_transition(decision_id, resolved_before, status)
             self._db.execute(
                 f"UPDATE {self.table_ref.full_name} SET {set_sql}, "  # noqa: S608  # TableRef + code-supplied quoted columns; values parameterized
                 "decided_at = CURRENT_TIMESTAMP WHERE decision_id = ?",
@@ -543,6 +539,11 @@ class LinkDecisionsRepoBase(BaseRepo):
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
+
+    def _validate_status_transition(
+        self, decision_id: str, before: dict[str, Any], status: str
+    ) -> None:
+        """Apply a queue-specific transition guard inside the write transaction."""
 
     def reverse(
         self,

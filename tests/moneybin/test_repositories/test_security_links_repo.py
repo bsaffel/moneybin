@@ -370,6 +370,33 @@ def test_decision_lifecycle_and_pending_count(db: Database) -> None:
         )
 
 
+def test_update_status_validates_pending_decision_inside_transaction(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal transition cannot interleave between the guard and write."""
+    repo = SecurityLinkDecisionsRepo(db)
+    decision_id = _propose(repo, decision_id="dec_atomic_guard").target_id
+    assert decision_id is not None
+
+    transaction_started = False
+    original_begin = db.begin
+    original_fetch = repo._fetch_row  # pyright: ignore[reportPrivateUsage]
+
+    def begin() -> None:
+        nonlocal transaction_started
+        transaction_started = True
+        original_begin()
+
+    def fetch_row(value: str) -> dict[str, Any] | None:
+        assert transaction_started
+        return original_fetch(value)
+
+    monkeypatch.setattr(db, "begin", begin)
+    monkeypatch.setattr(repo, "_fetch_row", fetch_row)
+
+    repo.update_status(decision_id, status="accepted", decided_by="user", actor="cli")
+
+
 def test_insert_writes_row_and_audit_row(db: Database) -> None:
     event = _propose(SecurityLinkDecisionsRepo(db), decision_id="dec_insert_audit")
     assert event.target_id == "dec_insert_audit"
