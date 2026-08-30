@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.config import MoneyBinSettings
+from moneybin.config import GSHEET_PUBLIC_OAUTH_CLIENT_ID, MoneyBinSettings
 from moneybin.connectors.gsheet.errors import GSheetAuthError
 from moneybin.connectors.gsheet.oauth_client import (
     GOOGLE_SHEETS_READ_SCOPE,
@@ -95,9 +95,19 @@ def test_fake_oauth_implements_oauth_credentials_provider_protocol() -> None:
 
 def _make_settings(
     client_id: str = "fake-client-id.apps.googleusercontent.com",
+    client_secret: str | None = "fake-client-secret",  # noqa: S107  # test credential
 ) -> MoneyBinSettings:
-    """Build a settings instance with a configured gsheet client id."""
-    return MoneyBinSettings.model_validate({"gsheet": {"oauth_client_id": client_id}})
+    """Build a settings instance with a configured gsheet client id and secret.
+
+    Both are configured by default because authorize() refuses without a
+    secret; pass client_secret=None to exercise that refusal.
+    """
+    return MoneyBinSettings.model_validate({
+        "gsheet": {
+            "oauth_client_id": client_id,
+            "oauth_client_secret": client_secret,
+        }
+    })
 
 
 def _store_with(values: dict[str, str | None]) -> MagicMock:
@@ -402,3 +412,168 @@ def test_google_oauth_refresh_downgrade_clears_capability_cache(
         call.args == (GSHEET_WRITE_ACCESS_TOKEN_KEY, "downgraded-access")
         for call in store.set_key.call_args_list
     )
+
+
+def test_google_oauth_authorize_sends_configured_client_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Desktop-app client's code->token exchange needs the client secret.
+
+    Consent succeeds and Google returns an authorization code, then the
+    exchange fails when client_secret is empty, so the configured value has to
+    reach the client config the flow is built from.
+    """
+    creds = MagicMock(
+        refresh_token="refresh-xyz",  # noqa: S106  # test credential
+        token="access-xyz",  # noqa: S106  # test credential
+        expiry=None,
+        granted_scopes=[GOOGLE_SHEETS_READ_SCOPE],
+        scopes=[GOOGLE_SHEETS_READ_SCOPE],
+    )
+    flow = MagicMock()
+    flow.run_local_server.return_value = creds
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    from_config = MagicMock(return_value=flow)
+    monkeypatch.setattr(InstalledAppFlow, "from_client_config", from_config)
+    expected = "fake-desktop-secret"
+    settings = MoneyBinSettings.model_validate({
+        "gsheet": {
+            "oauth_client_id": "fake-client-id.apps.googleusercontent.com",
+            "oauth_client_secret": expected,
+        }
+    })
+    client = GoogleOAuthClient(_store_with({}), settings)
+
+    client.authorize()
+
+    client_config = from_config.call_args.args[0]
+    assert client_config["installed"]["client_secret"] == expected
+
+
+def test_google_oauth_authorize_refuses_before_browser_when_secret_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No secret means the exchange is doomed, so refuse before consent.
+
+    Without this the user opens a browser, picks an account, grants access, and
+    only then gets a generic failure for a cause no part of the flow named.
+    """
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    from_config = MagicMock()
+    monkeypatch.setattr(InstalledAppFlow, "from_client_config", from_config)
+    client = GoogleOAuthClient(_store_with({}), _make_settings(client_secret=None))
+
+    with pytest.raises(GSheetAuthError, match="OAUTH_CLIENT_SECRET"):
+        client.authorize()
+
+    from_config.assert_not_called()
+
+
+def test_google_oauth_refresh_names_the_missing_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refresh without the secret must name the cause, not fail generically.
+
+    google-auth raises a generic RefreshError when client_secret is None, and
+    the connector's broad handler turns that into "See application logs for
+    detail." A scheduled `refresh` started without the exported variable would
+    then fail with an error naming nothing, while is_authorized() still says
+    true.
+    """
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "refresh-abc",
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+    })
+    from google.oauth2 import credentials as credentials_module
+
+    constructor = MagicMock()
+    monkeypatch.setattr(credentials_module, "Credentials", constructor)
+    client = GoogleOAuthClient(store, _make_settings(client_secret=None))
+
+    with pytest.raises(GSheetAuthError, match="OAUTH_CLIENT_SECRET"):
+        client.get_access_token()
+
+    constructor.assert_not_called()
+
+
+def test_google_oauth_refresh_sends_configured_client_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refresh grant needs the secret for the same reason the exchange does.
+
+    google-auth refuses locally when client_secret is None, so a connector that
+    authorized successfully would still fail every pull once the cached access
+    token aged out.
+    """
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "refresh-abc",
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+    })
+    creds = MagicMock(
+        token="access-xyz",  # noqa: S106  # test credential
+        expiry=None,
+        granted_scopes=[GOOGLE_SHEETS_READ_SCOPE],
+        scopes=[GOOGLE_SHEETS_READ_SCOPE],
+    )
+    from google.oauth2 import credentials as credentials_module
+
+    constructor = MagicMock(return_value=creds)
+    monkeypatch.setattr(credentials_module, "Credentials", constructor)
+    expected = "fake-desktop-secret"
+    settings = MoneyBinSettings.model_validate({
+        "gsheet": {
+            "oauth_client_id": "fake-client-id.apps.googleusercontent.com",
+            "oauth_client_secret": expected,
+        }
+    })
+    client = GoogleOAuthClient(store, settings)
+
+    client.get_access_token()
+
+    assert constructor.call_args.kwargs["client_secret"] == expected
+
+
+def test_google_oauth_refuses_user_secret_paired_with_embedded_client_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A secret set without its own client ID is a guaranteed mismatch.
+
+    Google issues each secret for one specific client ID and MoneyBin ships
+    none for the embedded one, so "set the secret, forgot the ID" reaches
+    consent and dies at the exchange — the late failure this helper exists to
+    prevent, for a narrower trigger.
+    """
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    from_config = MagicMock()
+    monkeypatch.setattr(InstalledAppFlow, "from_client_config", from_config)
+    client = GoogleOAuthClient(
+        _store_with({}),
+        _make_settings(
+            client_id=GSHEET_PUBLIC_OAUTH_CLIENT_ID,
+            client_secret="user-desktop-secret",  # noqa: S106  # test credential
+        ),
+    )
+
+    with pytest.raises(GSheetAuthError, match="OAUTH_CLIENT_ID"):
+        client.authorize()
+
+    from_config.assert_not_called()
+
+
+def test_google_oauth_is_authorized_false_when_client_secret_missing() -> None:
+    """A grant the next refresh cannot use is not an authorized state.
+
+    Reporting true here sends the CLI and MCP auth paths down their
+    ``already_authorized`` branch, so the missing secret surfaces later as a
+    generic refresh failure instead of the named refusal ``authorize()`` gives.
+    """
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "refresh-abc",
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+    })
+    client = GoogleOAuthClient(store, _make_settings(client_secret=None))
+
+    assert client.is_authorized() is False
