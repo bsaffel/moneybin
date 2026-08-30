@@ -79,6 +79,18 @@ def mock_investments_client(investments_sync_data: SyncDataResponse) -> MagicMoc
     return client
 
 
+@pytest.fixture
+def mock_sync_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep pull tests focused on sync orchestration, not SQLMesh execution."""
+    from moneybin.services import sync_service
+    from moneybin.services.refresh import RefreshResult
+
+    def fake_refresh(_db: Database) -> RefreshResult:
+        return RefreshResult(applied=True, duration_seconds=0.0)
+
+    monkeypatch.setattr(sync_service, "_refresh", fake_refresh)
+
+
 def _payload(accounts: list[dict[str, Any]], *, item_id: str) -> SyncDataResponse:
     """A minimal one-institution /sync/data response carrying only accounts."""
     return SyncDataResponse.model_validate({
@@ -149,6 +161,7 @@ def _payload_with_shared_official_name() -> SyncDataResponse:
     )
 
 
+@pytest.mark.usefixtures("mock_sync_refresh")
 def test_pull_happy_path(
     mock_client: MagicMock,
     db: Database,
@@ -176,6 +189,7 @@ def test_pull_happy_path(
     assert result.institutions[0].provider_item_id == "item_chase_abc"
 
 
+@pytest.mark.usefixtures("mock_sync_refresh")
 def test_pull_acks_after_successful_load(
     mock_client: MagicMock,
     db: Database,
@@ -193,6 +207,7 @@ def test_pull_acks_after_successful_load(
     mock_client.ack.assert_called_once_with(sync_data.metadata.job_id)
 
 
+@pytest.mark.usefixtures("mock_sync_refresh")
 def test_pull_ack_failure_does_not_fail_the_pull(
     mock_client: MagicMock,
     db: Database,
@@ -217,6 +232,7 @@ def test_pull_ack_failure_does_not_fail_the_pull(
     assert any("ack" in r.message.lower() for r in caplog.records)
 
 
+@pytest.mark.usefixtures("mock_sync_refresh")
 def test_pull_with_institution_resolves_to_provider_item_id(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
@@ -247,6 +263,7 @@ def test_pull_with_unknown_institution_raises(
         service.pull(institution="UnknownBank")
 
 
+@pytest.mark.usefixtures("mock_sync_refresh")
 def test_pull_with_provider_item_id_skips_resolution(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
@@ -267,6 +284,7 @@ def test_pull_rejects_both_institution_and_provider_item_id(
         service.pull(institution="Chase", provider_item_id="item_x")
 
 
+@pytest.mark.usefixtures("mock_sync_refresh")
 def test_pull_with_force_passes_reset_cursor(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
@@ -434,6 +452,7 @@ def test_pull_flags_manual_plaid_overlap(
     assert result.investment_source_overlap_accounts == [canonical_account_id]
 
 
+@pytest.mark.usefixtures("mock_sync_refresh")
 def test_link_new_institution_auto_pulls(
     mock_client: MagicMock,
     db: Database,
