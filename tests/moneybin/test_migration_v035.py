@@ -26,8 +26,6 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V035__add_securities_created_by import migrate
 from tests.moneybin.migration_helpers import run_migration
 
-pytestmark = pytest.mark.fresh_db
-
 _OLD_SHAPE = """
 CREATE TABLE app.securities (
     security_id VARCHAR NOT NULL PRIMARY KEY,

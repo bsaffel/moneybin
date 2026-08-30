@@ -86,7 +86,7 @@ def test_assume_initialized_rejects_missing_file(tmp_path: Path) -> None:
 
 
 def _catalog(db: Database) -> dict[str, object]:
-    """Full schema fingerprint: tables, columns (+types), views, comments, constraints."""
+    """Full schema fingerprint, including indexes and catalog comments."""
     tables = db.execute(
         "SELECT schema_name, table_name, comment FROM duckdb_tables() "
         "ORDER BY schema_name, table_name"
@@ -96,8 +96,26 @@ def _catalog(db: Database) -> dict[str, object]:
         "FROM duckdb_columns() ORDER BY schema_name, table_name, column_name"
     ).fetchall()
     views = db.execute(
-        "SELECT schema_name, view_name FROM duckdb_views() "
+        "SELECT schema_name, view_name, comment FROM duckdb_views() "
         "ORDER BY schema_name, view_name"
+    ).fetchall()
+    indexes = db.execute(
+        "SELECT schema_name, index_name, table_name, is_unique, sql "
+        "FROM duckdb_indexes() "
+        "ORDER BY schema_name, index_name"
+    ).fetchall()
+    catalog_comments = db.execute(
+        "SELECT object_type, schema_name, object_name, comment FROM ("
+        "SELECT 'table' AS object_type, schema_name, table_name AS object_name, comment "
+        "FROM duckdb_tables() "
+        "UNION ALL "
+        "SELECT 'view' AS object_type, schema_name, view_name AS object_name, comment "
+        "FROM duckdb_views() "
+        "UNION ALL "
+        "SELECT 'index' AS object_type, schema_name, index_name AS object_name, comment "
+        "FROM duckdb_indexes()"
+        ") WHERE comment IS NOT NULL "
+        "ORDER BY object_type, schema_name, object_name"
     ).fetchall()
     # Constraints (PK/unique/check/not-null) — the dimension test_repo_metadata's
     # PK check relies on; included so schema drift in keys can't slip past.
@@ -110,8 +128,25 @@ def _catalog(db: Database) -> dict[str, object]:
         "tables": tables,
         "columns": columns,
         "views": views,
+        "indexes": indexes,
+        "catalog_comments": catalog_comments,
         "constraints": constraints,
     }
+
+
+def test_catalog_includes_indexes_and_comments(tmp_path: Path) -> None:
+    database = Database(
+        tmp_path / "test.duckdb",
+        secret_store=_store(),
+        no_auto_upgrade=True,
+        read_only=False,
+    )
+    try:
+        catalog = _catalog(database)
+        assert "indexes" in catalog
+        assert "catalog_comments" in catalog
+    finally:
+        database.close()
 
 
 def test_template_copy_matches_fresh_build(tmp_path: Path) -> None:

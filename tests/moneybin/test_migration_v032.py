@@ -24,8 +24,6 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V032__add_category_source_map_and_class import migrate
 from tests.moneybin.migration_helpers import column_exists, column_info, run_migration
 
-pytestmark = pytest.mark.fresh_db
-
 _BRIDGE_COLUMNS = {
     "source_type",
     "source_category_code",

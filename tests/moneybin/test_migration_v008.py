@@ -20,8 +20,6 @@ from tests.moneybin.migration_helpers import (
     run_migration,
 )
 
-pytestmark = pytest.mark.fresh_db
-
 
 def _reset_to_pre_v008_state(db: Database) -> None:
     """Reverse the V008 end-state: drop `exemplars`, restore raw_pattern NOT NULL."""
