@@ -127,23 +127,32 @@ class GoogleOAuthClient:
                 "MONEYBIN_GSHEET__OAUTH_CLIENT_ID before running `gsheet connect`."
             )
 
+        client_secret = self._settings.gsheet.oauth_client_secret
+        if not client_secret:
+            # Refuse here rather than at the exchange: without the secret the
+            # code->token step always fails, but it fails *after* the user has
+            # already picked an account and granted access, so the browser
+            # reports success and the error names no cause.
+            raise GSheetAuthError(
+                "Google Sheets OAuth client secret is not configured. Google's "
+                "Desktop clients require it to exchange the authorization "
+                "code, so consent would succeed and the exchange would fail. "
+                "Set MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET before running "
+                "`gsheet connect`."
+            )
+
         # Import lazily so the connector is importable in environments that
         # don't have google-auth-oauthlib installed (e.g. minimal CI jobs).
         from google_auth_oauthlib.flow import InstalledAppFlow
 
-        client_secret = self._settings.gsheet.oauth_client_secret
         client_config = {
             "installed": {
                 "client_id": client_id,
                 # Google's Desktop clients require the secret in the
-                # code->token exchange even under PKCE — an empty string fails
-                # the exchange *after* a successful consent, so the browser
-                # looks like it worked. RFC 8252 s8.5: a secret shipped to
-                # every user is not confidential; PKCE and the loopback
-                # redirect carry the security.
-                "client_secret": (
-                    client_secret.get_secret_value() if client_secret else ""
-                ),
+                # code->token exchange even under PKCE. RFC 8252 s8.5: a
+                # secret shipped to every user is not confidential; PKCE and
+                # the loopback redirect carry the security.
+                "client_secret": client_secret.get_secret_value(),
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
                 # 127.0.0.1, not "localhost": on hosts where localhost
@@ -297,12 +306,18 @@ class GoogleOAuthClient:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
 
+        # The refresh grant needs the secret for the same reason the initial
+        # exchange does: google-auth puts client_secret into the body
+        # unconditionally and urlencodes it, so None would go out as the
+        # literal "None" and Google would answer invalid_client an hour after
+        # a connect that looked healthy.
+        client_secret = self._settings.gsheet.oauth_client_secret
         creds = Credentials(
             token=None,
             refresh_token=refresh_token,
             token_uri="https://oauth2.googleapis.com/token",  # noqa: S106  # Google OAuth endpoint URL, not a credential
             client_id=client_id,
-            client_secret=None,
+            client_secret=(client_secret.get_secret_value() if client_secret else None),
             scopes=sorted(grant.scopes),
         )
         try:

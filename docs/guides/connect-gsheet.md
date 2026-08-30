@@ -16,7 +16,7 @@ This is the first entry in the `connect-*` family. Future siblings — Airtable,
 **This is not:**
 
 - A two-way sync. MoneyBin only reads from your sheet (`spreadsheets.readonly` OAuth scope); it never writes back.
-- An aggregator integration like Plaid. MoneyBin's client speaks Google's API directly — no moneybin-sync mediation, no shared client secret.
+- An aggregator integration like Plaid. MoneyBin's client speaks Google's API directly — no moneybin-sync mediation, and no third party ever sees your refresh token.
 - A schema designer. You bring your sheet's shape; MoneyBin detects it. If you want to restructure, do it in the sheet and run `gsheet reconnect`.
 
 ## `_link` vs `_connect` — which family is this?
@@ -34,9 +34,22 @@ The verb predicts the trust model. You should never need a qualifier to know whi
 moneybin gsheet auth
 ```
 
-This opens your browser to Google's OAuth consent screen using the **Desktop app** PKCE flow — no shared client secret is bundled with MoneyBin, and no third party sees your refresh token. On consent, the token lands in your local `SecretStore` (keychain or passphrase-derived key, same as every other MoneyBin secret).
+This opens your browser to Google's OAuth consent screen using the **Desktop app** PKCE flow. No third party sees your refresh token: on consent it lands in your local `SecretStore` (keychain or passphrase-derived key, same as every other MoneyBin secret).
 
 You only need to do this once per profile. `gsheet connect` will trigger `gsheet auth` automatically on first run if you skip this step.
+
+### Using your own Google OAuth client
+
+MoneyBin ships a public client ID for its own Google Cloud project. Google requires a matching client secret in the code-for-token exchange even under PKCE, because Desktop clients have no signing certificate to attest with. That pair is not a confidential credential — [RFC 8252 §8.5](https://datatracker.ietf.org/doc/html/rfc8252#section-8.5) says a secret shipped to every user cannot be one — and it grants no access to your data on its own: a human still has to consent, and the scope is read-only.
+
+What it does share is quota. Google rate-limits the Sheets API per client ID at roughly 10 queries per second across everyone using that credential, so a heavy shared load is felt by every user of it. To run on your own quota, register a **Desktop app** client in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) with the Sheets API enabled, then set both:
+
+```bash
+export MONEYBIN_GSHEET__OAUTH_CLIENT_ID="<your-client-id>.apps.googleusercontent.com"
+export MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET="<your-client-secret>"
+```
+
+Set both or neither. With an ID and no secret, `gsheet auth` refuses before opening the browser rather than letting you consent to an exchange that cannot complete.
 
 ## Connect a sheet
 

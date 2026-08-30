@@ -203,14 +203,23 @@ def test_auto_rule_guard_defaults() -> None:
 
 
 @pytest.mark.unit
-def test_gsheet_oauth_client_id_ships_embedded_by_default() -> None:
+def test_gsheet_oauth_client_id_ships_embedded_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The Sheets connector authorizes on a fresh install with no dotenv.
 
-    connect-gsheet.md ships a public installed-app client ID (PKCE, no
-    secret) so a pip user never touches Google Cloud Console. SyncConfig
-    carries a same-named Auth0 field; embedding must not land there.
+    connect-gsheet.md ships a public installed-app client ID so a pip user
+    never touches Google Cloud Console. SyncConfig carries a same-named Auth0
+    field; embedding must not land there.
+
+    The env vars are cleared because this asserts the shipped default: a
+    developer with either override exported would otherwise see a failure that
+    reads like a regression in the embedded value.
     """
     from moneybin.config import GSHEET_PUBLIC_OAUTH_CLIENT_ID, MoneyBinSettings
+
+    monkeypatch.delenv("MONEYBIN_GSHEET__OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MONEYBIN_SYNC__OAUTH_CLIENT_ID", raising=False)
 
     settings = MoneyBinSettings()
 
@@ -242,6 +251,7 @@ def test_gsheet_oauth_client_secret_override_lands_on_gsheet_not_sync(
 
     expected = "desktop-secret"
     monkeypatch.setenv("MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET", expected)
+    monkeypatch.delenv("MONEYBIN_SYNC__OAUTH_CLIENT_SECRET", raising=False)
 
     settings = MoneyBinSettings()
 
