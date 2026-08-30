@@ -762,6 +762,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **Google Sheets connects with no setup.** MoneyBin now ships the OAuth client
+  secret alongside its public client ID, so `moneybin gsheet auth` completes on
+  a bare install. Google's Desktop clients require both halves, and a wheel
+  carries no dotenv to read a user-supplied secret from — so shipping only the
+  ID meant every user first registered their own Desktop client in the Google
+  Cloud Console, the 15 minutes of setup this connector chose OAuth to avoid. A
+  credential shipped to every user is not confidential (RFC 8252 §8.5); PKCE
+  and the loopback redirect carry the security, and the read-only
+  `spreadsheets.readonly` scope bounds what a consent can grant. The shared
+  client draws on one Google project's quota of 300 read requests per minute,
+  so `MONEYBIN_GSHEET__OAUTH_CLIENT_ID` and
+  `MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET` remain supported and are the
+  documented remedy for anyone throttled, or unwilling to trust MoneyBin's
+  project identity on the consent screen. Setting a secret without its own
+  client ID is still refused by name. The reasoning and its sources — RFC 8252
+  §8.5, Google's own installed-app documentation, and rclone's 2026 retirement
+  of its shared client — are written up in `docs/guides/connect-gsheet.md`
+  under "Why MoneyBin ships a client secret".
 - **`--help` no longer lists commands that aren't built yet.** Twelve
   whole-command placeholders — `budget delete/set`, `sync key rotate`, `sync
   schedule set/show/remove`, `transactions categorize ml apply/status/train`,
@@ -1198,10 +1216,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET` is now required alongside
   `MONEYBIN_GSHEET__OAUTH_CLIENT_ID`, and both the authorization and refresh
   grants refuse by name when either is missing rather than failing somewhere
-  less legible. Registering your own Desktop app client is required today;
-  `docs/guides/connect-gsheet.md` covers it. The refresh grant carried the same
-  defect and would have failed about an hour after an authorization that looked
-  healthy. Setting only the secret is refused too, because it pairs your secret
+  less legible. `docs/guides/connect-gsheet.md` covers bringing your own client.
+  The refresh grant carried the same defect and would have failed about an hour
+  after an authorization that looked healthy. Setting only the secret is refused too, because it pairs your secret
   with MoneyBin's embedded client ID, which Google never issued it for. And
   `gsheet auth` no longer reports an existing connection as authorized when
   either variable is missing: it re-authorizes and names the gap instead of

@@ -7,7 +7,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.config import GSHEET_PUBLIC_OAUTH_CLIENT_ID, MoneyBinSettings
+from moneybin.config import (
+    GSHEET_PUBLIC_OAUTH_CLIENT_ID,
+    GSHEET_PUBLIC_OAUTH_CLIENT_SECRET,
+    MoneyBinSettings,
+)
 from moneybin.connectors.gsheet.errors import GSheetAuthError
 from moneybin.connectors.gsheet.oauth_client import (
     GOOGLE_SHEETS_READ_SCOPE,
@@ -577,3 +581,31 @@ def test_google_oauth_is_authorized_false_when_client_secret_missing() -> None:
     client = GoogleOAuthClient(store, _make_settings(client_secret=None))
 
     assert client.is_authorized() is False
+
+
+def test_google_oauth_authorizes_with_the_shipped_client_id_and_secret_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped pair is the default configuration and must authorize as-is.
+
+    Embedding the secret is what makes a bare ``pip install`` usable: refusing
+    the default pairing would leave every user who has not registered their own
+    Google Cloud Desktop client unable to authorize at all.
+    """
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    from_config = MagicMock()
+    from_config.return_value.run_local_server.return_value = MagicMock(
+        refresh_token="refresh-abc",  # noqa: S106  # test credential
+        token="access-abc",  # noqa: S106  # test credential
+        expiry=None,
+        granted_scopes=[GOOGLE_SHEETS_READ_SCOPE],
+    )
+    monkeypatch.setattr(InstalledAppFlow, "from_client_config", from_config)
+    client = GoogleOAuthClient(_store_with({}), MoneyBinSettings.model_validate({}))
+
+    client.authorize()
+
+    installed = from_config.call_args.args[0]["installed"]
+    assert installed["client_id"] == GSHEET_PUBLIC_OAUTH_CLIENT_ID
+    assert installed["client_secret"] == GSHEET_PUBLIC_OAUTH_CLIENT_SECRET

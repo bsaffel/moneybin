@@ -17,7 +17,11 @@ import logging
 import time
 from dataclasses import dataclass
 
-from moneybin.config import GSHEET_PUBLIC_OAUTH_CLIENT_ID, MoneyBinSettings
+from moneybin.config import (
+    GSHEET_PUBLIC_OAUTH_CLIENT_ID,
+    GSHEET_PUBLIC_OAUTH_CLIENT_SECRET,
+    MoneyBinSettings,
+)
 from moneybin.connectors.gsheet.errors import GSheetAuthError
 from moneybin.secrets import (
     GSHEET_ACCESS_TOKEN_EXPIRES_KEY,
@@ -143,22 +147,27 @@ class GoogleOAuthClient:
         client_secret = self._settings.gsheet.oauth_client_secret
         if not client_secret:
             raise GSheetAuthError(
-                "Google Sheets OAuth client secret is not configured. Google's "
-                "Desktop clients require it alongside the client ID for both "
-                "the authorization exchange and later token refreshes. Set "
-                "MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET. See "
+                "Google Sheets OAuth client secret is empty. Google's Desktop "
+                "clients require it alongside the client ID for both the "
+                "authorization exchange and later token refreshes, so an empty "
+                "MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET disables the connector. "
+                "Unset it to use MoneyBin's shipped client, or set it to your "
+                "own alongside MONEYBIN_GSHEET__OAUTH_CLIENT_ID. See "
                 "docs/guides/connect-gsheet.md."
             )
-        # Google issues each secret for one specific client ID, and MoneyBin
-        # ships none for the embedded one. So a secret set without its own ID
-        # is a mismatched pair by construction, and Google only says so after
-        # the user has consented.
-        if client_id == GSHEET_PUBLIC_OAUTH_CLIENT_ID:
+        # Google issues each secret for one specific client ID, and the shipped
+        # secret is the only one the embedded ID accepts. So any *other* secret
+        # left beside it is a mismatched pair by construction — "set the secret,
+        # forgot the ID" — and Google only says so after the user has consented.
+        if (
+            client_id == GSHEET_PUBLIC_OAUTH_CLIENT_ID
+            and client_secret.get_secret_value() != GSHEET_PUBLIC_OAUTH_CLIENT_SECRET
+        ):
             raise GSheetAuthError(
                 "Google Sheets OAuth client secret is set, but the client ID is "
-                "still MoneyBin's embedded one, which has no secret. A secret "
-                "belongs to the client ID it was issued with, so set your own "
-                "MONEYBIN_GSHEET__OAUTH_CLIENT_ID alongside it. See "
+                "still MoneyBin's embedded one, which that secret was not issued "
+                "for. A secret belongs to the client ID it was issued with, so "
+                "set your own MONEYBIN_GSHEET__OAUTH_CLIENT_ID alongside it. See "
                 "docs/guides/connect-gsheet.md."
             )
         return client_id, client_secret.get_secret_value()

@@ -228,15 +228,26 @@ def test_gsheet_oauth_client_id_ships_embedded_by_default(
     assert settings.sync.oauth_client_id is None
 
 
-def test_gsheet_oauth_client_secret_defaults_to_none(
+def test_gsheet_oauth_client_secret_defaults_to_the_shipped_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No secret ships yet, so the connector must not invent one."""
-    from moneybin.config import MoneyBinSettings
+    """The secret ships beside the ID so a bare install can authorize.
+
+    Google's Desktop clients require the secret in the code->token exchange, so
+    a ``None`` default leaves every user who has not registered their own Cloud
+    project unable to authorize at all.
+    """
+    from moneybin.config import GSHEET_PUBLIC_OAUTH_CLIENT_SECRET, MoneyBinSettings
 
     monkeypatch.delenv("MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("MONEYBIN_SYNC__OAUTH_CLIENT_SECRET", raising=False)
 
-    assert MoneyBinSettings().gsheet.oauth_client_secret is None
+    settings = MoneyBinSettings()
+
+    secret = settings.gsheet.oauth_client_secret
+    assert secret is not None
+    assert secret.get_secret_value() == GSHEET_PUBLIC_OAUTH_CLIENT_SECRET
+    assert settings.sync.oauth_client_secret is None
 
 
 def test_gsheet_oauth_client_secret_override_lands_on_gsheet_not_sync(
