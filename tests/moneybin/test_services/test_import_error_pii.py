@@ -341,6 +341,19 @@ def test_a_duplicated_metadata_referent_is_not_echoed_in_full(
         # digit to the last would leave "****2024" — no name at all, which
         # defeats the field. The word between them is what keeps it whole.
         ("Retirement Plan 2024 Rewards", "Retirement Plan 2024 Rewards"),
+        # The same identifier, spaced and unspaced. A formatted one puts a
+        # *word* between its digit groups -- a bank code is letters -- so the
+        # run ends there and `CC00 BANK` survives as the residue. That residue
+        # carries letters, which is exactly the test dim_accounts uses to decide
+        # a label is a name, so it reached the wire as the account's name with
+        # the last four appended. Masking cannot swallow the word without
+        # swallowing `Checking 1234 Savings 5678` above; what it can do is
+        # refuse the remainder once it has fired, and a digit surviving outside
+        # the mask is what says the remainder is still the identifier. The
+        # unspaced form already rendered this way -- pinned beside it because
+        # the two spellings of one number must not disclose to different depths.
+        ("CC00 BANK 1234 5678 9012", "…9012"),
+        ("CC00BANK123456789012", "…9012"),
         # A bare trailing four-digit group is the masked last-four banks print,
         # and parse_account_label lifts it out into `last_four` — so the label
         # arrives already stripped and there is nothing left for the mask to

@@ -210,6 +210,11 @@ def mask_embedded_account_number(label: str) -> str:
     return _EMBEDDED_ACCOUNT_NUMBER.sub(_mask, label)
 
 
+#: What ``mask_embedded_account_number`` leaves behind, so a residue can be
+#: examined without counting the mask's own digits as surviving ones.
+_MASK_TOKEN = re.compile(r"\*{4}\d{4}")
+
+
 def _authored_label_parts(label: str) -> tuple[str, str, str | None]:
     """Return ``(display_label, clean_name, last_four)`` for an authored label.
 
@@ -224,8 +229,25 @@ def _authored_label_parts(label: str) -> tuple[str, str, str | None]:
     Every authored-label site goes through here so the ordering cannot drift
     back apart: one path derives the key, one takes --account-name, one reads
     a sheet's Account column, and all three feed the same two consumers.
+
+    Refuses the remainder when the mask fired and a digit survived outside it,
+    because that digit says the remainder is still the identifier. A formatted
+    account number puts a *word* between its digit groups -- a bank code is
+    letters -- so "CC00 BANK 1234 5678 9012" masks only from the first group
+    onward and leaves "CC00 BANK". Nothing downstream can tell that from a name:
+    it carries letters, which is exactly the test `dim_accounts` uses to decide
+    a label names the account, so it became the account's name with the last
+    four appended. Widening the mask across the word is the other repair and it
+    is the wrong one -- the word boundary is what keeps "Checking 1234 Savings
+    5678" and "Retirement Plan 2024 Rewards" intact, and no rule can tell a bank
+    code from a real word. Collapsing to the mask is also what the same number
+    unspaced already did, so the two spellings stop disclosing to different
+    depths.
     """
-    clean_name, last_four = parse_account_label(mask_embedded_account_number(label))
+    masked = mask_embedded_account_number(label)
+    if masked != label and any(ch.isdigit() for ch in _MASK_TOKEN.sub(" ", masked)):
+        masked = _MASK_TOKEN.findall(masked)[-1]
+    clean_name, last_four = parse_account_label(masked)
     return (mask_embedded_account_number(clean_name), clean_name, last_four)
 
 
