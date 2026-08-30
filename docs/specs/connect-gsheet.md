@@ -590,12 +590,30 @@ a bare install authorizes with no setup; the costs below are what that buys and
 what it costs. `MONEYBIN_GSHEET__OAUTH_CLIENT_ID` / `__OAUTH_CLIENT_SECRET`
 remain the override.
 
-**Impersonation (bounded).** Anyone holding the credential can render a consent
-screen carrying MoneyBin's name. It grants no data access on its own — a human
-must still complete consent — and the read-only
-`spreadsheets.readonly` scope caps what a successful phish can obtain. Google
-verification does **not** mitigate this: a phisher using the leaked ID gets our
-*verified* screen. Verification buys user confidence, not protection here.
+**Impersonation (bounded by Google, not by us).** Anyone holding the credential
+can render a consent screen carrying MoneyBin's name, but that is further from a
+working phish than it sounds. Google delivers the authorization code only to a
+redirect URI registered for the client, and a Desktop client may register only
+loopback (`http://127.0.0.1:port`) or a custom scheme, so a mailed consent link
+delivers the code to the victim's own machine. The manual copy/paste flow that
+once let a remote attacker collect one has been [blocked for every
+client](https://developers.google.com/identity/protocols/oauth2/resources/oob-migration)
+since 31 January 2023, explicitly because it "poses a remote phishing risk".
+What remains is a malicious app the user installs and runs locally — and an
+attacker already executing code on that machine can read the stored refresh
+token directly, so the shipped credential adds nothing to their reach.
+
+**Read-only by registration, not by habit.** The shipped client declares
+`spreadsheets.readonly` alone on its consent screen, and `_oauth_client_credentials()`
+refuses `require_write=True` while running on it, so exporting *to* a sheet
+requires the user's own client. Google shows its [unverified-app
+warning](https://support.google.com/cloud/answer/7454865) whenever an app
+requests a sensitive scope its consent screen does not declare, so a screen
+carrying MoneyBin's name that asks to *edit* spreadsheets is never legitimate.
+Requesting write with the shared client would declare that scope and spend the
+signal for every user. Google verification does **not** mitigate impersonation
+by itself: a phisher using the leaked ID gets our *verified* screen for the
+scopes we declared. Verification buys user confidence, not protection here.
 
 **Shared quota (the real ceiling).** Google meters the Sheets API per Cloud
 project at 300 read requests/minute, with a separate 60/minute cap per user

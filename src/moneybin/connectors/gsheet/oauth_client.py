@@ -98,7 +98,7 @@ class GoogleOAuthClient:
         # CLI and MCP auth paths would report already_authorized and leave the
         # missing variable to surface as a generic failure at refresh time.
         try:
-            self._oauth_client_credentials()
+            self._oauth_client_credentials(require_write=require_write)
         except GSheetAuthError:
             return False
         keys = _WRITE_KEYS if require_write else _READ_KEYS
@@ -129,7 +129,7 @@ class GoogleOAuthClient:
             return cached
         return self._refresh_access_token(grant, require_write=require_write)
 
-    def _oauth_client_credentials(self) -> tuple[str, str]:
+    def _oauth_client_credentials(self, *, require_write: bool) -> tuple[str, str]:
         """Return the configured client id and secret, or refuse by name.
 
         Both grants need both values, and both fail unhelpfully without them:
@@ -144,6 +144,20 @@ class GoogleOAuthClient:
                 "MONEYBIN_GSHEET__OAUTH_CLIENT_ID. See "
                 "docs/guides/connect-gsheet.md."
             )
+        # The shipped client declares only the read-only scope on its consent
+        # screen, and that is the sole reason an impersonated "edit your
+        # spreadsheets" screen looks wrong: Google shows its unverified-app
+        # warning for a sensitive scope the screen never declared. Requesting
+        # write here would force that scope onto the shared screen and spend
+        # the signal for everyone, so export runs on the user's own client.
+        if require_write and client_id == GSHEET_PUBLIC_OAUTH_CLIENT_ID:
+            raise GSheetAuthError(
+                "Google Sheets write access is not available with MoneyBin's "
+                "shipped OAuth client, which is registered for the read-only "
+                "scope alone. Set your own MONEYBIN_GSHEET__OAUTH_CLIENT_ID "
+                "and MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET to export to a "
+                "sheet. See docs/guides/connect-gsheet.md."
+            )
         client_secret = self._settings.gsheet.oauth_client_secret
         if not client_secret:
             raise GSheetAuthError(
@@ -155,14 +169,14 @@ class GoogleOAuthClient:
                 "own alongside MONEYBIN_GSHEET__OAUTH_CLIENT_ID. See "
                 "docs/guides/connect-gsheet.md."
             )
-        # Google issues each secret for one specific client ID, and the shipped
-        # secret is the only one the embedded ID accepts. So any *other* secret
-        # left beside it is a mismatched pair by construction — "set the secret,
-        # forgot the ID" — and Google only says so after the user has consented.
-        if (
-            client_id == GSHEET_PUBLIC_OAUTH_CLIENT_ID
-            and client_secret.get_secret_value() != GSHEET_PUBLIC_OAUTH_CLIENT_SECRET
-        ):
+        # Google issues each secret for one specific client ID, so a half-set
+        # pair is a mismatch by construction, and Google only says so after the
+        # user has already consented. Both halves default to a shipped value,
+        # so both directions of the mistake reach here.
+        shipped_secret = client_secret.get_secret_value() == (
+            GSHEET_PUBLIC_OAUTH_CLIENT_SECRET
+        )
+        if client_id == GSHEET_PUBLIC_OAUTH_CLIENT_ID and not shipped_secret:
             raise GSheetAuthError(
                 "Google Sheets OAuth client secret is set, but the client ID is "
                 "still MoneyBin's embedded one, which that secret was not issued "
@@ -170,11 +184,21 @@ class GoogleOAuthClient:
                 "set your own MONEYBIN_GSHEET__OAUTH_CLIENT_ID alongside it. See "
                 "docs/guides/connect-gsheet.md."
             )
+        if client_id != GSHEET_PUBLIC_OAUTH_CLIENT_ID and shipped_secret:
+            raise GSheetAuthError(
+                "Google Sheets OAuth client ID is your own, but the client "
+                "secret is still MoneyBin's shipped one, which Google did not "
+                "issue for it. Set MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET to the "
+                "secret issued alongside your client ID. See "
+                "docs/guides/connect-gsheet.md."
+            )
         return client_id, client_secret.get_secret_value()
 
     def authorize(self, *, require_write: bool = False) -> OAuthGrant:
         """Establish or incrementally upgrade the persisted OAuth grant."""
-        client_id, client_secret = self._oauth_client_credentials()
+        client_id, client_secret = self._oauth_client_credentials(
+            require_write=require_write
+        )
 
         # Import lazily so the connector is importable in environments that
         # don't have google-auth-oauthlib installed (e.g. minimal CI jobs).
@@ -334,7 +358,9 @@ class GoogleOAuthClient:
         # locally without it (Credentials._perform_refresh_token raises a
         # RefreshError naming no cause), which this method's broad handler
         # would flatten into "See application logs for detail."
-        client_id, client_secret = self._oauth_client_credentials()
+        client_id, client_secret = self._oauth_client_credentials(
+            require_write=require_write
+        )
 
         # Lazy import for the same reason as authorize().
         from google.auth.transport.requests import Request

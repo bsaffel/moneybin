@@ -467,7 +467,11 @@ GSHEET_PUBLIC_OAUTH_CLIENT_ID = (
 # the ID is: a wheel carries no dotenv, so a user-supplied secret means every
 # `pip install` must first register a Desktop client — the 15 minutes of Cloud
 # Console setup this connector chose OAuth to avoid. Impersonation is bounded
-# (read-only scope, and a human still completes consent). The real ceiling is
+# mostly by Google: a Desktop client may register only a loopback redirect, so a
+# phished consent delivers the code to the victim's own machine. The bound we
+# own is scope — this client declares `spreadsheets.readonly` alone and
+# _oauth_client_credentials() refuses write with it, which is what keeps
+# Google's unverified-app warning meaningful. The real ceiling is
 # the shared 300 req/min project quota; anyone throttled sets their own pair via
 # MONEYBIN_GSHEET__OAUTH_CLIENT_ID / __OAUTH_CLIENT_SECRET, which stay the
 # documented remedy. See docs/specs/connect-gsheet.md, "Embedded credential:

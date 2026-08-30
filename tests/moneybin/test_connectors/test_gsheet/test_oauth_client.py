@@ -609,3 +609,99 @@ def test_google_oauth_authorizes_with_the_shipped_client_id_and_secret_pair(
     installed = from_config.call_args.args[0]["installed"]
     assert installed["client_id"] == GSHEET_PUBLIC_OAUTH_CLIENT_ID
     assert installed["client_secret"] == GSHEET_PUBLIC_OAUTH_CLIENT_SECRET
+
+
+def test_google_oauth_refuses_shipped_secret_paired_with_a_custom_client_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setting the ID but not the secret is the mirror of the refusal above.
+
+    The secret defaults to MoneyBin's shipped one, so setting only
+    ``MONEYBIN_GSHEET__OAUTH_CLIENT_ID`` silently pairs a custom client with a
+    secret Google never issued for it, and the browser flow reaches consent
+    before the exchange fails. The settings here deliberately omit the secret
+    so the config-layer default is what reaches the guard.
+    """
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    monkeypatch.delenv("MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET", raising=False)
+    from_config = MagicMock()
+    monkeypatch.setattr(InstalledAppFlow, "from_client_config", from_config)
+    client = GoogleOAuthClient(
+        _store_with({}),
+        MoneyBinSettings.model_validate({
+            "gsheet": {"oauth_client_id": "my-own.apps.googleusercontent.com"}
+        }),
+    )
+
+    with pytest.raises(GSheetAuthError, match="OAUTH_CLIENT_SECRET"):
+        client.authorize()
+
+    from_config.assert_not_called()
+
+
+def test_google_oauth_refuses_write_authorization_with_the_shipped_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped client is registered for the read-only scope alone.
+
+    That registration is the only thing making an impersonated "edit your
+    spreadsheets" consent screen look wrong: Google shows its unverified-app
+    warning for a sensitive scope the consent screen never declared. Requesting
+    write here would force that scope onto the shared screen and spend the
+    signal, so export runs on the user's own client.
+    """
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    monkeypatch.delenv("MONEYBIN_GSHEET__OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET", raising=False)
+    from_config = MagicMock()
+    monkeypatch.setattr(InstalledAppFlow, "from_client_config", from_config)
+    client = GoogleOAuthClient(_store_with({}), MoneyBinSettings.model_validate({}))
+
+    with pytest.raises(GSheetAuthError, match="write access"):
+        client.authorize(require_write=True)
+
+    from_config.assert_not_called()
+
+
+def test_google_oauth_allows_write_authorization_with_a_user_registered_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The read-only restriction binds the shipped pair, not the user's own."""
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    from_config = MagicMock()
+    from_config.return_value.run_local_server.return_value = MagicMock(
+        refresh_token="refresh-abc",  # noqa: S106  # test credential
+        token="access-abc",  # noqa: S106  # test credential
+        expiry=None,
+        granted_scopes=[GOOGLE_SHEETS_WRITE_SCOPE],
+    )
+    monkeypatch.setattr(InstalledAppFlow, "from_client_config", from_config)
+    client = GoogleOAuthClient(_store_with({}), _make_settings())
+
+    client.authorize(require_write=True)
+
+    assert from_config.call_args.args[1] == [GOOGLE_SHEETS_WRITE_SCOPE]
+
+
+def test_google_oauth_is_authorized_write_false_with_the_shipped_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Export's pre-check must not claim a write grant the shipped client cannot hold.
+
+    ``ExportService.set_sheets`` authorizes only when ``is_authorized`` reports
+    False, so a True here would skip the named refusal and surface as an opaque
+    API failure instead. The store deliberately holds a satisfying write grant:
+    the restriction, not a missing token, is what must return False.
+    """
+    monkeypatch.delenv("MONEYBIN_GSHEET__OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET", raising=False)
+    store = _store_with({
+        GSHEET_WRITE_REFRESH_TOKEN_KEY: "refresh-abc",
+        GSHEET_WRITE_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_WRITE_SCOPE,
+    })
+    client = GoogleOAuthClient(store, MoneyBinSettings.model_validate({}))
+
+    assert client.is_authorized(require_write=True) is False

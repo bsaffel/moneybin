@@ -50,14 +50,15 @@ MoneyBin ships a public client ID *and* the client secret Google issued for it, 
 
 What it costs, stated honestly:
 
-- **The consent screen carries MoneyBin's name.** Anyone holding the credential can render one. It grants no data access by itself: a human still completes consent, and the scope is read-only (`spreadsheets.readonly`).
+- **The consent screen carries MoneyBin's name.** Anyone holding the credential can render one — though that is further from a working phish than it sounds. Google delivers the authorization code only to a redirect URI registered for the client, and a Desktop client may register only loopback (`http://127.0.0.1:port`) or a custom scheme, so a mailed consent link delivers the code to the victim's own machine, not the sender's. The manual copy/paste flow that once let a remote attacker collect one has been [blocked for every client](https://developers.google.com/identity/protocols/oauth2/resources/oob-migration) since January 2023, explicitly because it "poses a remote phishing risk". What remains is a malicious app you install and run yourself — and an attacker already running code on your machine can read the stored refresh token directly, so the shipped credential adds nothing to their reach.
+- **MoneyBin never requests write access with this client.** Its consent screen declares `spreadsheets.readonly` and nothing else, which is what keeps a warning signal alive: Google shows an [unverified-app warning](https://support.google.com/cloud/answer/7454865) whenever an app requests a sensitive scope its consent screen does not declare. So a screen carrying MoneyBin's name that asks to *edit* your spreadsheets is never a legitimate one. That costs something real — exporting *to* a Google Sheet needs your own client (below), because requesting write here would declare the scope on the shared screen and spend the signal for everyone.
 - **The API quota is shared.** Google meters the Sheets API [per Cloud project](https://developers.google.com/workspace/sheets/api/limits) at 300 read requests per minute, with a separate 60-per-minute cap per user per project. The per-user cap stops any one user monopolizing it, but the project ceiling is genuinely shared.
 
 The shared client is a starting point, not a permanent foundation. rclone — the most-cited precedent for this pattern — now tells its users that "the shared client_id is being retired and will stop working during 2026" ([rclone Google Drive docs](https://rclone.org/drive/)). If you get throttled, or would rather not trust MoneyBin's project identity on the consent screen, bring your own client.
 
 ### Bring your own Google OAuth client (optional)
 
-Nothing here is required — the shipped client works. Register your own **Desktop app** client in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) with the Sheets API enabled if you want a private quota, or would rather not trust MoneyBin's project identity on the consent screen. Then set both:
+Reading a sheet needs none of this — the shipped client works. Exporting *to* a sheet does require your own client, because the shipped one is registered read-only and MoneyBin refuses to request write with it. Register your own **Desktop app** client in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) with the Sheets API enabled if you want a private quota, or would rather not trust MoneyBin's project identity on the consent screen. Then set both:
 
 ```bash
 export MONEYBIN_GSHEET__OAUTH_CLIENT_ID="<your-client-id>.apps.googleusercontent.com"
