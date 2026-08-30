@@ -239,12 +239,32 @@ class TestEndToEndDedup:
         result2 = matcher2.run()
         assert result2.auto_merged >= 1
 
-    def test_gold_key_consistency(self) -> None:
+    def test_gold_key_consistency(self, db: Database) -> None:
         """Python and SQL gold key generation must produce identical results."""
-        py_key = gold_key_unmatched("csv", "txn123", "acct1")
+        source_type = "csv"
+        source_origin = "broker-export"
+        source_account_key = "source-account"
+        source_transaction_id = "txn123"
+        py_key = gold_key_unmatched(
+            source_type,
+            source_origin,
+            source_account_key,
+            source_transaction_id,
+        )
+        sql_key = db.execute(
+            """
+            SELECT SUBSTRING(SHA256(? || '|' || ? || '|' || ? || '|' || ?), 1, 16)
+            """,
+            [
+                source_type,
+                source_origin,
+                source_account_key,
+                source_transaction_id,
+            ],
+        ).fetchone()
 
-        assert len(py_key) == 16
-        assert all(c in "0123456789abcdef" for c in py_key)
+        assert sql_key is not None
+        assert py_key == sql_key[0]
 
         group_key = gold_key_matched([
             ("csv", "txn_csv", "acct1"),

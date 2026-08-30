@@ -10,15 +10,15 @@ from moneybin.extractors.tabular.account_label import parse_account_label
 @pytest.mark.parametrize(
     ("label", "expected_name", "expected_last4"),
     [
-        ("Daily Expense (...1789)", "Daily Expense", "1789"),
-        ("Checking ····1789", "Checking", "1789"),  # noqa: RUF001  # U+00B7 mask dots are the input under test
-        ("Savings x1789", "Savings", "1789"),
-        ("Card ending in 1789", "Card", "1789"),
-        ("Card ending 1789", "Card", "1789"),
-        ("Card ends in 1789", "Card", "1789"),  # "ends in" must strip like "ending in"
-        ("Checking end in 4267", "Checking", "4267"),  # "end in" variant
-        ("WF CHECKING 9940", "WF CHECKING", "9940"),  # bare trailing 4-digit group
-        ("Joint (xxxx4267)", "Joint", "4267"),
+        ("Everyday Spending (...7777)", "Everyday Spending", "7777"),
+        ("Checking ····7777", "Checking", "7777"),  # noqa: RUF001  # U+00B7 mask dots are the input under test
+        ("Savings x7777", "Savings", "7777"),
+        ("Card ending in 7777", "Card", "7777"),
+        ("Card ending 7777", "Card", "7777"),
+        ("Card ends in 7777", "Card", "7777"),  # "ends in" must strip like "ending in"
+        ("Checking end in 1212", "Checking", "1212"),  # "end in" variant
+        ("WF CHECKING 3030", "WF CHECKING", "3030"),  # bare trailing 4-digit group
+        ("Joint (xxxx1212)", "Joint", "1212"),
         ("365 Savings", "365 Savings", None),  # 3 digits → no last4
         ("Brokerage", "Brokerage", None),
         ("", "", None),

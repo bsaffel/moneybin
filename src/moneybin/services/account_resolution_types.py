@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import string
 from dataclasses import dataclass
-from typing import NotRequired, TypedDict, TypeGuard
+from typing import TYPE_CHECKING, NotRequired, TypedDict, TypeGuard
 
 from moneybin.services.ledger_overlap import LedgerOverlap
+
+if TYPE_CHECKING:  # import-time cycle: account_display_name reads the
+    # UNNAMED_ACCOUNT_LABEL defined below, so the edge back is annotation-only.
+    from moneybin.services.account_display_name import AccountNameFacts
 
 _ACCOUNT_IDENTIFIER_CHARACTERS = frozenset(string.ascii_letters + string.digits)
 
@@ -272,6 +276,18 @@ class SourceAccount:
     dedup, which leaves nothing on record identifying THIS file. Carried here so
     the resolver can also link the derived key, and an unpinned re-import of the
     same file still recognises the account instead of asking or minting."""
+
+    name_facts: AccountNameFacts | None = None
+    """What ``core.dim_accounts`` will name this account by, if it mints one.
+
+    Never a resolution signal — the resolver ignores it. It rides here because
+    the mint report (``accounts_created``) is built long after the channel that
+    knows which institution spelling and which account-number column the model
+    will read. Distinct from ``account_name`` beside it, which is the file's raw
+    free-text label and feeds fuzzy matching: ``name_facts.source_label`` is the
+    display-safe form of that label, and is the top rung the model names by.
+    Left None only by callers that never report a mint (the sync path, the
+    resolver's own probes)."""
 
     explicit_account_id: str | None = None
     force_standalone: bool = False

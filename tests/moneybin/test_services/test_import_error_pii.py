@@ -290,41 +290,48 @@ def test_a_duplicated_metadata_referent_is_not_echoed_in_full(
 @pytest.mark.parametrize(
     ("label", "expected"),
     [
-        # Contiguous — the shape parse_account_label leaves entirely alone.
-        (f"Checking {ACCTID}", "Checking ****1098"),
-        # Grouped. parse_account_label strips only the trailing four-digit
-        # token, so the *prefix* of the number survives into the label — and a
-        # contiguous-run mask matches none of it, because every remaining run
-        # is four digits.
-        ("Checking 1234-5678-9012", "Checking ****5678"),
-        ("Checking 4111 1111 1111 1111", "Checking ****1111"),
+        # Contiguous — the shape parse_account_label leaves entirely alone, so
+        # the mask collapses the whole run and the parser lifts the surviving
+        # four into last_four, where the ladder re-attaches them.
+        (f"Checking {ACCTID}", "Checking …1098"),
+        # Grouped, and the reason masking now runs BEFORE the last-four strip.
+        # Stripping first left the number's *prefix* in the label, so the mask
+        # kept that prefix's tail: "1234-5678-9012" lost 9012, and the label
+        # then announced ****5678 — four digits from the middle of the number,
+        # in the slot every surface fills with the last four. Wrong digits, and
+        # a second slice of the number beside the real last four the account
+        # already shows. Masking first collapses the run to its true tail.
+        ("Checking 1234-5678-9012", "Checking …9012"),
+        ("Checking 4111 1111 1111 1111", "Checking …1111"),
         # Every separator, not an enumerated few: the label parser and the mask
         # have to agree on what a separator is, and each time they did not, the
-        # gap was a run of account digits. The parser's trailing-token strip
-        # accepts these, so the mask has to as well.
-        ("Checking 1234.5678.9012", "Checking ****5678"),
-        ("Checking 1234/5678/9012", "Checking ****5678/"),
-        ("Checking 1234_5678_9012", "Checking ****5678_"),
+        # gap was a run of account digits. Ordering matters here too — the
+        # slash and underscore cases used to leave the separator itself dangling
+        # after the masked prefix ("****5678/"), because the strip had already
+        # taken the group that followed it.
+        ("Checking 1234.5678.9012", "Checking …9012"),
+        ("Checking 1234/5678/9012", "Checking …9012"),
+        ("Checking 1234_5678_9012", "Checking …9012"),
         # A three-character separator, which the parser's own trailing-token
-        # strip accepts: it lifts `9012` out and hands the mask `1234 - 5678`.
-        ("Checking 1234 - 5678 - 9012", "Checking ****5678"),
+        # strip accepts. Masking first means the strip never sees the raw run.
+        ("Checking 1234 - 5678 - 9012", "Checking …9012"),
         # Letters *inside* the identifier, the shape brokerage and investment
         # accounts actually use. The run is bounded by separator length, not by
         # character class, so letters no longer end it.
-        ("Brokerage 12AB34CD56", "Brokerage ****3456"),
-        ("IRA 12X3456789", "IRA ****6789"),
+        ("Brokerage 12AB34CD56", "Brokerage …3456"),
+        ("IRA 12X3456789", "IRA …6789"),
         # Letter groups of any length. Bounding the gap at three characters was
         # the third enumeration to leak: `ABCD` is not a word, it is the middle
         # of an identifier, and no digit-count-per-group rule can tell them
         # apart. The rule is about words, so the gap length is unbounded.
-        ("Brokerage 12ABCD34EFGH56", "Brokerage ****3456"),
+        ("Brokerage 12ABCD34EFGH56", "Brokerage …3456"),
         # Trailing text, so the parser's last-four strip does not fire first and
         # the mask is the only thing standing between this and the wire.
         ("Acct 1234WXYZ5678 IRA", "Acct ****5678 IRA"),
         # A letter prefix or suffix belongs to the identifier, not to the name,
         # so the mask swallows the whole token rather than leaving a stub.
-        ("Brokerage X12345678", "Brokerage ****5678"),
-        ("Checking 12345XY", "Checking ****2345"),
+        ("Brokerage X12345678", "Brokerage …5678"),
+        ("Checking 12345XY", "Checking …2345"),
         # A whole *word* breaks the run — two separate four-digit tokens are not
         # one eight-digit number. This is the boundary, and it is the entire
         # rule: `Savings` is whitespace-delimited and alphabetic, `ABCD` above is
@@ -333,14 +340,38 @@ def test_a_duplicated_metadata_referent_is_not_echoed_in_full(
         # Seven digits, and none of it an account number. Masking from the first
         # digit to the last would leave "****2024" — no name at all, which
         # defeats the field. The word between them is what keeps it whole.
-        ("401K Plan 2024 Rewards", "401K Plan 2024 Rewards"),
+        ("Retirement Plan 2024 Rewards", "Retirement Plan 2024 Rewards"),
+        # The same identifier, spaced and unspaced. A formatted one puts a
+        # *word* between its digit groups -- a bank code is letters -- so the
+        # run ends there and `CC00 BANK` survives as the residue. That residue
+        # carries letters, which is exactly the test dim_accounts uses to decide
+        # a label is a name, so it reached the wire as the account's name with
+        # the last four appended. Masking cannot swallow the word without
+        # swallowing `Checking 1234 Savings 5678` above; what it can do is
+        # refuse the remainder once it has fired, and a digit surviving outside
+        # the mask is what says the remainder is still the identifier. The
+        # unspaced form already rendered this way -- pinned beside it because
+        # the two spellings of one number must not disclose to different depths.
+        ("CC00 BANK 1234 5678 9012", "…9012"),
+        ("CC00BANK123456789012", "…9012"),
+        # Two identifiers in one label. The refusal above keys on a digit
+        # surviving *outside* the mask, and here none does: both runs mask
+        # cleanly and the label ends in an ordinary word, so nothing said the
+        # remainder was still an identifier and both tails reached the name --
+        # eight digits from two distinct numbers, twice what this rung may
+        # disclose. How many identifiers were masked is the other half of the
+        # same question, and a label naming two of them is not a name under
+        # either half.
+        ("Primary 123456789 Secondary 987654321 account", "…4321"),
         # A bare trailing four-digit group is the masked last-four banks print,
         # and parse_account_label lifts it out into `last_four` — so the label
         # arrives already stripped and there is nothing left for the mask to
         # find. Pinned because it is the boundary: one digit more and the mask
-        # has to act.
-        ("Checking 1789", "Checking"),
-        ("Savings 2024", "Savings"),
+        # has to act. The ladder then puts that same last four back in its
+        # canonical position, which is a round trip through the field the
+        # parser moved it to, not a second slice of the number.
+        ("Checking 7777", "Checking …7777"),
+        ("Savings 2024", "Savings …2024"),
     ],
 )
 def test_a_minted_accounts_display_name_masks_every_account_number_shape(
@@ -348,15 +379,19 @@ def test_a_minted_accounts_display_name_masks_every_account_number_shape(
 ) -> None:
     """Grouped numbers are the shape that survives both stages.
 
-    ``parse_account_label`` removes a recognized trailing four-digit token, so
-    ``Checking 4111 1111 1111 1111`` arrives as ``Checking 4111 1111 1111`` —
-    twelve digits of a card number, in a field declared safe to show. Masking
-    only contiguous runs of five or more leaves that untouched, because each
-    group is four.
+    ``mask_embedded_account_number`` runs first and ``parse_account_label``
+    second, which is what makes the surviving four digits the account's own.
+    The other order strips a recognized trailing token before masking, leaving
+    the number's prefix behind for the mask to take *its* tail from — so
+    ``Checking 1234-5678-9012`` announced ``****5678``, the middle of the
+    number, where the last four belongs.
 
     Exact equality on both directions: masking too little publishes a number,
-    masking too much turns the mint report into ``****1098`` and defeats the
-    field's purpose, which is to name what was created.
+    masking too much turns the mint report into ``…1098`` and defeats the
+    field's purpose, which is to name what was created. And the four digits
+    that do survive must be the last four, because that is the only slice the
+    account already shows everywhere else — any other four is a second,
+    independent disclosure of the same number.
     """
     csv = tmp_path / "txns.csv"
     csv.write_text(
@@ -381,7 +416,7 @@ def test_a_minted_accounts_display_name_does_not_carry_an_account_number(
     documented as safe to show, and it reaches the terminal, the CLI/MCP
     ``accounts_created`` rows and the inbox drain unmasked. For tabular it is
     derived from the file's own account column via ``parse_account_label``,
-    which strips only a *recognized masked* last-four — ``(...1789)``, ``x1789``,
+    which strips only a *recognized masked* last-four — ``(...7777)``, ``x7777``,
     a bare trailing group. A genuinely unmasked full number matches none of
     those patterns and passed through whole, so the one shape that actually
     needed stripping was the one that survived.

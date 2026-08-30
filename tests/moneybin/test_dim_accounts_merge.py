@@ -97,19 +97,21 @@ def _insert_tabular_account(
     extracted_at: str,
     source_origin: str = "test_bank_tab",
     account_number: str | None = None,
+    account_label: str | None = None,
 ) -> None:
     db.execute(
         """
         INSERT INTO raw.tabular_accounts
-            (account_id, account_name, account_type, institution_name,
-             account_number, source_file, source_type, source_origin,
-             import_id, extracted_at, loaded_at)
-        VALUES (?, ?, ?, ?, ?, '/tmp/test.csv', 'csv', ?, 'imp-tab-001',
+            (account_id, account_name, account_label, account_type,
+             institution_name, account_number, source_file, source_type,
+             source_origin, import_id, extracted_at, loaded_at)
+        VALUES (?, ?, ?, ?, ?, ?, '/tmp/test.csv', 'csv', ?, 'imp-tab-001',
                 ?::TIMESTAMP, ?::TIMESTAMP)
         """,  # noqa: S608  # test fixture
         [
             native_key,
             account_name,
+            account_label,
             account_type,
             institution_name,
             account_number,
@@ -232,7 +234,7 @@ def dim_accounts_cases_template(
         )
 
         last_four_canonical_id = _case_id("ofx_last_four")
-        last_four_native = "123456784267"
+        last_four_native = "123456781212"
         _insert_ofx_account(
             db,
             native_key=last_four_native,
@@ -301,6 +303,70 @@ def dim_accounts_cases_template(
             account_number="9876554521",
             extracted_at="2024-03-01 00:00:00",
             source_origin=_case_id("subtype_last_four_origin"),
+        )
+
+        for native_key, number in (
+            (_case_id("shared_label_a_native"), "4001111"),
+            (_case_id("shared_label_b_native"), "4002222"),
+        ):
+            _insert_tabular_account(
+                db,
+                native_key=native_key,
+                account_name="HOUSEHOLD CHECKING",
+                account_label="HOUSEHOLD CHECKING",
+                institution_name="Test Bank",
+                account_type="CHECKING",
+                account_number=number,
+                extracted_at="2024-03-01 00:00:00",
+                source_origin=_case_id("shared_label_origin"),
+            )
+
+        _insert_tabular_account(
+            db,
+            native_key=_case_id("label_no_number_native"),
+            account_name="Vacation Fund",
+            account_label="Vacation Fund",
+            institution_name="Test Bank",
+            account_type="SAVINGS",
+            account_number=None,
+            extracted_at="2024-03-01 00:00:00",
+            source_origin=_case_id("label_no_number_origin"),
+        )
+
+        _insert_tabular_account(
+            db,
+            native_key=_case_id("label_non_latin_native"),
+            account_name="Row With A Non-Latin Label",
+            account_label="储蓄账户",
+            institution_name="Test Bank",
+            account_type="SAVINGS",
+            account_number="4001111",
+            extracted_at="2024-03-01 00:00:00",
+            source_origin=_case_id("label_non_latin_origin"),
+        )
+
+        _insert_tabular_account(
+            db,
+            native_key=_case_id("label_sentinel_native"),
+            account_name="Row Whose Label Says Nothing Names It",
+            account_label=UNNAMED_ACCOUNT_LABEL,
+            institution_name="Test Bank",
+            account_type="SAVINGS",
+            account_number="4001111",
+            extracted_at="2024-03-01 00:00:00",
+            source_origin=_case_id("label_sentinel_origin"),
+        )
+
+        _insert_tabular_account(
+            db,
+            native_key=_case_id("label_unicode_digits_native"),
+            account_name="Row Whose Masked Tail Is Not Latin",
+            account_label="Primary ****٦٧٨٩ account",
+            institution_name="Test Bank",
+            account_type="SAVINGS",
+            account_number="4001111",
+            extracted_at="2024-03-01 00:00:00",
+            source_origin=_case_id("label_unicode_digits_origin"),
         )
 
         with sqlmesh_context(db) as ctx:
@@ -457,8 +523,8 @@ def test_last_four_derived_for_ofx_without_account_settings(
         [canonical_id],
     ).fetchone()
     assert row is not None, "derived-last4 canonical row missing from core.dim_accounts"
-    assert row[0] == "4267", f"expected derived last_four 4267, got {row[0]!r}"
-    assert "4267" in row[1], f"display_name should include last4: {row[1]!r}"
+    assert row[0] == "1212", f"expected derived last_four 1212, got {row[0]!r}"
+    assert "1212" in row[1], f"display_name should include last4: {row[1]!r}"
 
 
 @pytest.mark.slow
@@ -575,3 +641,120 @@ def test_a_subtype_with_no_institution_still_keeps_its_last_four(
     ).fetchone()
     assert row is not None, "account missing from core.dim_accounts"
     assert row[0] == "checking …4521"
+
+
+@pytest.mark.slow
+def test_two_accounts_sharing_one_label_keep_distinct_names(
+    dim_accounts_cases: Database,
+) -> None:
+    """The account-label arm carries a last four for the reason every arm does.
+
+    The label is the one name a person chose, but choosing it does not make it
+    unique: Plaid sends the institution's own per-account name, and a
+    household's two checking accounts routinely carry one product name. An
+    arm that named both of them that would collide two accounts onto one
+    string — the defect the arm was added to fix — and
+    ``AccountService.resolve_strict`` raises ``AmbiguousAccountError`` on the
+    duplicate, refusing a name reference that resolved before.
+    """
+    names = [
+        str(row[0])
+        for row in dim_accounts_cases.execute(
+            "SELECT display_name FROM core.dim_accounts "
+            "WHERE account_id IN (?, ?) ORDER BY account_id",
+            [_case_id("shared_label_a_native"), _case_id("shared_label_b_native")],
+        ).fetchall()
+    ]
+    assert names == ["HOUSEHOLD CHECKING …1111", "HOUSEHOLD CHECKING …2222"], names
+
+
+@pytest.mark.slow
+def test_a_label_alone_names_an_account_with_no_number(
+    dim_accounts_cases: Database,
+) -> None:
+    """The discriminator is appended when there is one, never invented.
+
+    SQL ``||`` yields NULL when any operand is NULL, so the with-last-four arm
+    simply does not fire for an account whose source stated no number, and the
+    bare arm below it names the account by what it does have.
+    """
+    row = dim_accounts_cases.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        [_case_id("label_no_number_native")],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "Vacation Fund"
+
+
+@pytest.mark.slow
+def test_a_non_latin_label_names_the_account_through_real_duckdb(
+    dim_accounts_cases: Database,
+) -> None:
+    r"""The letter test is Unicode-aware in the model, not only in the mirror.
+
+    ``\p{L}`` replaced ``[A-Za-z]`` here after a review round found the ASCII
+    class silently discarding every non-Latin label — the account fell to its
+    institution-derived name and the label a person wrote was dropped. The
+    Python mirror pins that with non-Latin fixtures; this module's own contract
+    is that the two ladders never drift, and until now nothing ran the branch
+    against real DuckDB, whose regex dialect is the reason the class had to
+    change in the first place.
+
+    Discriminating on purpose: with ``[A-Za-z]`` restored, both label arms miss
+    and this account renders "Test Bank savings …1111".
+    """
+    row = dim_accounts_cases.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        [_case_id("label_non_latin_native")],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "储蓄账户 …1111"
+
+
+@pytest.mark.slow
+def test_the_unnamed_sentinel_is_never_promoted_as_a_source_label(
+    dim_accounts_cases: Database,
+) -> None:
+    """The one string that means "no name" must not be taken for one.
+
+    ``UNNAMED_ACCOUNT_LABEL`` is this ladder's own terminal arm, and
+    ``is_a_name`` rejects it precisely because it compares equal to itself
+    across unrelated accounts. It reaches ``account_label`` by an ordinary
+    route: ``reports.*`` publish it as ``account_name``, so re-importing a
+    MoneyBin export puts the literal in the Account column. Promoting it would
+    hand ``resolve_strict`` and the merge matcher a name they must then discard,
+    leaving the account unresolvable by what it displays — strictly worse than
+    the institution-derived name it would otherwise have carried.
+    """
+    row = dim_accounts_cases.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        [_case_id("label_sentinel_native")],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "Test Bank savings …1111"
+
+
+@pytest.mark.slow
+def test_a_masked_tail_in_another_script_takes_no_second_last_four(
+    dim_accounts_cases: Database,
+) -> None:
+    r"""The model's digit guard reads any script's digits, not only ASCII.
+
+    Companion to the non-Latin *letter* case above, and the same drift caught
+    pointing the other way. ``mask_embedded_account_number`` builds its token
+    from whatever ``\d`` matched, and Python's ``\d`` is Unicode, so an
+    Arabic-Indic account number reaches ``account_label`` masked to
+    ``****٦٧٨٩``. ``[0-9]{4}`` saw no digits there and the with-last-four arm
+    fired anyway, joining ``…1111`` onto a residue that already showed four --
+    eight digits of two numbers, the disclosure the guard is there to stop.
+
+    The two sides had to move together and could not move alike: DuckDB's RE2
+    reads ``\d`` as ASCII, so only ``\p{Nd}`` mirrors Python's ``\d`` here.
+    That is what this test runs against real DuckDB to prove.
+    """
+    row = dim_accounts_cases.execute(
+        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        [_case_id("label_unicode_digits_native")],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "Primary ****٦٧٨٩ account"

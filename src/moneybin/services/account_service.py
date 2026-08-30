@@ -170,6 +170,50 @@ def suggest_holder_category(value: str) -> str | None:
 
 _LAST_FOUR_RE = re.compile(r"^[0-9]{4}$")
 
+#: Free-text settings fields normalized before validation. ``core.dim_accounts``
+#: reads every one of them with no ``TRIM``, so padding stored here is padding
+#: rendered inside an account's name -- while the Python mirror
+#: (``services/account_display_name.py::_stated``) trims, which is exactly how
+#: the announced name and the stored one come to disagree. Normalizing once at
+#: this boundary keeps both readers on the same string instead of asking each to
+#: defend itself. ``last_four`` and ``currency_code`` are absent because their
+#: patterns are anchored and reject padding outright; a whitespace-only value
+#: strips to ``""`` and fails the same length check ``""`` already failed.
+_TRIMMED_SETTING_FIELDS = (
+    "display_name",
+    "official_name",
+    "account_subtype",
+    "holder_category",
+)
+
+
+def normalize_setting_text(value: str) -> str:
+    """A free-text setting as ``app.account_settings`` will hold it.
+
+    Public because two surfaces judge a value's canonical spelling *before* the
+    write that normalizes it -- ``settings_update`` and ``accounts set`` -- and
+    both have to ask about the stored spelling. Sharing one function is what
+    keeps a warning from naming a string the database does not hold.
+    """
+    return value.strip()
+
+
+def _stored_text(value: str | None) -> str | None:
+    """A stored free-text column, with a blank read as the absence it meant.
+
+    A row written before this module trimmed can hold ``"   "``: valid then
+    against an untrimmed length check, empty by the time that same check runs
+    now. ``AccountSettings`` validates on construction expressly so a row from
+    a looser era still reads, and ``_load_settings`` is the only way back to
+    one -- so raising here would lock the account out of every settings mutator
+    rather than merely refuse the blank. A blank is what an absent value looked
+    like before ``None`` was the only spelling for it.
+    """
+    if value is None:
+        return None
+    return normalize_setting_text(value) or None
+
+
 # Bucket label for a NULL account_type or account_subtype in summary() to represent accounts with
 # NULL account_subtype. MCP/CLI consumers see this string in the dict keys.
 _UNSET_LABEL = "<unset>"
@@ -212,9 +256,13 @@ class AccountSettings:
         }
 
     def __post_init__(self) -> None:
-        """Validate string lengths and formats at construction."""
+        """Normalize free text, then validate string lengths and formats."""
         if not self.account_id:
             raise ValueError("account_id is required")
+        for field_name in _TRIMMED_SETTING_FIELDS:
+            value: str | None = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(self, field_name, normalize_setting_text(value))
         if self.display_name is not None:
             if not 1 <= len(self.display_name) <= 80:
                 raise ValueError("display_name must be 1-80 characters")
@@ -387,11 +435,11 @@ class AccountService:
             return None
         return AccountSettings(
             account_id=row[0],
-            display_name=row[1],
-            official_name=row[2],
+            display_name=_stored_text(row[1]),
+            official_name=_stored_text(row[2]),
             last_four=row[3],
-            account_subtype=row[4],
-            holder_category=row[5],
+            account_subtype=_stored_text(row[4]),
+            holder_category=_stored_text(row[5]),
             currency_code=row[6],
             credit_limit=row[7],
             archived=row[8],
@@ -690,6 +738,18 @@ class AccountService:
             diff["include_in_net_worth"] = include_in_net_worth
         if archived is not None:
             diff["archived"] = archived
+
+        # The canonical-spelling checks below have to judge the value that will
+        # be written, not the one that arrived: `AccountSettings` trims on
+        # construction, so checking the raw diff warned that "  checking  " is
+        # not a Plaid subtype while storing the canonical "checking" it had
+        # just doubted -- and handed `suggest_subtype` a padded string to
+        # match, which is where the suggestion that makes the warning
+        # actionable comes from.
+        for field_name in _TRIMMED_SETTING_FIELDS:
+            pending = diff.get(field_name)
+            if isinstance(pending, str):
+                diff[field_name] = normalize_setting_text(pending)
 
         subtype = diff.get("account_subtype")
         if isinstance(subtype, str) and not is_canonical_subtype(subtype):

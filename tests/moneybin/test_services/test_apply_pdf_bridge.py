@@ -733,9 +733,10 @@ def test_bridge_apply_reports_the_account_it_minted(
     assert result.outcome == "applied"
     assert len(result.accounts_created) == 1
     created = result.accounts_created[0]
-    # The document alias, never the source_account_key (an account number on
-    # several channels) — see CreatedAccount's own contract.
-    assert created.display_name == "chase_may"
+    # The name core.dim_accounts stores, so the caller can find the account
+    # again under it — never the source_account_key (an account number on
+    # several channels). See CreatedAccount's own contract.
+    assert created.display_name == "Chase …1234"
     # The opaque canonical id, and it is the account the link actually points at.
     linked = db.conn.execute(
         "SELECT account_id FROM app.account_links "
