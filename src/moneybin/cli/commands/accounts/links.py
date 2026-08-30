@@ -122,10 +122,16 @@ def _overlap_cell(overlap: LedgerOverlap) -> str:
 
     "0 of 0" would read as two ledgers with nothing in common — evidence against
     the merge — where no comparable period means the probe could not look.
+
+    The tolerance rides along because the ratio does not mean what it looks
+    like without it: two sources date the same purchase differently, so these
+    are amounts agreeing within a posting-lag window, not on an exact date. Read
+    from the measurement rather than from the module default, so a caller that
+    widened the window cannot render a number under a width it never used.
     """
     if not overlap.measurable:
         return "no shared period"
-    return f"{overlap.matched:,} of {overlap.comparable:,}"
+    return f"{overlap.matched:,} of {overlap.comparable:,} ±{overlap.window_days}d"
 
 
 @app.command("set")
@@ -572,21 +578,46 @@ def links_history(
 
 @app.command("run")
 def links_run(
+    account_id: str | None = typer.Argument(
+        None, help="Account absorbed on accept (requires CANDIDATE_ACCOUNT_ID)"
+    ),
+    candidate_account_id: str | None = typer.Argument(
+        None, help="Account kept on accept (requires ACCOUNT_ID)"
+    ),
     output: OutputFormat = output_option,
 ) -> None:
-    """Backfill pending account-link proposals for existing accounts.
+    """Propose account merges: sweep for duplicates, or link two accounts by id.
 
-    Finds weak-signal candidate pairs for every account in core.dim_accounts
-    that has no pending proposal yet and writes pending decisions for review.
+    With no arguments, finds weak-signal candidate pairs for every account in
+    core.dim_accounts that has no pending proposal yet. Run this after importing
+    accounts from multiple sources to surface cross-source twins.
 
-    Run this after importing accounts from multiple sources to surface
-    cross-source twins for review.
+    With two account ids, proposes exactly that pair — the escape hatch for a
+    duplicate no signal reaches, where nothing matches but you know it is one
+    account. Order is direction: the first id is absorbed and the second kept,
+    whenever both are absorbable. Neither form merges: both write proposals for
+    `accounts links set`.
     """
+    if (account_id is None) != (candidate_account_id is None):
+        logger.error(
+            "❌ Naming one account is ambiguous. Pass both ids to propose that "
+            "pair, or neither to sweep every account for duplicates."
+        )
+        raise typer.Exit(2)
+
+    decision_id: str | None = None
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            new_proposals = AccountLinksService(db, actor="cli").run()
+            svc = AccountLinksService(db, actor="cli")
+            if account_id is None or candidate_account_id is None:
+                new_proposals = svc.run()
+            else:
+                decision_id = svc.propose_pair(account_id, candidate_account_id)
+                new_proposals = 1
 
-    payload = AccountLinksRunPayload(new_proposals=new_proposals)
+    payload = AccountLinksRunPayload(
+        new_proposals=new_proposals, decision_id=decision_id
+    )
 
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json  # noqa: PLC0415 — defer import
@@ -598,7 +629,9 @@ def links_run(
         )
         return
 
-    if new_proposals == 0:
+    if decision_id is not None:
+        typer.echo(f"✅ Proposed the pair as decision {decision_id}.")
+    elif new_proposals == 0:
         typer.echo("No new account-link proposals written.")
     else:
         typer.echo(f"✅ Wrote {new_proposals} new pending account-link proposal(s).")

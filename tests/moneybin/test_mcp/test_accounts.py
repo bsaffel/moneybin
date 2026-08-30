@@ -29,6 +29,7 @@ from moneybin.mcp.tools.accounts import (
     accounts_balance_assert_coarse,
     accounts_balances_coarse,
     accounts_coarse,
+    accounts_links_run,
     accounts_resolve,
     accounts_set,
     register_accounts_coarse_reads,
@@ -851,6 +852,7 @@ class TestStandardCoarseAccountReads:
             "accounts_set",
             "accounts_balances",
             "accounts_balance_assert",
+            "accounts_links_run",
         }
 
 
@@ -1880,3 +1882,84 @@ def test_an_unnameable_account_is_still_resolvable_by_its_id() -> None:
 
     assert isinstance(resolution, ResolvedEntity)
     assert resolution.entity_id == "acct_nameless"
+
+
+# ---------------------------------------------------------------------------
+# accounts_links_run — sweep, or one pair the caller names (issue #450)
+# ---------------------------------------------------------------------------
+
+
+def _seed_mergeable(account_id: str, link_id: str) -> None:
+    """Give an existing account the accepted source_native link a merge re-points."""
+    with get_database(read_only=False) as db:
+        AccountLinksRepo(db).insert(
+            link_id=link_id,
+            account_id=account_id,
+            ref_kind="source_native",
+            ref_value=f"native-{account_id}",
+            source_type="ofx",
+            source_origin="test_bank",
+            decided_by="auto",
+            actor="system",
+            status="accepted",
+        )
+
+
+async def test_links_run_without_a_pair_sweeps_and_names_no_decision() -> None:
+    """The backfill writes many proposals or none, so no single id identifies it."""
+    envelope = await accounts_links_run()
+
+    assert envelope.data.decision_id is None
+
+
+async def test_links_run_with_a_named_pair_returns_the_decision_it_wrote() -> None:
+    """Naming two accounts queues exactly one proposal and hands back its id.
+
+    Without the id the caller has to re-read the whole queue and guess which
+    row is the one it just created.
+    """
+    _seed_mergeable("ACC001", "lnk_run_acc001")
+
+    envelope = await accounts_links_run(
+        account_id="ACC001", candidate_account_id="ACC002"
+    )
+
+    assert envelope.data.new_proposals == 1
+    decision_id = envelope.data.decision_id
+    assert decision_id is not None
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            "SELECT provisional_account_id, candidate_account_id, status "
+            "FROM app.account_link_decisions WHERE decision_id = ?",
+            [decision_id],
+        ).fetchone()
+    assert row == ("ACC001", "ACC002", "pending")
+
+
+async def test_links_run_refuses_a_half_named_pair_rather_than_sweeping() -> None:
+    """One id is ambiguous, and the safe reading is not the whole-book backfill."""
+    response = await accounts_links_run(account_id="ACC001")
+
+    assert response.error is not None
+    assert response.error.code == "mutation_invalid_input"
+    assert "candidate_account_id" in response.error.message
+
+
+async def test_links_run_does_not_promise_a_safe_retry() -> None:
+    """The pair form refuses a pair it already proposed, so retrying is not free.
+
+    The sweep half is safely repeatable — it skips pairs already decided. The
+    pair half is not: a second call for the same pair raises
+    MUTATION_CONSTRAINT_VIOLATION, because writing the same proposal twice must
+    fail rather than converge. An agent whose await timed out (the sync body
+    runs to completion regardless) would retry on the strength of
+    ``idempotentHint`` and get an error instead of the decision id it already
+    wrote, so the hint must not claim otherwise.
+    """
+    srv = FastMCP("test")
+    register_accounts_tools(srv)
+
+    tool = next(t for t in await srv._list_tools() if t.name == "accounts_links_run")  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    assert tool.annotations is not None
+    assert tool.annotations.idempotentHint is False

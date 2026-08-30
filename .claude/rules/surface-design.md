@@ -160,7 +160,7 @@ Coherence requires that when a verb appears, it means the same thing everywhere.
 | `_set` | Idempotent state assertion (1a collection-set OR 1b entity upsert / partial update) | `accounts_set`, `taxonomy_set`, `investments_securities_set` |
 | `_create` | Strict create — errors if entity exists | `transactions_create` |
 | `_delete` | Remove one entity by id or natural key when that boundary is admitted | No bare `_delete` identity is in the current registry |
-| `_run` | Execute a discrete batch/pipeline operation | `refresh_run`, `transactions_categorize_run` |
+| `_run` | Execute a discrete batch/pipeline operation, optionally scoped to the subject the caller names | `refresh_run`, `transactions_categorize_run`, `accounts_links_run` |
 | `_commit` | Finalize externally-decided proposals (terminal step of propose→review→commit workflows) | `transactions_categorize_commit` |
 | `_confirm` | Accept or override an interactively-presented proposal (terminal step of a propose→review→confirm workflow) | `import_confirm` |
 | `_refresh` | Rebuild derived state from raw inputs (refresh domain) | `refresh_run` (umbrella) |
@@ -360,7 +360,7 @@ When adding or modifying a tool / command / endpoint:
 
 ## Registry budget
 
-The operating contract is one 49-tool standard registry. Generic clients
+The operating contract is one 50-tool standard registry. Generic clients
 receive it in full; capable hosts may optionally defer schemas from that same
 registry without reconnect, packs, or profiles. Reports never consume tool
 slots. The deterministic comparison passed, but promotion remains unready

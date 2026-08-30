@@ -217,12 +217,18 @@ def accounts_created_action(count: int) -> str | None:
     Names no account: the ids and labels are structured data on the result, and
     ``actions`` is unclassified prose that the redaction pass cannot see.
 
-    The merge recovery is entirely MCP-reachable, which is easy to miss because
-    the tool named after it is not: ``accounts_links_run`` is unregistered, but
-    ``refresh_run(steps=["identity"])`` calls the same
+    The merge recovery is entirely MCP-reachable: ``refresh_run(steps=
+    ["identity"])`` and ``accounts_links_run`` both call
     ``AccountLinksService.run()``, and ``reviews`` and ``identity_links_decide``
     carry the rest of the loop. Sending the agent to the CLI for any of it costs
     it the one correction it can perform without the user leaving the chat.
+
+    The sweep alone is not the whole recovery, which is why the named-pair form
+    is spelled out here too. ``run()`` proposes only what a signal reaches, and
+    the duplicate a user notices on an import is often the one that reaches
+    none — a card reissued under another institution name, an export whose
+    label and last four both changed. An agent given the sweep alone reads an
+    empty review queue as "nothing to merge" and stops one call short.
     """
     if not count:
         return None
@@ -233,7 +239,9 @@ def accounts_created_action(count: int) -> str | None:
         "display_name=...). If one duplicates an account they already have, "
         "refresh_run(steps=['identity']) proposes the merge, "
         "reviews(kind='account_links') shows it, and identity_links_decide "
-        "accepts it."
+        "accepts it. If that sweep proposes nothing, the pair shares no signal "
+        "— name it directly with accounts_links_run(account_id=..., "
+        "candidate_account_id=...), which queues the same reviewable proposal."
     )
 
 

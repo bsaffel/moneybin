@@ -1009,7 +1009,9 @@ def echo_accounts_created(accounts: Sequence[dict[str, str]]) -> None:
         # command that exits on a missing option value.
         "   Rename with 'moneybin accounts set <account_id> --display-name <name>'; "
         "if it duplicates an account you already have, "
-        "'moneybin accounts links run' proposes the merge.",
+        "'moneybin accounts links run' proposes the merge — and if that "
+        "proposes nothing, the pair shares no signal, so name it yourself with "
+        "'moneybin accounts links run <account_id> <candidate_account_id>'.",
         err=True,
     )
 
@@ -1138,6 +1140,12 @@ def format_account_candidate(candidate: Mapping[str, object]) -> str:
         return f"{rendered} · ledger overlap: no comparable transactions"
 
     overlap = f"ledger overlap: {matched}/{comparable} matched"
+    # The posting-lag tolerance, when the payload states it: "2/2 matched" reads
+    # as exact-date agreement otherwise, which is a stronger claim than the
+    # probe makes.
+    window_days = candidate.get("overlap_window_days")
+    if type(window_days) is int:
+        overlap += f" within ±{window_days}d"
     window_start = candidate.get("overlap_window_start")
     window_end = candidate.get("overlap_window_end")
     if isinstance(window_start, str) and isinstance(window_end, str):

@@ -11,6 +11,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **You can propose a merge for two accounts nothing automatic would pair.**
+  `accounts links run` and the newly registered `accounts_links_run` MCP tool
+  now accept two account ids and queue exactly that pair for review, under a
+  `manual` signal with no confidence score — nothing was measured, and a number
+  there would rank a bare assertion against real evidence. This is the escape
+  hatch for a duplicate no signal reaches: different last four, different
+  institution, nothing in common but your knowledge that it is one account.
+  Until now, surfacing such a pair took a code change to the resolver, which put
+  it out of reach of every surface.
+
+  With no ids, both surfaces still sweep every account for twins, exactly as
+  before. Naming only one id is an error rather than a sweep: silently
+  backfilling the whole book because the second id was forgotten writes
+  proposals nobody asked for. Neither form merges anything — both write pending
+  proposals that clear the same confirmation gate, so the pair still has to be
+  accepted by a human before any data moves. Registering the tool takes the
+  50-tool standard registry to ADR-016's hard maximum exactly — admitting
+  another tool now means retiring one. (#450)
+
+  Either id may name an account an import has only just created. Those live in
+  the link records before the next transform materializes them into
+  `core.dim_accounts`, and imports do not refresh by default — so checking the
+  materialized table alone would have refused the freshest half of every pair,
+  which is the half you are most likely to have just noticed. The places that
+  announce a duplicate now name this form too: the import's created-account
+  hint on both surfaces, and the `duplicate_account_overlap` doctor finding,
+  which measures transaction overlap and already warned that identity
+  resolution may propose nothing at all for the pair it just flagged.
+
 - **`moneybin --home <path>` picks the data directory.** Until now `MONEYBIN_HOME`
   was the only way to point MoneyBin at a different set of profiles, config and
   databases, and it appeared in no `--help` output — so the override was easy to
@@ -1263,6 +1292,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   quoting style), a quoted identifier, or a `--` comment. This unblocks
   `... WHERE action LIKE 'export%'` against `app.audit_log`, the documented
   way to find an export's audit trail from the agent-safe SQL surface (#447).
+
+- **Account merge proposals key on the last four, not on the institution.** The
+  proposer both missed real cross-source duplicates and filed proposals for
+  unrelated pairs, and each failure had its own cause.
+
+  The last-four rung required the source to carry a resolved institution. A
+  tabular export names its account only inside a label — `Daily Expense (...)`
+  — and no institution is parsed from it, so the account it minted had an exact
+  last four and no institution, invisible to every last-four comparison. The
+  OFX copy of the same account minted separately, both counted toward spending
+  and net worth, and nothing proposed the merge. Institution is now evidence
+  rather than a precondition: it still vetoes a pair that states two different
+  banks, but a pair where either side names none surfaces under a new
+  `last_four` signal, kept distinct from `institution_last4` so the queue can
+  tell "both sides named this bank" from "one side named nothing".
+
+  Separately, `institution_reissue` fired on a shared institution plus a last
+  four that differed — which, in an established book, is every pair of cards at
+  one bank. It never checked that the two ledgers were sequential, which is what
+  a reissue means, so it proposed pairs that ran side by side for months, each
+  carrying its own refutation in zero matched transactions over the period they
+  shared. A proposal is now dropped only when that whole refutation holds: the
+  two ledgers ran at once for longer than a statement cycle **and** shared no
+  transaction over a period both of them covered. Requiring the second half
+  matters most for the duplicate this queue exists to catch — one account
+  arriving from two sources overlaps in dates by construction and matches on
+  every row, so dropping on the dates alone would have silently withheld the
+  pair and left it double-counting. Only positive concurrency drops it: an
+  account with no published ledger, or no comparable period to measure, keeps
+  its proposal, which is the import-time state the signal was written for. An
+  unstated currency counts as silence here for the same reason: the overlap
+  probe normally reads a one-sided blank as a mismatch, which is affordable
+  where the count is only shown beside a proposal and inverts where it
+  suppresses one — a tabular export leaving the column empty beside a feed
+  that states USD would otherwise score zero against a ledger it agrees with
+  row for row, and the drop would read that as disagreement. Two stated and
+  differing currencies still refute.
+
+  Ledger overlap now also states the posting-lag tolerance it matched within, on
+  every surface that reports it. "345 of 346" otherwise reads as exact-date
+  agreement, a stronger claim than the probe makes and a different basis for
+  ratifying an irreversible merge. (#450)
 
 - **A denied keychain read is no longer reported as a missing key.** macOS
   reports a sandbox-denied keychain read identically to a genuinely absent

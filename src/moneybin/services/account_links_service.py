@@ -559,6 +559,137 @@ class AccountLinksService:
         logger.info(f"Account-link backfill wrote {new_count} new pending decisions")
         return new_count
 
+    def propose_pair(
+        self,
+        account_id: str,
+        candidate_account_id: str,
+        *,
+        decided_by: str = "user",
+    ) -> str:
+        """Queue a merge proposal for two accounts a caller names directly.
+
+        The escape hatch for a twin no signal reaches — different last four,
+        different institution, no shared name, nothing in common but a person
+        knowing it is one account. Without it, surfacing a missed pair takes a
+        resolver change, which puts it out of reach of every surface.
+
+        Writes one ``pending`` decision under signal ``manual`` and merges
+        nothing: the pair clears the same confirmation gate as a proposal the
+        resolver found. ``confidence_score`` stays NULL — nothing was measured,
+        and a number here would rank a bare assertion against real evidence.
+
+        Argument order sets which account is absorbed, but only an account
+        holding an accepted ``source_native`` link can be: :meth:`set` re-points
+        that link, and without one the merge cannot collapse the data. The pair
+        is flipped when only the second side qualifies, rather than queued as a
+        decision that dead-ends at accept.
+
+        Raises ``UserError`` when both ids name one account
+        (MUTATION_INVALID_INPUT), either names no account this database knows —
+        ``AccountResolver.knows_account_id``, which reads the links table as
+        well as the dim so a just-imported account is nameable before the next
+        transform (MUTATION_NOT_FOUND) — a pending or accepted decision already
+        covers the pair, or neither side can be absorbed (both
+        MUTATION_CONSTRAINT_VIOLATION). A *rejected* pair is re-proposable: a
+        past answer is not a permanent veto, and a reject is the cheapest
+        decision to make by mistake.
+        """
+        from moneybin.services.account_resolver import (  # noqa: PLC0415  # circular at module level
+            AccountResolver,
+            refresh_account_link_pending_gauge,
+        )
+
+        # Deferred so this module does not become a second eager path onto
+        # import_service's graph. It is on the CLI cold path today only through
+        # inbox_service, and a module-level import here would keep it there
+        # even after that one is deferred. Only the refusal below needs it.
+        from moneybin.services.import_service import (  # noqa: PLC0415  # cold-start hygiene
+            mask_embedded_account_number,
+        )
+
+        if account_id == candidate_account_id:
+            raise UserError(
+                "Both ids name the same account; a link needs two different accounts.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+
+        pair = [account_id, candidate_account_id]
+        # Both arms, via the resolver: an account an import just minted is in
+        # app.account_links and not yet in the SQLMesh-materialized dim, and
+        # that freshly imported duplicate is the one this hatch exists to
+        # recover. knows_account_id also declines an id whose links are all
+        # reversed — already merged away — which the dim alone still answers
+        # "yes" for until the next transform.
+        resolver = AccountResolver(self._db, actor=self._actor)
+        missing = [a for a in pair if not resolver.knows_account_id(a)]
+        if missing:
+            # Masked because an unresolved ``account_id`` is the source-native
+            # key, which on OFX is the institution's ``<ACCTID>``. This refusal
+            # reaches the CLI log and the MCP envelope, both of which outlive
+            # the call that named it.
+            raise UserError(
+                "No account in this database for "
+                f"{', '.join(repr(mask_embedded_account_number(m)) for m in missing)}.",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+
+        # A rejected or reversed decision does not block: those are past answers.
+        existing = self._db.execute(
+            f"""
+            SELECT decision_id, status FROM {ACCOUNT_LINK_DECISIONS.full_name}
+            WHERE ((provisional_account_id = ? AND candidate_account_id = ?)
+                OR (provisional_account_id = ? AND candidate_account_id = ?))
+              AND status IN ('pending', 'accepted')
+            LIMIT 1
+            """,  # noqa: S608  # TableRef constant + parameterized values
+            [account_id, candidate_account_id, candidate_account_id, account_id],
+        ).fetchone()
+        if existing is not None:
+            raise UserError(
+                f"Decision {existing[0]!r} already covers this pair and is "
+                f"{existing[1]}; nothing to propose.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+
+        mergeable = {
+            str(r[0])
+            for r in self._db.execute(
+                f"SELECT DISTINCT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef constant + parameterized values
+                "WHERE ref_kind = 'source_native' AND status = 'accepted' "
+                "AND account_id IN (?, ?)",
+                pair,
+            ).fetchall()
+        }
+        if account_id in mergeable:
+            absorbed, survivor = account_id, candidate_account_id
+        elif candidate_account_id in mergeable:
+            absorbed, survivor = candidate_account_id, account_id
+        else:
+            raise UserError(
+                "Neither account holds an accepted source_native link, so a "
+                "merge would have nothing to re-point and could not collapse "
+                "either ledger. Import at least one of them from a source first.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+
+        decision_id = uuid.uuid4().hex[:12]
+        self._decisions.insert(
+            decision_id=decision_id,
+            provisional_account_id=absorbed,
+            candidate_account_id=survivor,
+            confidence_score=None,
+            match_signals={
+                "signal": "manual",
+                "value": _resolve_display_name(self._db, survivor),
+            },
+            decided_by=decided_by,
+            actor=self._actor,
+            status="pending",
+        )
+        refresh_account_link_pending_gauge(self._db)
+        logger.info(f"Queued manual account-link proposal {decision_id} for review")
+        return decision_id
+
     def record_committed_outer_decisions(self) -> None:
         """Refresh metrics after an enclosing transaction commits."""
         from moneybin.services.account_resolver import (  # noqa: PLC0415

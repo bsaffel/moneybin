@@ -4107,9 +4107,9 @@ class TestImportFilesConfirmationRequired:
 
         The first version of this action said the merge was "CLI-only today"
         and sent the agent to a terminal for the one correction it could have
-        made itself. The mistake was reading the unregistered
-        ``accounts_links_run`` as the only way to propose a merge:
-        ``refresh_run(steps=["identity"])`` calls the same
+        made itself. The mistake was reading ``accounts_links_run`` — then
+        unregistered, and registered since — as the only way to propose a
+        merge: ``refresh_run(steps=["identity"])`` calls the same
         ``AccountLinksService.run()``, and ``reviews`` +
         ``identity_links_decide`` finish the loop.
 
@@ -4129,6 +4129,41 @@ class TestImportFilesConfirmationRequired:
             assert tool in STANDARD_TOOL_NAMES
         # No CLI escape hatch: naming one here is what the bug looked like.
         assert "moneybin " not in action
+
+    async def test_the_created_account_action_names_the_no_signal_fallback(
+        self,
+    ) -> None:
+        """The sweep it points at cannot find every duplicate an import makes.
+
+        ``refresh_run(steps=["identity"])`` proposes only what a signal reaches
+        — same institution and last four, a fuzzy name, a reissue. A duplicate
+        that shares none of those is exactly what the user notices and the
+        sweep does not, and an agent following this action alone reaches an
+        empty review queue and stops. The named-pair form of
+        ``accounts_links_run`` is the recovery, so the action has to say so
+        before the agent concludes there is nothing to merge.
+
+        The parameter name is read off the live tool rather than written as a
+        literal: the claim is that the action names a call the agent can
+        actually make.
+        """
+        import inspect
+
+        from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+        from moneybin.mcp.tools.accounts import accounts_links_run
+        from moneybin.mcp.tools.import_tools import (
+            accounts_created_action,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        action = accounts_created_action(1)
+
+        assert action is not None
+        assert "accounts_links_run" in action
+        assert "accounts_links_run" in STANDARD_TOOL_NAMES
+        pair_params = inspect.signature(inspect.unwrap(accounts_links_run)).parameters
+        for param in ("account_id", "candidate_account_id"):
+            assert param in pair_params
+            assert param in action
 
     async def test_the_registered_inbox_tool_keeps_the_minted_account_hint(
         self, monkeypatch: MonkeyPatch
