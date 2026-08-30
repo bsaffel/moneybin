@@ -117,8 +117,16 @@ class TestCLIProfileHandling:
         mocker.patch.dict(os.environ, {})
         os.environ.pop("MONEYBIN_PROFILE", None)
 
-        from moneybin.cli.utils import resolve_profile
+        from moneybin.cli.utils import resolve_profile, stash_cli_flags
         from moneybin.utils.user_config import set_default_profile
+
+        # This test drives the resolver directly rather than through
+        # `runner.invoke`, so nothing has called `stash_cli_flags` to clear the
+        # module-level `_flags` singleton the way every real CLI invocation
+        # does. Without this reset the config.yaml branch below is only reached
+        # because no *preceding* test in this file left `--profile` set — an
+        # ordering accident, not an isolated test.
+        stash_cli_flags(None, False)
 
         records: list[logging.LogRecord] = []
 

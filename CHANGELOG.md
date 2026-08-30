@@ -762,6 +762,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **`--help` no longer lists commands that aren't built yet.** Twelve
+  whole-command placeholders — `budget delete/set`, `sync key rotate`, `sync
+  schedule set/show/remove`, `transactions categorize ml apply/status/train`,
+  and `db key export/import/verify` — are hidden from `--help`, along with the
+  four groups (`budget`, `sync key`, `sync schedule`, `transactions categorize
+  ml`) that contained nothing else. `db key` stays listed because `db key show`
+  and `db key rotate` work. Nothing is removed: every one of them is still
+  invocable and keeps its exit code, so a script calling `sync key rotate`
+  today behaves exactly as before — it just no longer appears in the menu of
+  things MoneyBin claims to do. They now report "not yet implemented" as a
+  single `WARNING`, which means the three `db key` placeholders no longer exit
+  `1` silently when `MONEYBIN_LOGGING__LEVEL=WARNING` (#457).
+- **Messages name transforms, not the library that runs them.** Help text,
+  option descriptions, progress lines, and migration warnings said "SQLMesh" —
+  a dependency you did not choose and cannot act on. They now say "transform".
+  `moneybin logs sqlmesh` is unchanged: that one is a log-file name you type,
+  not vocabulary. The profile banner also names the single source that actually
+  resolved your profile instead of listing candidates (#457).
 - **Account-merge candidates carry measured ledger overlap instead of a
   constant `confidence`.** An import that offers to merge a file into an
   account you already have returned a `confidence` on every candidate — a

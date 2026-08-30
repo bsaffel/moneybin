@@ -872,7 +872,7 @@ class Database:
                 "sqlmesh migrate failed or durable state did not advance",
                 exc_info=True,
             )
-            logger.warning("⚠️  sqlmesh migrate failed — see logs for details")
+            logger.warning("⚠️  Transform state migration failed — see logs for details")
             return False
         finally:
             BaseDuckDBConnectionConfig._data_file_to_adapter.pop(adapter_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above

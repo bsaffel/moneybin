@@ -251,8 +251,31 @@ def test_stub_message_survives_a_warning_log_level(
 
 # --- Requirement 17: no user-facing message names an internal dependency ----
 
-# SQLMesh is the transform engine. Users have "transforms", not a vendor.
-INTERNAL_DEPENDENCIES = ("SQLMesh",)
+# SQLMesh is the transform engine and SQLGlot its SQL parser. Users have
+# "transforms", not a vendor.
+#
+# Matched case-insensitively. The first version of this guard compared the
+# names verbatim, and `database.py` reached the user with a lowercase
+# "sqlmesh migrate failed" — scanned by this test, and walked straight past.
+# Casing is not the rule; naming the dependency is.
+INTERNAL_DEPENDENCIES = ("SQLMesh", "SQLGlot")
+
+
+def names_an_internal_dependency(text: str) -> bool:
+    """Whether ``text`` names a dependency the user did not choose."""
+    folded = text.casefold()
+    return any(name.casefold() in folded for name in INTERNAL_DEPENDENCIES)
+
+
+# `moneybin logs sqlmesh` is the one place the name is legitimately user-facing:
+# it is a value the user types and the actual prefix of the log file on disk
+# (`sqlmesh-<session>.log`), not vendor vocabulary in prose. Renaming it is a
+# CLI public-contract change that also orphans existing log files, so it is out
+# of scope for message hygiene.
+#
+# Declared, not inferred — and the test below asserts the exemption is still
+# *needed*, so a stale entry fails rather than quietly widening the guard.
+IDENTIFIER_EXEMPT_HELP = frozenset({"logs"})
 
 SRC_ROOT = Path(moneybin.__file__).parent
 
@@ -263,8 +286,15 @@ def test_help_text_names_no_internal_dependency(path: str) -> None:
     result = runner.invoke(app, [*path.split(), "--help"])
 
     assert result.exit_code == 0, result.output
-    for dependency in INTERNAL_DEPENDENCIES:
-        assert dependency not in result.stdout, f"`{path} --help` names {dependency}"
+    if path in IDENTIFIER_EXEMPT_HELP:
+        assert names_an_internal_dependency(result.stdout), (
+            f"`{path} --help` no longer names an internal dependency — drop it "
+            f"from IDENTIFIER_EXEMPT_HELP rather than leaving the guard widened"
+        )
+        return
+    assert not names_an_internal_dependency(result.stdout), (
+        f"`{path} --help` names an internal dependency"
+    )
 
 
 def _user_facing_strings(module: Path) -> list[str]:
@@ -340,7 +370,7 @@ def test_runtime_messages_name_no_internal_dependency() -> None:
         if not _reaches_the_console(module):
             continue
         for text in _user_facing_strings(module):
-            if any(name in text for name in INTERNAL_DEPENDENCIES):
+            if names_an_internal_dependency(text):
                 offenders.append(f"{module.relative_to(SRC_ROOT)}: {text!r}")
 
     assert not offenders, (

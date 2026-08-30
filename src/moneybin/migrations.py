@@ -693,15 +693,15 @@ def sqlmesh_state_assessment(db: Database) -> tuple[str | None, bool]:
     schema_version, sqlmesh_version, sqlglot_version = state
     if schema_version < SCHEMA_VERSION:
         return (
-            f"SQLMesh state schema (v{schema_version}) is behind the installed "
-            f"sqlmesh package (v{SCHEMA_VERSION}). "
+            f"Transform state schema (v{schema_version}) is behind this MoneyBin "
+            f"version (v{SCHEMA_VERSION}). "
             "Run `moneybin db migrate apply` to migrate the state.",
             True,
         )
     if schema_version > SCHEMA_VERSION:
         return (
-            f"SQLMesh state schema (v{schema_version}) is ahead of the installed "
-            f"sqlmesh package (v{SCHEMA_VERSION}). Upgrade the sqlmesh package to match.",
+            f"Transform state schema (v{schema_version}) is ahead of this MoneyBin "
+            f"version (v{SCHEMA_VERSION}). Upgrade MoneyBin to match.",
             False,
         )
 
@@ -719,17 +719,21 @@ def sqlmesh_state_assessment(db: Database) -> tuple[str | None, bool]:
         sqlglot_version
     ) != major_minor(installed_sqlglot)
     if sqlmesh_mismatch or sqlglot_mismatch:
+        # The engine/parser split is diagnostic, so the versions stay. Their
+        # vendor names do not: the user's action is the same either way, and
+        # requirement 17 keeps a dependency the user never chose out of the
+        # message they read.
         parts: list[str] = []
         if sqlmesh_mismatch:
             parts.append(
-                f"SQLMesh state {sqlmesh_version} vs installed {installed_pkg}"
+                f"transform engine state {sqlmesh_version} vs installed {installed_pkg}"
             )
         if sqlglot_mismatch:
             parts.append(
-                f"SQLGlot state {sqlglot_version} vs installed {installed_sqlglot}"
+                f"SQL parser state {sqlglot_version} vs installed {installed_sqlglot}"
             )
         return (
-            f"SQLMesh state library version drift ({'; '.join(parts)}). "
+            f"Transform state library version drift ({'; '.join(parts)}). "
             "Run `moneybin db migrate apply` to migrate the state.",
             True,
         )
