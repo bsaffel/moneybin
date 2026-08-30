@@ -17,6 +17,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.render import Money, format_money, render_rows, render_summary
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.reports._framework.cli_register import echo_report_notes
@@ -78,21 +79,40 @@ def reports_networth(
             if row["account_id"] is None:
                 by_currency.setdefault(row["currency_code"], []).append(row)
         balance_date = result.records[0]["balance_date"]
-        typer.echo(f"Net worth as of {balance_date}")
         for currency, rows in by_currency.items():
-            typer.echo(f"  {currency_label(currency)}: {_summed(rows, 'net_worth')}")
-            typer.echo(f"    Assets:      {_summed(rows, 'total_assets')}")
-            typer.echo(f"    Liabilities: {_summed(rows, 'total_liabilities')}")
-            typer.echo(f"    Accounts:    {_summed(rows, 'account_count')}")
+            render_summary(
+                [
+                    # Every figure here is a position rather than a movement, so
+                    # each is a `balance`: unsigned when it is, and keeping the
+                    # `−` when it is not. Liabilities are stored negative, and a
+                    # profile can hold a negative net worth outright — the one
+                    # amount on this surface where a dropped minus inverts the
+                    # answer.
+                    ("Net worth", format_money(_summed(rows, "net_worth"), "balance")),
+                    ("Assets", format_money(_summed(rows, "total_assets"), "balance")),
+                    (
+                        "Liabilities",
+                        format_money(_summed(rows, "total_liabilities"), "balance"),
+                    ),
+                    ("Accounts", str(_summed(rows, "account_count") or 0)),
+                ],
+                title=f"{currency_label(currency)} as of {balance_date}",
+            )
         accounts = [row for row in result.records if row["account_id"] is not None]
         if accounts:
-            typer.echo("Per-account breakdown:")
-            for row in accounts:
-                typer.echo(
-                    f"  {row['account_name']!s:<40} {row['account_balance']!s:>14} "
-                    f"{currency_label(row['currency_code']):<3} "
-                    f"({row['observation_source']})"
-                )
+            render_rows(
+                ["account", "balance", "currency", "source"],
+                [
+                    (
+                        row["account_name"],
+                        row["account_balance"],
+                        currency_label(row["currency_code"]),
+                        row["observation_source"],
+                    )
+                    for row in accounts
+                ],
+                money={"balance": Money("balance")},
+            )
         echo_report_notes(result)
 
     render_or_json(
@@ -139,18 +159,28 @@ def reports_networth_history(
         # Each currency is its own series, so a period appears once per
         # currency; without the column two rows for the same month read as one
         # position swinging wildly.
-        typer.echo("period       cur     net_worth     change_abs    change_pct")
-        for point in result.records:
-            change_abs = point["change_abs"] if point["change_abs"] is not None else "-"
-            change_pct = (
-                f"{point['change_pct']:.2%}" if point["change_pct"] is not None else "-"
-            )
-            currency = currency_label(point["currency_code"])
-            typer.echo(
-                f"{point['period']!s:<12} {currency:<7} {point['net_worth']!s:>12} "
-                f"{change_abs!s:>13} "
-                f"{change_pct:>10}"
-            )
+        render_rows(
+            ["period", "currency", "net_worth", "change_abs", "change_pct"],
+            [
+                (
+                    point["period"],
+                    currency_label(point["currency_code"]),
+                    point["net_worth"],
+                    point["change_abs"],
+                    f"{point['change_pct']:.2%}"
+                    if point["change_pct"] is not None
+                    else "-",
+                )
+                for point in result.records
+            ],
+            money={
+                "net_worth": Money("balance"),
+                # A change in a position, not in a spend magnitude: the sign
+                # says which way the position moved, and up is the favourable
+                # direction, so a rise reads as income rather than expense.
+                "change_abs": Money("delta", polarity="income"),
+            },
+        )
         echo_report_notes(result)
 
     render_or_json(

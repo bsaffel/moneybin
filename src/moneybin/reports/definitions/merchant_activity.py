@@ -53,18 +53,40 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
             "ISO 4217 currency this row is denominated in; null means unknown.",
             DataClass.CURRENCY,
         ),
-        OutputColumn("total_spend", "Lifetime absolute outflow.", DataClass.TXN_AMOUNT),
         OutputColumn(
-            "total_inflow", "Lifetime sum of positive amounts.", DataClass.TXN_AMOUNT
+            "total_spend",
+            "Lifetime absolute outflow.",
+            DataClass.TXN_AMOUNT,
+            money_kind="magnitude",
+        ),
+        OutputColumn(
+            "total_inflow",
+            "Lifetime sum of positive amounts.",
+            DataClass.TXN_AMOUNT,
+            money_kind="magnitude",
         ),
         OutputColumn(
             "total_outflow",
             "Lifetime sum of negative amounts, kept negative.",
             DataClass.TXN_AMOUNT,
+            # Kept negative, unlike `total_spend` one row up, which is the same
+            # money as an absolute. Declaring them the same kind would render
+            # one of the two with a sign it does not carry.
+            money_kind="flow",
         ),
         OutputColumn("txn_count", "Transaction count.", DataClass.AGGREGATE),
-        OutputColumn("avg_amount", "Mean signed amount.", DataClass.TXN_AMOUNT),
-        OutputColumn("median_amount", "Median signed amount.", DataClass.TXN_AMOUNT),
+        OutputColumn(
+            "avg_amount",
+            "Mean signed amount.",
+            DataClass.TXN_AMOUNT,
+            money_kind="flow",
+        ),
+        OutputColumn(
+            "median_amount",
+            "Median signed amount.",
+            DataClass.TXN_AMOUNT,
+            money_kind="flow",
+        ),
         OutputColumn("first_seen", "Earliest transaction date.", DataClass.TXN_DATE),
         OutputColumn("last_seen", "Latest transaction date.", DataClass.TXN_DATE),
         OutputColumn(

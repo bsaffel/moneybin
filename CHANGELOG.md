@@ -762,6 +762,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **Every table the CLI prints is now built the same way.** Twelve commands
+  rendered rows through five different idioms — a shared Rich helper for three,
+  and a hand-padded f-string per command for the rest, each with its own guessed
+  column widths. They all go through one `render_rows` now, which sizes each
+  column to its widest value, so `accounts links history` no longer aligns only
+  the rows that fell back to ids. Two more renderers cover the other shapes a
+  command prints: `render_summary` for a labelled block like `reports networth`,
+  and `render_note` for the status lines `-q` silences. Result rows and
+  summaries have no way to be silenced — neither renderer accepts a quiet flag.
+
+  No value is ever elided to make a row fit: a name too wide for the terminal
+  wraps, because a resolved account name ends in the masked last four and
+  clipping it removes exactly the digits that tell two candidates apart.
+
+- **Amounts print with thousands separators and a sign that means something.**
+  Every money column now declares what its number *is* — a signed flow, a
+  positive magnitude like `SUM(ABS(amount))`, a change in one, or a balance —
+  and the renderer reads that declaration instead of guessing from the value.
+  `reports spending` no longer risks rendering spending as green income, and a
+  rise in spending reads as a rise in spending rather than as a gain. Negative
+  amounts carry `−` (U+2212), matching the rest of the product. A negative net
+  worth keeps its minus: "balances unsigned" only ever meant no decorative `+`
+  on a positive position. Colour is redundant with the sign glyph and appears
+  only on a terminal with `NO_COLOR` unset, so piping or redirecting output
+  loses nothing.
+
+- **`transactions matches` stops reporting an unscored match as `0.00`.** An
+  exact-id match records no confidence score; the two match tables printed that
+  as zero, which reads as the engine having compared the pair and found nothing
+  in common. It now prints `-`, matching what the merchant and security link
+  queues already did.
+
 - **`--help` no longer lists commands that aren't built yet.** Twelve
   whole-command placeholders — `budget delete/set`, `sync key rotate`, `sync
   schedule set/show/remove`, `transactions categorize ml apply/status/train`,

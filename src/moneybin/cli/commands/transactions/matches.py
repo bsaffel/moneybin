@@ -7,7 +7,9 @@ import duckdb as duckdb_mod
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.render import render_rows
 from moneybin.cli.utils import (
+    confidence_cell,
     emit_json,
     handle_cli_errors,
     warn_match_decisions_committed,
@@ -26,6 +28,19 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 logger = logging.getLogger(__name__)
+
+
+def _score(row: dict[str, Any]) -> float | None:
+    """This match's confidence, keeping "no score recorded" distinct from zero.
+
+    The two hand-built tables this replaced coerced a missing score to ``0.00``,
+    which reads as the engine having compared the pair and found nothing in
+    common — the opposite of what an exact-id match, which records no score at
+    all, actually means. Its sibling queues already printed a dash here.
+    """
+    value = row.get("confidence_score")
+    return None if value is None else float(value)
+
 
 _NO_TRANSFORMS_MSG = (
     "❌ No transaction data available — run 'moneybin transform apply' first"
@@ -68,21 +83,20 @@ def matches_pending(
 
         for ck, group_rows in groups.items():
             typer.echo(f"\n── component {ck} ({len(group_rows)} edge(s)) ──")
-            typer.echo(
-                f"  {'Match ID':<14} {'Type':<9} {'Tier':<5} {'Score':>6} "
-                f"{'Type A':<8} {'Type B':<8}"
+            render_rows(
+                ["match id", "type", "tier", "score", "type a", "type b"],
+                [
+                    (
+                        str(row["match_id"])[:12],
+                        str(row.get("match_type", "dedup")),
+                        str(row.get("match_tier") or "-"),
+                        confidence_cell(_score(row)),
+                        str(row["source_type_a"]),
+                        str(row["source_type_b"]),
+                    )
+                    for row in group_rows
+                ],
             )
-            for row in group_rows:
-                score = float(row.get("confidence_score") or 0)
-                typer.echo(
-                    f"  {str(row['match_id'])[:12]:<14} "
-                    f"{str(row.get('match_type', 'dedup')):<9} "
-                    f"{str(row.get('match_tier') or '-'):<5} "
-                    f"{score:>6.2f} "
-                    f"{str(row['source_type_a']):<8} "
-                    f"{str(row['source_type_b']):<8}"
-                )
-        typer.echo()
 
 
 @app.command("run")
@@ -170,23 +184,31 @@ def matches_history(
                     logger.info("No match decisions found")
                 return
 
-            typer.echo(
-                f"\n{'Match ID':<14} {'Type':<9} {'Status':<10} {'Tier':<5} {'Score':>6} "
-                f"{'Decided By':<10} {'Type A':<6} {'Type B':<6}"
+            render_rows(
+                [
+                    "match id",
+                    "type",
+                    "status",
+                    "tier",
+                    "score",
+                    "decided by",
+                    "type a",
+                    "type b",
+                ],
+                [
+                    (
+                        entry["match_id"][:12],
+                        entry.get("match_type", "dedup"),
+                        entry["match_status"],
+                        entry.get("match_tier") or "-",
+                        confidence_cell(_score(entry)),
+                        entry["decided_by"],
+                        entry["source_type_a"],
+                        entry["source_type_b"],
+                    )
+                    for entry in entries
+                ],
             )
-            typer.echo("-" * 80)
-            for entry in entries:
-                typer.echo(
-                    f"{entry['match_id'][:12]:<14} "
-                    f"{entry.get('match_type', 'dedup'):<9} "
-                    f"{entry['match_status']:<10} "
-                    f"{(entry.get('match_tier') or '-'):<5} "
-                    f"{float(entry.get('confidence_score') or 0):>6.2f} "
-                    f"{entry['decided_by']:<10} "
-                    f"{entry['source_type_a']:<6} "
-                    f"{entry['source_type_b']:<6}"
-                )
-            typer.echo()
 
 
 @app.command("undo")

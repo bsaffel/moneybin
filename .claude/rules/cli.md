@@ -194,6 +194,47 @@ for the binding rules; they are cross-surface, not MCP-specific.
 
 This makes every read command pipeable into `jq`, scripts, and AI agents. Audit-tested by `tests/moneybin/test_cli/test_cli_output_quiet.py`.
 
+## Text rendering
+
+Text output goes through `moneybin.cli.render` — never a `rich.Table` built at
+the call site, never a hand-padded f-string column. Three renderers, one per
+shape of result:
+
+| Shape | Renderer | Stream | `-q` |
+|---|---|---|---|
+| A collection of records | `render_rows(columns, rows, money=...)` | stdout | never suppressed |
+| A labelled scalar block | `render_summary(pairs, title=...)` | stdout | never suppressed |
+| An informational status line | `render_note(message, quiet=..., warn=...)` | stderr | suppressed |
+
+Neither result renderer takes a `quiet` parameter, so there is no way to route
+data through this module and have it silenced.
+
+**Amounts.** `format_money` is the only place an amount becomes text, and every
+money column declares a **money kind** — `flow`, `magnitude`, `delta`, or
+`balance` — that decides its sign glyph and colour. The renderer never reads
+meaning off the raw number: `spending_trend.total_spend` is `SUM(ABS(amount))`,
+so colouring on sign alone would render spending as green income. Pass the
+declaration as `render_rows(..., money={"amount": Money("flow")})`; a report
+declares it on its `OutputColumn` instead and the framework passes it through.
+
+**Colour** is defined once, semantically, as `render.Style` — no colour literal
+belongs at a call site — and is emitted only when stdout is a TTY and `NO_COLOR`
+is unset. The sign glyph is always present, so the encoding survives a pipe.
+
+Three guards in `tests/moneybin/test_cli/test_render.py` enforce this
+structurally: Rich may be imported only by `render.py`, no `typer.echo` outside
+it carries an alignment format spec, and nothing calls `typer.secho`/`typer.style`.
+
+**Eight modules are still exempt from the second guard**, named in
+`_AWAITING_RENDER_ROWS` in that file: `commands/db.py`, `demo.py`, `fx.py`,
+`import_cmd.py`, and four under `commands/investments/`. They hand-format
+columns today and migrate in the third pull request of M3K.3. The list is
+asserted by set equality in both directions, so it can only shrink — a module
+acquiring the pattern fails, and one that has shed it must be removed. Do not
+copy their approach into anything new, and do not add to the list.
+
+Full contract: [`cli-output-coherence.md`](../../docs/specs/cli-output-coherence.md).
+
 ## Conventions
 
 - Kebab-case for command names

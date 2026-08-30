@@ -135,6 +135,44 @@ class ParamSpec:
     data_class: DataClass
 
 
+type MoneyKind = Literal["flow", "magnitude", "delta", "balance"]
+"""What a money column's number means, so a renderer never has to guess.
+
+Deliberately not named ``kind``: :class:`ReportSemantics` already has one, with
+a different vocabulary and a different grain. That one is *report*-level, and
+`spending` carries a ``magnitude`` and a ``delta`` in the same result, so one
+report-level value cannot describe both columns. The two overlap in wording
+(``flow``, and ``position`` ≈ ``balance``) without being the same thing; a
+shared name would read as one concept and rot into two.
+
+- ``flow`` — signed under the AGENTS.md accounting convention (negative =
+  expense, positive = income).
+- ``magnitude`` — a positive absolute quantity whose polarity is carried by the
+  column rather than the value. `spending_trend.total_spend` is
+  ``SUM(ABS(t.amount))``: an outflow that happens to be positive.
+- ``delta`` — a signed *change in a magnitude*, where the sign means direction
+  rather than income/expense. `spending_trend.mom_delta` is
+  ``total_spend - prev_month_spend``, so positive means spending rose. Declares
+  a :data:`Polarity`, because that is what decides whether a rise is good.
+- ``balance`` — a position, not a movement.
+
+Optional on :class:`OutputColumn`. There is no default kind: an undeclared
+column is not money as far as the renderer is concerned, and reaches the table
+through ``str()``. Defaulting to a kind would mean guessing which columns hold
+amounts, which is the inference requirement 12 exists to remove — and the only
+available signal, :class:`~moneybin.privacy.taxonomy.DataClass`, answers a
+privacy question, not a rendering one. An extension keeps working undeclared,
+rendering exactly as it did before the field existed, and opts in per column.
+"""
+
+type Polarity = Literal["expense", "income"]
+"""Which direction is the favourable one for the quantity a ``delta`` measures.
+
+A rise in spending and a rise in income are both ``+``; only the declaration
+says which of them is good news.
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class OutputColumn:
     """One named report output with its meaning and privacy class."""
@@ -142,6 +180,10 @@ class OutputColumn:
     name: str
     description: str
     data_class: DataClass
+    money_kind: MoneyKind | None = None
+    """How to render this column's amounts; ``None`` means it is not money."""
+    polarity: Polarity | None = None
+    """Required when ``money_kind`` is ``"delta"``; meaningless otherwise."""
 
 
 @dataclass(frozen=True, slots=True)

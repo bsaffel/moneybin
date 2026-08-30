@@ -17,6 +17,7 @@ import typer
 
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.render import render_rows
 from moneybin.cli.utils import (
     handle_cli_errors,
     warn_transfers_retired,
@@ -28,6 +29,7 @@ from moneybin.privacy.payloads.accounts import (
     AccountLinksHistoryPayload,
     AccountLinksPendingPayload,
     AccountLinksRunPayload,
+    LinkHistoryRow,
 )
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_links_service import (
@@ -94,24 +96,25 @@ def links_pending(
             f"— {group.transactions:,} transactions move "
             f"— {len(group.candidates)} candidate(s) ──"
         )
-        typer.echo(
-            f"  {'Candidate':<32} {'Signal':<20} "
-            f"{'Ledger overlap':>16}  {'Decision ID':<14} {'Candidate ID'}"
+        # Never truncated. A resolved display name ends in the masked last
+        # four, so clipping it to the column width would cut off the digits
+        # that tell two candidates at one institution apart — the exact
+        # confusion this ordering exists to remove. `render_rows` folds a wide
+        # value rather than eliding it, so a long name pushes the row ragged
+        # instead of losing characters.
+        render_rows(
+            ["candidate", "signal", "ledger overlap", "decision id", "candidate id"],
+            [
+                (
+                    c.candidate_display_name or "-",
+                    c.signal,
+                    _overlap_cell(c.overlap),
+                    c.decision_id[:12],
+                    c.candidate_account_id[:12],
+                )
+                for c in group.candidates
+            ],
         )
-        for c in group.candidates:
-            # Padded, never truncated. A resolved display name ends in the
-            # masked last four, so clipping it to the column width would cut off
-            # the digits that tell two candidates at one institution apart —
-            # the exact confusion this ordering exists to remove. A long name
-            # pushing the row ragged is the cheaper failure.
-            typer.echo(
-                f"  {c.candidate_display_name or '-':<32} "
-                f"{c.signal:<20} "
-                f"{_overlap_cell(c.overlap):>16}  "
-                f"{c.decision_id[:12]:<14} "
-                f"{c.candidate_account_id[:12]}"
-            )
-    typer.echo()
 
 
 def _overlap_cell(overlap: LedgerOverlap) -> str:
@@ -537,35 +540,34 @@ def links_history(
             logger.info("No account-link decisions found")
         return
 
-    # Wide enough for two resolved names and the arrow between them.
-    # dim_accounts builds a name as institution + subtype + masked last four, so
-    # a merge of two runs about 55 characters — a column sized for one left every
-    # named row ragged and aligned only the rows that had fallen back to ids.
-    # Padded, never truncated, for the same reason as the pending table above.
-    typer.echo(
-        f"\n{'Merged':<60} {'Status':<10} {'Decided By':<10} "
-        f"{'Signal':<20} {'Decision ID'}"
-    )
-    typer.echo("-" * 116)
-    for d in payload.decisions:
-        # A frozen "" means the freeze looked and declined to record a raw-only
-        # name. Falling back to a truncated id puts an id where a name goes —
-        # the defect this whole surface exists to fix — and a 12-char prefix is
-        # not even usable as a handle. The shared constant is the same string
-        # core.dim_accounts puts in this column for a row it could not name, so
-        # the two cannot render as two spellings in one table.
-        merged = (
+    def _merged(d: LinkHistoryRow) -> str:
+        """Both sides of one merge, named rather than identified.
+
+        A frozen "" means the freeze looked and declined to record a raw-only
+        name. Falling back to a truncated id puts an id where a name goes — the
+        defect this whole surface exists to fix — and a 12-char prefix is not
+        even usable as a handle. The shared constant is the same string
+        core.dim_accounts puts in this column for a row it could not name, so
+        the two cannot render as two spellings in one table.
+        """
+        return (
             f"{d.provisional_display_name or UNNAMED_ACCOUNT_LABEL} → "
             f"{d.candidate_display_name or UNNAMED_ACCOUNT_LABEL}"
         )
-        typer.echo(
-            f"{merged:<60} "
-            f"{d.status:<10} "
-            f"{d.decided_by:<10} "
-            f"{d.signal:<20} "
-            f"{d.decision_id[:12]}"
-        )
-    typer.echo()
+
+    # `merged` holds two resolved names and the arrow between them, which
+    # dim_accounts builds as institution + subtype + masked last four — about
+    # 55 characters each. The renderer sizes the column to the widest value
+    # rather than to a guessed width, which is what the hand-built version
+    # could not do: a column sized for one name left every named row ragged and
+    # aligned only the rows that had fallen back to ids.
+    render_rows(
+        ["merged", "status", "decided by", "signal", "decision id"],
+        [
+            (_merged(d), d.status, d.decided_by, d.signal, d.decision_id[:12])
+            for d in payload.decisions
+        ],
+    )
 
 
 @app.command("run")

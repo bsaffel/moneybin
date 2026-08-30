@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 from dataclasses import replace
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import typer
@@ -12,13 +13,15 @@ from typer.testing import CliRunner
 
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat
+from moneybin.cli.render import Money
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.cli_register import (
     build_cli_command,
+    money_columns,
     register_report_cli,
 )
-from moneybin.reports._framework.contract import ReportQuery
+from moneybin.reports._framework.contract import OutputColumn, ReportQuery
 from moneybin.reports._framework.execute import ReportResult, inspection_hint
 from moneybin.reports._framework.introspect import (
     _RESERVED_CLI_PARAMS,  # pyright: ignore[reportPrivateUsage]  # the guard's subject
@@ -529,3 +532,114 @@ def test_cli_command_executes_stable_report_id_through_catalog() -> None:
         display_currency=None,
         home_currency=None,
     )
+
+
+def _money_runner(db: Database) -> ReportQuery:
+    """Amounts in two kinds.
+
+    Args:
+        db: Open read-only database connection.
+    """
+    return ReportQuery("SELECT 1", [])
+
+
+_MONEY_COLUMNS = (
+    OutputColumn("net", "A signed flow.", DataClass.TXN_AMOUNT, money_kind="flow"),
+    OutputColumn(
+        "spend",
+        "A positive absolute outflow.",
+        DataClass.TXN_AMOUNT,
+        money_kind="magnitude",
+    ),
+    OutputColumn("txn_count", "How many rows.", DataClass.AGGREGATE),
+)
+
+
+def _money_spec():  # noqa: ANN202 — test helper
+    return build_spec(
+        _money_runner,
+        report_id="test:money",
+        name="money",
+        view=_VIEW,
+        classes={
+            "net": DataClass.TXN_AMOUNT,
+            "spend": DataClass.TXN_AMOUNT,
+            "txn_count": DataClass.AGGREGATE,
+        },
+        parameter_classes={},
+        columns=_MONEY_COLUMNS,
+        semantics=TEST_SEMANTICS,
+    )
+
+
+def _money_app():  # noqa: ANN202 — test helper
+    app = typer.Typer()
+    register_report_cli(_money_spec(), app)
+    app.command("noop")(lambda: None)
+    return app
+
+
+def _money_result() -> ReportResult:
+    return ReportResult(
+        records=[
+            {
+                "net": Decimal("-1234.5"),
+                "spend": Decimal("1234.5"),
+                "txn_count": 2,
+            }
+        ],
+        columns=["net", "spend", "txn_count"],
+        output_classes={
+            "net": DataClass.TXN_AMOUNT,
+            "spend": DataClass.TXN_AMOUNT,
+            "txn_count": DataClass.AGGREGATE,
+        },
+        tier=Tier.MEDIUM,
+        total_count=1,
+        truncated=False,
+    )
+
+
+def test_a_reports_declared_money_kind_reaches_its_rendered_table() -> None:
+    """The generated command is the only path carrying requirement 12.
+
+    Every built-in report but ``networth`` renders through this command, and
+    the kinds they declare are inert unless ``money_columns`` is wired into
+    ``render_report_result``. Asserting the rendered string rather than the
+    dict is what makes that wiring load-bearing: a ``money_columns`` returning
+    ``{}`` leaves every column reaching the table through ``str()``, which no
+    other test in the tree would notice.
+    """
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _money_result()
+        result = _runner_cli.invoke(_money_app(), ["money"], env={"COLUMNS": "200"})
+
+    assert result.exit_code == 0, result.output
+    # `flow` is signed with U+2212, separated, and carried to two places —
+    # `str(Decimal("-1234.5"))` is "-1234.5" on all three counts.
+    assert "\u22121,234.50" in result.output
+    # `magnitude` is the same number unsigned: its direction is the column's,
+    # not the value's, so a `+` here would read as income.
+    assert "+1,234.50" not in result.output
+    assert "1,234.50" in result.output
+
+
+def test_every_declared_money_column_survives_spec_registration() -> None:
+    """A declaration that never reaches `money_columns` is decoration.
+
+    The kinds are declared on `OutputColumn` in the report definitions, but
+    `build_spec` rebuilds the spec from the runner's signature, so a field it
+    failed to carry would drop every declaration silently.
+    """
+    declared = money_columns(_money_spec())
+
+    assert declared == {
+        "net": Money("flow"),
+        "spend": Money("magnitude"),
+    }, "txn_count declares no kind and must not appear"

@@ -132,11 +132,11 @@ def categorize_pending(
         if not records:
             logger.info("No uncategorized transactions.")
             return
-        from moneybin.cli.utils import render_rich_table
+        from moneybin.cli.render import render_rows  # noqa: PLC0415 — defer import
 
         cols = list(records[0].keys())
         rows = [tuple(r.values()) for r in records]
-        render_rich_table(cols, rows)
+        render_rows(cols, rows)
 
     render_or_json(
         envelope, output, render_fn=_render_table, cli_actor="categorize_pending"
