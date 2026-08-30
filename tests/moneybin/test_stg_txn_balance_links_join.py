@@ -649,10 +649,12 @@ def test_stg_tabular_transactions_keeps_curated_corrected_duplicates(
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("match_status", ["accepted", "rejected"])
 def test_stg_tabular_transactions_keeps_corrected_transfer_endpoints(
     db: Database,
+    match_status: str,
 ) -> None:
-    """An upgrade keeps corrected twins used by an accepted transfer."""
+    """An upgrade keeps corrected twins used by a terminal transfer decision."""
     debit_account_id = "canonical-upgrade-transfer-debit"
     credit_account_id = "canonical-upgrade-transfer-credit"
     debit_native_key = "native-upgrade-transfer-debit"
@@ -719,7 +721,7 @@ def test_stg_tabular_transactions_keeps_corrected_transfer_endpoints(
             account_id, confidence_score, match_signals, match_type, match_tier,
             account_id_b, match_status, match_reason, decided_by, decided_at
         ) VALUES ('upgrade-transfer-pair', ?, 'csv', ?, ?, 'csv', ?, ?, 0.95, '{}',
-                  'transfer', '4', ?, 'accepted', NULL, 'user', CURRENT_TIMESTAMP)
+                  'transfer', '4', ?, ?, NULL, 'user', CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture
         [
             debit_source_id,
@@ -728,6 +730,7 @@ def test_stg_tabular_transactions_keeps_corrected_transfer_endpoints(
             source_origin,
             debit_account_id,
             credit_account_id,
+            match_status,
         ],
     )
 
@@ -762,22 +765,42 @@ def test_stg_tabular_transactions_keeps_corrected_transfer_endpoints(
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    transfer = db.execute(
-        """
-        SELECT debit_transaction_id, credit_transaction_id
-        FROM core.bridge_transfers
-        WHERE transfer_id = 'upgrade-transfer-pair'
-        """
-    ).fetchone()
+    if match_status == "accepted":
+        transfer = db.execute(
+            """
+            SELECT debit_transaction_id, credit_transaction_id
+            FROM core.bridge_transfers
+            WHERE transfer_id = 'upgrade-transfer-pair'
+            """
+        ).fetchone()
 
-    assert transfer == (corrected_ids[debit_source_id], corrected_ids[credit_source_id])
+        assert transfer == (
+            corrected_ids[debit_source_id],
+            corrected_ids[credit_source_id],
+        )
+    else:
+        retained = {
+            row[0]
+            for row in db.execute(
+                """
+                SELECT source_account_key
+                FROM prep.stg_tabular__transactions
+                WHERE source_account_key IN (?, ?)
+                """,
+                [debit_native_key, credit_native_key],
+            ).fetchall()
+        }
+
+        assert retained == {debit_native_key, credit_native_key}
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("match_status", ["accepted", "rejected"])
 def test_stg_tabular_transactions_keeps_corrected_dedup_secondary(
     db: Database,
+    match_status: str,
 ) -> None:
-    """An upgrade keeps a corrected twin referenced by an accepted dedup decision."""
+    """An upgrade keeps a corrected twin referenced by a terminal dedup decision."""
     canonical_id = "canonical-upgrade-dedup-01"
     native_key = "native-upgrade-dedup-01"
     source_id = "dedup-secondary"
@@ -817,7 +840,7 @@ def test_stg_tabular_transactions_keeps_corrected_dedup_secondary(
             account_id, confidence_score, match_signals, match_type, match_tier,
             match_status, match_reason, decided_by, decided_at
         ) VALUES ('upgrade-dedup-pair', ?, 'csv', ?, ?, 'csv', ?, ?, 0.95, '{}',
-                  'dedup', '3', 'accepted', NULL, 'user', CURRENT_TIMESTAMP)
+                  'dedup', '3', ?, NULL, 'user', CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture
         [
             legacy_source_id,
@@ -825,6 +848,7 @@ def test_stg_tabular_transactions_keeps_corrected_dedup_secondary(
             corrected_source_id,
             source_origin,
             canonical_id,
+            match_status,
         ],
     )
     db.execute(

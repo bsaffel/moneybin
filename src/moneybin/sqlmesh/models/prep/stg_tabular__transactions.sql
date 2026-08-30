@@ -147,10 +147,10 @@ WITH accepted_native_links AS (
      excluded only when an accepted legacy self-map proves the same canonical
      account, file, origin, and transaction content and no app state references
      their gold id. A corrected row already in an accepted dedup group is also
-     retained: its gold id may be anchored by another source. Active transfer
-     endpoints are also retained because bridge_transfers requires both rows.
-     Duplicate content is paired by occurrence, so a reused path remains
-     visible. */
+     retained: its gold id may be anchored by another source. Unreversed
+     terminal transfer endpoints are also retained because bridge_transfers
+     requires both rows and rejected decisions prevent re-proposal. Duplicate
+     content is paired by occurrence, so a reused path remains visible. */
   WHERE
     deleted_from_source_at IS NULL
     AND NOT EXISTS(
@@ -182,7 +182,7 @@ WITH accepted_native_links AS (
             1
           FROM app.match_decisions AS match
           WHERE
-            match.match_status = 'accepted'
+            match.match_status IN ('accepted', 'rejected')
             AND match.reversed_at IS NULL
             AND match.match_type IN ('dedup', 'transfer')
             AND (
