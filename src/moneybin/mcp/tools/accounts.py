@@ -911,19 +911,23 @@ def accounts_links_run(
         Envelope with ``data.new_proposals`` (pending decisions written) and
         ``data.decision_id`` (the pair form's new decision; None for a sweep).
     """
+    # Validate before opening the database. A half-named pair is a pure input
+    # error, and taking the single writer lock first turns it into a lock
+    # timeout that tells the caller nothing about what it actually got wrong.
+    # The CLI twin validates in this same order.
+    if (account_id is None) != (candidate_account_id is None):
+        raise UserError(
+            "Naming one account is ambiguous: pass both account_id and "
+            "candidate_account_id to propose that pair, or neither to sweep "
+            "every account for duplicates.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
     with get_database(read_only=False) as db:
         svc = AccountLinksService(db, actor="mcp")
-        if account_id is None and candidate_account_id is None:
+        if account_id is None or candidate_account_id is None:
             return build_envelope(
                 data=AccountLinksRunPayload(new_proposals=svc.run()),
                 actions=["Use reviews(kind='account_links') to review proposed merges"],
-            )
-        if account_id is None or candidate_account_id is None:
-            raise UserError(
-                "Naming one account is ambiguous: pass both account_id and "
-                "candidate_account_id to propose that pair, or neither to sweep "
-                "every account for duplicates.",
-                code=error_codes.MUTATION_INVALID_INPUT,
             )
         decision_id = svc.propose_pair(account_id, candidate_account_id)
     return build_envelope(

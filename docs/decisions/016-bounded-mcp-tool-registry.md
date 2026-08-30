@@ -87,11 +87,13 @@ service-layer contract, or CLI-first operator exemptions.
 ## Current evidence
 
 The operating contract is the 50-tool standard registry. Its deterministic
-comparison records 52,986 candidate metadata bytes, SHA-256
-`b4f5d08d6ead64b5d5fcead60a75a7714ede3bb69ac23ac300e6fc88e2390c13`, against
+[`standard.json`](../../tests/fixtures/mcp_surface/standard.json) snapshot
+records 59,577 bytes of serialized metadata, SHA-256
+`e4ab65de81ffe8b8b63f1448ab7b151b46924d9155e7b3f64d8f72da4397a4f6`, against
 the 90,734-byte frozen baseline, SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`: a
--37,748-byte (-41.6%) delta. It advertises zero output schemas and has
+-31,157-byte (-34.3%) delta. Both figures are the snapshot's own `total_bytes`
+and `sha256`, so a registry change moves them and the docs suite checks them. It advertises zero output schemas and has
 `contract_passed: true`.
 
 This ADR remains **Proposed**. `promotion_ready: false`: context budget and

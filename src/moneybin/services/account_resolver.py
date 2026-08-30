@@ -1164,10 +1164,24 @@ class AccountResolver:
             # review queue; picking between them is the human's call.
             out.extend(_retyped_reissue_candidates(src, name_rows))
             out = self._drop_concurrent_reissues(out, account_id=exclude_account_id)
-            if not out and reissue:
-                out = self._drop_concurrent_reissues(
-                    self._reissue_candidates(src, exclude_account_id),
-                    account_id=exclude_account_id,
+            # A bare `last_four` hit is not a signal that cleared: it matches
+            # on four digits alone, while this sweep matches same-institution
+            # accounts whose last four *differs*. The two are disjoint by
+            # construction, so letting the coincidence cancel the sweep loses
+            # the genuine replacement card — the same mistake the name pass
+            # made one rung up, once the rung stopped requiring an institution.
+            cleared = [c for c in out if c.signal != "last_four"]
+            if not cleared and reissue:
+                # Extend rather than replace: `out` may already hold the bare
+                # last-four hits this guard deliberately looks past, and the
+                # sweep is meant to add to them, not stand in for them. When
+                # `out` is empty — the only case that reached here before — the
+                # two are the same thing.
+                out.extend(
+                    self._drop_concurrent_reissues(
+                        self._reissue_candidates(src, exclude_account_id),
+                        account_id=exclude_account_id,
+                    )
                 )
             if not out and fallback:
                 out = self._fallback_candidates(src, exclude_account_id)

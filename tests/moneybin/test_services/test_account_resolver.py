@@ -1697,6 +1697,47 @@ def test_the_cap_keeps_the_corroborated_match_over_bare_collisions(
     assert ("zz_chase_twin", "institution_last4") in surfaced, surfaced
 
 
+def test_a_bare_last_four_does_not_suppress_the_reissue_sweep(db: Database) -> None:
+    """The same rule one rung further down: a coincidence is not a cleared signal.
+
+    ``if not out and reissue`` reads anything in ``out`` as "a signal cleared,
+    so the sweep is unnecessary". Since the last-four rung stopped requiring an
+    institution, an unrelated account that merely states the incoming last four
+    now lands in ``out`` — and silently cancels the sweep that would have
+    surfaced the genuine replacement card. The two are disjoint by
+    construction: the rung matches last fours, the sweep matches
+    same-institution accounts whose last four *differs*.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="chase_old_card",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="tabular_coincidence",
+        display_name="Daily Expense",
+        institution_name=None,
+        last_four="5678",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose(
+        _src(
+            account_name="replacement card ending 5678",
+            last_four="5678",
+            institution="chase",
+        )
+    )
+
+    surfaced = {(c.account_id, c.signal) for c in proposal.candidates}
+    assert ("tabular_coincidence", "last_four") in surfaced, surfaced
+    assert ("chase_old_card", "institution_reissue") in surfaced, surfaced
+
+
 def test_mint_claims_full_number_strong_ref_for_later_adopt(db: Database) -> None:
     """A minted account claims its scoped full_number so a later source adopts it.
 

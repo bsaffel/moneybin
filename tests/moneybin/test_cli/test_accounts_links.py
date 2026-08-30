@@ -1415,3 +1415,23 @@ class TestLinksHistory:
 
         runner.invoke(app, ["history", "--limit", "10"])
         mock_history.assert_called_once_with(limit=10)
+
+
+def test_links_run_arity_error_is_logged_like_its_siblings(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A half-named pair reaches the console marker and the durable log.
+
+    The sibling usage errors in this command group go through
+    ``logger.error("❌ ...")``, which both marks the line as an error on the
+    console and writes it to ``cli_YYYY-MM-DD.log``. A bare ``typer.echo(...,
+    err=True)`` does neither, so the one usage error an agent is most likely to
+    hit would have been the only one leaving no trace. The check runs before
+    the database opens, so this exercises no writer lock.
+    """
+    with caplog.at_level(logging.ERROR):
+        result = runner.invoke(app, ["run", "ACC001"])
+
+    assert result.exit_code == 2
+    assert "❌" in caplog.text
+    assert "ambiguous" in caplog.text

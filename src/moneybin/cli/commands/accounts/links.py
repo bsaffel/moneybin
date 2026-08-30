@@ -597,10 +597,9 @@ def links_run(
     `accounts links set`.
     """
     if (account_id is None) != (candidate_account_id is None):
-        typer.echo(
-            "Naming one account is ambiguous. Pass both ids to propose that "
-            "pair, or neither to sweep every account for duplicates.",
-            err=True,
+        logger.error(
+            "❌ Naming one account is ambiguous. Pass both ids to propose that "
+            "pair, or neither to sweep every account for duplicates."
         )
         raise typer.Exit(2)
 
