@@ -501,6 +501,84 @@ def test_write_query_raises(populated_db: Database) -> None:
     assert ei.value.code == error_codes.SQL_INVALID_QUERY
 
 
+# Every keyword `_WRITE_PATTERNS` blocks, lowercased the way the issue's
+# repro used them — the regex is case-insensitive either way.
+_WRITE_KEYWORDS = [
+    "insert",
+    "update",
+    "delete",
+    "drop",
+    "create",
+    "alter",
+    "truncate",
+    "replace",
+    "merge",
+    "copy",
+    "attach",
+    "detach",
+    "export",
+    "import",
+]
+
+
+@pytest.mark.parametrize("keyword", _WRITE_KEYWORDS)
+def test_write_keyword_inside_string_literal_is_not_rejected(keyword: str) -> None:
+    """A write keyword occurring only inside a quoted literal is not a write.
+
+    Regression test for #447: ``_WRITE_PATTERNS`` scanned raw query text, so
+    ``SELECT 'export' AS probe`` was refused as though it contained a real
+    ``EXPORT`` statement — one character away, ``SELECT 'expor' AS control``
+    was always accepted. The bug was scanning quoted content at all, not
+    anything specific to the word "export".
+    """
+    assert validate_read_only_query(f"SELECT '{keyword}' AS probe") is None
+
+
+def test_write_keyword_inside_string_literal_with_escaped_quote() -> None:
+    """An escaped quote (``''``) inside the literal must not end it early.
+
+    A naive quote-splitting mask would treat ``it''s`` as closing after
+    ``it`` and reopening before ``s``, which un-masks ``update`` between them.
+    """
+    assert validate_read_only_query("SELECT 'it''s time to update' AS note") is None
+
+
+def test_real_write_keyword_still_rejected_alongside_masked_literal() -> None:
+    """Masking a literal must not blind the guard to a REAL write elsewhere.
+
+    The query is a legal read-only prefix (``WITH ...``) carrying a write
+    verb in the CTE body, plus an unrelated masked literal — proving the mask
+    only removes false positives from quoted text, not detection of an
+    actual write.
+    """
+    error = validate_read_only_query(
+        "WITH x AS (UPDATE core.fct_transactions SET amount = 1) "
+        "SELECT 'export' AS probe FROM x"
+    )
+    assert error is not None
+    assert "Write operations" in error
+
+
+def test_audit_log_export_action_query_executes(populated_db: Database) -> None:
+    """``... WHERE action LIKE 'export%'`` against ``app.audit_log`` returns rows.
+
+    The motivating case from #447: this exact shape was refused before the
+    fix because ``'export%'`` contains the blocked ``EXPORT`` keyword inside a
+    string literal, masking the real binder/execution behavior entirely.
+    """
+    populated_db.execute(
+        "INSERT INTO app.audit_log (audit_id, actor, action, operation_id) "
+        "VALUES (?, ?, ?, ?)",
+        ["audit_test_1", "system", "export.run", "op_test_1"],
+    )
+    result = execute_sql_query(
+        populated_db,
+        "SELECT action FROM app.audit_log WHERE action LIKE 'export%'",
+        max_rows=10,
+    )
+    assert result.records == [{"action": "export.run"}]
+
+
 def test_multi_statement_query_is_rejected() -> None:
     """Two statements in one string are refused before any classification.
 

@@ -24,7 +24,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import duckdb
+import sqlglot
 from sqlglot import exp
+from sqlglot.errors import TokenError
+from sqlglot.tokenizer_core import TokenType
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -124,11 +127,39 @@ _READ_ONLY_PREFIXES = re.compile(
     re.IGNORECASE,
 )
 
-# Patterns that indicate write operations (even inside CTEs)
+# Patterns that indicate write operations (even inside CTEs). Matched against
+# the string-literal-masked text (`_mask_string_literals`) below, not the raw
+# query: a real DML/DDL keyword is never inside a quoted literal, so masking
+# only removes false positives (`SELECT 'export' AS probe`) and cannot hide an
+# actual write.
 _WRITE_PATTERNS = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|REPLACE|MERGE|COPY|ATTACH|DETACH|EXPORT|IMPORT)\b",
     re.IGNORECASE,
 )
+
+
+def _mask_string_literals(sql: str) -> str:
+    """Blank the contents of every string literal, quotes included.
+
+    An ordinary word inside a quoted literal (``'export'``, ``'update'``) is
+    data, not a keyword, but a text-only regex can't tell the difference.
+    Uses sqlglot's tokenizer rather than a bespoke quote scanner so an escaped
+    quote (``'it''s'``) doesn't end the literal early.
+
+    Falls back to the original text on a tokenize failure — genuinely
+    malformed SQL still reaches the same "could not parse" error a few lines
+    later in the normal parse step, just without this mask applied first.
+    """
+    try:
+        tokens = sqlglot.tokenize(sql, read="duckdb")
+    except TokenError:
+        return sql
+    masked = sql
+    string_tokens = [t for t in tokens if t.token_type is TokenType.STRING]
+    for token in sorted(string_tokens, key=lambda t: t.start, reverse=True):
+        span = token.end - token.start + 1
+        masked = masked[: token.start] + " " * span + masked[token.end + 1 :]
+    return masked
 
 
 def validate_read_only_query(sql: str) -> str | None:
@@ -171,7 +202,7 @@ def validate_read_only_query(sql: str) -> str | None:
             "Queries must read from database tables only."
         )
 
-    if _WRITE_PATTERNS.search(stripped):
+    if _WRITE_PATTERNS.search(_mask_string_literals(stripped)):
         return (
             "Write operations (INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, etc.) "
             "are not allowed."

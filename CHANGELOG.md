@@ -1164,6 +1164,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **`sql_query` no longer refuses a read-only `SELECT` for a write keyword
+  inside a quoted string.** `SELECT 'export' AS probe` was rejected as though
+  it were a real `EXPORT` statement — one character away, `SELECT 'expor' AS
+  control` was always accepted, because the write-operation guard scanned raw
+  query text with no regard for string literals. It now masks literal
+  contents (via sqlglot's tokenizer) before matching, so ordinary words like
+  `export`, `update`, or `create` inside a string no longer trip it. This
+  unblocks `... WHERE action LIKE 'export%'` against `app.audit_log`, the
+  documented way to find an export's audit trail from the agent-safe SQL
+  surface (#447).
+
 - **A denied keychain read is no longer reported as a missing key.** macOS
   reports a sandbox-denied keychain read identically to a genuinely absent
   item (`errSecItemNotFound`), so three call sites each guessed differently:
