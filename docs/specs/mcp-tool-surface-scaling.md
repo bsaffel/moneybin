@@ -436,6 +436,25 @@ metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
 
+### Evaluation coverage for admitted tools
+
+Admission-record question 6 — which evaluation tasks prove the new surface is
+better — has no scoreable answer for a newly admitted tool today, and that is a
+property of the fixtures rather than of any one proposal. The 17 cases in
+[`cases.json`](../../tests/fixtures/mcp_eval/cases.json) carry expectations
+keyed to two frozen captures, `baseline-105` and `standard-47`. The operating
+registry is 50 tools, so it matches neither, and a case naming a tool admitted
+after the `standard-47` snapshot cannot be scored against either one.
+
+Until a capture of the current registry exists, record question 6 as
+**deferred, with this reason** — never as satisfied, and never as not
+applicable. A tool admitted in that window rests on question 7's workflow
+closure, meaning a capability the surface could not reach at any number of
+calls, rather than on an unmeasured claim that it scores better.
+`accounts_links_run` was admitted on exactly that basis: it appears in neither
+capture, and the merge it proposes was previously unreachable from MCP for a
+duplicate no signal finds (#450).
+
 ### Historical evidence location
 
 [ADR-016](../decisions/016-bounded-mcp-tool-registry.md) owns the measured
