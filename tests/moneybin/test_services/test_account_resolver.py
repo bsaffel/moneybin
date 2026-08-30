@@ -666,6 +666,84 @@ def test_the_raw_fallback_returns_a_bare_label_when_no_last_four_survives(
     assert fetch_display_name(db, "acct_nodigits") == "Everyday Spending"
 
 
+def test_the_raw_fallback_never_names_an_account_by_the_unnamed_sentinel(
+    db: Database,
+) -> None:
+    """The one string that means "no name" is not a name on this side either.
+
+    ``UNNAMED_ACCOUNT_LABEL`` is the display ladder's terminal arm, and the
+    ladder's other two encodings both refuse it as a *source* label:
+    ``usable_source_label`` and ``dim_accounts.sql``'s two label arms. It
+    reaches ``raw.account_label`` by an ordinary route -- ``reports.*`` publish
+    the sentinel as ``account_name``, so re-importing a MoneyBin export writes
+    the literal back as an authored label. This function is the third encoding
+    of that same rung, and it answers the review queue and the decision log
+    before the first refresh: accepting the sentinel here renders
+    "Unnamed account …7777" while ``core.dim_accounts`` falls through to its
+    institution rung on the far side of the same refresh -- the two-readers
+    split this resolver exists to close.
+
+    Falling through costs nothing even when nothing else can name the account:
+    the row then drops out, and every caller substitutes the same sentinel one
+    branch later, so the string a person sees is unchanged.
+
+    Discriminating on both arms at once: drop the guard from the appending arm
+    and the answer is "Unnamed account …7777"; drop it from the bare arm alone
+    and the answer is "Unnamed account".
+    """
+    AccountLinksRepo(db).insert(
+        link_id="link_acct_sentinel",
+        account_id="acct_sentinel",
+        ref_kind="source_native",
+        ref_value="sentinel-label",
+        source_type="csv",
+        source_origin="tiller",
+        decided_by="auto",
+        actor="system",
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "
+        "(account_id, account_name, account_label, account_number_masked, "
+        "institution_name, source_file, source_type, source_origin, import_id) "
+        "VALUES ('sentinel-label', ?, ?, "
+        "'****7777', 'Test Bank', '/sheet.csv', 'csv', 'tiller', 'imp')",
+        [UNNAMED_ACCOUNT_LABEL, UNNAMED_ACCOUNT_LABEL],
+    )
+
+    assert fetch_display_name(db, "acct_sentinel") == "Test Bank ****7777"
+
+
+def test_the_raw_fallback_keeps_a_real_name_that_resembles_the_sentinel(
+    db: Database,
+) -> None:
+    """Exact equality, not a prefix: "Unnamed account 2" is a name someone chose.
+
+    The rule is that the sentinel says nothing could name the account, and only
+    the sentinel itself says that. A ``LIKE 'Unnamed account%'`` guard would
+    discard a real authored label instead, and nothing else in this suite would
+    fail on it.
+    """
+    AccountLinksRepo(db).insert(
+        link_id="link_acct_near_sentinel",
+        account_id="acct_near_sentinel",
+        ref_kind="source_native",
+        ref_value="near-sentinel-label",
+        source_type="csv",
+        source_origin="tiller",
+        decided_by="auto",
+        actor="system",
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "
+        "(account_id, account_name, account_label, account_number_masked, "
+        "institution_name, source_file, source_type, source_origin, import_id) "
+        "VALUES ('near-sentinel-label', 'Unnamed account 2', 'Unnamed account 2', "
+        "'****7777', 'Test Bank', '/sheet.csv', 'csv', 'tiller', 'imp')"
+    )
+
+    assert fetch_display_name(db, "acct_near_sentinel") == "Unnamed account 2 …7777"
+
+
 def test_no_candidate_mints_standalone(db: Database) -> None:
     """Empty (but present) core.dim_accounts -> a brand-new standalone account."""
     create_core_tables(db)  # dim exists but is empty: exercises the real query path

@@ -28,6 +28,7 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
     AccountCandidate,
     AccountProposal,
     ResolvedAccount,
@@ -53,6 +54,12 @@ logger = logging.getLogger(__name__)
 #: two escapes deep, in a pattern that must stay identical to the one in
 #: dim_accounts.sql and to ``account_display_name._has_letter``.
 _SQL_HAS_LETTER = r"\p{L}"
+
+#: The unnamed sentinel as a SQL literal, interpolated for the same reason
+#: ``_SQL_HAS_LETTER`` is: the label arms below must refuse exactly what
+#: dim_accounts.sql and ``account_display_name.usable_source_label`` refuse,
+#: and binding it to the constant is what keeps a rename from splitting them.
+_SQL_UNNAMED_LABEL = f"'{UNNAMED_ACCOUNT_LABEL}'"
 
 
 def refresh_account_link_pending_gauge(db: Database) -> None:
@@ -240,9 +247,21 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
                       -- holds four digits takes nothing more -- joining
                       -- "Checking ****5678" with "…9012" would publish eight
                       -- digits of a twelve-digit number.
+                      -- Neither arm takes the unnamed sentinel. It holds
+                      -- letters, so the letter test alone reads it as a name,
+                      -- but it is this ladder's own terminal arm: a label equal
+                      -- to it says the source could not name the account
+                      -- either. A re-imported MoneyBin export carries it
+                      -- literally, and accepting it would answer
+                      -- "Unnamed account …1234" here while the refreshed
+                      -- dimension falls through to its institution rung.
+                      -- Falling through costs nothing even when nothing else
+                      -- names the account: the row drops out, and every caller
+                      -- substitutes the same sentinel for an absent id.
                       CASE
                         WHEN REGEXP_MATCHES(raw.account_label, '{_SQL_HAS_LETTER}')
                         AND NOT REGEXP_MATCHES(raw.account_label, '[0-9]{{4}}')
+                        AND raw.account_label <> {_SQL_UNNAMED_LABEL}
                         AND LENGTH(
                           REGEXP_REPLACE(
                             COALESCE(raw.account_number, raw.account_number_masked),
@@ -262,6 +281,7 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
                       -- same two cases by falling through its own NULL.
                       CASE
                         WHEN REGEXP_MATCHES(raw.account_label, '{_SQL_HAS_LETTER}')
+                        AND raw.account_label <> {_SQL_UNNAMED_LABEL}
                         THEN raw.account_label
                       END,
                       -- Same derivation core.dim_accounts uses for
