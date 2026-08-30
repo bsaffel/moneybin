@@ -8,12 +8,8 @@ installs get them via this migration. Pure additive (`ADD COLUMN IF NOT EXISTS
 
 from __future__ import annotations
 
-import pytest
-
 from moneybin.database import Database
 from moneybin.sql.migrations.V030__add_plaid_transaction_fields import migrate
-
-pytestmark = pytest.mark.fresh_db
 
 _NEW_COLUMNS = [
     "original_description",

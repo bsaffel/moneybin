@@ -19,8 +19,6 @@ import pytest
 from moneybin.database import Database
 from moneybin.sql.migrations.V012__drop_merchant_overrides import migrate
 
-pytestmark = pytest.mark.fresh_db
-
 
 def _table_exists(db: Database, schema: str, table: str) -> bool:
     row = db.execute(

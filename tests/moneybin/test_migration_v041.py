@@ -9,8 +9,6 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V041__create_app_export_destinations import migrate
 from tests.moneybin.migration_helpers import run_migration
 
-pytestmark = pytest.mark.fresh_db
-
 
 def test_v041_creates_export_destinations(db: Database) -> None:
     """The migration creates the exact cross-kind destination registry."""

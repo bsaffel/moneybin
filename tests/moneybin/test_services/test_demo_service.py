@@ -29,6 +29,8 @@ _INSERT_TXN = (
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
+_PERSONAS = ("basic", "family", "freelancer", "international")
+
 
 @pytest.fixture(autouse=True)
 def _restore_profile_state() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
@@ -40,6 +42,45 @@ def _restore_profile_state() -> Generator[None, None, None]:  # pyright: ignore[
         yield
     finally:
         config._current_profile = original  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.fixture(scope="session", params=_PERSONAS)
+def demo_profile_for_persona(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> Generator[tuple[Path, DemoResult], None, None]:
+    """Build each real persona once for the read-only pipeline assertions."""
+    import os
+
+    from moneybin import config
+
+    home = tmp_path_factory.mktemp(f"demo_{request.param}")
+    original_home = os.environ.get("MONEYBIN_HOME")
+    os.environ["MONEYBIN_HOME"] = str(home)
+    config.clear_settings_cache()
+    try:
+        result = DemoService().run(persona=request.param, seed=42, years=1)
+    finally:
+        if original_home is None:
+            os.environ.pop("MONEYBIN_HOME", None)
+        else:
+            os.environ["MONEYBIN_HOME"] = original_home
+        config.clear_settings_cache()
+    yield home, result
+
+
+@pytest.fixture
+def built_demo_profile(
+    demo_profile_for_persona: tuple[Path, DemoResult],
+    monkeypatch: pytest.MonkeyPatch,
+) -> DemoResult:
+    """Activate one immutable, session-built demo profile for a read-only test."""
+    from moneybin import config
+
+    home, result = demo_profile_for_persona
+    monkeypatch.setenv("MONEYBIN_HOME", str(home))
+    config.clear_settings_cache()
+    config.set_current_profile(DEMO_PROFILE)
+    return result
 
 
 def _mock_pipeline(
@@ -303,9 +344,8 @@ def test_rebuild_requires_confirmation(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("persona", ["basic", "family", "freelancer", "international"])
 def test_demo_net_worth_covers_every_account(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persona: str
+    built_demo_profile: DemoResult,
 ) -> None:
     # Demo's one headline answer. It used to print "Net worth: 0.00": every account
     # is carried in `core.fct_balances_daily` only to its OWN last observation, so on
@@ -313,10 +353,9 @@ def test_demo_net_worth_covers_every_account(
     # older statements had already dropped out. The OFX accounts carry a single
     # opening-day balance, so they vanished entirely, and `basic`'s remaining account
     # happened to sit at zero.
-    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
     from moneybin.database import get_database
 
-    result = DemoService().run(persona=persona, seed=42, years=1)
+    result = built_demo_profile
 
     # A real position exists. For one currency that is the scalar; for several
     # the scalar is null by design and each currency carries its own figure.
@@ -337,9 +376,8 @@ def test_demo_net_worth_covers_every_account(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("persona", ["basic", "family", "freelancer", "international"])
 def test_demo_ships_a_categorized_profile(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persona: str
+    built_demo_profile: DemoResult,
 ) -> None:
     # Demo's headline promise. It previously shipped 0% categorized — the generator
     # never taught the engine about the merchants it invented, and doctor's coverage
@@ -349,10 +387,9 @@ def test_demo_ships_a_categorized_profile(
     # The floor is deliberately well under what the personas actually reach (~84-93%)
     # so it tracks the real failure — a collapse to zero — rather than churning on
     # every merchant-catalog tweak.
-    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
     from moneybin.database import get_database
 
-    result = DemoService().run(persona=persona, seed=42, years=1)
+    result = built_demo_profile
 
     assert result.transaction_count > 0
     assert result.categorized_count / result.transaction_count > 0.7
@@ -364,20 +401,16 @@ def test_demo_ships_a_categorized_profile(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("persona", ["basic", "family", "freelancer", "international"])
 def test_demo_pipeline_output_is_invisible_to_the_real_data_guard(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persona: str
+    built_demo_profile: DemoResult,
 ) -> None:
     # The inverse property, driven through the REAL pipeline for every persona.
     # The guard now treats any `app.*` table outside _DEMO_WRITTEN_APP_TABLES as
     # the user's — so if the pipeline ever starts writing another one, demo would
     # refuse to rebuild its OWN profile on the next run. This is the test that
     # catches that in CI rather than in a user's terminal.
-    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
     from moneybin.database import get_database
     from moneybin.synthetic.reset import has_non_synthetic_data
-
-    DemoService().run(persona=persona, seed=42, years=1)
 
     with get_database(read_only=True) as db:
         assert has_non_synthetic_data(db) is False
