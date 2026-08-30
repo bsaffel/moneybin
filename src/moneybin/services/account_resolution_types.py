@@ -100,6 +100,7 @@ class AccountCandidateDict(TypedDict):
     signal: str
     overlap_matched: NotRequired[int]
     overlap_comparable: NotRequired[int]
+    overlap_window_days: NotRequired[int]
     overlap_window_start: NotRequired[str | None]
     overlap_window_end: NotRequired[str | None]
 
@@ -214,6 +215,7 @@ class AccountProposal:
                 serialized.update({
                     "overlap_matched": candidate.overlap.matched,
                     "overlap_comparable": candidate.overlap.comparable,
+                    "overlap_window_days": candidate.overlap.window_days,
                     "overlap_window_start": (
                         candidate.overlap.window_start.isoformat()
                         if candidate.overlap.window_start is not None

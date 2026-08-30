@@ -35,6 +35,7 @@ from moneybin.services.account_resolution_types import (
     is_a_name,
     normalize_account_identifier,
 )
+from moneybin.services.ledger_overlap import fetch_ledger_spans
 from moneybin.services.pdf_account_identity import legacy_pdf_identifier_key
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
@@ -294,6 +295,16 @@ def _last_fours_disagree(
 # null last_four forced the review open — see _fallback_candidates: there any
 # omitted account is unpickable, so a long list is the lesser cost.
 _FALLBACK_CANDIDATE_CAP = 25
+
+# How long two ledgers may run at once before the reissue signal stops believing
+# one account replaced the other. A changeover is not instantaneous — a refund,
+# a final fee, or a charge that posts late lands on the retired number after the
+# replacement has started — so a few weeks of tail overlap is still the reissue
+# shape. Roughly one statement cycle, which is the period such stragglers arrive
+# in. Beyond it the two accounts were simply open together, which is the case
+# this bound exists to refuse: the live pairs that motivated it ran concurrently
+# for 76 to 362 days.
+_REISSUE_MAX_CONCURRENT_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -1092,36 +1103,7 @@ class AccountResolver:
         )
         try:
             out: list[_Candidate] = list(pending_candidates)
-            if (
-                src.last_four
-                and src.institution
-                and (target_inst := _institution_key(src.institution))
-            ):
-                # Match on institution_slug, never institution_name: the name is
-                # for display, and the dim's per-field merge lets a later
-                # source win it outright. Both sides go through
-                # _institution_key so the spellings a source happens to carry
-                # meet the registry's curated slug. Fetch by exact last_four and
-                # compare in Python because the two sides still differ in case.
-                # An institution that normalizes to nothing (all punctuation) is
-                # skipped — it would match every other such row sharing
-                # last_four.
-                rows = self._db.execute(
-                    f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
-                    "WHERE last_four = ? AND account_id != ?",
-                    [src.last_four, exclude_account_id],
-                ).fetchall()
-                # confidence is informational only — weak signals always go to review.
-                out.extend(
-                    _Candidate(
-                        account_id=str(r[0]),
-                        signal="institution_last4",
-                        value=f"{target_inst}:{src.last_four}",
-                        confidence=0.5,
-                    )
-                    for r in rows
-                    if r[1] and _institution_key(str(r[1])) == target_inst
-                )
+            out.extend(self._last_four_candidates(src, exclude_account_id))
             if out:
                 return _dedupe_candidates(out, legacy_candidates)
             name_rows = self._db.execute(
@@ -1170,8 +1152,12 @@ class AccountResolver:
             # nothing to do with. Both are weak signals headed for the same
             # review queue; picking between them is the human's call.
             out.extend(_retyped_reissue_candidates(src, name_rows))
+            out = self._drop_concurrent_reissues(out, account_id=exclude_account_id)
             if not out and reissue:
-                out = self._reissue_candidates(src, exclude_account_id)
+                out = self._drop_concurrent_reissues(
+                    self._reissue_candidates(src, exclude_account_id),
+                    account_id=exclude_account_id,
+                )
             if not out and fallback:
                 out = self._fallback_candidates(src, exclude_account_id)
                 return _dedupe_candidates(legacy_candidates, out)
@@ -1179,6 +1165,112 @@ class AccountResolver:
         except duckdb.CatalogException:
             logger.debug("core.dim_accounts unavailable; using raw candidates only")
             return _dedupe_candidates(pending_candidates, legacy_candidates)
+
+    def _last_four_candidates(
+        self, src: SourceAccount, exclude_account_id: str
+    ) -> list[_Candidate]:
+        """Existing accounts stating the same last four — the strongest weak signal.
+
+        Institution is **evidence here, never a precondition.** Keying the rung
+        on a shared institution made the whole rung unreachable for an account
+        that has none, and one of the two channels routinely mints exactly that:
+        a tabular export names its account only in a label ("Daily Expense
+        (...1789)"), which yields a last four and no institution. The account it
+        minted was invisible to every last-four comparison, so the cross-source
+        twin the review queue exists to surface never appeared and both copies
+        of the same ledger counted toward spending and net worth.
+
+        What institution still does is *contradict*. Two banks issuing the same
+        four digits is a collision, not a duplicate, so a pair that states two
+        different institutions is dropped. Silence is not contradiction: when
+        either side has no resolved institution the pair surfaces under
+        ``last_four`` instead of ``institution_last4``, because the queue must
+        be able to tell "both sides named this bank" from "one side named
+        nothing" — that is the difference between a near-certain twin and a
+        four-digit coincidence, and both are review-only either way.
+
+        Match on ``institution_slug``, never ``institution_name``: the name is
+        for display and the dim's per-field merge lets a later source win it
+        outright. Both sides go through ``_institution_key`` so the spellings a
+        source happens to carry meet the registry's curated slug, and the
+        comparison happens in Python because the two still differ in case. An
+        institution that normalizes to nothing (all punctuation) reads as
+        unstated rather than as a value that would match every other such row.
+        """
+        if not src.last_four:
+            return []
+        target_inst = _institution_key(src.institution) if src.institution else None
+        rows = self._db.execute(
+            f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            "WHERE last_four = ? AND account_id != ? ORDER BY account_id",
+            [src.last_four, exclude_account_id],
+        ).fetchall()
+        candidates: list[_Candidate] = []
+        for row in rows:
+            candidate_inst = _institution_key(str(row[1])) if row[1] else None
+            if target_inst and candidate_inst and target_inst != candidate_inst:
+                continue
+            shared_institution = target_inst is not None and candidate_inst is not None
+            # confidence is informational only — weak signals always go to review.
+            candidates.append(
+                _Candidate(
+                    account_id=str(row[0]),
+                    signal="institution_last4" if shared_institution else "last_four",
+                    value=(
+                        f"{target_inst}:{src.last_four}"
+                        if shared_institution
+                        else src.last_four
+                    ),
+                    confidence=0.5 if shared_institution else 0.45,
+                )
+            )
+        return candidates
+
+    def _drop_concurrent_reissues(
+        self, candidates: list[_Candidate], *, account_id: str
+    ) -> list[_Candidate]:
+        """Refuse a reissue proposal whose two ledgers demonstrably ran side by side.
+
+        A reissue is sequential by definition — the old number stops, the
+        replacement starts — and the signal never checked that. It fired on a
+        shared institution plus a last four that differed, which in an
+        established book is every pair of cards at one bank: a user with three
+        Wells Fargo accounts got a proposal for each pair, and the two Chase
+        cards they had deliberately kept apart were proposed against each other
+        while both were still open. Each proposal's own evidence contradicted it
+        — zero matched transactions over a period both ledgers covered — and a
+        queue that fills with self-refuting proposals teaches the user to
+        dismiss the queue, which is the whole trust budget "magic stays visible"
+        is protecting.
+
+        Only *positive* concurrency drops a candidate. An account with no
+        published ledger keeps its proposal: at import time the provisional was
+        minted seconds ago and no transform has run, so silence there is the
+        normal state rather than an answer. That is what keeps the PDF
+        replacement-card case — the shape the signal was written for — working.
+        """
+        reissue_ids = [
+            c.account_id for c in candidates if c.signal == "institution_reissue"
+        ]
+        if not reissue_ids:
+            return candidates
+        spans = fetch_ledger_spans(self._db, [account_id, *reissue_ids])
+        own = spans.get(account_id)
+        if own is None:
+            return candidates
+        kept: list[_Candidate] = []
+        for candidate in candidates:
+            other = spans.get(candidate.account_id)
+            if (
+                candidate.signal == "institution_reissue"
+                and other is not None
+                and own.concurrent_with(
+                    other, tolerance_days=_REISSUE_MAX_CONCURRENT_DAYS
+                )
+            ):
+                continue
+            kept.append(candidate)
+        return kept
 
     def _pending_pdf_candidates(
         self, src: SourceAccount, exclude_account_id: str

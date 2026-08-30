@@ -270,6 +270,11 @@ class LinkCandidateRow:
     #: way to tell the two apart, so neither may be dropped from the surface.
     overlap_matched: Annotated[int, DataClass.AGGREGATE]
     overlap_comparable: Annotated[int, DataClass.AGGREGATE]
+    #: Posting-lag tolerance, in days, that ``overlap_matched`` was counted at.
+    #: Two sources date the same purchase differently, so the count is agreement
+    #: on amount and currency within this window rather than on an exact date.
+    #: Without it the ratio reads as a stronger claim than it makes.
+    overlap_window_days: Annotated[int, DataClass.AGGREGATE]
 
     @classmethod
     def from_candidate(cls, c: PendingLinkCandidate) -> LinkCandidateRow:
@@ -281,6 +286,7 @@ class LinkCandidateRow:
             signal=c.signal,
             overlap_matched=c.overlap.matched,
             overlap_comparable=c.overlap.comparable,
+            overlap_window_days=c.overlap.window_days,
         )
 
 

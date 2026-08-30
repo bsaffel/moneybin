@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 from unittest.mock import patch
 
@@ -1068,13 +1069,15 @@ def test_reissued_card_dissimilar_alias_surfaces_for_review(db: Database) -> Non
     assert dec == (first.account_id, "institution_reissue")
 
 
-def test_institution_last4_skips_when_slug_is_empty(db: Database) -> None:
-    """A purely non-alphanumeric institution slugifies to '' and must not match.
+def test_an_empty_slug_never_claims_a_shared_institution(db: Database) -> None:
+    """A purely non-alphanumeric institution slugifies to '' and names no bank.
 
     '###' and '@@@' both slugify to '' (slugify strips non-alphanumerics), so an
-    empty slug would otherwise spuriously equal any stored institution that also
-    slugifies to '' sharing the last_four — a false merge proposal. The
-    institution+last4 rung is skipped when the slug is empty.
+    empty slug would spuriously equal any stored institution that also slugifies
+    to ''. The pair may still be proposed — they state the same last four, and
+    the rung no longer requires an institution — but it must be proposed as what
+    it is. Reporting ``institution_last4`` here would tell the reviewer that two
+    sources agreed on a bank when neither named one.
     """
     create_core_tables(db)
     resolver = AccountResolver(db, actor="system")
@@ -1088,7 +1091,12 @@ def test_institution_last4_skips_when_slug_is_empty(db: Database) -> None:
     second = resolver.resolve(
         _src(source_type="ofx", source_account_key="ofx-x", institution="###")
     )
-    assert second.outcome == "minted_new"
+    assert second.outcome == "pending_review"
+    row = db.conn.execute(
+        "SELECT match_reason FROM app.account_link_decisions WHERE decision_id = ?",
+        [second.pending_decision_ids[0]],
+    ).fetchone()
+    assert row == ("last_four",)
 
 
 def test_find_candidates_prefers_institution_last4_over_name(db: Database) -> None:
@@ -2393,3 +2401,213 @@ def test_core_passes_the_unnamed_terminal_label_through_untouched(
     resolved = fetch_core_display_names(db, ["acct_nameless"])
 
     assert resolved == {"acct_nameless": UNNAMED_ACCOUNT_LABEL}
+
+
+# ---------------------------------------------------------------------------
+# Last four without an institution, and the reissue signal's sequence test
+# ---------------------------------------------------------------------------
+
+
+def _seed_txn(
+    db: Database, *, account_id: str, txn_date: date, amount: str = "-10.00"
+) -> None:
+    """Insert one core.fct_transactions row so an account has a dated ledger."""
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount) VALUES (?, ?, ?, ?)",
+        [f"{account_id}-{txn_date.isoformat()}-{amount}", account_id, txn_date, amount],
+    )
+
+
+def _seed_ledger(
+    db: Database, *, account_id: str, first: date, last: date, amount: str = "-10.00"
+) -> None:
+    """Give an account a ledger spanning ``first``..``last`` (two rows)."""
+    _seed_txn(db, account_id=account_id, txn_date=first, amount=amount)
+    _seed_txn(db, account_id=account_id, txn_date=last, amount=amount)
+
+
+def test_same_last_four_proposes_when_the_candidate_states_no_institution(
+    db: Database,
+) -> None:
+    """The cross-source twin an aggregator CSV mints must still reach the queue.
+
+    A tabular export names its account only as a label ("Daily Expense
+    (...1789)"), so the account it mints carries an exact last four and no
+    resolved institution. Keying the last-four rung on a shared institution made
+    that account invisible to the proposer, and the duplicate double-counted
+    every transaction it held.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="from_csv",
+        last_four="1789",
+        institution_name=None,
+        display_name="…1789",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    resolved = resolver.resolve(
+        _src(source_type="ofx", source_account_key="ofx-1789", last_four="1789")
+    )
+
+    assert resolved.outcome == "pending_review"
+    row = db.conn.execute(
+        "SELECT candidate_account_id, match_reason "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
+        [resolved.pending_decision_ids[0]],
+    ).fetchone()
+    assert row == ("from_csv", "last_four")
+
+
+def test_same_last_four_proposes_when_the_source_states_no_institution(
+    db: Database,
+) -> None:
+    """The mirror case: the account with no institution is the one being resolved."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="from_ofx",
+        last_four="1789",
+        institution_name="Wells Fargo",
+        institution_slug="wells_fargo",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    resolved = resolver.resolve(
+        _src(source_account_key="csv-1789", last_four="1789", institution=None)
+    )
+
+    assert resolved.outcome == "pending_review"
+    row = db.conn.execute(
+        "SELECT candidate_account_id, match_reason "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
+        [resolved.pending_decision_ids[0]],
+    ).fetchone()
+    assert row == ("from_ofx", "last_four")
+
+
+def test_the_same_last_four_at_two_stated_institutions_stays_distinct(
+    db: Database,
+) -> None:
+    """Institution is evidence when both sides state it, and it still vetoes.
+
+    Dropping it as a *precondition* must not drop it as a *contradiction*: two
+    banks issuing the same four digits is a collision, not a duplicate.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="at_chase",
+        last_four="4267",
+        institution_name="chase",
+        display_name="Chase credit card …4267",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    resolved = resolver.resolve(
+        _src(source_account_key="wf-4267", institution="wells_fargo")
+    )
+
+    assert resolved.outcome == "minted_new"
+    assert resolved.pending_decision_ids == ()
+
+
+def test_a_concurrent_ledger_is_not_proposed_as_a_reissue(db: Database) -> None:
+    """A reissue is sequential: the old number stops, the replacement starts.
+
+    Two cards at one bank that ran side by side all year are two products the
+    user chose to keep, and the proposer used to file one proposal per pair on
+    the shared institution alone. Every such proposal carried its own
+    contradiction — no shared transactions over a period both ledgers covered.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="card_a",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="card_b",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="5678",
+    )
+    _seed_ledger(
+        db, account_id="card_a", first=date(2025, 1, 2), last=date(2025, 12, 30)
+    )
+    _seed_ledger(
+        db, account_id="card_b", first=date(2025, 1, 2), last=date(2025, 12, 31)
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    assert resolver.propose_existing("card_a") is None
+
+
+def test_a_sequential_ledger_still_proposes_the_reissue(db: Database) -> None:
+    """The signal survives for the shape it was written for — one card replacing another."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="reissued_old",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="reissued_new",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="5678",
+    )
+    _seed_ledger(
+        db, account_id="reissued_old", first=date(2025, 1, 4), last=date(2025, 6, 9)
+    )
+    _seed_ledger(
+        db, account_id="reissued_new", first=date(2025, 6, 14), last=date(2025, 12, 20)
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("reissued_old")
+
+    assert proposal is not None
+    assert [c.account_id for c in proposal.candidates] == ["reissued_new"]
+    assert proposal.candidates[0].signal == "institution_reissue"
+
+
+def test_a_reissue_survives_while_the_provisional_has_no_ledger_yet(
+    db: Database,
+) -> None:
+    """Import time has nothing to measure, so silence must not suppress the signal.
+
+    ``resolve()`` proposes against an account minted seconds earlier, before any
+    transform publishes its rows. Absence of a ledger is absence of evidence —
+    only a positively concurrent pair is dropped.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="reissued_old",
+        display_name="WF Checking 4267",
+        institution_name="wells_fargo",
+        last_four="1234",
+    )
+    _seed_ledger(
+        db, account_id="reissued_old", first=date(2025, 1, 4), last=date(2025, 12, 9)
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    resolved = resolver.resolve(_src(source_account_key="wf-replacement"))
+
+    assert resolved.outcome == "pending_review"
+    row = db.conn.execute(
+        "SELECT candidate_account_id, match_reason "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
+        [resolved.pending_decision_ids[0]],
+    ).fetchone()
+    assert row == ("reissued_old", "institution_reissue")

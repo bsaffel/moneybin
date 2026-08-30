@@ -393,6 +393,9 @@ class TestLinksPending:
         assert groups[0]["transactions"] == 346
         assert groups[0]["candidates"][0]["overlap_matched"] == 345
         assert groups[0]["candidates"][0]["overlap_comparable"] == 346
+        # The tolerance the ratio was measured at, so 345 of 346 is not read as
+        # exact-date agreement it never claimed to be.
+        assert groups[0]["candidates"][0]["overlap_window_days"] == 3
         assert "confidence" not in groups[0]["candidates"][0]
 
     @patch("moneybin.cli.commands.accounts.links.get_database")

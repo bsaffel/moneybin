@@ -480,14 +480,19 @@ def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
     existing accounts that may represent the same real-world account.
 
     For each candidate: decision_id, candidate_account_id, display name, the
-    matching signal that fired (institution_last4, name, or
-    institution_reissue — same bank, last four changed), and measured ledger
-    evidence — overlap_matched of overlap_comparable transactions already held
-    by both accounts over the period they share. overlap_comparable of 0 means
-    the two ledgers share no comparable period, not that they disagree. Each
-    group also carries how many transactions the merge would move. ref_value
-    (the raw native reference, which can be a full account number) is never
-    included.
+    matching signal that fired, and measured ledger evidence —
+    overlap_matched of overlap_comparable transactions already held by both
+    accounts over the period they share. A match is equal amount and currency
+    within overlap_window_days of posting lag, NOT an exact date; read the ratio
+    against that width. overlap_comparable of 0 means the two ledgers share no
+    comparable period, not that they disagree. Each group also carries how many
+    transactions the merge would move. ref_value (the raw native reference,
+    which can be a full account number) is never included.
+
+    Signals: institution_last4 (same bank, same last four), last_four (same last
+    four, at least one side naming no bank), name (fuzzy display-name match),
+    institution_reissue (same bank, last four changed, ledgers sequential), and
+    manual (a caller asserted this pair; no signal fired).
 
     Decide each group via accounts_links_set. accounts_links_run (backfill
     discovery) and accounts links undo are not yet registered — deferred to

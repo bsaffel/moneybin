@@ -119,10 +119,16 @@ def _overlap_cell(overlap: LedgerOverlap) -> str:
 
     "0 of 0" would read as two ledgers with nothing in common — evidence against
     the merge — where no comparable period means the probe could not look.
+
+    The tolerance rides along because the ratio does not mean what it looks
+    like without it: two sources date the same purchase differently, so these
+    are amounts agreeing within a posting-lag window, not on an exact date. Read
+    from the measurement rather than from the module default, so a caller that
+    widened the window cannot render a number under a width it never used.
     """
     if not overlap.measurable:
         return "no shared period"
-    return f"{overlap.matched:,} of {overlap.comparable:,}"
+    return f"{overlap.matched:,} of {overlap.comparable:,} ±{overlap.window_days}d"
 
 
 @app.command("set")

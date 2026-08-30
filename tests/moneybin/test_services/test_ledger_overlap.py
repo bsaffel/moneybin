@@ -16,8 +16,11 @@ from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 from moneybin.services.ledger_overlap import (
+    DEFAULT_POSTING_LAG_DAYS,
     IncomingTransaction,
     LedgerOverlap,
+    LedgerSpan,
+    fetch_ledger_spans,
     probe_incoming_ledger_overlap,
     probe_ledger_overlap,
 )
@@ -564,3 +567,74 @@ def test_an_unmaterialized_core_reports_no_comparable_period(db: Database) -> No
     overlap = probe_ledger_overlap(db, account_id=_TWIN, against_account_id=_SURVIVOR)
 
     assert not overlap.measurable
+
+
+def test_the_probe_reports_the_window_it_matched_within(core_db: Database) -> None:
+    """A ratio is only evidence once the tolerance that produced it travels with it.
+
+    "345 of 346" supports a merge if it means exact-date agreement and something
+    weaker if it means agreement within a window. The reader cannot tell from
+    the ratio, so the probe states it.
+    """
+    _insert_txn(core_db, account_id=_TWIN, txn_date=date(2026, 5, 3), amount="-12.00")
+    _insert_txn(
+        core_db, account_id=_SURVIVOR, txn_date=date(2026, 5, 5), amount="-12.00"
+    )
+
+    default = probe_ledger_overlap(
+        core_db, account_id=_TWIN, against_account_id=_SURVIVOR
+    )
+    widened = probe_ledger_overlap(
+        core_db, account_id=_TWIN, against_account_id=_SURVIVOR, window_days=9
+    )
+
+    assert default.window_days == DEFAULT_POSTING_LAG_DAYS
+    assert widened.window_days == 9
+
+
+def test_an_unmeasurable_probe_still_reports_its_window(core_db: Database) -> None:
+    """The tolerance is a property of the question asked, not of the answer found."""
+    overlap = probe_incoming_ledger_overlap(
+        core_db, transactions=[], against_account_id=_SURVIVOR, window_days=7
+    )
+
+    assert overlap.measurable is False
+    assert overlap.window_days == 7
+
+
+def test_ledger_spans_omit_an_account_with_no_transactions(core_db: Database) -> None:
+    """Absent, never an empty span — "no ledger yet" must not read as "no overlap"."""
+    _insert_txn(core_db, account_id=_TWIN, txn_date=date(2026, 5, 3), amount="-12.00")
+    _insert_txn(core_db, account_id=_TWIN, txn_date=date(2026, 7, 21), amount="-4.00")
+
+    spans = fetch_ledger_spans(core_db, [_TWIN, _SURVIVOR])
+
+    assert set(spans) == {_TWIN}
+    assert spans[_TWIN] == LedgerSpan(
+        first_date=date(2026, 5, 3), last_date=date(2026, 7, 21)
+    )
+
+
+def test_two_ledgers_running_side_by_side_read_as_concurrent() -> None:
+    """The shape a reissue is not: both accounts posting over the same months."""
+    a = LedgerSpan(first_date=date(2025, 1, 2), last_date=date(2025, 12, 30))
+    b = LedgerSpan(first_date=date(2025, 1, 2), last_date=date(2025, 12, 31))
+
+    assert a.concurrent_with(b, tolerance_days=30) is True
+    assert b.concurrent_with(a, tolerance_days=30) is True
+
+
+def test_a_short_changeover_tail_is_not_concurrency() -> None:
+    """One card replacing another leaves stragglers on the retired number."""
+    old = LedgerSpan(first_date=date(2025, 1, 4), last_date=date(2025, 6, 25))
+    new = LedgerSpan(first_date=date(2025, 6, 14), last_date=date(2025, 12, 20))
+
+    assert old.concurrent_with(new, tolerance_days=30) is False
+
+
+def test_two_ledgers_that_never_met_are_not_concurrent() -> None:
+    """Disjoint ranges: the subtraction goes negative and must not read as overlap."""
+    old = LedgerSpan(first_date=date(2025, 1, 4), last_date=date(2025, 6, 9))
+    new = LedgerSpan(first_date=date(2025, 8, 14), last_date=date(2025, 12, 20))
+
+    assert old.concurrent_with(new, tolerance_days=30) is False
