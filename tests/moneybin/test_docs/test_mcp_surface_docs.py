@@ -205,6 +205,8 @@ REGISTERED_RESOURCE_URIS = frozenset(
 
 @cache
 def _mcp_contract_name_pattern(names: frozenset[str]) -> re.Pattern[str]:
+    if not names:
+        return re.compile(r"(?!)")
     alternatives = "|".join(
         re.escape(name) for name in sorted(names, key=len, reverse=True)
     )
@@ -277,7 +279,9 @@ def _markdown_heading_breadcrumb(text: str, offset: int) -> tuple[str, ...]:
     if index < 0:
         return ()
     title_start, title_end = title_spans[index]
-    if title_start <= offset < title_end:
+    if offset == title_start:
+        return breadcrumbs[index][:-1]
+    if title_start < offset < title_end:
         return breadcrumbs[index][:-1] + (text[title_start:offset],)
     return breadcrumbs[index]
 
@@ -286,6 +290,11 @@ def test_markdown_heading_breadcrumb_preserves_partial_heading_titles() -> None:
     text = "## MCP tools\n"
 
     assert _markdown_heading_breadcrumb(text, text.index("tools")) == ("MCP ",)
+    assert _markdown_heading_breadcrumb(text, text.index("MCP")) == ()
+
+
+def test_mcp_contract_name_pattern_rejects_empty_name_sets() -> None:
+    assert _mcp_contract_name_pattern(frozenset()).search("anything") is None
 
 
 def _markdown_table_column_header(text: str, offset: int) -> str | None:
