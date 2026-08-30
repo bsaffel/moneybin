@@ -165,12 +165,24 @@ def test_stg_tabular_transactions_keeps_pre_fix_pinned_row_authoritative(
             ('canonical-pinned-01:source-001', ?, DATE '2024-01-15', -50.00,
              'Test purchase', ?, 'csv', ?, 'legacy-import',
              CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('canonical-pinned-01:source-002', ?, DATE '2024-01-15', -50.00,
+             'Test purchase', ?, 'csv', ?, 'legacy-import',
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
             ('native-statement-01:source-001', ?, DATE '2024-01-15', -50.00,
+             'Test purchase', ?, 'csv', ?, 'corrected-import',
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('native-statement-01:source-002', ?, DATE '2024-01-15', -50.00,
              'Test purchase', ?, 'csv', ?, 'corrected-import',
              CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture
         [
             canonical_id,
+            source_file,
+            source_origin,
+            canonical_id,
+            source_file,
+            source_origin,
+            native_key,
             source_file,
             source_origin,
             native_key,
@@ -208,12 +220,12 @@ def test_stg_tabular_transactions_keeps_pre_fix_pinned_row_authoritative(
         [source_file],
     ).fetchall()
 
-    assert rows == [(canonical_id,)]
+    assert rows == [(canonical_id,), (canonical_id,)]
     raw_count = db.execute(
         "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_file = ?",
         [source_file],
     ).fetchone()
-    assert raw_count == (2,)
+    assert raw_count == (4,)
 
 
 @pytest.mark.slow
@@ -260,6 +272,72 @@ def test_stg_tabular_transactions_keeps_distinct_source_transaction_ids(
     _insert_accepted_source_native(
         db,
         link_id="link-source-id-native",
+        account_id=canonical_id,
+        ref_value=native_key,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        """
+        SELECT source_account_key
+        FROM prep.stg_tabular__transactions
+        WHERE source_file = ?
+        ORDER BY source_account_key
+        """,
+        [source_file],
+    ).fetchall()
+
+    assert rows == [(canonical_id,), (native_key,)]
+
+
+@pytest.mark.slow
+def test_stg_tabular_transactions_keeps_distinct_original_date_strings(
+    db: Database,
+) -> None:
+    """Different raw date strings are distinct content-hash identities."""
+    canonical_id = "canonical-raw-date-01"
+    native_key = "native-raw-date-01"
+    source_file = "raw-date-statement.csv"
+    source_origin = "raw-date-test"
+
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, transaction_date, original_date_str,
+             amount, description, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES
+            ('canonical-raw-date-01:legacy-001', ?, DATE '2024-01-15',
+             '2024-01-15', -50.00, 'Test purchase', ?, 'csv', ?,
+             'legacy-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('native-raw-date-01:later-002', ?, DATE '2024-01-15',
+             '01/15/2024', -50.00, 'Test purchase', ?, 'csv', ?,
+             'later-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [
+            canonical_id,
+            source_file,
+            source_origin,
+            native_key,
+            source_file,
+            source_origin,
+        ],
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-raw-date-legacy",
+        account_id=canonical_id,
+        ref_value=canonical_id,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-raw-date-native",
         account_id=canonical_id,
         ref_value=native_key,
         source_type="csv",

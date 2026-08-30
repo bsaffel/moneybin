@@ -1164,6 +1164,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **Re-importing a file pinned before #438 no longer double-counts its transactions (#442, PR #459).** Staging keeps the legacy transaction IDs that existing notes and categorizations reference, while safely suppressing only an exact corrected re-import twin; raw import history is never deleted.
+
 - **A denied keychain read is no longer reported as a missing key.** macOS
   reports a sandbox-denied keychain read identically to a genuinely absent
   item (`errSecItemNotFound`), so three call sites each guessed differently:

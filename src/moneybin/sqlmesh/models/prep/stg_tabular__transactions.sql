@@ -14,16 +14,17 @@ WITH accepted_native_links AS (
     status = 'accepted' AND ref_kind = 'source_native'
 ), legacy_pinned AS (
   SELECT
-    current_link.account_id AS canonical_account_id,
+    t.account_id AS canonical_account_id,
     t.source_file,
     t.source_type,
     t.source_origin,
     t.transaction_date,
     t.amount,
     t.description,
+    t.original_date_str,
     t.source_transaction_id,
     ROW_NUMBER() OVER (
-      PARTITION BY t.account_id, t.source_file, t.source_type, t.source_origin, t.transaction_date, t.amount, t.description, t.source_transaction_id
+      PARTITION BY t.account_id, t.source_file, t.source_type, t.source_origin, t.transaction_date, t.amount, t.description, t.original_date_str, t.source_transaction_id
       ORDER BY t.transaction_id
     ) AS occurrence
   FROM raw.tabular_transactions AS t
@@ -40,10 +41,6 @@ WITH accepted_native_links AS (
     AND legacy_self_map.source_type = t.source_type
     AND legacy_self_map.source_origin IS NOT DISTINCT FROM t.source_origin
     AND legacy_self_map.status = 'accepted'
-  JOIN accepted_native_links AS current_link
-    ON current_link.ref_value = legacy_self_map.ref_value
-    AND current_link.source_type = legacy_self_map.source_type
-    AND current_link.source_origin IS NOT DISTINCT FROM legacy_self_map.source_origin
   WHERE
     t.deleted_from_source_at IS NULL
 ), corrected_pinned AS (
@@ -56,9 +53,10 @@ WITH accepted_native_links AS (
     t.transaction_date,
     t.amount,
     t.description,
+    t.original_date_str,
     t.source_transaction_id,
     ROW_NUMBER() OVER (
-      PARTITION BY link.account_id, t.source_file, t.source_type, t.source_origin, t.transaction_date, t.amount, t.description, t.source_transaction_id
+      PARTITION BY link.account_id, t.source_file, t.source_type, t.source_origin, t.transaction_date, t.amount, t.description, t.original_date_str, t.source_transaction_id
       ORDER BY t.transaction_id
     ) AS occurrence
   FROM raw.tabular_transactions AS t
@@ -132,6 +130,7 @@ WITH accepted_native_links AS (
         AND legacy.transaction_date = corrected.transaction_date
         AND legacy.amount = corrected.amount
         AND legacy.description IS NOT DISTINCT FROM corrected.description
+        AND legacy.original_date_str IS NOT DISTINCT FROM corrected.original_date_str
         AND legacy.source_transaction_id IS NOT DISTINCT FROM corrected.source_transaction_id
         AND legacy.occurrence = corrected.occurrence
       WHERE
@@ -142,6 +141,7 @@ WITH accepted_native_links AS (
         AND corrected.transaction_date = t.transaction_date
         AND corrected.amount = t.amount
         AND corrected.description IS NOT DISTINCT FROM t.description
+        AND corrected.original_date_str IS NOT DISTINCT FROM t.original_date_str
         AND corrected.source_transaction_id IS NOT DISTINCT FROM t.source_transaction_id
     )
 )
