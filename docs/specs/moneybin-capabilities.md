@@ -3,7 +3,7 @@
 > **Status:** implemented
 
 This spec defines parity between MoneyBin's two active user surfaces. Parity
-means that the CLI and the 49-tool standard registry can produce the same
+means that the CLI and the 50-tool standard registry can produce the same
 durable user outcome. It does not require similar command or tool names.
 Generic clients receive the full registry; a capable host may optionally defer
 schemas from that same registry. Observed host-native deferral evidence remains
@@ -22,7 +22,7 @@ Every map row contains:
 | Field | Meaning |
 |---|---|
 | `capability_id` | Stable domain-oriented identifier; unique across the map |
-| `mcp_tools` | Exact names in the standard 49-tool MCP registry |
+| `mcp_tools` | Exact names in the standard 50-tool MCP registry |
 | `cli_commands` | Exact space-delimited executable Typer paths |
 | `service_methods` | Importable callables that own the behavior |
 | `observable_outcomes` | Stable rows, states, counts, audit operations, or results used to judge equivalence |
@@ -42,7 +42,7 @@ coverage catalog.
 
 Counted from the map on 2026-08-14, it contains:
 
-- 49 non-exempt capability rows covering all 49 standard MCP tools. `reports`
+- 50 non-exempt capability rows covering all 50 standard MCP tools. `reports`
   serves two capabilities — the catalog read and report execution — under one
   tool identity.
 - 194 implemented Typer paths, including hidden compatibility aliases, with
@@ -66,7 +66,7 @@ is added.
 | Report verification | none — `admission-pending` | `reports explain` | Same query in both provenance forms, per-column class provenance, lineage, drift freshness, and graduation eligibility for every tier |
 | Export delivery | `export_run` | `export bundle`, `export report` | Same `ExportService.run` subject, named destination, redaction mode, format, row counts, checksums, receipt identity, and safe failures. Both surfaces record the run's receipt to `app.audit_log` under action `export.run`, readable afterwards through `system_audit` (MCP) or `moneybin system audit` (CLI) |
 | Export destination target state | `exports_set`; readiness through `system_status(sections=["exports"])` | `export destination list`, `export destination add local`, `export destination add sheets`, `export destination remove` | Same `ExportService`/repository-owned named destination readiness and typed local or Sheets state |
-| Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert` | `accounts list/get/summary/set`, `accounts balance *` | Same account projections, settings, observations, and assertions |
+| Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert`, `accounts_links_run` | `accounts list/get/summary/set`, `accounts balance *`, `accounts links run` | Same account projections, settings, observations, assertions, and merge proposals |
 | Investments | `investments`, `investments_record`, `investments_securities_set`, `investments_lots_select` | `investments *` | Same ledger, holdings, lots, securities, and gains |
 | Investment prices | `investments(view="holdings")` carries the resolved valuation; no observation-grain tool is named yet | `investments prices pull/set/delete/list` | Same `PriceService` refresh, audited user marks, and resolved series. An observation-grain MCP capability stays unnamed until it passes tool admission; the valuation it produces is already surfaced on holdings |
 | Tiingo price credential | exempt — `secret-material` | `investments prices token` | Same profile-scoped `SecretStore` entry; an API token must never enter an LLM context |

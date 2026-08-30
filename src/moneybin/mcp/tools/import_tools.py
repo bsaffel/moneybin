@@ -217,9 +217,8 @@ def accounts_created_action(count: int) -> str | None:
     Names no account: the ids and labels are structured data on the result, and
     ``actions`` is unclassified prose that the redaction pass cannot see.
 
-    The merge recovery is entirely MCP-reachable, which is easy to miss because
-    the tool named after it is not: ``accounts_links_run`` is unregistered, but
-    ``refresh_run(steps=["identity"])`` calls the same
+    The merge recovery is entirely MCP-reachable: ``refresh_run(steps=
+    ["identity"])`` and ``accounts_links_run`` both call
     ``AccountLinksService.run()``, and ``reviews`` and ``identity_links_decide``
     carry the rest of the loop. Sending the agent to the CLI for any of it costs
     it the one correction it can perform without the user leaving the chat.

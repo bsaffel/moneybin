@@ -156,11 +156,11 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # tools never owed: accepting a match can reverse a transfer the user
     # accepted, and an agent that cannot read that from the description
     # reports the reversal as a clean accept. Registry-wide the consolidation
-    # still stands at -37.0% — 57,196 bytes against the baseline's 90,734, both
+    # still stands at -34.4% — 59,531 bytes against the baseline's 90,734, both
     # readable as `total_bytes` in the two fixtures this test loads. (The figure
-    # was recorded as -38.0% and had already drifted before display conversion
-    # added its 116; it is a comment, so nothing failed. Recompute it from the
-    # fixtures rather than trusting this line.)
+    # has drifted twice before — recorded as -38.0%, then -37.0% — because
+    # nothing fails when a comment goes stale. Recompute it from the fixtures
+    # rather than trusting this line.)
     "reviews_decide": (2_727, 2_566),
     # Grew by the same disclosure, for the same reason: accepting an account
     # decision re-runs matching, which can reverse a transfer the user
@@ -188,6 +188,7 @@ _STANDARD_CALLBACK_NAMES = {
     "accounts_set": "accounts_set",
     "accounts_balances": "accounts_balances_coarse",
     "accounts_balance_assert": "accounts_balance_assert_coarse",
+    "accounts_links_run": "accounts_links_run",
     "investments": "investments_coarse",
     "investments_record": "investments_record",
     "investments_securities_set": "investments_securities_set",
@@ -420,7 +421,7 @@ def test_standard_surface_is_smaller_than_baseline() -> None:
     standard = _inventory_server_sync()
 
     assert baseline.total_bytes == 90_734
-    assert standard.tool_count == 49
+    assert standard.tool_count == 50
     assert standard.total_bytes < baseline.total_bytes
     assert {
         row.name for row in standard.tools if row.output_schema_bytes > 0
@@ -429,10 +430,11 @@ def test_standard_surface_is_smaller_than_baseline() -> None:
 
 def test_current_registry_respects_hard_limit_without_report_reservations() -> None:
     """Reports extend the catalog runner and never reserve MCP tool slots."""
-    assert STANDARD_TOOL_COUNT == 49
+    assert STANDARD_TOOL_COUNT == 50
     assert {"export_run", "exports_set"} <= STANDARD_TOOL_NAMES
-    assert STANDARD_TOOL_COUNT < HARD_TOOL_LIMIT
-    assert HARD_TOOL_LIMIT - STANDARD_TOOL_COUNT == 1
+    # At the hard maximum exactly, so the next admission must retire a tool.
+    # 50 is a maximum, not a ceiling to stay under: equality still respects it.
+    assert STANDARD_TOOL_COUNT == HARD_TOOL_LIMIT
 
 
 @pytest.mark.integration

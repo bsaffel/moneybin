@@ -48,7 +48,7 @@ GitHub's registry for VS Code, and per-client marketplaces (Cursor deep links,
 Windsurf, Cline). The official MCP Registry is a preview-stage metadata
 backbone that aggregators consume — publish to it, but don't build on it.
 
-MoneyBin exposes one current 49-tool standard registry with a hard 50-tool
+MoneyBin exposes one current 50-tool standard registry with a hard 50-tool
 project limit. Reports extend the single catalog runner and consume no tool
 slots. Windsurf's separate 100-tool cap applies across all connected servers,
 so the remaining capacity belongs to the user's combined MCP configuration.
@@ -83,7 +83,7 @@ so the remaining capacity belongs to the user's combined MCP configuration.
 | LibreChat | stdio, sse, streamable-http | `librechat.yaml` / in-app panel | T2 | |
 | Warp | stdio, SSE URL | UI add; auto-detects `.warp/.mcp.json` + reads Claude Code/Codex config | T2 | Often works with zero MoneyBin effort via config pickup |
 | Open WebUI | streamable-http (native ≥0.6.31); stdio via `mcpo` | admin config | T2 | Localhost streamable-http intersects our `--insecure` gate — document carefully |
-| Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | Works via stdio. Its 100-active-tool global cap accommodates all 49 MoneyBin tools and leaves 51 tool slots for other servers. Document only; revisit if momentum warrants release-gated support |
+| Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | Works via stdio. Its 100-active-tool global cap accommodates all 50 MoneyBin tools and leaves 50 tool slots for other servers. Document only; revisit if momentum warrants release-gated support |
 | claude.ai web + mobile (custom connectors) | remote MCP (OAuth optional platform-side) | Settings → Connectors (Free capped at 1) | **T3** | M3D. Available on all plans incl. Free |
 | ChatGPT desktop app (Codex host) | **stdio + streamable HTTP** | Settings → MCP servers → Add (STDIO); shares `~/.codex/config.toml`; `mcp install --client chatgpt-desktop` writes it | **T1** | Same local host as Codex — configure once, use in ChatGPT desktop + Codex CLI + IDE extension |
 | ChatGPT web (Developer Mode) | **remote-only** (HTTPS `/mcp`; SSE+streamable) | Developer Mode → add connector | **T3** | Web doesn't read local Codex config. **Mobile MCP support undocumented** (Jul 2026). Plus/Pro/Business/Enterprise/Edu; Free excluded. Write-tiering ambiguous — re-verify at M3D |
@@ -108,8 +108,8 @@ works.
   Antigravity, Cursor, VS Code/Copilot, Claude Desktop, and Gemini CLI have a
   concrete installation path and a client surface we will smoke-test each
   release. Gemini CLI remains T1 through its transition to Antigravity CLI.
-- **Windsurf → T2.** Its 100-active-tool global cap accommodates all 49
-MoneyBin tools and leaves 51 tool slots for other servers. Stdio
+- **Windsurf → T2.** Its 100-active-tool global cap accommodates all 50
+MoneyBin tools and leaves 50 tool slots for other servers. Stdio
 configuration remains documented; the tier reflects product momentum and
 release-gating cost, not a current compatibility defect.
 - **Antigravity → T1.** It supports the transports MoneyBin needs and provides
@@ -144,9 +144,9 @@ Stale guidance found during the review; all are routine fixes:
 4. **File the upstream Claude Desktop bug**: connector toggle ON in Chat with
    tools never reaching the model (observed 2026-07-10) contradicts Anthropic's
    documented behavior — file with logs against claude-ai-mcp.
-5. **Keep Windsurf headroom current.** The full 49-tool standard registry is
+5. **Keep Windsurf headroom current.** The full 50-tool standard registry is
    visible at connect. Cascade's hard 100-active-tool global ceiling therefore
-   leaves 51 tool slots for every other connected server. Derive the MoneyBin
+   leaves 50 tool slots for every other connected server. Derive the MoneyBin
    count from `STANDARD_TOOL_NAMES` and the rendered standard snapshot; do not
    preserve a second compatibility count in install code or prose.
 6. **`docs/features.md` and `docs/specs/user-facing-doc-polish.md` are CORRECT
@@ -316,7 +316,7 @@ first public release). Content decisions:
   sunsetting Gemini CLI. T1 targets the stable desktop + CLI surfaces and
   re-verifies the config path each release while the surfaces settle.
 - **Windsurf → T2** (was OQ1). Its 100-active-tool global cap accommodates all
-  49 MoneyBin tools and leaves 51 tool slots for other servers. The client
+  50 MoneyBin tools and leaves 50 tool slots for other servers. The client
   remains documented rather than release-gated because its momentum does not
   justify the recurring validation cost. Revisit on a momentum change.
 - **Ship the Claude Code distribution plugin in M3B** (was OQ6). It is a

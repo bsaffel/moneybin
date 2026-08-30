@@ -1175,6 +1175,73 @@ class TestLinksRun:
         assert "data" in parsed
         assert parsed["data"]["new_proposals"] == 7
 
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.propose_pair")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    def test_run_with_a_named_pair_proposes_only_that_pair(
+        self, mock_run: MagicMock, mock_propose: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """Two ids ask for one proposal, not a sweep of every account."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_propose.return_value = "dec_manual01"
+
+        result = runner.invoke(app, ["run", "acct_aaa00000", "acct_bbb00000"])
+
+        assert result.exit_code == 0
+        mock_propose.assert_called_once_with("acct_aaa00000", "acct_bbb00000")
+        mock_run.assert_not_called()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.propose_pair")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    def test_run_with_one_id_refuses_rather_than_sweeping(
+        self, mock_run: MagicMock, mock_propose: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """A single id is ambiguous, and the safe reading is not the sweep.
+
+        Silently backfilling every account because the second id was forgotten
+        would write proposals the caller never asked for.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+        result = runner.invoke(app, ["run", "acct_aaa00000"])
+
+        assert result.exit_code == 2
+        mock_run.assert_not_called()
+        mock_propose.assert_not_called()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.propose_pair")
+    def test_run_json_with_a_named_pair_carries_the_decision_id(
+        self, mock_propose: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """The caller can decide the proposal it just made without re-querying."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_propose.return_value = "dec_manual01"
+
+        result = runner.invoke(
+            app, ["run", "acct_aaa00000", "acct_bbb00000", "--output", "json"]
+        )
+
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["data"]["new_proposals"] == 1
+        assert parsed["data"]["decision_id"] == "dec_manual01"
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    def test_run_json_without_a_pair_names_no_decision(
+        self, mock_run: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """A sweep writes many proposals or none, so no single id identifies it."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_run.return_value = 4
+
+        result = runner.invoke(app, ["run", "--output", "json"])
+
+        assert result.exit_code == 0
+        assert json.loads(result.output)["data"]["decision_id"] is None
+
 
 class TestLinksHistory:
     """Tests for `accounts links history`."""

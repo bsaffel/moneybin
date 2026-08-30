@@ -362,6 +362,9 @@ Account entities (dim records) plus per-account workflows.
 | `accounts balance assert <account-id> <amount>` | Record a point-in-time balance assertion (reconciles via delta row). | `--as-of <date>` |
 | `accounts balance assertion-delete <assertion-id>` | Delete one balance assertion. | `-y, --yes` |
 | `accounts balance reconcile <account-id>` | Recompute reconciliation deltas for an account. | — |
+| `accounts links pending` | Provisional accounts and the merges proposed for them, with the ledger evidence behind each. | `-o/--output`, `-q` |
+| `accounts links set <decision-id>` | Merge the provisional into a candidate, or keep it standalone. | `--into <account-id>`, `--standalone`, `-y, --yes` |
+| `accounts links run [<id> <id>]` | With no ids, sweep every account for duplicates. With two, propose exactly that pair — the escape hatch for a duplicate no signal reaches. | `-o/--output` |
 
 `accounts set` cascades atomically: `--archive` also sets `--exclude` for net-worth in the same write; `--unarchive` does NOT auto-restore `--include`.
 

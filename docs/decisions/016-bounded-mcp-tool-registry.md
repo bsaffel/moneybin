@@ -23,7 +23,7 @@ have changed:
 4. Modern hosts increasingly support tool search or deferred schema loading
    without requiring server-side list mutation.
 5. A carrying-weight review found that MoneyBin can preserve capability parity
-   through the exact 49-tool intent-shaped standard registry.
+   through the exact 50-tool intent-shaped standard registry.
 6. A proposed 44-tool universal / 48-tool complete split hid too little to
    justify profiles, packs, reconnect behavior, and workflow-closure rules.
 7. A generic read-only report registry prevents every new report from adding a
@@ -86,7 +86,7 @@ service-layer contract, or CLI-first operator exemptions.
 
 ## Current evidence
 
-The operating contract is the 49-tool standard registry. Its deterministic
+The operating contract is the 50-tool standard registry. Its deterministic
 comparison records 52,986 candidate metadata bytes, SHA-256
 `b4f5d08d6ead64b5d5fcead60a75a7714ede3bb69ac23ac300e6fc88e2390c13`, against
 the 90,734-byte frozen baseline, SHA-256
@@ -95,7 +95,7 @@ the 90,734-byte frozen baseline, SHA-256
 `contract_passed: true`.
 
 This ADR remains **Proposed**. `promotion_ready: false`: context budget and
-host-native deferral are both `not_observed`. Generic clients receive all 49
+host-native deferral are both `not_observed`. Generic clients receive all 50
 tools, and supported hosts may defer schemas from that same registry without
 reconnect, packs, or profiles. Those not-observed facts prevent acceptance,
 not operation of the selected registry.
@@ -171,7 +171,7 @@ available through the explicit admission record.
 Promote this ADR to **Accepted** when:
 
 - the governing spec reaches `implemented`;
-- the exact 49-tool contract reconciles with live code;
+- the exact 50-tool contract reconciles with live code;
 - canonical structured transport and generic reports are proven;
 - the initial standard registry advertises zero output schemas, or every
   exception has an approved consumer-driven admission record;

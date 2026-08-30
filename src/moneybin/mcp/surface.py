@@ -32,6 +32,7 @@ STANDARD_TOOL_NAMES = frozenset({
     "accounts_set",
     "accounts_balances",
     "accounts_balance_assert",
+    "accounts_links_run",
     "investments",
     "investments_record",
     "investments_securities_set",
@@ -72,7 +73,7 @@ STANDARD_TOOL_NAMES = frozenset({
     "sql_query",
     "sql_schema",
 })
-STANDARD_TOOL_COUNT = 49
+STANDARD_TOOL_COUNT = 50
 VISIBLE_TOOL_COUNT = STANDARD_TOOL_COUNT
 HARD_TOOL_LIMIT = 50
 CARRYING_WEIGHT_REVIEW_AT = 40

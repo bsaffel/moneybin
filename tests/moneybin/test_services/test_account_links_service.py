@@ -2073,3 +2073,190 @@ def test_a_deliberately_empty_frozen_name_is_not_recovered_from_raw(
 
     assert row["provisional_display_name"] == ""
     assert row["candidate_display_name"] == "Candidate Alpha"
+
+
+# ---------------------------------------------------------------------------
+# propose_pair() — the explicit escape hatch (issue #450, "Done when" 7)
+# ---------------------------------------------------------------------------
+
+
+def _seed_unrelated_pair(db: Database) -> None:
+    """Two accounts no automatic signal would ever pair.
+
+    Different last four, different institution, no shared name — the shape of a
+    pair the resolver is *right* not to propose and a human still knows is one
+    account. Both carry an accepted ``source_native`` link, so either side can
+    be the absorbed one.
+    """
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
+        "display_name, source_type) VALUES (?, ?, ?, ?, ?)",
+        [_PROV1, "1111", "first_bank", "Household Checking", "csv"],
+    )
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
+        "display_name, source_type) VALUES (?, ?, ?, ?, ?)",
+        [_CAND_A, "9999", "second_bank", "Joint Account", "ofx"],
+    )
+    _insert_link(db, link_id=_LINK_PROV1, account_id=_PROV1, ref_value="native-ref-1")
+    _insert_link(db, link_id=_LINK_PROV2, account_id=_CAND_A, ref_value="native-ref-2")
+
+
+def test_propose_pair_writes_a_pending_decision_no_signal_would_have_found(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """A caller can queue a pair the resolver shares no evidence for.
+
+    This is the whole point of the surface: a missed twin is recoverable by
+    naming both accounts, not by changing resolver code. ``run()`` finds nothing
+    here — asserted below so the proposal is credited to propose_pair.
+    """
+    _seed_unrelated_pair(db)
+    assert svc.run() == 0
+
+    decision_id = svc.propose_pair(_PROV1, _CAND_A)
+
+    row = db.execute(
+        "SELECT provisional_account_id, candidate_account_id, status "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
+        [decision_id],
+    ).fetchone()
+    assert row == (_PROV1, _CAND_A, "pending")
+
+
+def test_propose_pair_claims_no_confidence_it_did_not_measure(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """The signal is ``manual`` and the confidence column stays NULL.
+
+    Every other signal carries a score derived from what matched. Nothing
+    matched here — a caller asserted the pair — so a score would be an invented
+    number, and the queue would rank a bare assertion against measured evidence.
+    """
+    _seed_unrelated_pair(db)
+
+    decision_id = svc.propose_pair(_PROV1, _CAND_A)
+
+    row = db.execute(
+        "SELECT confidence_score, match_signals FROM app.account_link_decisions "
+        "WHERE decision_id = ?",
+        [decision_id],
+    ).fetchone()
+    assert row is not None
+    confidence, match_signals = row
+    assert confidence is None
+    assert '"signal":"manual"' in match_signals.replace(" ", "")
+
+
+def test_propose_pair_surfaces_in_the_review_queue(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """The proposal reaches ``pending()`` like any other — same confirm gate."""
+    _seed_unrelated_pair(db)
+
+    svc.propose_pair(_PROV1, _CAND_A)
+
+    groups = svc.pending()
+    assert len(groups) == 1
+    assert groups[0].provisional_account_id == _PROV1
+    assert [c.signal for c in groups[0].candidates] == ["manual"]
+
+
+def test_propose_pair_absorbs_the_side_that_can_actually_be_merged(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """Naming the un-mergeable account first still yields a usable decision.
+
+    Only an account holding an accepted ``source_native`` link can be absorbed —
+    ``set()`` repoints that link and refuses the merge without one. A caller
+    cannot be expected to know which side qualifies, so the pair is oriented
+    for them rather than queued as a decision that dead-ends at accept.
+    """
+    _seed_unrelated_pair(db)
+    db.execute(
+        "DELETE FROM app.account_links WHERE account_id = ?", [_PROV1]
+    )  # only _CAND_A can be absorbed now
+
+    decision_id = svc.propose_pair(_PROV1, _CAND_A)
+
+    row = db.execute(
+        "SELECT provisional_account_id, candidate_account_id "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
+        [decision_id],
+    ).fetchone()
+    assert row == (_CAND_A, _PROV1)
+
+
+def test_propose_pair_refuses_when_neither_side_can_be_absorbed(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """With no accepted source_native link on either side, no merge can happen."""
+    _seed_unrelated_pair(db)
+    db.execute("DELETE FROM app.account_links")
+
+    with pytest.raises(UserError, match="source"):
+        svc.propose_pair(_PROV1, _CAND_A)
+
+    assert db.execute("SELECT count(*) FROM app.account_link_decisions").fetchone() == (
+        0,
+    )
+
+
+def test_propose_pair_refuses_an_account_that_is_the_same_on_both_sides(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """An account cannot absorb itself."""
+    _seed_unrelated_pair(db)
+
+    with pytest.raises(UserError, match="same account"):
+        svc.propose_pair(_PROV1, _PROV1)
+
+
+def test_propose_pair_refuses_an_account_absent_from_dim_accounts(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """A typo'd id is named back to the caller rather than queued as a proposal."""
+    _seed_unrelated_pair(db)
+
+    with pytest.raises(UserError, match="no_such_acct"):
+        svc.propose_pair(_PROV1, "no_such_acct")
+
+
+def test_propose_pair_refuses_a_pair_already_queued_in_the_other_direction(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """The pair is unordered — an existing pending decision already covers it."""
+    _seed_unrelated_pair(db)
+    _insert_decision(
+        db,
+        decision_id=_DEC1,
+        provisional_account_id=_CAND_A,
+        candidate_account_id=_PROV1,
+    )
+
+    with pytest.raises(UserError, match="pending"):
+        svc.propose_pair(_PROV1, _CAND_A)
+
+
+def test_propose_pair_re_proposes_a_pair_that_was_rejected_before(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """A rejection is a past answer, not a permanent veto.
+
+    Blocking on it would put the pair beyond reach of every surface again — the
+    exact dead end this method exists to remove — and a reject is the easiest
+    decision to make by mistake.
+    """
+    _seed_unrelated_pair(db)
+    _insert_decision(
+        db,
+        decision_id=_DEC1,
+        provisional_account_id=_PROV1,
+        candidate_account_id=_CAND_A,
+    )
+    svc.set(_DEC1, target_account_id=None)  # standalone-reject
+
+    decision_id = svc.propose_pair(_PROV1, _CAND_A)
+
+    assert decision_id != _DEC1
+    assert _decision_status(db, decision_id) == "pending"

@@ -698,6 +698,23 @@
     "exemption": null
   },
   {
+    "capability_id": "accounts.links.propose",
+    "mcp_tools": [
+      "accounts_links_run"
+    ],
+    "cli_commands": [
+      "accounts links run"
+    ],
+    "service_methods": [
+      "moneybin.services.account_links_service.AccountLinksService.run",
+      "moneybin.services.account_links_service.AccountLinksService.propose_pair"
+    ],
+    "observable_outcomes": [
+      "a whole-book sweep and an explicitly named pair both write the same pending account-link proposals, under the signal that found them"
+    ],
+    "exemption": null
+  },
+  {
     "capability_id": "identity.links.decide",
     "mcp_tools": [
       "identity_links_decide"

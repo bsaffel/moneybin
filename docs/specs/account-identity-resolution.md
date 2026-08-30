@@ -1,6 +1,7 @@
 # Cross-Source Account Identity Resolution
 
-> Last updated: 2026-08-10
+> Last updated: 2026-08-29 — last-four rung no longer requires an
+> institution; the reissue signal requires sequential ledgers (#450)
 > Status: implemented (architecture M1S.1–.6 + the capture/bind-first
 > corrections M1S.7–.9, all shipped — see [§Decision 8](#decision-8--capture-mutable-labels-and-the-exporter-axis-m1s7-live-test-reconciliation));
 > the full-scale live re-validation this spec was written to unblock (5-account
@@ -244,7 +245,9 @@ provisional_account_id TEXT  NOT NULL,     -- the just-minted source account und
 candidate_account_id   TEXT  NOT NULL,     -- an existing canonical account proposed as the same
 confidence_score       DECIMAL(5, 4),
 match_signals          TEXT,               -- JSON-encoded (per match_decisions convention):
-                                           --   which weak signal matched + its value (institution_last4 / name / institution_reissue)
+                                           --   which weak signal matched + its value
+                                           --   (institution_last4 / last_four / name /
+                                           --    institution_reissue / manual)
 status                 TEXT  NOT NULL,     -- pending | accepted | rejected | reversed
 decided_by             TEXT  NOT NULL,     -- auto | user
 match_reason           TEXT,
@@ -266,6 +269,7 @@ reversed_by            TEXT
 
 - **Candidate signals are not stored on `account_links`.** `institution_last4`
   (OFX `RIGHT(number,4)`, Plaid `mask`, tabular `account_number_masked`),
+  `last_four` (the same match where either side names no institution),
   `account_name`, and `institution_reissue` (same institution, both sides carry
   a last-four and they differ) are *weak signals* the resolver computes live and matches
   against **existing accounts' `last_four` / `institution_slug` / `display_name`
@@ -351,8 +355,10 @@ signal reliability:
    (`persistent_token`, scoped `full_number`)** — safe because step 1 just proved
    no existing account holds them, and it lets a later source bearing the same
    token / scoped number auto-adopt via step 1 instead of minting a duplicate.
-   Then look for existing accounts sharing `institution + last4` (when
-   institution is known), then fuzzy `account_name`, then the **reissue signal** — same
+   Then look for existing accounts sharing a **last four** — under
+   `institution_last4` (0.5) when both sides name the same institution, under
+   `last_four` (0.45) when either names none — then fuzzy `account_name`, then
+   the **reissue signal** — same
    institution where both sides carry a last-four and the two *differ*
    (`institution_reissue`, confidence 0.3) — querying `core.dim_accounts`. The
    reissue signal exists because a replacement card changes its last four by
@@ -386,6 +392,27 @@ signal reliability:
    against every other. Keeping the two separate is what lets backfill see a
    vetoed duplicate without drowning in pairwise noise — conflating them made a
    duplicate the backfill queue used to surface silently invisible:
+   Institution is **evidence on the last-four rung, never a precondition for
+   it.** Two accounts that state different banks are still vetoed, but a pair
+   where either side names none is proposed under `last_four` rather than
+   dropped. Requiring a resolved institution silently excluded the tabular path,
+   which names its account only inside a label (`Daily Expense (...1789)`) and
+   parses no institution from it: the twin it minted carried an exact last four,
+   matched nothing, and both copies counted toward spending and net worth with
+   no proposal to merge them. The two signals stay distinct so the queue can
+   tell "both sides named this bank" from "one side named nothing".
+
+   The reissue signal additionally requires the two ledgers to be
+   **sequential**, which is what a reissue means. Shared institution plus a
+   differing last four is, in an established book, every pair of cards at one
+   bank; without a sequence check the signal proposed pairs that ran
+   concurrently for months, each carrying its own refutation in zero matched
+   transactions over a shared period. A proposal is dropped when both ledgers
+   demonstrably overlap by more than `_REISSUE_MAX_CONCURRENT_DAYS` (30, roughly
+   one statement cycle). Only *positive* concurrency drops it — an account with
+   no published ledger keeps its proposal, which is the import-time state the
+   signal was written for.
+
    - **0 candidates** → done: a new standalone account. Its `last_four` /
      institution / name (captured per Decision 7) become candidate signals for
      *future* imports.

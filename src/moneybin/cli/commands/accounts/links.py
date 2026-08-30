@@ -96,7 +96,7 @@ def links_pending(
         )
         typer.echo(
             f"  {'Candidate':<32} {'Signal':<20} "
-            f"{'Ledger overlap':>16}  {'Decision ID':<14} {'Candidate ID'}"
+            f"{'Ledger overlap':>20}  {'Decision ID':<14} {'Candidate ID'}"
         )
         for c in group.candidates:
             # Padded, never truncated. A resolved display name ends in the
@@ -107,7 +107,7 @@ def links_pending(
             typer.echo(
                 f"  {c.candidate_display_name or '-':<32} "
                 f"{c.signal:<20} "
-                f"{_overlap_cell(c.overlap):>16}  "
+                f"{_overlap_cell(c.overlap):>20}  "
                 f"{c.decision_id[:12]:<14} "
                 f"{c.candidate_account_id[:12]}"
             )
@@ -576,21 +576,45 @@ def links_history(
 
 @app.command("run")
 def links_run(
+    account_id: str | None = typer.Argument(
+        None, help="One side of a pair to propose (requires CANDIDATE_ACCOUNT_ID)"
+    ),
+    candidate_account_id: str | None = typer.Argument(
+        None, help="The other side of the pair (requires ACCOUNT_ID)"
+    ),
     output: OutputFormat = output_option,
 ) -> None:
-    """Backfill pending account-link proposals for existing accounts.
+    """Propose account merges: sweep for duplicates, or link two accounts by id.
 
-    Finds weak-signal candidate pairs for every account in core.dim_accounts
-    that has no pending proposal yet and writes pending decisions for review.
+    With no arguments, finds weak-signal candidate pairs for every account in
+    core.dim_accounts that has no pending proposal yet. Run this after importing
+    accounts from multiple sources to surface cross-source twins.
 
-    Run this after importing accounts from multiple sources to surface
-    cross-source twins for review.
+    With two account ids, proposes exactly that pair — the escape hatch for a
+    duplicate no signal reaches, where nothing matches but you know it is one
+    account. Neither form merges: both write proposals for `accounts links set`.
     """
+    if (account_id is None) != (candidate_account_id is None):
+        typer.echo(
+            "Naming one account is ambiguous. Pass both ids to propose that "
+            "pair, or neither to sweep every account for duplicates.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    decision_id: str | None = None
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            new_proposals = AccountLinksService(db, actor="cli").run()
+            svc = AccountLinksService(db, actor="cli")
+            if account_id is None or candidate_account_id is None:
+                new_proposals = svc.run()
+            else:
+                decision_id = svc.propose_pair(account_id, candidate_account_id)
+                new_proposals = 1
 
-    payload = AccountLinksRunPayload(new_proposals=new_proposals)
+    payload = AccountLinksRunPayload(
+        new_proposals=new_proposals, decision_id=decision_id
+    )
 
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json  # noqa: PLC0415 — defer import
@@ -602,7 +626,9 @@ def links_run(
         )
         return
 
-    if new_proposals == 0:
+    if decision_id is not None:
+        typer.echo(f"✅ Proposed the pair as decision {decision_id}.")
+    elif new_proposals == 0:
         typer.echo("No new account-link proposals written.")
     else:
         typer.echo(f"✅ Wrote {new_proposals} new pending account-link proposal(s).")

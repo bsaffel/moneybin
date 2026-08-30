@@ -245,10 +245,12 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |       |         in advance. Standalone is never gated.
 |       +-- history [--limit N] [--output json] [--quiet]
 |       |         Recent decisions (all statuses), newest first.
-|       +-- run [--output json]
-|                 Backfill pending link proposals for all existing accounts.
-|                 Finds cross-source twins (same institution+last4 or fuzzy name match)
-|                 that have no pending proposal yet and writes pending decisions.
+|       +-- run [ACCOUNT_ID CANDIDATE_ACCOUNT_ID] [--output json]
+|                 With no ids, backfills pending link proposals for all existing accounts:
+|                 finds cross-source twins (shared last four, or fuzzy name match) that have
+|                 no pending proposal yet and writes pending decisions.
+|                 With two ids, proposes exactly that pair under signal `manual` — the escape
+|                 hatch for a duplicate no signal reaches. One id alone exits 2.
 |                 Prints count of new proposals written; hints user toward `accounts links pending`.
 |   Note: `accounts links undo` is deliberately NOT YET registered (deferred to M1L audit-undo consumer).
 |

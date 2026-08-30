@@ -10,7 +10,7 @@
 ## Status
 
 - **Type:** Architecture
-- **Status:** in-progress — the 49-tool registry is operating, but promotion is
+- **Status:** in-progress — the 50-tool registry is operating, but promotion is
   blocked on observed context-budget and host-native-deferral evidence
 - **Address:** M3K.2 — second work item under M3K (CLI / MCP UX standards)
 - **Origin:** July 2026 MCP surface review. ADR-016 records the measured
@@ -27,7 +27,7 @@ smallest possible tool count and not a marketing-friendly headline.
 
 ## Decision summary
 
-MoneyBin operates one bounded 49-tool standard registry.
+MoneyBin operates one bounded 50-tool standard registry.
 
 - Every standard client receives the complete registered surface. There are no
   core capability packs, hidden expert tools, or reconnect-only modes.
@@ -53,14 +53,14 @@ MoneyBin operates one bounded 49-tool standard registry.
   for selection, arguments, workflow completion, and safety.
 
 ADR-016 records why a connection-profile model was rejected. The operating
-contract has one registry and one generic report runner. The 49-tool standard
+contract has one registry and one generic report runner. The 50-tool standard
 registry is now the operating reality. Promotion remains open for observed
 context-budget and host-native-deferral evidence.
 
 ## Why now
 
-The operating registry contains 49 tools, stays below Windsurf's
-100-active-tool global cap, and leaves 51 tool slots for other connected
+The operating registry contains 50 tools, stays below Windsurf's
+100-active-tool global cap, and leaves 50 tool slots for other connected
 servers. Its rendered metadata, tool identities, and zero advertised output
 schemas are frozen in the standard snapshot below.
 
@@ -294,8 +294,8 @@ CI rejects duplicate description openings and enforces description budgets.
 
 ## Standard registry
 
-The 49-tool registry below is the live public contract. Generic clients receive
-all 49 tools; capable hosts may optionally defer schemas from that same
+The 50-tool registry below is the live public contract. Generic clients receive
+all 50 tools; capable hosts may optionally defer schemas from that same
 registry without reconnect, packs, or profiles. The registry selection has
 passed its deterministic contract comparison, but promotion remains open until
 the observed-evidence gates below close.
@@ -305,7 +305,7 @@ the observed-evidence gates below close.
 | System | `system_status`, `system_audit`, `system_audit_undo` | Sectioned overview/health/statistics; unified audit list/detail/history; operation-level recovery |
 | Profile | `profile`, `profile_set` | Active profile metadata and managed settings, including the home currency |
 | Reports | `reports` | Catalog and execute every registered report |
-| Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert` | Collection/detail/resolve; settings; latest/history; assertion set/remove |
+| Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert`, `accounts_links_run` | Collection/detail/resolve; settings; latest/history; assertion set/remove; merge proposals (sweep or named pair) |
 | Investments | `investments`, `investments_record`, `investments_securities_set`, `investments_lots_select` | Read views; ledger events; security catalog; specific-lot overrides |
 | Transactions | `transactions`, `transactions_create`, `transactions_annotate`, `transactions_categorize_assist`, `transactions_categorize_commit`, `transactions_categorize_run`, `transactions_categorize_rules`, `transactions_categorize_rules_set` | Query; manual entries; notes/tags/splits; assisted and deterministic categorization; rule lifecycle |
 | Reviews | `reviews`, `reviews_decide`, `identity_links_decide` | Normalized queue/history, including auto-rule proposals; ordinary and auto-rule decisions; destructive identity merges |
@@ -426,12 +426,12 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic current
 [`standard.json`](../../tests/fixtures/mcp_surface/standard.json) snapshot
-contains 49 tools, 58,164 bytes of serialized metadata, zero advertised output schemas,
+contains 50 tools, 59,531 bytes of serialized metadata, zero advertised output schemas,
 and registry SHA-256
-`d9ef170b1b5868c90ca5a16a375def5a09435ffd529a1951770e63f06c2df0da`.
+`90fbfccca9e80add63bb1627cbfa06975ebf8e2ee1fec5fc0dfe3b734826a991`.
 The frozen baseline is 90,734 bytes with SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`.
-The delta is -32,570 bytes (-35.9%). The deterministic estimate is 14,541
+The delta is -31,203 bytes (-34.4%). The deterministic estimate is 14,883
 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
@@ -505,18 +505,18 @@ ADR-016 owns its measured interpretation. The current registry fixture is
 
 The 50-tool maximum and 40-tool carrying-weight review threshold are durable
 policy. Both hard-limit and description-budget enforcement apply to the
-operating 49-tool registry.
+operating 50-tool registry.
 
 The persisted comparison records `contract_passed: true` and
 `promotion_ready: false`: context budget: not_observed; host-native deferral:
 not_observed. Deterministic fixtures cannot establish either fact. These are
 the remaining promotion blockers, not reasons to misstate the operating
-49-tool registry.
+50-tool registry.
 
 Evaluate:
 
 1. the frozen pre-cutover surface;
-2. the exact 49-tool standard registry;
+2. the exact 50-tool standard registry;
 3. individual consolidation alternatives where schema size or accuracy is
    uncertain;
 4. optional host-native deferred loading from that same registry.
@@ -629,7 +629,7 @@ is a bounded domain runner, not an execution proxy.
 
 This spec remains `in-progress` and must not move to `implemented` until:
 
-- observed model-context evidence is persisted for the 49-tool registry;
+- observed model-context evidence is persisted for the 50-tool registry;
 - optional host-native deferral is observed against that same registry; and
 - ADR-016 is accepted after those evidence gates close.
 

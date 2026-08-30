@@ -4107,9 +4107,9 @@ class TestImportFilesConfirmationRequired:
 
         The first version of this action said the merge was "CLI-only today"
         and sent the agent to a terminal for the one correction it could have
-        made itself. The mistake was reading the unregistered
-        ``accounts_links_run`` as the only way to propose a merge:
-        ``refresh_run(steps=["identity"])`` calls the same
+        made itself. The mistake was reading ``accounts_links_run`` — then
+        unregistered, and registered since — as the only way to propose a
+        merge: ``refresh_run(steps=["identity"])`` calls the same
         ``AccountLinksService.run()``, and ``reviews`` +
         ``identity_links_decide`` finish the loop.
 

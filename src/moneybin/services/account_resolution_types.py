@@ -136,8 +136,8 @@ class AccountCandidate:
     account_id: str
     display_name: str
     confidence: float
-    # "legacy_pdf_identity" | "institution_last4" | "name" |
-    # "institution_reissue" | "institution" | "fallback". The first four fired
+    # "legacy_pdf_identity" | "institution_last4" | "last_four" | "name" |
+    # "institution_reissue" | "institution" | "fallback". The first five fired
     # on real evidence. The last two are the interactive import gate's
     # last-resort pick-list; never emitted on the backfill link queue.
     signal: str
@@ -336,7 +336,8 @@ class PendingLinkCandidate:
     decision_id: str
     candidate_account_id: str
     candidate_display_name: str
-    # "institution_last4" | "name" | "institution_reissue" — only these three.
+    # "institution_last4" | "last_four" | "name" | "institution_reissue" |
+    # "manual" (a caller named the pair; no signal fired) — only these five.
     # Narrower than _Candidate.signal: this reads persisted decision rows, and
     # the single insert site passes fallback=False, so the gate's last-resort
     # pick-list ("institution" / "fallback") is never written to review.

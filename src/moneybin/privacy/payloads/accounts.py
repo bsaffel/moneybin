@@ -261,7 +261,7 @@ class LinkCandidateRow:
     # else (taxonomy.py / AccountSummary / AccountDetail); a user/auto label can
     # embed identifying text, so it must not be under-classified to LOW here.
     candidate_display_name: Annotated[str, DataClass.USER_NOTE]
-    # "institution_last4", "name", or "institution_reissue"
+    # "institution_last4", "last_four", "name", "institution_reissue", or "manual"
     signal: Annotated[str, DataClass.TXN_TYPE]
     #: Transactions of the provisional account that also appear in this
     #: candidate's ledger, out of those in a period both ledgers cover. Both are
@@ -414,6 +414,9 @@ class AccountLinksHistoryPayload:
 
 @dataclass(frozen=True, slots=True)
 class AccountLinksRunPayload:
-    """Payload for accounts_links_run — count of new pending proposals written."""
+    """Payload for accounts_links_run — the pending proposals the call wrote."""
 
     new_proposals: Annotated[int, DataClass.AGGREGATE]
+    # Only the pair form has one decision to name; a sweep writes many or none,
+    # so no single id identifies it and the caller re-reads the queue instead.
+    decision_id: Annotated[str | None, DataClass.RECORD_ID] = None
