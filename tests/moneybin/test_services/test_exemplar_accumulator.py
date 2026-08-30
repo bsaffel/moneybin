@@ -57,7 +57,7 @@ def _items(
 def test_first_categorization_creates_merchant_with_one_exemplar(
     real_db: Database,
 ) -> None:
-    _seed_txn(real_db, "t1", "PAYPAL INST XFER", "GOOGLE YOUTUBE BRANDON SAFFEL")
+    _seed_txn(real_db, "t1", "PAYPAL INST XFER", "GOOGLE YOUTUBE ACCT HOLDER")
     svc = CategorizationService(real_db)
     svc.categorize_items(_items(("t1", "Subscriptions", "YouTube")))
     row = real_db.execute(

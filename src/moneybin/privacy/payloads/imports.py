@@ -106,14 +106,18 @@ class ImportCreatedAccount(TypedDict, total=False):
 
     Same two fields, and the same classes, as an existing-account candidate: a
     minted account is the account a candidate would have been, and USER_NOTE is
-    what ``core.dim_accounts.display_name`` carries everywhere else.
+    what ``core.dim_accounts.display_name`` carries everywhere else — because
+    ``display_name`` here IS that label, derived at mint time from the same seed
+    registries the model joins, so this row and ``accounts`` name the account
+    identically.
 
     There is no ``source_account_key`` field, because an OFX ``<ACCTID>`` can be
-    an account number and the opaque ``account_id`` already names the row. PDF
-    native keys are document digests; ``display_name`` prefers a labelled
-    account or product name and otherwise falls back to the document alias. The
-    alias is ``slugify(file_path.stem)`` — a path the caller supplied and, in
-    ``import_files`` responses, already readable in the same row's ``path``.
+    an account number and the opaque ``account_id`` already names the row.
+    ``display_name`` may still be built from a file's own account column — it is
+    the model's top derived rung — but only in the display-safe form the
+    importer writes to ``raw.tabular_accounts.account_label``, with embedded
+    account numbers masked and a label carrying no letter rejected outright as
+    an account number wearing a name's column heading.
     """
 
     account_id: Annotated[str, DataClass.RECORD_ID]
@@ -551,8 +555,9 @@ class ImportInboxProcessedEntry(TypedDict, total=False):
 
     Declared rather than opaque for the same reason as
     ``ImportInboxPendingEntry``: ``accounts_created[].display_name`` is the
-    source's own label for an account it just minted (USER_NOTE → MEDIUM), and
-    an opaque ``dict[str, object]`` would have handed the whole row one class.
+    resolved label ``core.dim_accounts`` stores for an account it just minted
+    (USER_NOTE → MEDIUM), and an opaque ``dict[str, object]`` would have handed
+    the whole row one class.
     Key omission is the contract — ``accounts_created`` is absent when the file
     adopted every account, which is the common re-import case.
     """

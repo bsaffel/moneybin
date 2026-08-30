@@ -10,7 +10,7 @@ Guarantee every MCP tool call returns within a bounded wall-clock time with a st
 
 ## Background
 
-A `import_inbox_sync` call hung the MoneyBin MCP server for 30+ minutes against a profile with five Wells Fargo QBO files in the inbox. The client (Claude Code) had no way to recover — MCP tool calls are synchronous from the agent's perspective, so the agent blocked on a response that never arrived. Worse, the first interrupted call appears to have left a DuckDB transaction open, so the reconnected server's next call immediately deadlocked behind the orphaned write lock.
+A `import_inbox_sync` call hung the MoneyBin MCP server for 30+ minutes against a profile with five QBO files from one bank in the inbox. The client (Claude Code) had no way to recover — MCP tool calls are synchronous from the agent's perspective, so the agent blocked on a response that never arrived. Worse, the first interrupted call appears to have left a DuckDB transaction open, so the reconnected server's next call immediately deadlocked behind the orphaned write lock.
 
 Realistic SQLMesh-on-DuckDB workloads at personal-finance scale (tens of thousands to low millions of rows) complete in 1–10 seconds, with 30 seconds being a generous worst case. A multi-minute response means the server is deadlocked or in a runaway loop, not doing legitimate work.
 

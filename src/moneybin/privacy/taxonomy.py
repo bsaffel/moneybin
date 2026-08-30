@@ -1089,6 +1089,13 @@ INTERNAL_CRITICAL: dict[tuple[str, str], dict[str, DataClass]] = {
     ("raw", "tabular_accounts"): {
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
         "account_name": DataClass.ACCOUNT_IDENTIFIER,
+        # `account_label` beside it is deliberately ABSENT, and that is the
+        # difference between the two columns: it is account_name after the
+        # importer stripped the last four and masked any embedded number, and it
+        # becomes core.dim_accounts.display_name (USER_NOTE). Declaring it in a
+        # registry of CRITICAL columns would claim one string is two classes
+        # depending on which layer read it. It rides the FLOORED content net,
+        # which its masking has already put it on the safe side of.
         "account_number": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "account_number_masked": DataClass.INSTITUTION_ACCOUNT_NUMBER,
     },

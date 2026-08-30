@@ -159,6 +159,40 @@ class TestSharedInstitutionRegistry:
                 "fall back to the raw <ORG> code"
             )
 
+    def test_every_registry_fid_resolves_to_its_display_name(self) -> None:
+        """The display half of the registry is readable from Python, not just SQL.
+
+        ``core.dim_accounts`` resolves ``institution_name`` as
+        ``COALESCE(seeds.institutions.display_name, <ORG>)``. An import has to
+        name a minted account before that model has run, so it needs the same
+        lookup — from the same CSV, so the two cannot disagree about a bank's
+        name.
+        """
+        from moneybin.extractors.institution_resolution import (  # noqa: PLC0415
+            _fid_to_slug,  # pyright: ignore[reportPrivateUsage]
+            display_name_for_fid,
+        )
+
+        rows = {row["fid"]: row["display_name"] for row in self._registry_rows()}
+        assert rows, "institution registry CSV is empty"
+        for fid in _fid_to_slug():
+            assert display_name_for_fid(fid) == rows[fid]
+        assert display_name_for_fid("0") is None, "an unregistered FID must not resolve"
+        assert display_name_for_fid(None) is None
+
+    def _registry_rows(self) -> list[dict[str, str]]:
+        import csv  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        from importlib import resources  # noqa: PLC0415
+
+        raw = (
+            resources
+            .files("moneybin")
+            .joinpath("sqlmesh/models/seeds/institutions.csv")
+            .read_text()
+        )
+        return list(csv.DictReader(io.StringIO(raw)))
+
     def test_registry_fids_survive_numeric_csv_inference(self) -> None:
         """Every fid must round-trip through pandas' numeric column inference.
 

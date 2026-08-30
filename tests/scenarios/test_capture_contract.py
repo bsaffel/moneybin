@@ -38,7 +38,7 @@ def _import_csv_with_label(svc: ImportService) -> None:
     import_answering_gate(
         svc,
         _CAPTURE / "transactions.csv",
-        account_name="Daily Expense (...1789)",
+        account_name="Everyday Spending (...7777)",
         confirm=True,
         actor_kind="human",
         refresh=False,

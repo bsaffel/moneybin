@@ -34,8 +34,9 @@ For an exact duplicate (`date_distance = 0` → `date_score = 1.0`), auto-merge
 needed description similarity `S ≥ 0.92`. OFX truncates/splits descriptions
 differently from CSV (OFX `description` is truncated; the rest lands in the
 unscored `memo`), so cross-format `S` is well below 0.92 — exact duplicates
-**never auto-merged**. Verified live: importing 5 WF `.csv` files (twins of 5
-already-loaded `.qfx`) produced **558** core rows instead of **279**.
+**never auto-merged**. Verified live: importing 5 `.csv` files from one bank
+(twins of 5 already-loaded `.qfx`) produced **558** core rows instead of
+**279**.
 
 ## Prerequisite: shared `account_id` (M1S)
 
@@ -44,10 +45,10 @@ identity unifies. The blocking self-join requires `a.account_id = b.account_id`
 (`scoring.py`), but today each source mints its own `account_id`, so a real
 account imported as both `.qfx` and `.csv` carries **two** `account_id`s and the
 join produces **zero** candidate pairs — scoring (this fix) is never reached.
-Verified live 2026-06-13: the 5-WF `.qfx`+`.csv` case yielded 10 `account_id`s
-for 5 accounts → 558 rows, all `source_count = 1`. The unit/scenario fixtures
-here pass because they construct both sides with the **same** `account_id`;
-production data does not. [`account-identity-resolution.md`](account-identity-resolution.md)
+Verified live 2026-06-13: the 5-account `.qfx`+`.csv` case yielded 10
+`account_id`s for 5 accounts → 558 rows, all `source_count = 1`. The
+unit/scenario fixtures here pass because they construct both sides with the
+**same** `account_id`; production data does not. [`account-identity-resolution.md`](account-identity-resolution.md)
 (M1S) makes `account_id` canonical across sources, at which point this auto-merge
 fires as designed (279 @ `source_count = 2`).
 
@@ -74,9 +75,9 @@ cross-source-only; the **agreement requirement** applies everywhere.
 Containment is the literal mechanism: sources carry a shared merchant string,
 truncate it at different lengths, and wrap it in their own preamble and trailing
 detail, so the common text is not always at the front. A prefix-only rule was
-implemented first and rejected — it missed real Wells Fargo pairs where the CSV
-prepends a transaction-type preamble (`RECURRING PAYMENT AUTHORIZED ON 01/25
-TASKAPP …` against an OFX `TASKAPP`). The relation is structural, so it needs no
+implemented first and rejected — it missed real pairs from one bank's export
+where the CSV prepends a transaction-type preamble (`RECURRING PAYMENT
+AUTHORIZED ON 01/25 TASKAPP …` against an OFX `TASKAPP`). The relation is structural, so it needs no
 similarity cutoff to tune.
 
 Every cross-source pair that survives 1:1 assignment and does *not* agree goes
@@ -410,8 +411,8 @@ descriptions sharing nothing) must not.
   asserted to clear `high_confidence_threshold`, so the day the formula alone
   becomes safe, the test that says otherwise fails loudly rather than rotting.
 - **Scenario** (`tests/scenarios/`):
-  - `dedup-cross-format-truncation` (positive) — 4 real deidentified WF
-    OFX↔CSV pairs with low description similarity collapse to 4 gold records,
+  - `dedup-cross-format-truncation` (positive) — 4 deidentified OFX↔CSV
+    pairs with low description similarity collapse to 4 gold records,
     each `source_count = 2`.
   - `dedup-overmerge-guard` (negative/precision) — two distinct $5 txns, each in
     both formats (4 rows), stay two records (`source_count = 2` each), never one

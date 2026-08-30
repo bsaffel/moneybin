@@ -5,6 +5,7 @@
 CREATE TABLE IF NOT EXISTS raw.tabular_accounts (
     account_id VARCHAR NOT NULL,                -- Source-native account key, NEVER a canonical MoneyBin account id; app.account_links maps it to the canonical id
     account_name VARCHAR NOT NULL,              -- Human-readable account label provided by user or extracted from multi-account file
+    account_label VARCHAR,                      -- Display-safe form of account_name for core.dim_accounts.display_name: trailing last-four token dropped, embedded account numbers masked. NULL when no human authored a name and the importer synthesized one from the filename
     account_number VARCHAR,                     -- Full account number if available in source; stored encrypted at rest, masked at application layer for all output
     account_number_masked VARCHAR,              -- Last 4 digits for display (e.g. "...4521"); derived from account_number or extracted directly if source only provides masked
     account_type VARCHAR,                       -- Account type if known (e.g. checking, savings, credit, brokerage, investment)

@@ -42,7 +42,7 @@ class TestAccountLinksRedaction:
         exact form (JSON masking is coarse; structured presentation is M1S.5).
         """
         classes = CLASSIFICATION[("app", "account_link_decisions")]
-        raw = '{"signal": "institution_last4", "value": "4267"}'
+        raw = '{"signal": "institution_last4", "value": "1212"}'
         out = redact_records(
             [{"match_signals": raw}], {"match_signals": classes["match_signals"]}
         )

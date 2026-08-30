@@ -28,6 +28,7 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
     AccountCandidate,
     AccountProposal,
     ResolvedAccount,
@@ -47,6 +48,30 @@ from moneybin.tables import (
 from moneybin.utils import slugify
 
 logger = logging.getLogger(__name__)
+
+#: Any Unicode letter, the test that keeps the label rung for names rather than
+#: for masked account numbers. Named rather than inlined because the query below
+#: is an f-string, where the literal would have to be spelled ``\\p{{L}}`` —
+#: two escapes deep, in a pattern that must stay identical to the one in
+#: dim_accounts.sql and to ``account_display_name._has_letter``.
+_SQL_HAS_LETTER = r"\p{L}"
+
+#: A four-digit run in any script, the test that stops a label already stating
+#: an identifier from taking a second one. ``\p{Nd}`` rather than ``[0-9]``
+#: because the importer's masker keeps whatever digits it matched: a non-Latin
+#: account number reaches this column masked to four non-ASCII digits, which
+#: ``[0-9]{4}`` read as none at all, and the raw last four was appended on top
+#: of the mask. Named for the same reason ``_SQL_HAS_LETTER`` is -- the
+#: f-string below would spell it two escapes deep -- and it must stay identical
+#: to dim_accounts.sql, which cannot spell it ``\d{4}`` either: DuckDB's RE2
+#: reads that as ASCII, so only the mirror in ``account_display_name`` may.
+_SQL_HAS_FOUR_DIGIT_RUN = r"\p{Nd}{4}"
+
+#: The unnamed sentinel as a SQL literal, interpolated for the same reason
+#: ``_SQL_HAS_LETTER`` is: the label arms below must refuse exactly what
+#: dim_accounts.sql and ``account_display_name.usable_source_label`` refuse,
+#: and binding it to the constant is what keeps a rename from splitting them.
+_SQL_UNNAMED_LABEL = f"'{UNNAMED_ACCOUNT_LABEL}'"
 
 
 def refresh_account_link_pending_gauge(db: Database) -> None:
@@ -171,13 +196,16 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
     free-text label, classed ``ACCOUNT_IDENTIFIER`` because it can be a bare
     account number, and nothing downstream can tell a name from a number -- so
     returning it put a potentially unmasked account number into surfaces that
-    declare far less. What it answers with instead is *constructed*, the same
-    shape ``core.dim_accounts`` builds: institution name, then the last four
-    digits of ``account_number`` (or ``account_number_masked``) behind a
-    ``****``. Either half may be missing; an account with neither stays absent
-    rather than being named by its file. So an account whose only name lived in
-    that free-text label now reads as "Example Bank ****4521" -- worse prose
-    than the label it replaced, and a great deal safer.
+    declare far less. It answers with ``account_label`` instead: the same text
+    after the importer stripped the trailing last four and masked any embedded
+    number, which is the rung ``core.dim_accounts`` names by, so this answer and
+    the one on the far side of a refresh agree. Failing that it *constructs*
+    one, the same shape the model builds below its top rung: institution name,
+    then the last four digits of ``account_number`` (or
+    ``account_number_masked``) behind a ``****``. Either half may be missing; an
+    account with neither stays absent rather than being named by its file, so an
+    account whose only name lived in an unmasked label still reads as
+    "Example Bank ****4521".
 
     Both queries guard ``CatalogException`` so callers work before the core
     layer is materialized (a profile has decisions before its first SQLMesh
@@ -204,38 +232,99 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
         # recency alone would let such a row hide an older one that does name
         # the account, which is the bare-id rendering this resolver exists to
         # prevent.
+        #
+        # `resolved_label`, not `account_label`: DuckDB binds a window ORDER BY
+        # to a base COLUMN in preference to a same-named SELECT-list alias, so
+        # once raw.tabular_accounts gained a real account_label the first sort
+        # key silently became that column instead of the expression below --
+        # ranking every row equal and letting the nameless newest one win.
+        # Verified against DuckDB, and pinned by
+        # test_an_unnameable_raw_row_does_not_hide_an_older_nameable_one.
         raw_rows = db.execute(
             f"""
-            SELECT account_id, account_label FROM (
+            SELECT account_id, resolved_label FROM (
                 SELECT
                     link.account_id AS account_id,
-                    -- Same derivation core.dim_accounts uses for last_four_raw:
-                    -- strip to digits, and only speak if four survive. That is
-                    -- what keeps an alphanumeric PDF identifier ("ACCT-9Z", one
-                    -- digit) from ever reaching a caller -- the column is named
-                    -- "masked" but the PDF path stores a whole identifier in it.
-                    NULLIF(TRIM(
-                      COALESCE(raw.institution_name, '') ||
+                    COALESCE(
+                      -- The name a person wrote, already display-safe: the
+                      -- importer masks and strips it before writing. Top rung
+                      -- in core.dim_accounts too, letter test and last-four
+                      -- append included, so the pre-refresh answer and the
+                      -- post-refresh one agree.
+                      -- Two arms, exactly as dim_accounts has them: a label
+                      -- with no four-digit run of its own carries the last
+                      -- four, because a chosen name is not a unique one and
+                      -- two accounts sharing a product name would otherwise
+                      -- collide back onto one string. A label that already
+                      -- holds four digits takes nothing more -- joining
+                      -- "Checking ****5678" with "…9012" would publish eight
+                      -- digits of a twelve-digit number.
+                      -- Neither arm takes the unnamed sentinel. It holds
+                      -- letters, so the letter test alone reads it as a name,
+                      -- but it is this ladder's own terminal arm: a label equal
+                      -- to it says the source could not name the account
+                      -- either. A re-imported MoneyBin export carries it
+                      -- literally, and accepting it would answer
+                      -- "Unnamed account …1234" here while the refreshed
+                      -- dimension falls through to its institution rung.
+                      -- Falling through costs nothing even when nothing else
+                      -- names the account: the row drops out, and every caller
+                      -- substitutes the same sentinel for an absent id.
                       CASE
-                        WHEN LENGTH(
+                        WHEN REGEXP_MATCHES(raw.account_label, '{_SQL_HAS_LETTER}')
+                        AND NOT REGEXP_MATCHES(raw.account_label, '{_SQL_HAS_FOUR_DIGIT_RUN}')
+                        AND raw.account_label <> {_SQL_UNNAMED_LABEL}
+                        AND LENGTH(
                           REGEXP_REPLACE(
                             COALESCE(raw.account_number, raw.account_number_masked),
                             '[^0-9]', '', 'g'
                           )
                         ) >= 4
-                        THEN ' ****' || RIGHT(
+                        THEN raw.account_label || ' …' || RIGHT(
                           REGEXP_REPLACE(
                             COALESCE(raw.account_number, raw.account_number_masked),
                             '[^0-9]', '', 'g'
                           ),
                           4
                         )
-                        ELSE ''
-                      END
-                    ), '') AS account_label,
+                      END,
+                      -- The label with no last four to add, and the label that
+                      -- already states one. dim_accounts' bare arm covers the
+                      -- same two cases by falling through its own NULL.
+                      CASE
+                        WHEN REGEXP_MATCHES(raw.account_label, '{_SQL_HAS_LETTER}')
+                        AND raw.account_label <> {_SQL_UNNAMED_LABEL}
+                        THEN raw.account_label
+                      END,
+                      -- Same derivation core.dim_accounts uses for
+                      -- last_four_raw: strip to digits, and only speak if four
+                      -- survive. That is what keeps an alphanumeric PDF
+                      -- identifier ("ACCT-9Z", one digit) from ever reaching a
+                      -- caller -- the column is named "masked" but the PDF path
+                      -- stores a whole identifier in it.
+                      NULLIF(TRIM(
+                        COALESCE(raw.institution_name, '') ||
+                        CASE
+                          WHEN LENGTH(
+                            REGEXP_REPLACE(
+                              COALESCE(raw.account_number, raw.account_number_masked),
+                              '[^0-9]', '', 'g'
+                            )
+                          ) >= 4
+                          THEN ' ****' || RIGHT(
+                            REGEXP_REPLACE(
+                              COALESCE(raw.account_number, raw.account_number_masked),
+                              '[^0-9]', '', 'g'
+                            ),
+                            4
+                          )
+                          ELSE ''
+                        END
+                      ), '')
+                    ) AS resolved_label,
                     ROW_NUMBER() OVER (
                         PARTITION BY link.account_id
-                        ORDER BY account_label IS NOT NULL DESC,
+                        ORDER BY resolved_label IS NOT NULL DESC,
                                  raw.extracted_at DESC
                     ) AS rn
                 FROM {TABULAR_ACCOUNTS.full_name} AS raw
@@ -1199,8 +1288,8 @@ class AccountResolver:
         Institution is **evidence here, never a precondition.** Keying the rung
         on a shared institution made the whole rung unreachable for an account
         that has none, and one of the two channels routinely mints exactly that:
-        a tabular export names its account only in a label ("Daily Expense
-        (...1789)"), which yields a last four and no institution. The account it
+        a tabular export names its account only in a label ("Everyday Spending
+        (...7777)"), which yields a last four and no institution. The account it
         minted was invisible to every last-four comparison, so the cross-source
         twin the review queue exists to surface never appeared and both copies
         of the same ledger counted toward spending and net worth.
@@ -1265,10 +1354,10 @@ class AccountResolver:
         A reissue is sequential by definition — the old number stops, the
         replacement starts — and the signal never checked that. It fired on a
         shared institution plus a last four that differed, which in an
-        established book is every pair of cards at one bank: a user with three
-        Wells Fargo accounts got a proposal for each pair, and the two Chase
-        cards they had deliberately kept apart were proposed against each other
-        while both were still open. Each proposal's own evidence contradicted it
+        established book is every pair of cards at one bank: three accounts at
+        one institution draw a proposal for each pair, and two cards at another
+        that were deliberately kept apart are proposed against each other while
+        both are still open. Each proposal's own evidence contradicted it
         — zero matched transactions over a period both ledgers covered — and a
         queue that fills with self-refuting proposals teaches the user to
         dismiss the queue, which is the whole trust budget "magic stays visible"

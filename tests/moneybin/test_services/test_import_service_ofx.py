@@ -23,7 +23,7 @@ def test_ofx_and_pdf_share_normalized_full_number_scope() -> None:
         routing_number="021000021",
         account_type="CHECKING",
         type=None,
-        institution=SimpleNamespace(fid=""),
+        institution=SimpleNamespace(fid="", organization=""),
     )
     [ofx] = _ofx_source_accounts(SimpleNamespace(accounts=[account]), "bank")
     pdf = derive_pdf_account_identity(
@@ -121,7 +121,7 @@ class TestImportOFXBatchLifecycle:
             INSERT INTO raw.ofx_transactions
                 (source_transaction_id, account_id, transaction_type,
                  date_posted, amount, payee, source_file, source_type)
-            VALUES ('SHAREDFITID999', '4387', 'DEBIT', TIMESTAMP '2025-11-19',
+            VALUES ('SHAREDFITID999', '4242', 'DEBIT', TIMESTAMP '2025-11-19',
                     -0.39, 'FOREIGN TRANSACTION FEE', ?, 'ofx')
             """,
             [str(fixture.resolve())],
@@ -354,7 +354,7 @@ class TestExtractionParsesTheHashedBytes:
         # Bound up front rather than via import_answering_gate: the helper
         # re-imports to answer, and the second read would see the replacement —
         # which is the very swap this test exists to keep out of the rows.
-        # "1111" is sample_minimal.ofx's <ACCTID>; the replacement's is 4387.
+        # "1111" is sample_minimal.ofx's <ACCTID>; the replacement's is 4242.
         ImportService(db).import_file(
             target, refresh=False, account_bindings={"1111": "new"}
         )
