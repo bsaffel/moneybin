@@ -149,9 +149,10 @@ make check test
 
 Ruff format, Ruff lint, Pyright, and the unit tests. Add `make test-integration`
 and `make test-scenarios` when the diff touches shared primitives, data shapes,
-or migrations. A `.sql` diff runs `make format-sql` and the unit tests, which
-parse the SQLMesh models off disk. Any other diff runs its layer's gate instead
-— docs and agent instructions take
+matching or categorization heuristics, or migrations, and `make test-e2e` when
+CLI startup or packaging can change. A `.sql` diff runs `make format-sql` and
+the unit tests, which parse the SQLMesh models off disk. Any other diff runs its
+layer's gate instead — docs and agent instructions take
 `uv run pytest tests/test_documentation_policy.py`. The full rule is under
 "Pre-commit gate" in [`AGENTS.md`](AGENTS.md). CI runs every category regardless.
 
