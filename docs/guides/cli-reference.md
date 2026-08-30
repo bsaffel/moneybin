@@ -5,6 +5,8 @@ MoneyBin's CLI covers everything its MCP server does. Read commands return text 
 
 This page covers the full user-facing surface. Per-command flag detail lives in `moneybin <cmd> --help`. `--help` is always side-effect free — it does not touch profiles, open the database, or hit the network.
 
+**🚧 marks a command that is not fully built.** Twelve of them are also hidden from `--help`, so the CLI never advertises what it cannot do: `budget set`/`delete`, `sync key rotate`, `sync schedule set`/`show`/`remove`, `transactions categorize ml train`/`status`/`apply`, and `db key export`/`import`/`verify`. Each stays invocable, so a script that already calls one keeps working; the first nine exit `0` and the three `db key` names exit `1`.
+
 ## Standard flags
 
 These flags appear on commands across every group. They are not repeated in the per-group tables below.
@@ -210,10 +212,10 @@ Pull transactions from external services through the moneybin-sync proxy. **`syn
 | `sync disconnect <item-id>` | Disconnect a linked institution. | `-y, --yes` |
 | `sync pull [<item-id>]` | Pull new transactions (and, for brokerage/retirement accounts, securities, investment transactions, and holdings) and run the refresh pipeline. Use without an item-id to pull every connected institution. | `--refresh/--no-refresh`, `--since`, `--full` |
 | `sync status` | Show last-sync timestamps and pending-cursor state per linked institution. | — |
-| `sync key rotate` | Rotate the sync server's encryption key. | — |
-| `sync schedule set <cron>` | Configure a scheduled sync job. | — |
-| `sync schedule show` | Show the active sync schedule. | — |
-| `sync schedule remove` | Disable scheduled sync. | — |
+| `sync key rotate` 🚧 | Rotate the sync server's encryption key (stub). | — |
+| `sync schedule set <cron>` 🚧 | Configure a scheduled sync job (stub). | — |
+| `sync schedule show` 🚧 | Show the active sync schedule (stub). | — |
+| `sync schedule remove` 🚧 | Disable scheduled sync (stub). | — |
 
 **Related guides:** [`data-import.md`](data-import.md), [`data-pipeline.md`](data-pipeline.md).
 
@@ -318,7 +320,7 @@ Categorization workflow. Engines: deterministic rules + merchant mappings (local
 | `transactions categorize auto accept <proposal-id>` | Accept one auto-rule proposal. | `--all` |
 | `transactions categorize auto rules` | List rules created from auto-proposals. | — |
 | `transactions categorize auto stats` | Auto-rule activity summary. | — |
-| `transactions categorize ml status` / `train` / `apply` | ML-assisted categorization (stub). | — |
+| `transactions categorize ml status` / `train` / `apply` 🚧 | ML-assisted categorization (stub). | — |
 
 **Related guides:** [`categorization.md`](categorization.md).
 
@@ -532,9 +534,9 @@ Lifecycle, exploration, and key management on the encrypted database.
 | `db kill` | Kill processes holding the database. | `-y, --yes` |
 | `db key show` | Print the encryption key to stderr (use with care). | — |
 | `db key rotate` | Re-encrypt with a new key. | `-y, --yes` |
-| `db key export <path>` | Export the key to a file (encrypted). | — |
-| `db key import <path>` | Import a key from a file. | — |
-| `db key verify` | Verify the cached key matches the database. | — |
+| `db key export <path>` 🚧 | Export the key to a file (encrypted) (stub). | — |
+| `db key import <path>` 🚧 | Import a key from a file (stub). | — |
+| `db key verify` 🚧 | Verify the cached key matches the database (stub). | — |
 | `db migrate apply` | Apply pending schema migrations. | `--dry-run` |
 | `db migrate status` | Show applied migrations and pending ones. | — |
 

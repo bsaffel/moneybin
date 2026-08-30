@@ -71,7 +71,7 @@ def registered_model_names() -> frozenset[str]:
         # registered set — which would silently shrink the very check whose
         # job is noticing absent models. Say so rather than under-reporting.
         logger.warning(
-            f"{len(unparsed)} SQLMesh model file(s) have an unreadable name "
+            f"{len(unparsed)} transform model file(s) have an unreadable name "
             f"header and are excluded from the registered set: "
             f"{', '.join(sorted(unparsed))}"
         )

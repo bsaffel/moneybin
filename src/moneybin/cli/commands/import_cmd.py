@@ -209,7 +209,7 @@ def import_files_command(
         True,
         "--refresh/--no-refresh",
         help=(
-            "Run the post-load refresh pipeline (matching + SQLMesh apply + "
+            "Run the post-load refresh pipeline (matching + transforms + "
             "categorization) once after the batch completes. Pass --no-refresh "
             "to defer; system_status will show transforms_pending and a later "
             "'transform apply' or refresh will catch up."

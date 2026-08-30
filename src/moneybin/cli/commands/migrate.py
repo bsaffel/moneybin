@@ -74,13 +74,13 @@ def migrate_apply(
             drift, needs_migration = sqlmesh_state_assessment(db)
             if needs_migration:
                 logger.info(
-                    "⚙️  Migrating SQLMesh state to the installed package version..."
+                    "⚙️  Migrating transform state to the installed package version..."
                 )
                 if db.repair_sqlmesh_state():
-                    logger.info("✅ SQLMesh state migrated")
+                    logger.info("✅ Transform state migrated")
                 else:
                     logger.error(
-                        "❌ SQLMesh state migration did not advance the state — see logs"
+                        "❌ Transform state migration did not advance the state — see logs"
                     )
                     raise typer.Exit(1) from None
             elif drift is not None:

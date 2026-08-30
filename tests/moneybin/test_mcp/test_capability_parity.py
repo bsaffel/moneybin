@@ -55,6 +55,20 @@ UNIMPLEMENTED_CLI_INVOCATIONS = {
     "transactions categorize ml train": (),
 }
 UNIMPLEMENTED_CLI_PATHS = set(UNIMPLEMENTED_CLI_INVOCATIONS)
+# Whole-command stubs that exit 1 rather than 0. Kept out of the map above
+# because that one drives the exit-0 / shared-message assertions; these
+# predate that policy and MB-37 preserves their exit code.
+#
+# These two maps are the single enumeration of the CLI's whole-command stubs.
+# `test_message_hygiene.py` imports them rather than restating them: a stub
+# added here but not there would otherwise keep its parity mapping while
+# escaping every exit-code, message-shape, and repo-path assertion.
+UNIMPLEMENTED_EXIT_ONE_CLI_INVOCATIONS = {
+    "db key export": (),
+    "db key import": ("envelope.bin",),
+    "db key verify": (),
+}
+UNIMPLEMENTED_EXIT_ONE_CLI_PATHS = set(UNIMPLEMENTED_EXIT_ONE_CLI_INVOCATIONS)
 HIDDEN_COMPATIBILITY_ALIASES = {
     "sync connect": "sync link",
     "sync connect-status": "sync link-status",
@@ -209,16 +223,26 @@ def test_unimplemented_cli_exclusions_execute_as_explicit_stubs(
 
     assert result.exit_code == 0, result.output
     assert "This command is not yet implemented." in result.stderr
-    assert "docs/specs/" in result.stderr
+    assert "moneybin --help" in result.stderr
 
 
-def test_hidden_cli_paths_are_explicit_mapped_compatibility_aliases() -> None:
+def test_hidden_cli_paths_are_aliases_or_unimplemented_stubs() -> None:
+    """Only two things are hidden: compatibility aliases and whole-command stubs.
+
+    Stubs are hidden per cli-output-coherence req 31 so ``--help`` stops
+    advertising what the CLI cannot deliver. They stay registered and
+    invocable, so the namespace remains reserved.
+    """
     commands = registered_cli_commands()
     hidden = {path for path, command in commands.items() if command.hidden}
     mapped = {path for row in load_outcome_map() for path in row.cli_commands}
 
-    assert hidden == set(HIDDEN_COMPATIBILITY_ALIASES)
-    assert hidden <= mapped
+    assert hidden == (
+        set(HIDDEN_COMPATIBILITY_ALIASES)
+        | UNIMPLEMENTED_CLI_PATHS
+        | UNIMPLEMENTED_EXIT_ONE_CLI_PATHS
+    )
+    assert set(HIDDEN_COMPATIBILITY_ALIASES) <= mapped
     for alias, canonical in HIDDEN_COMPATIBILITY_ALIASES.items():
         assert commands[alias].hidden
         assert canonical in commands

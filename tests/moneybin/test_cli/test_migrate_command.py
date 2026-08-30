@@ -237,8 +237,8 @@ class TestMigrateApply:
         mock_runner.apply_all.return_value = MigrationResult(applied_count=0)
         mock_runner.check_drift.return_value = []
         sqlmesh_state.assessment.return_value = (  # type: ignore[attr-defined]
-            "SQLMesh state schema (v105) is ahead of the installed sqlmesh "
-            "package (v101). Upgrade the sqlmesh package to match.",
+            "Transform state schema (v105) is ahead of the schema "
+            "this install supports (v101). Upgrade MoneyBin to match.",
             False,
         )
         mock_db = mock_get_db.return_value.__enter__.return_value
@@ -378,8 +378,8 @@ class TestMigrateStatus:
         mock_runner.check_drift.return_value = []
         mock_get_versions.return_value = {}
         sqlmesh_state.drift.return_value = (  # type: ignore[attr-defined]
-            "SQLMesh state schema (v100) is behind the installed sqlmesh "
-            "package (v101). Run `moneybin db migrate apply` to migrate the state."
+            "Transform state schema (v100) is behind the schema "
+            "this install supports (v101). Run `moneybin db migrate apply` to migrate the state."
         )
 
         with caplog.at_level(logging.WARNING, logger="moneybin.cli.commands.migrate"):

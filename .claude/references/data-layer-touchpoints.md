@@ -36,9 +36,11 @@ until tests run:
 - `tests/scenarios/_tier1_backfill.py` → `FCT_TRANSACTIONS_SCHEMA`, asserted by
   the scenario `schema_snapshot`.
 
-**Gates:** `make check test` catches the binder errors and the `db_helpers` /
-matching stubs; `make test-scenarios` catches the `FCT_TRANSACTIONS_SCHEMA`
-snapshot. Run **both** — scenarios are not in `make check test`.
+**Gates:** `make check` plus `make test`, `make test-integration`, and
+`make test-scenarios` — a data-layer diff touches shared primitives, so it takes
+the covering run. That catches the binder errors, the `db_helpers` / matching
+stubs, and the `FCT_TRANSACTIONS_SCHEMA` snapshot (`make test` is unit-only, so
+scenarios need their own invocation).
 `tests/moneybin/test_sync_e2e.py` is the right place to assert a new field
 actually reaches core. (Learned shipping Plaid `original_description`, #283.)
 
