@@ -14,8 +14,10 @@ after new raw rows updates the materialized dimension.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
+from sqlmesh import Context
 
 from moneybin.database import Database, sqlmesh_context
 from moneybin.services.transform_service import TransformService
@@ -82,6 +84,37 @@ def _insert_plaid_account(
         """,  # noqa: S608  # test fixture, not executing user SQL
         [f"link-{native_key}", canonical_id, native_key, source_origin],
     )
+
+
+@pytest.mark.slow
+def test_apply_does_not_restate_after_a_fresh_plan(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh plan materializes FULL models without a follow-up restate."""
+    plan_calls: list[dict[str, object]] = []
+    original_plan = Context.plan
+
+    def record_plan(self: Context, *args: Any, **kwargs: Any) -> Any:
+        plan_calls.append(kwargs)
+        return original_plan(self, *args, **kwargs)
+
+    monkeypatch.setattr(Context, "plan", record_plan)
+    _insert_plaid_account(
+        db,
+        native_key="a-native-checking",
+        canonical_id="canonA00000001",
+        institution_name="Bank A",
+        account_type="depository",
+        mask="0000",
+        source_origin="item_a",
+        extracted_at="2026-06-01 12:00:00",
+    )
+
+    result = TransformService(db).apply()
+
+    assert result.applied, f"fresh apply failed: {result.error}"
+    assert plan_calls == [{"auto_apply": True, "no_prompts": True}]
+    assert db.execute("SELECT COUNT(*) FROM core.dim_accounts").fetchone() == (1,)
 
 
 @pytest.mark.slow
