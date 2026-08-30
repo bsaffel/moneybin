@@ -72,13 +72,34 @@ def test_a_boolean_in_a_money_column_renders_absent_not_as_one() -> None:
     assert format_money(False, "balance") == "-"
 
 
-def test_an_unparseable_money_cell_renders_absent_rather_than_raising() -> None:
+def test_an_unparseable_money_cell_prints_itself_rather_than_raising() -> None:
     """The render layer is the wrong place to raise InvalidOperation.
 
     The traceback would name neither the column nor the report that declared
-    it, and it would take down a whole table over one cell.
+    it, and it would take down a whole table over one cell. It prints the text
+    it was given rather than a dash, because a dash is this CLI's spelling of
+    *absent* and text in the cell means something was there.
     """
-    assert format_money("n/a", "flow") == "-"
+    assert format_money("n/a", "flow") == "n/a"
+
+
+def test_a_masked_money_cell_prints_its_mask_rather_than_a_dash() -> None:
+    """Withheld and absent are different facts, so they cannot share a glyph.
+
+    `redact_records` runs before rendering, so a money column carrying a
+    whole-masking class (`ROUTING_NUMBER`, `COMPOSITE_IDENTIFIER`,
+    `UNRESOLVED`) reaches this function already replaced by its sentinel.
+    Formatting it as `-` would make the text CLI contradict both its own
+    masking and the JSON/MCP result for the same query, and would leave a
+    reader unable to tell a withheld amount from a SQL NULL.
+
+    The rule is *text is not an amount*, not a list of the sentinels in use
+    today: matching `"*****"` by value would miss the partial mask below and
+    would pin a privacy constant into the render layer, where it would drift
+    from `privacy/redaction.py`.
+    """
+    assert format_money("*****", "flow") == "*****"
+    assert format_money("****1098", "balance") == "****1098"
 
 
 def test_format_money_renders_a_missing_amount_as_a_dash() -> None:
@@ -322,6 +343,22 @@ def test_render_rows_formats_a_declared_money_column(
     render_rows(["amount"], [(Decimal("-1234.5"),)], money={"amount": Money("flow")})
 
     assert "−1,234.50" in capsys.readouterr().out
+
+
+def test_render_rows_shows_a_masked_amount_as_withheld_not_absent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The table must not contradict the masking the framework already applied.
+
+    A declared money column redacted to its sentinel reaches `render_rows`
+    as a string. Printing `-` there would tell the reader the report returned
+    nothing, while `--output json` for the same query shows the mask.
+    """
+    render_rows(["amount"], [("*****",)], money={"amount": Money("flow")})
+
+    out = capsys.readouterr().out
+    assert "*****" in out
+    assert "-" not in out.replace("─", "")
 
 
 def test_render_rows_right_aligns_amounts(capsys: pytest.CaptureFixture[str]) -> None:

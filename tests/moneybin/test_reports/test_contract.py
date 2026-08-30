@@ -400,6 +400,40 @@ def test_columns_and_classes_must_use_the_same_privacy_class() -> None:
         replace(_build_spec(), columns=mismatched)
 
 
+def test_a_delta_column_must_declare_its_polarity_at_construction() -> None:
+    """Reject the invalid contract where it is written, not where it is read.
+
+    `Money` already refuses a delta with no polarity, but that check runs in
+    the text renderer — `money_columns(spec)` in the generated CLI command,
+    after `catalog.execute(...)` has already run the report and written its
+    audit-log and metrics side effects. A JSON or MCP caller never reaches it
+    at all, so the same broken declaration is loud on one surface and silent
+    on the others. Declaring it here makes an unrenderable report unbuildable
+    for the out-of-repo authors `docs/specs/extension-contracts.md` addresses.
+    """
+    with pytest.raises(ValueError, match="polarity"):
+        OutputColumn(
+            name="value",
+            description="Month-over-month change.",
+            data_class=DataClass.AGGREGATE,
+            money_kind="delta",
+        )
+
+
+def test_a_non_delta_money_column_needs_no_polarity() -> None:
+    """The other three kinds carry their direction in the kind itself."""
+    for kind in ("flow", "magnitude", "balance"):
+        assert (
+            OutputColumn(
+                name="value",
+                description="Aggregate value.",
+                data_class=DataClass.AGGREGATE,
+                money_kind=kind,
+            ).polarity
+            is None
+        )
+
+
 def test_duplicate_output_column_names_are_rejected() -> None:
     with pytest.raises(ValueError, match="columns and classes"):
         replace(_build_spec(), columns=(_COLUMNS[0], _COLUMNS[0]))

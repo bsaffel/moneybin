@@ -146,6 +146,14 @@ def format_money(value: object, kind: MoneyKind) -> str:
     """
     amount = _as_decimal(value)
     if amount is None:
+        # Text in a money cell is a value, not a missing one. `redact_records`
+        # masks a whole-masked money column to a sentinel before the renderer
+        # sees it, and spelling that withheld amount `-` would both contradict
+        # the JSON/MCP result for the same query and read as a SQL NULL.
+        # Matched by shape rather than against the sentinels in use, so a new
+        # mask in `privacy/redaction.py` cannot quietly start reading as absent.
+        if isinstance(value, str) and value:
+            return value
         return "-"
     digits = f"{abs(amount):,.2f}"
     if amount < 0:

@@ -185,6 +185,22 @@ class OutputColumn:
     polarity: Polarity | None = None
     """Required when ``money_kind`` is ``"delta"``; meaningless otherwise."""
 
+    def __post_init__(self) -> None:
+        """Reject an unrenderable delta where it is declared, not where it is read.
+
+        ``Money`` refuses the same pair, but that check runs in the text
+        renderer — ``money_columns(spec)``, which the generated CLI command
+        reaches only *after* ``catalog.execute(...)`` has run the report and
+        written its side effects — and a JSON or MCP caller never reaches it at
+        all. Enforcing it at construction makes the broken contract unbuildable
+        on every surface at once, which is what an out-of-repo author reading
+        ``docs/specs/extension-contracts.md`` needs it to do.
+        """
+        if self.money_kind == "delta" and self.polarity is None:
+            raise ValueError(
+                f"money column {self.name!r} is a delta and must declare its polarity"
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class ReportSemantics:

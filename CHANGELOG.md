@@ -1249,6 +1249,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **A withheld amount no longer prints as an absent one.** A money column
+  carrying a whole-masking privacy class (`ROUTING_NUMBER`,
+  `COMPOSITE_IDENTIFIER`, `UNRESOLVED`) reaches the renderer already replaced
+  by its `*****` sentinel. `format_money` read that as unparseable and printed
+  `-`, so the text table contradicted both its own masking and the
+  `--output json` result for the same query, and a reader could not tell a
+  withheld amount from a SQL NULL. Text in a money cell now prints itself —
+  matched by shape rather than against the sentinels in use today, so a new
+  mask cannot quietly start reading as absent. Non-numeric text in a money
+  column that was never a mask now shows through for the same reason, instead
+  of being reported as no data (#470).
+
+- **A `delta` money column with no `polarity` is rejected where it is
+  declared.** `OutputColumn` accepted the pair and only the text renderer
+  refused it — inside `money_columns`, which the generated CLI command reaches
+  after the report has already run and written its audit-log and metrics side
+  effects, and which a JSON or MCP caller never reaches at all. The same broken
+  declaration was therefore loud on one surface and silent on the others. It
+  now raises at construction, so an unrenderable report is unbuildable
+  everywhere at once. No in-repo report was affected; this closes the gap for
+  the out-of-repo authors `docs/specs/extension-contracts.md` addresses (#470).
+
 - **`-q/--quiet` now works on the report commands.** `reports networth`,
   `networth-history`, `reports run`, and every generated built-in report
   command accepted the flag and then dropped it, so their next-step hints

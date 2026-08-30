@@ -220,6 +220,16 @@ Numbered, each independently testable.
     column — and so does alignment: the ratio columns sit left while the money
     columns sit right (requirement 13), so their digits never line up.
 
+    `reports networth-history` splits the same way for the same reason, but
+    only on the glyph and alignment halves: its `change_pct` is already
+    formatted to two places (`f"{...:.2%}"`), so it costs a hyphen-minus beside
+    `change_abs`'s U+2212 and a left-aligned column beside a right-aligned one,
+    without the runaway precision above. Fixing that one column's glyph alone
+    would be worse than leaving it: `mom_pct` would still print hyphen-minus,
+    and the reader would face two ratio columns disagreeing about the same
+    character with no rule saying which is right. Both wait on the percent
+    contract.
+
     The same gap costs alignment in five more tables. `render_rows`
     right-aligns a column only when it is declared money, so every non-money
     numeric that a hand-built table used to right-align now sits left:
