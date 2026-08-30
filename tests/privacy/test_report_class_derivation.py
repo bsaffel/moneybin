@@ -383,7 +383,7 @@ def _declaration_is_safe(declared: DataClass, derived: DataClass) -> bool:
 
     Ordered on ``(tier, mask_strength)`` lexicographically. Tier alone is NOT
     sufficient, and the gap it leaves is the whole reason this helper exists:
-    all four CRITICAL classes share ``Tier.CRITICAL`` but do not share a
+    all five CRITICAL classes share ``Tier.CRITICAL`` but do not share a
     transform, so a tier-only comparison rates ACCOUNT_IDENTIFIER (masks
     PARTIAL, ``"****" + value[-4:]``) an adequate stand-in for ROUTING_NUMBER
     (masks WHOLE). Runtime masking keys off the DECLARED class, so that
@@ -458,7 +458,7 @@ def test_declared_classes_match_derivation() -> None:
     ``_declaration_is_safe`` — **tier, then mask strength**, not class
     identity. Over-declaring is safe below CRITICAL except over ``FLOORED``
     (every other transform there is passthrough) and not automatically safe
-    at CRITICAL, where the four classes share a tier and differ in transform;
+    at CRITICAL, where the five classes share a tier and differ in transform;
     see that helper. Only a declaration
     that masks strictly more weakly than derivation requires an explicit,
     reasoned ``class_downgrades`` entry.

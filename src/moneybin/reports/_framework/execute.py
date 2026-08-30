@@ -463,7 +463,7 @@ def masked_columns(output_classes: Mapping[str, DataClass]) -> tuple[str, ...]:
     """The columns whose class masks their value, in declaration order.
 
     Measured from the class's own transform rather than from a tier comparison:
-    all four CRITICAL classes share a tier but two of them mask only partially,
+    all five CRITICAL classes share a tier but two of them mask only partially,
     and below CRITICAL every transform is passthrough except FLOORED. The
     transform is what the reader actually sees.
     """

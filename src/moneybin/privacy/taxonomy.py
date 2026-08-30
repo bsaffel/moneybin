@@ -63,6 +63,20 @@ class DataClass(StrEnum):
     AGGREGATE = "aggregate"
     RECORD_ID = "record_id"
     TIMESTAMP_OBSERVABILITY = "timestamp_observability"
+    # A serialized/composite value (JSON, a packed multi-field string) that may
+    # embed identifier-class material at a position the declaration cannot
+    # pin down. CRITICAL and masked WHOLE, for the same reason UNRESOLVED is:
+    # a DuckDB JSON column reaches the redaction transform as `str`, so
+    # ACCOUNT_IDENTIFIER's `"****" + value[-4:]` would surface the tail of the
+    # SERIALIZED TEXT — whichever key happens to sort last — not the tail of
+    # any value inside it. Unlike UNRESOLVED, this IS a positive declaration:
+    # the column's shape and worst-case content are known, just not which
+    # bytes land in the last four. Use this instead of UNRESOLVED for a
+    # `CLASSIFICATION`/`core`+`app` column — UNRESOLVED there is the
+    # fail-closed marker for a column NOBODY classified, and declaring it
+    # explicitly would defeat the completeness tests that exist to catch that
+    # gap. Origin: match_signals (issue #451).
+    COMPOSITE_IDENTIFIER = "composite_identifier"
     # Not a classification — the absence of one. Assigned by the fail-closed
     # paths in ``sql_lineage`` / ``sql_query`` when a column reaches the user
     # WITHOUT lineage having positively established what it holds (an
@@ -106,6 +120,7 @@ _TIER_BY_CLASS: dict[DataClass, Tier] = {
     DataClass.AGGREGATE: Tier.LOW,
     DataClass.RECORD_ID: Tier.LOW,
     DataClass.TIMESTAMP_OBSERVABILITY: Tier.LOW,
+    DataClass.COMPOSITE_IDENTIFIER: Tier.CRITICAL,
     DataClass.UNRESOLVED: Tier.CRITICAL,
     DataClass.FLOORED: Tier.LOW,
 }
@@ -137,9 +152,13 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "match_reason": DataClass.USER_NOTE,
         # Unlike match_decisions.match_signals (scores), this carries weak-signal
         # values that include account digits (institution_last4) — masked, not the
-        # LOW-tier AGGREGATE passthrough. JSON masking is coarse here; the typed
-        # accounts_links surface (M1S.5) presents signals with structured masking.
-        "match_signals": DataClass.ACCOUNT_IDENTIFIER,
+        # LOW-tier AGGREGATE passthrough. COMPOSITE_IDENTIFIER, not
+        # ACCOUNT_IDENTIFIER: a DuckDB JSON column reaches the transform as `str`,
+        # so ACCOUNT_IDENTIFIER's partial mask would surface the tail of the
+        # SERIALIZED JSON TEXT, not of any signal value (issue #451). Whole-masking
+        # costs only the rendered value here; the typed accounts_links surface
+        # (M1S.5) presents signals with structured masking.
+        "match_signals": DataClass.COMPOSITE_IDENTIFIER,
         "provisional_account_id": DataClass.RECORD_ID,
         # Frozen alongside candidate_display_name above; same reasoning.
         "provisional_display_name": DataClass.USER_NOTE,

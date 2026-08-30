@@ -165,8 +165,8 @@ explicit inline reason**. CI fails unless every declared column is either
 derivation-matched **or** carries an explicit downgrade.
 
 The floor is ordered on **`(tier, mask strength)`**, not tier alone. Tier alone
-is insufficient at CRITICAL: all four CRITICAL classes share `Tier.CRITICAL`
-but `ROUTING_NUMBER`/`UNRESOLVED` mask wholly while
+is insufficient at CRITICAL: all five CRITICAL classes share `Tier.CRITICAL`
+but `ROUTING_NUMBER`/`UNRESOLVED`/`COMPOSITE_IDENTIFIER` mask wholly while
 `ACCOUNT_IDENTIFIER`/`INSTITUTION_ACCOUNT_NUMBER` mask partially
 (`"****" + value[-4:]`), and runtime masking keys off the **declared** class —
 so declaring `ACCOUNT_IDENTIFIER` where derivation says `ROUTING_NUMBER` sits

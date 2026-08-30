@@ -120,10 +120,11 @@ complete, and fails the build if the two disagree.
 - **At CRITICAL, over-declaring is not automatically safe — the transform
   matters.** Below CRITICAL every transform is passthrough, so a higher tier is
   strictly more masking and tier alone decides. At CRITICAL it does not: all
-  four classes share `Tier.CRITICAL` but `ROUTING_NUMBER` and `UNRESOLVED` mask
-  **wholly** (`'021000021'` → `'*****'`) while `ACCOUNT_IDENTIFIER` and
-  `INSTITUTION_ACCOUNT_NUMBER` mask **partially** (`'021000021'` →
-  `'****0021'`). Runtime masking keys off the **declared** class, so declaring
+  five classes share `Tier.CRITICAL` but `ROUTING_NUMBER`, `UNRESOLVED`, and
+  `COMPOSITE_IDENTIFIER` mask **wholly** (`'021000021'` → `'*****'`) while
+  `ACCOUNT_IDENTIFIER` and `INSTITUTION_ACCOUNT_NUMBER` mask **partially**
+  (`'021000021'` → `'****0021'`). Runtime masking keys off the **declared**
+  class, so declaring
   `ACCOUNT_IDENTIFIER` for a column that derives to `ROUTING_NUMBER` publishes
   the real routing number's last four digits. **Never replace a whole-masking
   class with a partial-masking one.** The guard measures each class's strength
