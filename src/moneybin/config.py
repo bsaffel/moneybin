@@ -483,7 +483,7 @@ class GSheetSettings(BaseModel):
         description=(
             "OAuth 2.0 client secret for the installed-app Google OAuth flow. "
             "Google's Desktop clients require it in the code->token exchange "
-            "even under PKCE; RFC 8252 s8.5 says a secret shipped to every "
+            "even under PKCE; RFC 8252 §8.5 says a secret shipped to every "
             "user is not confidential. Set with "
             "MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET."
         ),

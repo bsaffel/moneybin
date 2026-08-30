@@ -1204,7 +1204,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `MONEYBIN_GSHEET__OAUTH_CLIENT_ID` at your own project to use its API quota
   instead, or set it empty to disable the connector. This does not yet remove
   the Google Cloud Console step — Google's Desktop clients also require a
-  client secret, which MoneyBin does not ship; see the `Fixed` entry below.
+  client secret, which MoneyBin does not ship; see the #456 entry above.
   (#452)
 - **An account with nothing to identify it now reads `Unnamed account`, not
   `Account <id>`.** `core.dim_accounts.display_name` ended its fallback chain

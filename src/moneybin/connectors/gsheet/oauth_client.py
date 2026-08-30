@@ -156,7 +156,7 @@ class GoogleOAuthClient:
             "installed": {
                 "client_id": client_id,
                 # Google's Desktop clients require the secret in the
-                # code->token exchange even under PKCE. RFC 8252 s8.5: a
+                # code->token exchange even under PKCE. RFC 8252 §8.5: a
                 # secret shipped to every user is not confidential; PKCE and
                 # the loopback redirect carry the security.
                 "client_secret": client_secret,
