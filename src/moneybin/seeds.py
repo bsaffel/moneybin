@@ -77,7 +77,7 @@ def materialize_seeds(db: Database) -> None:
     from moneybin.database import sqlmesh_context
 
     if _SEED_MODELS:
-        logger.info("Materializing SQLMesh seed models")
+        logger.info("Materializing seed models")
         with sqlmesh_context(db) as ctx:
             ctx.plan(auto_apply=True, no_prompts=True, select_models=_SEED_MODELS)
 

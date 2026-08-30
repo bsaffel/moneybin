@@ -501,6 +501,192 @@ def test_write_query_raises(populated_db: Database) -> None:
     assert ei.value.code == error_codes.SQL_INVALID_QUERY
 
 
+# Every keyword the old text-scanning guard blocked, lowercased the way the
+# issue's repro used them — write detection is case-insensitive either way.
+_WRITE_KEYWORDS = [
+    "insert",
+    "update",
+    "delete",
+    "drop",
+    "create",
+    "alter",
+    "truncate",
+    "replace",
+    "merge",
+    "copy",
+    "attach",
+    "detach",
+    "export",
+    "import",
+]
+
+
+@pytest.mark.parametrize("keyword", _WRITE_KEYWORDS)
+def test_write_keyword_inside_string_literal_is_not_rejected(keyword: str) -> None:
+    """A write keyword occurring only inside a quoted literal is not a write.
+
+    Regression test for #447: the write-operation guard used to scan raw
+    query text, so ``SELECT 'export' AS probe`` was refused as though it
+    contained a real ``EXPORT`` statement — one character away,
+    ``SELECT 'expor' AS control`` was always accepted. The bug was scanning
+    quoted content at all, not anything specific to the word "export". The
+    guard now checks the parsed AST's expression types instead of matching
+    text, so a word appearing in a position sqlglot never resolves to a write
+    node (a literal, an identifier, a comment) cannot trip it.
+    """
+    assert validate_read_only_query(f"SELECT '{keyword}' AS probe") is None
+
+
+def test_write_keyword_inside_string_literal_with_escaped_quote() -> None:
+    """An escaped quote (``''``) inside the literal is still just data.
+
+    Pins that the shared parser (also used for schema/lineage resolution)
+    tokenizes ``it''s`` as one literal rather than ending it early at the
+    first apostrophe, which would otherwise un-mask ``update`` between them.
+    """
+    assert validate_read_only_query("SELECT 'it''s time to update' AS note") is None
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        pytest.param("SELECT e'export' AS probe", id="escape-string"),
+        pytest.param("SELECT $$export$$ AS probe", id="dollar-quoted-string"),
+        pytest.param('SELECT "export" FROM t', id="double-quoted-identifier"),
+        pytest.param("SELECT 1 -- export this later", id="trailing-comment"),
+    ],
+)
+def test_write_keyword_outside_a_string_literal_is_not_rejected(sql: str) -> None:
+    """A write keyword in a non-literal quoted/commented position is not a write.
+
+    DuckDB has more ways to carry the text "export" without writing anything:
+    an escape string (``e'...'``), a dollar-quoted string (``$$...$$``), a
+    double-quoted identifier (a column literally named ``export``), and a
+    ``--`` comment. None of these produce a write-type AST node, so the
+    AST-based guard passes all four (verified against the real ``duckdb``
+    engine that each is valid, keyword-free SQL).
+    """
+    assert validate_read_only_query(sql) is None
+
+
+def test_real_write_keyword_still_rejected_alongside_string_literal() -> None:
+    """A quoted literal elsewhere must not blind the guard to a REAL write.
+
+    The query is a legal read-only prefix (``WITH ...``) carrying a write verb
+    in the CTE body, plus an unrelated string literal that also happens to
+    contain a write keyword — proving the AST check only reacts to an actual
+    write-type node, not to the word appearing anywhere in the text.
+    """
+    error = validate_read_only_query(
+        "WITH x AS (UPDATE core.fct_transactions SET amount = 1) "
+        "SELECT 'export' AS probe FROM x"
+    )
+    assert error is not None
+    assert "Write operations" in error
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        pytest.param(
+            "WITH x AS (INSERT INTO y VALUES (1)) SELECT 1 FROM x", id="insert"
+        ),
+        pytest.param("WITH x AS (DELETE FROM y) SELECT 1 FROM x", id="delete"),
+        pytest.param("WITH x AS (CREATE TABLE y (a INT)) SELECT 1 FROM x", id="create"),
+        pytest.param("WITH x AS (DROP TABLE y) SELECT 1 FROM x", id="drop"),
+        pytest.param("WITH x AS (ATTACH 'y.db' AS y) SELECT 1 FROM x", id="attach"),
+        pytest.param("WITH x AS (DETACH y) SELECT 1 FROM x", id="detach"),
+        pytest.param(
+            "WITH x AS (MERGE INTO t USING s ON t.id = s.id "
+            "WHEN MATCHED THEN UPDATE SET x = s.x) SELECT 1 FROM x",
+            id="merge",
+        ),
+    ],
+)
+def test_write_type_nested_in_cte_is_independently_isolated(sql: str) -> None:
+    """Each AST write-node type the guard checks is exercised on its own.
+
+    A bare top-level write statement (e.g. ``DROP TABLE t``) is already
+    refused by the read-only-prefix check before the AST write check ever
+    runs, so a fixture using only bare statements would still pass even with
+    the corresponding entry deleted from ``_WRITE_EXPRESSION_TYPES`` — the
+    "fixture trips two guards, isolates neither" trap this repo's testing.md
+    documents. Nesting each write inside a CTE forces the prefix check to
+    pass, so only the structural write check can be what refuses it.
+
+    UPDATE already has its own CTE-nested test above
+    (``test_real_write_keyword_still_rejected_alongside_string_literal``).
+    TruncateTable, Alter, and Copy are absent here because DuckDB's own
+    grammar (via sqlglot) refuses to parse any of them as a CTE body at all —
+    verified, each raises a ``ParseError`` rather than reaching this check in
+    either a bare or nested position, so no isolating fixture is
+    constructible for them; they stay in the checked tuple purely as
+    defense-in-depth (see the module comment on `_WRITE_EXPRESSION_TYPES`).
+    """
+    error = validate_read_only_query(sql)
+    assert error is not None
+    assert "Write operations" in error
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        pytest.param("EXPORT DATABASE 'dir'", id="export-bare"),
+        pytest.param("IMPORT DATABASE 'dir'", id="import-bare"),
+        pytest.param(
+            "REPLACE INTO core.fct_transactions VALUES (1)", id="replace-bare"
+        ),
+        pytest.param(
+            "WITH x AS (SELECT 1) EXPORT DATABASE 'dir'", id="export-with-prefixed"
+        ),
+        pytest.param(
+            "WITH x AS (SELECT 1) IMPORT DATABASE 'dir'", id="import-with-prefixed"
+        ),
+        pytest.param(
+            "WITH x AS (SELECT 1) REPLACE INTO core.fct_transactions VALUES (1)",
+            id="replace-with-prefixed",
+        ),
+    ],
+)
+def test_keywords_with_no_dedicated_ast_node_are_still_refused(
+    sql: str, populated_db: Database
+) -> None:
+    """EXPORT/IMPORT DATABASE and bare REPLACE INTO are refused end to end.
+
+    These three have no dedicated sqlglot node for the duckdb dialect, so
+    `_WRITE_EXPRESSION_TYPES` deliberately doesn't name them (see the module
+    comment). Pins that the rest of the pipeline still refuses every shape
+    regardless: a bare statement fails the read-only-prefix check, and a
+    WITH-prefixed attempt is a genuine DuckDB syntax error (a CTE body must be
+    a SELECT) that fails to parse — `validate_read_only_query` defers a parse
+    failure to the caller, and `execute_sql_query`'s own parse then raises
+    `sql_invalid_query`.
+    """
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(populated_db, sql, max_rows=10)
+    assert ei.value.code == error_codes.SQL_INVALID_QUERY
+
+
+def test_audit_log_export_action_query_executes(populated_db: Database) -> None:
+    """``... WHERE action LIKE 'export%'`` against ``app.audit_log`` returns rows.
+
+    The motivating case from #447: this exact shape was refused before the
+    fix because ``'export%'`` contains the blocked ``EXPORT`` keyword inside a
+    string literal, masking the real binder/execution behavior entirely.
+    """
+    populated_db.execute(
+        "INSERT INTO app.audit_log (audit_id, actor, action, operation_id) "
+        "VALUES (?, ?, ?, ?)",
+        ["audit_test_1", "system", "export.run", "op_test_1"],
+    )
+    result = execute_sql_query(
+        populated_db,
+        "SELECT action FROM app.audit_log WHERE action LIKE 'export%'",
+        max_rows=10,
+    )
+    assert result.records == [{"action": "export.run"}]
+
+
 def test_multi_statement_query_is_rejected() -> None:
     """Two statements in one string are refused before any classification.
 

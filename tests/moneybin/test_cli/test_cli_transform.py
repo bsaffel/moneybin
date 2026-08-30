@@ -51,7 +51,7 @@ class TestTransformStatus:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Missing SQLMesh env reports the bootstrap hint."""
+        """Missing transform env reports the bootstrap hint."""
 
         def fake_status(_self: Any) -> TransformStatus:
             return TransformStatus(
@@ -72,7 +72,7 @@ class TestTransformStatus:
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0
-        assert "No SQLMesh environment initialized yet" in caplog.text
+        assert "No transform environment initialized yet" in caplog.text
 
     def test_status_renders_last_apply(
         self,

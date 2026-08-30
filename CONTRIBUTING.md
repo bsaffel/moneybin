@@ -141,13 +141,20 @@ The full rule is in [`.claude/rules/testing.md`](.claude/rules/testing.md).
 
 ### 5. Pre-commit gate
 
+Size the gate to what the change can reach. A `.py` diff runs:
+
 ```bash
 make check test
 ```
 
-Runs Ruff format, Ruff lint, Pyright, and unit tests. CI runs the same checks
-plus integration, e2e, and scenarios. SQL changes also need
-`uv run sqlmesh -p src/moneybin/sqlmesh format`.
+Ruff format, Ruff lint, Pyright, and the unit tests. Add `make test-integration`
+and `make test-scenarios` when the diff touches shared primitives, data shapes,
+matching or categorization heuristics, or migrations, and `make test-e2e` when
+CLI startup or packaging can change. A `.sql` diff runs `make format-sql` and
+the unit tests, which parse the SQLMesh models off disk. Any other diff runs its
+layer's gate instead — docs and agent instructions take
+`uv run pytest tests/test_documentation_policy.py`. The full rule is under
+"Pre-commit gate" in [`AGENTS.md`](AGENTS.md). CI runs every category regardless.
 
 ### 6. Commit and PR
 

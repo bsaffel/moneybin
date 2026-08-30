@@ -762,6 +762,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **`--help` no longer lists commands that aren't built yet.** Twelve
+  whole-command placeholders — `budget delete/set`, `sync key rotate`, `sync
+  schedule set/show/remove`, `transactions categorize ml apply/status/train`,
+  and `db key export/import/verify` — are hidden from `--help`, along with the
+  four groups (`budget`, `sync key`, `sync schedule`, `transactions categorize
+  ml`) that contained nothing else. `db key` stays listed because `db key show`
+  and `db key rotate` work. Nothing is removed: every one of them is still
+  invocable and keeps its exit code, so a script calling `sync key rotate`
+  today behaves exactly as before — it just no longer appears in the menu of
+  things MoneyBin claims to do. They now report "not yet implemented" on stderr
+  at every `MONEYBIN_LOGGING__LEVEL`, so the three `db key` placeholders can no
+  longer exit `1` with no output — previously they printed nothing at
+  `WARNING`, and would have printed nothing at `ERROR` or `CRITICAL` (#457).
+- **Messages name transforms, not the library that runs them.** Help text,
+  option descriptions, progress lines, and migration warnings said "SQLMesh" —
+  a dependency you did not choose and cannot act on. They now say "transform".
+  `system doctor` follows: two check names it printed verbatim are now
+  `transform_model_presence` and `transform_audits_unavailable`, so a script
+  matching the old names needs updating. `moneybin logs sqlmesh` is unchanged:
+  that one is a log-file name you type, not vocabulary. `db migrate` also no
+  longer reports the transform engine's internal state-schema number as though
+  it were your MoneyBin version. The profile banner names the single source
+  that actually resolved your profile instead of listing candidates (#457).
 - **Account-merge candidates carry measured ledger overlap instead of a
   constant `confidence`.** An import that offers to merge a file into an
   account you already have returned a `confidence` on every candidate — a
@@ -1164,6 +1187,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **`sql_query` no longer refuses a read-only `SELECT` for a write keyword
+  that isn't actually a write.** `SELECT 'export' AS probe` was rejected as
+  though it were a real `EXPORT` statement — one character away,
+  `SELECT 'expor' AS control` was always accepted, because the write-operation
+  guard scanned raw query text with no regard for where the word appeared. It
+  now checks the parsed SQL's structure instead of its text: a word matters
+  only when it produces an actual write statement (`INSERT`, `UPDATE`,
+  `DROP`, etc.), never when it merely appears inside a string literal (any
+  quoting style), a quoted identifier, or a `--` comment. This unblocks
+  `... WHERE action LIKE 'export%'` against `app.audit_log`, the documented
+  way to find an export's audit trail from the agent-safe SQL surface (#447).
+
 - **A denied keychain read is no longer reported as a missing key.** macOS
   reports a sandbox-denied keychain read identically to a genuinely absent
   item (`errSecItemNotFound`), so three call sites each guessed differently:
