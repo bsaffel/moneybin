@@ -56,6 +56,17 @@ logger = logging.getLogger(__name__)
 #: dim_accounts.sql and to ``account_display_name._has_letter``.
 _SQL_HAS_LETTER = r"\p{L}"
 
+#: A four-digit run in any script, the test that stops a label already stating
+#: an identifier from taking a second one. ``\p{Nd}`` rather than ``[0-9]``
+#: because the importer's masker keeps whatever digits it matched: a non-Latin
+#: account number reaches this column masked to four non-ASCII digits, which
+#: ``[0-9]{4}`` read as none at all, and the raw last four was appended on top
+#: of the mask. Named for the same reason ``_SQL_HAS_LETTER`` is -- the
+#: f-string below would spell it two escapes deep -- and it must stay identical
+#: to dim_accounts.sql, which cannot spell it ``\d{4}`` either: DuckDB's RE2
+#: reads that as ASCII, so only the mirror in ``account_display_name`` may.
+_SQL_HAS_FOUR_DIGIT_RUN = r"\p{Nd}{4}"
+
 #: The unnamed sentinel as a SQL literal, interpolated for the same reason
 #: ``_SQL_HAS_LETTER`` is: the label arms below must refuse exactly what
 #: dim_accounts.sql and ``account_display_name.usable_source_label`` refuse,
@@ -261,7 +272,7 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
                       -- substitutes the same sentinel for an absent id.
                       CASE
                         WHEN REGEXP_MATCHES(raw.account_label, '{_SQL_HAS_LETTER}')
-                        AND NOT REGEXP_MATCHES(raw.account_label, '[0-9]{{4}}')
+                        AND NOT REGEXP_MATCHES(raw.account_label, '{_SQL_HAS_FOUR_DIGIT_RUN}')
                         AND raw.account_label <> {_SQL_UNNAMED_LABEL}
                         AND LENGTH(
                           REGEXP_REPLACE(

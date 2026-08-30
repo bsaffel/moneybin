@@ -637,6 +637,43 @@ def test_the_raw_fallback_leaves_a_label_that_already_states_four_digits(
     assert fetch_display_name(db, "acct_digits") == "Checking ****5678"
 
 
+def test_the_raw_fallback_leaves_a_label_whose_four_digits_are_not_latin(
+    db: Database,
+) -> None:
+    r"""The pre-refresh answer reads a four-digit run in any script too.
+
+    Third encoding of the one ladder, and the last to learn this: the model
+    guards with ``\p{Nd}{4}`` and the Python mirror with ``\d{4}``, while this
+    query still asked ``[0-9]{4}`` -- so a label the importer had already
+    masked to non-Latin digits read as carrying none of its own, and the raw
+    last four was appended on top of it. That is eight digits standing where
+    the mask had narrowed the field to four, the exact join the ASCII sibling
+    above exists to prevent. It surfaced only before the first SQLMesh run:
+    refreshing the dimension answers with the label alone, so the two
+    encodings disagreed about the same account as well.
+    """
+    AccountLinksRepo(db).insert(
+        link_id="link_acct_nd",
+        account_id="acct_nd",
+        ref_kind="source_native",
+        ref_value="unicode-digit-label",
+        source_type="csv",
+        source_origin="tiller",
+        decided_by="auto",
+        actor="system",
+    )
+    db.execute(
+        "INSERT INTO raw.tabular_accounts "
+        "(account_id, account_name, account_label, account_number_masked, "
+        "institution_name, source_file, source_type, source_origin, import_id) "
+        "VALUES ('unicode-digit-label', 'Primary ****٦٧٨٩ account', "
+        "'Primary ****٦٧٨٩ account', '****7777', 'Test Bank', "
+        "'/sheet.csv', 'csv', 'tiller', 'imp')"
+    )
+
+    assert fetch_display_name(db, "acct_nd") == "Primary ****٦٧٨٩ account"
+
+
 def test_the_raw_fallback_returns_a_bare_label_when_no_last_four_survives(
     db: Database,
 ) -> None:

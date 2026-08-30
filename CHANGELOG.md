@@ -1290,8 +1290,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   mask, never how many masks there were. Separately, a four-digit run written
   in a non-Latin script was invisible to the "this label already shows four
   digits" test, so MoneyBin appended its own last four beside one and published
-  eight again. Both are closed, the second in the SQL model and its Python
-  mirror together (#446).
+  eight again. Both are closed, the second across all three encodings of the
+  name ladder: the SQL model, its Python mirror, and the raw fallback that
+  answers before the first refresh (#446).
 
 - **`sql_query` no longer refuses a read-only `SELECT` for a write keyword
   that isn't actually a write.** `SELECT 'export' AS probe` was rejected as
