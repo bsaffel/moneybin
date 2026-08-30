@@ -452,7 +452,8 @@ def test_apply_returns_apply_result_shape(
     assert result.applied is True
     assert result.duration_seconds >= 0
     assert result.error is None
-    fake_ctx.plan.assert_called_once_with(auto_apply=True, no_prompts=True)
+    fake_ctx.plan.assert_called_once_with(no_prompts=True)
+    fake_ctx.apply.assert_called_once_with(fake_ctx.plan.return_value)
 
 
 def test_a_failing_duration_metric_does_not_abort_a_completed_apply(
