@@ -305,6 +305,19 @@ def test_settings_that_state_nothing_leave_the_derived_facts_alone() -> None:
     )
 
 
+def test_a_short_alphanumeric_identifier_is_kept_as_a_name() -> None:
+    """Accepted, not overlooked — pinned so a guard cannot land silently.
+
+    The masker declines a label carrying fewer than five digits, so one reaches
+    this rung whole and becomes the account's name.
+    ``.claude/rules/identifiers.md`` records why that is accepted and bounds
+    what it can disclose; a change of mind belongs in that note rather than
+    past it, and this test is what sends a future guard there first.
+    """
+    assert usable_source_label("ACCT-XY9Z") == "ACCT-XY9Z"
+    assert usable_source_label("AB1234C") == "AB1234C"
+
+
 def test_the_unnamed_sentinel_is_not_a_usable_source_label() -> None:
     """The mirror rejects the sentinel for the reason the model does.
 

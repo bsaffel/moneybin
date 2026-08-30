@@ -43,6 +43,7 @@ from moneybin.services.account_service import (
     AccountService,
     is_canonical_holder_category,
     is_canonical_subtype,
+    normalize_setting_text,
     suggest_holder_category,
     suggest_subtype,
 )
@@ -306,6 +307,15 @@ def accounts_set(
             err=True,
         )
         raise typer.Exit(2)
+
+    # Ask about the spelling the service will store. Settings are trimmed on
+    # the way in, and a non-TTY run without --yes refuses anything
+    # non-canonical outright, so checking the raw flag turns one stray space
+    # into a hard refusal of a subtype MoneyBin recognizes.
+    for field_key in _SOFT_VALIDATED_FIELDS:
+        pending = diff.get(field_key)
+        if isinstance(pending, str):
+            diff[field_key] = normalize_setting_text(pending)
 
     # Soft-validation BEFORE writing
     for field_key, (

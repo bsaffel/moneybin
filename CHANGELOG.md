@@ -1271,6 +1271,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rows, and in `import_confirm` — is now the same resolved label
   `moneybin accounts` shows, on every channel (#446).
 
+  Putting those two readers on one string meant trimming a setting on the way
+  in, and MoneyBin now judges a value *after* that trim rather than before.
+  `accounts set --subtype " checking "` used to be refused outright in a
+  non-interactive run, and the MCP tool used to store the canonical `checking`
+  while warning in the same breath that it had never heard of `  checking  `.
+  Separately, an account whose settings row still held a blank written before
+  that trim existed could no longer be read or changed at all: every settings
+  mutator loads the row first, and the row now failed the length check it had
+  passed when it was written. A stored blank loads as the absent value it
+  always meant (#446).
+
 - **`sql_query` no longer refuses a read-only `SELECT` for a write keyword
   that isn't actually a write.** `SELECT 'export' AS probe` was rejected as
   though it were a real `EXPORT` statement — one character away,

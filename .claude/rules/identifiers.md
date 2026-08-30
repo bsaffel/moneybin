@@ -98,6 +98,19 @@ outside. Three rules follow:
   a key carrying fewer than five digits unchanged — `'1234'` and `'ACCT-XY9Z'`
   both render verbatim, and `import_cmd.py:812` writes that refusal to
   `logger.error`. Passing through the masker is not what makes a key safe.
+- **That shortfall has exactly two accepted surfaces, and this is the list.**
+  The refusal message above is one. The other is the authored account label:
+  `usable_source_label` asks only that a label hold a letter, so a value the
+  masker declined to touch — `'ACCT-XY9Z'`, `'AB1234C'` — becomes the account's
+  `display_name` in `core.dim_accounts` and reaches every report and MCP
+  response. Accepted, with the bound stated rather than assumed: the masker
+  fires at five digits counted across the run, gaps included, so at most four
+  digits plus the label's own letters can survive it — and four digits is
+  precisely what MoneyBin already prints beside every account as `****1234`.
+  Refusing identifier-shaped labels was the alternative, and it takes
+  `CD-2024` and the rest of the real names that rung exists to surface with it.
+  Two entries, no third: another surface is a decision to take deliberately, on
+  its own arithmetic, not a precedent to read off these two.
 - **Never narrow the mask by arguing a particular key is synthetic.** "This
   channel derives its key from the filename, so it is not PII" is true of the
   value and wrong about the field: the same column carries a real `<ACCTID>`

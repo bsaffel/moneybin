@@ -292,6 +292,53 @@ class TestAccountSettingsLoad:
         assert loaded is not None
         assert loaded.display_name == "Checking"
 
+    @pytest.mark.unit
+    def test_a_legacy_blank_value_loads_as_the_absence_it_meant(
+        self, test_db: Database
+    ) -> None:
+        """A blank written before the trim existed must not lock the account.
+
+        `AccountSettings` validates on construction expressly so a row from a
+        looser era still reads. Trimming ahead of that validation turned the
+        accommodation inside out: `"   "` passed the length check when it was
+        written and fails it now, and every settings mutator loads the row
+        first, so the account becomes unreadable and unwritable together.
+        """
+        _seed_blank_settings_row(test_db)
+        loaded = AccountService(test_db)._load_settings("acct_a")
+        assert loaded is not None
+        assert loaded.display_name is None
+        assert loaded.official_name is None
+        assert loaded.account_subtype is None
+        assert loaded.holder_category is None
+
+    @pytest.mark.unit
+    def test_a_legacy_blank_row_can_still_be_updated(self, test_db: Database) -> None:
+        """The break is not read-only; `_load_or_default` gates every mutator."""
+        _seed_blank_settings_row(test_db)
+        updated, _ = AccountService(test_db).settings_update(
+            "acct_a", actor="cli", display_name="Everyday Spending"
+        )
+        assert updated.display_name == "Everyday Spending"
+
+
+def _seed_blank_settings_row(db: Database) -> None:
+    """Write the whitespace-only row a pre-trim MoneyBin accepted."""
+    AccountSettingsRepo(db).set(
+        account_id="acct_a",
+        display_name="   ",
+        official_name="  ",
+        last_four=None,
+        account_subtype=" ",
+        holder_category="\t",
+        currency_code=None,
+        credit_limit=None,
+        archived=False,
+        include_in_net_worth=True,
+        default_cost_basis_method=None,
+        actor="test",
+    )
+
 
 class TestEmptyResults:
     """Tests for service behavior with no data in tables."""
@@ -397,6 +444,42 @@ class TestAccountServiceMutators:
         assert updated.holder_category == "corporate"
         assert len(warnings) == 1
         assert warnings[0]["field"] == "holder_category"
+
+    @pytest.mark.unit
+    def test_a_padded_canonical_value_warns_about_nothing(
+        self, test_db: Database
+    ) -> None:
+        """The warning has to describe the value that actually gets stored.
+
+        `AccountSettings` trims on construction, so `"  checking  "` is written
+        as the canonical `"checking"`. Reading the soft-canonical check off the
+        raw caller value instead reports that MoneyBin does not know a subtype
+        it just recognized, normalized, and stored.
+        """
+        svc = AccountService(test_db)
+        updated, warnings = svc.settings_update(
+            "acct_a", actor="cli", account_subtype="  checking  "
+        )
+        assert updated.account_subtype == "checking"
+        assert warnings == []
+
+    @pytest.mark.unit
+    def test_a_padded_unknown_value_is_reported_by_its_stored_spelling(
+        self, test_db: Database
+    ) -> None:
+        """Padding must not reach the message either.
+
+        The warning is the only place a caller learns which spelling was
+        doubted, so quoting the untrimmed input points them at a string the
+        database does not hold.
+        """
+        svc = AccountService(test_db)
+        updated, warnings = svc.settings_update(
+            "acct_a", actor="cli", holder_category="  corporate  "
+        )
+        assert updated.holder_category == "corporate"
+        assert len(warnings) == 1
+        assert warnings[0]["message"] == "'corporate' is not a known holder category"
 
     @pytest.mark.unit
     def test_settings_update_default_cost_basis_method_persists(

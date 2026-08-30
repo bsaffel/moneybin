@@ -139,6 +139,17 @@ def usable_source_label(label: str | None) -> str | None:
     re-imported. Promoting it would hand ``is_a_name`` a label it must discard,
     leaving the account unresolvable by what it displays — strictly worse than
     the institution-derived name the fallthrough gives it.
+
+    The letter test is the whole gate, and its reach is worth stating rather
+    than assuming. The channel's masker fires at five digits counted across the
+    run, so a label carrying four or fewer — ``ACCT-XY9Z``, ``AB1234C`` —
+    arrives here whole and becomes the account's name everywhere it is shown.
+    Accepted on the same terms as Plaid's unmasked ``name``
+    (``stg_plaid__accounts.sql``): four digits is what every masked surface
+    already prints as ``****1234``, and refusing identifier-shaped labels takes
+    ``CD-2024`` and the rest of the real names this rung exists to surface with
+    it. ``.claude/rules/identifiers.md`` carries the accepted list and that
+    bound; a third surface is a fresh decision, not an inference from this one.
     """
     stated = _stated(label)
     if stated is None or not _has_letter(stated):
