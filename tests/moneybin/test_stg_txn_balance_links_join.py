@@ -649,6 +649,131 @@ def test_stg_tabular_transactions_keeps_curated_corrected_duplicates(
 
 
 @pytest.mark.slow
+def test_stg_tabular_transactions_keeps_corrected_transfer_endpoints(
+    db: Database,
+) -> None:
+    """An upgrade keeps corrected twins used by an accepted transfer."""
+    debit_account_id = "canonical-upgrade-transfer-debit"
+    credit_account_id = "canonical-upgrade-transfer-credit"
+    debit_native_key = "native-upgrade-transfer-debit"
+    credit_native_key = "native-upgrade-transfer-credit"
+    source_origin = "upgrade-transfer-test"
+    transfer_legs = [
+        (debit_account_id, debit_native_key, "transfer-debit", -50.00),
+        (credit_account_id, credit_native_key, "transfer-credit", 50.00),
+    ]
+
+    for canonical_id, native_key, source_id, amount in transfer_legs:
+        db.execute(
+            """
+            INSERT INTO raw.tabular_transactions
+                (transaction_id, account_id, source_transaction_id, transaction_date,
+                 amount, description, source_file, source_type, source_origin,
+                 import_id, extracted_at, loaded_at)
+            VALUES (?, ?, ?, DATE '2024-01-15', ?, 'Transfer', ?, 'csv', ?,
+                    'corrected-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,  # noqa: S608  # test fixture
+            [
+                f"{native_key}:{source_id}",
+                native_key,
+                source_id,
+                amount,
+                f"{native_key}.csv",
+                source_origin,
+            ],
+        )
+        _insert_accepted_source_native(
+            db,
+            link_id=f"link-upgrade-transfer-native-{source_id}",
+            account_id=canonical_id,
+            ref_value=native_key,
+            source_type="csv",
+            source_origin=source_origin,
+        )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    corrected_ids = dict(
+        db.execute(
+            """
+            SELECT source_transaction_id, transaction_id
+            FROM prep.int_transactions__matched
+            WHERE source_transaction_id IN (?, ?)
+            """,
+            [
+                f"{debit_native_key}:transfer-debit",
+                f"{credit_native_key}:transfer-credit",
+            ],
+        ).fetchall()
+    )
+    debit_source_id = f"{debit_native_key}:transfer-debit"
+    credit_source_id = f"{credit_native_key}:transfer-credit"
+    assert set(corrected_ids) == {debit_source_id, credit_source_id}
+
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('upgrade-transfer-pair', ?, 'csv', ?, ?, 'csv', ?, ?, 0.95, '{}',
+                  'transfer', '4', ?, 'accepted', NULL, 'user', CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [
+            debit_source_id,
+            source_origin,
+            credit_source_id,
+            source_origin,
+            debit_account_id,
+            credit_account_id,
+        ],
+    )
+
+    for canonical_id, native_key, source_id, amount in transfer_legs:
+        db.execute(
+            """
+            INSERT INTO raw.tabular_transactions
+                (transaction_id, account_id, source_transaction_id, transaction_date,
+                 amount, description, source_file, source_type, source_origin,
+                 import_id, extracted_at, loaded_at)
+            VALUES (?, ?, ?, DATE '2024-01-15', ?, 'Transfer', ?, 'csv', ?,
+                    'legacy-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,  # noqa: S608  # test fixture
+            [
+                f"{canonical_id}:{source_id}",
+                canonical_id,
+                source_id,
+                amount,
+                f"{native_key}.csv",
+                source_origin,
+            ],
+        )
+        _insert_accepted_source_native(
+            db,
+            link_id=f"link-upgrade-transfer-legacy-{source_id}",
+            account_id=canonical_id,
+            ref_value=canonical_id,
+            source_type="csv",
+            source_origin=source_origin,
+        )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    transfer = db.execute(
+        """
+        SELECT debit_transaction_id, credit_transaction_id
+        FROM core.bridge_transfers
+        WHERE transfer_id = 'upgrade-transfer-pair'
+        """
+    ).fetchone()
+
+    assert transfer == (corrected_ids[debit_source_id], corrected_ids[credit_source_id])
+
+
+@pytest.mark.slow
 def test_stg_tabular_transactions_does_not_cross_suppress_a_reused_path(
     db: Database,
 ) -> None:

@@ -147,8 +147,10 @@ WITH accepted_native_links AS (
      excluded only when an accepted legacy self-map proves the same canonical
      account, file, origin, and transaction content and no app state references
      their gold id. A corrected row already in an accepted dedup group is also
-     retained: its gold id may be anchored by another source. Duplicate content
-     is paired by occurrence, so a reused path remains visible. */
+     retained: its gold id may be anchored by another source. Active transfer
+     endpoints are also retained because bridge_transfers requires both rows.
+     Duplicate content is paired by occurrence, so a reused path remains
+     visible. */
   WHERE
     deleted_from_source_at IS NULL
     AND NOT EXISTS(
@@ -182,15 +184,32 @@ WITH accepted_native_links AS (
           WHERE
             match.match_status = 'accepted'
             AND match.reversed_at IS NULL
-            AND match.match_type = 'dedup'
-            AND match.account_id = corrected.canonical_account_id
+            AND match.match_type IN ('dedup', 'transfer')
             AND (
               (
-                match.source_type_a = corrected.source_type
+                match.match_type = 'dedup'
+                AND match.account_id = corrected.canonical_account_id
+                AND (
+                  (
+                    match.source_type_a = corrected.source_type
+                    AND match.source_transaction_id_a = corrected.transaction_id
+                  )
+                  OR (
+                    match.source_type_b = corrected.source_type
+                    AND match.source_transaction_id_b = corrected.transaction_id
+                  )
+                )
+              )
+              OR (
+                match.match_type = 'transfer'
+                AND match.account_id = corrected.canonical_account_id
+                AND match.source_type_a = corrected.source_type
                 AND match.source_transaction_id_a = corrected.transaction_id
               )
               OR (
-                match.source_type_b = corrected.source_type
+                match.match_type = 'transfer'
+                AND match.account_id_b = corrected.canonical_account_id
+                AND match.source_type_b = corrected.source_type
                 AND match.source_transaction_id_b = corrected.transaction_id
               )
             )
