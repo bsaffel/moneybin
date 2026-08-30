@@ -4,12 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from moneybin.mcp.privacy import (
-    check_table_allowed,
-    truncate_result,
-    validate_managed_write,
-    validate_read_only_query,
-)
+from moneybin.config import get_settings
+from moneybin.mcp.privacy import validate_read_only_query
 from moneybin.privacy.log import write_privacy_event
 
 
@@ -20,6 +16,14 @@ async def test_privacy_coarse_status_is_default(mcp_db: object) -> None:
 
     assert response.data.kind == "status"
     assert response.summary.sensitivity == "low"
+
+
+def test_get_max_rows_uses_the_mcp_configuration() -> None:
+    from moneybin.mcp import privacy
+
+    get_max_rows = getattr(privacy, "get_max_rows", lambda: None)
+
+    assert get_max_rows() == get_settings().mcp.max_rows
 
 
 @pytest.mark.parametrize(
@@ -359,131 +363,3 @@ class TestValidateReadOnlyQuery:
             """
         )
         assert result is None
-
-
-class TestCheckTableAllowed:
-    """Tests for table allowlist checking."""
-
-    @pytest.mark.unit
-    def test_no_allowlist_allows_all(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from moneybin.mcp import privacy
-
-        monkeypatch.setattr(privacy, "_get_mcp_limits", lambda: (100, 10000, None))
-        assert check_table_allowed("any_table") is None
-
-    @pytest.mark.unit
-    def test_allowlist_blocks_unlisted(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from moneybin.mcp import privacy
-
-        monkeypatch.setattr(
-            privacy,
-            "_get_mcp_limits",
-            lambda: (100, 10000, {"raw.ofx_accounts"}),
-        )
-        result = check_table_allowed("raw.ofx_transactions")
-        assert result is not None
-        assert "not in the allowed" in result
-
-    @pytest.mark.unit
-    def test_allowlist_permits_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from moneybin.mcp import privacy
-
-        monkeypatch.setattr(
-            privacy,
-            "_get_mcp_limits",
-            lambda: (100, 10000, {"raw.ofx_accounts"}),
-        )
-        assert check_table_allowed("raw.ofx_accounts") is None
-
-
-class TestTruncateResult:
-    """Tests for result truncation."""
-
-    @pytest.mark.unit
-    def test_short_text_unchanged(self) -> None:
-        text = "short text"
-        assert truncate_result(text) == text
-
-    @pytest.mark.unit
-    def test_long_text_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from moneybin.mcp import privacy
-
-        monkeypatch.setattr(privacy, "_get_mcp_limits", lambda: (100, 20, None))
-        result = truncate_result("x" * 100)
-        # First 20 chars should be the original content
-        assert result.startswith("x" * 20)
-        # Truncation notice should be appended
-        assert "[Result truncated" in result
-        # Only the first 20 x's should remain (not all 100)
-        assert result.count("x") == 20
-
-
-class TestValidateManagedWrite:
-    """Tests for managed write validation."""
-
-    @pytest.mark.unit
-    def test_insert_into_app_schema_allowed(self) -> None:
-        assert (
-            validate_managed_write(
-                "INSERT INTO app.transaction_categories VALUES ('t1', 'Food')"
-            )
-            is None
-        )
-
-    @pytest.mark.unit
-    def test_insert_into_raw_schema_allowed(self) -> None:
-        assert (
-            validate_managed_write(
-                "INSERT INTO raw.ofx_transactions VALUES ('t1', 'a1')"
-            )
-            is None
-        )
-
-    @pytest.mark.unit
-    def test_update_app_schema_allowed(self) -> None:
-        assert (
-            validate_managed_write(
-                "UPDATE app.budgets SET monthly_amount = 500 WHERE budget_id = 'b1'"
-            )
-            is None
-        )
-
-    @pytest.mark.unit
-    def test_drop_rejected(self) -> None:
-        result = validate_managed_write("DROP TABLE app.budgets")
-        assert result is not None
-        assert "DROP" in result
-
-    @pytest.mark.unit
-    def test_alter_rejected(self) -> None:
-        result = validate_managed_write("ALTER TABLE app.budgets ADD COLUMN x INT")
-        assert result is not None
-
-    @pytest.mark.unit
-    def test_truncate_rejected(self) -> None:
-        result = validate_managed_write("TRUNCATE TABLE app.budgets")
-        assert result is not None
-
-    @pytest.mark.unit
-    def test_insert_into_core_rejected(self) -> None:
-        result = validate_managed_write("INSERT INTO core.dim_accounts VALUES ('x')")
-        assert result is not None
-        assert "app" in result or "raw" in result
-
-    @pytest.mark.unit
-    def test_create_or_replace_in_core_allowed(self) -> None:
-        """Core transforms use CREATE OR REPLACE TABLE."""
-        assert (
-            validate_managed_write(
-                "CREATE OR REPLACE TABLE core.dim_accounts AS (SELECT 1)",
-                allow_core_transforms=True,
-            )
-            is None
-        )
-
-    @pytest.mark.unit
-    def test_create_or_replace_core_rejected_without_flag(self) -> None:
-        result = validate_managed_write(
-            "CREATE OR REPLACE TABLE core.dim_accounts AS (SELECT 1)"
-        )
-        assert result is not None

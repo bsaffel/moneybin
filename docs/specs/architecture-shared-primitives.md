@@ -500,7 +500,7 @@ Two narrow naming changes rode along with this spec landing — both shipped. Re
 - `src/moneybin/staleness.py` — `resolve_threshold_days`, `is_stale`, `SECURITY_TYPE_STALENESS_DAYS`; the observation-age vocabulary shared by every valuation domain (see "Observation staleness" below).
 - `src/moneybin/protocol/envelope.py` — `ResponseEnvelope`, `SummaryMeta`, `build_envelope`, `build_error_envelope`.
 - `src/moneybin/mcp/decorator.py` — `mcp_tool` decorator.
-- `src/moneybin/mcp/privacy.py` — `Sensitivity` enum, `validate_read_only_query`, `validate_managed_write`, `truncate_result`.
+- `src/moneybin/mcp/privacy.py` — `Sensitivity` enum and the `validate_read_only_query` re-export.
 - `src/moneybin/observability.py` — `setup_observability`, `tracked`, `track_duration`, `flush_metrics`.
 - `src/moneybin/log_sanitizer.py` — `SanitizedLogFormatter`.
 - `src/moneybin/privacy/taxonomy.py` — `DataClass` / `Tier` registry; column-level classification source of truth (PR #169, see `privacy-data-classification.md`).

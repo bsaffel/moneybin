@@ -214,28 +214,6 @@ _TRANSACTIONS_AMOUNT_OVERRIDES = {"amount": _DECIMAL_AMOUNT}
 
 
 # Pydantic schemas for OFX data validation
-class OFXInstitutionSchema(BaseModel):
-    """OFX financial institution information."""
-
-    organization: str | None = Field(None, description="Financial institution name")
-    fid: str | None = Field(None, description="Financial institution ID")
-
-    model_config = {"extra": "allow"}
-
-
-class OFXAccountSchema(BaseModel):
-    """OFX account information."""
-
-    account_id: str = Field(..., description="Account identifier")
-    routing_number: str | None = Field(None, description="Bank routing number")
-    account_type: str | None = Field(None, description="Account type (e.g., CHECKING)")
-    institution: OFXInstitutionSchema | None = Field(
-        None, description="Institution information"
-    )
-
-    model_config = {"extra": "allow"}
-
-
 class OFXTransactionSchema(BaseModel):
     """OFX transaction data with validation."""
 
@@ -255,26 +233,6 @@ class OFXTransactionSchema(BaseModel):
         if result is None:
             raise ValueError("amount is required")
         return result
-
-    model_config = {"extra": "allow"}
-
-
-class OFXStatementSchema(BaseModel):
-    """OFX statement with balance information."""
-
-    start_date: datetime | None = Field(None, description="Statement start date")
-    end_date: datetime | None = Field(None, description="Statement end date")
-    balance: Decimal | None = Field(None, description="Ledger balance")
-    balance_date: datetime | None = Field(None, description="Balance as-of date")
-    available_balance: Decimal | None = Field(
-        None, description="Available balance if provided"
-    )
-
-    @field_validator("balance", "available_balance", mode="before")
-    @classmethod
-    def validate_decimal(cls, v: Any) -> Decimal | None:
-        """Convert balance to Decimal for precision."""
-        return coerce_to_decimal(v)
 
     model_config = {"extra": "allow"}
 

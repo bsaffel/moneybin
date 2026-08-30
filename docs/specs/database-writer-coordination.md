@@ -152,7 +152,7 @@ def get_database(
     read_only: bool,
     max_wait: float = 5.0,
 ) -> Database:
-    global _database_accessed, _migration_check_done
+    global _migration_check_done
     db_path = get_settings().database.path
     deadline = time.monotonic() + max_wait
     delay = 0.05
@@ -166,7 +166,6 @@ def get_database(
             )
             if not read_only:
                 _migration_check_done = True
-            _database_accessed = True
             if not read_only:
                 with _active_write_lock:
                     global _active_write_conn
@@ -246,23 +245,11 @@ def interrupt_and_reset_database() -> None:
         conn.interrupt_and_reset()
 ```
 
-**Database-accessed flag**
-
-```python
-_database_accessed: bool = False
-
-
-def database_was_accessed() -> bool:
-    return _database_accessed
-```
-
-Set to `True` in `get_database()` after the first successful open.
-
 **Functions to remove**
 
 - `_database_instance` singleton and all references
 - `close_database()`
-- `get_database_if_initialized()` — replaced by `database_was_accessed()`
+- `get_database_if_initialized()`
 - `_temporary_singleton()` — `sqlmesh_context()` will take an explicit `db` parameter
 
 **`sqlmesh_context()` — new signature**
@@ -361,14 +348,7 @@ with get_database(read_only=False) as db:
           ...
   ```
 - `init_db()`: remove `get_database()` warm-up call; just call `register_core_tools()`.
-- `close_db()`: remove `close_database()` call; flush metrics if accessed:
-  ```python
-  def close_db() -> None:
-      from moneybin.database import database_was_accessed
-
-      if database_was_accessed():
-          flush_metrics()
-  ```
+- `close_db()`: remove `close_database()` call.
 
 **`mcp/decorator.py`**
 
@@ -460,7 +440,9 @@ with sqlmesh_command("SQLMesh transform") as db:
 
 **`observability.py` `flush_metrics()`**
 
-Gate the flush on `database_was_written()` (not `database_was_accessed()`). This ensures read-only sessions — which never open a write connection — do not open one at exit purely to persist metrics:
+Gate the flush on `database_was_written()`. This ensures read-only sessions —
+which never open a write connection — do not open one at exit purely to persist
+metrics:
 
 ```python
 def flush_metrics() -> None:
