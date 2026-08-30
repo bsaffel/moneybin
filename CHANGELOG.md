@@ -797,10 +797,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   necessarily unique: two of a household's accounts are routinely given the
   same product name by their bank. A name that already shows four digits of its own is left
   exactly as it is, so nothing ever prints two separate pieces of one account
-  number. Account numbers embedded in the label are masked
-  (`Checking 987654321098` → `Checking ****1098`), and a label holding no
-  letters at all is treated as an account number rather than a name, so it
-  keeps the assembled label instead.
+  number. Account numbers embedded in the label are masked,
+  and one that ends the label becomes that account's last four in the form
+  every surface uses (`Checking 987654321098` → `Checking …1098`). A label
+  holding no letters at all is treated as an account number rather than a
+  name, so it keeps the assembled label instead.
   A connected account takes the new name on the next `moneybin refresh`, since
   its name was already in the raw table. A spreadsheet-sourced one takes it on
   the next import of that file: the new column is deliberately not backfilled,

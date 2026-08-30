@@ -4,7 +4,7 @@
 > Status: implemented (architecture M1S.1–.6 + the capture/bind-first
 > corrections M1S.7–.9, all shipped — see [§Decision 8](#decision-8--capture-mutable-labels-and-the-exporter-axis-m1s7-live-test-reconciliation));
 > the full-scale live re-validation this spec was written to unblock (5-account
-> / 279-row WF persona, [§Testing](#testing)) has not yet been re-run — tracked
+> / 279-row one-bank persona, [§Testing](#testing)) has not yet been re-run — tracked
 > as follow-up enrichment, not a capability gap
 > Address: M1S (Ingestion Core)
 > Type: Feature
@@ -394,8 +394,8 @@ signal reliability:
      Imports never reach this rung: the Decision 7 gate answers every candidate
      before `resolve()` runs, so the queue's producers are the backfill link
      service and sync. **Never auto-merge on `institution+last4` or name**
-     (Plaid's mask≠number warning + last4-collision risk — two distinct WF
-     accounts could share `1212`).
+     (Plaid's mask≠number warning + last4-collision risk — two distinct
+     accounts at one institution could share `1212`).
 
 | Outcome | signal | action | resulting state |
 |---|---|---|---|
@@ -1281,7 +1281,7 @@ collapse onto, by construction.
 The full number / `full_number` `ref_value` is CRITICAL/PII: derive `RIGHT(·,4)`
 inside the model and expose only the last 4; never surface the full number in
 `dim`. `display_name`'s last4 fragment reads the same derived value (fixes the
-bare-"WF CHECKING" display regression).
+bare-"TESTBANK CHECKING" display regression).
 
 ### The account-label parser (Tier B)
 
@@ -1343,8 +1343,8 @@ A single-account file with no caller-supplied identity (no `--account-name`/`--a
 
 ## Idempotency, reverse-order imports, correction
 
-Worked through a one-bank case (`institution="WF"`, three checking accounts
-and two savings):
+Worked through a one-bank case (`institution="TESTBANK"`, three checking
+accounts and two savings):
 
 - **Re-import** the same `.qfx` → `source_native` mapping hit → same canonical id.
   No new account, no doubled txns.
@@ -1353,7 +1353,7 @@ and two savings):
   on `C1`. OFX of the same account imports: its scoped `full_number` has no
   accepted mapping yet, but OFX's last4 matches `C1`'s captured `last_four` →
   **pending decision** (last4-only, never auto-merge) → confirmed **at import**
-  (the OFX `import_confirm` proposes "this looks like your existing WF checking
+  (the OFX `import_confirm` proposes "this looks like your existing checking
   …1212") or later in the queue → on accept, OFX's mapping re-points to `C1`; both
   sources share `C1`; the 279 twins dedup. (Real last4 collision → user rejects →
   two distinct accounts.)
@@ -1490,15 +1490,17 @@ nobody. Registering it means declaring the tier in the same change.
   states no identity and still asks. CLI + MCP parity.
 - **Scenario** (`tests/scenarios/test_account_identity_cross_source.py`,
   `make test-scenarios` — data-shape change): `account-identity-cross-source`
-  proves the regression fix with a representative 2-account fixture — 2 WF
-  accounts imported as 2 `.qfx` + 2 `.csv` twins (12 raw rows across 4 source
-  accounts), bound onto the qfx-minted canonical accounts, resolve to **2
+  proves the regression fix with a representative 2-account fixture — 2
+  same-institution accounts imported as 2 `.qfx` + 2 `.csv` twins (12 raw rows
+  across 4 source accounts), bound onto the qfx-minted canonical accounts,
+  resolve to **2
   canonical accounts** and **6 `core.fct_transactions` rows at
   `source_count = 2`** (the import-validation live test, now reproducible). The
   hand-derived counts make over/under-merge detectable per the
-  scenario-expectations rule. Scaling this to the full 5-account / 279-row WF
-  persona (which needs a twin generator) is tracked as follow-up enrichment, not
-  a capability gap — the collapse mechanism is identical at any N.
+  scenario-expectations rule. Scaling this to the full 5-account / 279-row
+  one-bank persona (which needs a twin generator) is tracked as follow-up
+  enrichment, not a capability gap — the collapse mechanism is identical at
+  any N.
 - **Scenario** (reissue + document identity): the same file proves a reissued
   card reaches the review queue through a real import — the fixture's last four
   differs from the original, so `institution_last4` is structurally unable to
@@ -1556,8 +1558,8 @@ scope.)
   unifies (noted in [`matching-exact-key-dedup.md`](matching-exact-key-dedup.md)).
 - **Account merge** — the deferred `account-management.md` operation, now a link
   re-point.
-- **The Ingestion-Complete validation gate** — the 5-WF re-import test (279 @
-  `source_count = 2`) resumes once M1S lands.
+- **The Ingestion-Complete validation gate** — the 5-account re-import test
+  (279 @ `source_count = 2`) resumes once M1S lands.
 
 ## Out of scope
 
@@ -1575,8 +1577,8 @@ scope.)
 Synthetic one-bank case — 5 accounts: checking …1212, …7777, …3030; savings
 …4040, …5050. Each
 imported as `.qfx` and `.csv` produced two `account_id`s sharing the same masked
-`****<last4>` display. The bridge that should link them: `institution="WF"` +
-`last4` (OFX `RIGHT(number,4)` == Plaid `mask` == the `1212` in the CSV's
-`"WF CHECKING 1212"` name). **Collision risk to design against:** two distinct WF
-accounts could share a last4 → that pair must go to the review queue, never
-auto-merge.
+`****<last4>` display. The bridge that should link them:
+`institution="TESTBANK"` + `last4` (OFX `RIGHT(number,4)` == Plaid `mask` ==
+the `1212` in the CSV's `"TESTBANK CHECKING 1212"` name). **Collision risk to
+design against:** two distinct accounts at one institution could share a last4
+→ that pair must go to the review queue, never auto-merge.
