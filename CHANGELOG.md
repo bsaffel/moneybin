@@ -1292,6 +1292,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   everywhere at once. No in-repo report was affected; this closes the gap for
   the out-of-repo authors `docs/specs/extension-contracts.md` addresses (#470).
 
+  The same guard now checks the declared values themselves. `money_kind` and
+  `polarity` are `Literal` types, which bind a type checker and nothing at
+  runtime, so an author running none got no signal from either wrong value —
+  and neither one fails loudly by itself. An unrecognized kind falls through
+  the renderer to an unsigned, uncoloured amount that reads as a deliberate
+  balance, and every polarity that is not `income` colours as `expense`, so
+  `polarity="up"` inverts a delta's colours rather than raising. A polarity on
+  any kind but `delta` is refused too, because nothing reads one there:
+  accepting it silently tells an author their column is polarized when the
+  rendered output will not be (#470).
+
 - **`-q/--quiet` now works on the report commands.** `reports networth`,
   `networth-history`, `reports run`, and every generated built-in report
   command accepted the flag and then dropped it, so their next-step hints

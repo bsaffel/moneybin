@@ -317,6 +317,14 @@ Numbered, each independently testable.
     formatted — and keying rendering to it would couple the two the moment one
     of them moved. `docs/specs/extension-contracts.md` documents the optional
     field alongside `DEFAULT_COLUMNS`.
+
+    Optional is not unchecked. `OutputColumn.__post_init__` refuses a
+    `money_kind` or `polarity` outside its declared set, and a polarity on any
+    kind but `delta`. Both are `Literal` types, which bind a type checker and
+    not the interpreter, so the extension author this field exists for gets no
+    runtime signal otherwise — and a wrong value is silent rather than loud: an
+    unrecognized kind renders unsigned and uncoloured, and `Money.style_for`
+    reads every polarity that is not `income` as `expense`.
 13. Amounts are right-aligned in `render_rows` columns.
 14. Color is driven by the money kind plus the value, never by the value alone.
     A `flow` colors `--pos-income` when positive and `--neg-expense` when

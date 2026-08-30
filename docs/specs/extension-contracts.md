@@ -486,6 +486,13 @@ naming which direction is the favourable one. A rise in spending and a rise in
 income are both `+`; only the declaration says which is good news, and the wrong
 default would paint a spending increase as income.
 
+`OutputColumn` checks both fields at construction and raises `ValueError` on a
+kind or polarity outside those sets, a `delta` with no polarity, or a polarity
+declared on any other kind. The `Literal` annotations bind a type checker, not
+the interpreter, and neither wrong value fails on its own: an unrecognized kind
+renders unsigned and uncoloured, and any polarity that is not `income` colours
+as `expense`.
+
 The field is **optional**, so an existing extension report keeps working
 unchanged and simply renders its amounts as plain text. Declare it when the
 column holds money. For in-repo reports it is not optional in practice: a

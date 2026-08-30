@@ -13,7 +13,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.tables import TableRef
@@ -172,6 +172,11 @@ A rise in spending and a rise in income are both ``+``; only the declaration
 says which of them is good news.
 """
 
+# Read off the aliases above rather than restated, so the runtime gate in
+# `OutputColumn.__post_init__` cannot drift from the type a contributor sees.
+_MONEY_KINDS: tuple[str, ...] = get_args(MoneyKind.__value__)
+_POLARITIES: tuple[str, ...] = get_args(Polarity.__value__)
+
 
 @dataclass(frozen=True, slots=True)
 class OutputColumn:
@@ -183,22 +188,51 @@ class OutputColumn:
     money_kind: MoneyKind | None = None
     """How to render this column's amounts; ``None`` means it is not money."""
     polarity: Polarity | None = None
-    """Required when ``money_kind`` is ``"delta"``; meaningless otherwise."""
+    """Required when ``money_kind`` is ``"delta"``; refused on the other kinds."""
 
     def __post_init__(self) -> None:
-        """Reject an unrenderable delta where it is declared, not where it is read.
+        """Reject an unrenderable declaration where it is written, not where it is read.
 
-        ``Money`` refuses the same pair, but that check runs in the text
-        renderer — ``money_columns(spec)``, which the generated CLI command
-        reaches only *after* ``catalog.execute(...)`` has run the report and
-        written its side effects — and a JSON or MCP caller never reaches it at
-        all. Enforcing it at construction makes the broken contract unbuildable
-        on every surface at once, which is what an out-of-repo author reading
-        ``docs/specs/extension-contracts.md`` needs it to do.
+        ``Money`` refuses the delta-without-polarity pair too, but that check
+        runs in the text renderer — ``money_columns(spec)``, which the generated
+        CLI command reaches only *after* ``catalog.execute(...)`` has run the
+        report and written its side effects — and a JSON or MCP caller never
+        reaches it at all. Enforcing it at construction makes the broken
+        contract unbuildable on every surface at once, which is what an
+        out-of-repo author reading ``docs/specs/extension-contracts.md`` needs
+        it to do.
+
+        The vocabulary is checked here for that reason and one more: a
+        ``Literal`` binds a type checker, and the author this contract is
+        written for may not run one. Neither wrong value fails on its own —
+        an unrecognized ``money_kind`` falls through the renderer to unsigned
+        and uncoloured, and ``Money.style_for`` reads every polarity that is
+        not ``"income"`` as expense, so ``polarity="up"`` inverts a delta's
+        colours instead of raising. A polarity on a non-delta is refused rather
+        than ignored because no kind but ``delta`` reads one, and silently
+        dropping it tells an author their column is polarized when the rendered
+        output will not be. ``Money`` is left alone: it is not part of the
+        extension surface, and every in-repo construction of one is a literal
+        pyright already checks.
         """
+        if self.money_kind is not None and self.money_kind not in _MONEY_KINDS:
+            raise ValueError(
+                f"money column {self.name!r} declares an unknown money_kind "
+                f"{self.money_kind!r}; expected one of {', '.join(_MONEY_KINDS)}"
+            )
+        if self.polarity is not None and self.polarity not in _POLARITIES:
+            raise ValueError(
+                f"money column {self.name!r} declares an unknown polarity "
+                f"{self.polarity!r}; expected one of {', '.join(_POLARITIES)}"
+            )
         if self.money_kind == "delta" and self.polarity is None:
             raise ValueError(
                 f"money column {self.name!r} is a delta and must declare its polarity"
+            )
+        if self.money_kind != "delta" and self.polarity is not None:
+            raise ValueError(
+                f"money column {self.name!r} is not a delta, so its polarity "
+                f"{self.polarity!r} would be ignored rather than applied"
             )
 
 

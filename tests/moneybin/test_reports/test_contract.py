@@ -434,6 +434,57 @@ def test_a_non_delta_money_column_needs_no_polarity() -> None:
         )
 
 
+def test_a_money_kind_outside_the_vocabulary_is_refused() -> None:
+    """`Literal` is a promise to a type checker, not a gate at runtime.
+
+    An out-of-repo author running no type checker gets no signal at all: an
+    unknown kind falls through `Money.style_for` to neutral and through
+    `format_money` to unsigned, so a flow column misspelled `"inflow"` prints
+    an uncoloured, unsigned amount that reads as a deliberate balance.
+    """
+    with pytest.raises(ValueError, match="money_kind"):
+        OutputColumn(
+            name="value",
+            description="Aggregate value.",
+            data_class=DataClass.AGGREGATE,
+            money_kind="inflow",  # pyright: ignore[reportArgumentType]  # the runtime gate under test
+        )
+
+
+def test_a_polarity_outside_the_vocabulary_is_refused() -> None:
+    """`style_for` reads every non-`"income"` polarity as expense.
+
+    So `polarity="up"` on a delta does not fail — it inverts, painting a rise
+    in the colour of a fall. A wrong colour on a real number is worse than a
+    refusal, because nothing in the output says it happened.
+    """
+    with pytest.raises(ValueError, match="polarity"):
+        OutputColumn(
+            name="value",
+            description="Month-over-month change.",
+            data_class=DataClass.AGGREGATE,
+            money_kind="delta",
+            polarity="up",  # pyright: ignore[reportArgumentType]  # the runtime gate under test
+        )
+
+
+def test_a_polarity_on_a_non_delta_is_refused() -> None:
+    """A declaration the renderer ignores is a claim the contract does not keep.
+
+    Only `delta` colours against polarity; the other three kinds never read it.
+    Accepting one silently tells an author their column is polarised when the
+    rendered output will not be.
+    """
+    with pytest.raises(ValueError, match="polarity"):
+        OutputColumn(
+            name="value",
+            description="Spend for the period.",
+            data_class=DataClass.TXN_AMOUNT,
+            money_kind="magnitude",
+            polarity="expense",
+        )
+
+
 def test_duplicate_output_column_names_are_rejected() -> None:
     with pytest.raises(ValueError, match="columns and classes"):
         replace(_build_spec(), columns=(_COLUMNS[0], _COLUMNS[0]))
