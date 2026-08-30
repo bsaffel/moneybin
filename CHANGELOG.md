@@ -1183,6 +1183,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **`sql_query` no longer refuses a read-only `SELECT` for a write keyword
+  that isn't actually a write.** `SELECT 'export' AS probe` was rejected as
+  though it were a real `EXPORT` statement — one character away,
+  `SELECT 'expor' AS control` was always accepted, because the write-operation
+  guard scanned raw query text with no regard for where the word appeared. It
+  now checks the parsed SQL's structure instead of its text: a word matters
+  only when it produces an actual write statement (`INSERT`, `UPDATE`,
+  `DROP`, etc.), never when it merely appears inside a string literal (any
+  quoting style), a quoted identifier, or a `--` comment. This unblocks
+  `... WHERE action LIKE 'export%'` against `app.audit_log`, the documented
+  way to find an export's audit trail from the agent-safe SQL surface (#447).
+
 - **Account merge proposals key on the last four, not on the institution.** The
   proposer both missed real cross-source duplicates and filed proposals for
   unrelated pairs, and each failure had its own cause.
