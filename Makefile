@@ -1,7 +1,7 @@
 # MoneyBin Development Makefile
 # This Makefile provides development commands for the MoneyBin project
 
-.PHONY: help setup clean install install-dev test test-cov lint format format-sql type-check pre-commit venv activate status install-uv test-e2e test-scenarios update-test-durations generate-report-classes claude-mcp audit
+.PHONY: help setup clean install install-dev test test-cov lint format format-sql type-check pre-commit venv activate status install-uv test-e2e test-scenarios generate-report-classes claude-mcp audit
 
 # Default target
 .DEFAULT_GOAL := help
@@ -156,11 +156,6 @@ test-e2e: venv ## Development: Run end-to-end subprocess tests
 test-scenarios: venv ## Development: Run all whole-pipeline scenarios via pytest
 	@echo "$(BLUE)🧪 Running all scenarios...$(RESET)"
 	@uv run pytest tests/scenarios/ -m scenarios -v --durations=25
-
-update-test-durations: venv ## Development: Regenerate .test_durations to rebalance CI shards (unit, integration, e2e, scenarios); commit the result
-	@echo "$(BLUE)⏱️  Storing test durations for pytest-split shard balancing...$(RESET)"
-	@uv run pytest tests/ -m "unit or integration or e2e or scenarios" --store-durations
-	@echo "$(BLUE)ℹ️  Commit .test_durations to apply the rebalance to CI$(RESET)"
 
 generate-report-classes: venv ## Development: Regenerate the derived reports.* privacy-class module; commit the result
 	@echo "$(BLUE)🔐 Regenerating derived report-class module...$(RESET)"

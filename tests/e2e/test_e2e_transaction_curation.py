@@ -18,7 +18,7 @@ import pytest
 
 from tests.e2e.conftest import (
     FIXTURES_DIR,
-    make_workflow_env,
+    make_workflow_env_fast,
     run_cli,
 )
 
@@ -41,40 +41,31 @@ def _query_json(env: dict[str, str], sql: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _bootstrap_account(env: dict[str, str], account_id: str) -> None:
-    """Seed ``core.dim_accounts`` by importing a CSV under ``account_id`` then transforming.
-
-    Manual entry validates the supplied ``account_id`` against ``core.dim_accounts``
-    (per ``TransactionService._validate_manual_entry``); a fresh profile has no
-    accounts yet, so each test imports the standard CSV fixture under the desired
-    account_id and runs ``transform apply`` to materialize the dim row.
-    """
-    fixture = FIXTURES_DIR / "tabular" / "standard.csv"
-    run_cli(
-        "import",
-        "files",
-        str(fixture),
-        "--account-id",
-        account_id,
-        "--no-refresh",
-        "--confirm",
-        env=env,
-    ).assert_success()
-    run_cli("transform", "apply", env=env, timeout=180).assert_success()
+def _template_account_id(env: dict[str, str]) -> str:
+    """Return the canonical account ID bootstrapped in the copied snapshot."""
+    result = run_cli("accounts", "list", "--output", "json", env=env)
+    result.assert_success()
+    rows = _loads(result.stdout)["data"]["rows"]
+    assert rows, result.stdout
+    return str(rows[0]["account_id"])
 
 
 class TestManualEntryGoldenPath:
     """Manual entry → transform → query confirms row in core.fct_transactions."""
 
-    def test_create_then_visible_in_fct(self, e2e_home: Path) -> None:
-        env = make_workflow_env(e2e_home, "wf-curation-create")
-        _bootstrap_account(env, "manual-acct")
+    def test_create_then_visible_in_fct(
+        self, _transformed_profile_template: Path, e2e_home: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            e2e_home, "wf-curation-create", _transformed_profile_template
+        )
+        account_id = _template_account_id(env)
 
         result = run_cli(
             "transactions",
             "create",
             "--account",
-            "manual-acct",
+            account_id,
             "--date",
             "2024-06-01",
             "--output",
@@ -106,15 +97,19 @@ class TestManualEntryGoldenPath:
 class TestNotesTagsSplitsGoldenPath:
     """Add notes/tags/splits to a manual transaction → visible via fct LIST columns."""
 
-    def test_curation_columns_populate(self, e2e_home: Path) -> None:
-        env = make_workflow_env(e2e_home, "wf-curation-annotate")
-        _bootstrap_account(env, "manual-acct")
+    def test_curation_columns_populate(
+        self, _transformed_profile_template: Path, e2e_home: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            e2e_home, "wf-curation-annotate", _transformed_profile_template
+        )
+        account_id = _template_account_id(env)
 
         result = run_cli(
             "transactions",
             "create",
             "--account",
-            "manual-acct",
+            account_id,
             "--date",
             "2024-06-02",
             "--output",
@@ -178,9 +173,13 @@ class TestNotesTagsSplitsGoldenPath:
 class TestTagRenameAuditChain:
     """Tag rename across N transactions emits 1 parent + N child audit events."""
 
-    def test_rename_emits_chain(self, e2e_home: Path) -> None:
-        env = make_workflow_env(e2e_home, "wf-curation-tag-rename")
-        _bootstrap_account(env, "manual-acct")
+    def test_rename_emits_chain(
+        self, _transformed_profile_template: Path, e2e_home: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            e2e_home, "wf-curation-tag-rename", _transformed_profile_template
+        )
+        account_id = _template_account_id(env)
 
         # Create three manual transactions and apply the same tag to each.
         txn_ids: list[str] = []
@@ -189,7 +188,7 @@ class TestTagRenameAuditChain:
                 "transactions",
                 "create",
                 "--account",
-                "manual-acct",
+                account_id,
                 "--date",
                 "2024-06-03",
                 "--output",
@@ -255,7 +254,7 @@ class TestSystemAuditUndo:
             "transactions",
             "create",
             "--account",
-            "manual-acct",
+            _template_account_id(env),
             "--date",
             "2024-06-03",
             "--output",
@@ -285,9 +284,12 @@ class TestSystemAuditUndo:
         assert tag_ops, ops
         return tag_ops[0]["operation_id"]
 
-    def test_undo_round_trip(self, e2e_home: Path) -> None:
-        env = make_workflow_env(e2e_home, "wf-audit-undo")
-        _bootstrap_account(env, "manual-acct")
+    def test_undo_round_trip(
+        self, _transformed_profile_template: Path, e2e_home: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            e2e_home, "wf-audit-undo", _transformed_profile_template
+        )
         op = self._tagged_txn_op(env)
 
         # get shows the op as undoable with the tag.add event.
@@ -313,8 +315,12 @@ class TestSystemAuditUndo:
 class TestImportLabelsGoldenPath:
     """CSV import → import labels add → list shows the label."""
 
-    def test_label_round_trip(self, e2e_home: Path) -> None:
-        env = make_workflow_env(e2e_home, "wf-curation-labels")
+    def test_label_round_trip(
+        self, _mutating_profile_template: Path, e2e_home: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            e2e_home, "wf-curation-labels", _mutating_profile_template
+        )
         fixture = FIXTURES_DIR / "tabular" / "standard.csv"
 
         result = run_cli(
@@ -360,16 +366,20 @@ class TestImportLabelsGoldenPath:
 class TestCategoryEditAudit:
     """Editing a transaction's category writes an audit event with before/after."""
 
-    def test_category_set_emits_audit(self, e2e_home: Path) -> None:
-        env = make_workflow_env(e2e_home, "wf-curation-cat-edit")
-        _bootstrap_account(env, "manual-acct")
+    def test_category_set_emits_audit(
+        self, _transformed_profile_template: Path, e2e_home: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            e2e_home, "wf-curation-cat-edit", _transformed_profile_template
+        )
+        account_id = _template_account_id(env)
 
         # Create a transaction and transform so it lands in core.fct_transactions.
         result = run_cli(
             "transactions",
             "create",
             "--account",
-            "manual-acct",
+            account_id,
             "--date",
             "2024-06-04",
             "--output",
@@ -435,7 +445,9 @@ class TestMCPBulkCreate:
     """MCP transactions_create with 5 entries → all 5 land in core.fct_transactions."""
 
     async def test_bulk_create_atomic(
-        self, tmp_path_factory: pytest.TempPathFactory
+        self,
+        _transformed_profile_template: Path,
+        tmp_path_factory: pytest.TempPathFactory,
     ) -> None:
         import os
 
@@ -445,8 +457,10 @@ class TestMCPBulkCreate:
         from tests.e2e.conftest import FAST_ARGON2_ENV
 
         home = tmp_path_factory.mktemp("e2e_curation_mcp")
-        env = make_workflow_env(home, "mcp-curation")
-        _bootstrap_account(env, "mcp-acct")
+        env = make_workflow_env_fast(
+            home, "mcp-curation", _transformed_profile_template
+        )
+        account_id = _template_account_id(env)
 
         server_params = StdioServerParameters(
             command="uv",  # noqa: S607 — uv is on PATH in dev environments
@@ -456,7 +470,7 @@ class TestMCPBulkCreate:
 
         entries = [
             {
-                "account_id": "mcp-acct",
+                "account_id": account_id,
                 "amount": f"-{i + 1}.00",
                 "transaction_date": "2024-06-05",
                 "description": f"mcp row {i}",
