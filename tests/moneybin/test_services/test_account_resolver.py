@@ -2727,6 +2727,11 @@ def test_a_concurrent_ledger_is_not_proposed_as_a_reissue(db: Database) -> None:
     user chose to keep, and the proposer used to file one proposal per pair on
     the shared institution alone. Every such proposal carried its own
     contradiction — no shared transactions over a period both ledgers covered.
+
+    The distinct amounts are that contradiction, and they are what isolates
+    this test from its twin above: a shared span is only half the evidence, so
+    a fixture whose two ledgers agreed on a row would be dropped by neither
+    condition and would prove nothing about either.
     """
     create_core_tables(db)
     _seed_dim_account(
@@ -2744,14 +2749,63 @@ def test_a_concurrent_ledger_is_not_proposed_as_a_reissue(db: Database) -> None:
         last_four="5678",
     )
     _seed_ledger(
-        db, account_id="card_a", first=date(2025, 1, 2), last=date(2025, 12, 30)
+        db,
+        account_id="card_a",
+        first=date(2025, 1, 2),
+        last=date(2025, 12, 30),
+        amount="-10.00",
     )
     _seed_ledger(
-        db, account_id="card_b", first=date(2025, 1, 2), last=date(2025, 12, 31)
+        db,
+        account_id="card_b",
+        first=date(2025, 1, 2),
+        last=date(2025, 12, 31),
+        amount="-37.42",
     )
     resolver = AccountResolver(db, actor="system")
 
     assert resolver.propose_existing("card_a") is None
+
+
+def test_a_concurrent_span_holding_the_same_rows_still_proposes_the_pair(
+    db: Database,
+) -> None:
+    """Overlapping spans are not concurrency — a true twin overlaps by definition.
+
+    Two sources holding one account cover the same period *and* the same
+    transactions, so a drop keyed on the date ranges alone reads that agreement
+    as proof the two ran side by side. That withholds exactly the duplicate the
+    queue exists to catch, and the pair goes on double-counting. Only a period
+    both ledgers cover and *disagree* across refutes a reissue.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="twin_ofx",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="twin_csv",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="5678",
+    )
+    _seed_ledger(
+        db, account_id="twin_ofx", first=date(2025, 1, 2), last=date(2025, 12, 30)
+    )
+    _seed_ledger(
+        db, account_id="twin_csv", first=date(2025, 1, 2), last=date(2025, 12, 30)
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("twin_ofx")
+
+    assert proposal is not None
+    assert [c.account_id for c in proposal.candidates] == ["twin_csv"]
+    assert proposal.candidates[0].signal == "institution_reissue"
 
 
 def test_a_sequential_ledger_still_proposes_the_reissue(db: Database) -> None:

@@ -35,7 +35,7 @@ from moneybin.services.account_resolution_types import (
     is_a_name,
     normalize_account_identifier,
 )
-from moneybin.services.ledger_overlap import fetch_ledger_spans
+from moneybin.services.ledger_overlap import fetch_ledger_spans, probe_ledger_overlap
 from moneybin.services.pdf_account_identity import legacy_pdf_identifier_key
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
@@ -1279,6 +1279,15 @@ class AccountResolver:
         minted seconds ago and no transform has run, so silence there is the
         normal state rather than an answer. That is what keeps the PDF
         replacement-card case — the shape the signal was written for — working.
+
+        Overlapping spans alone are not that positive evidence, and reading
+        them as such inverts the signal on the case that matters most. A true
+        cross-source twin — one account arriving from two sources — covers the
+        same period by construction *and* holds the same rows, so a drop keyed
+        on the date ranges would withhold exactly the duplicate this queue
+        exists to surface and leave it double-counting. Both halves of the
+        original evidence have to hold: the ledgers ran together **and**
+        disagreed across a period both of them covered.
         """
         reissue_ids = [
             c.account_id for c in candidates if c.signal == "institution_reissue"
@@ -1298,10 +1307,24 @@ class AccountResolver:
                 and own.concurrent_with(
                     other, tolerance_days=_REISSUE_MAX_CONCURRENT_DAYS
                 )
+                and self._ledgers_contradict(account_id, candidate.account_id)
             ):
                 continue
             kept.append(candidate)
         return kept
+
+    def _ledgers_contradict(self, account_id: str, other_account_id: str) -> bool:
+        """Whether a period both ledgers cover holds none of the same transactions.
+
+        ``measurable`` is the half that keeps this honest: ``comparable == 0``
+        means the probe found no shared period to compare, which is absence of
+        evidence, not evidence of absence. Only a period both ledgers populated
+        and still agreed on nothing refutes a reissue.
+        """
+        overlap = probe_ledger_overlap(
+            self._db, account_id=account_id, against_account_id=other_account_id
+        )
+        return overlap.measurable and overlap.matched == 0
 
     def _pending_pdf_candidates(
         self, src: SourceAccount, exclude_account_id: str

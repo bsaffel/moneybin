@@ -1238,10 +1238,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one bank. It never checked that the two ledgers were sequential, which is what
   a reissue means, so it proposed pairs that ran side by side for months, each
   carrying its own refutation in zero matched transactions over the period they
-  shared. A proposal is now dropped when both ledgers demonstrably ran at once
-  for longer than a statement cycle. Only positive concurrency drops it: an
-  account with no published ledger keeps its proposal, which is the import-time
-  state the signal was written for.
+  shared. A proposal is now dropped only when that whole refutation holds: the
+  two ledgers ran at once for longer than a statement cycle **and** shared no
+  transaction over a period both of them covered. Requiring the second half
+  matters most for the duplicate this queue exists to catch — one account
+  arriving from two sources overlaps in dates by construction and matches on
+  every row, so dropping on the dates alone would have silently withheld the
+  pair and left it double-counting. Only positive concurrency drops it: an
+  account with no published ledger, or no comparable period to measure, keeps
+  its proposal, which is the import-time state the signal was written for.
 
   Ledger overlap now also states the posting-lag tolerance it matched within, on
   every surface that reports it. "345 of 346" otherwise reads as exact-date

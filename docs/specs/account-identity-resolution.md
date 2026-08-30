@@ -407,11 +407,23 @@ signal reliability:
    differing last four is, in an established book, every pair of cards at one
    bank; without a sequence check the signal proposed pairs that ran
    concurrently for months, each carrying its own refutation in zero matched
-   transactions over a shared period. A proposal is dropped when both ledgers
-   demonstrably overlap by more than `_REISSUE_MAX_CONCURRENT_DAYS` (30, roughly
-   one statement cycle). Only *positive* concurrency drops it — an account with
+   transactions over a shared period. A proposal is dropped only when **both**
+   halves of that refutation hold: the ledgers overlap by more than
+   `_REISSUE_MAX_CONCURRENT_DAYS` (30, roughly one statement cycle), *and*
+   `probe_ledger_overlap` finds zero matched transactions across a period both
+   ledgers populated. Only *positive* concurrency drops it — an account with
    no published ledger keeps its proposal, which is the import-time state the
    signal was written for.
+
+   The transaction half is not redundant with the date half, and dropping on
+   the dates alone inverts the signal on the case that matters most. A true
+   cross-source twin — one account arriving from two sources — overlaps by
+   construction and holds the same rows, so a date-only drop would withhold
+   exactly the duplicate this queue exists to surface and leave it
+   double-counting. `LedgerOverlap.measurable` carries the other edge: a
+   `comparable` count of zero means no shared period was available to compare,
+   which is absence of evidence rather than evidence of absence, and keeps the
+   proposal.
 
    The pass then branches on how many candidates survived:
 
