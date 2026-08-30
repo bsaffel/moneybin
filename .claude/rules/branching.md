@@ -1,5 +1,5 @@
 ---
-description: "Branch prefix → PR label mapping, commit message style"
+description: "Branch prefix → PR label mapping, commit message style, account PII in public branch, PR, and issue text"
 ---
 
 # Branch Naming & PR Labels
@@ -8,38 +8,75 @@ description: "Branch prefix → PR label mapping, commit message style"
 
 `{type}/{kebab-case-summary}` — e.g., `feat/add-oauth-support`, `fix/null-pointer-auth`, `deps/bump-typer`.
 
-## What you publish is a public surface
+## Branch names, PR and issue text, and comments are a public surface
 
-A branch name reaches origin, every PR URL, the reflog, and CI logs — all
-public. So does a commit message, a PR title or body, a review reply, and an
-issue comment. Never build one from real account data: an institution plus a
-last four is a linked pair, and neither a rename nor an edit recalls it. One
-such branch had to be force-deleted from origin with its history rewritten,
-and the worktree directory kept the name afterward. A PR body later had to be
-edited for the same reason, and the commit message it was drafted from still
-carries the value.
+A branch name reaches origin, every PR URL, the reflog, and CI logs. A PR
+title, a PR body, an issue title, an issue body, a review comment, and a commit
+message reach the same places plus notification email — and AGENTS.md routes
+public delivery status and implementation-ready work to this repository's
+issues, so an agent writes them routinely. All of it is public, effectively
+permanent, and written by hand — `SanitizedLogFormatter` guards the log
+pipeline and nothing guards this. Never build any of it from real user data: an
+institution plus a last four is a linked pair, and a rename does not recall it.
+One such branch had to be force-deleted from origin with its history rewritten,
+and the worktree directory kept the name afterward.
+
+Retraction is weaker than it looks, so the scan has to happen before posting.
+Editing a body leaves the prior revision in GitHub's edit history. Rewriting a
+branch is weaker still: a force-pushed-away commit stays fetchable by SHA
+through the commit URL and the REST commits API, so the leak survives a clean
+branch tip and a squash merge alike. Purging it takes GitHub Support, not Git.
 
 Name the defect, not the account — `fix/cross-source-dedup-remediation`, never
 `fix/<bank>-<last-four>-…`. The same applies to worktree directory names, which
-the native mechanism derives from the branch.
+the native mechanism derives from the branch. This rule file is public too:
+describe the shape, never paste the offending name as an example.
 
-**A last four is not made safe by looking masked.** The `****NNNN` form is safe
-because the mask replaces digits that were there. A display label of the form
-`<Account Name> (...<last four>)` replaces nothing — the last four *is* the
-identifying content, and the label wrapped around it supplies the second half
-of the pair. AGENTS.md's "masked identifiers" allowance covers a value reduced
-to a mask, never a value that was only ever a last four.
+### The log permitted list does not transfer
 
-**Quoting the repo does not launder it.** A last four already sitting in a
-spec, a fixture filename, a CHANGELOG entry, or a test is still that account's
-last four when you copy it into a commit message or a PR body — it reaches a
-new audience that was not reading the source file. Cite `path:line` instead,
-or write the shape (`<label> (...<last4>)`). Prose you author is the surface
-this rule governs; a code change that must touch the literal is a different
-question, decided in the file it lives in.
+AGENTS.md → Security bounds log output by `privacy-data-protection.md` §"What
+CAN appear", and that list permits **institution names and masked
+identifiers**. It permits them because a log line is machine-generated, locally
+scoped, and already filtered. Public text is none of those things, so that list
+is not the standard here. Keep all of the following out of a branch name, PR
+title, PR body, issue title, issue body, comment, or commit message.
 
-This rule file is public too: describe the shape, never paste the offending
-value as an example.
+"Real" throughout means it came out of the user's data — a live profile, a real
+session, a connected account. It never means the reader's: the agent applying
+this rule banks nowhere, so a test written as "an institution *you* bank with"
+excludes every institution and passes everything.
+
+- A real institution the user banks with, linked to their holdings. Naming an
+  institution impersonally is fine — as a parser's `<ORG>` value, a statement
+  layout, or a member of a class ("institutions that tokenize account
+  numbers"). What discloses is the link between a real institution and the
+  user's accounts or profile, whatever the grammar carrying it: "two real
+  accounts at `<institution>`" and "validated against real accounts at
+  `<institution>`" disclose the same fact, and neither is possessive. Test for
+  the link, not for a word — no amount of surrounding verification detail makes
+  it necessary.
+- A last four belonging to a real account, masked or bare — `****1234`,
+  `…1234`, `x1234` are the shapes. Masking is a display rule, not a licence to
+  publish.
+- A real account display name, nickname, or balance.
+- A real merchant, counterparty, or transaction description taken from the
+  user's data.
+
+Synthetic values are the default for every example: `1234`, `5678`,
+`Vacation Fund …1111`. A real value never demonstrates a format better than a
+fabricated one does.
+
+### Verification evidence is where this leaks
+
+The diff is not the risk — the **Test plan** is. A verification line reports
+what the run actually touched, and what it touched was a real profile. Report
+the shape instead of the holding: "a 3-year family-persona profile, two
+same-institution accounts, 2,886 transactions, no warning" carries the same
+evidentiary weight as naming the bank and none of the exposure. Counts, date
+spans, and pass/fail totals are fine; the identifying noun is what has to go.
+
+Scan the composed body before posting, not only the staged diff — the body is
+written from session context that no pre-commit check has ever seen.
 
 ## Type → Label Mapping
 
