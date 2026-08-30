@@ -10,19 +10,19 @@ app = typer.Typer(
 )
 
 
-@app.command("status")
+@app.command("status", hidden=True)
 def ml_status() -> None:
     """Show ML model status."""
-    _not_implemented("categorization-ml.md")
+    _not_implemented("ML-assisted categorization")
 
 
-@app.command("train")
+@app.command("train", hidden=True)
 def ml_train() -> None:
     """Train the ML categorization model."""
-    _not_implemented("categorization-ml.md")
+    _not_implemented("ML-assisted categorization")
 
 
-@app.command("apply")
+@app.command("apply", hidden=True)
 def ml_apply() -> None:
     """Apply ML model to uncategorized transactions."""
-    _not_implemented("categorization-ml.md")
+    _not_implemented("ML-assisted categorization")

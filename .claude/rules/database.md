@@ -174,7 +174,7 @@ Both SQLMesh models and schema DDL use the same pattern: `/* description */` blo
 
 **SQLMesh models:** `register_comments` (enabled by default) auto-detects the `/* */` block before `MODEL()` as the table description and inline comments on outermost SELECT columns as column descriptions. Both are applied as `COMMENT ON TABLE`/`COLUMN` on every `sqlmesh run`. Important: if a `column_descriptions` block is present in MODEL(), auto-detection of inline comments is disabled — use one or the other, not both.
 
-**Schema DDL files:** `schema.py:_apply_comments()` uses sqlglot to parse each file — sqlglot attaches `/* */` block comments to adjacent `Create` expressions and trailing `--` comments to `ColumnDef` expressions. Applied on every app startup via `init_schemas`.
+**Schema DDL files:** `schema.py:_comment_plan()` uses sqlglot to parse each file — sqlglot attaches `/* */` block comments to adjacent `Create` expressions and trailing `--` comments to `ColumnDef` expressions. The resulting plan is applied on every app startup via `init_schemas`.
 
 ### Gotchas
 

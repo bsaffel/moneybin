@@ -74,8 +74,8 @@ the design system".
 - **Package manager**: `uv` only. Never `pip install`, `uv pip install`, or `python -m`.
 - **Linting/formatting**: `make format && make lint` (Ruff, line length 88).
 - **Type checking**: `uv run pyright` (not mypy) — the gate is the bare, repo-wide run. A scoped `uv run pyright <path>` is a fast inner loop, never a substitute: it skips the tests you just edited, which is how a green local run becomes a red CI type check.
-- **Tests**: Dev `uv run pytest <path> -v`; pre-commit `make test`. Always `uv run pytest`; wrong interpreter → `uv sync --reinstall`.
-- **Pre-commit checklist**: `make check test` — format, lint, type-check, tests. Run once before committing. **Scope the gate to what the diff touches, and never to less:** a diff containing no `.py` files runs its own layer's gate instead (e.g. `uv run pytest tests/design_system` for `design-system/`), and relies on CI for the rest — the 5,800-test Python suite returns no signal on a markdown-only change. Any diff touching `src/` or `tests/` runs the full checklist. This selects the covering gate; it is not licence to skip one. **`make check test` does not include scenarios** — a diff that changes data shapes, matching/categorization heuristics, or migrations also runs `make test-scenarios`.
+- **Tests**: Dev `uv run pytest <path> -v`; always `uv run pytest`; wrong interpreter → `uv sync --reinstall`.
+- **Pre-commit gate**: `make check` on every `.py` diff and `make format-sql` on every `.sql` diff, repo-wide — format/lint/type catches the import/signature breakage that reds every CI job at once. Then **size the test run by blast radius, not diff size**: run the tests covering what you changed and what imports it; **can't name them → `make test`**. Unit tests parse the SQLMesh models off disk, so a SQL-only diff still runs them. `make test` is unit-only — add `make test-integration` and `make test-scenarios` when the diff touches a shared primitive (`config.py`, `database.py`, `tables.py`, `privacy/`, `repositories/base.py`, `tests/**/conftest.py`, `tests/moneybin/db_helpers.py`), a data shape, a matching/categorization heuristic, or a migration, and `make test-e2e` when CLI startup or packaging can change. Other diffs run their layer's gate: agent instructions and docs → `uv run pytest tests/test_documentation_policy.py`; `design-system/` → `uv run pytest tests/design_system`. Report the gate you ran.
 - **SQL formatting**: `make format-sql` (sets `MAX_FORK_WORKERS=1`; the bare `uv run sqlmesh -p src/moneybin/sqlmesh format` forks a worker pool the encrypted-DB design disallows and the sandbox blocks).
 - **Check library docs first**: Before implementing patterns with SQLMesh, DuckDB, Pydantic, etc., verify the correct API in official docs. Training knowledge may be outdated.
 
@@ -166,6 +166,7 @@ Security-critical parameters (crypto cost factors, key lengths, salt sizes) defi
 
 - **Encryption at rest**: AES-256-GCM on all DuckDB databases. See [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md).
 - **No PII or financial data in logs.** The permitted list is `privacy-data-protection.md` §"What CAN appear" — record counts, entity ids, masked identifiers, category labels and institution names, status codes and operation names, and file paths (never file contents). Nothing outside it. One exception: an account label already reduced to its masked form (`****1098`) may appear in a refusal message, because a caller who passed several keys cannot otherwise tell which one was rejected. That mask is digit-pattern based, so it fires only on keys carrying five or more digits — a shorter key reaches the refusal, and the log, verbatim. Treat that as a known gap, not as licence to widen the exception. See `.claude/rules/identifiers.md` → "Account identifiers".
+- **Public text is stricter than logs.** Branch names, PR and issue titles and bodies, review comments, and commit messages pass through no sanitizer and are effectively permanent. The log list above does *not* transfer: it permits institution names and masked identifiers, which are exactly what must never identify a real holding in public. See `.claude/rules/branching.md` → "Branch names, PR and issue text, and comments are a public surface".
 - **Parameterized SQL** with `?` placeholders. See `.claude/rules/security.md` for full standards.
 
 ## Rules Index
@@ -193,6 +194,6 @@ Files in `.claude/rules/` auto-load via `paths:` frontmatter — path-scoped loa
 | Rule | Covers |
 |------|--------|
 | `design-principles.md` | Durable path selection: one-way-door classifier, public-contract trigger list, the agent protocol, coherence rule. Depth — post-launch contract evolution, the milestone addressing scheme (`M{phase}{letter}.{n}` — append, don't reinvent), what it does NOT mean, the ADR bar: `.claude/references/design-principles-depth.md` |
-| `branching.md` | Branch prefix → PR label mapping, commit message style |
+| `branching.md` | Branch prefix → PR label mapping, commit message style, account PII in public branch, PR, and issue text |
 | `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |
 | `agent-experience.md` | Required agent-experience report whenever you interact with MoneyBin's MCP server in a session |

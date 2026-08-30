@@ -1,9 +1,100 @@
 """Tests for schema initialization and inline-comment application."""
 
+import os
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import moneybin.schema as schema
 from moneybin.database import Database
+
+
+def test_comment_plan_cache_matches_uncached_derivation(tmp_path: Path) -> None:
+    """A cached schema plan must preserve every derived catalog comment."""
+    sql_path = tmp_path / "comments.sql"
+    sql_path.write_text(
+        """
+        /* Account settings. */
+        CREATE TABLE app.account_settings (
+            account_id TEXT, -- Canonical account identifier.
+            display_name TEXT -- User-facing account name.
+        );
+        """
+    )
+    schema._COMMENT_PLAN_CACHE.clear()  # pyright: ignore[reportPrivateUsage]  # cache internals under test
+
+    uncached = schema._derive_comment_plan(  # pyright: ignore[reportPrivateUsage]  # derivation baseline under test
+        sql_path.read_text()
+    )
+    with patch.object(schema.sqlglot, "parse", wraps=schema.sqlglot.parse) as parse:
+        first_cached = schema._comment_plan(sql_path)  # pyright: ignore[reportPrivateUsage]  # cache behavior under test
+        second_cached = schema._comment_plan(sql_path)  # pyright: ignore[reportPrivateUsage]  # cache behavior under test
+
+    assert first_cached == uncached
+    assert second_cached == uncached
+    assert parse.call_count == 1
+
+
+def test_comment_plan_cache_reparses_when_schema_file_changes(tmp_path: Path) -> None:
+    """A changed schema file must not reuse its prior comment plan."""
+    sql_path = tmp_path / "comments.sql"
+    sql_path.write_text(
+        "CREATE TABLE app.first_table (\n  id TEXT -- First identifier.\n);\n"
+    )
+    schema._COMMENT_PLAN_CACHE.clear()  # pyright: ignore[reportPrivateUsage]  # cache internals under test
+
+    first = schema._comment_plan(sql_path)  # pyright: ignore[reportPrivateUsage]  # cache invalidation under test
+    sql_path.write_text(
+        "CREATE TABLE app.second_table (\n  id TEXT -- Second identifier.\n);\n"
+    )
+    sql_path.touch()
+    second = schema._comment_plan(sql_path)  # pyright: ignore[reportPrivateUsage]  # cache invalidation under test
+
+    assert first != second
+    assert second[0].table_name == "second_table"
+
+
+def test_comment_plan_cache_reparses_when_content_changes_with_same_mtime(
+    tmp_path: Path,
+) -> None:
+    """Metadata-preserving schema replacement must not retain stale comments."""
+    sql_path = tmp_path / "comments.sql"
+    sql_path.write_text("CREATE TABLE app.first_table (\n  id TEXT\n);\n")
+    schema._COMMENT_PLAN_CACHE.clear()  # pyright: ignore[reportPrivateUsage]  # cache internals under test
+    first = schema._comment_plan(sql_path)  # pyright: ignore[reportPrivateUsage]  # cache invalidation under test
+    stat = sql_path.stat()
+    sql_path.write_text("CREATE TABLE app.second_table (\n  id TEXT\n);\n")
+    os.utime(sql_path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+    second = schema._comment_plan(sql_path)  # pyright: ignore[reportPrivateUsage]  # cache invalidation under test
+
+    assert first != second
+    assert second[0].table_name == "second_table"
+
+
+def test_reopen_reuses_schema_comment_plans(
+    tmp_path: Path, mock_secret_store: MagicMock
+) -> None:
+    """A second writable open re-applies comments without reparsing schema DDL."""
+    db_path = tmp_path / "moneybin.duckdb"
+    schema._COMMENT_PLAN_CACHE.clear()  # pyright: ignore[reportPrivateUsage]  # cache internals under test
+
+    with patch.object(schema.sqlglot, "parse", wraps=schema.sqlglot.parse) as parse:
+        db = Database(
+            db_path,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+            read_only=False,
+        )
+        db.close()
+        db = Database(
+            db_path,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+            read_only=False,
+        )
+        db.close()
+
+    assert parse.call_count == len(schema._all_schema_files())  # pyright: ignore[reportPrivateUsage]  # source list under test
 
 
 def _reset_seeds_categories_for_v014_replay(db: Database) -> None:

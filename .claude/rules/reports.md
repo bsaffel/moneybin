@@ -105,8 +105,8 @@ complete, and fails the build if the two disagree.
   (`_orphaned_downgrades`) walks the declared downgrades and fails any entry
   naming a column the model no longer selects — otherwise a renamed or dropped
   column's reason would survive unvisited forever, and pre-authorize whatever
-  a future column of the same name declared. Needs no database, so it runs in
-  the default `make check test` gate, not `make test-scenarios`.
+  a future column of the same name declared. Needs no database, so it runs
+  with the unit tests, not `make test-scenarios`.
 - **A `class_downgrades` reason cannot waive an *equal-tier* weakening.** The
   mechanism exists because derivation over-classifies *computed* columns — an
   author asserts "this z-score reveals no amount", a claim about information
