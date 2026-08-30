@@ -143,31 +143,16 @@ Before the source-native key rule above, `--account-id` overwrote
 never collide with their corrected replacements: re-importing that same file
 inserts a second copy beside them and the statement is counted twice.
 
-**Delete the old import batch before re-importing.** `moneybin import history`
-lists the batches; removing the pre-fix one leaves nothing for the corrected
-rows to duplicate.
-
-MoneyBin does not clean these up automatically, and that is deliberate. An
-automatic sweep has to decide which existing rows a re-import replaces, and it
-cannot: the corrected row and its pre-fix twin share no key, so the only
-available match is `(transaction_date, amount, description)` at the same path.
-That match cannot tell one document pinned twice from two different documents
-that reached the same path, and it silently deletes the wrong account's
-transaction when it guesses wrong. Rotating the key is also not free even when
-the match is right — `core.fct_transactions.transaction_id` is derived from
-`source_account_key`, which is why
-[`int_transactions__matched`](../../src/moneybin/sqlmesh/models/prep/int_transactions__matched.sql)
-deliberately keeps the mutable `account_id` out of that derivation. Rewriting
-the source key moves the gold id, and every note, tag, split and
-categorization keyed to it detaches with no forwarding record. Counting a
-statement twice is visible in any report and reversible; silently deleting one
-transaction or orphaning a year of curation is neither.
-
-This is a deliberate deviation from `.claude/rules/identifiers.md`'s "changing
-an id leaves the old one behind — retire it in the same change": a retroactive
-cleanup needs either an old-to-new transaction-id forwarding table or a
-staging-layer suppression like the one `prep.stg_ofx__transactions` already
-uses for superseded FITIDs, and both are their own piece of work.
+Re-import the file normally. Staging retains the pre-fix raw row as the
+authoritative copy and suppresses its corrected twin from the derived ledger.
+No raw rows are deleted and the legacy `transaction_id` remains the gold id, so
+notes, tags, splits, and categorizations remain attached. Suppression is scoped
+to the same canonical account, source file, source origin, and transaction
+content, pairing repeated identical rows one-for-one. A path reused for another
+account therefore retains both accounts' transactions. If the legacy self-map
+was later reversed by an account merge, it cannot prove which later native row
+is its replacement, so staging retains both rather than risk losing a reused
+path's transaction.
 
 ## Common pitfalls
 
