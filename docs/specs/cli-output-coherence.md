@@ -277,6 +277,20 @@ Numbered, each independently testable.
     requirement 22 preserves it. The audit skips recovery-action lines.
 17. No user-facing message names an internal dependency. `SQLMesh` is not a user
     concept; the stage is "transforms".
+
+    **The surface is every console-visible module, not `moneybin.cli`.** The
+    user reads one stderr stream, and the services behind a command write to it
+    on the same terms — `_CONSOLE_SUPPRESSED_PREFIXES` is a denylist, so a
+    module's INFO reaches the console unless it is named there. A CLI-only
+    rename leaves `transform apply` printing "Running SQLMesh transforms"
+    directly above "Transforms applied", and pairs a renamed
+    "Transform state migrated" in `db migrate apply` with
+    `database.py`'s "SQLMesh state updated" on the adjacent path. Seven strings
+    across five modules below the CLI carry it:
+    `services/transform_service.py` (start, failure, completion),
+    `database.py`, `seeds.py`, `services/doctor_service.py`, and
+    `sqlmesh_registry.py`. Contributor-facing prose — comments, module
+    docstrings, the `sqlmesh_registry` module name — is out of scope.
 18. `refresh` emits one `render_note` per pipeline stage naming the stage and its
     observable outcome, including stages whose outcome is zero. A run that changed
     nothing and a run that recategorized 400 transactions are distinguishable from
@@ -286,11 +300,12 @@ Numbered, each independently testable.
     counts, logs them, and returns `str | None`, discarding them. The renderer
     cannot recover a count the service already dropped, and must not re-query for
     it. `RefreshResult` therefore gains a per-stage outcome carrying the counts the
-    steps already compute. This is **one of the two** requirements in this
+    steps already compute. This is **one of the three** requirements in this
     spec that reach below the CLI layer, and it is deliberate: the outcome per
     stage is the payload, so no render-layer-only change can satisfy it.
-    Requirement 16's `merchant_links_run` leak is the other, and its reach is
-    smaller — a message rewrite rather than a carrier change.
+    Requirement 16's `merchant_links_run` leak and requirement 17's five
+    service-layer modules are the others; both reach less far — a message
+    rewrite rather than a carrier change.
 19. The profile banner names the source that actually resolved, or says
     nothing. Two lines carry it, and only one was clean at spec time.
     `src/moneybin/cli/utils.py` logs a bare `Using profile: {profile_name}`,
@@ -411,6 +426,18 @@ Numbered, each independently testable.
      `docs/specs/*.md` does not appear in any message reachable by an installed
      user. Both stub families share one message: two shapes for one situation
      is the coherence failure "one way to do each thing" forbids.
+
+     **One record, at `WARNING`.** `WARNING` is one of `LoggingConfig.level`'s
+     five supported values, and an INFO-level stub message is dropped there —
+     which would leave the three `db key` stubs exiting `1` having printed
+     nothing, a bare failure code with no reason. Those three explained
+     themselves unconditionally through `typer.echo(..., err=True)` before
+     requirement 31 moved them onto the shared helper, so INFO would have made
+     them worse than it found them. The next action rides in the same record
+     rather than a second one, because splitting it would drop exactly the half
+     this requirement demands. Residual: at `ERROR` and `CRITICAL` the message
+     is still suppressed. That is the level a user sets to see only failures,
+     and closing it would need the two message shapes requirement 32 forbids.
 33. Exit codes are unchanged. The tree carries **two** policies, and this spec
     records rather than unifies them: stubs routed through `stubs.py` exit `0`
     (the reasoning is in its docstring — `1` means "ran and failed"), while the

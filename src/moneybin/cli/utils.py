@@ -344,9 +344,12 @@ def sqlmesh_command(
     shadowing the imported ``operation`` context manager.
 
     Args:
-        label: Verb-noun describing the action (e.g. ``"SQLMesh plan"``).
+        label: Verb-noun describing the action (e.g. ``"Seed materialization"``).
             Used in the leading ``⚙️ {label}…`` and trailing
-            ``❌ {label} failed`` lines.
+            ``❌ {label} failed`` lines, so it reaches the user verbatim and
+            names the action in their vocabulary, never a dependency (req 17).
+            The message guard cannot catch a violation here — the string lives
+            at the call site, which is neither ``logger.*`` nor ``typer.echo``.
         success: Custom success message after ``✅ ``. Defaults to
             ``f"{label} completed"``.
     """

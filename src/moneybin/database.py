@@ -753,7 +753,7 @@ class Database:
                         if self.migrate_sqlmesh_state():
                             record_version(self, "sqlmesh", sqlmesh_version)
                             if stored_sqlmesh is not None:
-                                logger.info("  ✅ SQLMesh state updated")
+                                logger.info("  ✅ Transform state updated")
                 except importlib.metadata.PackageNotFoundError:
                     pass  # SQLMesh not installed — skip
 

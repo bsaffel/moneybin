@@ -55,14 +55,20 @@ UNIMPLEMENTED_CLI_INVOCATIONS = {
     "transactions categorize ml train": (),
 }
 UNIMPLEMENTED_CLI_PATHS = set(UNIMPLEMENTED_CLI_INVOCATIONS)
-# Whole-command stubs that exit 1 rather than 0. Kept out of the set above
+# Whole-command stubs that exit 1 rather than 0. Kept out of the map above
 # because that one drives the exit-0 / shared-message assertions; these
 # predate that policy and MB-37 preserves their exit code.
-UNIMPLEMENTED_EXIT_ONE_CLI_PATHS = {
-    "db key export",
-    "db key import",
-    "db key verify",
+#
+# These two maps are the single enumeration of the CLI's whole-command stubs.
+# `test_message_hygiene.py` imports them rather than restating them: a stub
+# added here but not there would otherwise keep its parity mapping while
+# escaping every exit-code, message-shape, and repo-path assertion.
+UNIMPLEMENTED_EXIT_ONE_CLI_INVOCATIONS = {
+    "db key export": (),
+    "db key import": ("envelope.bin",),
+    "db key verify": (),
 }
+UNIMPLEMENTED_EXIT_ONE_CLI_PATHS = set(UNIMPLEMENTED_EXIT_ONE_CLI_INVOCATIONS)
 HIDDEN_COMPATIBILITY_ALIASES = {
     "sync connect": "sync link",
     "sync connect-status": "sync link-status",

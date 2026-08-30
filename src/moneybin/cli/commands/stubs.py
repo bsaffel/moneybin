@@ -27,9 +27,14 @@ def _not_implemented(feature: str) -> None:
     failures via stderr text. The "ran but unimplemented" signal is
     delivered via the logged message (which `setup_logging(cli_mode=True)`
     routes to stderr) rather than the exit code.
+
+    Emitted at WARNING, and as one record rather than two: `WARNING` is a
+    supported `LoggingConfig.level`, and at INFO this message would vanish
+    there — leaving the `db key` stubs, which exit 1, reporting a bare
+    failure code with no reason. Splitting the next action into a second
+    INFO record would lose exactly the half req 32 requires.
     """
-    logger.info("This command is not yet implemented.")
-    logger.info(
-        f"💡 Support for {feature} is planned — "
-        "run `moneybin --help` for what works today."
+    logger.warning(
+        f"⚠️  This command is not yet implemented. Support for {feature} is "
+        "planned — run `moneybin --help` for what works today."
     )

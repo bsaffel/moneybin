@@ -2073,7 +2073,7 @@ class DoctorService:
                             )
                         )
         except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
-            logger.warning(f"SQLMesh audit discovery failed: {e}")
+            logger.warning(f"Transform audit discovery failed: {e}")
             results.append(
                 InvariantResult(
                     name="sqlmesh_audits_unavailable",

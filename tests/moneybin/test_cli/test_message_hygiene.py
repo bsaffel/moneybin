@@ -9,6 +9,7 @@ trio, which predates the helper and inlines its own message.
 """
 
 import ast
+import logging
 from pathlib import Path
 
 import click
@@ -16,31 +17,30 @@ import pytest
 from typer.main import get_command
 from typer.testing import CliRunner
 
-from moneybin.cli import main as cli_main
+import moneybin
+from moneybin.cli.commands.stubs import (
+    _not_implemented,  # pyright: ignore[reportPrivateUsage]
+)
 from moneybin.cli.main import app
+from moneybin.logging.config import (
+    _CONSOLE_SUPPRESSED_PREFIXES,  # pyright: ignore[reportPrivateUsage]
+)
+from tests.moneybin.test_mcp.test_capability_parity import (
+    UNIMPLEMENTED_CLI_INVOCATIONS,
+    UNIMPLEMENTED_EXIT_ONE_CLI_INVOCATIONS,
+)
 
 runner = CliRunner()
 
-# Whole-command stubs: every path through them is unimplemented.
-STUB_COMMANDS = (
-    "budget delete",
-    "budget set",
-    "sync key rotate",
-    "sync schedule remove",
-    "sync schedule set",
-    "sync schedule show",
-    "transactions categorize ml apply",
-    "transactions categorize ml status",
-    "transactions categorize ml train",
-)
+# Whole-command stubs: every path through them is unimplemented. Imported
+# rather than restated — `test_capability_parity` owns the one enumeration,
+# and it is the file a contributor adding a stub must already edit, so a stub
+# cannot reach that list while escaping the assertions below.
+STUB_COMMANDS = tuple(sorted(UNIMPLEMENTED_CLI_INVOCATIONS))
 
 # Whole-command stubs that predate the shared helper and exit 1 rather than 0.
-# MB-37 preserves exit codes, so the divergence is recorded here, not unified.
-EXIT_ONE_STUB_COMMANDS = (
-    "db key export",
-    "db key import",
-    "db key verify",
-)
+# MB-37 preserves exit codes, so the divergence is recorded, not unified.
+EXIT_ONE_STUB_COMMANDS = tuple(sorted(UNIMPLEMENTED_EXIT_ONE_CLI_INVOCATIONS))
 
 ALL_STUB_COMMANDS = STUB_COMMANDS + EXIT_ONE_STUB_COMMANDS
 
@@ -158,20 +158,10 @@ def test_stub_name_absent_from_parent_help(path: str) -> None:
     assert leaf not in result.stdout, f"{path} is advertised by `{parent} --help`"
 
 
-# Arguments needed to reach each stub's body.
+# Arguments needed to reach each stub's body, from the same two maps.
 STUB_INVOCATIONS = {
-    "budget delete": ("Food",),
-    "budget set": ("Food", "100"),
-    "sync key rotate": (),
-    "sync schedule remove": (),
-    "sync schedule set": (),
-    "sync schedule show": (),
-    "transactions categorize ml apply": (),
-    "transactions categorize ml status": (),
-    "transactions categorize ml train": (),
-    "db key export": (),
-    "db key import": ("envelope.bin",),
-    "db key verify": (),
+    **UNIMPLEMENTED_CLI_INVOCATIONS,
+    **UNIMPLEMENTED_EXIT_ONE_CLI_INVOCATIONS,
 }
 
 
@@ -228,12 +218,43 @@ def test_exit_one_stub_keeps_its_exit_code(path: str) -> None:
     assert result.exit_code == 1, result.output
 
 
+def test_stub_message_survives_a_warning_log_level(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A supported log level must not turn a stub into a silent no-op.
+
+    ``WARNING`` is one of ``LoggingConfig.level``'s five supported values. An
+    INFO-level stub message is dropped there, and the three ``db key`` stubs
+    then exit 1 having printed nothing — a bare failure code with no reason.
+    Those three explained themselves unconditionally before req 31 moved them
+    onto the shared helper, so this is the regression that move would cause.
+
+    Calls the helper rather than a command: ``setup_logging(cli_mode=True)``
+    rebuilds the root handlers during ``runner.invoke`` and drops caplog's, so
+    an end-to-end assertion here would read empty whatever the level. That
+    every stub reaches this helper is what the parametrized end-to-end tests
+    above establish; this one owns the level the helper emits at.
+    """
+    with caplog.at_level(logging.WARNING, logger="moneybin.cli.commands.stubs"):
+        _not_implemented("scheduled sync")
+
+    assert "not yet implemented" in caplog.text.lower(), (
+        "the stub message is dropped when the log level is WARNING"
+    )
+    assert "moneybin --help" in caplog.text, (
+        "the stub's next action is dropped when the log level is WARNING"
+    )
+    assert "scheduled sync" in caplog.text, (
+        "the stub message no longer names the feature it stands in for"
+    )
+
+
 # --- Requirement 17: no user-facing message names an internal dependency ----
 
 # SQLMesh is the transform engine. Users have "transforms", not a vendor.
 INTERNAL_DEPENDENCIES = ("SQLMesh",)
 
-CLI_PACKAGE = Path(cli_main.__file__).parent
+SRC_ROOT = Path(moneybin.__file__).parent
 
 
 @pytest.mark.parametrize("path", sorted(_walk_commands()))
@@ -251,6 +272,11 @@ def _user_facing_strings(module: Path) -> list[str]:
 
     Comments and internal docstrings are out of scope — requirement 17 is
     about what the user reads, not what a contributor reads.
+
+    Known blind spot: a message assembled in a local variable and then logged
+    reaches the user but not this scan. Widening to arbitrary dataflow needs
+    more than the AST; the ``--help`` test above and the guides check below
+    cover the surfaces where that has actually happened.
     """
     tree = ast.parse(module.read_text())
     emitted: list[str] = []
@@ -264,7 +290,7 @@ def _user_facing_strings(module: Path) -> list[str]:
         else:
             continue
         is_log = owner == "logger" and called in {"info", "warning", "error"}
-        is_echo = owner == "typer" and called == "echo"
+        is_echo = owner == "typer" and called in {"echo", "secho"}
         if not (is_log or is_echo):
             continue
         for argument in ast.walk(node):
@@ -273,18 +299,49 @@ def _user_facing_strings(module: Path) -> list[str]:
     return emitted
 
 
+def _logger_name(module: Path) -> str:
+    """The logger name ``logging.getLogger(__name__)`` produces in this module."""
+    relative = module.relative_to(SRC_ROOT.parent).with_suffix("")
+    parts = relative.parts
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _reaches_the_console(module: Path) -> bool:
+    """Whether this module's log records survive to the user's stderr.
+
+    ``_CONSOLE_SUPPRESSED_PREFIXES`` is a denylist, so a module is visible
+    unless it is named there. Deriving the exemption from that tuple rather
+    than from a second hand-written list is what keeps the two in step: adding
+    a prefix there silences this check for the same module, and nothing else.
+    """
+    name = _logger_name(module)
+    return not any(
+        name == prefix or name.startswith(f"{prefix}.")
+        for prefix in _CONSOLE_SUPPRESSED_PREFIXES
+    )
+
+
 def test_runtime_messages_name_no_internal_dependency() -> None:
     """The behavioural partner to the --help test above.
 
     ``--help`` cannot see a message that is only emitted mid-run, and those
     messages reach the same reader. Scanning the call sites is what covers
     them without executing every long-running command.
+
+    Scoped to every console-visible module, not to ``moneybin.cli``: the user
+    reads one stderr stream, and the services behind a command write to it on
+    the same terms. A CLI-only scan passes while ``transform apply`` prints
+    "Running SQLMesh transforms" directly above "Transforms applied".
     """
     offenders: list[str] = []
-    for module in sorted(CLI_PACKAGE.rglob("*.py")):
+    for module in sorted(SRC_ROOT.rglob("*.py")):
+        if not _reaches_the_console(module):
+            continue
         for text in _user_facing_strings(module):
             if any(name in text for name in INTERNAL_DEPENDENCIES):
-                offenders.append(f"{module.relative_to(CLI_PACKAGE)}: {text!r}")
+                offenders.append(f"{module.relative_to(SRC_ROOT)}: {text!r}")
 
     assert not offenders, (
         "user-facing messages name an internal dependency:\n" + "\n".join(offenders)
