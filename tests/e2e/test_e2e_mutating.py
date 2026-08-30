@@ -769,7 +769,7 @@ class TestLogsMutating:
 # copy it through make_workflow_env_fast.
 # ---------------------------------------------------------------------------
 
-_OFX_ACCOUNT_ID = "9876543210"  # ACCTID from sample_statement.qfx
+_OFX_ACCOUNT_ID = "9876543210"  # ACCTID from multi_currency_eur.qfx
 
 
 @pytest.fixture(scope="module")

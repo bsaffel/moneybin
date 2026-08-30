@@ -2,6 +2,7 @@ name: CI
 
 on:
   workflow_call:
+  workflow_dispatch:
   schedule:
     - cron: "17 3 * * 6"
   push:
@@ -11,7 +12,7 @@ on:
 # Cancel superseded runs on the same ref so rapid pushes (common with agents)
 # don't pile up behind stale runs. Mirrors scenarios.yml.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -49,7 +50,7 @@ jobs:
   checks:
     name: Checks
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -79,7 +80,7 @@ jobs:
   test-unit:
     name: Unit tests (shard ${{ matrix.group }})
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       # Don't cancel sibling shards on one failure — surface every failing
@@ -139,7 +140,7 @@ jobs:
   coverage:
     name: Coverage report
     needs: [changes, test-unit]
-    if: ${{ always() && needs.changes.outputs.code == 'true' && github.event_name != 'schedule' }}
+    if: ${{ always() && needs.changes.outputs.code == 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -180,7 +181,7 @@ jobs:
   smoke-install:
     name: Clean-install smoke test
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -202,7 +203,7 @@ jobs:
   test-integration:
     name: Integration tests (shard ${{ matrix.group }})
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -250,7 +251,7 @@ jobs:
   test-e2e:
     name: E2E tests (shard ${{ matrix.group }})
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -296,9 +297,9 @@ jobs:
   record-test-durations:
     name: Record CI test durations
     needs: [changes]
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
 
