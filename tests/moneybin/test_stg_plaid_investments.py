@@ -7,9 +7,11 @@ Also covers the core boundary those views feed: the three-branch union into
 
 from __future__ import annotations
 
+import shutil
 import uuid
 from collections.abc import Generator
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -250,6 +252,20 @@ def _module_database(
         tmp_path_factory.mktemp(name) / "test.duckdb",
         secret_store=secret_store,
         no_auto_upgrade=True,
+        read_only=False,
+    )
+    request.addfinalizer(db.close)
+    return db
+
+
+def _snapshot_database(path: Path, request: pytest.FixtureRequest) -> Database:
+    secret_store = MagicMock()
+    secret_store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    db = Database(
+        path,
+        secret_store=secret_store,
+        no_auto_upgrade=True,
+        assume_initialized=True,
         read_only=False,
     )
     request.addfinalizer(db.close)
@@ -1294,11 +1310,11 @@ def test_taxonomy_emits_only_closed_vocabulary(
 
 
 @pytest.fixture(scope="module")
-def bootstrap_cases(
+def bootstrap_cases_template(
     tmp_path_factory: pytest.TempPathFactory,
     request: pytest.FixtureRequest,
-) -> Generator[Database, None, None]:
-    """The spec's reconciliation cases A–H plus the no-gap and guard cases."""
+) -> Path:
+    """Closed, planned baseline for the opening-lot reconciliation cases."""
     db = _module_database(tmp_path_factory, request, "plaid_investment_bootstrap")
     # A: pre-window buy, untouched. 100 shares @ 2021-03-11, basis 1000.
     _raw_holding(db, security_id="sec_a", quantity="100", cost_basis="1000.00")
@@ -1676,7 +1692,32 @@ def bootstrap_cases(
     _link_security(db, "mb21_absent_security", "cat0000000d3")
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
-    yield db
+    db.close()
+    return db.path
+
+
+@pytest.fixture(scope="module")
+def bootstrap_cases(
+    tmp_path_factory: pytest.TempPathFactory,
+    request: pytest.FixtureRequest,
+    bootstrap_cases_template: Path,
+) -> Generator[Database, None, None]:
+    """Read-only reconciliation baseline kept separate from the rebuild case."""
+    path = tmp_path_factory.mktemp("plaid_investment_bootstrap_cases") / "test.duckdb"
+    shutil.copy(bootstrap_cases_template, path)
+    yield _snapshot_database(path, request)
+
+
+@pytest.fixture()
+def bootstrap_rebuild_case(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+    bootstrap_cases_template: Path,
+) -> Database:
+    """Per-test copy so a real rebuild cannot pollute the shared baseline."""
+    path = tmp_path / "test.duckdb"
+    shutil.copy(bootstrap_cases_template, path)
+    return _snapshot_database(path, request)
 
 
 def _opening(db: Database, security_id: str) -> list[tuple[object, ...]]:
@@ -1850,21 +1891,21 @@ def test_bootstrap_row_carries_the_ledger_shape(bootstrap_cases: Database) -> No
 
 @pytest.mark.slow
 def test_bootstrap_ids_stable_across_rebuild_and_later_snapshots(
-    bootstrap_cases: Database,
+    bootstrap_rebuild_case: Database,
 ) -> None:
     """A later snapshot must never rewrite (or duplicate) a frozen bootstrap lot."""
-    before = _opening(bootstrap_cases, "sec_a")
+    before = _opening(bootstrap_rebuild_case, "sec_a")
     _raw_holding(
-        bootstrap_cases,
+        bootstrap_rebuild_case,
         security_id="sec_a",
         quantity="0",
         cost_basis="0",
         source_file="mb21_bootstrap_later",
         extracted_at="2026-08-01 12:00:00",
     )
-    with sqlmesh_context(bootstrap_cases) as ctx:
+    with sqlmesh_context(bootstrap_rebuild_case) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
-    after = _opening(bootstrap_cases, "sec_a")
+    after = _opening(bootstrap_rebuild_case, "sec_a")
     assert len(after) == 1
     assert before == after
     assert after[0][:4] == (
