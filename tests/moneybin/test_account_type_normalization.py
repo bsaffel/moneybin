@@ -209,7 +209,7 @@ def account_type_cases_template(
             source_origin=origin,
         )
 
-    for name, suffix in (("typeless_a", "4387"), ("typeless_b", "3431")):
+    for name, suffix in (("typeless_a", "4242"), ("typeless_b", "7080")):
         # ``dim_accounts`` derives last_four only from a numeric native account id.
         # Keep that real input shape while the source origin and canonical id isolate
         # this template case from every other row.
@@ -234,7 +234,7 @@ def account_type_cases_template(
     ):
         # The Chase display assertion needs the provider's numeric suffix in its
         # native id; the source origin and canonical id still namespace this case.
-        native = "ofx-b1-4387" if name == "opaque_org" else _case_id(f"{name}_native")
+        native = "ofx-b1-4242" if name == "opaque_org" else _case_id(f"{name}_native")
         origin = _case_origin(name)
         _ofx_account(
             db,
@@ -392,8 +392,8 @@ def test_typeless_accounts_stay_distinguishable_by_last_four(
     assert len(set(names)) == 2, (
         f"typeless accounts collided on display_name: {names!r}"
     )
-    assert "4387" in names[0], names[0]
-    assert "3431" in names[1], names[1]
+    assert "4242" in names[0], names[0]
+    assert "7080" in names[1], names[1]
     # And no double space where the absent type used to be interpolated.
     assert all("  " not in n for n in names), names
 
@@ -414,7 +414,7 @@ def test_opaque_ofx_org_code_resolves_to_a_readable_institution_name(
     ).fetchone()
     assert row is not None
     assert row[0] == "Chase", f"expected the FID to resolve a name, got {row[0]!r}"
-    assert row[1] == "Chase credit card …4387", row[1]
+    assert row[1] == "Chase credit card …4242", row[1]
 
 
 @pytest.mark.slow

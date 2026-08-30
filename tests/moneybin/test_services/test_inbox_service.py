@@ -863,7 +863,7 @@ class TestSyncFailure:
             "candidates": [
                 {
                     "account_id": "acct_a",
-                    "display_name": "WF CHECKING …4267",
+                    "display_name": "WF CHECKING …1212",
                     "signal": "fallback",
                 }
             ],
@@ -1945,16 +1945,16 @@ class TestArchiveConfirmedFile:
         inbox_service.ensure_layout()
         pending_month = inbox_service.pending_dir / "2026-06"
         pending_month.mkdir(parents=True)
-        src = pending_month / "WF-BusinessChecking.csv"
+        src = pending_month / "BankExport-Checking.csv"
         src.write_text("a,b\n1,2\n")
-        sidecar = pending_month / "WF-BusinessChecking.csv.pending.yml"
+        sidecar = pending_month / "BankExport-Checking.csv.pending.yml"
         sidecar.write_text("reason: account_confirmation\n")
 
         final = inbox_service.archive_confirmed_file(src)
 
         assert final is not None
         assert (
-            final == inbox_service.processed_dir / "2026-06" / "WF-BusinessChecking.csv"
+            final == inbox_service.processed_dir / "2026-06" / "BankExport-Checking.csv"
         )
         assert final.exists()
         assert not src.exists()

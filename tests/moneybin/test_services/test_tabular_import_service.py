@@ -417,7 +417,7 @@ def test_single_account_csv_captures_last4_from_label(
     import_answering_gate(
         svc,
         _STANDARD_CSV,
-        account_name="WF Checking (...4267)",
+        account_name="WF Checking (...1212)",
         refresh=False,
         confirm=True,
         auto_accept=True,
@@ -428,7 +428,7 @@ def test_single_account_csv_captures_last4_from_label(
         WHERE source_type IN ('csv', 'tsv', 'excel')
         """
     ).fetchone()
-    assert masked is not None and masked[0] == "****4267", masked
+    assert masked is not None and masked[0] == "****1212", masked
 
 
 def test_pinned_csv_import_keeps_the_files_own_key_on_the_raw_row(

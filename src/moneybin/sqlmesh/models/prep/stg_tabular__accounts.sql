@@ -7,6 +7,7 @@ SELECT
   COALESCE(links.account_id, a.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
   a.account_id AS source_account_key,
   a.account_name,
+  NULLIF(TRIM(a.account_label), '') AS account_label, /* already masked and stripped by the importer; dim_accounts names the account by it */
   a.account_number,
   a.account_number_masked,
   m.account_type,

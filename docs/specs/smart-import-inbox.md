@@ -135,7 +135,7 @@ $ moneybin import inbox
    account, =new mints one; or move the file into inbox/<account-slug>/ and
    re-sync):
      @0  account: ****hash
-       9f8e7d6c5b4a  Wells Fargo Checking ••9940
+       9f8e7d6c5b4a  Wells Fargo Checking ••3030
 Done: 1 imported, 0 failed, 1 pending.
 ```
 
@@ -164,7 +164,7 @@ projection of the existing `import_status` tool.
          {"source_account_key": "unknown-bank-<hash>", "proposed_account_id": "ab12cd34ef56",
           "is_new": true, "requires_confirm": true,
           "candidates": [
-            {"account_id": "9f8e7d6c5b4a", "display_name": "Wells Fargo Checking ••9940",
+            {"account_id": "9f8e7d6c5b4a", "display_name": "Wells Fargo Checking ••3030",
              "signal": "institution"}
           ]}
        ]}
