@@ -309,7 +309,7 @@ def profile_set(
 
     Dotted ``section.field`` keys write the profile's ``config.yaml``. Undotted
     managed keys (``home_currency``) write ``app.profile_settings`` in the
-    profile's database, where the SQLMesh report guards can read them.
+    profile's database, where the report guards can read them.
     """
     svc = ProfileService()
     target: str

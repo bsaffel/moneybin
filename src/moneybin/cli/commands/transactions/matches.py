@@ -88,7 +88,7 @@ def matches_pending(
 @app.command("run")
 def matches_run(
     skip_transform: bool = typer.Option(
-        False, "--skip-transform", help="Skip SQLMesh transforms after matching"
+        False, "--skip-transform", help="Skip transforms after matching"
     ),
     auto_accept_transfers: bool = typer.Option(
         False,
@@ -251,7 +251,7 @@ def matches_set(
 @app.command("backfill")
 def matches_backfill(
     skip_transform: bool = typer.Option(
-        False, "--skip-transform", help="Skip SQLMesh transforms after matching"
+        False, "--skip-transform", help="Skip transforms after matching"
     ),
     auto_accept_transfers: bool = typer.Option(
         False,

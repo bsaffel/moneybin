@@ -327,31 +327,31 @@ class DoctorService:
             presence = model_presence(self._db)
         except Exception as e:  # noqa: BLE001 — per-invariant isolation; an unreadable catalog is not a fresh profile
             return InvariantResult(
-                name="sqlmesh_model_presence",
+                name="transform_model_presence",
                 status="skipped",
                 detail=f"model catalog unavailable: {e}",
                 affected_ids=[],
             )
         if presence.never_built:
             return InvariantResult(
-                name="sqlmesh_model_presence",
+                name="transform_model_presence",
                 status="skipped",
-                detail="no SQLMesh models built yet; run refresh_run",
+                detail="no transform models built yet; run refresh_run",
                 affected_ids=[],
             )
         if not presence.missing:
             return InvariantResult(
-                name="sqlmesh_model_presence",
+                name="transform_model_presence",
                 status="pass",
                 detail=None,
                 affected_ids=[],
             )
         missing = list(presence.missing)
         return InvariantResult(
-            name="sqlmesh_model_presence",
+            name="transform_model_presence",
             status="fail",
             detail=(
-                f"{len(missing)} registered SQLMesh model(s) have no table or view: "
+                f"{len(missing)} registered transform model(s) have no table or view: "
                 f"{', '.join(missing[:5])}"
                 f"{' …' if len(missing) > 5 else ''}"
             ),
@@ -2073,12 +2073,12 @@ class DoctorService:
                             )
                         )
         except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
-            logger.warning(f"SQLMesh audit discovery failed: {e}")
+            logger.warning(f"Transform audit discovery failed: {e}")
             results.append(
                 InvariantResult(
-                    name="sqlmesh_audits_unavailable",
+                    name="transform_audits_unavailable",
                     status="skipped",
-                    detail=f"SQLMesh audit discovery failed: {e}",
+                    detail=f"Transform audit discovery failed: {e}",
                     affected_ids=[],
                 )
             )
