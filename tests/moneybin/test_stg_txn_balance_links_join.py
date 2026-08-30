@@ -577,15 +577,19 @@ def test_stg_tabular_transactions_preserves_legacy_transaction_curation(
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize(
+    "proposal_status", ["tracking", "pending", "approved", "rejected", "superseded"]
+)
 def test_stg_tabular_transactions_keeps_curated_corrected_duplicates(
     db: Database,
+    proposal_status: str,
 ) -> None:
-    """An upgrade never hides a corrected duplicate with existing app curation."""
+    """An upgrade never hides a corrected duplicate with an app reference."""
     canonical_id = "canonical-upgrade-curation-01"
     native_key = "native-upgrade-curation-01"
     source_file = "upgrade-curation-statement.csv"
     source_origin = "upgrade-curation-test"
-    source_ids = ["category", "note", "tag", "split", "decision"]
+    source_ids = ["category", "note", "tag", "split", "decision", "alias", "proposal"]
 
     for source_id in source_ids:
         db.execute(
@@ -668,6 +672,22 @@ def test_stg_tabular_transactions_keeps_curated_corrected_duplicates(
         """,  # noqa: S608  # test fixture
         [corrected_ids[corrected_source_ids["decision"]]],
     )
+    db.execute(
+        """
+        INSERT INTO app.transaction_id_aliases
+            (old_transaction_id, new_transaction_id, created_at)
+        VALUES ('superseded-upgrade-alias', ?, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [corrected_ids[corrected_source_ids["alias"]]],
+    )
+    db.execute(
+        """
+        INSERT INTO app.proposed_rules
+            (proposed_rule_id, merchant_pattern, category, status, sample_txn_ids)
+        VALUES ('proposal-upgrade-curation', 'Test purchase', 'Food', ?, ARRAY[?])
+        """,  # noqa: S608  # test fixture
+        [proposal_status, corrected_ids[corrected_source_ids["proposal"]]],
+    )
 
     for source_id in source_ids:
         db.execute(
@@ -705,7 +725,7 @@ def test_stg_tabular_transactions_keeps_curated_corrected_duplicates(
             """
             SELECT transaction_id
             FROM core.fct_transactions
-            WHERE transaction_id IN (?, ?, ?, ?, ?)
+            WHERE transaction_id IN (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 corrected_ids[corrected_source_ids[source_id]]

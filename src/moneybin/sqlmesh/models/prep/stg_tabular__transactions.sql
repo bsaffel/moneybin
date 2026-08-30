@@ -109,6 +109,10 @@ WITH accepted_native_links AS (
   SELECT
     new_transaction_id AS transaction_id
   FROM app.transaction_id_aliases
+  UNION
+  SELECT
+    UNNEST(sample_txn_ids) AS transaction_id
+  FROM app.proposed_rules
 ), ranked AS (
   SELECT
     transaction_id,
