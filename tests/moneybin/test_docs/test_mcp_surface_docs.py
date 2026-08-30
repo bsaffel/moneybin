@@ -294,7 +294,7 @@ def test_markdown_heading_breadcrumb_preserves_partial_heading_titles() -> None:
 
 
 def test_mcp_contract_name_pattern_rejects_empty_name_sets() -> None:
-    assert _mcp_contract_name_pattern(frozenset()).search("anything") is None
+    assert _mcp_contract_name_pattern(frozenset[str]()).search("anything") is None
 
 
 def _markdown_table_column_header(text: str, offset: int) -> str | None:
