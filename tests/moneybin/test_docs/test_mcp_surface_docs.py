@@ -255,10 +255,11 @@ def _identifier_is_qualified_or_data_value(
 @cache
 def _markdown_headings(
     text: str,
-) -> tuple[tuple[int, ...], tuple[tuple[str, ...], ...]]:
+) -> tuple[tuple[int, ...], tuple[tuple[str, ...], ...], tuple[tuple[int, int], ...]]:
     headings: list[tuple[int, str]] = []
     offsets: list[int] = []
     breadcrumbs: list[tuple[str, ...]] = []
+    title_spans: list[tuple[int, int]] = []
     for match in re.finditer(r"(?m)^(#{1,6})[ \t]+([^\n]+)$", text):
         level = len(match.group(1))
         while headings and headings[-1][0] >= level:
@@ -266,13 +267,25 @@ def _markdown_headings(
         headings.append((level, match.group(2)))
         offsets.append(match.start())
         breadcrumbs.append(tuple(title for _, title in headings))
-    return tuple(offsets), tuple(breadcrumbs)
+        title_spans.append(match.span(2))
+    return tuple(offsets), tuple(breadcrumbs), tuple(title_spans)
 
 
 def _markdown_heading_breadcrumb(text: str, offset: int) -> tuple[str, ...]:
-    offsets, breadcrumbs = _markdown_headings(text)
+    offsets, breadcrumbs, title_spans = _markdown_headings(text)
     index = bisect_right(offsets, offset) - 1
-    return breadcrumbs[index] if index >= 0 else ()
+    if index < 0:
+        return ()
+    title_start, title_end = title_spans[index]
+    if title_start <= offset < title_end:
+        return breadcrumbs[index][:-1] + (text[title_start:offset],)
+    return breadcrumbs[index]
+
+
+def test_markdown_heading_breadcrumb_preserves_partial_heading_titles() -> None:
+    text = "## MCP tools\n"
+
+    assert _markdown_heading_breadcrumb(text, text.index("tools")) == ("MCP ",)
 
 
 def _markdown_table_column_header(text: str, offset: int) -> str | None:
