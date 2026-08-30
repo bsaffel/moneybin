@@ -130,7 +130,8 @@ class GoogleOAuthClient:
         if not client_id:
             raise GSheetAuthError(
                 "Google Sheets OAuth client ID is not configured. Set "
-                "MONEYBIN_GSHEET__OAUTH_CLIENT_ID."
+                "MONEYBIN_GSHEET__OAUTH_CLIENT_ID. See "
+                "docs/guides/connect-gsheet.md."
             )
         client_secret = self._settings.gsheet.oauth_client_secret
         if not client_secret:
@@ -138,7 +139,8 @@ class GoogleOAuthClient:
                 "Google Sheets OAuth client secret is not configured. Google's "
                 "Desktop clients require it alongside the client ID for both "
                 "the authorization exchange and later token refreshes. Set "
-                "MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET."
+                "MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET. See "
+                "docs/guides/connect-gsheet.md."
             )
         return client_id, client_secret.get_secret_value()
 

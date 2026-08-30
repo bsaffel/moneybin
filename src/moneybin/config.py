@@ -450,9 +450,11 @@ class SyncConfig(BaseModel):
     )
 
 
-# Public installed-app OAuth client. Native apps are public clients (RFC 8252)
-# and cannot hold a secret, so PKCE and the loopback redirect carry the security
-# and this ships in source — a wheel contains no dotenv to read it from.
+# Public installed-app OAuth client. A native app cannot keep a shipped
+# credential confidential (RFC 8252), so hiding this buys nothing and it lives
+# in source — a wheel contains no dotenv to read it from. That is not the same
+# as needing no secret: Google's Desktop clients still require one in the
+# code->token exchange, which oauth_client_secret below supplies.
 # connect-gsheet.md "Design rationale"; a wrong-field copy would land in
 # SyncConfig.oauth_client_id, which is the unrelated Auth0 client.
 # Must stay in MoneyBin's own Google Cloud project — the consent screen shows

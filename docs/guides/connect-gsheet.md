@@ -49,7 +49,7 @@ export MONEYBIN_GSHEET__OAUTH_CLIENT_ID="<your-client-id>.apps.googleusercontent
 export MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET="<your-client-secret>"
 ```
 
-Set both or neither — an ID without a secret is refused, and so is a secret without an ID.
+Set both. Setting neither is not a working alternative: the client ID falls back to MoneyBin's embedded value, which leaves an ID with no secret — the state `gsheet auth` refuses.
 
 Export them somewhere your scheduled runs will see them, not just your interactive shell. The refresh grant needs the same pair as the initial exchange, so a `launchd`/`cron` `moneybin refresh` that starts without them fails once the cached access token ages out, roughly an hour after an authorization that looked fine.
 
