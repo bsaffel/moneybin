@@ -501,8 +501,8 @@ def test_write_query_raises(populated_db: Database) -> None:
     assert ei.value.code == error_codes.SQL_INVALID_QUERY
 
 
-# Every keyword `_WRITE_PATTERNS` blocks, lowercased the way the issue's
-# repro used them — the regex is case-insensitive either way.
+# Every keyword the old text-scanning guard blocked, lowercased the way the
+# issue's repro used them — write detection is case-insensitive either way.
 _WRITE_KEYWORDS = [
     "insert",
     "update",
@@ -525,31 +525,57 @@ _WRITE_KEYWORDS = [
 def test_write_keyword_inside_string_literal_is_not_rejected(keyword: str) -> None:
     """A write keyword occurring only inside a quoted literal is not a write.
 
-    Regression test for #447: ``_WRITE_PATTERNS`` scanned raw query text, so
-    ``SELECT 'export' AS probe`` was refused as though it contained a real
-    ``EXPORT`` statement — one character away, ``SELECT 'expor' AS control``
-    was always accepted. The bug was scanning quoted content at all, not
-    anything specific to the word "export".
+    Regression test for #447: the write-operation guard used to scan raw
+    query text, so ``SELECT 'export' AS probe`` was refused as though it
+    contained a real ``EXPORT`` statement — one character away,
+    ``SELECT 'expor' AS control`` was always accepted. The bug was scanning
+    quoted content at all, not anything specific to the word "export". The
+    guard now checks the parsed AST's expression types instead of matching
+    text, so a word appearing in a position sqlglot never resolves to a write
+    node (a literal, an identifier, a comment) cannot trip it.
     """
     assert validate_read_only_query(f"SELECT '{keyword}' AS probe") is None
 
 
 def test_write_keyword_inside_string_literal_with_escaped_quote() -> None:
-    """An escaped quote (``''``) inside the literal must not end it early.
+    """An escaped quote (``''``) inside the literal is still just data.
 
-    A naive quote-splitting mask would treat ``it''s`` as closing after
-    ``it`` and reopening before ``s``, which un-masks ``update`` between them.
+    Pins that the shared parser (also used for schema/lineage resolution)
+    tokenizes ``it''s`` as one literal rather than ending it early at the
+    first apostrophe, which would otherwise un-mask ``update`` between them.
     """
     assert validate_read_only_query("SELECT 'it''s time to update' AS note") is None
 
 
-def test_real_write_keyword_still_rejected_alongside_masked_literal() -> None:
-    """Masking a literal must not blind the guard to a REAL write elsewhere.
+@pytest.mark.parametrize(
+    "sql",
+    [
+        pytest.param("SELECT e'export' AS probe", id="escape-string"),
+        pytest.param("SELECT $$export$$ AS probe", id="dollar-quoted-string"),
+        pytest.param('SELECT "export" FROM t', id="double-quoted-identifier"),
+        pytest.param("SELECT 1 -- export this later", id="trailing-comment"),
+    ],
+)
+def test_write_keyword_outside_a_string_literal_is_not_rejected(sql: str) -> None:
+    """A write keyword in a non-literal quoted/commented position is not a write.
 
-    The query is a legal read-only prefix (``WITH ...``) carrying a write
-    verb in the CTE body, plus an unrelated masked literal — proving the mask
-    only removes false positives from quoted text, not detection of an
-    actual write.
+    DuckDB has more ways to carry the text "export" without writing anything:
+    an escape string (``e'...'``), a dollar-quoted string (``$$...$$``), a
+    double-quoted identifier (a column literally named ``export``), and a
+    ``--`` comment. None of these produce a write-type AST node, so the
+    AST-based guard passes all four (verified against the real ``duckdb``
+    engine that each is valid, keyword-free SQL).
+    """
+    assert validate_read_only_query(sql) is None
+
+
+def test_real_write_keyword_still_rejected_alongside_string_literal() -> None:
+    """A quoted literal elsewhere must not blind the guard to a REAL write.
+
+    The query is a legal read-only prefix (``WITH ...``) carrying a write verb
+    in the CTE body, plus an unrelated string literal that also happens to
+    contain a write keyword — proving the AST check only reacts to an actual
+    write-type node, not to the word appearing anywhere in the text.
     """
     error = validate_read_only_query(
         "WITH x AS (UPDATE core.fct_transactions SET amount = 1) "

@@ -24,10 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import duckdb
-import sqlglot
 from sqlglot import exp
-from sqlglot.errors import TokenError
-from sqlglot.tokenizer_core import TokenType
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -127,39 +124,43 @@ _READ_ONLY_PREFIXES = re.compile(
     re.IGNORECASE,
 )
 
-# Patterns that indicate write operations (even inside CTEs). Matched against
-# the string-literal-masked text (`_mask_string_literals`) below, not the raw
-# query: a real DML/DDL keyword is never inside a quoted literal, so masking
-# only removes false positives (`SELECT 'export' AS probe`) and cannot hide an
-# actual write.
-_WRITE_PATTERNS = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|REPLACE|MERGE|COPY|ATTACH|DETACH|EXPORT|IMPORT)\b",
-    re.IGNORECASE,
+# Concrete sqlglot expression types for every write operation this gate
+# refuses (even nested inside a CTE). Structural, not textual: a query is
+# checked by what it PARSES to, so an ordinary word that merely LOOKS like a
+# keyword — inside a string literal (`'export'`, `e'export'`, `$$export$$`),
+# a quoted identifier (`"update"`), or a `-- comment` — can never trip this,
+# because none of those produce one of these node types. `find_all` walks the
+# whole tree, so a write buried in a CTE or a semicolon-separated second
+# statement is still caught (`SELECT 1; DROP TABLE x` verified).
+#
+# `EXPORT DATABASE`, `IMPORT DATABASE`, and bare `REPLACE INTO` have no
+# dedicated sqlglot node for the duckdb dialect (`REPLACE INTO` isn't even
+# valid DuckDB syntax — only `INSERT OR REPLACE INTO`, which parses as
+# `exp.Insert`) and are not covered here. That's safe: each is a top-level-only
+# statement DuckDB's own grammar refuses anywhere but the start of a query
+# (verified: `WITH x AS (SELECT 1) EXPORT DATABASE 'dir'` is a DuckDB parser
+# error, not a valid nested form), so `_READ_ONLY_PREFIXES` above already
+# refuses it as a bare statement before this check would run. The same holds
+# for DDL sqlglot falls back to a generic `exp.Command` for (e.g. `ALTER
+# SEQUENCE ... RESTART`, `DROP TYPE`, `CREATE TYPE ... AS ENUM`) — verified
+# each is likewise rejected by DuckDB when following `WITH x AS (SELECT 1)`.
+_WRITE_EXPRESSION_TYPES = (
+    exp.Insert,
+    exp.Update,
+    exp.Delete,
+    exp.Create,
+    exp.Drop,
+    exp.Alter,
+    exp.TruncateTable,
+    exp.Merge,
+    exp.Copy,
+    exp.Attach,
+    exp.Detach,
 )
 
 
-def _mask_string_literals(sql: str) -> str:
-    """Blank the contents of every string literal, quotes included.
-
-    An ordinary word inside a quoted literal (``'export'``, ``'update'``) is
-    data, not a keyword, but a text-only regex can't tell the difference.
-    Uses sqlglot's tokenizer rather than a bespoke quote scanner so an escaped
-    quote (``'it''s'``) doesn't end the literal early.
-
-    Falls back to the original text on a tokenize failure — genuinely
-    malformed SQL still reaches the same "could not parse" error a few lines
-    later in the normal parse step, just without this mask applied first.
-    """
-    try:
-        tokens = sqlglot.tokenize(sql, read="duckdb")
-    except TokenError:
-        return sql
-    masked = sql
-    string_tokens = [t for t in tokens if t.token_type is TokenType.STRING]
-    for token in sorted(string_tokens, key=lambda t: t.start, reverse=True):
-        span = token.end - token.start + 1
-        masked = masked[: token.start] + " " * span + masked[token.end + 1 :]
-    return masked
+def _contains_write_operation(tree: exp.Expr) -> bool:
+    return next(tree.find_all(*_WRITE_EXPRESSION_TYPES), None) is not None
 
 
 def validate_read_only_query(sql: str) -> str | None:
@@ -202,7 +203,15 @@ def validate_read_only_query(sql: str) -> str | None:
             "Queries must read from database tables only."
         )
 
-    if _WRITE_PATTERNS.search(_mask_string_literals(stripped)):
+    # A parse error here is not this gate's to report: return None and let the
+    # caller's own parse surface it with its own error code. Both remaining
+    # checks need the parsed tree, so parse once (cached) and reuse it.
+    try:
+        tree = parse_cached(stripped)
+    except SqlParseError:
+        return None
+
+    if _contains_write_operation(tree):
         return (
             "Write operations (INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, etc.) "
             "are not allowed."
@@ -211,13 +220,8 @@ def validate_read_only_query(sql: str) -> str | None:
     # Every statement in `SELECT 1; SELECT routing_number FROM ...` is
     # individually a legal read, so none of the checks above fire — but DuckDB
     # returns the LAST statement's rows while classification reads the first.
-    # A parse error here is not this gate's to report: return None and let the
-    # caller's parse surface it with its own error code.
-    try:
-        if is_multi_statement(parse_cached(stripped)):
-            return "Queries must be one statement; remove the extra ';'-separated SQL."
-    except SqlParseError:
-        return None
+    if is_multi_statement(tree):
+        return "Queries must be one statement; remove the extra ';'-separated SQL."
 
     return None
 
