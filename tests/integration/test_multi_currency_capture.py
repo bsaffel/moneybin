@@ -15,11 +15,11 @@ import pytest
 
 from moneybin.database import Database, sqlmesh_context
 from moneybin.services.import_service import ImportService
+from tests.integration.conftest import make_secret_store
 
 pytestmark = pytest.mark.integration
 
 _FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
-_ENCRYPTION_KEY = "integration-test-key-0123456789abcdef"
 
 
 def _build_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Database:
@@ -33,8 +33,7 @@ def _build_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Database:
     ImportService's refresh=True) reuses this same encrypted connection
     instead of opening an unencrypted one at the default path.
     """
-    secret_store = MagicMock()
-    secret_store.get_key.return_value = _ENCRYPTION_KEY
+    secret_store = make_secret_store()
     db_path = tmp_path / "multi_currency_eur.duckdb"
     db = Database(db_path, secret_store=secret_store, read_only=False)
     mock_settings = MagicMock()

@@ -15,16 +15,9 @@ from moneybin.mcp.tools.transactions_categorize_assist import (
     transactions_categorize_assist,
 )
 from moneybin.services.categorization import RedactedTransaction
+from tests.integration.conftest import make_secret_store as _make_secret_store
 
 pytestmark = pytest.mark.integration
-
-_ENCRYPTION_KEY = "integration-test-key-0123456789abcdef"
-
-
-def _make_secret_store() -> MagicMock:
-    store = MagicMock()
-    store.get_key.return_value = _ENCRYPTION_KEY
-    return store
 
 
 def _make_db(tmp_path: Path) -> tuple[Database, MagicMock]:

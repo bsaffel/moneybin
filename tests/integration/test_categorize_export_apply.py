@@ -19,18 +19,11 @@ from typer.testing import CliRunner
 from moneybin.cli.commands.transactions.categorize import app as categorize_app
 from moneybin.cli.main import app as main_app
 from moneybin.database import Database
+from tests.integration.conftest import make_secret_store as _make_secret_store
 
 pytestmark = pytest.mark.integration
 
 runner = CliRunner()
-
-_ENCRYPTION_KEY = "integration-test-key-0123456789abcdef"
-
-
-def _make_secret_store() -> MagicMock:
-    store = MagicMock()
-    store.get_key.return_value = _ENCRYPTION_KEY
-    return store
 
 
 def _make_db_with_uncategorized(

@@ -21,6 +21,7 @@ from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from tests.moneybin.test_repositories.conftest import audit_rows_for as _audit_rows_for
 
 
 def _bind(
@@ -313,19 +314,6 @@ def _propose(repo: SecurityLinkDecisionsRepo, **overrides: Any):
     }
     kwargs.update(overrides)
     return repo.insert(**kwargs)
-
-
-def _audit_rows_for(db: Database, target_id: str) -> list[tuple[Any, ...]]:
-    return db.conn.execute(
-        """
-        SELECT action, target_schema, target_table, target_id,
-               before_value, after_value, actor, parent_audit_id
-          FROM app.audit_log
-         WHERE target_id = ?
-         ORDER BY occurred_at ASC, audit_id ASC
-        """,
-        [target_id],
-    ).fetchall()
 
 
 def test_decision_lifecycle_and_pending_count(db: Database) -> None:

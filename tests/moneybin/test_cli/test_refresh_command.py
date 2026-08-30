@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
 from click.testing import Result
 from typer.testing import CliRunner
 
@@ -13,12 +12,6 @@ from moneybin.cli.main import app
 from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
 from moneybin.services.rate_backfill import RateBackfillResult
 from moneybin.services.refresh import RefreshResult
-
-
-@pytest.fixture
-def runner() -> CliRunner:
-    """Return a Typer/Click CliRunner with split streams."""
-    return CliRunner()
 
 
 def test_refresh_json_success(runner: CliRunner) -> None:
