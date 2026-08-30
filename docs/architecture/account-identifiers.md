@@ -148,8 +148,9 @@ authoritative copy and suppresses its corrected twin from the derived ledger.
 No raw rows are deleted and the legacy `transaction_id` remains the gold id, so
 notes, tags, splits, and categorizations remain attached. Suppression is scoped
 to the same canonical account, source file, source origin, and transaction
-content, pairing repeated identical rows one-for-one. A path reused for another
-account therefore retains both accounts' transactions. If the legacy self-map
+content (including the source transaction ID when supplied), pairing repeated
+identical rows one-for-one. A path reused for another account therefore retains
+both accounts' transactions. If the legacy self-map
 was later reversed by an account merge, it cannot prove which later native row
 is its replacement, so staging retains both rather than risk losing a reused
 path's transaction.

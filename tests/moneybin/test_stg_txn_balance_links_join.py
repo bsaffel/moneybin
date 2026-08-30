@@ -217,6 +217,72 @@ def test_stg_tabular_transactions_keeps_pre_fix_pinned_row_authoritative(
 
 
 @pytest.mark.slow
+def test_stg_tabular_transactions_keeps_distinct_source_transaction_ids(
+    db: Database,
+) -> None:
+    """Matching content does not make distinct source transactions duplicates."""
+    canonical_id = "canonical-source-id-01"
+    native_key = "native-source-id-01"
+    source_file = "source-id-statement.csv"
+    source_origin = "source-id-test"
+
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, source_transaction_id, transaction_date,
+             amount, description, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES
+            ('canonical-source-id-01:legacy-001', ?, 'legacy-001',
+             DATE '2024-01-15', -50.00, 'Test purchase', ?, 'csv', ?,
+             'legacy-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('native-source-id-01:later-002', ?, 'later-002',
+             DATE '2024-01-15', -50.00, 'Test purchase', ?, 'csv', ?,
+             'later-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [
+            canonical_id,
+            source_file,
+            source_origin,
+            native_key,
+            source_file,
+            source_origin,
+        ],
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-source-id-legacy",
+        account_id=canonical_id,
+        ref_value=canonical_id,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-source-id-native",
+        account_id=canonical_id,
+        ref_value=native_key,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        """
+        SELECT source_account_key
+        FROM prep.stg_tabular__transactions
+        WHERE source_file = ?
+        ORDER BY source_account_key
+        """,
+        [source_file],
+    ).fetchall()
+
+    assert rows == [(canonical_id,), (native_key,)]
+
+
+@pytest.mark.slow
 def test_stg_tabular_transactions_keeps_active_legacy_row_when_twin_is_deleted(
     db: Database,
 ) -> None:
