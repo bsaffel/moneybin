@@ -143,7 +143,7 @@ def reports_run(
     ),
     display_currency: str | None = display_currency_option,
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001  # result rows are data, never suppressed
+    quiet: bool = quiet_option,
 ) -> None:
     """Run one registered report by ID or name."""
     from moneybin.cli.report_params import parse_report_parameters
@@ -180,7 +180,9 @@ def reports_run(
                 display_currency=display_currency,
                 home_currency=profile_home_currency(db),
             )
-    render_report_result(result, output, cli_actor="reports_run", money=money)
+    render_report_result(
+        result, output, cli_actor="reports_run", money=money, quiet=quiet
+    )
 
 
 def reports_explain(

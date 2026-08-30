@@ -1220,6 +1220,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **`-q/--quiet` now works on the report commands.** `reports networth`,
+  `networth-history`, `reports run`, and every generated built-in report
+  command accepted the flag and then dropped it, so their next-step hints
+  ("run `moneybin reports explain …`") printed regardless. Each forwards it
+  now. What `-q` still does not silence is any statement about how far the
+  numbers can be trusted — a truncated result, a degraded report, or a
+  currency conversion — because asking for less chatter is not a claim that
+  the truncation stopped (#470).
+
+- **`transactions categorize pending` formats its amounts like every other
+  table.** Its `amount` column printed raw (`-42.5`, left-aligned, no
+  separator) while the rest of the CLI moved to `−42.50` (#470).
+
 - **`sql_query` no longer refuses a read-only `SELECT` for a write keyword
   that isn't actually a write.** `SELECT 'export' AS probe` was rejected as
   though it were a real `EXPORT` statement — one character away,

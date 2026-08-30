@@ -79,8 +79,17 @@ def _cli_signature(spec: ReportSpec) -> inspect.Signature:
     return inspect.Signature(params)
 
 
-def echo_report_notes(result: CatalogReportResult) -> None:
+def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> None:
     """Echo the envelope metadata the text path would otherwise drop.
+
+    ``quiet`` reaches the next-step hints and nothing else. Requirement 4 makes
+    ``-q`` the switch for an informational status line, and a hint is one: it
+    suggests a command to run next. The conversion disclosure and the two
+    warnings are not — they state how far the numbers above can be trusted, and
+    a flag asking for less chatter is not a claim that masking, truncation, or
+    a currency conversion stopped happening. Silencing those is the failure the
+    rest of this docstring describes, arriving through ``-q`` instead of
+    through the surface that skipped them.
 
     ``render_or_json`` renders the envelope on the JSON path only, so every
     text renderer of a report result has to say these three things itself.
@@ -128,7 +137,7 @@ def echo_report_notes(result: CatalogReportResult) -> None:
     # rendered, not just that hint: a runner's own `actions` are next steps for
     # whoever called it, and the text path is a caller.
     for action in result.actions:
-        render_note(f"💡 {action}")
+        render_note(f"💡 {action}", quiet=quiet)
 
 
 def money_columns(spec: RegisteredReport) -> dict[str, Money]:
@@ -152,6 +161,7 @@ def render_report_result(
     *,
     cli_actor: str,
     money: Mapping[str, Money] | None = None,
+    quiet: bool = False,
 ) -> None:
     """Render one report result as a table or the JSON envelope.
 
@@ -171,7 +181,7 @@ def render_report_result(
                 for record in result.records
             ]
             render_rows(result.columns, rows, money=money)
-        echo_report_notes(result)
+        echo_report_notes(result, quiet=quiet)
 
     render_or_json(
         result.to_envelope(),
@@ -197,9 +207,9 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
         )
 
         output: OutputFormat = kwargs.pop("output")
-        # quiet has nothing to silence here: the text renderer emits only the
-        # results table (no status chatter) and JSON output ignores it.
-        kwargs.pop("quiet", None)
+        # Reaches the next-step hints in `echo_report_notes` and nothing else —
+        # the table is data (requirement 5) and JSON output has no notes.
+        quiet: bool = bool(kwargs.pop("quiet", False))
         # Popped before `kwargs` becomes `parameters`: display conversion is the
         # framework's, not the runner's, so a runner would reject it as unknown.
         display_currency: str | None = kwargs.pop("display_currency", None)
@@ -224,7 +234,11 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                     home_currency=profile_home_currency(db),
                 )
             render_report_result(
-                result, output, cli_actor=cli_actor, money=money_columns(spec)
+                result,
+                output,
+                cli_actor=cli_actor,
+                money=money_columns(spec),
+                quiet=quiet,
             )
 
     _impl.__name__ = spec.name

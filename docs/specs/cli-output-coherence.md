@@ -123,6 +123,17 @@ Numbered, each independently testable.
 4. `render_note` is the only way a command prints an informational status line. It
    emits to **stderr** and is suppressed by `-q/--quiet`. Result framing
    (requirement 10) is not a note and does not travel this path.
+
+    **A fidelity disclosure is not an informational status line.** `-q` reaches
+    a next-step hint — "run `moneybin reports explain …`" — because that is
+    chatter in the sense this requirement means. It does not reach the three
+    statements `echo_report_notes` makes about how far the numbers above can be
+    trusted: the truncation warning, the degraded-report warning, and the
+    applied-rates conversion disclosure. Asking for less chatter is not a claim
+    that masking, truncation, or a currency conversion stopped happening, and
+    `moneybin reports <x> -q > out.txt` must not capture a capped table that
+    reads as the whole answer. That is requirement 10's silent truncation
+    arriving through the quiet flag instead of through the stream split.
 5. Result data is never suppressed by `-q` (restates `cli.md`; asserted here
    because the renderers are now the enforcement point). The same guarantee
    covers any statement about what the result omits — see requirement 10.

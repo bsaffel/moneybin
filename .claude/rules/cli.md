@@ -209,6 +209,13 @@ shape of result:
 Neither result renderer takes a `quiet` parameter, so there is no way to route
 data through this module and have it silenced.
 
+A command that accepts `-q` must forward it: `render_note` defaults to
+`quiet=False`, so a dropped flag is a flag that silently does nothing. Forward
+it to the chatter only — a next-step hint, a progress line, a `✅`. A statement
+about how far the numbers can be trusted (truncated, degraded, converted)
+keeps printing under `-q`, because asking for less chatter is not a claim that
+the truncation stopped.
+
 **Amounts.** `format_money` is the only place an amount becomes text, and every
 money column declares a **money kind** — `flow`, `magnitude`, `delta`, or
 `balance` — that decides its sign glyph and colour. The renderer never reads

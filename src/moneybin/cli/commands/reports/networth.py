@@ -40,7 +40,7 @@ def reports_networth(
     ),
     display_currency: str | None = display_currency_option,
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — networth prints a snapshot, not informational chatter
+    quiet: bool = quiet_option,
 ) -> None:
     """Show current or as-of net worth + per-account breakdown."""
     with handle_cli_errors():
@@ -65,7 +65,7 @@ def reports_networth(
     def _render_text(_: object) -> None:
         if not result.records or result.records[0]["balance_date"] is None:
             typer.echo("No net worth data available.")
-            echo_report_notes(result)
+            echo_report_notes(result, quiet=quiet)
             return
         # One totals row per currency the profile holds. Display conversion
         # prices each of them and relabels it into the target currency, so
@@ -113,7 +113,7 @@ def reports_networth(
                 ],
                 money={"balance": Money("balance")},
             )
-        echo_report_notes(result)
+        echo_report_notes(result, quiet=quiet)
 
     render_or_json(
         result.to_envelope(),
@@ -132,7 +132,7 @@ def reports_networth_history(
     ),
     display_currency: str | None = display_currency_option,
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — history prints a series, not informational chatter
+    quiet: bool = quiet_option,
 ) -> None:
     """Net worth time series with period-over-period change."""
     with handle_cli_errors():
@@ -181,7 +181,7 @@ def reports_networth_history(
                 "change_abs": Money("delta", polarity="income"),
             },
         )
-        echo_report_notes(result)
+        echo_report_notes(result, quiet=quiet)
 
     render_or_json(
         result.to_envelope(),

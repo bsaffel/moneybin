@@ -9,6 +9,7 @@ from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import typer
+from click.testing import Result
 from typer.testing import CliRunner
 
 from moneybin import error_codes
@@ -643,3 +644,71 @@ def test_every_declared_money_column_survives_spec_registration() -> None:
         "net": Money("flow"),
         "spend": Money("magnitude"),
     }, "txn_count declares no kind and must not appear"
+
+
+def _noisy_result() -> ReportResult:
+    """A result carrying both a next-step hint and a fidelity warning."""
+    return ReportResult(
+        records=[
+            {"net": Decimal("-1234.5"), "spend": Decimal("1234.5"), "txn_count": 2}
+        ],
+        columns=["net", "spend", "txn_count"],
+        output_classes={
+            "net": DataClass.TXN_AMOUNT,
+            "spend": DataClass.TXN_AMOUNT,
+            "txn_count": DataClass.AGGREGATE,
+        },
+        tier=Tier.MEDIUM,
+        total_count=1,
+        truncated=True,
+        actions=["Run 'moneybin reports explain test:money' for the SQL"],
+    )
+
+
+def _invoke_money(*args: str) -> Result:
+    """Run the generated command over a result that emits both note kinds."""
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _noisy_result()
+        return _runner_cli.invoke(
+            _money_app(), ["money", *args], env={"COLUMNS": "200"}
+        )
+
+
+def test_quiet_suppresses_a_reports_next_step_hint() -> None:
+    """Requirement 4: a `render_note` status line is what `-q` silences.
+
+    The generated command advertises `--quiet` in its own signature, so a hint
+    that survives it is the flag not working rather than a design choice. The
+    non-quiet half is asserted beside it because a hint that never renders at
+    all would satisfy the suppression assertion on its own.
+    """
+    loud = _invoke_money()
+    quiet = _invoke_money("--quiet")
+
+    assert loud.exit_code == 0, loud.output
+    assert quiet.exit_code == 0, quiet.output
+    assert "reports explain test:money" in loud.output
+    assert "reports explain test:money" not in quiet.output
+
+
+def test_quiet_does_not_suppress_the_truncation_warning() -> None:
+    """`-q` drops the chatter, never the statement that rows are missing.
+
+    `moneybin reports <x> -q > out.txt` would otherwise capture a capped table
+    that reads as the whole answer — the silent truncation requirement 10
+    forbids, arriving through the quiet flag instead of through the stream
+    split. Nothing about the rows themselves looks unusual, which is what makes
+    it worse than a masked cell.
+    """
+    quiet = _invoke_money("--quiet")
+
+    assert quiet.exit_code == 0, quiet.output
+    assert "more exist" in quiet.output
+    # The rows are data and are never suppressed either (requirement 5).
+    assert "−1,234.50" in quiet.output
