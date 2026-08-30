@@ -59,13 +59,13 @@ def demo_profile_for_persona(
     config.clear_settings_cache()
     try:
         result = DemoService().run(persona=request.param, seed=42, years=1)
-        yield home, result
     finally:
         if original_home is None:
             os.environ.pop("MONEYBIN_HOME", None)
         else:
             os.environ["MONEYBIN_HOME"] = original_home
         config.clear_settings_cache()
+    yield home, result
 
 
 @pytest.fixture

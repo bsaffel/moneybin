@@ -228,16 +228,18 @@ def test_write_write_contention_retries(
         text=True,
         env=env,
     )
-    _wait_for_marker(signal_path)
-    pb = subprocess.Popen(  # noqa: S603 — controlled test script
-        [sys.executable, "-c", textwrap.dedent(worker_b)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-    )
-    _wait_for_marker(retry_path)
-    release_path.touch()
+    try:
+        _wait_for_marker(signal_path)
+        pb = subprocess.Popen(  # noqa: S603 — controlled test script
+            [sys.executable, "-c", textwrap.dedent(worker_b)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        _wait_for_marker(retry_path)
+    finally:
+        release_path.touch()
 
     _, a_err = pa.communicate(timeout=15)
     b_out, b_err = pb.communicate(timeout=20)
@@ -336,16 +338,18 @@ def test_read_only_holder_blocks_write_then_succeeds(
         text=True,
         env=env,
     )
-    _wait_for_marker(signal_path)
-    pb = subprocess.Popen(  # noqa: S603 — controlled test script
-        [sys.executable, "-c", textwrap.dedent(worker_b)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-    )
-    _wait_for_marker(retry_path)
-    release_path.touch()
+    try:
+        _wait_for_marker(signal_path)
+        pb = subprocess.Popen(  # noqa: S603 — controlled test script
+            [sys.executable, "-c", textwrap.dedent(worker_b)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        _wait_for_marker(retry_path)
+    finally:
+        release_path.touch()
 
     _, a_err = pa.communicate(timeout=15)
     b_out, b_err = pb.communicate(timeout=20)
