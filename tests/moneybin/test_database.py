@@ -716,7 +716,7 @@ class TestRunSqlmeshMigrate:
             result = db.migrate_sqlmesh_state()
 
         assert result is False
-        assert "sqlmesh migrate failed" in caplog.text
+        assert "Transform state migration failed" in caplog.text
         # Cache should still be cleaned up in finally
         assert cache_key not in cache
 

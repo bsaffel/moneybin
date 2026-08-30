@@ -257,7 +257,7 @@ app.add_typer(merchants.app, name="merchants")
 app.add_typer(
     privacy.app, name="privacy", help="Privacy utilities: redaction and audit"
 )
-app.add_typer(budget_cmd.app, name="budget")
+app.add_typer(budget_cmd.app, name="budget", hidden=True)
 app.add_typer(
     fx.app,
     name="fx",
@@ -266,12 +266,12 @@ app.add_typer(
 app.add_typer(system.app, name="system")
 app.command(
     name="refresh",
-    help="Refresh derived tables: matching, SQLMesh apply, categorization (leaf)",
+    help="Refresh derived tables: matching, transforms, categorization (leaf)",
 )(refresh.refresh_command)
 app.add_typer(
     transform.app,
     name="transform",
-    help="Run SQLMesh data transformations",
+    help="Run data transformations",
 )
 app.add_typer(
     synthetic.app,

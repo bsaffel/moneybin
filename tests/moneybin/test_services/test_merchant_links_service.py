@@ -9,6 +9,9 @@ Fixture layout:
 
 from __future__ import annotations
 
+import logging
+import re
+
 import pytest
 
 from moneybin import error_codes
@@ -676,3 +679,56 @@ def test_reject_increments_merchant_link_outcomes_counter(
     assert after == before + 1, (
         "MERCHANT_LINK_OUTCOMES_TOTAL{outcome='rejected'} must increment by 1 on reject"
     )
+
+
+_SERVICE_LOGGER = "moneybin.services.merchant_links_service"
+_COMPOUND_IDENTIFIER = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
+_KEY_VALUE_FRAGMENT = re.compile(r"\w+=\S+")
+
+
+def test_run_reports_its_outcome_without_internal_identifiers(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Req 16: the run summary is prose, not `merchant_links_run: bound=0 ...`.
+
+    This message reaches the user through the log handler on both the CLI and
+    the MCP path, so the leak is user-facing even though it lives in a service.
+    """
+    with caplog.at_level(logging.INFO, logger=_SERVICE_LOGGER):
+        MerchantLinksService(db, actor="cli").run()
+
+    reported = "\n".join(
+        record.getMessage()
+        for record in caplog.records
+        if record.name == _SERVICE_LOGGER
+    )
+
+    assert reported, "run() reported nothing about its outcome"
+    assert not _COMPOUND_IDENTIFIER.search(reported), (
+        f"run() leaks an internal identifier: {reported!r}"
+    )
+    assert not _KEY_VALUE_FRAGMENT.search(reported), (
+        f"run() leaks a debug fragment: {reported!r}"
+    )
+
+
+def test_run_still_distinguishes_its_two_outcomes(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Rephrasing must not collapse the two outcomes the counts distinguished.
+
+    Asserting on the counts alone cannot prove this: on an empty database
+    ``bound`` and ``conflicts`` are both ``0``, so a message reporting only one
+    of them would pass. The labels are what stay distinguishable.
+    """
+    with caplog.at_level(logging.INFO, logger=_SERVICE_LOGGER):
+        MerchantLinksService(db, actor="cli").run()
+
+    reported = "\n".join(
+        record.getMessage()
+        for record in caplog.records
+        if record.name == _SERVICE_LOGGER
+    ).lower()
+
+    assert "linked" in reported, f"no accepted-binding outcome reported: {reported!r}"
+    assert "review" in reported, f"no queued-conflict outcome reported: {reported!r}"

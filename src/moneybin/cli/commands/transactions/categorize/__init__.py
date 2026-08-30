@@ -36,7 +36,7 @@ app = typer.Typer(
 
 app.add_typer(rules.app, name="rules")
 app.add_typer(auto.app, name="auto")
-app.add_typer(ml.app, name="ml")
+app.add_typer(ml.app, name="ml", hidden=True)
 
 app.command("export-uncategorized")(categorize_export_uncategorized)
 app.command("commit-from-file")(categorize_commit_from_file)

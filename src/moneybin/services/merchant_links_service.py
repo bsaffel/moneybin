@@ -298,7 +298,8 @@ class MerchantLinksService:
         result = MerchantResolver(self._db, actor=self._actor).harvest()
         refresh_merchant_link_pending_gauge(self._db)
         logger.info(
-            f"merchant_links_run: bound={result.bound} conflicts={result.conflicts}"
+            f"Merchant linking complete: {result.bound} linked automatically, "
+            f"{result.conflicts} sent for review."
         )
         return result
 

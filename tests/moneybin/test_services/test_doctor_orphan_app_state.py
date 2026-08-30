@@ -220,7 +220,7 @@ def test_run_all_populates_recovery_actions_for_orphan_app_state(
 
     SQLMesh isn't booted in this fixture (no ``monkeypatch`` of
     ``sqlmesh_context``), so ``_run_sqlmesh_audits`` degrades to a single
-    ``sqlmesh_audits_unavailable`` skipped result instead of producing the
+    ``transform_audits_unavailable`` skipped result instead of producing the
     real 3 SQLMesh-audit results. That's fine for this test — we filter by
     name to find ``orphan_app_state`` and exercise ``_apply_recipe`` for it
     plus every non-SQLMesh ``_run_*`` method. SQLMesh-recipe wiring is
