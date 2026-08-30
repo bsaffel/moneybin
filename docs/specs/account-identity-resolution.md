@@ -952,12 +952,19 @@ Guard-2 free-text resolution):
     reason silence does — a statement that fills its currency column only on
     foreign rows leaves the domestic ones empty, not NULL.
   - **`confidence_score` is not a review surface.** Its value is fixed per
-    signal (0.5 `institution_last4`, 0.4 `name`, 0.3 `institution_reissue`), so
-    it restates `signal` in a less legible form; no input moves it. The column
-    remains as the audit record of what was written when the proposal was
-    created, and is no longer projected onto any surface — the review queue,
-    the decision history, and the import gate's `account_proposals` all carry
-    `signal` plus the measured overlap instead.
+    signal — 0.5 `institution_last4` and `legacy_pdf_identity`, 0.45
+    `last_four`, 0.4 `name`, 0.3 `institution_reissue`, 0.2 `institution`, 0.1
+    `fallback` — so it restates `signal` in a less legible form; no input moves
+    it. The corroborated and bare last-four rungs are the pair that shows why
+    the number adds nothing a reader wants: 0.5 against 0.45 is the whole
+    difference between "both sides named this bank" and "one side named
+    nothing", which `signal` says outright. A `manual` proposal carries no
+    score at all — `propose_pair` writes NULL because nothing was measured, and
+    any number there would read as a measurement that never happened. The
+    column remains as the audit record of what was written when the proposal
+    was created, and is no longer projected onto any surface — the review
+    queue, the decision history, and the import gate's `account_proposals` all
+    carry `signal` plus the measured overlap instead.
 - **Status lifecycle.** `account_links`: `accepted` (live) / `reversed` (undone).
   `account_link_decisions`: `pending` (awaiting review) → `accepted` (merged onto
   the named candidate) / `rejected` (declined pairing — not re-proposed) /
