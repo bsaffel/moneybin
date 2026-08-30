@@ -56,6 +56,17 @@ def _make_env(db_path: Path, encryption_key: str) -> dict[str, str]:
 
 # The encryption key used for all tests in this module.
 _TEST_KEY = "concurrent-access-test-key-abc123"  # noqa: S105 — test-only key
+_MARKER_TIMEOUT = 15.0
+
+
+def _wait_for_marker(marker: Path) -> None:
+    """Wait until a subprocess proves it has reached the named state."""
+    deadline = time.monotonic() + _MARKER_TIMEOUT
+    while time.monotonic() < deadline:
+        if marker.exists():
+            return
+        time.sleep(0.05)
+    pytest.fail(f"Timed out waiting for readiness marker: {marker}")
 
 
 @pytest.fixture(scope="module")
@@ -149,6 +160,8 @@ def test_write_write_contention_retries(
     db_path, key = concurrent_db
     env = _make_env(db_path, key)
     signal_path = tmp_path / "a_write_ready.flag"
+    release_path = tmp_path / "release_write.flag"
+    retry_path = tmp_path / "b_write_retried.flag"
 
     worker_a = f"""
     import time, sys, os
@@ -163,7 +176,9 @@ def test_write_write_contention_retries(
 
     with Database(db_path, read_only=False, secret_store=mock_store, no_auto_upgrade=True) as db:
         open("{signal_path}", "w").close()
-        time.sleep(3)
+        release_path = Path("{release_path}")
+        while not release_path.exists():
+            time.sleep(0.05)
     sys.exit(0)
     """
 
@@ -177,12 +192,7 @@ def test_write_write_contention_retries(
     key = os.environ["_MB_TEST_KEY"]
     mock_store = MagicMock()
     mock_store.get_key.return_value = key
-    signal_path = "{signal_path}"
-
-    for _ in range(50):
-        if os.path.exists(signal_path):
-            break
-        time.sleep(0.1)
+    retry_path = "{retry_path}"
 
     # Manual retry loop — same pattern as get_database() internally.
     retry_count = 0
@@ -198,6 +208,7 @@ def test_write_write_contention_retries(
         except DatabaseLockError as e:
             last_exc = e
             retry_count += 1
+            Path(retry_path).touch()
             time.sleep(delay)
             delay = min(delay * 1.5, 0.5)
 
@@ -217,14 +228,18 @@ def test_write_write_contention_retries(
         text=True,
         env=env,
     )
-    time.sleep(0.3)
-    pb = subprocess.Popen(  # noqa: S603 — controlled test script
-        [sys.executable, "-c", textwrap.dedent(worker_b)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-    )
+    try:
+        _wait_for_marker(signal_path)
+        pb = subprocess.Popen(  # noqa: S603 — controlled test script
+            [sys.executable, "-c", textwrap.dedent(worker_b)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        _wait_for_marker(retry_path)
+    finally:
+        release_path.touch()
 
     _, a_err = pa.communicate(timeout=15)
     b_out, b_err = pb.communicate(timeout=20)
@@ -253,6 +268,8 @@ def test_read_only_holder_blocks_write_then_succeeds(
     db_path, key = concurrent_db
     env = _make_env(db_path, key)
     signal_path = tmp_path / "a_ro_ready.flag"
+    release_path = tmp_path / "release_read.flag"
+    retry_path = tmp_path / "b_read_retried.flag"
 
     worker_a = f"""
     import time, sys, os
@@ -267,7 +284,9 @@ def test_read_only_holder_blocks_write_then_succeeds(
 
     with Database(db_path, read_only=True, secret_store=mock_store) as db:
         open("{signal_path}", "w").close()
-        time.sleep(4)
+        release_path = Path("{release_path}")
+        while not release_path.exists():
+            time.sleep(0.05)
     sys.exit(0)
     """
 
@@ -281,12 +300,7 @@ def test_read_only_holder_blocks_write_then_succeeds(
     key = os.environ["_MB_TEST_KEY"]
     mock_store = MagicMock()
     mock_store.get_key.return_value = key
-    signal_path = "{signal_path}"
-
-    for _ in range(50):
-        if os.path.exists(signal_path):
-            break
-        time.sleep(0.1)
+    retry_path = "{retry_path}"
 
     retry_count = 0
     deadline = time.monotonic() + 9.0
@@ -301,6 +315,7 @@ def test_read_only_holder_blocks_write_then_succeeds(
         except DatabaseLockError as e:
             last_exc = e
             retry_count += 1
+            Path(retry_path).touch()
             time.sleep(delay)
             delay = min(delay * 1.5, 0.5)
         except Exception as e:
@@ -323,14 +338,18 @@ def test_read_only_holder_blocks_write_then_succeeds(
         text=True,
         env=env,
     )
-    time.sleep(0.3)
-    pb = subprocess.Popen(  # noqa: S603 — controlled test script
-        [sys.executable, "-c", textwrap.dedent(worker_b)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-    )
+    try:
+        _wait_for_marker(signal_path)
+        pb = subprocess.Popen(  # noqa: S603 — controlled test script
+            [sys.executable, "-c", textwrap.dedent(worker_b)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        _wait_for_marker(retry_path)
+    finally:
+        release_path.touch()
 
     _, a_err = pa.communicate(timeout=15)
     b_out, b_err = pb.communicate(timeout=20)
