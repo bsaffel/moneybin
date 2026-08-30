@@ -372,10 +372,10 @@ def db(
     object, schema, and per-test isolation are identical to a fresh build.
 
     Mark a test or module ``@pytest.mark.fresh_db`` to force a real per-test
-    schema build instead — required for tests whose *subject* is schema
-    creation, migration, or init (so they exercise the real mechanism rather
-    than a pre-baked copy). See ``test_template_copy_matches_fresh_build`` for
-    the invariant that keeps the two paths equivalent.
+    schema build instead — required when a test exercises schema creation,
+    automatic migration, or initialization itself. Individual migration tests
+    may use the template after reconstructing their pre-migration state; see
+    ``test_template_copy_matches_fresh_build`` for the equivalence invariant.
 
     Fast-path key constraint: the template is encrypted with the conftest
     default key (``"test-encryption-key-for-unit-tests"``). A module that

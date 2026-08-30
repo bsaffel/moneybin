@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
-
 from moneybin.database import Database
 from moneybin.loaders import import_log
 from moneybin.sql.migrations.V046__add_file_sha256_to_import_log import migrate
 from tests.moneybin.migration_helpers import run_migration
-
-pytestmark = pytest.mark.fresh_db
 
 _COLUMN_SHAPE_SQL = """
 SELECT column_name, data_type, is_nullable

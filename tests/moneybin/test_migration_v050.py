@@ -15,8 +15,6 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V050__add_plaid_account_identity_fields import migrate
 from tests.moneybin.migration_helpers import column_exists, insert_rows, run_migration
 
-pytestmark = pytest.mark.fresh_db
-
 _PRE_MIGRATION_COLUMNS = (
     "account_id",
     "account_type",
