@@ -97,6 +97,8 @@ WITH ofx_balance_currency AS (
     a.extracted_at,
     a.loaded_at,
     NULL::TEXT AS official_name,
+    NULL /* OFX has no account-name element at all: <BANKACCTFROM> carries the
+       number, the type and the routing number, and nothing a person wrote. */::TEXT AS account_label,
     a.account_subtype,
     CASE
       WHEN LENGTH(REGEXP_REPLACE(a.source_account_key, '[^0-9]', '', 'g')) >= 4
@@ -127,6 +129,7 @@ WITH ofx_balance_currency AS (
     extracted_at,
     loaded_at,
     NULL::TEXT AS official_name,
+    account_label,
     account_subtype,
     CASE
       WHEN LENGTH(
@@ -158,6 +161,7 @@ WITH ofx_balance_currency AS (
     a.extracted_at,
     a.loaded_at,
     a.official_name,
+    a.account_label,
     a.account_subtype,
     CASE
       WHEN LENGTH(REGEXP_REPLACE(a.mask, '[^0-9]', '', 'g')) >= 4
@@ -215,7 +219,14 @@ WITH ofx_balance_currency AS (
          Source rank is the wrong key here: a tabular row that DID resolve is
          more useful than an OFX row that fell back to a raw <ORG>.
        - Descriptive fields (institution_name, account_type, official_name,
-         account_subtype): first non-null by recency — ARG_MAX over extracted_at.
+         account_label, account_subtype): first non-null by recency — ARG_MAX
+         over extracted_at.
+         account_label by recency and not by source rank on purpose: only two
+         sources have one at all, and neither is more authoritative than the
+         other — a spreadsheet's Account column and Plaid's per-account name are
+         both what a person calls this account, so the newer spelling is the
+         better answer. Ranking would instead pin the first source that ever
+         named it and make re-exporting under a new name a no-op.
          account_type arrives already normalized to one canonical vocabulary by
          the three stg_*__accounts views (seeds.account_type_map), so this merge
          compares like with like; before that normalization a later 'depository'
@@ -244,6 +255,8 @@ WITH ofx_balance_currency AS (
       NOT account_type IS NULL) AS account_type,
     ARG_MAX(official_name, extracted_at) FILTER(WHERE
       NOT official_name IS NULL) AS official_name,
+    ARG_MAX(account_label, extracted_at) FILTER(WHERE
+      NOT account_label IS NULL) AS account_label,
     ARG_MAX(account_subtype, extracted_at) FILTER(WHERE
       NOT account_subtype IS NULL) AS account_subtype,
     ARG_MIN(source_type, (source_rank, -EPOCH_US(extracted_at))) AS source_type,
@@ -272,6 +285,54 @@ SELECT
   GREATEST(w.loaded_at, s.updated_at) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   COALESCE(
     s.display_name,
+    CASE
+      WHEN REGEXP_MATCHES(w.account_label, '\p{L}')
+      AND NOT REGEXP_MATCHES(w.account_label, '\p{Nd}{4}')
+      AND w.account_label <> 'Unnamed account'
+      THEN w.account_label || ' …' || COALESCE(s.last_four, w.last_four_derived)
+    END /* The name a person wrote — a sheet's Account column, --account-name, or
+       Plaid's per-account name — outranks every label assembled below it. It is
+       the only rung whose text a human chose, and `moneybin accounts` already
+       prints institution and type in their own columns beside the name, so
+       naming a row "Test Bank depository" restates what is on screen and
+       discards what is not.
+       A label with no digits of its own carries the last four, like every rung
+       that can. A label is chosen, not unique: Plaid sends the institution's
+       own account name, and a household's two checking accounts routinely
+       carry one product name. Naming both of them that collides two accounts
+       onto one string, which is the defect this rung was added to fix, and
+       resolve_strict then refuses a name reference that resolved before.
+       A label already holding four digits takes nothing more. Four digits is
+       the last-four unit, so such a label either states the account's own or is
+       what the masker left of a longer number, and "Checking ****5678" joined
+       with "…9012" publishes eight digits of a twelve-digit one. A year inside
+       a name cannot be told from a number's tail, so neither is joined.
+       \p{Nd} rather than [0-9], so a run written in another script counts as
+       one too: the importer's masker keeps whatever digits it matched, so a
+       non-Latin account number reaches this column masked to four non-ASCII
+       digits that [0-9]{4} read as none at all. The Python mirror spells this
+       \d, which is already that category, while RE2 reads \d as ASCII -- the
+       two sides mirror each other here only under different source.
+       The bare arm below is that case and the no-last-four one.
+       The letter test is what keeps this rung for names. An Account column
+       mapped straight from the account number is ordinary in a hand-rolled
+       export; the importer masks it, which makes it safe to show but not a
+       name, and "****1098" identifies the account strictly worse than
+       "Test Bank …1098" does. Mirrored by
+       services/account_display_name.py::usable_source_label, which the mint
+       report derives through before any of this has run.
+       'Unnamed account' is excluded from both label arms because it is this
+       ladder's own terminal arm — the one string that says nothing could name
+       the account — and it reaches a source label by an ordinary route, since
+       reports.* publish it as account_name and an export can be re-imported.
+       It holds letters, so the test above cannot tell it apart. Promoting it
+       would hand is_a_name a label it must discard, leaving the account
+       unresolvable by the name it displays while the institution-derived
+       fallthrough below would have named it. */,
+    CASE
+      WHEN REGEXP_MATCHES(w.account_label, '\p{L}') AND w.account_label <> 'Unnamed account'
+      THEN w.account_label
+    END,
     w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type) || ' …' || COALESCE(s.last_four, w.last_four_derived),
     w.institution_name || ' …' || COALESCE(s.last_four, w.last_four_derived),
     w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type),
@@ -284,7 +345,7 @@ SELECT
        IS the institution's own account number, and the dim cannot tell that
        case apart (see grain_key above). Naming no account at all beats naming
        one with a number, and this column feeds reports.* as account_name. */
-  ) AS display_name, /* Resolved display label: user override → institution+subtype-or-type+last4 → institution+last4 → institution+subtype-or-type → institution → subtype-or-type+last4 → subtype-or-type → last4 alone → the literal 'Unnamed account' terminal, so it is never NULL and never an id. The subtype is preferred over the type because 'checking' reads to a human where the canonical 'depository' does not. A last four outranks the category it sits beside at every level: 'checking' is shared by every checking account, while the last four is what tells two of them apart, and it is already published in its own column and printed as confirm evidence. */
+  ) AS display_name, /* Resolved display label: user override → the source's own account label when it holds a letter and is not the 'Unnamed account' sentinel → institution+subtype-or-type+last4 → institution+last4 → institution+subtype-or-type → institution → subtype-or-type+last4 → subtype-or-type → last4 alone → the literal 'Unnamed account' terminal, so it is never NULL and never an id. The subtype is preferred over the type because 'checking' reads to a human where the canonical 'depository' does not. A last four outranks the category it sits beside at every level: 'checking' is shared by every checking account, while the last four is what tells two of them apart, and it is already published in its own column and printed as confirm evidence. */
   COALESCE(s.official_name, w.official_name) AS official_name, /* Institution's formal account name: user override (app.account_settings) else Plaid official_name */
   COALESCE(s.last_four, w.last_four_derived) AS last_four, /* Last 4 of account number: user-set app.account_settings.last_four, else derived per source (OFX source_account_key digits, Plaid mask, tabular account_number/masked). Never the full number. */
   COALESCE(s.account_subtype, w.account_subtype) AS account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...): user override else Plaid subtype */

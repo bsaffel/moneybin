@@ -57,7 +57,7 @@ flowchart TD
 3. **Weak match → always a confirm.** A shared **last 4 digits** — corroborated
    by a shared **institution** when both sides name one, and dropped outright
    when they name two different ones — or a **fuzzy name** match. Weak signals
-   collide — two Wells Fargo accounts can both end in `4267` — so MoneyBin
+   collide — two Wells Fargo accounts can both end in `1212` — so MoneyBin
    *proposes* and waits. **It never merges two accounts on a weak signal.**
 4. **Nothing matched, but the file named an account.** An OFX `<ACCTID>`, a
    statement's issuer and last four, an account column in a spreadsheet — the
@@ -83,9 +83,21 @@ $ moneybin import files statement.ofx
   Accounts: 1
   Transactions: 2
 ✅ statement.ofx [ofx] — 2 rows
-👀 Created account: sample_bank CHECKING (e3a84714695d)
+👀 Created account: SAMPLE BANK checking …1111 (e3a84714695d)
    Rename with 'moneybin accounts set <account_id> --display-name <name>'; if it duplicates an account you already have, 'moneybin accounts links run' proposes the merge.
 ```
+
+The name is the one `moneybin accounts` will show for that account — MoneyBin
+derives it at mint time by the same rules the accounts table is built from, so
+the two never disagree. If your file named the account itself — a spreadsheet's
+Account column, `--account-name`, or the name your bank shows in its own app —
+that name is used, with any account number in it masked and the last four added
+beside it (`Vacation Fund …1111`) so two accounts sharing a name stay
+distinguishable — unless the name already shows four digits of its own, which
+it then keeps unchanged. Otherwise MoneyBin assembles one from the institution and
+account-type registries, as in the OFX example above, and reports
+`Unnamed account` when it has nothing to assemble from. Rename any of them with
+the command above.
 
 The same two fields reach every other surface: `accounts_created` on the
 `--output json` per-file rows, on the `import_files` MCP result, and on

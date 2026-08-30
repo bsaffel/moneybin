@@ -491,7 +491,7 @@ class TestExtractorPopulatesBatchColumns:
 def _txn_row(
     *,
     source_transaction_id: str,
-    account_id: str = "4387",
+    account_id: str = "4242",
     transaction_type: str = "DEBIT",
     date_posted: str = "2025-11-19",
     amount: str = "-13.12",
