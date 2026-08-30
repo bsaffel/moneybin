@@ -17,7 +17,7 @@ import logging
 import time
 from dataclasses import dataclass
 
-from moneybin.config import MoneyBinSettings
+from moneybin.config import GSHEET_PUBLIC_OAUTH_CLIENT_ID, MoneyBinSettings
 from moneybin.connectors.gsheet.errors import GSheetAuthError
 from moneybin.secrets import (
     GSHEET_ACCESS_TOKEN_EXPIRES_KEY,
@@ -90,6 +90,13 @@ class GoogleOAuthClient:
     # OAuthCredentialsProvider protocol -----------------------------------
     def is_authorized(self, *, require_write: bool = False) -> bool:
         """Return whether a persisted refresh grant satisfies the capability."""
+        # A grant the next refresh cannot use is not an authorized state: the
+        # CLI and MCP auth paths would report already_authorized and leave the
+        # missing variable to surface as a generic failure at refresh time.
+        try:
+            self._oauth_client_credentials()
+        except GSheetAuthError:
+            return False
         keys = _WRITE_KEYS if require_write else _READ_KEYS
         try:
             self._secrets.get_key(keys.refresh)
@@ -140,6 +147,18 @@ class GoogleOAuthClient:
                 "Desktop clients require it alongside the client ID for both "
                 "the authorization exchange and later token refreshes. Set "
                 "MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET. See "
+                "docs/guides/connect-gsheet.md."
+            )
+        # Google issues each secret for one specific client ID, and MoneyBin
+        # ships none for the embedded one. So a secret set without its own ID
+        # is a mismatched pair by construction, and Google only says so after
+        # the user has consented.
+        if client_id == GSHEET_PUBLIC_OAUTH_CLIENT_ID:
+            raise GSheetAuthError(
+                "Google Sheets OAuth client secret is set, but the client ID is "
+                "still MoneyBin's embedded one, which has no secret. A secret "
+                "belongs to the client ID it was issued with, so set your own "
+                "MONEYBIN_GSHEET__OAUTH_CLIENT_ID alongside it. See "
                 "docs/guides/connect-gsheet.md."
             )
         return client_id, client_secret.get_secret_value()

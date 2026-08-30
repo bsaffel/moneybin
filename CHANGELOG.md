@@ -1201,7 +1201,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   less legible. Registering your own Desktop app client is required today;
   `docs/guides/connect-gsheet.md` covers it. The refresh grant carried the same
   defect and would have failed about an hour after an authorization that looked
-  healthy. (#456)
+  healthy. Setting only the secret is refused too, because it pairs your secret
+  with MoneyBin's embedded client ID, which Google never issued it for. And
+  `gsheet auth` no longer reports an existing connection as authorized when
+  either variable is missing: it re-authorizes and names the gap instead of
+  succeeding now and failing at the next refresh. (#456)
 - **`sql_query` no longer refuses a read-only `SELECT` for a write keyword
   that isn't actually a write.** `SELECT 'export' AS probe` was rejected as
   though it were a real `EXPORT` statement — one character away,
