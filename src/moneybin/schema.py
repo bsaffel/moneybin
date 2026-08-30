@@ -22,6 +22,8 @@ the ``ColumnDef`` expression and applied as ``COMMENT ON COLUMN``.
 """
 
 import logging
+from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 import duckdb
@@ -48,6 +50,22 @@ _PROVIDER_SCHEMA_DIRS: list[Path] = [
     _EXTRACTORS_DIR / "plaid" / "schema",
     _EXTRACTORS_DIR / "tabular" / "schema",
 ]
+
+
+@dataclass(frozen=True)
+class _CommentPlan:
+    """The catalog comments derived from one schema DDL file."""
+
+    schema_name: str
+    table_name: str
+    table_sql: str
+    table_comment: str | None
+    column_comments: tuple[tuple[str, str], ...]
+
+
+# Schema DDL is static for a given installed build, while init_schemas runs on
+# each write open. Keep its parse result until the source file's mtime changes.
+_COMMENT_PLAN_CACHE: dict[tuple[Path, int, str], tuple[_CommentPlan, ...]] = {}
 
 
 # Cross-cutting (non-provider-owned) DDL files resolved against ``_SQL_DIR``.
@@ -130,15 +148,64 @@ def _all_schema_files() -> list[Path]:
     return files
 
 
+def _derive_comment_plan(sql: str) -> tuple[_CommentPlan, ...]:
+    """Parse schema DDL into the comments to apply to each catalog."""
+    plans: list[_CommentPlan] = []
+    for statement in sqlglot.parse(sql, dialect="duckdb"):
+        if not isinstance(statement, exp.Create) or statement.kind != "TABLE":
+            continue
+
+        table = statement.find(exp.Table)
+        if table is None:
+            continue
+        schema_name = table.args["db"].name if table.args.get("db") else None
+        if schema_name is None:
+            continue
+
+        table_comment = statement.comments[-1].strip() if statement.comments else None
+        column_comments = tuple(
+            (col_def.name, col_def.comments[-1].strip())
+            for col_def in statement.find_all(exp.ColumnDef)
+            if col_def.comments and col_def.comments[-1].strip()
+        )
+        plans.append(
+            _CommentPlan(
+                schema_name=schema_name,
+                table_name=table.name,
+                table_sql=table.sql(dialect="duckdb"),
+                table_comment=table_comment,
+                column_comments=column_comments,
+            )
+        )
+    return tuple(plans)
+
+
+def _comment_plan(sql_path: Path, sql: str | None = None) -> tuple[_CommentPlan, ...]:
+    """Return a parsed comment plan, refreshing it when the DDL changes."""
+    sql = sql if sql is not None else sql_path.read_text()
+    cache_key = (
+        sql_path,
+        sql_path.stat().st_mtime_ns,
+        sha256(sql.encode()).hexdigest(),
+    )
+    cached = _COMMENT_PLAN_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    plan = _derive_comment_plan(sql)
+    _COMMENT_PLAN_CACHE[cache_key] = plan
+    return plan
+
+
 def _apply_comments(
     conn: duckdb.DuckDBPyConnection,
-    sql: str,
+    comment_plan: tuple[_CommentPlan, ...],
     table_snapshot: dict[tuple[str, str], str | None],
     column_snapshot: dict[tuple[str, str, str], str | None],
 ) -> None:
-    """Parse SQL with sqlglot and apply table and column comments to DuckDB catalog.
+    """Apply a pre-derived table and column comment plan to DuckDB's catalog.
 
-    sqlglot attaches SQL comments to adjacent AST nodes during parsing:
+    The plan preserves comments sqlglot attached to adjacent AST nodes:
 
     - A ``/* description */`` block comment immediately before ``CREATE TABLE``
       is attached to the ``Create`` expression and applied as
@@ -156,57 +223,50 @@ def _apply_comments(
     DDL comment is skipped so the privacy sigil suffix written by
     ``sync_classification_comments`` survives across startups.
     """
-    for statement in sqlglot.parse(sql, dialect="duckdb"):
-        if not isinstance(statement, exp.Create) or statement.kind != "TABLE":
-            continue
-
-        table = statement.find(exp.Table)
-        if table is None:
-            continue
-        table_name = table.sql(dialect="duckdb")
-        schema_str = table.args["db"].name if table.args.get("db") else None
-        table_str = table.name
-        if schema_str is None:
-            continue
-
+    for table_plan in comment_plan:
         # Table-level comment: /* description */ on the line before CREATE TABLE.
-        # Use [-1] (the closest comment) to match SQLMesh's own pattern and avoid
-        # picking up unrelated -- notes that may also precede the /* */ block.
-        if statement.comments:
-            description = statement.comments[-1].strip()
-            existing = table_snapshot.get((schema_str, table_str))
+        if table_plan.table_comment:
+            description = table_plan.table_comment
+            existing = table_snapshot.get((
+                table_plan.schema_name,
+                table_plan.table_name,
+            ))
             if description and strip_sigil(existing or "") != description:
                 try:
                     safe_desc = escape_sql_literal(description)
-                    conn.execute(f"COMMENT ON TABLE {table_name} IS '{safe_desc}'")
-                    logger.debug(f"Applied table comment to {table_name}")
+                    conn.execute(
+                        f"COMMENT ON TABLE {table_plan.table_sql} IS '{safe_desc}'"
+                    )
+                    logger.debug(f"Applied table comment to {table_plan.table_sql}")
                 except duckdb.CatalogException:
                     logger.debug(
-                        f"Skipping table comment for {table_name} — table does not exist yet"
+                        f"Skipping table comment for {table_plan.table_sql} — table does not exist yet"
                     )
 
         # Column-level comments: trailing -- text on each column definition
-        for col_def in statement.find_all(exp.ColumnDef):
-            if not col_def.comments:
-                continue
-            comment = col_def.comments[-1].strip()
-            if not comment:
-                continue
-            existing = column_snapshot.get((schema_str, table_str, col_def.name))
+        for column_name, comment in table_plan.column_comments:
+            existing = column_snapshot.get((
+                table_plan.schema_name,
+                table_plan.table_name,
+                column_name,
+            ))
             if strip_sigil(existing or "") == comment:
                 continue
             try:
                 safe_comment = escape_sql_literal(comment)
                 conn.execute(
-                    f"COMMENT ON COLUMN {table_name}.{col_def.name} IS '{safe_comment}'"
+                    f"COMMENT ON COLUMN {table_plan.table_sql}.{column_name} IS "
+                    f"'{safe_comment}'"
                 )
-                logger.debug(f"Applied column comment to {table_name}.{col_def.name}")
+                logger.debug(
+                    f"Applied column comment to {table_plan.table_sql}.{column_name}"
+                )
             except (duckdb.CatalogException, duckdb.BinderException):
                 # Column may not exist yet — either the table is created later
                 # (e.g. SQLMesh-managed core tables) or a pending migration will
                 # add the column. Comments will reapply on the next startup.
                 logger.debug(
-                    f"Skipping column comment for {table_name}.{col_def.name}"
+                    f"Skipping column comment for {table_plan.table_sql}.{column_name}"
                     " — column or table does not exist yet"
                 )
 
@@ -280,7 +340,9 @@ def init_schemas(
         sql = sql_path.read_text()
         conn.execute(sql)
         executed += 1
-        _apply_comments(conn, sql, table_snapshot, column_snapshot)
+        _apply_comments(
+            conn, _comment_plan(sql_path, sql), table_snapshot, column_snapshot
+        )
         logger.debug(f"Executed {sql_path.name}")
 
     logger.debug(f"Executed {executed} schema files")

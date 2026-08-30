@@ -93,7 +93,7 @@ def review_impl(
         return
 
     if interactive:
-        _not_implemented("moneybin-cli.md (review collapse — interactive loop pending)")
+        _not_implemented("the interactive review loop")
         return
 
     # Counts are the default: they are what `--help` describes, and the only

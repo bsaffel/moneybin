@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -16,8 +17,36 @@ from tests.moneybin.db_helpers import (
 )
 
 
+def _make_mock_store() -> MagicMock:
+    store = MagicMock()
+    store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    return store
+
+
+@pytest.fixture(scope="session")
+def _populated_db_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture referenced by parameter name
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    """Build the privacy schema baseline once and close it before copying."""
+    template_path = tmp_path_factory.mktemp("privacy_db_template") / "template.duckdb"
+    database = Database(
+        template_path,
+        secret_store=_make_mock_store(),
+        no_auto_upgrade=True,
+        read_only=False,
+    )
+    create_core_tables_raw(database.conn)
+    apply_core_table_comments(database)
+    create_core_dim_stub_views(database)
+    database.close()
+    return template_path
+
+
 @pytest.fixture()
-def populated_db(tmp_path: Path) -> Generator[Database, None, None]:
+def populated_db(
+    tmp_path: Path,
+    _populated_db_template: Path,
+) -> Generator[Database, None, None]:
     """A Database with init_schemas() done and core.* test tables present.
 
     Mirrors the shape `tests/moneybin/conftest.py:schema_catalog_db` uses,
@@ -27,17 +56,15 @@ def populated_db(tmp_path: Path) -> Generator[Database, None, None]:
     create_core_tables_raw doesn't create them but the CLASSIFICATION
     registry covers them (they're SQLMesh views in production).
     """
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    db_path = tmp_path / "privacy.duckdb"
+    shutil.copy(_populated_db_template, db_path)
     database = Database(
-        tmp_path / "privacy.duckdb",
-        secret_store=mock_store,
+        db_path,
+        secret_store=_make_mock_store(),
         no_auto_upgrade=True,
+        assume_initialized=True,
         read_only=False,
     )
-    create_core_tables_raw(database.conn)
-    apply_core_table_comments(database)
-    create_core_dim_stub_views(database)
     try:
         yield database
     finally:

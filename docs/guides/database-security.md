@@ -72,7 +72,8 @@ moneybin db key show
 # Generate a new key and re-encrypt the database in place.
 moneybin db key rotate
 
-# Reserved subcommands — print "not yet implemented" today.
+# Reserved subcommands — hidden from `db key --help`, and each one
+# reports "not yet implemented" and exits 1.
 moneybin db key export
 moneybin db key import
 moneybin db key verify
@@ -84,7 +85,7 @@ moneybin db key verify
 
 - **`moneybin db key show`** prints the 64-character hex encryption key to stdout. Treat it like a root password — anyone with this string and the database file can read everything. The CLI emits a security warning to stderr alongside the key. Useful for: writing the key down somewhere durable before you can lose it.
 - **`moneybin db key rotate`** generates a new random key, opens both old and new databases with DuckDB's `COPY FROM DATABASE old_db TO new_db`, and atomically replaces the file. The old key is invalidated. **Existing backups are still encrypted with the old key** — they don't get re-encrypted. If you rotate, save the new key (`db key show`) and consider taking a fresh backup right after. There is no `--passphrase` or `--auto` flag on `db key rotate`; it always emits a fresh random key.
-- **`moneybin db key export` / `import` / `verify`** are reserved subcommands that print "not yet implemented" today. The intent is an encrypted-envelope export for off-machine recovery; until those ship, use `db key show` and store the output in a password manager or paper-in-a-safe.
+- **`moneybin db key export` / `import` / `verify`** are reserved subcommands that report "not yet implemented" and exit `1`. They are hidden from `db key --help` so the CLI does not advertise them, and they remain invocable so an existing script keeps its exit code. The intent is an encrypted-envelope export for off-machine recovery; until those ship, use `db key show` and store the output in a password manager or paper-in-a-safe.
 
 ### Headless and env-var key injection
 

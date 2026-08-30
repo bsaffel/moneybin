@@ -762,6 +762,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **`--help` no longer lists commands that aren't built yet.** Twelve
+  whole-command placeholders — `budget delete/set`, `sync key rotate`, `sync
+  schedule set/show/remove`, `transactions categorize ml apply/status/train`,
+  and `db key export/import/verify` — are hidden from `--help`, along with the
+  four groups (`budget`, `sync key`, `sync schedule`, `transactions categorize
+  ml`) that contained nothing else. `db key` stays listed because `db key show`
+  and `db key rotate` work. Nothing is removed: every one of them is still
+  invocable and keeps its exit code, so a script calling `sync key rotate`
+  today behaves exactly as before — it just no longer appears in the menu of
+  things MoneyBin claims to do. They now report "not yet implemented" on stderr
+  at every `MONEYBIN_LOGGING__LEVEL`, so the three `db key` placeholders can no
+  longer exit `1` with no output — previously they printed nothing at
+  `WARNING`, and would have printed nothing at `ERROR` or `CRITICAL` (#457).
+- **Messages name transforms, not the library that runs them.** Help text,
+  option descriptions, progress lines, and migration warnings said "SQLMesh" —
+  a dependency you did not choose and cannot act on. They now say "transform".
+  `system doctor` follows: two check names it printed verbatim are now
+  `transform_model_presence` and `transform_audits_unavailable`, so a script
+  matching the old names needs updating. `moneybin logs sqlmesh` is unchanged:
+  that one is a log-file name you type, not vocabulary. `db migrate` also no
+  longer reports the transform engine's internal state-schema number as though
+  it were your MoneyBin version. The profile banner names the single source
+  that actually resolved your profile instead of listing candidates (#457).
 - **Your file's own account name is now what MoneyBin calls the account.** A
   spreadsheet's Account column, `--account-name`, and Plaid's per-account name
   were read for matching and then discarded before the account was named, so a
