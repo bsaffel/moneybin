@@ -10,6 +10,8 @@ audit verb (transaction-curation.md) is preserved, not renamed:
 
 - :meth:`set` — the user-manual-edit path: a partial-column upsert that leaves
   ``merchant_id`` / ``rule_id`` / ``confidence`` untouched on conflict.
+- :meth:`update_links` — the maintenance path: updates only ``merchant_id`` and
+  ``rule_id`` while preserving the category metadata.
 - :meth:`upsert_guarded` — the engine path: a full-column upsert gated by the
   source-precedence ladder, so a lower-authority source never overwrites a
   higher one. The precedence CASE is generated from ``SOURCE_PRIORITY`` (the
@@ -97,6 +99,42 @@ class TransactionCategoriesRepo(BaseRepo):
                 [transaction_id, category, subcategory, category_id, categorized_by],
             )
             after = self._fetch_row(transaction_id)
+            return self._emit_audit(
+                action="category.set",
+                target=(*self._audit_target, transaction_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
+    def update_links(
+        self,
+        transaction_id: str,
+        *,
+        merchant_id: str | None,
+        rule_id: str | None,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Update categorization links without changing category metadata."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._require(
+                self._fetch_row(transaction_id),
+                "transaction_id",
+                transaction_id,
+            )
+            self._db.execute(
+                f"UPDATE {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef + parameterized values
+                "SET merchant_id = ?, rule_id = ? WHERE transaction_id = ?",
+                [merchant_id, rule_id, transaction_id],
+            )
+            after = self._require(
+                self._fetch_row(transaction_id),
+                "transaction_id",
+                transaction_id,
+            )
             return self._emit_audit(
                 action="category.set",
                 target=(*self._audit_target, transaction_id),
