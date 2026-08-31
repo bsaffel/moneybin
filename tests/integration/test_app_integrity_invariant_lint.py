@@ -15,7 +15,8 @@ import moneybin.tables as tables_module
 pytestmark = pytest.mark.integration
 
 _MUTATION_RE = re.compile(
-    r"\b(?:INSERT\s+(?:OR\s+(?:IGNORE|REPLACE)\s+)?INTO|UPDATE|DELETE\s+FROM)\s+"
+    r"\b(?:INSERT\s+(?:OR\s+(?:IGNORE|REPLACE)\s+)?INTO|MERGE\s+INTO|UPDATE|"
+    r"DELETE\s+FROM)\s+"
     r'"?(app)"?\s*\.\s*"?([a-z_][a-z0-9_]*)"?(?![a-z0-9_"])',
     re.IGNORECASE,
 )
@@ -456,6 +457,16 @@ def _static_sqls(
                 value,
                 locals_=locals_,
                 seen_names=seen_names | {node.id},
+            )
+        ]
+    if isinstance(node, ast.IfExp):
+        return [
+            sql
+            for branch in (node.body, node.orelse)
+            for sql in _static_sqls(
+                branch,
+                locals_=locals_,
+                seen_names=seen_names,
             )
         ]
     if not isinstance(node, ast.JoinedStr):
@@ -1439,6 +1450,62 @@ def test_rejects_insert_or_ignore_in_service(tmp_path: Path) -> None:
     assert _violations_in_path(source) == [
         _Violation(path=source, line=4, table="app.user_categories")
     ]
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "app.user_categories",
+        '"app"."user_categories"',
+    ],
+)
+def test_rejects_merge_into_protected_table(tmp_path: Path, target: str) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "def merge(db):\n"
+        f"    db.execute('MERGE INTO {target} AS target USING source ON FALSE')\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=2, table="app.user_categories")
+    ]
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "'DELETE FROM app.user_categories' if unsafe else 'SELECT 1'",
+        "'SELECT 1' if safe else 'DELETE FROM app.user_categories'",
+    ],
+)
+def test_rejects_protected_write_in_conditional_expression(
+    tmp_path: Path, expression: str
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        f"def delete(db, unsafe, safe):\n    sql = {expression}\n    db.execute(sql)\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=3, table="app.user_categories")
+    ]
+
+
+def test_allows_safe_conditional_expression(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "def query(db, detailed):\n"
+        "    sql = 'SELECT * FROM app.user_categories' if detailed else 'SELECT 1'\n"
+        "    db.execute(sql)\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
 
 
 def test_allows_base_repository_writes(tmp_path: Path) -> None:
