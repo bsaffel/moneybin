@@ -6,7 +6,7 @@ implemented
 
 > **Final enforcement reconciliation (2026-08-30).** The static Invariant 10
 > gate now lives in `tests/integration/test_app_integrity_invariant_lint.py`.
-> It derives protected `app.*` tables from the concrete repository registry,
+> It derives protected `app.*` tables from the independent `TableRef` registry,
 > resolves inline and function-local `TableRef.full_name` SQL and ingestion
 > targets, checks `execute`, `executemany`, `sql`, and `ingest_dataframe`
 > entry points, checks every control-flow binding conservatively, and preserves
@@ -301,12 +301,14 @@ Per `.claude/rules/testing.md` test layers.
 | Unit | `tests/moneybin/test_repositories/test_<table>_repo.py` (per repo) | `upsert`/`delete` happy path; `before_value` captures the full prior row (not a diff); `parent_audit_id` is recorded when supplied; audit emission and DB write are atomic (rollback test: simulate a failure between write and audit, assert the row is not present) |
 | Unit | `tests/moneybin/test_repositories/test_base.py` | Repository contract: methods return `AuditEvent`; `_emit_audit()` is the single emission point; metric `app_mutation_audit_emitted_total` increments per call |
 | Integration | `tests/integration/test_app_integrity_invariant_lint.py` | Lint rule rejects protected writes through positional and keyword `query` arguments to `execute`, `executemany`, and `sql`, plus positional and keyword `table` targets to `ingest_dataframe`, in a service-shaped fixture file; restricts the migration exemption to `src/moneybin/sql/migrations/V*.py`; allows sanctioned writes in `repositories/base.py` and `*_repo.py`; honors the allowlist for exempt tables |
-| Integration | `tests/integration/test_app_integrity_cascade.py` | A single user action that triggers a cascade (deletes a `user_category` and rewrites referencing `transaction_categories`) produces one parent audit row + N children sharing the parent's `audit_id` as `parent_audit_id`; `AuditService.chain_for(parent_audit_id)` returns the full set |
-| Integration | `tests/integration/test_doctor_app_integrity.py` | Doctor audit-coverage check flags a manually inserted bypass row; passes for normally-mutated rows; respects sampling cap and the `--full` opt-in |
-| Scenario | `tests/scenarios/test_scenario_app_integrity.py` | End-to-end: import + categorize + rule-promote + budget-set; assert (a) every `app.*` row touched has a `target_table`-matching `app.audit_log` row, (b) cascades thread `parent_audit_id` correctly, (c) `before_value` for every UPDATE/DELETE matches the full prior row |
+| Service | `tests/moneybin/test_services/test_security_links_service.py` | A security-merge cascade produces one parent audit row plus child rows for lot selection, link repointing, and security deletion that share the parent's `audit_id` as `parent_audit_id` |
+| Service | `tests/moneybin/test_services/test_doctor_app_integrity.py` | Doctor audit-coverage checks enumerate the live repo registry and require every repo table to have coverage or an exact named exemption |
 | Migration regression | covered by existing per-service tests | Per-service tests that already exist (`test_services/test_categorization_service.py`, etc.) must pass unchanged after migration. Repository migration is mechanical — public service surface is preserved, audit emission is added (not changed). New asserts added where existing tests would otherwise silently accept a missing audit row. |
 
-`tests/moneybin/test_db_helpers_parity.py` (introduced by `smart-import-transform.md`) gains a new parity assertion: the protected-tables list in the lint rule MUST equal the union of `*Repo` table coverage. Drift between the two is a doctor-of-the-doctor bug.
+The lint derives protected tables from the independent `TableRef` registry, not
+from repository discovery. Its regression tests prove that a newly declared
+`app.*` table is protected before a repository exists and that only the exact
+`src/moneybin/repositories/` path receives the repository write exemption.
 
 ## Out of Scope
 

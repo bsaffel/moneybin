@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import ast
 import re
+import runpy
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 import moneybin.tables as tables_module
-from moneybin.repositories import concrete_repo_classes
 
 pytestmark = pytest.mark.integration
 
@@ -28,9 +28,9 @@ _EXEMPT_TABLES = frozenset({
 })
 _PROTECTED_TABLES = (
     frozenset(
-        cls.table_ref.full_name
-        for cls in concrete_repo_classes()
-        if cls.table_ref.schema == "app"
+        ref.full_name
+        for ref in vars(tables_module).values()
+        if isinstance(ref, tables_module.TableRef) and ref.schema == "app"
     )
     - _EXEMPT_TABLES
 )
@@ -272,7 +272,7 @@ def _scope_bindings(
 
 
 def _violations_in_path(path: Path) -> list[_Violation]:
-    is_repository = path.parent.name == "repositories" and (
+    is_repository = path.parts[-4:-1] == ("src", "moneybin", "repositories") and (
         path.name == "base.py" or path.name.endswith("_repo.py")
     )
     is_audit_service = (
@@ -719,6 +719,35 @@ def test_allows_base_repository_writes(tmp_path: Path) -> None:
     )
 
     assert _violations_in_path(source) == []
+
+
+def test_rejects_repository_named_service_subdirectory(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/repositories/rogue_repo.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "def delete(db):\n"
+        '    db.execute("DELETE FROM app.user_categories WHERE category_id = ?")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=2, table="app.user_categories")
+    ]
+
+
+def test_new_declared_app_table_is_protected_without_a_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tables_module,
+        "UNREPOSITORY_TABLE",
+        tables_module.TableRef("app", "unrepository_table"),
+        raising=False,
+    )
+
+    reloaded = runpy.run_path(__file__)
+
+    assert "app.unrepository_table" in reloaded["_PROTECTED_TABLES"]
 
 
 def test_rejects_migration_named_runtime_module(tmp_path: Path) -> None:
