@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import typer
 
@@ -153,6 +153,35 @@ def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> No
     # whoever called it, and the text path is a caller.
     for action in result.actions:
         render_note(f"💡 {action}", quiet=quiet)
+
+
+class ColumnView(NamedTuple):
+    """What the text branch renders, and whether the renderer fits it."""
+
+    columns: tuple[str, ...]
+    fit: bool
+
+
+def column_view(
+    spec: RegisteredReport,
+    result_columns: Sequence[str],
+    *,
+    parameters: Mapping[str, Any],
+    wide: bool,
+) -> ColumnView:
+    """One report's whole text-branch column decision (requirements 6, 7).
+
+    Both CLI paths reach the same renderer — a built-in's generated command and
+    ``reports run``, which serves every tier — so resolving the narrowed set and
+    the fit flag separately in each is two copies of one decision. They were,
+    and the tested copy was not the one `run` used.
+    """
+    return ColumnView(
+        visible_columns(spec, result_columns, parameters=parameters, wide=wide),
+        # Only a report that named no columns of its own. `--wide` is a request
+        # for the whole projection, not for a fitted one.
+        fit=spec.default_columns is None and not wide,
+    )
 
 
 def visible_columns(
@@ -338,18 +367,15 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                     display_currency=display_currency,
                     home_currency=profile_home_currency(db),
                 )
+            view = column_view(spec, result.columns, parameters=kwargs, wide=wide)
             render_report_result(
                 result,
                 output,
                 cli_actor=cli_actor,
                 money=money_columns(spec),
                 quiet=quiet,
-                columns=visible_columns(
-                    spec, result.columns, parameters=kwargs, wide=wide
-                ),
-                # Only a report that named no columns of its own; `--wide` is a
-                # request for the whole projection, not for a fitted one.
-                fit=spec.default_columns is None and not wide,
+                columns=view.columns,
+                fit=view.fit,
             )
 
     _impl.__name__ = spec.name

@@ -195,7 +195,10 @@ Numbered, each independently testable.
 
    The ends are kept because they are what identify a row and carry its answer —
    a spending table reads as `month … total`, and dropping either end for two
-   middle dimensions keeps the qualifiers and loses the question. Requirement
+   middle dimensions keeps the qualifiers and loses the question. A column too
+   wide to keep costs only itself: the walk closes that side and keeps taking
+   from the other, so widths `1, 100, 1, 1, 1` render four columns rather than
+   the two an all-or-nothing stop would leave in an 80-column window. Requirement
    10's framing line reports the fit from what was actually printed, so a
    narrowing the caller never requested is disclosed by the same line as a
    declared one. **Requirement 9's 80-column guarantee remains contract-tested

@@ -154,9 +154,9 @@ def reports_run(
         profile_home_currency,
     )
     from moneybin.reports._framework.cli_register import (
+        column_view,
         money_columns,
         render_report_result,
-        visible_columns,
     )
 
     # Parity with the `reports` MCP tool, which validates `ge=1`. `--limit 0`
@@ -187,21 +187,15 @@ def reports_run(
             # Resolved inside the database scope for the same reason `money` is:
             # a user-tier spec is built from a row, and this is the only scope
             # holding the connection that builds it.
-            columns = visible_columns(
-                spec, result.columns, parameters=parameters, wide=wide
-            )
-            fit_to_terminal = spec.default_columns is None
+            view = column_view(spec, result.columns, parameters=parameters, wide=wide)
     render_report_result(
         result,
         output,
         cli_actor="reports_run",
         money=money,
         quiet=quiet,
-        columns=columns,
-        # A saved report names no default columns — the user's own SELECT is
-        # the projection — so the renderer fits it to the terminal. `--wide` is
-        # a request for the whole thing, not for a fitted one.
-        fit=fit_to_terminal and not wide,
+        columns=view.columns,
+        fit=view.fit,
     )
 
 

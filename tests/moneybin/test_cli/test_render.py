@@ -659,6 +659,31 @@ def test_the_fit_measures_values_not_just_headers(
     assert "columns shown" in capsys.readouterr().out
 
 
+def test_one_unkeepable_column_does_not_end_the_fit(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A column too wide to keep costs only itself, not the ones behind it.
+
+    The walk alternates between the two ends, so abandoning it at the first
+    candidate that does not fit discards everything still unvisited on the
+    other side. Here `sprawling` can never be kept at any realistic terminal
+    size, while `third` and `fourth` are a handful of characters each and there
+    is room for both — stopping at `sprawling` would render a two-column table
+    in an eighty-column window.
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+    columns = ["first", "sprawling", "third", "fourth", "fifth"]
+
+    render_rows(columns, [("a", "w" * 100, "c", "d", "e")], fit=True)
+
+    out = capsys.readouterr().out
+    assert "4 of 5 columns shown — --wide for all" in out
+    assert "third" in out
+    assert "fourth" in out
+    # Not "wide": the framing line's own `--wide for all` contains it.
+    assert "sprawling" not in out
+
+
 def test_an_undeclared_total_frames_nothing(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -221,17 +221,29 @@ def _fit_columns(widths: Sequence[int], available: int) -> tuple[int, ...]:
     kept = [0] if total == 1 else [0, total - 1]
     budget = [widths[i] for i in kept] + [len(ELISION)]
     head, tail = 1, total - 2
-    while head <= tail:
-        # Outside-in, alternating, so neither end is favoured by parity.
-        nxt = head if (head - 1) <= (total - 2 - tail) else tail
+    # A side closes for good once its next column does not fit: the budget only
+    # grows, so that same column can never fit later. The other side keeps
+    # going — abandoning both would discard narrow columns behind one wide one,
+    # rendering two columns in a terminal with room for five.
+    head_open, tail_open = True, True
+    while head <= tail and (head_open or tail_open):
+        # Outside-in, taking from whichever side has given up less ground so
+        # far. Ties go to the head, so an odd count leans left.
+        take_head = head_open and (not tail_open or (head - 1) <= (total - 2 - tail))
+        nxt = head if take_head else tail
         if _table_width([*budget, widths[nxt]]) > available:
-            break
+            head_open, tail_open = (
+                (False, tail_open) if take_head else (head_open, False)
+            )
+            continue
         budget.append(widths[nxt])
         kept.append(nxt)
-        if nxt == head:
+        if take_head:
             head += 1
         else:
             tail -= 1
+    # Only ever a prefix and a suffix, so what was dropped stays one contiguous
+    # run and one ELISION column still describes it.
     return tuple(sorted(kept))
 
 
