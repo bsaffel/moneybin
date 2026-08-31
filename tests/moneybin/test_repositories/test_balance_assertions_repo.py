@@ -11,37 +11,16 @@ from __future__ import annotations
 import json
 from datetime import date
 from decimal import Decimal
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 from moneybin.repositories.balance_assertions_repo import BalanceAssertionsRepo
+from tests.moneybin.test_repositories.conftest import audit_rows_for as _audit_rows_for
+from tests.moneybin.test_repositories.conftest import metric_for
 
-
-def _audit_rows_for(db: Database, target_id: str) -> list[tuple[Any, ...]]:
-    return db.conn.execute(
-        """
-        SELECT action, target_schema, target_table, target_id,
-               before_value, after_value, actor, parent_audit_id
-          FROM app.audit_log
-         WHERE target_id = ?
-         ORDER BY occurred_at ASC, audit_id ASC
-        """,
-        [target_id],
-    ).fetchall()
-
-
-def _metric(action: str) -> float:
-    return (
-        REGISTRY.get_sample_value(
-            "moneybin_app_mutation_audit_emitted_total",
-            {"repository": "balance_assertions", "action": action},
-        )
-        or 0.0
-    )
+_metric = metric_for("balance_assertions")
 
 
 _DAY = date(2026, 5, 1)

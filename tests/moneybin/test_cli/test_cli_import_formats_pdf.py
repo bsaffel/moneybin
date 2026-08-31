@@ -8,7 +8,6 @@ from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app as import_app
@@ -44,12 +43,6 @@ def _make_pdf_format(**kwargs: Any) -> Any:
     }
     defaults.update(kwargs)
     return PdfFormat(**defaults)
-
-
-@pytest.fixture()
-def runner() -> CliRunner:
-    """Provide a Typer CliRunner for invoking the import app."""
-    return CliRunner()
 
 
 def _mock_get_database(mocker: Any, pdf_formats: list[Any]) -> None:

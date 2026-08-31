@@ -13,35 +13,13 @@ from unittest.mock import MagicMock
 
 import duckdb
 import pytest
-from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 from moneybin.repositories.account_link_decisions_repo import (
     AccountLinkDecisionsRepo,
 )
-
-
-def _audit_rows_for(db: Database, target_id: str) -> list[tuple[Any, ...]]:
-    return db.conn.execute(
-        """
-        SELECT action, target_schema, target_table, target_id,
-               before_value, after_value, actor, parent_audit_id
-          FROM app.audit_log
-         WHERE target_id = ?
-         ORDER BY occurred_at ASC, audit_id ASC
-        """,
-        [target_id],
-    ).fetchall()
-
-
-def _metric(action: str) -> float:
-    return (
-        REGISTRY.get_sample_value(
-            "moneybin_app_mutation_audit_emitted_total",
-            {"repository": "account_link_decisions", "action": action},
-        )
-        or 0.0
-    )
+from tests.moneybin.test_repositories.conftest import audit_rows_for as _audit_rows_for
+from tests.moneybin.test_repositories.conftest import metric
 
 
 def _insert(repo: AccountLinkDecisionsRepo, **overrides: Any) -> Any:
@@ -61,7 +39,7 @@ def _insert(repo: AccountLinkDecisionsRepo, **overrides: Any) -> Any:
 
 def test_insert_writes_row_and_audit_row(db: Database) -> None:
     repo = AccountLinkDecisionsRepo(db)
-    before_metric = _metric("account_link_decision.insert")
+    before_metric = metric("account_link_decisions", "account_link_decision.insert")
 
     event = _insert(repo)
     assert event.target_id == "dec00000001"
@@ -89,7 +67,10 @@ def test_insert_writes_row_and_audit_row(db: Database) -> None:
     assert after_json["match_signals"]["signal"] == "institution_last4"
     assert actor == "system"
 
-    assert _metric("account_link_decision.insert") - before_metric == 1.0
+    assert (
+        metric("account_link_decisions", "account_link_decision.insert") - before_metric
+        == 1.0
+    )
 
 
 @pytest.mark.parametrize("bad_value", ["bogus", "system"])

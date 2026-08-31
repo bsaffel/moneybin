@@ -28,12 +28,6 @@ from moneybin.cli.commands import logs as logs_module
 from moneybin.logging.config import setup_logging
 
 
-@pytest.fixture()
-def runner() -> CliRunner:
-    """Return a fresh Typer/Click CliRunner with split streams."""
-    return CliRunner()
-
-
 def _patch_settings(monkeypatch: pytest.MonkeyPatch, log_dir: Path) -> None:
     monkeypatch.setattr(
         "moneybin.cli.commands.logs.get_settings",

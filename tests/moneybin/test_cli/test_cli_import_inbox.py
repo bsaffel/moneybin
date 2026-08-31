@@ -46,12 +46,6 @@ def _fake_get_database(**kwargs: object) -> Generator[object, None, None]:
 
 
 @pytest.fixture
-def runner() -> CliRunner:
-    """Return a Typer CliRunner for invoking the root app."""
-    return CliRunner()
-
-
-@pytest.fixture
 def patch_inbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
     """Patch InboxService, get_database, get_settings, handle_cli_errors to skip the real DB."""
     fake = MagicMock()

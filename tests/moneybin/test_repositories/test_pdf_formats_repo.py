@@ -15,6 +15,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
+from tests.moneybin.test_repositories.conftest import audit_rows_for as _audit_rows_for
 
 _RECIPE_V1: dict[str, Any] = {
     "fields": [
@@ -38,19 +39,6 @@ _FINGERPRINT: dict[str, Any] = {
     "headers": ["Date", "Description", "Amount"],
     "page_bucket": "2-3",
 }
-
-
-def _audit_rows_for(db: Database, target_id: str) -> list[tuple[Any, ...]]:
-    return db.conn.execute(
-        """
-        SELECT action, target_schema, target_table, target_id,
-               before_value, after_value, actor, parent_audit_id
-          FROM app.audit_log
-         WHERE target_id = ?
-         ORDER BY occurred_at ASC, audit_id ASC
-        """,
-        [target_id],
-    ).fetchall()
 
 
 def _save_new(
