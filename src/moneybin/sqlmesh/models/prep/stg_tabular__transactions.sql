@@ -94,7 +94,11 @@ WITH accepted_native_links AS (
     t.source_file,
     t.source_type,
     t.source_origin,
-    NULLIF(TRIM(t.source_transaction_id), '') AS source_transaction_id
+    NULLIF(TRIM(t.source_transaction_id), '') AS source_transaction_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY t.account_id, t.source_file, t.source_type, t.source_origin, NULLIF(TRIM(t.source_transaction_id), '')
+      ORDER BY t.transaction_id
+    ) AS occurrence
   FROM raw.tabular_transactions AS t
   JOIN app.account_links AS legacy_self_map
     ON legacy_self_map.ref_kind = 'source_native'
@@ -121,7 +125,11 @@ WITH accepted_native_links AS (
     t.source_file,
     t.source_type,
     t.source_origin,
-    NULLIF(TRIM(t.source_transaction_id), '') AS source_transaction_id
+    NULLIF(TRIM(t.source_transaction_id), '') AS source_transaction_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY link.account_id, t.source_file, t.source_type, t.source_origin, NULLIF(TRIM(t.source_transaction_id), '')
+      ORDER BY t.transaction_id
+    ) AS occurrence
   FROM raw.tabular_transactions AS t
   JOIN accepted_native_links AS link
     ON link.source_type = t.source_type
@@ -160,6 +168,7 @@ WITH accepted_native_links AS (
     AND legacy.source_type = corrected.source_type
     AND legacy.source_origin IS NOT DISTINCT FROM corrected.source_origin
     AND legacy.source_transaction_id = corrected.source_transaction_id
+    AND legacy.occurrence = corrected.occurrence
 ), curated_transaction_ids AS (
   SELECT
     transaction_id
@@ -192,6 +201,7 @@ WITH accepted_native_links AS (
   SELECT
     match.account_id,
     match.source_type_a AS source_type,
+    match.source_origin_a AS source_origin,
     match.source_transaction_id_a AS transaction_id
   FROM app.match_decisions AS match
   WHERE
@@ -206,6 +216,7 @@ WITH accepted_native_links AS (
       ELSE match.account_id_b
     END AS account_id,
     match.source_type_b AS source_type,
+    match.source_origin_b AS source_origin,
     match.source_transaction_id_b AS transaction_id
   FROM app.match_decisions AS match
   WHERE
@@ -227,6 +238,7 @@ WITH accepted_native_links AS (
   LEFT JOIN protected_corrected_match_endpoints AS endpoint
     ON endpoint.account_id = pair.canonical_account_id
     AND endpoint.source_type = pair.source_type
+    AND endpoint.source_origin IS NOT DISTINCT FROM pair.source_origin
     AND endpoint.transaction_id = pair.corrected_transaction_id
   WHERE
     curation.transaction_id IS NULL AND endpoint.transaction_id IS NULL
@@ -301,39 +313,12 @@ WITH accepted_native_links AS (
         AND NOT EXISTS(
           SELECT
             1
-          FROM app.match_decisions AS match
+          FROM protected_corrected_match_endpoints AS endpoint
           WHERE
-            match.match_status IN ('pending', 'accepted', 'rejected')
-            AND match.reversed_at IS NULL
-            AND match.match_type IN ('dedup', 'transfer')
-            AND (
-              (
-                match.match_type = 'dedup'
-                AND match.account_id = corrected.canonical_account_id
-                AND (
-                  (
-                    match.source_type_a = corrected.source_type
-                    AND match.source_transaction_id_a = corrected.transaction_id
-                  )
-                  OR (
-                    match.source_type_b = corrected.source_type
-                    AND match.source_transaction_id_b = corrected.transaction_id
-                  )
-                )
-              )
-              OR (
-                match.match_type = 'transfer'
-                AND match.account_id = corrected.canonical_account_id
-                AND match.source_type_a = corrected.source_type
-                AND match.source_transaction_id_a = corrected.transaction_id
-              )
-              OR (
-                match.match_type = 'transfer'
-                AND match.account_id_b = corrected.canonical_account_id
-                AND match.source_type_b = corrected.source_type
-                AND match.source_transaction_id_b = corrected.transaction_id
-              )
-            )
+            endpoint.account_id = corrected.canonical_account_id
+            AND endpoint.source_type = corrected.source_type
+            AND endpoint.source_origin IS NOT DISTINCT FROM corrected.source_origin
+            AND endpoint.transaction_id = corrected.transaction_id
         )
         AND corrected.source_file IS NOT DISTINCT FROM t.source_file
         AND corrected.source_type = t.source_type

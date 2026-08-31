@@ -1394,7 +1394,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `gsheet auth` no longer reports an existing connection as authorized when
   either variable is missing: it re-authorizes and names the gap instead of
   succeeding now and failing at the next refresh. (#456)
-- **Re-importing a file pinned before #438 no longer double-counts its transactions (#442, PR #459).** Staging keeps the legacy transaction IDs and safely suppresses only an exact, uncurated corrected re-import twin; raw import history is never deleted. A corrected twin that already has transaction curation remains visible, preventing its app state from becoming orphaned.
+- **Re-importing a file pinned before #438 no longer double-counts its
+  transactions (#442, PR #459).** Staging keeps the legacy transaction IDs and
+  safely suppresses only an exact, uncurated corrected re-import twin; raw
+  import history is never deleted. A corrected twin that already has transaction
+  curation remains visible, preventing its app state from becoming orphaned.
 - **An import now announces a new account under the name you will find it by.**
   A first-contact import mints the account without asking and reports what it
   created, and the MCP tool tells the agent to relay that to the user — but the
@@ -1436,7 +1440,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SELECT 'expor' AS control` was always accepted, because the write-operation
   guard scanned raw query text with no regard for where the word appeared. It
   now checks the parsed SQL's structure instead of its text: a word matters
-   only when it produces an actual write statement (`INSERT`, `UPDATE`,
+  only when it produces an actual write statement (`INSERT`, `UPDATE`,
    `DROP`, etc.), never when it merely appears inside a string literal (any
    quoting style), a quoted identifier, or a `--` comment. This unblocks
    `... WHERE action LIKE 'export%'` against `app.audit_log`, the documented

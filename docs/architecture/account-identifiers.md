@@ -147,15 +147,17 @@ Re-import using the same recorded source-file provenance. Staging retains the
 pre-fix raw row as the authoritative copy and suppresses its uncurated corrected
 twin from the derived ledger. No raw rows are deleted. If app state already
 references the corrected twin, both rows remain visible rather than orphaning
-the note, tag, split, categorization, review decision, or alias target.
-Suppression is scoped to the same canonical account, source file, source origin,
-and transaction content (including the raw date string and source transaction ID
-when supplied), pairing repeated identical rows one-for-one. A path reused for
-another account therefore retains both accounts' transactions. The CLI preserves
-the path spelling it receives, so re-importing through a different relative path
-or symlink is not yet recognized as the same document; durable document identity
-is tracked by the [Document–Account Binding](../specs/document-account-binding.md)
-spec. If the legacy self-map
+the note, tag, split, categorization, review decision, or alias target. A
+nonblank source transaction ID pairs one legacy row with one corrected row in
+the same canonical account, source file, type, and origin; the output keeps the
+legacy identity and projects the corrected values even when transaction content
+has changed. Rows without a source transaction ID instead require exact
+transaction content (including the raw date string), pairing repeated identical
+rows one-for-one. A path reused for another account therefore retains both
+accounts' transactions. The CLI preserves the path spelling it receives, so
+re-importing through a different relative path or symlink is not yet recognized
+as the same document; durable document identity is tracked by the
+[Document–Account Binding](../specs/document-account-binding.md) spec. If the legacy self-map
 was later reversed by an account merge, it cannot prove which later native row
 is its replacement, so staging retains both rather than risk losing a reused
 path's transaction.

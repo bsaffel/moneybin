@@ -32,7 +32,7 @@ def _insert_accepted_source_native(
     source_origin: str,
     status: str = "accepted",
 ) -> None:
-    """Seed one accepted source_native row in app.account_links."""
+    """Seed one source_native row in app.account_links."""
     db.execute(
         """
         INSERT INTO app.account_links
@@ -376,6 +376,174 @@ def test_stg_tabular_transactions_projects_corrected_stable_source_id_values(
             "source-001",
             date(2024, 1, 16),
             Decimal("-55.00"),
+            "Corrected purchase",
+        )
+    ]
+
+
+@pytest.mark.slow
+def test_stg_tabular_transactions_pairs_duplicate_stable_source_ids_by_occurrence(
+    db: Database,
+) -> None:
+    """A duplicate stable ID retires only one legacy/corrected pair.
+
+    The production change this catches is joining every repeated legacy ID to the
+    one corrected row, which projects corrected values under every legacy ID.
+    """
+    canonical_id = "canonical-duplicate-stable-id-01"
+    native_key = "native-duplicate-stable-id-01"
+    source_file = "duplicate-stable-id-statement.csv"
+    source_origin = "duplicate-stable-id-test"
+
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, source_transaction_id, transaction_date,
+             amount, description, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES
+            ('canonical-duplicate-stable-id-01:legacy-001', ?, 'repeat-001',
+             DATE '2024-01-15', -50.00, 'Original purchase', ?, 'csv', ?,
+             'legacy-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('canonical-duplicate-stable-id-01:legacy-002', ?, 'repeat-001',
+             DATE '2024-01-16', -55.00, 'Second legacy purchase', ?, 'csv', ?,
+             'legacy-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('native-duplicate-stable-id-01:corrected-001', ?, 'repeat-001',
+             DATE '2024-01-17', -60.00, 'Corrected purchase', ?, 'csv', ?,
+             'corrected-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [
+            canonical_id,
+            source_file,
+            source_origin,
+            canonical_id,
+            source_file,
+            source_origin,
+            native_key,
+            source_file,
+            source_origin,
+        ],
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-duplicate-stable-id-legacy",
+        account_id=canonical_id,
+        ref_value=canonical_id,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-duplicate-stable-id-native",
+        account_id=canonical_id,
+        ref_value=native_key,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        """
+        SELECT transaction_date, amount, description
+        FROM prep.stg_tabular__transactions
+        WHERE source_file = ?
+        ORDER BY transaction_date
+        """,
+        [source_file],
+    ).fetchall()
+
+    assert rows == [
+        (date(2024, 1, 16), Decimal("-55.00"), "Second legacy purchase"),
+        (date(2024, 1, 17), Decimal("-60.00"), "Corrected purchase"),
+    ]
+
+
+@pytest.mark.slow
+def test_stg_tabular_transactions_scopes_stable_match_protection_to_origin(
+    db: Database,
+) -> None:
+    """A decision for another origin cannot retain this corrected twin."""
+    canonical_id = "canonical-origin-match-01"
+    native_key = "native-origin-match-01"
+    source_file = "origin-match-statement.csv"
+    source_origin = "origin-match-current"
+    other_origin = "origin-match-other"
+    source_id = "source-001"
+    corrected_transaction_id = f"{native_key}:{source_id}"
+
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, source_transaction_id, transaction_date,
+             amount, description, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES
+            ('canonical-origin-match-01:source-001', ?, ?, DATE '2024-01-15',
+             -50.00, 'Original purchase', ?, 'csv', ?, 'legacy-import',
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            (?, ?, ?, DATE '2024-01-16', -55.00, 'Corrected purchase', ?,
+             'csv', ?, 'corrected-import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [
+            canonical_id,
+            source_id,
+            source_file,
+            source_origin,
+            corrected_transaction_id,
+            native_key,
+            source_id,
+            source_file,
+            source_origin,
+        ],
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-origin-match-legacy",
+        account_id=canonical_id,
+        ref_value=canonical_id,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-origin-match-native",
+        account_id=canonical_id,
+        ref_value=native_key,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b, account_id,
+            confidence_score, match_signals, match_type, match_tier, match_status,
+            match_reason, decided_by, decided_at
+        ) VALUES ('origin-mismatch-pair', ?, 'csv', ?, 'other-source-001', 'csv',
+                  ?, ?, 0.95, '{}', 'dedup', '3', 'accepted', NULL, 'user',
+                  CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [corrected_transaction_id, other_origin, other_origin, canonical_id],
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        """
+        SELECT source_account_key, transaction_id, description
+        FROM prep.stg_tabular__transactions
+        WHERE source_file = ?
+        """,
+        [source_file],
+    ).fetchall()
+
+    assert rows == [
+        (
+            canonical_id,
+            "canonical-origin-match-01:source-001",
             "Corrected purchase",
         )
     ]
@@ -822,6 +990,16 @@ def test_stg_tabular_transactions_keeps_curated_corrected_duplicates(
     }
 
     assert retained_ids == set(corrected_ids.values())
+    legacy_rows = db.execute(
+        """
+        SELECT COUNT(*)
+        FROM prep.stg_tabular__transactions
+        WHERE source_account_key = ? AND source_file = ?
+        """,
+        [canonical_id, source_file],
+    ).fetchone()
+
+    assert legacy_rows == (len(source_ids),)
 
 
 @pytest.mark.slow
