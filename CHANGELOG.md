@@ -1311,6 +1311,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **Transforming fresh data no longer repeats a full rebuild when the initial
+  SQLMesh plan already scheduled every FULL model.** A view-only model change
+  still triggers that rebuild when new raw data landed, so refreshed reports do
+  not miss the new rows. (#483)
+
 - **A non-finite amount no longer crashes a report, or prices as though it were
   a number.** A `NaN` in a money column left `format_money` through
   `amount < 0` as a raw `decimal.InvalidOperation` traceback rather than a

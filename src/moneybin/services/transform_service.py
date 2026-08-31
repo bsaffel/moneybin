@@ -12,6 +12,7 @@ import time
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Protocol, cast
 
 import duckdb
 
@@ -70,6 +71,32 @@ _RAW_IMPORT_SCOPED: frozenset[str] = frozenset({
     "tabular_accounts",
     "tabular_transactions",
 })
+
+
+class _PlannedSnapshot(Protocol):
+    name: str
+    is_full: bool
+
+
+class _SnapshotInterval(Protocol):
+    snapshot_id: object
+
+
+class _InitialPlan(Protocol):
+    snapshots: dict[object, _PlannedSnapshot]
+    missing_intervals: Collection[_SnapshotInterval]
+
+
+def _plan_backfills_full_models(
+    plan: _InitialPlan, full_models: Collection[str]
+) -> bool:
+    """Return whether the initial SQLMesh plan schedules every FULL model."""
+    planned_full_models = {
+        plan.snapshots[interval.snapshot_id].name
+        for interval in plan.missing_intervals
+        if plan.snapshots[interval.snapshot_id].is_full
+    }
+    return set(full_models) <= planned_full_models
 
 
 def _build_raw_landing_scan(
@@ -290,16 +317,24 @@ class TransformService:
                     #      per-model cron cadence. (No incremental models exist
                     #      today, so this is currently a no-op — wired now so the
                     #      pipeline is correct when one lands.)
-                    #   3. restate FULL models — a FULL model's interval is
-                    #      already "complete" after step 1, so run() skips it; only
-                    #      restatement forces the full rebuild that picks up new
-                    #      raw rows. Scoped to is_full so INCREMENTAL models are
-                    #      NOT blanket-restated (that would reprocess all history
-                    #      every refresh and defeat incrementality).
+                    #   3. restate FULL models only when step 1 did not schedule
+                    #      every one. A plan may change only a VIEW or environment
+                    #      metadata, which does not rebuild FULL models; otherwise
+                    #      the restatement forces the rebuild that picks up new raw
+                    #      rows. Scoped to is_full so INCREMENTAL models are NOT
+                    #      blanket-restated (that would reprocess all history and
+                    #      defeat incrementality).
                     # DEPRECATED-WHEN: the first INCREMENTAL model lands — verify
                     # step 2 keeps it fresh and that it stays out of the restate
                     # set below.
-                    ctx.plan(auto_apply=True, no_prompts=True)
+                    initial_plan = ctx.plan(no_prompts=True)
+                    full_models = [
+                        name for name, model in ctx.models.items() if model.kind.is_full
+                    ]
+                    initial_plan_backfills_full_models = _plan_backfills_full_models(
+                        cast(_InitialPlan, initial_plan), full_models
+                    )
+                    ctx.apply(initial_plan)
                     # ctx.run() returns a CompletionStatus; unlike plan() it does
                     # NOT raise on scheduler/audit/model failure (SQLMesh's own
                     # CLI checks is_failure and raises "Run failed"). Surface a
@@ -309,10 +344,7 @@ class TransformService:
                     run_status = ctx.run(ignore_cron=True)
                     if run_status.is_failure:
                         raise RuntimeError("SQLMesh run reported a failure status")
-                    full_models = [
-                        name for name, model in ctx.models.items() if model.kind.is_full
-                    ]
-                    if full_models:
+                    if full_models and not initial_plan_backfills_full_models:
                         ctx.plan(
                             restate_models=full_models,
                             auto_apply=True,
