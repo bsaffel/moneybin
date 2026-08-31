@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from moneybin.config import get_settings
 from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
 from moneybin.privacy.log import write_privacy_event
 
@@ -18,8 +17,21 @@ async def test_privacy_coarse_status_is_default(mcp_db: object) -> None:
     assert response.summary.sensitivity == "low"
 
 
-def test_get_max_rows_uses_the_mcp_configuration() -> None:
-    assert get_max_rows() == get_settings().mcp.max_rows
+def test_get_max_rows_reads_the_current_mcp_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settings-cache reset takes effect without an MCP-specific cache."""
+    from moneybin.config import clear_settings_cache, set_current_profile
+
+    original_limit = get_max_rows()
+    monkeypatch.setenv("MONEYBIN_MCP__MAX_ROWS", str(original_limit + 1))
+    clear_settings_cache()
+    set_current_profile("test")
+
+    assert get_max_rows() == original_limit + 1
+
+    clear_settings_cache()
+    set_current_profile("test")
 
 
 @pytest.mark.parametrize(
