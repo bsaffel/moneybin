@@ -750,6 +750,7 @@ def _purge_binding(plan: Any) -> ConfirmationBinding:
             "state": "absent",
             "connection_before_state": _json_value(plan.connection_before_state),
             "raw_before_state": _json_value(plan.raw_before_state),
+            "account_before_state": _json_value(plan.account_before_state),
         },
         resolved_ids=(plan.connection_id,),
         actor="mcp",

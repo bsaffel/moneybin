@@ -49,7 +49,7 @@ from moneybin.services.import_confirmation import (
     MappingValidationError,
     validate_partial_mapping,
 )
-from moneybin.tables import GSHEET_SEEDS, TABULAR_TRANSACTIONS
+from moneybin.tables import GSHEET_SEEDS, TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,9 @@ class GSheetPurgePlan:
     connection_id: str
     connection_before_state: dict[str, Any]
     raw_before_state: tuple[dict[str, Any], ...]
+    # Kept separate from raw_before_state rather than concatenated: the two
+    # tables have different columns, and the confirmation renders these rows.
+    account_before_state: tuple[dict[str, Any], ...]
     blast_radius: dict[str, int]
 
 
@@ -575,19 +578,43 @@ class GSheetConnectionService:
         columns = [str(column[0]) for column in cursor.description]
         return tuple(dict(zip(columns, row, strict=True)) for row in cursor.fetchall())
 
+    def _account_before_state(self, conn: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+        """Every ``raw.tabular_accounts`` row this connection owns.
+
+        Only an unbound transactions connection registers any: a bound one
+        files every row under an account it did not create, and a seed
+        connection names no accounts at all.
+        """
+        if conn["adapter"] == "seed":
+            return ()
+        cursor = self._db.execute(
+            f"""
+            SELECT *
+            FROM {TABULAR_ACCOUNTS.full_name}
+            WHERE source_origin = ?
+            ORDER BY account_id
+            """,  # noqa: S608  # TableRef + parameterized value
+            [conn["connection_id"]],
+        )
+        columns = [str(column[0]) for column in cursor.description]
+        return tuple(dict(zip(columns, row, strict=True)) for row in cursor.fetchall())
+
     def plan_purge(self, connection_id: str) -> GSheetPurgePlan:
         """Snapshot the complete connection/raw before-state for confirmation."""
         conn = self._repo.get(connection_id)
         if conn is None:
             raise GSheetError(f"Unknown connection: {connection_id}")
         raw_rows = self._raw_before_state(conn)
+        account_rows = self._account_before_state(conn)
         return GSheetPurgePlan(
             connection_id=connection_id,
             connection_before_state=conn,
             raw_before_state=raw_rows,
+            account_before_state=account_rows,
             blast_radius={
                 "connections": 1,
                 "raw_rows": len(raw_rows),
+                "raw_account_rows": len(account_rows),
                 "views": int(conn["adapter"] == "seed" and bool(conn.get("alias"))),
             },
         )
@@ -632,6 +659,14 @@ class GSheetConnectionService:
             else:
                 self._db.execute(
                     f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} WHERE source_origin = ?",  # noqa: S608  # TableRef + parameterized value
+                    [connection_id],
+                )
+                # An unbound connection registers the accounts its sheet names.
+                # Leaving them would keep user-authored labels — and the
+                # accounts core projects from them — after a purge that says it
+                # deleted everything this connection owns.
+                self._db.execute(
+                    f"DELETE FROM {TABULAR_ACCOUNTS.full_name} WHERE source_origin = ?",  # noqa: S608  # TableRef + parameterized value
                     [connection_id],
                 )
 
@@ -732,16 +767,10 @@ class GSheetConnectionService:
             sign_convention_to_save = sign or detection.sign_convention
             sign_evidence_header = None
 
-        _require_inferred_sign_confirmation(
-            resolved_convention=sign_convention_to_save,
-            sign_was_explicit=sign is not None,
-            evidence_header=sign_evidence_header,
-            human_sign_confirmation=human_sign_confirmation,
-        )
-
-        # Ahead of the metric, matching connect's order: a refused reconnect
-        # persists no mapping, so booking an accepted confirmation for it
-        # overstates the counter.
+        # Both guards sit ahead of the metric: a refused reconnect persists no
+        # mapping, so booking an accepted confirmation for it overstates the
+        # counter. Keyability is asked first, matching connect, so a sheet with
+        # both problems names the same blocker whichever verb reached it.
         _require_keyable_accounts(
             adapter=existing["adapter"],
             account_id=existing["account_id"],
@@ -750,6 +779,13 @@ class GSheetConnectionService:
                 "Restore the account column in the sheet, or disconnect and "
                 "reconnect with --account-name / --account-id to bind it."
             ),
+        )
+
+        _require_inferred_sign_confirmation(
+            resolved_convention=sign_convention_to_save,
+            sign_was_explicit=sign is not None,
+            evidence_header=sign_evidence_header,
+            human_sign_confirmation=human_sign_confirmation,
         )
 
         if existing["adapter"] == "transactions":

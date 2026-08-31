@@ -116,8 +116,15 @@ class GSheetAdapter(Protocol):
         self,
         df: pl.DataFrame,
         connection: GSheetConnection,
+        db: Database,
     ) -> pl.DataFrame:
-        """Apply pinned mapping + typed transforms; produce load-ready frame."""
+        """Apply pinned mapping + typed transforms; produce load-ready frame.
+
+        ``db`` carries the identities this connection has already registered.
+        The transactions adapter keys an unbound sheet's rows by account, and
+        ``transaction_id`` folds that key, so a key recomputed from the current
+        label would rotate every id the account owns whenever the label changes.
+        """
         ...
 
     def load(

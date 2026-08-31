@@ -92,6 +92,7 @@ class RawSeedAdapter:
         self,
         df: pl.DataFrame,
         connection: GSheetConnection,
+        db: Database,
     ) -> pl.DataFrame:
         """Build the `raw.gsheet_seeds` insert frame from a current pull.
 
@@ -108,6 +109,9 @@ class RawSeedAdapter:
         sheet). Returns an empty frame with the correct schema when the
         input is empty.
         """
+        # Accepted for Protocol parity; a seed sheet names no accounts, so it
+        # has no remembered key to look up.
+        _ = db
         records = df.to_dicts()
         rows: list[dict[str, object]] = []
         seen_hashes: dict[str, int] = {}

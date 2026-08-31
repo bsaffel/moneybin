@@ -144,10 +144,70 @@ def _account_labels_from(df: pl.DataFrame, account_col: str) -> list[tuple[str, 
     return labels
 
 
+def _remembered_account_keys(
+    db: Database, connection: GSheetConnection
+) -> dict[str, str]:
+    """Label -> native key for every account this connection already registered."""
+    rows = db.execute(
+        f"SELECT account_name, account_id FROM {TABULAR_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
+        "WHERE source_origin = ?",
+        [connection.connection_id],
+    ).fetchall()
+    return {str(r[0]): str(r[1]) for r in rows if r[0] is not None}
+
+
+def _account_key_by_label(
+    labels: list[str], remembered: dict[str, str]
+) -> dict[str, str]:
+    """The native key each label in this pull resolves to.
+
+    A label the connection already knows keeps the key it was registered under.
+    That is what makes a repeat pull idempotent, and after a rename is adopted
+    it is what holds the new label on the original key.
+
+    ``transaction_id`` folds this key, so re-deriving it from a label the user
+    edited would soft-delete every row the account owns and re-insert copies
+    under fresh ids -- orphaning the notes and splits keyed to the old ones, and
+    minting a second account beside the first. When exactly one known label
+    leaves and exactly one unknown arrives, that is a rename, and the departing
+    key carries over so nothing moves.
+
+    Two of each is a pairing the sheet offers no evidence for, and grafting the
+    wrong pair merges two accounts -- the wrong inference `magic stays visible`
+    ranks hardest to notice and undo. So an ambiguous set mints fresh keys and
+    leaves the resolver's review queue to propose the merge where a human sees
+    it.
+
+    One account leaving as another arrives reads as a rename here, because the
+    sheet cannot tell the two apart. It is the reversible side of that call --
+    nothing is deleted, and the caller logs the adoption -- where re-keying
+    soft-deletes real rows. Note that ``remembered`` holds only accounts that
+    reached the ledger, so one whose rows never parse stays permanently
+    "arrived" and blocks adoption rather than mispairing: the failure that costs
+    more is the one made harder to reach.
+    """
+    from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
+        label_account_key,
+    )
+
+    current = dict.fromkeys(labels)
+    resolved = {label: key for label, key in remembered.items() if label in current}
+    arrived = [label for label in current if label not in remembered]
+    departed = [label for label in remembered if label not in current]
+
+    if len(arrived) == 1 and len(departed) == 1:
+        resolved[arrived[0]] = remembered[departed[0]]
+        return resolved
+    for label in arrived:
+        resolved[label] = label_account_key(label)
+    return resolved
+
+
 def _resolve_account_ids(
     df: pl.DataFrame,
     connection: GSheetConnection,
     field_mapping: dict[str, str],
+    db: Database,
 ) -> str | list[str]:
     """The account key stamped on each row: one bound account, or one per row.
 
@@ -170,11 +230,10 @@ def _resolve_account_ids(
     so this channel is deliberately correct rather than bug-compatible; moving
     the tabular path over rotates native keys for existing installs and needs
     its own migration.
-    """
-    from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
-        label_account_key,
-    )
 
+    A key is looked up before it is derived: see :func:`_account_key_by_label`
+    for why a label the user edits must not re-key the rows it already owns.
+    """
     if connection.account_id is not None:
         return connection.account_id
 
@@ -186,9 +245,11 @@ def _resolve_account_ids(
             f"connection {connection.connection_id} has neither"
         )
 
-    return [
-        label_account_key(label) for label, _ in _account_labels_from(df, account_col)
-    ]
+    labels = [label for label, _ in _account_labels_from(df, account_col)]
+    key_by_label = _account_key_by_label(
+        labels, _remembered_account_keys(db, connection)
+    )
+    return [key_by_label[label] for label in labels]
 
 
 def _link_sheet_accounts(
@@ -241,14 +302,14 @@ def _register_sheet_accounts(
 ) -> None:
     """Write one ``raw.tabular_accounts`` row per account the sheet names.
 
-    Keyed by the same native slug the transform stamps on each transaction, so
-    the resolver's native→canonical mapping links both together. Upserted on
-    every pull rather than written once: a sheet is live, and an account
-    renamed in it should re-label rather than mint a second row.
+    Keyed by the same native key the transform stamps on each transaction — the
+    remembered one where this connection already has it, so both stay in step —
+    so the resolver's native→canonical mapping links them together. Upserted on
+    every pull rather than written once: a sheet is live, and an account renamed
+    in it re-labels the row already on that key rather than minting a second.
     """
     from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
         authored_label_parts,
-        label_account_key,
     )
 
     field_mapping = {dest: src for src, dest in connection.column_mapping.items()}
@@ -261,10 +322,32 @@ def _register_sheet_accounts(
     # name is the exception: a blank cell and a typed "Unknown" share a key,
     # and letting the filler hold it purely by arriving first would record the
     # synthesized label as one a person wrote.
+    labels = _account_labels_from(source_df, account_col)
+    remembered = _remembered_account_keys(db, connection)
+    key_by_label = _account_key_by_label([label for label, _ in labels], remembered)
+
+    # An adopted rename re-labels the row already sitting on that key, so the
+    # upsert below leaves no twin behind. Surfaced rather than silent: the
+    # sheet cannot prove a renamed account is the same account, and a wrong
+    # merge is the expensive one to notice.
+    label_by_key = {key: label for label, key in remembered.items()}
+    adopted = [
+        key
+        for label, key in key_by_label.items()
+        if key in label_by_key and label_by_key[key] != label
+    ]
+    if adopted:
+        logger.warning(
+            f"gsheet accounts: connection={connection.connection_id} adopted "
+            f"{len(adopted)} label change(s) onto an existing account key; "
+            "transaction ids were left unchanged. Reject in the account-link "
+            "review queue if these name different accounts."
+        )
+
     name_by_key: dict[str, str] = {}
     authored_keys: set[str] = set()
-    for label, authored in _account_labels_from(source_df, account_col):
-        key = label_account_key(label)
+    for label, authored in labels:
+        key = key_by_label[label]
         if authored:
             if key not in authored_keys:
                 name_by_key[key] = label
@@ -411,6 +494,7 @@ class TransactionsAdapter:
         self,
         df: pl.DataFrame,
         connection: GSheetConnection,
+        db: Database,
     ) -> pl.DataFrame:
         """Apply the pinned mapping + typed transforms; produce a load-ready frame.
 
@@ -422,7 +506,7 @@ class TransactionsAdapter:
         # dest_field → source_column for transform_dataframe.
         field_mapping = {dest: src for src, dest in connection.column_mapping.items()}
 
-        account_ids = _resolve_account_ids(df, connection, field_mapping)
+        account_ids = _resolve_account_ids(df, connection, field_mapping, db)
 
         # date_format / sign_convention / number_format are pinned at connect
         # time; transform_dataframe requires concrete values, so fall back to

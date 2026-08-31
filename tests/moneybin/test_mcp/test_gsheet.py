@@ -277,6 +277,7 @@ async def test_gsheet_absent_plan_and_purge_run_off_event_loop() -> None:
             "account_id": None,
         },
         raw_before_state=[{"row_id": "row_1"}],
+        account_before_state=[],
         blast_radius={"connections": 1, "raw_rows": 1},
     )
     loop_thread = threading.get_ident()

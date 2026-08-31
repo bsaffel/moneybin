@@ -178,7 +178,7 @@ class GSheetPullService:
             )
 
         try:
-            transformed = adapter.transform(df, conn)
+            transformed = adapter.transform(df, conn, self._db)
             load_result = adapter.load(
                 transformed, conn, self._db, import_id, source_df=df
             )

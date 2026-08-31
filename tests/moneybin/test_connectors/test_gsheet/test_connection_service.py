@@ -989,7 +989,12 @@ def test_purge_plan_captures_complete_connection_and_raw_rows(
     assert plan.connection_before_state["column_mapping"]
     assert len(plan.raw_before_state) == 1
     assert plan.raw_before_state[0]["connection_id"] == result.connection.connection_id
-    assert plan.blast_radius == {"connections": 1, "raw_rows": 1, "views": 1}
+    assert plan.blast_radius == {
+        "connections": 1,
+        "raw_rows": 1,
+        "raw_account_rows": 0,
+        "views": 1,
+    }
 
 
 def test_confirmed_purge_revalidates_inside_transaction(
@@ -1258,3 +1263,82 @@ def test_reconnect_refuses_to_strand_an_unbound_connection(
     # A refusal that still books an accepted confirmation overstates the
     # metric for a mapping that was never persisted.
     assert _confirmation_count("accepted") == before
+
+
+def _connect_multi_account(
+    svc: GSheetConnectionService, sheets: TestSheetsClient, ss: str
+) -> str:
+    """Connect an unbound multi-account transactions sheet; return its id."""
+    sheets.register_workbook(ss, _multi_account_workbook())
+    result = svc.connect(
+        ConnectionRequest(
+            url=f"https://docs.google.com/spreadsheets/d/{ss}/edit#gid=0",
+            adapter="transactions",
+            yes=True,
+        )
+    )
+    return result.connection.connection_id
+
+
+def test_purge_removes_the_account_rows_an_unbound_pull_registered(
+    in_memory_db: Database,
+) -> None:
+    """``disconnect --purge`` promises a permanent purge, so nothing may survive.
+
+    An unbound connection registers one ``raw.tabular_accounts`` row per account
+    the sheet names, each holding a label a person wrote. Deleting only the
+    transactions leaves those labels — and the accounts projected from them —
+    behind after the connection itself is gone.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    connection_id = _connect_multi_account(svc, sheets, "ss-purge-accts")
+    before = in_memory_db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_accounts WHERE source_origin = ?",
+        [connection_id],
+    ).fetchone()
+    assert before is not None
+    assert before[0] == 2
+
+    svc.disconnect(connection_id, purge=True)
+
+    after = in_memory_db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_accounts WHERE source_origin = ?",
+        [connection_id],
+    ).fetchone()
+    assert after is not None
+    assert after[0] == 0
+
+
+def test_purge_plan_counts_the_account_rows_it_will_delete(
+    in_memory_db: Database,
+) -> None:
+    """The confirmation quotes a blast radius, so it has to count every row."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    connection_id = _connect_multi_account(svc, sheets, "ss-purge-plan-accts")
+
+    plan = svc.plan_purge(connection_id)
+
+    assert plan.blast_radius["raw_account_rows"] == 2
+    assert len(plan.account_before_state) == 2
+    assert {row["account_id"] for row in plan.account_before_state} == {
+        "everyday",
+        "rewards",
+    }
+
+
+def test_purge_leaves_another_connections_account_rows_alone(
+    in_memory_db: Database,
+) -> None:
+    """The delete is scoped by ``source_origin``, not by the table."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    doomed = _connect_multi_account(svc, sheets, "ss-purge-doomed")
+    kept = _connect_multi_account(svc, sheets, "ss-purge-kept")
+
+    svc.disconnect(doomed, purge=True)
+
+    survivors = in_memory_db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_accounts WHERE source_origin = ?",
+        [kept],
+    ).fetchone()
+    assert survivors is not None
+    assert survivors[0] == 2
