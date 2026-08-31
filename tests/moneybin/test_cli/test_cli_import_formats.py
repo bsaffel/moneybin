@@ -8,12 +8,6 @@ from typer.testing import CliRunner
 from moneybin.cli.commands.import_cmd import app as import_app
 
 
-@pytest.fixture()
-def runner() -> CliRunner:
-    """Provide a Typer CliRunner for invoking the import app."""
-    return CliRunner()
-
-
 class TestImportFormatsSubgroup:
     """Verify the import formats sub-group structure."""
 

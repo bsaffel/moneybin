@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
@@ -26,6 +26,7 @@ from moneybin.services.undo_service import UndoService
 from moneybin.sql.migrations.V045__create_app_user_reports import migrate
 from moneybin.tables import USER_REPORTS
 from tests.moneybin.migration_helpers import run_migration
+from tests.moneybin.test_repositories.conftest import audit_rows_for, metric_for
 
 _UNKNOWN_SEMANTICS = ReportSemantics(
     unit="rows",
@@ -109,27 +110,8 @@ def repo(db: Database) -> UserReportsRepo:
     return UserReportsRepo(db)
 
 
-def _metric(action: str) -> float:
-    return (
-        REGISTRY.get_sample_value(
-            "moneybin_app_mutation_audit_emitted_total",
-            {"repository": "user_reports", "action": action},
-        )
-        or 0.0
-    )
-
-
-def _audit_rows_for(db: Database, report_id: str) -> list[tuple[Any, ...]]:
-    return db.execute(
-        """
-        SELECT action, target_schema, target_table, target_id,
-               before_value, after_value, actor
-          FROM app.audit_log
-         WHERE target_id = ?
-         ORDER BY occurred_at ASC, audit_id ASC
-        """,
-        [report_id],
-    ).fetchall()
+_audit_rows_for = partial(audit_rows_for, include_parent_audit_id=False)
+_metric = metric_for("user_reports")
 
 
 def _create(repo: UserReportsRepo, **overrides: Any) -> str:

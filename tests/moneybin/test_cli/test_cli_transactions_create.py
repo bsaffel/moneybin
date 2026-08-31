@@ -15,11 +15,6 @@ from tests.moneybin.test_cli._curation_helpers import make_curation_db, patch_db
 
 
 @pytest.fixture()
-def runner() -> CliRunner:
-    return CliRunner()
-
-
-@pytest.fixture()
 def db(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Generator[Database, None, None]:

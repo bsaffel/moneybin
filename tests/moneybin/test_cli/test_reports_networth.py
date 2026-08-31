@@ -18,12 +18,6 @@ from moneybin.reports._framework.execute import ReportResult
 from tests.database_mocks import no_profile_database
 
 
-@pytest.fixture
-def runner() -> CliRunner:
-    """Return a Typer/Click CliRunner."""
-    return CliRunner()
-
-
 def _result(records: list[dict[str, object]]) -> ReportResult:
     columns = list(records[0]) if records else []
     return ReportResult(

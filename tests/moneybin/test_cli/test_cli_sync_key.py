@@ -8,12 +8,6 @@ from typer.testing import CliRunner
 from moneybin.cli.commands.sync import app as sync_app
 
 
-@pytest.fixture()
-def runner() -> CliRunner:
-    """Provide a Typer CliRunner for invoking the sync app."""
-    return CliRunner()
-
-
 class TestSyncKeySubgroup:
     """Verify the sync key sub-group structure."""
 

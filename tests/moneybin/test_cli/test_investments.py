@@ -19,12 +19,6 @@ from moneybin.repositories.securities_repo import SecuritiesRepo
 from tests.moneybin.db_helpers import create_core_dim_stub_views, create_core_tables
 
 
-@pytest.fixture()
-def runner() -> CliRunner:
-    """Return a Typer/Click CliRunner with split streams."""
-    return CliRunner()
-
-
 def _make_investments_db(tmp_path: Path) -> Database:
     """Build a Database with real raw/app schema + stubbed core.* investment tables.
 

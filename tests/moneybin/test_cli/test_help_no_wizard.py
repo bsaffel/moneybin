@@ -11,13 +11,6 @@ from typer.testing import CliRunner
 from moneybin.cli import utils as cli_utils
 from moneybin.cli.main import app
 
-
-@pytest.fixture()
-def runner() -> CliRunner:
-    """CLI runner. Click 8.2+ separates stderr by default; mix_stderr was removed."""
-    return CliRunner()
-
-
 _GROUPS = [
     [],  # top-level
     ["profile"],

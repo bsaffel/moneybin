@@ -16,7 +16,6 @@ from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
-from prometheus_client import REGISTRY
 
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.base import BaseRepo, LinkDecisionsRepoBase
@@ -24,6 +23,7 @@ from moneybin.repositories.merchant_link_decisions_repo import MerchantLinkDecis
 from moneybin.repositories.security_link_decisions_repo import SecurityLinkDecisionsRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import TableRef
+from tests.moneybin.test_repositories.conftest import metric_for
 
 
 class _FakeRepo(BaseRepo):
@@ -50,14 +50,7 @@ def test_link_decision_repos_share_the_parametrized_base(
     assert issubclass(repo_class, LinkDecisionsRepoBase)
 
 
-def _metric_value(action: str) -> float:
-    return (
-        REGISTRY.get_sample_value(
-            "moneybin_app_mutation_audit_emitted_total",
-            {"repository": "fake", "action": action},
-        )
-        or 0.0
-    )
+_metric_value = metric_for("fake")
 
 
 @pytest.mark.unit

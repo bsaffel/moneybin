@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from typer.testing import CliRunner
 
 import moneybin.database as db_module
 from moneybin.config import (
@@ -25,6 +26,12 @@ from tests.moneybin.db_helpers import (
     create_core_dim_stub_views,
     create_core_tables_raw,
 )
+
+
+@pytest.fixture()
+def runner() -> CliRunner:
+    """Return a fresh Typer CLI test runner."""
+    return CliRunner()
 
 
 @contextmanager

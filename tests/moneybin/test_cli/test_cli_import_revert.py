@@ -23,11 +23,6 @@ from moneybin.services.import_service import ImportRevertPlan, ImportService
 
 
 @pytest.fixture()
-def runner() -> CliRunner:
-    return CliRunner()
-
-
-@pytest.fixture()
 def patched_db(db: Database, monkeypatch: pytest.MonkeyPatch) -> Database:
     """Redirect the command's deferred ``get_database`` to the test database."""
 
