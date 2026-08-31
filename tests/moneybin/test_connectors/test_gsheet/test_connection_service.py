@@ -1347,3 +1347,49 @@ def test_reconnect_notes_renamed_duplicate_headers(in_memory_db: Database) -> No
 
     notes = " ".join(result.detection.notes)
     assert "Amount_duplicated_0" in notes
+
+
+def test_connect_note_reflects_an_override_of_a_renamed_column(
+    in_memory_db: Database,
+) -> None:
+    """An override can map the renamed copy, and then it *is* imported.
+
+    ``--column-mapping`` may name the synthesized ``_duplicated_N`` column, and
+    the persisted mapping then reads it. Building the note from the adapter
+    alone, before that merge, states the opposite of what the pull loaded.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook(
+        "ss1",
+        FakeWorkbook(
+            title="Budget",
+            tabs=[
+                FakeSheetTab(
+                    name="Transactions",
+                    gid=0,
+                    headers=["Date", "Description", "Category", "Amount", "Amount"],
+                    rows=[
+                        ["2026-01-15", "Whole Foods", "Groceries", "-87.42", "-99.99"]
+                    ],
+                )
+            ],
+        ),
+    )
+    req = ConnectionRequest(
+        url="https://docs.google.com/spreadsheets/d/ss1/edit#gid=0",
+        adapter="transactions",
+        account_name="Chase Checking",
+        account_id="acct_chase",
+        yes=True,
+        no_initial_pull=True,
+        column_mapping={"Amount_duplicated_0": "amount"},
+        # Replacing the detected amount source discards the column whose
+        # polarity was inferred, so the override path requires an explicit sign.
+        sign="negative_is_expense",
+    )
+
+    result = svc.connect(req)
+
+    notes = " ".join(result.detection.notes)
+    assert "Amount_duplicated_0" in notes
+    assert "not imported" not in notes

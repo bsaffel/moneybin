@@ -22,43 +22,52 @@ class DriftReport:
 _NULL_THRESHOLD = 0.5  # >50% null in sample counts as "mapped column is empty"
 
 
-def duplicated_headers(headers: list[str]) -> list[str]:
-    """Header texts that appear more than once, in first-seen order."""
-    seen: set[str] = set()
-    repeated: dict[str, None] = {}
-    for header in headers:
-        if header in seen:
-            repeated[header] = None
-        seen.add(header)
-    return list(repeated)
-
-
 def duplicate_mapped_header_drift(
     *,
     raw_headers: list[str],
+    deduped_headers: list[str],
     mapped_sources: Collection[str],
+    pinned_signature: Collection[str],
 ) -> DriftReport | None:
-    """Drift when a header the pinned mapping reads has gained a twin.
+    """Drift when a mapped header gained a twin *after* the mapping was pinned.
 
     ``rows_to_df`` renames the second occurrence, so by the time headers reach
     ``detect_drift`` the duplicate looks like an ordinary new column — and new
     columns are explicitly not drift. The pinned mapping then keeps importing
     the first occurrence while the twin's values are dropped and the pull still
-    reports success. Callers pass the raw header row, before deduplication,
-    because that is the only place the duplication is still visible.
+    reports success. Callers pass the raw header row alongside the deduplicated
+    columns because the pairing is the only place the rename is still visible.
+
+    The synthesized name is checked against the pinned signature rather than
+    merely detected. A sheet may legitimately have been connected with the
+    duplicate already present — allowing exactly that is why the rename exists —
+    and firing on the duplicate alone would drift-lock such a connection on its
+    first pull, with reconnect unable to clear it because reconnect's own
+    follow-up pull hits this same guard.
+
+    A header the user typed that exactly matches a synthesized name is treated
+    as the same column, not as drift. Storage keeps only the post-dedup name,
+    so the two are indistinguishable — and MoneyBin shows the synthesized name
+    in connect's notes and accepts it in ``--column-mapping``, so typing it into
+    the sheet reads as reattaching that mapping rather than as an accident.
 
     Only for adapters that read a mapping. One that imports every column loses
     nothing to a rename and must not be pinned into drift over it.
     """
-    duplicated = [h for h in duplicated_headers(raw_headers) if h in mapped_sources]
-    if not duplicated:
+    pinned = set(pinned_signature)
+    gained = [
+        f"{raw} -> {deduped}"
+        for raw, deduped in zip(raw_headers, deduped_headers, strict=True)
+        if raw != deduped and raw in mapped_sources and deduped not in pinned
+    ]
+    if not gained:
         return None
     return DriftReport(
         is_drift=True,
         reason=(
-            f"duplicated mapped headers: {duplicated}. Only the first column of "
-            "each is imported. Reconnect to re-pin the mapping, or remove the "
-            "duplicate column in the sheet."
+            f"mapped headers duplicated since connect: {gained}. Only the first "
+            "column of each is imported. Reconnect to re-pin the mapping, or "
+            "remove the duplicate column in the sheet."
         ),
     )
 

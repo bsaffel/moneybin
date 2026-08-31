@@ -892,7 +892,10 @@ def test_gsheet_connect_text_output_shows_detection_notes(
     )
 
     assert result.exit_code == 0, result.output
-    assert "Amount_duplicated_0" in result.stdout
+    # cli.md routes diagnostics to stderr so stdout stays pure data: a warning
+    # mixed into stdout is captured by a redirect as though it were output.
+    assert "Amount_duplicated_0" in (result.stderr or "")
+    assert "Amount_duplicated_0" not in result.stdout
 
 
 @pytest.mark.unit
@@ -912,7 +915,10 @@ def test_gsheet_reconnect_text_output_shows_detection_notes(
     result = runner.invoke(app, ["gsheet", "reconnect", "conn_abc123"])
 
     assert result.exit_code == 0, result.output
-    assert "Amount_duplicated_0" in result.stdout
+    # cli.md routes diagnostics to stderr so stdout stays pure data: a warning
+    # mixed into stdout is captured by a redirect as though it were output.
+    assert "Amount_duplicated_0" in (result.stderr or "")
+    assert "Amount_duplicated_0" not in result.stdout
 
 
 @pytest.mark.unit

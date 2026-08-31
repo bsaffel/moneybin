@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -26,7 +26,6 @@ from moneybin.config import get_settings
 from moneybin.connectors.gsheet.adapters import ADAPTERS
 from moneybin.connectors.gsheet.adapters.base import (
     DetectionResult,
-    GSheetAdapter,
     GSheetConnection,
     LoadResult,
 )
@@ -314,10 +313,6 @@ class GSheetConnectionService:
                     "--adapter=seed --alias=<name>."
                 )
 
-        # Only now is the adapter final: the seed fall-through above rebuilds
-        # ``detection``, discarding anything appended to the earlier one.
-        _note_renamed_duplicate_headers(detection, rows[0], df.columns, adapter)
-
         # Medium confidence: ambiguous column matches. Require explicit
         # acceptance (--yes) or an override (--column-mapping) before
         # persisting — otherwise wrong mappings can land silently and
@@ -456,6 +451,17 @@ class GSheetConnectionService:
                 IMPORT_OVERRIDE_TOTAL.labels(channel="gsheet").inc()
         else:
             column_mapping = detection.column_mapping
+
+        # Only here are both inputs final: the seed fall-through above rebuilds
+        # ``detection`` (discarding anything appended to the earlier one), and
+        # ``column_mapping`` has just absorbed any --column-mapping override.
+        _note_renamed_duplicate_headers(
+            detection,
+            rows[0],
+            df.columns,
+            imports_every_column=adapter.imports_every_column,
+            mapped_sources=column_mapping,
+        )
 
         _require_inferred_sign_confirmation(
             resolved_convention=sign_convention_for_save,
@@ -683,7 +689,6 @@ class GSheetConnectionService:
 
         adapter = ADAPTERS[existing["adapter"]]
         detection = adapter.detect(df, account_name=existing.get("account_name"))
-        _note_renamed_duplicate_headers(detection, rows[0], df.columns, adapter)
         if existing["adapter"] == "transactions":
             bands = get_settings().import_.confidence
             tier = tier_for(detection.score, t_high=bands.t_high, t_med=bands.t_med)
@@ -716,6 +721,15 @@ class GSheetConnectionService:
             detection.typed_columns
             if existing["adapter"] == "seed"
             else detection.column_mapping
+        )
+        # Re-pinning is meant to be quiet, but a renamed duplicate is a cost the
+        # re-pin imposes, so it is reported here the same way connect reports it.
+        _note_renamed_duplicate_headers(
+            detection,
+            rows[0],
+            df.columns,
+            imports_every_column=adapter.imports_every_column,
+            mapped_sources=column_mapping,
         )
         if existing["adapter"] == "transactions":
             IMPORT_DETECTION_SCORE.observe(detection.score)
@@ -837,31 +851,46 @@ def _note_renamed_duplicate_headers(
     detection: DetectionResult,
     original_headers: list[str],
     deduped_columns: list[str],
-    adapter: GSheetAdapter,
+    *,
+    imports_every_column: bool,
+    mapped_sources: Collection[str],
 ) -> None:
     """Record which headers ``rows_to_df`` renamed, and what it cost.
 
-    The cost is adapter-specific: a transactions mapping reads only the headers
-    it matched, so a renamed copy never lands; the seed adapter serializes every
-    column, so the copy arrives intact under its new name. Telling a seed user
-    their column was dropped warns about data loss that did not happen.
+    The cost is adapter-specific: the seed adapter serializes every column, so
+    a renamed copy arrives intact under its new name. Telling a seed user their
+    column was dropped warns about data loss that did not happen.
+
+    For a mapping-reading adapter the cost depends on the *effective* mapping,
+    not on the adapter alone — ``--column-mapping`` may name the synthesized
+    ``_duplicated_N`` column, in which case the renamed copy is exactly what
+    gets imported. Callers therefore pass the final persisted mapping, so this
+    never reports the opposite of what was loaded.
+
+    ``detection.notes`` is appended in place. ``DetectionResult`` is frozen, but
+    the field itself is not reassigned and each ``detect()`` returns a fresh
+    list, so no other instance observes the append.
     """
     renamed = [
-        f"{original} -> {deduped}"
+        (original, deduped)
         for original, deduped in zip(original_headers, deduped_columns, strict=True)
         if original != deduped
     ]
     if not renamed:
         return
-    fate = (
-        "Every column is imported, the renamed copies included."
-        if adapter.imports_every_column
-        else (
-            "Only the first column of each duplicated name is matched to a "
-            "field; the renamed copies are not imported."
-        )
-    )
-    detection.notes.append(f"Duplicate header(s) renamed: {'; '.join(renamed)}. {fate}")
+    pairs = "; ".join(f"{original} -> {deduped}" for original, deduped in renamed)
+    if imports_every_column:
+        fate = "Every column is imported, the renamed copies included."
+    else:
+        imported = [deduped for _, deduped in renamed if deduped in mapped_sources]
+        dropped = [deduped for _, deduped in renamed if deduped not in mapped_sources]
+        clauses: list[str] = []
+        if imported:
+            clauses.append(f"mapped to a field and imported: {imported}")
+        if dropped:
+            clauses.append(f"matched no field, so not imported: {dropped}")
+        fate = f"Renamed copies — {'; '.join(clauses)}."
+    detection.notes.append(f"Duplicate header(s) renamed: {pairs}. {fate}")
 
 
 def row_to_connection(row: dict[str, Any]) -> GSheetConnection:

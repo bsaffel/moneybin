@@ -157,10 +157,19 @@ class GSheetPullService:
         # first occurrence while the twin's values were dropped, with the pull
         # still reporting success. Check before delegating so the adapter's own
         # signature comparison never sees a duplicate it cannot recognize.
+        #
+        # ``rows`` is empty when every cell was cleared: Sheets omits "values"
+        # for an empty range. Indexing the header row without that guard escapes
+        # the whole function, leaving import_log stuck at "importing" — the same
+        # bug class the rows_to_df guard above closes. An empty sheet is drift by
+        # the adapter's own missing-header check, so fall through to it.
         drift = None
-        if not adapter.imports_every_column:
+        if rows and not adapter.imports_every_column:
             drift = duplicate_mapped_header_drift(
-                raw_headers=rows[0], mapped_sources=conn.column_mapping
+                raw_headers=rows[0],
+                deduped_headers=list(df.columns),
+                mapped_sources=conn.column_mapping,
+                pinned_signature=conn.header_signature,
             )
         if drift is None:
             drift = adapter.check_drift(conn, df)

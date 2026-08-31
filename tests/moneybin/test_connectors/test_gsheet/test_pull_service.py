@@ -321,3 +321,61 @@ def test_pull_ignores_newly_duplicated_unmapped_header(
     result = pull_svc.pull_connection(cid)
 
     assert result.status == "complete"
+
+
+def test_pull_accepts_duplicate_header_present_since_connect(
+    in_memory_db: Database,
+) -> None:
+    """A sheet that already repeated a header when connected must still pull.
+
+    Connecting such a sheet is what this feature exists to allow. The pull-time
+    duplicate guard therefore has to compare against the pinned signature and
+    fire only on a twin that appeared *after* pinning — otherwise the very first
+    pull drift-locks the connection, and reconnect cannot clear it because its
+    follow-up pull hits the same guard.
+    """
+    oauth = TestOAuthClient(authorized=True)
+    sheets = TestSheetsClient()
+    sheets.register_workbook("ss1", _tiller_workbook("ss1"))
+    sheets.mutate_tab(
+        "ss1",
+        0,
+        headers=["Date", "Description", "Amount", "Account", "Amount"],
+        rows=[["2026-01-15", "WF", "-87.42", "Checking", "-99.99"]],
+    )
+    conn_svc = GSheetConnectionService(
+        db=in_memory_db, sheets_client=sheets, oauth_client=oauth
+    )
+    connected = conn_svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ss1/edit#gid=0",
+            adapter="transactions",
+            account_name="Checking",
+            account_id="acct_a",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+    pull_svc = GSheetPullService(
+        db=in_memory_db, sheets_client=sheets, oauth_client=oauth
+    )
+
+    result = pull_svc.pull_connection(connected.connection.connection_id)
+
+    assert result.status == "complete", result.drift_reason
+
+
+def test_pull_survives_a_cleared_sheet(in_memory_db: Database) -> None:
+    """An emptied tab must fail the pull, not escape as an IndexError.
+
+    Sheets omits ``values`` entirely for an empty range, so the real client
+    returns ``[]``. Indexing the raw header row without guarding that escapes
+    ``pull_connection`` past every handler, leaving the import_log row open at
+    "importing" forever and the connection status untouched.
+    """
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    sheets.read_sheet_values = lambda *a, **k: []  # type: ignore[method-assign]
+
+    result = pull_svc.pull_connection(cid)
+
+    assert result.status != "complete"

@@ -50,9 +50,12 @@ def _echo_detection_notes(notes: list[str]) -> None:
     These carry the cost of an inference the user did not make — a renamed
     duplicate header, say. Emitting them only under ``--output json`` hides
     them from every human who does not ask for machine output.
+
+    They go to stderr per cli.md: a warning on stdout is captured by a redirect
+    or pipeline as though it were part of the data the command was asked for.
     """
     for note in notes:
-        typer.echo(f"⚠️  {note}")
+        typer.echo(f"⚠️  {note}", err=True)
 
 
 def _parse_column_mapping(raw: str | None) -> dict[str, str] | None:
