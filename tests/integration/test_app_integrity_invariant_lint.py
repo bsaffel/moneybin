@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
+import moneybin.tables as tables_module
 from moneybin.repositories import concrete_repo_classes
-from moneybin.tables import TableRef
 
 pytestmark = pytest.mark.integration
 
@@ -46,12 +46,11 @@ class _Violation:
 
 def _table_ref_bindings(tree: ast.Module) -> dict[str, list[str]]:
     bindings: dict[str, list[str]] = {}
-    tables_module = __import__("moneybin.tables", fromlist=["TableRef"])
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "moneybin.tables":
             for imported in node.names:
                 value = getattr(tables_module, imported.name, None)
-                if isinstance(value, TableRef):
+                if isinstance(value, tables_module.TableRef):
                     name = imported.asname or imported.name
                     if value.full_name not in bindings.setdefault(name, []):
                         bindings[name].append(value.full_name)
@@ -238,7 +237,7 @@ def _violations_in_path(path: Path) -> list[_Violation]:
         if not (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "execute"
+            and node.func.attr in ("execute", "executemany")
             and node.args
         ):
             continue
@@ -272,6 +271,22 @@ def test_rejects_inline_protected_write_in_service(tmp_path: Path) -> None:
         "\n"
         "def create(db):\n"
         '    db.execute(f"INSERT INTO {USER_CATEGORIES.full_name} VALUES (?)", ["id"])\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=4, table="app.user_categories")
+    ]
+
+
+def test_rejects_bulk_protected_write_in_service(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        "def create_many(db, rows):\n"
+        '    db.executemany(f"INSERT INTO {USER_CATEGORIES.full_name} VALUES (?)", rows)\n',
         encoding="utf-8",
     )
 
