@@ -1869,3 +1869,58 @@ class MatchApplier:
             src_attempted=categorized_by,
         ).inc()
         return WriteOutcome(written=False, skipped_reason="lower_priority_source")
+
+    def write_categorizations(
+        self, categorizations: list[dict[str, object]]
+    ) -> set[str]:
+        """Apply engine categorizations as one guarded, audited batch."""
+        if not categorizations:
+            return set()
+        prepared: list[dict[str, object]] = []
+        category_ids: dict[tuple[str, str | None], str | None] = {}
+        for categorization in categorizations:
+            categorized_by = str(categorization["categorized_by"])
+            if categorized_by not in SOURCE_PRIORITY:
+                raise ValueError(
+                    f"Unknown categorized_by={categorized_by!r}; "
+                    f"must be one of {sorted(SOURCE_PRIORITY)}"
+                )
+            category_key = (
+                str(categorization["category"]),
+                cast("str | None", categorization["subcategory"]),
+            )
+            if category_key not in category_ids:
+                category_ids[category_key] = resolve_category_id(
+                    self._db, *category_key
+                )
+            prepared.append({
+                **categorization,
+                "category_id": category_ids[category_key],
+            })
+        written = self._tx_categories.upsert_guarded_many(prepared, actor="system")
+        skipped_ids = sorted(
+            str(categorization["transaction_id"])
+            for categorization in prepared
+            if str(categorization["transaction_id"]) not in written
+        )
+        existing_by_id: dict[str, str] = {}
+        if skipped_ids:
+            placeholders = ", ".join("?" for _ in skipped_ids)
+            existing_by_id = {
+                str(transaction_id): str(categorized_by)
+                for transaction_id, categorized_by in self._db.execute(
+                    f"SELECT transaction_id, categorized_by "
+                    f"FROM {TRANSACTION_CATEGORIES.full_name} "
+                    f"WHERE transaction_id IN ({placeholders})",  # noqa: S608  # TableRef + parameterized values
+                    skipped_ids,
+                ).fetchall()
+            }
+        for categorization in prepared:
+            transaction_id = str(categorization["transaction_id"])
+            if transaction_id in written:
+                continue
+            CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL.labels(
+                src_existing=existing_by_id.get(transaction_id, "unknown"),
+                src_attempted=str(categorization["categorized_by"]),
+            ).inc()
+        return written

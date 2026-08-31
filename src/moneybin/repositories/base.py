@@ -181,6 +181,33 @@ class BaseRepo:
         ).inc()
         return event
 
+    def _emit_audits(
+        self,
+        *,
+        action: str,
+        changes: list[
+            tuple[
+                tuple[str | None, str | None, str | None],
+                dict[str, Any] | None,
+                dict[str, Any] | None,
+            ]
+        ],
+        actor: str,
+        parent_audit_id: str | None = None,
+    ) -> list[AuditEvent]:
+        """Emit row-grain audits for a batch mutation with one database write."""
+        events = self._audit.record_audit_events(
+            action=action,
+            changes=changes,
+            actor=actor,
+            parent_audit_id=parent_audit_id,
+        )
+        if events:
+            app_mutation_audit_emitted_total.labels(
+                repository=self.repository, action=action
+            ).inc(len(events))
+        return events
+
     def _fetch_one(
         self,
         table_ref: TableRef,
