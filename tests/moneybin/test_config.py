@@ -75,6 +75,26 @@ def test_mcp_max_items_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
+def test_mcp_deprecated_compatibility_settings_remain_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy MCP settings load but advertise that they no longer take effect."""
+    from moneybin.config import MoneyBinSettings, clear_settings_cache
+
+    monkeypatch.setenv("MONEYBIN_MCP__MAX_CHARS", "123")
+    monkeypatch.setenv("MONEYBIN_MCP__ALLOWED_TABLES", '["core.dim_accounts"]')
+    clear_settings_cache()
+
+    settings = MoneyBinSettings()
+
+    compatibility_values = settings.mcp.model_dump()
+    assert compatibility_values["max_chars"] == 123
+    assert compatibility_values["allowed_tables"] == ["core.dim_accounts"]
+    assert MCPConfig.model_fields["max_chars"].deprecated
+    assert MCPConfig.model_fields["allowed_tables"].deprecated
+
+
+@pytest.mark.unit
 def test_mcp_elicitation_wait_default() -> None:
     """The default is read from the constant, not restated as a literal."""
     from moneybin.config import DEFAULT_ELICITATION_WAIT_SECONDS

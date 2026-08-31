@@ -13,7 +13,6 @@ from pydantic import BaseModel
 from moneybin.privacy.redaction import (
     ConsentSet,
     MaskStrength,
-    _scrub_embedded_pii,  # pyright: ignore[reportPrivateUsage]
     is_safe_to_publish_verbatim,
     mask_strength,
     redact_records,
@@ -429,11 +428,6 @@ def test_idempotent_on_already_redacted() -> None:
     once = redact_typed(_sample_row(), consent=None)
     twice = redact_typed(once, consent=None)
     assert once == twice
-
-
-def test_scrub_embedded_pii_is_identity_in_pr2() -> None:
-    text = "Account 1234567890 was charged $42 on 2026-05-17"
-    assert _scrub_embedded_pii(text) == text
 
 
 def test_consent_set_is_placeholder_dataclass() -> None:

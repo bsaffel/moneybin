@@ -94,9 +94,9 @@ app.add_typer(config_app, name="config")
 def mcp_config_show(ctx: typer.Context) -> None:
     """Display current MCP server configuration.
 
-    Shows the active profile, database path, and MCP-specific limits
-    (max_rows, max_chars). Runs automatically when `mcp config` is
-    invoked without a subcommand.
+    Shows the active profile, database path, active row limit, and deprecated
+    compatibility settings. Runs automatically when `mcp config` is invoked
+    without a subcommand.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -110,7 +110,7 @@ def mcp_config_show(ctx: typer.Context) -> None:
     typer.echo(f"Profile:    {profile}")
     typer.echo(f"Database:   {db_path}")
     typer.echo(f"max_rows:   {settings.mcp.max_rows}")
-    typer.echo(f"max_chars:  {settings.mcp.max_chars}")
+    typer.echo("Deprecated compatibility settings: max_chars, allowed_tables (inert).")
 
 
 @config_app.command("path")

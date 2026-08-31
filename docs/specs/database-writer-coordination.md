@@ -35,7 +35,7 @@ Implement [ADR-010](../decisions/010-writer-coordination.md): replace the long-l
 9. CLI commands that only read data declare `read_only=True`; commands that write (import, categorize, curation) declare `read_only=False`.
 10. `interrupt_and_reset_database()` interrupts and closes the currently-active write connection, if any.
 11. `sqlmesh_context()` accepts an explicit `db: Database` parameter (the caller's write connection) instead of reading the module-level singleton.
-12. The atexit metrics flush opens a fresh connection only if the database was accessed during the session.
+12. The atexit metrics flush opens a fresh connection only if the database was written during the session.
 13. `DatabaseNotInitializedError` is caught at all CLI error handlers alongside `DatabaseKeyError`, displayed as a one-line message with no traceback.
 14. The `.claude/rules/database.md` connection-management section is updated to reflect the new per-operation model.
 15. `Database.__init__()` and `get_database()` both require `read_only` as a keyword-only argument; there is no default. All call sites declare intent explicitly. Pyright catches any missing kwarg at type-check time.
@@ -152,7 +152,7 @@ def get_database(
     read_only: bool,
     max_wait: float = 5.0,
 ) -> Database:
-    global _database_accessed, _migration_check_done
+    global _migration_check_done
     db_path = get_settings().database.path
     deadline = time.monotonic() + max_wait
     delay = 0.05
@@ -166,7 +166,6 @@ def get_database(
             )
             if not read_only:
                 _migration_check_done = True
-            _database_accessed = True
             if not read_only:
                 with _active_write_lock:
                     global _active_write_conn
@@ -246,23 +245,11 @@ def interrupt_and_reset_database() -> None:
         conn.interrupt_and_reset()
 ```
 
-**Database-accessed flag**
-
-```python
-_database_accessed: bool = False
-
-
-def database_was_accessed() -> bool:
-    return _database_accessed
-```
-
-Set to `True` in `get_database()` after the first successful open.
-
 **Functions to remove**
 
 - `_database_instance` singleton and all references
 - `close_database()`
-- `get_database_if_initialized()` — replaced by `database_was_accessed()`
+- `get_database_if_initialized()`
 - `_temporary_singleton()` — `sqlmesh_context()` will take an explicit `db` parameter
 
 **`sqlmesh_context()` — new signature**
@@ -361,14 +348,7 @@ with get_database(read_only=False) as db:
           ...
   ```
 - `init_db()`: remove `get_database()` warm-up call; just call `register_core_tools()`.
-- `close_db()`: remove `close_database()` call; flush metrics if accessed:
-  ```python
-  def close_db() -> None:
-      from moneybin.database import database_was_accessed
-
-      if database_was_accessed():
-          flush_metrics()
-  ```
+- `close_db()`: remove `close_database()` call.
 
 **`mcp/decorator.py`**
 
@@ -460,7 +440,9 @@ with sqlmesh_command("SQLMesh transform") as db:
 
 **`observability.py` `flush_metrics()`**
 
-Gate the flush on `database_was_written()` (not `database_was_accessed()`). This ensures read-only sessions — which never open a write connection — do not open one at exit purely to persist metrics:
+Gate the flush on `database_was_written()`. This ensures read-only sessions —
+which never open a write connection — do not open one at exit purely to persist
+metrics:
 
 ```python
 def flush_metrics() -> None:

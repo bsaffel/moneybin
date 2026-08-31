@@ -217,7 +217,7 @@ Then ATTACH the backup file with `READ_ONLY` from your client. The backup is a f
 
 ## Read-only invariant
 
-`db query` and `db shell` open the database with default permissions for the unlocked profile — **you can technically `INSERT`/`UPDATE`/`DELETE` from them**. The managed-write middleware that protects `core.*` and `reports.*` is enforced in the MoneyBin write path, not at the SQL layer. Don't write to those schemas from raw SQL; you'll bypass audit logging and SQLMesh's view contracts will undo your changes on the next `moneybin refresh`.
+`db query` and `db shell` open the database with default permissions for the unlocked profile — **you can technically `INSERT`/`UPDATE`/`DELETE` from them**. MoneyBin's service/repository write paths are the enforcement boundary for application mutations; raw SQL is outside that boundary. Don't write to `core.*` or `reports.*` from raw SQL; you'll bypass audit logging and SQLMesh's view contracts will undo your changes on the next `moneybin refresh`.
 
 The safe paths:
 
