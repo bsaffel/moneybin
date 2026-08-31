@@ -616,6 +616,16 @@ def _static_table_targets(
             locals_=locals_,
             seen_names=seen_names,
         )
+    if isinstance(node, ast.IfExp):
+        return [
+            table
+            for branch in (node.body, node.orelse)
+            for table in _static_table_targets(
+                branch,
+                locals_=locals_,
+                seen_names=seen_names,
+            )
+        ]
     if isinstance(node, ast.JoinedStr):
         return _static_sqls(
             node,
@@ -796,7 +806,7 @@ def _violations_in_path(path: Path) -> list[_Violation]:
                     )
                     if table.lower() in _PROTECTED_TABLES
                 )
-        if "append" in call_methods:
+        if call_methods & {"append", "insert_into"}:
             target = (
                 node.args[0]
                 if node.args
@@ -910,6 +920,8 @@ def test_rejects_protected_write_through_sql_method(tmp_path: Path) -> None:
         'db.conn.from_query(query="DELETE FROM app.user_categories")',
         'db.conn.append("app.user_categories", frame)',
         'db.conn.append(table_name="app.user_categories", df=frame)',
+        'db.conn.sql("SELECT 1").insert_into("app.user_categories")',
+        'db.conn.sql("SELECT 1").insert_into(table_name="app.user_categories")',
     ],
 )
 def test_rejects_protected_write_through_raw_duckdb_connection(
@@ -968,6 +980,78 @@ def test_rejects_protected_ingest_dataframe_local_target(tmp_path: Path) -> None
     assert _violations_in_path(source) == [
         _Violation(path=source, line=5, table="app.user_categories")
     ]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "db.ingest_dataframe({target}, frame)",
+        "db.ingest_dataframe(table={target}, df=frame)",
+        "db.conn.append({target}, frame)",
+        "db.conn.append(table_name={target}, df=frame)",
+    ],
+)
+@pytest.mark.parametrize(
+    "target",
+    [
+        "USER_CATEGORIES.full_name if unsafe else DIM_ACCOUNTS.full_name",
+        "DIM_ACCOUNTS.full_name if safe else USER_CATEGORIES.full_name",
+    ],
+)
+def test_rejects_protected_conditional_ingestion_target(
+    tmp_path: Path,
+    call: str,
+    target: str,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import DIM_ACCOUNTS, USER_CATEGORIES\n"
+        "\n"
+        "def load(db, frame, unsafe, safe):\n"
+        f"    {call.format(target=target)}\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=4, table="app.user_categories")
+    ]
+
+
+def test_rejects_nested_conditional_ingestion_target_through_local_name(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import DIM_ACCOUNTS, USER_CATEGORIES\n"
+        "\n"
+        "def load(db, frame, first, second):\n"
+        "    table = (DIM_ACCOUNTS.full_name if first else "
+        "(USER_CATEGORIES.full_name if second else DIM_ACCOUNTS.full_name))\n"
+        "    db.ingest_dataframe(table, frame)\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=5, table="app.user_categories")
+    ]
+
+
+def test_allows_safe_conditional_ingestion_target(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS\n"
+        "\n"
+        "def load(db, frame, accounts):\n"
+        "    table = (DIM_ACCOUNTS.full_name if accounts "
+        "else FCT_TRANSACTIONS.full_name)\n"
+        "    db.ingest_dataframe(table, frame)\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
 
 
 @pytest.mark.parametrize(
