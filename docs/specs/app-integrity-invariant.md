@@ -8,9 +8,11 @@ implemented
 > gate now lives in `tests/integration/test_app_integrity_invariant_lint.py`.
 > It derives protected `app.*` tables from the independent `TableRef` registry,
 > resolves inline and function-local `TableRef.full_name` SQL and ingestion
-> targets, checks `execute`, `executemany`, `sql`, and `ingest_dataframe`
-> entry points, checks every control-flow binding conservatively, and preserves
-> the caller and table exemptions in Requirements 7–8.
+> targets, checks `execute`, `executemany`, `sql`, `query`, `from_query`,
+> `append`, and `ingest_dataframe` entry points, ignores mutation-shaped text
+> inside SQL literals and comments, checks statically resolvable loop and other
+> control-flow bindings conservatively, and preserves the caller and table
+> exemptions in Requirements 7–8.
 
 > **Drift note (2026-05-17).** Bypass-map line numbers below reference the single-file `services/categorization_service.py` at HEAD `f13f3c7`. PR #155 (post-spec) split that module into a facade + collaborators under `src/moneybin/services/categorization/` (`__init__.py`, `_shared.py`, `applier.py`, `assist.py`, `matcher.py`, `orchestrator.py`, `queries.py`). The protected-tables list (Req 6), repository contract (Req 2–5), lint rule (Req 8), doctor invariants (Req 9), and PR ordering (Req 10) are unaffected — only the source file the implementation PRs will edit changes. Each PR-by-PR mutation-site call-out below should be re-located against the post-split files at implementation time; the mutations themselves (and their target tables) are unchanged. PR #166 (the category-delete cascade) and PR #174 (`category_id` FK migration) also landed post-spec; both touch the same `categorization_service` paths but do not change the bypass-map shape.
 
@@ -300,7 +302,7 @@ Per `.claude/rules/testing.md` test layers.
 |---|---|---|
 | Unit | `tests/moneybin/test_repositories/test_<table>_repo.py` (per repo) | `upsert`/`delete` happy path; `before_value` captures the full prior row (not a diff); `parent_audit_id` is recorded when supplied; audit emission and DB write are atomic (rollback test: simulate a failure between write and audit, assert the row is not present) |
 | Unit | `tests/moneybin/test_repositories/test_base.py` | Repository contract: methods return `AuditEvent`; `_emit_audit()` is the single emission point; metric `app_mutation_audit_emitted_total` increments per call |
-| Integration | `tests/integration/test_app_integrity_invariant_lint.py` | Lint rule rejects protected writes through positional and keyword `query` arguments to `execute`, `executemany`, and `sql`, plus positional and keyword `table` targets to `ingest_dataframe`, in a service-shaped fixture file; resolves local write-call aliases, literal tuple/list unpacking, and lexically scoped direct or module-form `TableRef` imports; recognizes quoted SQL identifiers; restricts repository, audit-service, and migration exemptions to their exact canonical paths; proves and honors the allowlist for exempt tables |
+| Integration | `tests/integration/test_app_integrity_invariant_lint.py` | Lint rule rejects protected writes through positional and keyword SQL arguments to `execute`, `executemany`, `sql`, `query`, and `from_query`, plus positional and keyword table targets to `append` and `ingest_dataframe`, in a service-shaped fixture file; resolves local write-call aliases, literal tuple/list and `for`-loop unpacking, and lexically scoped direct or module-form `TableRef` imports; recognizes quoted SQL identifiers without treating mutation-shaped text inside SQL literals or comments as executable; restricts repository, audit-service, and migration exemptions to their exact canonical paths; proves and honors the allowlist for exempt tables |
 | Service | `tests/moneybin/test_services/test_security_links_service.py` | A security-merge cascade produces one parent audit row plus child rows for lot selection, link repointing, and security deletion that share the parent's `audit_id` as `parent_audit_id` |
 | Service | `tests/moneybin/test_services/test_doctor_app_integrity.py` | Doctor audit-coverage checks enumerate the live repo registry and require every repo table to have coverage or an exact named exemption |
 | Migration regression | covered by existing per-service tests | Per-service tests that already exist (`test_services/test_categorization_service.py`, etc.) must pass unchanged after migration. Repository migration is mechanical — public service surface is preserved, audit emission is added (not changed). New asserts added where existing tests would otherwise silently accept a missing audit row. |

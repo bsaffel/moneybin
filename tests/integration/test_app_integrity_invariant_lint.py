@@ -101,10 +101,120 @@ def _assignment_bindings(
     return []
 
 
+def _resolved_binding_values(
+    value: ast.expr,
+    *,
+    visible_bindings: dict[str, list[_BindingValue]],
+) -> list[_BindingValue]:
+    if isinstance(value, ast.Name) and value.id in visible_bindings:
+        return visible_bindings[value.id]
+    return [value]
+
+
+def _target_names(target: ast.expr) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [name for item in target.elts for name in _target_names(item)]
+    return []
+
+
+def _static_dict_entries(
+    node: ast.expr,
+    *,
+    locals_: dict[str, list[_BindingValue]],
+    seen_names: frozenset[str],
+) -> list[tuple[ast.expr, ast.expr]]:
+    if isinstance(node, ast.Dict):
+        return [
+            (key, value)
+            for key, value in zip(node.keys, node.values, strict=True)
+            if key is not None
+        ]
+    if not isinstance(node, ast.Name) or node.id in seen_names:
+        return []
+    return [
+        entry
+        for value in locals_.get(node.id, [])
+        if isinstance(value, ast.expr)
+        for entry in _static_dict_entries(
+            value,
+            locals_=locals_,
+            seen_names=seen_names | {node.id},
+        )
+    ]
+
+
+def _static_loop_values(
+    node: ast.expr,
+    *,
+    locals_: dict[str, list[_BindingValue]],
+    seen_names: frozenset[str] = frozenset(),
+) -> list[ast.expr]:
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return list(node.elts)
+    if isinstance(node, ast.Dict):
+        return [key for key in node.keys if key is not None]
+    if isinstance(node, ast.Name):
+        if node.id in seen_names:
+            return []
+        return [
+            item
+            for value in locals_.get(node.id, [])
+            if isinstance(value, ast.expr)
+            for item in _static_loop_values(
+                value,
+                locals_=locals_,
+                seen_names=seen_names | {node.id},
+            )
+        ]
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"items", "keys", "values"}
+        and not node.args
+        and not node.keywords
+    ):
+        entries = _static_dict_entries(
+            node.func.value,
+            locals_=locals_,
+            seen_names=seen_names,
+        )
+        if node.func.attr == "items":
+            return [
+                ast.Tuple(elts=[key, value], ctx=ast.Load()) for key, value in entries
+            ]
+        return [key if node.func.attr == "keys" else value for key, value in entries]
+    return []
+
+
+def _for_bindings(
+    target: ast.expr,
+    iterable: ast.expr,
+    *,
+    locals_: dict[str, list[_BindingValue]],
+) -> list[tuple[str, _BindingValue]]:
+    bindings = [
+        binding
+        for value in _static_loop_values(iterable, locals_=locals_)
+        for binding in _assignment_bindings(target, value)
+    ]
+    bound_names = {name for name, _ in bindings}
+    return [
+        *bindings,
+        *(
+            (name, _UNKNOWN)
+            for name in _target_names(target)
+            if name not in bound_names
+        ),
+    ]
+
+
 def _local_bindings(
     scope: ast.AST,
     *,
     before_line: int | None,
+    outer_bindings: dict[str, list[_BindingValue]],
 ) -> dict[str, list[_BindingValue]]:
     candidates: dict[str, list[_BindingValue]] = {}
 
@@ -114,15 +224,25 @@ def _local_bindings(
 
     class Collector(ast.NodeVisitor):
         def visit_Assign(self, node: ast.Assign) -> None:
+            visible_bindings = {**outer_bindings, **candidates}
             for target in node.targets:
                 for name, value in _assignment_bindings(target, node.value):
-                    add(name, value, node.lineno)
+                    for resolved in _resolved_binding_values(
+                        value,
+                        visible_bindings=visible_bindings,
+                    ):
+                        add(name, resolved, node.lineno)
             self.generic_visit(node.value)
 
         def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
             if node.value is not None:
                 if isinstance(node.target, ast.Name):
-                    add(node.target.id, node.value, node.lineno)
+                    visible_bindings = {**outer_bindings, **candidates}
+                    for resolved in _resolved_binding_values(
+                        node.value,
+                        visible_bindings=visible_bindings,
+                    ):
+                        add(node.target.id, resolved, node.lineno)
                 self.generic_visit(node.value)
 
         def visit_Import(self, node: ast.Import) -> None:
@@ -132,6 +252,30 @@ def _local_bindings(
         def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
             for name, value in _import_bindings(node):
                 add(name, value, node.lineno)
+
+        def visit_For(self, node: ast.For) -> None:
+            visible_bindings = {**outer_bindings, **candidates}
+            for name, value in _for_bindings(
+                node.target,
+                node.iter,
+                locals_=visible_bindings,
+            ):
+                add(name, value, node.lineno)
+            self.visit(node.iter)
+            for statement in [*node.body, *node.orelse]:
+                self.visit(statement)
+
+        def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+            visible_bindings = {**outer_bindings, **candidates}
+            for name, value in _for_bindings(
+                node.target,
+                node.iter,
+                locals_=visible_bindings,
+            ):
+                add(name, value, node.lineno)
+            self.visit(node.iter)
+            for statement in [*node.body, *node.orelse]:
+                self.visit(statement)
 
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
             return
@@ -164,12 +308,22 @@ def _local_bindings(
         if isinstance(statement, ast.Assign) and (
             before_line is None or statement.lineno < before_line
         ):
-            for target in statement.targets:
-                for name, value in _assignment_bindings(target, statement.value):
-                    if before_line is None:
-                        add(name, value, statement.lineno)
-                    else:
-                        candidates[name] = [value]
+            bindings = [
+                binding
+                for target in statement.targets
+                for binding in _assignment_bindings(target, statement.value)
+            ]
+            visible_bindings = {**outer_bindings, **candidates}
+            for name, value in bindings:
+                resolved = _resolved_binding_values(
+                    value,
+                    visible_bindings=visible_bindings,
+                )
+                if before_line is None:
+                    for binding in resolved:
+                        add(name, binding, statement.lineno)
+                else:
+                    candidates[name] = resolved
             continue
         if (
             isinstance(statement, ast.AnnAssign)
@@ -177,10 +331,16 @@ def _local_bindings(
             and (before_line is None or statement.lineno < before_line)
         ):
             if isinstance(statement.target, ast.Name):
+                visible_bindings = {**outer_bindings, **candidates}
+                resolved = _resolved_binding_values(
+                    statement.value,
+                    visible_bindings=visible_bindings,
+                )
                 if before_line is None:
-                    add(statement.target.id, statement.value, statement.lineno)
+                    for binding in resolved:
+                        add(statement.target.id, binding, statement.lineno)
                 else:
-                    candidates[statement.target.id] = [statement.value]
+                    candidates[statement.target.id] = resolved
             continue
         if isinstance(statement, (ast.Import, ast.ImportFrom)) and (
             before_line is None or statement.lineno < before_line
@@ -316,6 +476,87 @@ def _static_sqls(
     return sqls
 
 
+def _sql_without_literals_and_comments(sql: str) -> str:
+    result: list[str] = []
+    index = 0
+
+    def mask(text: str) -> None:
+        result.extend("\n" if char == "\n" else " " for char in text)
+
+    while index < len(sql):
+        if sql.startswith("--", index):
+            end = sql.find("\n", index + 2)
+            end = len(sql) if end == -1 else end
+            mask(sql[index:end])
+            index = end
+            continue
+        if sql.startswith("/*", index):
+            start = index
+            depth = 1
+            index += 2
+            while index < len(sql) and depth:
+                if sql.startswith("/*", index):
+                    depth += 1
+                    index += 2
+                elif sql.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            mask(sql[start:index])
+            continue
+        if sql[index] == "$":
+            delimiter = re.match(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$", sql[index:])
+            if delimiter is not None:
+                start = index
+                marker = delimiter.group(0)
+                index += len(marker)
+                end = sql.find(marker, index)
+                index = len(sql) if end == -1 else end + len(marker)
+                mask(sql[start:index])
+                continue
+        if sql[index] == "'":
+            start = index
+            escape_backslashes = index > 0 and sql[index - 1] in {"e", "E"}
+            index += 1
+            while index < len(sql):
+                if escape_backslashes and sql[index] == "\\" and index + 1 < len(sql):
+                    index += 2
+                    continue
+                if sql[index] != "'":
+                    index += 1
+                    continue
+                if index + 1 < len(sql) and sql[index + 1] == "'":
+                    index += 2
+                    continue
+                index += 1
+                break
+            mask(sql[start:index])
+            continue
+        if sql[index] == '"':
+            start = index
+            index += 1
+            while index < len(sql):
+                if sql[index] != '"':
+                    index += 1
+                    continue
+                if index + 1 < len(sql) and sql[index + 1] == '"':
+                    index += 2
+                    continue
+                index += 1
+                break
+            quoted = sql[start:index]
+            identifier = quoted[1:-1].replace('""', '"')
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", identifier):
+                result.extend(quoted)
+            else:
+                mask(quoted)
+            continue
+        result.append(sql[index])
+        index += 1
+    return "".join(result)
+
+
 def _static_table_targets(
     node: ast.expr,
     *,
@@ -367,7 +608,13 @@ def _scope_bindings(
     bindings: dict[str, list[_BindingValue]] = {}
     for enclosing_scope in reversed(scopes):
         before_line = node.lineno if enclosing_scope is scopes[0] else None
-        bindings.update(_local_bindings(enclosing_scope, before_line=before_line))
+        bindings.update(
+            _local_bindings(
+                enclosing_scope,
+                before_line=before_line,
+                outer_bindings=bindings,
+            )
+        )
     return bindings
 
 
@@ -424,7 +671,7 @@ def _violations_in_path(path: Path) -> list[_Violation]:
         locals_ = _scope_bindings(node, tree=tree, parents=parents)
         call_methods = set(_static_call_methods(node.func, locals_=locals_))
         protected_tables: set[str] = set()
-        if call_methods & {"execute", "executemany", "sql"}:
+        if call_methods & {"execute", "executemany", "from_query", "query", "sql"}:
             query = (
                 node.args[0]
                 if node.args
@@ -445,7 +692,9 @@ def _violations_in_path(path: Path) -> list[_Violation]:
                 protected_tables.update(
                     f"{match.group(1)}.{match.group(2)}".lower()
                     for sql in sqls
-                    for match in _MUTATION_RE.finditer(sql)
+                    for match in _MUTATION_RE.finditer(
+                        _sql_without_literals_and_comments(sql)
+                    )
                     if f"{match.group(1)}.{match.group(2)}".lower() in _PROTECTED_TABLES
                 )
         if "ingest_dataframe" in call_methods:
@@ -457,6 +706,28 @@ def _violations_in_path(path: Path) -> list[_Violation]:
                         keyword.value
                         for keyword in node.keywords
                         if keyword.arg == "table"
+                    ),
+                    None,
+                )
+            )
+            if target is not None:
+                protected_tables.update(
+                    table.lower()
+                    for table in _static_table_targets(
+                        target,
+                        locals_=locals_,
+                    )
+                    if table.lower() in _PROTECTED_TABLES
+                )
+        if "append" in call_methods:
+            target = (
+                node.args[0]
+                if node.args
+                else next(
+                    (
+                        keyword.value
+                        for keyword in node.keywords
+                        if keyword.arg == "table_name"
                     ),
                     None,
                 )
@@ -550,6 +821,33 @@ def test_rejects_protected_write_through_sql_method(tmp_path: Path) -> None:
 
     assert _violations_in_path(source) == [
         _Violation(path=source, line=4, table="app.user_categories")
+    ]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        'db.conn.query("DELETE FROM app.user_categories")',
+        'db.conn.query(query="DELETE FROM app.user_categories")',
+        'db.conn.from_query("DELETE FROM app.user_categories")',
+        'db.conn.from_query(query="DELETE FROM app.user_categories")',
+        'db.conn.append("app.user_categories", frame)',
+        'db.conn.append(table_name="app.user_categories", df=frame)',
+    ],
+)
+def test_rejects_protected_write_through_raw_duckdb_connection(
+    tmp_path: Path,
+    call: str,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        f"def mutate(db, frame):\n    {call}\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=2, table="app.user_categories")
     ]
 
 
@@ -807,6 +1105,55 @@ def test_ignores_mutation_text_in_fstring_value(tmp_path: Path) -> None:
     assert _violations_in_path(source) == []
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 'DELETE FROM app.user_categories'",
+        "SELECT E'UPDATE app.user_categories SET active = FALSE'",
+        "SELECT $$INSERT INTO app.user_categories VALUES (1)$$",
+        "SELECT $note$DELETE FROM app.user_categories$note$",
+        "SELECT '-- DELETE FROM app.user_categories'",
+        "-- DELETE FROM app.user_categories\nSELECT 1",
+        "/* UPDATE app.user_categories SET active = FALSE */ SELECT 1",
+    ],
+)
+def test_ignores_mutation_text_in_sql_literals_and_comments(
+    tmp_path: Path,
+    sql: str,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        f"def preview(db):\n    db.execute({sql!r})\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "-- harmless comment\nDELETE FROM app.user_categories",
+        "SELECT 'safe'; DELETE FROM app.user_categories",
+    ],
+)
+def test_rejects_protected_write_after_sql_literals_and_comments(
+    tmp_path: Path,
+    sql: str,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        f"def mutate(db):\n    db.execute({sql!r})\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=2, table="app.user_categories")
+    ]
+
+
 def test_rejects_protected_write_captured_from_enclosing_scope(
     tmp_path: Path,
 ) -> None:
@@ -984,6 +1331,98 @@ def test_rejects_protected_write_through_control_flow_unpacking(
     assert _violations_in_path(source) == [
         _Violation(path=source, line=8, table="app.user_categories")
     ]
+
+
+def test_rejects_protected_write_through_for_loop_binding(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        "def delete(db):\n"
+        "    for table in [USER_CATEGORIES]:\n"
+        '        db.execute(f"DELETE FROM {table.full_name}")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=5, table="app.user_categories")
+    ]
+
+
+def test_rejects_protected_write_through_for_loop_unpacking(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        "DELETIONS = {USER_CATEGORIES.full_name: 'WHERE TRUE'}\n"
+        "\n"
+        "def delete(db):\n"
+        "    for table, where in DELETIONS.items():\n"
+        '        db.execute(f"DELETE FROM {table} {where}")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=7, table="app.user_categories")
+    ]
+
+
+def test_rejects_for_loop_binding_through_seeded_alias_cycle(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        "def delete(db):\n"
+        "    first = USER_CATEGORIES\n"
+        "    second = first\n"
+        "    first = second\n"
+        "    for table in [first]:\n"
+        '        db.execute(f"DELETE FROM {table.full_name}")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=8, table="app.user_categories")
+    ]
+
+
+def test_for_loop_binding_shadows_outer_table_ref_import(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import DIM_ACCOUNTS, USER_CATEGORIES as table\n"
+        "\n"
+        "def query(db):\n"
+        "    for table in [DIM_ACCOUNTS]:\n"
+        '        db.execute(f"UPDATE {table.full_name} SET active = FALSE")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
+
+
+def test_unknown_for_loop_binding_shadows_outer_table_ref_import(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES as table\n"
+        "\n"
+        "def query(db, tables):\n"
+        "    for table in tables:\n"
+        '        db.execute(f"UPDATE {table.full_name} SET active = FALSE")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
 
 
 def test_rejects_insert_or_ignore_in_service(tmp_path: Path) -> None:
