@@ -868,9 +868,9 @@ class CategorizationOrchestrator:
         against core.bridge_category_source_map — the two-tier, deterministic
         provider-code mapping (docs/specs/category-source-map.md). A transaction
         carries both a detailed code (category_detailed) and a primary code
-        (plaid_category); either may resolve in the bridge, so the QUALIFY
-        picks exactly one row per transaction, detailed preferred, primary
-        fallback. Gated at >= MEDIUM confidence. Writes
+        (plaid_category); either may resolve in the bridge, so the lateral
+        lookup picks exactly one row per transaction, detailed preferred,
+        primary fallback. Gated at >= MEDIUM confidence. Writes
         categorized_by='provider_native', source_type='plaid' at priority 6 —
         below every deliberate signal, above ai. Runs last of the deterministic
         categorizers so it only touches the long tail.
@@ -954,16 +954,17 @@ class CategorizationOrchestrator:
                 SELECT m.transaction_id, dc.category, dc.subcategory,
                     m.category_confidence, tc.merchant_id
                 FROM {INT_TRANSACTIONS_MERGED.full_name} AS m
-                JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
-                    ON {plaid_bridge_match_predicate("m.category_detailed", "m.plaid_category")}
-                JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
+                JOIN LATERAL (
+                    SELECT b.category_id
+                    FROM {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
+                    WHERE {plaid_bridge_match_predicate("m.category_detailed", "m.plaid_category")}
+                    ORDER BY (b.code_level = 'detailed') DESC
+                    LIMIT 1
+                ) AS bridge ON TRUE
+                JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = bridge.category_id
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
                     ON tc.transaction_id = m.transaction_id
                 WHERE {tc_where}
-                QUALIFY ROW_NUMBER() OVER (
-                    PARTITION BY m.transaction_id
-                    ORDER BY (b.code_level = 'detailed') DESC
-                ) = 1
                 """  # noqa: S608 — TableRef constants + code-constant bridge predicate; no user input
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):

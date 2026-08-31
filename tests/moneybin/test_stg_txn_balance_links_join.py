@@ -474,6 +474,188 @@ def test_stg_tabular_transactions_keeps_legacy_identity_when_path_changes(
 
 
 @pytest.mark.slow
+def test_stg_tabular_transactions_deduplicates_ordinary_reimports_across_paths(
+    db: Database,
+) -> None:
+    """An ordinary stable-ID re-import keeps only its newest raw row."""
+    transaction_id = "ordinary-path-reimport-001"
+    account_id = "ordinary-path-account-001"
+    earlier_path = "ordinary-path-earlier.csv"
+    later_path = "ordinary-path-later.csv"
+
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, source_transaction_id, transaction_date,
+             amount, description, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES
+            (?, ?, 'source-001', DATE '2024-01-15', -50.00, 'Earlier purchase',
+             ?, 'csv', 'ordinary-path-reimport-test', 'earlier-import',
+             TIMESTAMP '2024-01-15 00:00:00', TIMESTAMP '2024-01-15 00:00:00'),
+            (?, ?, 'source-001', DATE '2024-01-16', -55.00, 'Later purchase',
+             ?, 'csv', 'ordinary-path-reimport-test', 'later-import',
+             TIMESTAMP '2024-01-16 00:00:00', TIMESTAMP '2024-01-16 00:00:00')
+        """,  # noqa: S608  # test fixture
+        [
+            transaction_id,
+            account_id,
+            earlier_path,
+            transaction_id,
+            account_id,
+            later_path,
+        ],
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        """
+        SELECT source_file, description
+        FROM prep.stg_tabular__transactions
+        WHERE transaction_id = ?
+        """,
+        [transaction_id],
+    ).fetchall()
+
+    assert rows == [(later_path, "Later purchase")]
+
+
+@pytest.mark.slow
+def test_stg_tabular_transactions_keeps_same_ids_from_distinct_source_origins(
+    db: Database,
+) -> None:
+    """Source origins scope tabular IDs that otherwise collide."""
+    transaction_id = "cross-origin-transaction-001"
+    account_id = "cross-origin-account-001"
+
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, source_transaction_id, transaction_date,
+             amount, description, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES
+            (?, ?, 'source-001', DATE '2024-01-15', -50.00, 'First origin',
+             'first-origin.csv', 'csv', 'first-origin', 'first-import',
+             TIMESTAMP '2024-01-15 00:00:00', TIMESTAMP '2024-01-16 00:00:00'),
+            (?, ?, 'source-001', DATE '2024-01-15', -50.00, 'Second origin',
+             'second-origin.csv', 'csv', 'second-origin', 'second-import',
+             TIMESTAMP '2024-01-15 00:00:00', TIMESTAMP '2024-01-16 00:00:00')
+        """,  # noqa: S608  # test fixture
+        [transaction_id, account_id, transaction_id, account_id],
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        """
+        SELECT source_origin, description
+        FROM prep.stg_tabular__transactions
+        WHERE transaction_id = ?
+        ORDER BY source_origin
+        """,
+        [transaction_id],
+    ).fetchall()
+
+    assert rows == [
+        ("first-origin", "First origin"),
+        ("second-origin", "Second origin"),
+    ]
+
+
+@pytest.mark.slow
+def test_stg_tabular_transactions_breaks_same_load_timestamp_ties_by_extracted_at(
+    db: Database,
+) -> None:
+    """A same-scope re-import keeps the row from the later extraction."""
+    transaction_id = "same-load-timestamp-transaction-001"
+    account_id = "same-load-timestamp-account-001"
+    loaded_at = "2024-01-17 00:00:00"
+
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, source_transaction_id, transaction_date,
+             amount, description, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES
+            (?, ?, 'source-001', DATE '2024-01-15', -50.00, 'Earlier extraction',
+             'earlier-extraction.csv', 'csv', 'same-load-timestamp', 'first-import',
+             TIMESTAMP '2024-01-15 00:00:00', ?),
+            (?, ?, 'source-001', DATE '2024-01-16', -55.00, 'Later extraction',
+             'later-extraction.csv', 'csv', 'same-load-timestamp', 'second-import',
+             TIMESTAMP '2024-01-16 00:00:00', ?)
+        """,  # noqa: S608  # test fixture
+        [transaction_id, account_id, loaded_at, transaction_id, account_id, loaded_at],
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        """
+        SELECT source_file, description
+        FROM prep.stg_tabular__transactions
+        WHERE transaction_id = ?
+        """,
+        [transaction_id],
+    ).fetchall()
+
+    assert rows == [("later-extraction.csv", "Later extraction")]
+
+
+@pytest.mark.slow
+def test_stg_tabular_transactions_breaks_exact_timestamp_ties_by_source_file(
+    db: Database,
+) -> None:
+    """An otherwise equal re-import has a stable source-file winner."""
+    transaction_id = "exact-timestamp-transaction-001"
+    account_id = "exact-timestamp-account-001"
+    observed_at = "2024-01-17 00:00:00"
+
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, source_transaction_id, transaction_date,
+             amount, description, source_file, source_type, source_origin,
+             import_id, extracted_at, loaded_at)
+        VALUES
+            (?, ?, 'source-001', DATE '2024-01-15', -50.00, 'Z file',
+             'z-file.csv', 'csv', 'exact-timestamp', 'first-import', ?, ?),
+            (?, ?, 'source-001', DATE '2024-01-16', -55.00, 'A file',
+             'a-file.csv', 'csv', 'exact-timestamp', 'second-import', ?, ?)
+        """,  # noqa: S608  # test fixture
+        [
+            transaction_id,
+            account_id,
+            observed_at,
+            observed_at,
+            transaction_id,
+            account_id,
+            observed_at,
+            observed_at,
+        ],
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        """
+        SELECT source_file, description
+        FROM prep.stg_tabular__transactions
+        WHERE transaction_id = ?
+        """,
+        [transaction_id],
+    ).fetchall()
+
+    assert rows == [("a-file.csv", "A file")]
+
+
+@pytest.mark.slow
 def test_stg_tabular_transactions_pairs_duplicate_stable_source_ids_by_occurrence(
     db: Database,
 ) -> None:

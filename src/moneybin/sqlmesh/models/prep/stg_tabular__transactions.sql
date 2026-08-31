@@ -239,40 +239,42 @@ WITH accepted_native_links AS (
     AND endpoint.transaction_id = pair.corrected_transaction_id
   WHERE
     curation.transaction_id IS NULL AND endpoint.transaction_id IS NULL
-), ranked AS (
+), rankable_rows AS (
   SELECT
-    transaction_id,
-    account_id,
-    transaction_date,
-    post_date,
-    amount,
-    original_amount,
-    original_date_str,
-    TRIM(description) AS description,
-    TRIM(memo) AS memo,
-    category,
-    subcategory,
-    transaction_type,
-    status,
-    check_number,
-    source_transaction_id,
-    reference_number,
-    balance,
-    UPPER(NULLIF(TRIM(currency), '')) AS currency,
-    member_name,
-    source_file,
-    source_type,
-    source_origin,
-    import_id,
-    row_number,
-    extracted_at,
-    loaded_at,
-    deleted_from_source_at,
-    ROW_NUMBER() OVER (
-      PARTITION BY transaction_id, account_id, source_file, source_type, source_origin
-      ORDER BY loaded_at DESC
-    ) AS _row_num
+    COALESCE(identity.legacy_transaction_id, t.transaction_id) AS transaction_id,
+    COALESCE(identity.legacy_source_account_key, t.account_id) AS account_id,
+    t.transaction_date,
+    t.post_date,
+    t.amount,
+    t.original_amount,
+    t.original_date_str,
+    TRIM(t.description) AS description,
+    TRIM(t.memo) AS memo,
+    t.category,
+    t.subcategory,
+    t.transaction_type,
+    t.status,
+    t.check_number,
+    t.source_transaction_id,
+    t.reference_number,
+    t.balance,
+    UPPER(NULLIF(TRIM(t.currency), '')) AS currency,
+    t.member_name,
+    t.source_file,
+    t.source_type,
+    t.source_origin,
+    t.import_id,
+    t.row_number,
+    t.extracted_at,
+    t.loaded_at,
+    t.deleted_from_source_at
   FROM raw.tabular_transactions AS t
+  LEFT JOIN replaceable_stable_source_id_pairs AS identity
+    ON identity.corrected_transaction_id = t.transaction_id
+    AND identity.corrected_source_account_key = t.account_id
+    AND identity.source_file IS NOT DISTINCT FROM t.source_file
+    AND identity.source_type = t.source_type
+    AND identity.source_origin IS NOT DISTINCT FROM t.source_origin
   /* Exclude soft-deleted rows BEFORE ranking: a soft-deleted row with a newer
      loaded_at would rank #1 and then be dropped by the outer filter, while a valid
      same-key row at #2 is also excluded — silently losing the transaction.
@@ -284,7 +286,7 @@ WITH accepted_native_links AS (
      state references it. Duplicate content is paired by occurrence, so a reused
      path remains visible. */
   WHERE
-    deleted_from_source_at IS NULL
+    t.deleted_from_source_at IS NULL
     AND NOT EXISTS(
       SELECT
         1
@@ -339,11 +341,19 @@ WITH accepted_native_links AS (
         AND pair.source_type = t.source_type
         AND pair.source_origin IS NOT DISTINCT FROM t.source_origin
     )
+), ranked AS (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (
+      PARTITION BY transaction_id, account_id, source_type, source_origin
+      ORDER BY loaded_at DESC, extracted_at DESC, source_file ASC
+    ) AS _row_num
+  FROM rankable_rows
 )
 SELECT
   COALESCE(links.account_id, ranked.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
-  COALESCE(identity.legacy_source_account_key, ranked.account_id) AS source_account_key,
-  COALESCE(identity.legacy_transaction_id, ranked.transaction_id) AS transaction_id,
+  ranked.account_id AS source_account_key,
+  ranked.transaction_id,
   ranked.transaction_date,
   ranked.post_date,
   ranked.amount,
@@ -369,12 +379,6 @@ SELECT
   ranked.extracted_at,
   ranked.loaded_at
 FROM ranked
-LEFT JOIN replaceable_stable_source_id_pairs AS identity
-  ON identity.corrected_transaction_id = ranked.transaction_id
-  AND identity.corrected_source_account_key = ranked.account_id
-  AND identity.source_file IS NOT DISTINCT FROM ranked.source_file
-  AND identity.source_type = ranked.source_type
-  AND identity.source_origin IS NOT DISTINCT FROM ranked.source_origin
 LEFT JOIN app.account_links AS links
   ON links.status = 'accepted'
   AND links.ref_kind = 'source_native'
