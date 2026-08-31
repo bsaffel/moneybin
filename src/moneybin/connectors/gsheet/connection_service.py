@@ -284,6 +284,21 @@ class GSheetConnectionService:
         adapter = ADAPTERS[target_adapter]
         detection = adapter.detect(df, account_name=req.account_name)
 
+        # Surface the rename. A renamed copy matches no field alias, so its
+        # data is never imported — silent inference with a cost the user
+        # cannot see is what "Magic stays visible" rules out.
+        renamed = [
+            f"{original} -> {deduped}"
+            for original, deduped in zip(rows[0], df.columns, strict=True)
+            if original != deduped
+        ]
+        if renamed:
+            detection.notes.append(
+                f"Duplicate header(s) renamed: {'; '.join(renamed)}. "
+                "Only the first column of each duplicated name is matched to "
+                "a field; the renamed copies are not imported."
+            )
+
         # Derive tier from normalized score + shared confidence bands.
         if target_adapter == "transactions":
             bands = get_settings().import_.confidence
@@ -773,29 +788,51 @@ class GSheetConnectionService:
         )
 
 
+def _dedupe_headers(headers: list[str]) -> list[str]:
+    """Rename repeated headers to ``name``, ``name_duplicated_0``, ... .
+
+    Mirrors the naming polars applies on the CSV import path, so the same
+    sheet imported either way yields the same column names. Keying columns by
+    header text would otherwise collapse duplicates into one dict entry and
+    drop a column of data outright.
+    """
+    # Reserve every real header up front. Reserving only as we walk would let
+    # a synthesized name claim a header the sheet genuinely has further right,
+    # renaming the real column and rebinding a pinned mapping to the wrong
+    # data — with every pinned header still present, so drift sees nothing.
+    reserved = set(headers)
+    assigned: set[str] = set()
+    counts: dict[str, int] = {}
+    deduped: list[str] = []
+    for header in headers:
+        if header not in assigned:
+            candidate = header
+        else:
+            suffix = counts.get(header, 0)
+            candidate = f"{header}_duplicated_{suffix}"
+            while candidate in reserved or candidate in assigned:
+                suffix += 1
+                candidate = f"{header}_duplicated_{suffix}"
+            counts[header] = suffix + 1
+        assigned.add(candidate)
+        deduped.append(candidate)
+    return deduped
+
+
 def rows_to_df(rows: list[list[str]]) -> pl.DataFrame:
     """Convert raw cell values (first row headers) into a Polars DataFrame.
 
     Ragged rows (Google Sheets trims trailing empty cells) are padded to the
     header width with ``None`` so polars receives uniform-length columns.
 
-    Rejects duplicate header text — keying by header collapses duplicates
-    into one dict entry and silently corrupts row cardinality.
+    Duplicate header text is renamed rather than rejected — MoneyBin reads
+    the sheet read-only and must not require the user to edit their own data
+    to make it readable.
     """
     if not rows:
         return pl.DataFrame()
     headers, *data = rows
-    seen: set[str] = set()
-    duplicates: list[str] = []
-    for h in headers:
-        if h in seen and h not in duplicates:
-            duplicates.append(h)
-        seen.add(h)
-    if duplicates:
-        raise GSheetError(
-            f"Duplicate header(s) in sheet: {duplicates}. "
-            "Rename to make headers unique before connecting."
-        )
+    headers = _dedupe_headers(headers)
     columns: dict[str, list[str | None]] = {h: [] for h in headers}
     for row in data:
         for i, header in enumerate(headers):

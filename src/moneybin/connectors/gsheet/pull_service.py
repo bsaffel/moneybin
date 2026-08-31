@@ -145,10 +145,9 @@ class GSheetPullService:
         try:
             df = rows_to_df(rows)
         except Exception:
-            # rows_to_df raises GSheetError on duplicate headers (round-3
-            # guard). Without this wrap the import_log stays in
-            # "importing" — same bug class the transform/load guard below
-            # closes; the symmetric fix lives here.
+            # Any rows_to_df failure must still close the import_log row.
+            # Without this wrap it stays in "importing" — same bug class the
+            # transform/load guard below closes; the symmetric fix lives here.
             logger.exception(f"rows_to_df failed for connection={conn.connection_id}")
             return self._record_unexpected_failure(conn, import_id)
         drift = adapter.check_drift(conn, df)
