@@ -16,7 +16,9 @@ pytestmark = pytest.mark.integration
 
 _MUTATION_RE = re.compile(
     r"\b(?:INSERT\s+(?:OR\s+(?:IGNORE|REPLACE)\s+)?INTO|MERGE\s+INTO|UPDATE|"
-    r"DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?)\s+"
+    r"DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?|CREATE\s+OR\s+REPLACE\s+TABLE|"
+    r"DROP\s+TABLE(?:\s+IF\s+EXISTS)?|"
+    r"ALTER\s+TABLE(?:\s+IF\s+EXISTS)?(?:\s+ONLY)?)\s+"
     r'"?(app)"?\s*\.\s*"?([a-z_][a-z0-9_]*)"?(?![a-z0-9_"])',
     re.IGNORECASE,
 )
@@ -41,7 +43,7 @@ _PROTECTED_TABLES = (
     )
     - _EXEMPT_TABLES
 )
-_SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "moneybin"
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
@@ -839,6 +841,19 @@ def _violations_in_path(path: Path) -> list[_Violation]:
     return violations
 
 
+def _runtime_violations(repository_root: Path) -> list[_Violation]:
+    runtime_roots = (
+        repository_root / "src" / "moneybin",
+        repository_root / "scripts",
+    )
+    return [
+        violation
+        for runtime_root in runtime_roots
+        for path in sorted(runtime_root.rglob("*.py"))
+        for violation in _violations_in_path(path)
+    ]
+
+
 def test_rejects_inline_protected_write_in_service(tmp_path: Path) -> None:
     source = tmp_path / "src/moneybin/services/example_service.py"
     source.parent.mkdir(parents=True)
@@ -1276,6 +1291,8 @@ def test_ignores_mutation_text_in_fstring_value(tmp_path: Path) -> None:
         "SELECT '-- DELETE FROM app.user_categories'",
         "SELECT 'COPY app.user_categories FROM categories.csv'",
         "SELECT 'TRUNCATE app.user_categories'",
+        "SELECT 'DROP TABLE app.user_categories'",
+        "SELECT $$ALTER TABLE app.user_categories DROP active$$",
         "-- DELETE FROM app.user_categories\nSELECT 1",
         "-- COPY app.user_categories FROM categories.csv\nSELECT 1",
         "/* UPDATE app.user_categories SET active = FALSE */ SELECT 1",
@@ -1301,6 +1318,7 @@ def test_ignores_mutation_text_in_sql_literals_and_comments(
     [
         "-- harmless comment\nDELETE FROM app.user_categories",
         "SELECT 'safe'; DELETE FROM app.user_categories",
+        "-- harmless comment\nDROP TABLE app.user_categories",
     ],
 )
 def test_rejects_protected_write_after_sql_literals_and_comments(
@@ -1714,6 +1732,69 @@ def test_rejects_merge_into_protected_table(tmp_path: Path, target: str) -> None
 @pytest.mark.parametrize(
     "sql",
     [
+        "CREATE OR REPLACE TABLE app.user_categories (category_id VARCHAR)",
+        'CREATE OR REPLACE TABLE "app"."user_categories" AS SELECT 1',
+        "DROP TABLE app.user_categories",
+        'DROP TABLE IF EXISTS "app"."user_categories"',
+        "ALTER TABLE app.user_categories ADD COLUMN unsafe BOOLEAN",
+        'ALTER TABLE IF EXISTS ONLY "app"."user_categories" DROP unsafe',
+    ],
+)
+def test_rejects_destructive_ddl_of_protected_table(
+    tmp_path: Path,
+    sql: str,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        f"def mutate(db):\n    db.execute({sql!r})\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=2, table="app.user_categories")
+    ]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "CREATE TABLE app.user_categories (category_id VARCHAR)",
+        "CREATE TABLE IF NOT EXISTS app.user_categories (category_id VARCHAR)",
+        "DROP TABLE core.dim_accounts",
+        "ALTER TABLE app.metrics ADD COLUMN value DOUBLE",
+    ],
+)
+def test_allows_non_destructive_or_exempt_ddl(tmp_path: Path, sql: str) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        f"def mutate(db):\n    db.execute({sql!r})\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
+
+
+def test_rejects_destructive_ddl_through_table_ref(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        "def mutate(db):\n"
+        '    db.execute(f"DROP TABLE {USER_CATEGORIES.full_name}")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=4, table="app.user_categories")
+    ]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
         "COPY app.user_categories FROM 'categories.csv'",
         'COPY "app"."user_categories"(category_id) FROM \'categories.csv\'',
         "TRUNCATE app.user_categories",
@@ -1882,6 +1963,10 @@ def test_rejects_migration_named_runtime_module(tmp_path: Path) -> None:
             "UPDATE app.user_categories SET active = FALSE",
         ),
         (
+            "src/moneybin/sql/migrations/V999_test.py",
+            "DROP TABLE app.user_categories",
+        ),
+        (
             "src/moneybin/services/example_service.py",
             "INSERT INTO app.metrics VALUES (?)",
         ),
@@ -1920,12 +2005,21 @@ def test_allows_sanctioned_writes_and_reads(
     assert _violations_in_path(source) == []
 
 
-def test_runtime_app_mutations_are_repository_routed() -> None:
-    violations = [
-        violation
-        for path in sorted(_SOURCE_ROOT.rglob("*.py"))
-        for violation in _violations_in_path(path)
+def test_runtime_scan_includes_executable_scripts(tmp_path: Path) -> None:
+    source = tmp_path / "scripts/maintenance.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        'def mutate(db):\n    db.execute("UPDATE app.user_categories SET active = FALSE")\n',
+        encoding="utf-8",
+    )
+
+    assert _runtime_violations(tmp_path) == [
+        _Violation(path=source, line=2, table="app.user_categories")
     ]
+
+
+def test_runtime_app_mutations_are_repository_routed() -> None:
+    violations = _runtime_violations(_REPOSITORY_ROOT)
 
     assert not violations, (
         "Raw protected app.* mutation bypasses a repository:\n"

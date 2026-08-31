@@ -1,8 +1,9 @@
 """Tests for ``TransactionCategoriesRepo``.
 
-Covers the user upsert (``set``), the precedence-guarded engine upsert
-(``upsert_guarded``), single-row ``clear``, and the multi-row ``delete_by_rule``;
-each pairs its write with a full before/after audit row (Req 4).
+Covers the user upsert (``set``), maintenance link update (``update_links``),
+the precedence-guarded engine upsert (``upsert_guarded``), single-row ``clear``,
+and the multi-row ``delete_by_rule``; each pairs its write with a full
+before/after audit row (Req 4).
 """
 
 from __future__ import annotations
@@ -131,6 +132,38 @@ def test_set_preserves_merchant_and_rule_on_user_overwrite(db: Database) -> None
         ["txn3"],
     ).fetchone()
     assert row == ("Groceries", "user", "m1", "r1")
+
+
+def test_update_links_preserves_category_metadata_and_audits(db: Database) -> None:
+    repo = TransactionCategoriesRepo(db)
+    repo.set(
+        "txn-links",
+        category="Dining",
+        subcategory="Coffee",
+        category_id=None,
+        categorized_by="user",
+        actor="cli",
+    )
+
+    event = repo.update_links(
+        "txn-links",
+        merchant_id="merchant-1",
+        rule_id="rule-1",
+        actor="script",
+    )
+
+    assert event.target_id == "txn-links"
+    row = db.conn.execute(
+        "SELECT category, subcategory, categorized_by, merchant_id, rule_id "
+        "FROM app.transaction_categories WHERE transaction_id = ?",
+        ["txn-links"],
+    ).fetchone()
+    assert row == ("Dining", "Coffee", "user", "merchant-1", "rule-1")
+    audit = _audit_rows_for(db, "txn-links")[-1]
+    assert audit[0] == "category.set"
+    assert json.loads(audit[4])["merchant_id"] is None
+    assert json.loads(audit[5])["merchant_id"] == "merchant-1"
+    assert audit[6] == "script"
 
 
 # ---------------------------------------------------------------------------
