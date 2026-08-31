@@ -144,6 +144,34 @@ def _static_table_names(
     ]
 
 
+def _static_full_name_targets(
+    node: ast.expr,
+    *,
+    table_refs: dict[str, list[str]],
+    locals_: dict[str, list[ast.expr]],
+    seen_names: frozenset[str],
+) -> list[str]:
+    if isinstance(node, ast.Attribute) and node.attr == "full_name":
+        return _static_table_names(
+            node.value,
+            table_refs=table_refs,
+            locals_=locals_,
+            seen_names=seen_names,
+        )
+    if not isinstance(node, ast.Name) or node.id in seen_names:
+        return []
+    return [
+        table
+        for value in locals_.get(node.id, [])
+        for table in _static_full_name_targets(
+            value,
+            table_refs=table_refs,
+            locals_=locals_,
+            seen_names=seen_names | {node.id},
+        )
+    ]
+
+
 def _static_sqls(
     node: ast.expr,
     *,
@@ -172,13 +200,9 @@ def _static_sqls(
     for part in node.values:
         if isinstance(part, ast.Constant) and isinstance(part.value, str):
             choices = [part.value]
-        elif (
-            isinstance(part, ast.FormattedValue)
-            and isinstance(part.value, ast.Attribute)
-            and part.value.attr == "full_name"
-        ):
-            choices = _static_table_names(
-                part.value.value,
+        elif isinstance(part, ast.FormattedValue):
+            choices = _static_full_name_targets(
+                part.value,
                 table_refs=table_refs,
                 locals_=locals_,
                 seen_names=seen_names,
@@ -499,6 +523,36 @@ def test_rejects_protected_write_through_table_ref_alias(tmp_path: Path) -> None
     assert _violations_in_path(source) == [
         _Violation(path=source, line=5, table="app.user_categories")
     ]
+
+
+def test_rejects_protected_write_through_full_name_alias(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        "def delete(db):\n"
+        "    table = USER_CATEGORIES.full_name\n"
+        '    db.execute(f"DELETE FROM {table}")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=5, table="app.user_categories")
+    ]
+
+
+def test_ignores_mutation_text_in_fstring_value(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "def preview(db):\n"
+        '    note = "DELETE FROM app.user_categories"\n'
+        "    db.execute(f\"SELECT '{note}'\")\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
 
 
 def test_rejects_protected_write_captured_from_enclosing_scope(
