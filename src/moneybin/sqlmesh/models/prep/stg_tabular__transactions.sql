@@ -21,11 +21,12 @@ WITH accepted_native_links AS (
     t.source_origin,
     t.transaction_date,
     t.amount,
+    t.original_amount,
     t.description,
     t.original_date_str,
     t.source_transaction_id,
     ROW_NUMBER() OVER (
-      PARTITION BY t.account_id, t.source_file, t.source_type, t.source_origin, t.transaction_date, t.amount, t.description, t.original_date_str, t.source_transaction_id
+      PARTITION BY t.account_id, t.source_file, t.source_type, t.source_origin, t.transaction_date, t.amount, t.original_amount, t.description, t.original_date_str, t.source_transaction_id
       ORDER BY t.transaction_id
     ) AS occurrence
   FROM raw.tabular_transactions AS t
@@ -61,11 +62,12 @@ WITH accepted_native_links AS (
     t.source_origin,
     t.transaction_date,
     t.amount,
+    t.original_amount,
     t.description,
     t.original_date_str,
     t.source_transaction_id,
     ROW_NUMBER() OVER (
-      PARTITION BY link.account_id, t.source_file, t.source_type, t.source_origin, t.transaction_date, t.amount, t.description, t.original_date_str, t.source_transaction_id
+      PARTITION BY link.account_id, t.source_file, t.source_type, t.source_origin, t.transaction_date, t.amount, t.original_amount, t.description, t.original_date_str, t.source_transaction_id
       ORDER BY t.transaction_id
     ) AS occurrence
   FROM raw.tabular_transactions AS t
@@ -300,6 +302,7 @@ WITH accepted_native_links AS (
         AND NULLIF(TRIM(corrected.source_transaction_id), '') IS NULL
         AND legacy.transaction_date = corrected.transaction_date
         AND legacy.amount = corrected.amount
+        AND legacy.original_amount IS NOT DISTINCT FROM corrected.original_amount
         AND legacy.description IS NOT DISTINCT FROM corrected.description
         AND legacy.original_date_str IS NOT DISTINCT FROM corrected.original_date_str
         AND legacy.occurrence = corrected.occurrence

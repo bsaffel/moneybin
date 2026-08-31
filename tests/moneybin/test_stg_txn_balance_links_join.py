@@ -232,6 +232,72 @@ def test_stg_tabular_transactions_keeps_pre_fix_pinned_row_authoritative(
 
 
 @pytest.mark.slow
+def test_stg_tabular_transactions_keeps_idless_rows_with_different_amount_identity(
+    db: Database,
+) -> None:
+    """Different parsed amount strings are distinct content-hash identities."""
+    canonical_id = "canonical-amount-identity-01"
+    native_key = "native-amount-identity-01"
+    source_file = "amount-identity-statement.csv"
+    source_origin = "amount-identity-test"
+
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, transaction_date, amount, original_amount,
+             description, source_file, source_type, source_origin, import_id,
+             extracted_at, loaded_at)
+        VALUES
+            ('csv-legacy-amount-identity', ?, DATE '2024-01-15', 5.00, '5',
+             'Same-day purchase', ?, 'csv', ?, 'legacy-import',
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('csv-corrected-amount-identity', ?, DATE '2024-01-15', 5.00, '5.00',
+             'Same-day purchase', ?, 'csv', ?, 'corrected-import',
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [
+            canonical_id,
+            source_file,
+            source_origin,
+            native_key,
+            source_file,
+            source_origin,
+        ],
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-amount-identity-legacy",
+        account_id=canonical_id,
+        ref_value=canonical_id,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-amount-identity-native",
+        account_id=canonical_id,
+        ref_value=native_key,
+        source_type="csv",
+        source_origin=source_origin,
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        """
+        SELECT source_account_key, original_amount
+        FROM prep.stg_tabular__transactions
+        WHERE source_file = ?
+        ORDER BY source_account_key
+        """,
+        [source_file],
+    ).fetchall()
+
+    assert rows == [(canonical_id, "5"), (native_key, "5.00")]
+
+
+@pytest.mark.slow
 def test_stg_tabular_transactions_keeps_distinct_source_transaction_ids(
     db: Database,
 ) -> None:
