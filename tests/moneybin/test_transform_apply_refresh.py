@@ -113,13 +113,13 @@ def _write_restate_regression_models(root: Path, *, include_view_column: bool) -
         """
     if include_view_column:
         view_model = """
-            MODEL (
-              name reports.restate_items,
-              kind VIEW
-            );
+        MODEL (
+          name reports.restate_items,
+          kind VIEW
+        );
 
-            SELECT id, id AS copy_id FROM core.restate_items
-            """
+        SELECT id, id AS copy_id FROM core.restate_items
+        """
     (models / "items_view.sql").write_text(view_model)
 
 
