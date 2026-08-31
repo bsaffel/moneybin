@@ -201,7 +201,6 @@ WITH accepted_native_links AS (
   SELECT
     match.account_id,
     match.source_type_a AS source_type,
-    match.source_origin_a AS source_origin,
     match.source_transaction_id_a AS transaction_id
   FROM app.match_decisions AS match
   WHERE
@@ -216,7 +215,6 @@ WITH accepted_native_links AS (
       ELSE match.account_id_b
     END AS account_id,
     match.source_type_b AS source_type,
-    match.source_origin_b AS source_origin,
     match.source_transaction_id_b AS transaction_id
   FROM app.match_decisions AS match
   WHERE
@@ -238,7 +236,6 @@ WITH accepted_native_links AS (
   LEFT JOIN protected_corrected_match_endpoints AS endpoint
     ON endpoint.account_id = pair.canonical_account_id
     AND endpoint.source_type = pair.source_type
-    AND endpoint.source_origin IS NOT DISTINCT FROM pair.source_origin
     AND endpoint.transaction_id = pair.corrected_transaction_id
   WHERE
     curation.transaction_id IS NULL AND endpoint.transaction_id IS NULL
@@ -271,7 +268,10 @@ WITH accepted_native_links AS (
     extracted_at,
     loaded_at,
     deleted_from_source_at,
-    ROW_NUMBER() OVER (PARTITION BY transaction_id, account_id ORDER BY loaded_at DESC) AS _row_num
+    ROW_NUMBER() OVER (
+      PARTITION BY transaction_id, account_id, source_file, source_type, source_origin
+      ORDER BY loaded_at DESC
+    ) AS _row_num
   FROM raw.tabular_transactions AS t
   /* Exclude soft-deleted rows BEFORE ranking: a soft-deleted row with a newer
      loaded_at would rank #1 and then be dropped by the outer filter, while a valid
@@ -317,7 +317,6 @@ WITH accepted_native_links AS (
           WHERE
             endpoint.account_id = corrected.canonical_account_id
             AND endpoint.source_type = corrected.source_type
-            AND endpoint.source_origin IS NOT DISTINCT FROM corrected.source_origin
             AND endpoint.transaction_id = corrected.transaction_id
         )
         AND corrected.source_file IS NOT DISTINCT FROM t.source_file

@@ -19,6 +19,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
+import duckdb
+
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import RecoveryAction, UserError
@@ -30,8 +32,18 @@ from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.services.mutation_context import operation
 from moneybin.services.undo_dispatch import is_registered, repo_for
+from moneybin.tables import FCT_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
+
+
+_TRANSACTION_REFERENCE_TABLES = frozenset({
+    "categorization_decisions",
+    "transaction_categories",
+    "transaction_notes",
+    "transaction_splits",
+    "transaction_tags",
+})
 
 
 @dataclass(frozen=True)
@@ -81,12 +93,13 @@ class OperationDetail:
 
 @dataclass(frozen=True)
 class _Undoability:
-    """The three conditions that decide whether one operation can be undone."""
+    """The conditions that decide whether one operation can be undone."""
 
     can_undo: bool
     blockers: list[str]
     undone_by: str | None
     unresolvable: list[str]
+    has_missing_restored_transaction_reference: bool
 
 
 @dataclass
@@ -161,7 +174,7 @@ class UndoService:
         if not events:
             audit_undo_total.labels(outcome="not_found").inc()
             raise self._not_found_error(operation_id)
-        u = self._undoability(operation_id)
+        u = self._undoability(operation_id, events=events)
         if u.undone_by is not None:
             audit_undo_total.labels(outcome="already_undone").inc()
             raise UserError(
@@ -186,6 +199,13 @@ class UndoService:
                 f"modified the same rows. Undo those first.",
                 code=error_codes.UNDO_CASCADE_BLOCKED,
                 recovery_actions=[_undo_action(b) for b in u.blockers],
+            )
+        if u.has_missing_restored_transaction_reference:
+            audit_undo_total.labels(outcome="no_path").inc()
+            raise UserError(
+                f"Operation {operation_id!r} cannot be undone because it would "
+                "restore app state for a transaction that no longer exists.",
+                code=error_codes.RECOVERY_NO_PATH,
             )
 
         # Reverse in the exact reverse of write order inside one transaction under
@@ -271,6 +291,51 @@ class UndoService:
             reversed_row_count=len(undone),
             tables=tables,
         )
+
+    def _has_missing_restored_transaction_reference(
+        self, events: list[AuditEvent]
+    ) -> bool:
+        """Whether an inverse delete would restore app state for a retired transaction."""
+        transaction_ids = self._restored_transaction_ids(events)
+        if not transaction_ids:
+            return False
+        placeholders = ", ".join("?" for _ in transaction_ids)
+        try:
+            rows = self._db.execute(
+                f"SELECT transaction_id FROM {FCT_TRANSACTIONS.full_name} "
+                f"WHERE transaction_id IN ({placeholders})",  # noqa: S608  # TableRef + parameterized values
+                sorted(transaction_ids),
+            ).fetchall()
+        except duckdb.CatalogException:
+            # Pre-transform databases have no core transaction relation yet, so
+            # they cannot establish that a historical reference was retired.
+            return False
+        resolved_ids = {str(row[0]) for row in rows}
+        return not transaction_ids.issubset(resolved_ids)
+
+    @staticmethod
+    def _restored_transaction_ids(events: list[AuditEvent]) -> set[str]:
+        """Extract core transaction ids that an inverse would reinsert."""
+        transaction_ids: set[str] = set()
+        for event in events:
+            before = event.before_value
+            if before is None or event.after_value is not None:
+                continue
+            if event.target_schema != "app":
+                continue
+            if event.target_table in _TRANSACTION_REFERENCE_TABLES:
+                transaction_id = before.get("transaction_id")
+                if isinstance(transaction_id, str):
+                    transaction_ids.add(transaction_id)
+            elif event.target_table == "proposed_rules":
+                sample_txn_ids = before.get("sample_txn_ids")
+                if isinstance(sample_txn_ids, list):
+                    transaction_ids.update(
+                        transaction_id
+                        for transaction_id in sample_txn_ids
+                        if isinstance(transaction_id, str)
+                    )
+        return transaction_ids
 
     def history(
         self,
@@ -404,7 +469,7 @@ class UndoService:
         events = self._audit.events_for_operation(operation_id)
         if not events:
             raise self._not_found_error(operation_id)
-        u = self._undoability(operation_id)
+        u = self._undoability(operation_id, events=events)
         return OperationDetail(
             operation_id=operation_id,
             events=events,
@@ -470,9 +535,12 @@ class UndoService:
         )
 
     def _undoability(
-        self, operation_id: str, liveness: _UndoLiveness | None = None
+        self,
+        operation_id: str,
+        liveness: _UndoLiveness | None = None,
+        events: list[AuditEvent] | None = None,
     ) -> _Undoability:
-        """Compute the three undo-gating conditions once, for a single operation.
+        """Compute the undo-gating conditions once, for a single operation.
 
         Shared by ``undo`` (which branches on the individual fields to raise its
         specialized errors), ``get``, and ``history``'s per-operation summary — so
@@ -495,16 +563,25 @@ class UndoService:
         # e.g. legacy idempotent tag re-adds) — is refused by undo(), so can_undo
         # must be False here too or get()/history() would disagree.
         has_reversible_row = self._has_reversible_row(operation_id)
+        if events is None:
+            events = self._audit.events_for_operation(operation_id)
+        has_missing_restored_transaction_reference = (
+            self._has_missing_restored_transaction_reference(events)
+        )
         return _Undoability(
             can_undo=(
                 undone_by is None
                 and not blockers
                 and not unresolvable
                 and has_reversible_row
+                and not has_missing_restored_transaction_reference
             ),
             blockers=blockers,
             undone_by=undone_by,
             unresolvable=unresolvable,
+            has_missing_restored_transaction_reference=(
+                has_missing_restored_transaction_reference
+            ),
         )
 
     def _has_reversible_row(self, operation_id: str) -> bool:

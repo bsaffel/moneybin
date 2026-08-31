@@ -149,6 +149,46 @@ class TestUndo:
             UndoService(db).undo(op, actor="cli")
         assert exc.value.code == error_codes.UNDO_ALREADY_UNDONE
 
+    def test_refuses_to_restore_note_for_retired_transaction(
+        self, db: Database
+    ) -> None:
+        create_core_tables(db)
+        notes = TransactionNotesRepo(db)
+        with operation():
+            notes.add(
+                transaction_id="retired_transaction",
+                note_id="n1",
+                text="hi",
+                actor="cli",
+            )
+        with operation() as delete_op:
+            notes.delete(note_id="n1", actor="cli")
+
+        undo = UndoService(db)
+        detail = undo.get(delete_op)
+        summary = next(
+            operation
+            for operation in undo.history()
+            if operation.operation_id == delete_op
+        )
+
+        assert detail.can_undo is False
+        assert summary.can_undo is False
+        assert summary.recovery_actions == []
+        with pytest.raises(UserError) as exc:
+            undo.undo(delete_op, actor="cli")
+
+        assert exc.value.code == error_codes.RECOVERY_NO_PATH
+        remaining = db.execute(
+            "SELECT COUNT(*) FROM app.transaction_notes WHERE note_id = ?", ["n1"]
+        ).fetchone()
+        assert remaining == (0,)
+        undo_rows = db.execute(
+            "SELECT COUNT(*) FROM app.audit_log WHERE undoes_operation_id = ?",
+            [delete_op],
+        ).fetchone()
+        assert undo_rows == (0,)
+
     def test_independent_children_same_txn_do_not_block(self, db: Database) -> None:
         # Two notes on the same transaction are different rows — undoing the first
         # must not be blocked by the second (row-grain cascade: target_id is the
