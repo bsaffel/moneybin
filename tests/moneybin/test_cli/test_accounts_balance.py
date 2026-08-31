@@ -22,12 +22,6 @@ from moneybin.privacy.payloads.balances import (
 from moneybin.services.balance_service import BalanceService
 
 
-@pytest.fixture
-def runner() -> CliRunner:
-    """Return a Typer/Click CliRunner with split streams."""
-    return CliRunner()
-
-
 class TestAccountsBalanceHelp:
     """Tests for `accounts balance --help` surface."""
 

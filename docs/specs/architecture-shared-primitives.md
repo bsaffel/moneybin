@@ -51,10 +51,10 @@ MoneyBin uses eight schemas under this spec — seven that exist today plus `rep
 
 | Schema | Materialization | Mutated by | Read by | Allowed prefixes | Purpose |
 |---|---|---|---|---|---|
-| `raw` | Tables | Python loaders (`src/moneybin/loaders/`); managed-write MCP tools | SQLMesh staging models; agent-safe SQL (inspection, Layer Rule 2) | source-named (`tabular_*`, `ofx_*`, `plaid_*`, `manual_transactions`); plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Untouched data from each source. Re-importable from the original file. |
+| `raw` | Tables | Python loaders (`src/moneybin/loaders/`); MCP write tools | SQLMesh staging models; agent-safe SQL (inspection, Layer Rule 2) | source-named (`tabular_*`, `ofx_*`, `plaid_*`, `manual_transactions`); plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Untouched data from each source. Re-importable from the original file. |
 | `prep` | Views | SQLMesh transforms | SQLMesh core models; agent-safe SQL (inspection, Layer Rule 2) | `stg_<source>__<entity>`, `int_<entity>__<transformation>`; plus `stg_<pkg>__<entity>` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Light cleaning, type casting, source-system unioning. Internal to the pipeline: shapes change without notice and nothing downstream may depend on them. Readable through the agent-safe SQL surface for inspection only (Layer Rule 2). |
 | `core` | Tables (canonical) and Views (derived-grain) | SQLMesh transforms | All consumers (services, MCP, CLI, reports) | `fct_<entity>` (event grain or alternate event grain), `dim_<entity>` (slowly-changing entity), `bridge_<entity>` (M:N relationship); plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Canonical, deduplicated, multi-source. **One canonical table per real-world entity at its primary grain.** Alternate-grain facts use `fct_*` with a disambiguating name (`fct_transactions` header grain, `fct_transaction_lines` line grain). |
-| `app` | Tables | Services (write); migrations (DDL); managed-write MCP tools | SQLMesh `dim_*` models (joins for resolved views); services (reads) | flat tables named for the entity: `account_settings`, `transaction_notes`, `transaction_tags`, `match_decisions`, `categorization_rules`, `versions`, `schema_migrations`, `audit_log`, etc.; plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | User-state and application-managed metadata. **Mutable. Not derivable from raw.** Recovery is the responsibility of the `db backup` CLI surface, not the pipeline. |
+| `app` | Tables | Services (write); migrations (DDL); MCP write tools | SQLMesh `dim_*` models (joins for resolved views); services (reads) | flat tables named for the entity: `account_settings`, `transaction_notes`, `transaction_tags`, `match_decisions`, `categorization_rules`, `versions`, `schema_migrations`, `audit_log`, etc.; plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | User-state and application-managed metadata. **Mutable. Not derivable from raw.** Recovery is the responsibility of the `db backup` CLI surface, not the pipeline. |
 | `reports` | Views (typically) | SQLMesh transforms | CLI `reports *` commands; MCP `reports(report_id=..., parameters=...)`; future HTTP `/reports/*` | `<entity>` matching the CLI report name (`networth`, `spending`, `budget`, future `portfolio`, `cashflow`); plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Curated presentation models, one per report surface. **Read-only by design.** Symmetric with the CLI/MCP `reports` namespace per `moneybin-cli.md` v2. |
 | `meta` | Tables / Views | SQLMesh transforms | Reconciliation tooling; provenance queries; freshness probes | `fct_<entity>_provenance` (today: `fct_transaction_provenance`); `fct_<entity>_lineage` reserved; `model_freshness` | Provenance and pipeline metadata. Cross-source row lineage (`fct_*_provenance`) and model-level freshness (`model_freshness`, wrapping SQLMesh state). |
 | `seeds` | Tables | SQLMesh seeds (from CSV) | SQLMesh transforms; services (read-only reference data) | `<entity>` (e.g., `categories`) | Reference data shipped in-repo. Rebuilt from CSV on `sqlmesh seed`. |
@@ -180,7 +180,7 @@ Concrete reference: `NetworthService` (`src/moneybin/services/networth_service.p
 
 ### Read-only vs. transactional services
 
-The same shape covers both. A read-only service (e.g., `NetworthService`) only reads from `core.*` / `reports.*`. A transactional service (e.g., `CategorizationService`, `AccountService`) reads from `core` / `reports` and writes to `app.*` (or, in the `import` family, to `raw.*`). Transactional services use `db.begin() / commit() / rollback()` for multi-statement units of work. Transactional services compose `*Repo` classes (`src/moneybin/repositories/`) for protected `app.*` writes; raw mutation SQL against a protected `app.*` table inside a service is a contract violation under [Invariant 10](#architecture-invariants). The privacy middleware's managed-write validation enforces that writes target only `app.*` and `raw.*` schemas (with a `core.*` exception only for SQLMesh-issued `CREATE OR REPLACE TABLE` from the import service).
+The same shape covers both. A read-only service (e.g., `NetworthService`) only reads from `core.*` / `reports.*`. A transactional service (e.g., `CategorizationService`, `AccountService`) reads from `core` / `reports` and writes to `app.*` (or, in the `import` family, to `raw.*`). Transactional services use `db.begin() / commit() / rollback()` for multi-statement units of work. Transactional services compose `*Repo` classes (`src/moneybin/repositories/`) for protected `app.*` writes; raw mutation SQL against a protected `app.*` table inside a service is a contract violation under [Invariant 10](#architecture-invariants).
 
 ## MCP/CLI/SQL Symmetry
 
@@ -211,7 +211,6 @@ Each surface uses its native operation shape while preserving the same result. T
 3. **Privacy middleware** (`src/moneybin/mcp/privacy.py`) provides:
    - **Sensitivity tiers** — derived from typed result fields or computed per call by explicitly dynamic tools. Classification and critical-field masking are active; global consent enforcement and automatic degraded responses remain deferred.
    - **Read-only validation** for the general SQL query tool: rejects writes, file-access functions, URL literals, and quoted-path scans.
-   - **Managed-write validation** for write tools: allows `INSERT`/`UPDATE`/`DELETE` only on `app.*` and `raw.*` schemas; rejects DDL outright (with a narrow exception for SQLMesh-issued `CREATE OR REPLACE TABLE core.*`).
 
 ### Protocol-standard MCP fields are first-class, not optional
 
@@ -461,7 +460,7 @@ currency as formatting-only metadata.
 
 Two narrow naming changes rode along with this spec landing — both shipped. Retained for historical context.
 
-1. **`core.agg_net_worth` → `reports.net_worth`.** Shipped via [`reports-recipe-library.md`](reports-recipe-library.md): the `reports` schema lives in `src/moneybin/schema.py`, the SQLMesh model is `src/moneybin/sqlmesh/models/reports/net_worth.sql`, the module-level `REPORTS_NET_WORTH` constant is the canonical reference, and `NetworthService` reads from it. Privacy middleware's `_WRITABLE_SCHEMAS` is unchanged — `reports.*` is read-only by design and never appears in managed-write validation.
+1. **`core.agg_net_worth` → `reports.net_worth`.** Shipped via [`reports-recipe-library.md`](reports-recipe-library.md): the `reports` schema lives in `src/moneybin/schema.py`, the SQLMesh model is `src/moneybin/sqlmesh/models/reports/net_worth.sql`, the module-level `REPORTS_NET_WORTH` constant is the canonical reference, and `NetworthService` reads from it. `reports.*` is read-only by design.
 
 2. **`core.vw_transaction_lines` → `core.fct_transaction_lines`** in [`transaction-curation.md`](transaction-curation.md). Shipped: the module-level `FCT_TRANSACTION_LINES` constant and `src/moneybin/sqlmesh/models/core/fct_transaction_lines.sql` carry the new name.
 
@@ -500,7 +499,7 @@ Two narrow naming changes rode along with this spec landing — both shipped. Re
 - `src/moneybin/staleness.py` — `resolve_threshold_days`, `is_stale`, `SECURITY_TYPE_STALENESS_DAYS`; the observation-age vocabulary shared by every valuation domain (see "Observation staleness" below).
 - `src/moneybin/protocol/envelope.py` — `ResponseEnvelope`, `SummaryMeta`, `build_envelope`, `build_error_envelope`.
 - `src/moneybin/mcp/decorator.py` — `mcp_tool` decorator.
-- `src/moneybin/mcp/privacy.py` — `Sensitivity` enum, `validate_read_only_query`, `validate_managed_write`, `truncate_result`.
+- `src/moneybin/mcp/privacy.py` — `Sensitivity` enum and the `validate_read_only_query` re-export.
 - `src/moneybin/observability.py` — `setup_observability`, `tracked`, `track_duration`, `flush_metrics`.
 - `src/moneybin/log_sanitizer.py` — `SanitizedLogFormatter`.
 - `src/moneybin/privacy/taxonomy.py` — `DataClass` / `Tier` registry; column-level classification source of truth (PR #169, see `privacy-data-classification.md`).

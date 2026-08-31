@@ -17,12 +17,6 @@ from moneybin.cli.commands.db import (
 from moneybin.cli.commands.db import app as db_app
 
 
-@pytest.fixture()
-def runner() -> CliRunner:
-    """Provide a Typer CliRunner for invoking the db app."""
-    return CliRunner()
-
-
 class TestDbKeySubgroup:
     """Verify the db key sub-group structure and stub behavior."""
 

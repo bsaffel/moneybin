@@ -21,12 +21,6 @@ stats_app = typer.Typer()
 stats_app.command()(stats_command)
 
 
-@pytest.fixture()
-def runner() -> CliRunner:
-    """Return a Typer CLI test runner."""
-    return CliRunner()
-
-
 class TestStatsLeafShape:
     """Stats is a leaf command — no `show` subcommand, bare invocation runs it."""
 

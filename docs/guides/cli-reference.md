@@ -554,7 +554,7 @@ MCP server lifecycle and client install.
 | `mcp install` | Install MoneyBin into an MCP client's config. Supported clients: claude-desktop, claude-code, codex, chatgpt-desktop, vscode, cursor, windsurf, gemini-cli. (`chatgpt-desktop` shares Codex's `~/.codex/config.toml`; ChatGPT on the web cannot reach a local stdio server.) | `-c, --client`, `-p, --profile`, `--print`, `-y, --yes` |
 | `mcp list-tools` | List every registered MCP tool with its sensitivity tier. | `-o, --output` |
 | `mcp list-prompts` | List every registered MCP prompt. | `-o, --output` |
-| `mcp config` | Show active MCP server configuration (profile, database path, max-rows, max-chars). | — |
+| `mcp config` | Show active MCP server configuration (profile, database path, max-rows) and identify deprecated inert compatibility settings. | — |
 | `mcp config path` | Print an MCP client's config-file install path. Used by `make claude-mcp` and similar. | `-c, --client`, `-p, --profile` |
 
 **Related guides:** [`mcp-server.md`](mcp-server.md).

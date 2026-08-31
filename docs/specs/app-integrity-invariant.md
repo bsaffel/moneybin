@@ -2,7 +2,23 @@
 
 ## Status
 
-ready
+implemented
+
+> **Final enforcement reconciliation (2026-08-30).** The static Invariant 10
+> gate now lives in `tests/integration/test_app_integrity_invariant_lint.py`.
+> It derives protected `app.*` tables from the independent `TableRef` registry,
+> resolves inline and function-local `TableRef.full_name` SQL and ingestion
+> targets, checks `execute`, `executemany`, `sql`, `query`, `from_query`,
+> `append`, relation `insert_into`, and `ingest_dataframe` entry points,
+> including either branch of a conditional ingestion target, ignores
+> mutation-shaped text
+> inside SQL literals and comments, recognizes `MERGE INTO`, `COPY ... FROM`,
+> `TRUNCATE`, `CREATE OR REPLACE TABLE`, `DROP TABLE`, and `ALTER TABLE`
+> alongside the original mutation verbs, scans runtime Python under both
+> `src/moneybin/` and `scripts/`, checks statically
+> resolvable loop, comprehension-scope, conditional-expression, and other
+> control-flow bindings conservatively, and preserves the caller and table
+> exemptions in Requirements 7–8.
 
 > **Drift note (2026-05-17).** Bypass-map line numbers below reference the single-file `services/categorization_service.py` at HEAD `f13f3c7`. PR #155 (post-spec) split that module into a facade + collaborators under `src/moneybin/services/categorization/` (`__init__.py`, `_shared.py`, `applier.py`, `assist.py`, `matcher.py`, `orchestrator.py`, `queries.py`). The protected-tables list (Req 6), repository contract (Req 2–5), lint rule (Req 8), doctor invariants (Req 9), and PR ordering (Req 10) are unaffected — only the source file the implementation PRs will edit changes. Each PR-by-PR mutation-site call-out below should be re-located against the post-split files at implementation time; the mutations themselves (and their target tables) are unchanged. PR #166 (the category-delete cascade) and PR #174 (`category_id` FK migration) also landed post-spec; both touch the same `categorization_service` paths but do not change the bypass-map shape.
 
@@ -57,7 +73,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 ### Why this design
 
-**Repository over decorator.** DuckDB has no triggers; MoneyBin has no ORM, so audit must live in the application layer. A `@audited` decorator on service methods still requires per-method discipline, breaks on multi-row or multi-table mutations, and is invisible at SQL-grep time. The repository pattern makes audit **structural, not disciplinary**: each protected `app.*` table has a tiny `*Repo` class whose mutation methods (`upsert`, `delete`, …) emit audit unconditionally in the same DuckDB transaction. Services compose repositories instead of executing raw SQL. A lint rule rejects `INSERT/UPDATE/DELETE app.<protected>` outside `*_repo.py` and `audit_service.py`.
+**Repository over decorator.** DuckDB has no triggers; MoneyBin has no ORM, so audit must live in the application layer. A `@audited` decorator on service methods still requires per-method discipline, breaks on multi-row or multi-table mutations, and is invisible at SQL-grep time. The repository pattern makes audit **structural, not disciplinary**: each protected `app.*` table has a tiny `*Repo` class whose mutation methods (`upsert`, `delete`, …) emit audit unconditionally in the same DuckDB transaction. Services compose repositories instead of executing raw SQL. A lint rule rejects raw mutation SQL against `app.<protected>` outside `*_repo.py` and `audit_service.py`.
 
 **Repository over event sourcing.** Event sourcing has the right pattern but the wrong cost profile for a single-user local app — write amplification, projection maintenance, operational complexity. The repository pattern preserves today's read performance (only +1 INSERT per mutation) while achieving the same forensic property: every state change is recorded with full pre-image.
 
@@ -126,11 +142,12 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
    - **Tables:** `app.audit_log`, `app.metrics`, `app.seed_source_priority`, `app.schema_migrations`, `app.versions`. Named in Invariant 10 and allowlisted in the lint rule.
    - **Callers:** files under `src/moneybin/sql/migrations/V*.py`. Migration scripts are historical, immutable (their content hashes are recorded and re-runs would break if the SQL changed), and several existing migrations write to protected tables — e.g., `V006:34` (`app.user_merchants`), `V007:107` (`app.transaction_notes`), `V012:55` (`app.transaction_categories`). Forcing migrations through repositories would break migration discipline; the boundary the spec actually cares about is "runtime writer modules," and migrations sit on the other side of it. This exemption is parallel in spirit to the migration-tables exemption above — both treat migration-system state and code as system-managed rather than runtime user state.
 
-8. **Lint rule.** A static check rejects `execute(...)` calls whose effective first argument resolves to SQL matching `INSERT INTO app\.X|UPDATE app\.X|DELETE FROM app\.X` for any protected `X`, unless the enclosing module is `*_repo.py`, `audit_service.py`, or a migration script under `src/moneybin/sql/migrations/V*.py` per Req 7. The check MUST handle **both** SQL shapes used in the codebase today:
+8. **Lint rule.** A static check rejects `execute(...)`, `executemany(...)`, and `sql(...)` calls whose effective `query` argument, positional or keyword, resolves to protected-table mutation SQL, including `INSERT`, `UPDATE`, `DELETE`, `MERGE INTO`, `COPY ... FROM`, `TRUNCATE`, `CREATE OR REPLACE TABLE`, `DROP TABLE`, and `ALTER TABLE`. It scans runtime Python under both `src/moneybin/` and `scripts/`. It also rejects `ingest_dataframe(...)` when its effective `table` argument, positional or keyword, resolves to a protected `app.X` target. Connection `append(...)` and relation `insert_into(...)` calls receive the same check through their positional or keyword `table_name` argument. The caller exemptions are exactly `repositories/base.py`, `*_repo.py`, `audit_service.py`, and migration scripts under `src/moneybin/sql/migrations/V*.py` per Req 7. `BaseRepo` owns the shared audited-write and undo mechanics used by every concrete repository, so `repositories/base.py` is part of the trusted repository boundary rather than an incidental parser blind spot. The check MUST handle **all** statically resolvable shapes used in the codebase today:
    - **Inline literal** at the call site — `self._db.execute(f"INSERT INTO {TABLEREF.full_name} …", […])`.
    - **Local-variable assignment** — `sql = f"UPDATE {TABLEREF.full_name} …"; self._db.execute(sql, […])`. The check MUST resolve `sql` back to its assignment within the enclosing function and match against the resolved string. `services/budget_service.py:141-147` (`update_sql`) and `:152-160` (`insert_sql`) are concrete examples in-tree; any literal-only matcher would silently miss them.
+   - **Ingestion target** — `self._db.ingest_dataframe(TABLEREF.full_name, frame, ...)`, including a positional or keyword `table` argument and a local variable that resolves to a literal or `TableRef.full_name`.
 
-   TableRef constants are statically resolvable; the f-string interpolation MUST be constant-folded against the imported `TableRef.full_name` value so the matcher sees the resolved schema-qualified name. Implementation approach (ruff plugin vs pytest) is decided during a one-day spike at the start of Phase 1 (see [Resolved Design Decisions](#resolved-design-decisions) §4) — the spike's exit criteria MUST include covering both shapes above, not just inline literals.
+   TableRef constants are statically resolvable; the f-string interpolation MUST be constant-folded against the imported `TableRef.full_name` value so the matcher sees the resolved schema-qualified name. SQL assembled with string concatenation, `.format()`, or `%` formatting is outside this heuristic and prohibited by the repository's SQL conventions. Implementation approach (ruff plugin vs pytest) is decided during a one-day spike at the start of Phase 1 (see [Resolved Design Decisions](#resolved-design-decisions) §4) — the spike's exit criteria MUST include covering both shapes above, not just inline literals.
 
 9. **Doctor invariants.** `moneybin doctor` adds per-table checks for each protected table:
 
@@ -178,7 +195,7 @@ flowchart LR
     Audit[AuditService]
     DB[(app.user_categories)]
     Log[(app.audit_log)]
-    Lint{{Lint rule:<br/>blocks raw INSERT/UPDATE/DELETE<br/>app.* outside *_repo.py}}
+    Lint{{Lint rule:<br/>blocks raw mutation SQL<br/>against app.* outside *_repo.py}}
     Doctor{{Doctor:<br/>audit coverage,<br/>FK integrity,<br/>uniqueness}}
 
     CLI --> Svc
@@ -278,10 +295,10 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 ### PR 13 — Lint rule + final doctor invariants + spec → `implemented`
 
 - Lint rule per Req 8. Implementation chosen during PR 2's spike (ruff plugin if feasible, pytest as fallback). Allowlist:
-  - Path: `**/repositories/*_repo.py`, `services/audit_service.py`, `src/moneybin/sql/migrations/V*.py` (historical migrations — per Req 7).
+  - Path: `src/moneybin/repositories/base.py`, `src/moneybin/repositories/*_repo.py`, `src/moneybin/services/audit_service.py`, `src/moneybin/sql/migrations/V*.py` (historical migrations — per Req 7).
   - Tables: `app.audit_log`, `app.metrics`, `app.seed_source_priority`, `app.schema_migrations`, `app.versions`.
 - Backfill any doctor invariants not yet added (audit coverage check is reusable; per-table FK/orphan checks land per-PR).
-- Spec status → `implemented`; `INDEX.md` updated; CHANGELOG entry under `Unreleased` per `.claude/rules/shipping.md`.
+- Spec status → `implemented`; `INDEX.md` updated. No CHANGELOG entry: the final change is a lint-rule/test-only gate, which `.claude/rules/shipping.md` excludes.
 
 ## Test Coverage
 
@@ -291,13 +308,15 @@ Per `.claude/rules/testing.md` test layers.
 |---|---|---|
 | Unit | `tests/moneybin/test_repositories/test_<table>_repo.py` (per repo) | `upsert`/`delete` happy path; `before_value` captures the full prior row (not a diff); `parent_audit_id` is recorded when supplied; audit emission and DB write are atomic (rollback test: simulate a failure between write and audit, assert the row is not present) |
 | Unit | `tests/moneybin/test_repositories/test_base.py` | Repository contract: methods return `AuditEvent`; `_emit_audit()` is the single emission point; metric `app_mutation_audit_emitted_total` increments per call |
-| Integration | `tests/integration/test_app_integrity_lint.py` | Lint rule rejects `execute("INSERT INTO app.user_categories …")` in a service-shaped fixture file; allows the same SQL in a `*_repo.py`-shaped fixture file; honors the allowlist for exempt tables |
-| Integration | `tests/integration/test_app_integrity_cascade.py` | A single user action that triggers a cascade (deletes a `user_category` and rewrites referencing `transaction_categories`) produces one parent audit row + N children sharing the parent's `audit_id` as `parent_audit_id`; `AuditService.chain_for(parent_audit_id)` returns the full set |
-| Integration | `tests/integration/test_doctor_app_integrity.py` | Doctor audit-coverage check flags a manually inserted bypass row; passes for normally-mutated rows; respects sampling cap and the `--full` opt-in |
-| Scenario | `tests/scenarios/test_scenario_app_integrity.py` | End-to-end: import + categorize + rule-promote + budget-set; assert (a) every `app.*` row touched has a `target_table`-matching `app.audit_log` row, (b) cascades thread `parent_audit_id` correctly, (c) `before_value` for every UPDATE/DELETE matches the full prior row |
+| Integration | `tests/integration/test_app_integrity_invariant_lint.py` | Lint rule scans runtime Python under `src/moneybin/` and `scripts/`; rejects protected writes through positional and keyword SQL arguments to `execute`, `executemany`, `sql`, `query`, and `from_query`, plus positional and keyword table targets to `append`, relation `insert_into`, and `ingest_dataframe`, in a service-shaped fixture file; resolves local write-call aliases, literal tuple/list and `for`-loop unpacking, comprehension-local bindings, conditional-expression SQL and table-target branches, and lexically scoped direct or module-form `TableRef` imports; recognizes `MERGE INTO`, `COPY ... FROM`, `TRUNCATE`, `CREATE OR REPLACE TABLE`, `DROP TABLE`, `ALTER TABLE`, and quoted SQL identifiers without treating mutation-shaped text inside SQL literals or comments as executable or mistaking `COPY ... TO` or plain `CREATE TABLE` for a protected-table mutation; restricts repository, audit-service, and migration exemptions to their exact canonical paths; proves and honors the allowlist for exempt tables |
+| Service | `tests/moneybin/test_services/test_security_links_service.py` | A security-merge cascade produces one parent audit row plus child rows for lot selection, link repointing, and security deletion that share the parent's `audit_id` as `parent_audit_id` |
+| Service | `tests/moneybin/test_services/test_doctor_app_integrity.py` | Doctor audit-coverage checks enumerate the live repo registry and require every repo table to have coverage or an exact named exemption |
 | Migration regression | covered by existing per-service tests | Per-service tests that already exist (`test_services/test_categorization_service.py`, etc.) must pass unchanged after migration. Repository migration is mechanical — public service surface is preserved, audit emission is added (not changed). New asserts added where existing tests would otherwise silently accept a missing audit row. |
 
-`tests/moneybin/test_db_helpers_parity.py` (introduced by `smart-import-transform.md`) gains a new parity assertion: the protected-tables list in the lint rule MUST equal the union of `*Repo` table coverage. Drift between the two is a doctor-of-the-doctor bug.
+The lint derives protected tables from the independent `TableRef` registry, not
+from repository discovery. Its regression tests prove that a newly declared
+`app.*` table is protected before a repository exists and that only the exact
+`src/moneybin/repositories/` path receives the repository write exemption.
 
 ## Out of Scope
 

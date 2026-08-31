@@ -14,6 +14,9 @@ import re
 import duckdb
 
 from moneybin.database import Database, get_database
+from moneybin.repositories.transaction_categories_repo import (
+    TransactionCategoriesRepo,
+)
 from moneybin.services._text import normalize_description
 from moneybin.services.categorization import CategorizationService
 from moneybin.tables import (
@@ -46,6 +49,7 @@ def _matches_pattern(text: str, pattern: str, match_type: str) -> bool:
 def backfill(db: Database) -> dict[str, int]:
     """Backfill missing merchant_id and rule_id."""
     service = CategorizationService(db)
+    categories = TransactionCategoriesRepo(db)
     merchant_ids_set = 0
     rule_ids_set = 0
 
@@ -53,7 +57,7 @@ def backfill(db: Database) -> dict[str, int]:
     try:
         rows = db.execute(
             f"""
-            SELECT c.transaction_id, t.description
+            SELECT c.transaction_id, t.description, c.rule_id
             FROM {TRANSACTION_CATEGORIES.full_name} c
             JOIN {FCT_TRANSACTIONS.full_name} t
                 ON c.transaction_id = t.transaction_id
@@ -65,16 +69,14 @@ def backfill(db: Database) -> dict[str, int]:
     except duckdb.CatalogException:
         rows = []
 
-    for txn_id, description in rows:
+    for txn_id, description, rule_id in rows:
         merchant = service.match_merchant(description)
         if merchant:
-            db.execute(
-                f"""
-                UPDATE {TRANSACTION_CATEGORIES.full_name}
-                SET merchant_id = ?
-                WHERE transaction_id = ?
-                """,
-                [merchant["merchant_id"], txn_id],
+            categories.update_links(
+                txn_id,
+                merchant_id=merchant["merchant_id"],
+                rule_id=rule_id,
+                actor="script",
             )
             merchant_ids_set += 1
 
@@ -98,7 +100,7 @@ def backfill(db: Database) -> dict[str, int]:
             categorized_no_rule = db.execute(
                 f"""
                 SELECT c.transaction_id, t.description, t.amount,
-                       t.account_id, c.category, c.subcategory
+                       t.account_id, c.category, c.subcategory, c.merchant_id
                 FROM {TRANSACTION_CATEGORIES.full_name} c
                 JOIN {FCT_TRANSACTIONS.full_name} t
                     ON c.transaction_id = t.transaction_id
@@ -110,7 +112,15 @@ def backfill(db: Database) -> dict[str, int]:
         except duckdb.CatalogException:
             categorized_no_rule = []
 
-        for txn_id, description, amount, account_id, cat, subcat in categorized_no_rule:
+        for (
+            txn_id,
+            description,
+            amount,
+            account_id,
+            cat,
+            subcat,
+            merchant_id,
+        ) in categorized_no_rule:
             normalized = normalize_description(description)
             for rule in rules:
                 (
@@ -147,13 +157,11 @@ def backfill(db: Database) -> dict[str, int]:
                 if rule_account_id is not None and account_id != rule_account_id:
                     continue
 
-                db.execute(
-                    f"""
-                    UPDATE {TRANSACTION_CATEGORIES.full_name}
-                    SET rule_id = ?
-                    WHERE transaction_id = ?
-                    """,
-                    [rule_id, txn_id],
+                categories.update_links(
+                    txn_id,
+                    merchant_id=merchant_id,
+                    rule_id=rule_id,
+                    actor="script",
                 )
                 rule_ids_set += 1
                 break

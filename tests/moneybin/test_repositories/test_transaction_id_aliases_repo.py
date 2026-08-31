@@ -8,39 +8,20 @@ guard rejects re-aliasing an ``old_transaction_id`` that already forwards.
 from __future__ import annotations
 
 import json
+from functools import partial
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 from moneybin.repositories.transaction_id_aliases_repo import (
     TransactionIdAliasesRepo,
 )
+from tests.moneybin.test_repositories.conftest import audit_rows_for, metric_for
 
-
-def _audit_rows_for(db: Database, target_id: str) -> list[tuple[Any, ...]]:
-    return db.conn.execute(
-        """
-        SELECT action, target_schema, target_table, target_id,
-               before_value, after_value, actor
-          FROM app.audit_log
-         WHERE target_id = ?
-         ORDER BY occurred_at ASC, audit_id ASC
-        """,
-        [target_id],
-    ).fetchall()
-
-
-def _metric(action: str) -> float:
-    return (
-        REGISTRY.get_sample_value(
-            "moneybin_app_mutation_audit_emitted_total",
-            {"repository": "transaction_id_aliases", "action": action},
-        )
-        or 0.0
-    )
+_audit_rows_for = partial(audit_rows_for, include_parent_audit_id=False)
+_metric = metric_for("transaction_id_aliases")
 
 
 def _insert(repo: TransactionIdAliasesRepo, **overrides: Any) -> Any:

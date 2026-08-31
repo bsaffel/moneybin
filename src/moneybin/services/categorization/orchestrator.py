@@ -651,7 +651,7 @@ class CategorizationOrchestrator:
         if not uncategorized:
             return set()
 
-        applied: set[str] = set()
+        categorizations: list[dict[str, object]] = []
         for row in uncategorized:
             match = CategorizationMatcher.match_first_rule(
                 rules,
@@ -666,16 +666,18 @@ class CategorizationOrchestrator:
             categorized_by: CategorizedBy = (
                 "auto_rule" if created_by == "auto_rule" else "rule"
             )
-            outcome = self._applier.write_categorization(
-                transaction_id=row.transaction_id,
-                category=category,
-                subcategory=subcategory,
-                categorized_by=categorized_by,
-                rule_id=rule_id,
-                confidence=1.0,
-            )
-            if outcome.written:
-                applied.add(row.transaction_id)
+            categorizations.append({
+                "transaction_id": row.transaction_id,
+                "category": category,
+                "subcategory": subcategory,
+                "categorized_by": categorized_by,
+                "merchant_id": None,
+                "rule_id": rule_id,
+                "confidence": 1.0,
+                "source_type": "internal",
+            })
+
+        applied = self._applier.write_categorizations(categorizations)
 
         if applied:
             _engine_counts_logger.info(
@@ -754,7 +756,7 @@ class CategorizationOrchestrator:
             m.merchant_id: (m.category, m.subcategory) for m in merchants
         }
 
-        categorized_count = 0
+        categorizations: list[dict[str, object]] = []
         for row in uncategorized:
             txn_id = row.transaction_id
             # Spec Decision 3 rung 2: match the provider merchant_name too, not just
@@ -834,16 +836,18 @@ class CategorizationOrchestrator:
             # deferred to rules / LLM / Tier-2b).
             if category is None:
                 continue
-            outcome = self._applier.write_categorization(
-                transaction_id=txn_id,
-                category=category,
-                subcategory=subcategory,
-                categorized_by=categorized_by,
-                merchant_id=merchant_id,
-                confidence=1.0,
-            )
-            if outcome.written:
-                categorized_count += 1
+            categorizations.append({
+                "transaction_id": txn_id,
+                "category": category,
+                "subcategory": subcategory,
+                "categorized_by": categorized_by,
+                "merchant_id": merchant_id,
+                "rule_id": None,
+                "confidence": 1.0,
+                "source_type": "internal",
+            })
+
+        categorized_count = len(self._applier.write_categorizations(categorizations))
 
         if categorized_count:
             _engine_counts_logger.info(
@@ -985,7 +989,7 @@ class CategorizationOrchestrator:
         Returns the number of rows actually written (post-gate, post-priority
         guard).
         """
-        count = 0
+        categorizations: list[dict[str, object]] = []
         for txn_id, category, subcategory, level, merchant_id in rows:
             confidence = plaid_confidence_to_numeric(level)
             if confidence is None:
@@ -1001,20 +1005,22 @@ class CategorizationOrchestrator:
                     source_type="plaid", reason="below_gate", trigger=trigger
                 ).inc()
                 continue
-            outcome = self._applier.write_categorization(
-                transaction_id=txn_id,
-                category=category,
-                subcategory=subcategory,
-                categorized_by="provider_native",
-                merchant_id=merchant_id,
-                source_type="plaid",
-                confidence=confidence,
-            )
-            if outcome.written:
-                count += 1
-                CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
-                    source_type="plaid", trigger=trigger
-                ).inc()
+            categorizations.append({
+                "transaction_id": txn_id,
+                "category": category,
+                "subcategory": subcategory,
+                "categorized_by": "provider_native",
+                "merchant_id": merchant_id,
+                "rule_id": None,
+                "confidence": confidence,
+                "source_type": "plaid",
+            })
+
+        count = len(self._applier.write_categorizations(categorizations))
+        for _ in range(count):
+            CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+                source_type="plaid", trigger=trigger
+            ).inc()
 
         if count:
             _engine_counts_logger.info(

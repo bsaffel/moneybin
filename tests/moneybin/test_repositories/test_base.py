@@ -16,11 +16,14 @@ from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
-from prometheus_client import REGISTRY
 
-from moneybin.repositories.base import BaseRepo
+from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
+from moneybin.repositories.base import BaseRepo, LinkDecisionsRepoBase
+from moneybin.repositories.merchant_link_decisions_repo import MerchantLinkDecisionsRepo
+from moneybin.repositories.security_link_decisions_repo import SecurityLinkDecisionsRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import TableRef
+from tests.moneybin.test_repositories.conftest import metric_for
 
 
 class _FakeRepo(BaseRepo):
@@ -31,14 +34,23 @@ class _FakeRepo(BaseRepo):
     pk_columns = ("id",)
 
 
-def _metric_value(action: str) -> float:
-    return (
-        REGISTRY.get_sample_value(
-            "moneybin_app_mutation_audit_emitted_total",
-            {"repository": "fake", "action": action},
-        )
-        or 0.0
-    )
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "repo_class",
+    [
+        AccountLinkDecisionsRepo,
+        MerchantLinkDecisionsRepo,
+        SecurityLinkDecisionsRepo,
+    ],
+)
+def test_link_decision_repos_share_the_parametrized_base(
+    repo_class: type[BaseRepo],
+) -> None:
+    """Decision repositories share their audited queue mechanics by metadata."""
+    assert issubclass(repo_class, LinkDecisionsRepoBase)
+
+
+_metric_value = metric_for("fake")
 
 
 @pytest.mark.unit

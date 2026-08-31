@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any
+from functools import partial
 from unittest.mock import MagicMock
 
 import duckdb
 import pytest
-from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 from moneybin.repositories.export_destinations_repo import ExportDestinationsRepo
@@ -23,6 +22,9 @@ from moneybin.repositories.gsheet_connections_repo import (
 )
 from moneybin.services.mutation_context import operation
 from moneybin.services.undo_service import UndoService
+from tests.moneybin.test_repositories.conftest import audit_rows_for, metric
+
+_audit_rows_for = partial(audit_rows_for, include_parent_audit_id=False)
 
 
 def _insert_default(
@@ -55,19 +57,6 @@ def _insert_default(
     )
 
 
-def _audit_rows_for(db: Database, connection_id: str) -> list[tuple[Any, ...]]:
-    return db.conn.execute(
-        """
-        SELECT action, target_schema, target_table, target_id,
-               before_value, after_value, actor
-          FROM app.audit_log
-         WHERE target_id = ?
-         ORDER BY occurred_at ASC, audit_id ASC
-        """,
-        [connection_id],
-    ).fetchall()
-
-
 # ---------------------------------------------------------------------------
 # 1. insert + paired audit
 # ---------------------------------------------------------------------------
@@ -75,13 +64,7 @@ def _audit_rows_for(db: Database, connection_id: str) -> list[tuple[Any, ...]]:
 
 def test_insert_writes_connection_and_audit_row(db: Database) -> None:
     repo = GSheetConnectionsRepo(db)
-    before_metric = (
-        REGISTRY.get_sample_value(
-            "moneybin_app_mutation_audit_emitted_total",
-            {"repository": "gsheet_connections", "action": "gsheet_connection.insert"},
-        )
-        or 0.0
-    )
+    before_metric = metric("gsheet_connections", "gsheet_connection.insert")
     cid = repo.insert(
         spreadsheet_id="ss1",
         sheet_gid=0,
@@ -123,11 +106,9 @@ def test_insert_writes_connection_and_audit_row(db: Database) -> None:
     assert actor == "cli"
 
     # BaseRepo._emit_audit increments the repo-boundary mutation metric.
-    after_metric = REGISTRY.get_sample_value(
-        "moneybin_app_mutation_audit_emitted_total",
-        {"repository": "gsheet_connections", "action": "gsheet_connection.insert"},
+    assert (
+        metric("gsheet_connections", "gsheet_connection.insert") - before_metric == 1.0
     )
-    assert (after_metric or 0.0) - before_metric == 1.0
 
 
 def test_insert_rejects_workbook_already_configured_for_exports(db: Database) -> None:

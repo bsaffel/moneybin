@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
+from functools import partial
 from pathlib import Path
-from typing import Any
 
 import duckdb
 import pytest
@@ -24,25 +24,15 @@ from moneybin.services.mutation_context import operation
 from moneybin.services.undo_service import UndoService
 from moneybin.sql.migrations.V041__create_app_export_destinations import migrate
 from tests.moneybin.migration_helpers import run_migration
+from tests.moneybin.test_repositories.conftest import audit_rows_for
+
+_audit_rows_for = partial(audit_rows_for, include_parent_audit_id=False)
 
 
 @pytest.fixture()
 def repo(db: Database) -> ExportDestinationsRepo:
     run_migration(db, migrate)
     return ExportDestinationsRepo(db)
-
-
-def _audit_rows_for(db: Database, destination_id: str) -> list[tuple[Any, ...]]:
-    return db.execute(
-        """
-        SELECT action, target_schema, target_table, target_id,
-               before_value, after_value, actor
-          FROM app.audit_log
-         WHERE target_id = ?
-         ORDER BY occurred_at ASC, audit_id ASC
-        """,
-        [destination_id],
-    ).fetchall()
 
 
 def test_set_local_lists_and_resolves_exact_references(

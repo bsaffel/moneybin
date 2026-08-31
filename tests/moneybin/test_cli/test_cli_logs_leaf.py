@@ -15,12 +15,6 @@ from typer.testing import CliRunner
 from moneybin.cli.commands import logs as logs_module
 
 
-@pytest.fixture()
-def runner() -> CliRunner:
-    """Return a fresh Typer CliRunner."""
-    return CliRunner()
-
-
 def _seed_logs(log_dir: Path) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / "cli_2026-04-30.log").write_text(

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
-from typing import Any
 
 import pytest
 
@@ -19,19 +18,7 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.services.audit_service import AuditEvent
-
-
-def _audit_rows_for(db: Database, target_id: str) -> list[tuple[Any, ...]]:
-    return db.conn.execute(
-        """
-        SELECT action, target_schema, target_table, target_id,
-               before_value, after_value, actor, parent_audit_id
-          FROM app.audit_log
-         WHERE target_id = ?
-         ORDER BY occurred_at ASC, audit_id ASC
-        """,
-        [target_id],
-    ).fetchall()
+from tests.moneybin.test_repositories.conftest import audit_rows_for as _audit_rows_for
 
 
 def test_set_for_disposal_replaces_prior_selections(db: Database) -> None:

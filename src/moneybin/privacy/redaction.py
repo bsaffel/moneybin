@@ -385,21 +385,6 @@ def has_active_transform(payload_type: Any) -> bool:
     )
 
 
-def _scrub_embedded_pii(text: str) -> str:  # pyright: ignore[reportUnusedFunction]
-    """No-op identity for v1.
-
-    Reserved for a future Presidio integration that detects and masks
-    SSNs, phone numbers, etc. that may appear inside ``DESCRIPTION``
-    or ``USER_NOTE`` strings even when their containing field's class
-    doesn't require redaction. Tracked as a deferred follow-up.
-
-    Prefixed with underscore to signal "internal, subject to change." The
-    test suite imports it directly to document the PR-2 no-op contract and
-    to catch the moment a future PR changes the behaviour.
-    """
-    return text
-
-
 def redact_typed(
     obj: Any, consent: ConsentSet | None, declared_type: Any = None
 ) -> Any:

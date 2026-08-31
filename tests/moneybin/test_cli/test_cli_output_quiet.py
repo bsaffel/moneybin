@@ -7,13 +7,6 @@ from typer.testing import CliRunner
 
 from moneybin.cli.main import app as root_app
 
-
-@pytest.fixture()
-def runner() -> CliRunner:
-    """Return a Typer CliRunner for invoking the root app."""
-    return CliRunner()
-
-
 _READ_ONLY_HELP_PATHS: list[list[str]] = [
     ["db", "info", "--help"],
     ["db", "query", "--help"],

@@ -20,12 +20,6 @@ from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.account_service import CLEAR
 
 
-@pytest.fixture
-def runner() -> CliRunner:
-    """Return a Typer/Click CliRunner with split streams."""
-    return CliRunner()
-
-
 def _make_account(
     account_id: str = "acct_a",
     display_name: str = "Chase Checking",

@@ -10,17 +10,11 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.services.import_service import ImportService
+from tests.integration.conftest import make_secret_store as _make_secret_store
 
 pytestmark = pytest.mark.integration
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "ofx"
-_ENCRYPTION_KEY = "integration-test-key-0123456789abcdef"
-
-
-def _make_secret_store() -> MagicMock:
-    store = MagicMock()
-    store.get_key.return_value = _ENCRYPTION_KEY
-    return store
 
 
 def _build_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Database:

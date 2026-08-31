@@ -21,6 +21,7 @@ from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from tests.moneybin.test_repositories.conftest import audit_rows_for as _audit_rows_for
 
 
 def _bind(
@@ -315,19 +316,6 @@ def _propose(repo: SecurityLinkDecisionsRepo, **overrides: Any):
     return repo.insert(**kwargs)
 
 
-def _audit_rows_for(db: Database, target_id: str) -> list[tuple[Any, ...]]:
-    return db.conn.execute(
-        """
-        SELECT action, target_schema, target_table, target_id,
-               before_value, after_value, actor, parent_audit_id
-          FROM app.audit_log
-         WHERE target_id = ?
-         ORDER BY occurred_at ASC, audit_id ASC
-        """,
-        [target_id],
-    ).fetchall()
-
-
 def test_decision_lifecycle_and_pending_count(db: Database) -> None:
     repo = SecurityLinkDecisionsRepo(db)
     assert repo.count_pending() == 0
@@ -368,6 +356,33 @@ def test_decision_lifecycle_and_pending_count(db: Database) -> None:
         repo.update_status(
             decision_id, status="accepted", decided_by="user", actor="user"
         )
+
+
+def test_update_status_validates_pending_decision_inside_transaction(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal transition cannot interleave between the guard and write."""
+    repo = SecurityLinkDecisionsRepo(db)
+    decision_id = _propose(repo, decision_id="dec_atomic_guard").target_id
+    assert decision_id is not None
+
+    transaction_started = False
+    original_begin = db.begin
+    original_fetch = repo._fetch_row  # pyright: ignore[reportPrivateUsage]
+
+    def begin() -> None:
+        nonlocal transaction_started
+        transaction_started = True
+        original_begin()
+
+    def fetch_row(value: str) -> dict[str, Any] | None:
+        assert transaction_started
+        return original_fetch(value)
+
+    monkeypatch.setattr(db, "begin", begin)
+    monkeypatch.setattr(repo, "_fetch_row", fetch_row)
+
+    repo.update_status(decision_id, status="accepted", decided_by="user", actor="cli")
 
 
 def test_insert_writes_row_and_audit_row(db: Database) -> None:

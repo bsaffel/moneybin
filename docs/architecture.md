@@ -32,23 +32,23 @@ flowchart LR
 
   sources --> raw --> prep --> core --> reports --> consumers
   app -.joined into.-> core
-  consumers -- managed writes --> app
+  consumers -- service-backed writes --> app
   core --> meta
   consumers -. read-only SQL .-> core
   consumers -. "read-only SQL<br/>masked by value shape" .-> raw
   consumers -. "read-only SQL<br/>masked by value shape" .-> prep
 ```
 
-Consumers read from `core` and `reports` for analysis; the agent-safe SQL paths (`sql_query` and `moneybin sql query`) also read `raw` and `prep` for inspection, masked by value shape rather than by column declaration. Managed writes from MCP and CLI target `app.*` (and `raw.*` for the import family). DDL, writes to `core.*`, and writes outside the allowlist are rejected by the privacy middleware. This is the medallion / dbt-style layering pattern, with the `app.*` tier added for user-owned mutable state that isn't derivable from raw inputs.
+Consumers read from `core` and `reports` for analysis; the agent-safe SQL paths (`sql_query` and `moneybin sql query`) also read `raw` and `prep` for inspection, masked by value shape rather than by column declaration. MCP and CLI mutation operations target `app.*` (and `raw.*` for the import family) through their service-backed write paths; the general MCP SQL tool is read-only. This is the medallion / dbt-style layering pattern, with the `app.*` tier added for user-owned mutable state that isn't derivable from raw inputs.
 
 ## Schema layers
 
 | Schema | Materialized | Owner (writes) | Consumers (reads) | Purpose |
 |---|---|---|---|---|
-| `raw` | Tables | Python loaders, managed-write MCP | SQLMesh staging; agent-safe SQL (`sql_query`, `moneybin sql query`) for inspection | Untouched source data; re-importable from the original file |
+| `raw` | Tables | Python loaders, MCP write tools | SQLMesh staging; agent-safe SQL (`sql_query`, `moneybin sql query`) for inspection | Untouched source data; re-importable from the original file |
 | `prep` | Views | SQLMesh | SQLMesh core; agent-safe SQL (`sql_query`, `moneybin sql query`) for inspection | Light cleaning, type casting, source-system unioning |
 | `core` | Tables + views | SQLMesh | All consumers (services, MCP, CLI, reports) | Canonical, deduplicated, multi-source. One table per real-world entity at its primary grain |
-| `app` | Tables | Services, managed-write MCP, migrations | Services + `core.dim_*` joins | User state and application metadata. Mutable; not derivable from `raw` |
+| `app` | Tables | Services, MCP write tools, migrations | Services + `core.dim_*` joins | User state and application metadata. Mutable; not derivable from `raw` |
 | `reports` | Views | SQLMesh | CLI `reports *`, MCP `reports`, future HTTP | Curated presentation models, one per report surface. Read-only by design |
 | `meta` | Tables / views | SQLMesh | Reconciliation tooling, freshness probes | Cross-source provenance and pipeline metadata |
 | `seeds` | Tables | SQLMesh seeds (from CSV) | `prep`, `core`, services | Reference data shipped in-repo |
@@ -147,7 +147,7 @@ These are the contracts a consumer (MCP user, CLI driver, SQL writer) actually e
 
 - **Table references** — `TableRef` values carry schema, name, and audience; named values such as `FCT_TRANSACTIONS` are module-level constants imported from `moneybin.tables`. The `moneybin://schema` MCP resource derives from the interface set, so what you can query is what the agent sees.
 - **Sensitivity tiers** (`low` / `medium` / `high` / `critical`) — static tools derive a maximum tier from their typed payload; projection-varying tools classify each response dynamically under a declared maximum. The middleware masks critical fields, records audit metadata, and applies a 30-second default dispatch cap, with explicit 180-second overrides for bounded long-running workflows. Global consent gating is not yet enforced.
-- **Privacy middleware** — read-only validation for the general SQL tool (DDL and writes are rejected); managed-write validation that allows `INSERT` / `UPDATE` / `DELETE` only on `app.*` and `raw.*`. See [`docs/specs/mcp-architecture.md`](specs/mcp-architecture.md).
+- **Privacy middleware** — read-only validation for the general SQL tool (DDL and writes are rejected). See [`docs/specs/mcp-architecture.md`](specs/mcp-architecture.md).
 
 ## Internal invariants
 
