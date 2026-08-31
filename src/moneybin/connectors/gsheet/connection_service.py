@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -452,6 +452,17 @@ class GSheetConnectionService:
         else:
             column_mapping = detection.column_mapping
 
+        # Only here are both inputs final: the seed fall-through above rebuilds
+        # ``detection`` (discarding anything appended to the earlier one), and
+        # ``column_mapping`` has just absorbed any --column-mapping override.
+        _note_renamed_duplicate_headers(
+            detection,
+            rows[0],
+            df.columns,
+            imports_every_column=adapter.imports_every_column,
+            mapped_sources=column_mapping,
+        )
+
         _require_inferred_sign_confirmation(
             resolved_convention=sign_convention_for_save,
             sign_was_explicit=req.sign is not None,
@@ -711,6 +722,15 @@ class GSheetConnectionService:
             if existing["adapter"] == "seed"
             else detection.column_mapping
         )
+        # Re-pinning is meant to be quiet, but a renamed duplicate is a cost the
+        # re-pin imposes, so it is reported here the same way connect reports it.
+        _note_renamed_duplicate_headers(
+            detection,
+            rows[0],
+            df.columns,
+            imports_every_column=adapter.imports_every_column,
+            mapped_sources=column_mapping,
+        )
         if existing["adapter"] == "transactions":
             IMPORT_DETECTION_SCORE.observe(detection.score)
 
@@ -773,29 +793,51 @@ class GSheetConnectionService:
         )
 
 
+def _dedupe_headers(headers: list[str]) -> list[str]:
+    """Rename repeated headers to ``name``, ``name_duplicated_0``, ... .
+
+    Mirrors the naming polars applies on the CSV import path, so the same
+    sheet imported either way yields the same column names. Keying columns by
+    header text would otherwise collapse duplicates into one dict entry and
+    drop a column of data outright.
+    """
+    # Reserve every real header up front. Reserving only as we walk would let
+    # a synthesized name claim a header the sheet genuinely has further right,
+    # renaming the real column and rebinding a pinned mapping to the wrong
+    # data — with every pinned header still present, so drift sees nothing.
+    reserved = set(headers)
+    assigned: set[str] = set()
+    counts: dict[str, int] = {}
+    deduped: list[str] = []
+    for header in headers:
+        if header not in assigned:
+            candidate = header
+        else:
+            suffix = counts.get(header, 0)
+            candidate = f"{header}_duplicated_{suffix}"
+            while candidate in reserved or candidate in assigned:
+                suffix += 1
+                candidate = f"{header}_duplicated_{suffix}"
+            counts[header] = suffix + 1
+        assigned.add(candidate)
+        deduped.append(candidate)
+    return deduped
+
+
 def rows_to_df(rows: list[list[str]]) -> pl.DataFrame:
     """Convert raw cell values (first row headers) into a Polars DataFrame.
 
     Ragged rows (Google Sheets trims trailing empty cells) are padded to the
     header width with ``None`` so polars receives uniform-length columns.
 
-    Rejects duplicate header text — keying by header collapses duplicates
-    into one dict entry and silently corrupts row cardinality.
+    Duplicate header text is renamed rather than rejected — MoneyBin reads
+    the sheet read-only and must not require the user to edit their own data
+    to make it readable.
     """
     if not rows:
         return pl.DataFrame()
     headers, *data = rows
-    seen: set[str] = set()
-    duplicates: list[str] = []
-    for h in headers:
-        if h in seen and h not in duplicates:
-            duplicates.append(h)
-        seen.add(h)
-    if duplicates:
-        raise GSheetError(
-            f"Duplicate header(s) in sheet: {duplicates}. "
-            "Rename to make headers unique before connecting."
-        )
+    headers = _dedupe_headers(headers)
     columns: dict[str, list[str | None]] = {h: [] for h in headers}
     for row in data:
         for i, header in enumerate(headers):
@@ -803,6 +845,52 @@ def rows_to_df(rows: list[list[str]]) -> pl.DataFrame:
         # Extra columns past the header width have no header to bind to and
         # are dropped implicitly by the header-keyed loop above.
     return pl.DataFrame(columns)
+
+
+def _note_renamed_duplicate_headers(
+    detection: DetectionResult,
+    original_headers: list[str],
+    deduped_columns: list[str],
+    *,
+    imports_every_column: bool,
+    mapped_sources: Collection[str],
+) -> None:
+    """Record which headers ``rows_to_df`` renamed, and what it cost.
+
+    The cost is adapter-specific: the seed adapter serializes every column, so
+    a renamed copy arrives intact under its new name. Telling a seed user their
+    column was dropped warns about data loss that did not happen.
+
+    For a mapping-reading adapter the cost depends on the *effective* mapping,
+    not on the adapter alone — ``--column-mapping`` may name the synthesized
+    ``_duplicated_N`` column, in which case the renamed copy is exactly what
+    gets imported. Callers therefore pass the final persisted mapping, so this
+    never reports the opposite of what was loaded.
+
+    ``detection.notes`` is appended in place. ``DetectionResult`` is frozen, but
+    the field itself is not reassigned and each ``detect()`` returns a fresh
+    list, so no other instance observes the append.
+    """
+    renamed = [
+        (original, deduped)
+        for original, deduped in zip(original_headers, deduped_columns, strict=True)
+        if original != deduped
+    ]
+    if not renamed:
+        return
+    pairs = "; ".join(f"{original} -> {deduped}" for original, deduped in renamed)
+    if imports_every_column:
+        fate = "Every column is imported, the renamed copies included."
+    else:
+        imported = [deduped for _, deduped in renamed if deduped in mapped_sources]
+        dropped = [deduped for _, deduped in renamed if deduped not in mapped_sources]
+        clauses: list[str] = []
+        if imported:
+            clauses.append(f"mapped to a field and imported: {imported}")
+        if dropped:
+            clauses.append(f"matched no field, so not imported: {dropped}")
+        fate = f"Renamed copies — {'; '.join(clauses)}."
+    detection.notes.append(f"Duplicate header(s) renamed: {pairs}. {fate}")
 
 
 def row_to_connection(row: dict[str, Any]) -> GSheetConnection:

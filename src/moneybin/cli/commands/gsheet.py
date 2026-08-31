@@ -44,6 +44,20 @@ app = typer.Typer(
 )
 
 
+def _echo_detection_notes(notes: list[str]) -> None:
+    """Print structural detection notes on the default text surface.
+
+    These carry the cost of an inference the user did not make — a renamed
+    duplicate header, say. Emitting them only under ``--output json`` hides
+    them from every human who does not ask for machine output.
+
+    They go to stderr per cli.md: a warning on stdout is captured by a redirect
+    or pipeline as though it were part of the data the command was asked for.
+    """
+    for note in notes:
+        typer.echo(f"⚠️  {note}", err=True)
+
+
 def _parse_column_mapping(raw: str | None) -> dict[str, str] | None:
     """Parse a ``--column-mapping`` CLI argument into a dict.
 
@@ -243,6 +257,7 @@ def gsheet_connect(
         f"✅ Connected {conn.workbook_name}/{conn.sheet_name} "
         f"(adapter={conn.adapter}, connection_id={conn.connection_id})"
     )
+    _echo_detection_notes(result.detection.notes)
     if result.initial_pull is not None:
         p = result.initial_pull
         typer.echo(
@@ -499,6 +514,7 @@ def gsheet_reconnect(
                     "detection": {
                         "confidence": result.detection.confidence,
                         "column_mapping": result.detection.column_mapping,
+                        "notes": result.detection.notes,
                     },
                     "initial_pull": (
                         {
@@ -516,6 +532,7 @@ def gsheet_reconnect(
         return
 
     typer.echo(f"✅ Reconnected {connection_id} (status={result.connection.status})")
+    _echo_detection_notes(result.detection.notes)
     if result.initial_pull is not None:
         p = result.initial_pull
         typer.echo(

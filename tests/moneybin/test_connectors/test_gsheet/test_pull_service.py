@@ -273,3 +273,109 @@ def test_pull_closes_import_log_and_updates_status_on_transform_failure(
     assert conn_row["status"] == "failed"
     assert conn_row["consecutive_failure_count"] == 1
     assert conn_row["last_pull_at"] is not None
+
+
+def test_pull_flags_newly_duplicated_mapped_header_as_drift(
+    in_memory_db: Database,
+) -> None:
+    """A duplicate appearing after connect must not import silently.
+
+    ``detect_drift`` classifies the renamed copy as a new column, which is not
+    drift, so the pull would succeed while the pinned mapping keeps importing
+    only the first occurrence — dropping the second column's amounts with no
+    signal anywhere. Before duplicates were renamed this raised and produced a
+    visibly failed pull; drift restores that visibility and points the user at
+    the reconnect that re-pins the mapping.
+    """
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    sheets.mutate_tab(
+        "ss1",
+        0,
+        headers=["Date", "Description", "Amount", "Account", "Amount"],
+        rows=[["2026-01-15", "WF", "-87.42", "Checking", "-99.99"]],
+    )
+
+    result = pull_svc.pull_connection(cid)
+
+    assert result.status == "drift_detected"
+    assert result.drift_reason is not None
+    assert "Amount" in result.drift_reason
+
+
+def test_pull_ignores_newly_duplicated_unmapped_header(
+    in_memory_db: Database,
+) -> None:
+    """An unmapped duplicate imports nothing either way, so it must not block.
+
+    Pinning a connection into drift over a column the mapping never reads is
+    the over-trigger that would make the guard above a nuisance.
+    """
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    sheets.mutate_tab(
+        "ss1",
+        0,
+        headers=["Date", "Description", "Amount", "Account", "Note", "Note"],
+        rows=[["2026-01-15", "WF", "-87.42", "Checking", "a", "b"]],
+    )
+
+    result = pull_svc.pull_connection(cid)
+
+    assert result.status == "complete"
+
+
+def test_pull_accepts_duplicate_header_present_since_connect(
+    in_memory_db: Database,
+) -> None:
+    """A sheet that already repeated a header when connected must still pull.
+
+    Connecting such a sheet is what this feature exists to allow. The pull-time
+    duplicate guard therefore has to compare against the pinned signature and
+    fire only on a twin that appeared *after* pinning — otherwise the very first
+    pull drift-locks the connection, and reconnect cannot clear it because its
+    follow-up pull hits the same guard.
+    """
+    oauth = TestOAuthClient(authorized=True)
+    sheets = TestSheetsClient()
+    sheets.register_workbook("ss1", _tiller_workbook("ss1"))
+    sheets.mutate_tab(
+        "ss1",
+        0,
+        headers=["Date", "Description", "Amount", "Account", "Amount"],
+        rows=[["2026-01-15", "WF", "-87.42", "Checking", "-99.99"]],
+    )
+    conn_svc = GSheetConnectionService(
+        db=in_memory_db, sheets_client=sheets, oauth_client=oauth
+    )
+    connected = conn_svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ss1/edit#gid=0",
+            adapter="transactions",
+            account_name="Checking",
+            account_id="acct_a",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+    pull_svc = GSheetPullService(
+        db=in_memory_db, sheets_client=sheets, oauth_client=oauth
+    )
+
+    result = pull_svc.pull_connection(connected.connection.connection_id)
+
+    assert result.status == "complete", result.drift_reason
+
+
+def test_pull_survives_a_cleared_sheet(in_memory_db: Database) -> None:
+    """An emptied tab must fail the pull, not escape as an IndexError.
+
+    Sheets omits ``values`` entirely for an empty range, so the real client
+    returns ``[]``. Indexing the raw header row without guarding that escapes
+    ``pull_connection`` past every handler, leaving the import_log row open at
+    "importing" forever and the connection status untouched.
+    """
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    sheets.read_sheet_values = lambda *a, **k: []  # type: ignore[method-assign]
+
+    result = pull_svc.pull_connection(cid)
+
+    assert result.status != "complete"
