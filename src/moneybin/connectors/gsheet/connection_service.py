@@ -26,6 +26,7 @@ from moneybin.config import get_settings
 from moneybin.connectors.gsheet.adapters import ADAPTERS
 from moneybin.connectors.gsheet.adapters.base import (
     DetectionResult,
+    GSheetAdapter,
     GSheetConnection,
     LoadResult,
 )
@@ -284,21 +285,6 @@ class GSheetConnectionService:
         adapter = ADAPTERS[target_adapter]
         detection = adapter.detect(df, account_name=req.account_name)
 
-        # Surface the rename. A renamed copy matches no field alias, so its
-        # data is never imported — silent inference with a cost the user
-        # cannot see is what "Magic stays visible" rules out.
-        renamed = [
-            f"{original} -> {deduped}"
-            for original, deduped in zip(rows[0], df.columns, strict=True)
-            if original != deduped
-        ]
-        if renamed:
-            detection.notes.append(
-                f"Duplicate header(s) renamed: {'; '.join(renamed)}. "
-                "Only the first column of each duplicated name is matched to "
-                "a field; the renamed copies are not imported."
-            )
-
         # Derive tier from normalized score + shared confidence bands.
         if target_adapter == "transactions":
             bands = get_settings().import_.confidence
@@ -327,6 +313,10 @@ class GSheetConnectionService:
                     "Provide --column-mapping or retry with "
                     "--adapter=seed --alias=<name>."
                 )
+
+        # Only now is the adapter final: the seed fall-through above rebuilds
+        # ``detection``, discarding anything appended to the earlier one.
+        _note_renamed_duplicate_headers(detection, rows[0], df.columns, adapter)
 
         # Medium confidence: ambiguous column matches. Require explicit
         # acceptance (--yes) or an override (--column-mapping) before
@@ -693,6 +683,7 @@ class GSheetConnectionService:
 
         adapter = ADAPTERS[existing["adapter"]]
         detection = adapter.detect(df, account_name=existing.get("account_name"))
+        _note_renamed_duplicate_headers(detection, rows[0], df.columns, adapter)
         if existing["adapter"] == "transactions":
             bands = get_settings().import_.confidence
             tier = tier_for(detection.score, t_high=bands.t_high, t_med=bands.t_med)
@@ -840,6 +831,37 @@ def rows_to_df(rows: list[list[str]]) -> pl.DataFrame:
         # Extra columns past the header width have no header to bind to and
         # are dropped implicitly by the header-keyed loop above.
     return pl.DataFrame(columns)
+
+
+def _note_renamed_duplicate_headers(
+    detection: DetectionResult,
+    original_headers: list[str],
+    deduped_columns: list[str],
+    adapter: GSheetAdapter,
+) -> None:
+    """Record which headers ``rows_to_df`` renamed, and what it cost.
+
+    The cost is adapter-specific: a transactions mapping reads only the headers
+    it matched, so a renamed copy never lands; the seed adapter serializes every
+    column, so the copy arrives intact under its new name. Telling a seed user
+    their column was dropped warns about data loss that did not happen.
+    """
+    renamed = [
+        f"{original} -> {deduped}"
+        for original, deduped in zip(original_headers, deduped_columns, strict=True)
+        if original != deduped
+    ]
+    if not renamed:
+        return
+    fate = (
+        "Every column is imported, the renamed copies included."
+        if adapter.imports_every_column
+        else (
+            "Only the first column of each duplicated name is matched to a "
+            "field; the renamed copies are not imported."
+        )
+    )
+    detection.notes.append(f"Duplicate header(s) renamed: {'; '.join(renamed)}. {fate}")
 
 
 def row_to_connection(row: dict[str, Any]) -> GSheetConnection:

@@ -273,3 +273,51 @@ def test_pull_closes_import_log_and_updates_status_on_transform_failure(
     assert conn_row["status"] == "failed"
     assert conn_row["consecutive_failure_count"] == 1
     assert conn_row["last_pull_at"] is not None
+
+
+def test_pull_flags_newly_duplicated_mapped_header_as_drift(
+    in_memory_db: Database,
+) -> None:
+    """A duplicate appearing after connect must not import silently.
+
+    ``detect_drift`` classifies the renamed copy as a new column, which is not
+    drift, so the pull would succeed while the pinned mapping keeps importing
+    only the first occurrence — dropping the second column's amounts with no
+    signal anywhere. Before duplicates were renamed this raised and produced a
+    visibly failed pull; drift restores that visibility and points the user at
+    the reconnect that re-pins the mapping.
+    """
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    sheets.mutate_tab(
+        "ss1",
+        0,
+        headers=["Date", "Description", "Amount", "Account", "Amount"],
+        rows=[["2026-01-15", "WF", "-87.42", "Checking", "-99.99"]],
+    )
+
+    result = pull_svc.pull_connection(cid)
+
+    assert result.status == "drift_detected"
+    assert result.drift_reason is not None
+    assert "Amount" in result.drift_reason
+
+
+def test_pull_ignores_newly_duplicated_unmapped_header(
+    in_memory_db: Database,
+) -> None:
+    """An unmapped duplicate imports nothing either way, so it must not block.
+
+    Pinning a connection into drift over a column the mapping never reads is
+    the over-trigger that would make the guard above a nuisance.
+    """
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    sheets.mutate_tab(
+        "ss1",
+        0,
+        headers=["Date", "Description", "Amount", "Account", "Note", "Note"],
+        rows=[["2026-01-15", "WF", "-87.42", "Checking", "a", "b"]],
+    )
+
+    result = pull_svc.pull_connection(cid)
+
+    assert result.status == "complete"

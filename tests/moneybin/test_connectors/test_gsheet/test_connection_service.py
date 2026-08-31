@@ -1238,3 +1238,112 @@ def test_connect_notes_renamed_duplicate_headers(in_memory_db: Database) -> None
 
     notes = " ".join(result.detection.notes)
     assert "Amount_duplicated_0" in notes
+
+
+def test_connect_seed_note_describes_seed_import_behavior(
+    in_memory_db: Database,
+) -> None:
+    """The seed adapter imports every column, so the note must not claim otherwise.
+
+    ``RawSeedAdapter.transform`` serializes the whole DataFrame into
+    ``data_json``, renamed duplicates included. Telling a seed user their
+    renamed copy "is not imported" is a false warning about their own data.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook(
+        "ssSeedDup",
+        FakeWorkbook(
+            title="Personal Finance",
+            tabs=[
+                FakeSheetTab(
+                    name="Subscriptions",
+                    gid=7,
+                    headers=["Name", "Amount", "Amount"],
+                    rows=[["Netflix", "15.49", "15.49"]],
+                )
+            ],
+        ),
+    )
+
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssSeedDup/edit#gid=7",
+            adapter="seed",
+            alias="subs_dup",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+
+    notes = " ".join(result.detection.notes)
+    assert "Amount_duplicated_0" in notes
+    assert "not imported" not in notes
+
+
+def test_connect_seed_fallback_retains_duplicate_header_note(
+    in_memory_db: Database,
+) -> None:
+    """The note must survive the seed fall-through, which rebuilds ``detection``."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook(
+        "ssFallDup",
+        FakeWorkbook(
+            title="Random",
+            tabs=[
+                FakeSheetTab(
+                    name="random",
+                    gid=0,
+                    headers=["foo", "bar", "foo"],
+                    rows=[["1", "2", "3"]],
+                )
+            ],
+        ),
+    )
+
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssFallDup/edit#gid=0",
+            adapter=None,
+            accept_seed_fallback=True,
+            alias="fallback_dup",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+
+    assert result.connection.adapter == "seed"
+    notes = " ".join(result.detection.notes)
+    assert "foo_duplicated_0" in notes
+
+
+def test_reconnect_notes_renamed_duplicate_headers(in_memory_db: Database) -> None:
+    """Reconnect renames duplicates exactly as connect does, so it must say so.
+
+    Before the rename landed, a duplicate raised on this path and the failure
+    was impossible to miss. Renaming silently would drop a column the user can
+    see with nothing on any surface reporting it.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssRDup", _tiller_workbook())
+    cid = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssRDup/edit#gid=0",
+            adapter="transactions",
+            account_name="Chase Checking",
+            account_id="acct_chase",
+            yes=True,
+            no_initial_pull=True,
+        )
+    ).connection.connection_id
+
+    sheets.mutate_tab(
+        "ssRDup",
+        0,
+        headers=["Date", "Description", "Amount", "Account", "Amount"],
+        rows=[["2026-01-15", "Whole Foods", "-87.42", "Checking", "-99.99"]],
+    )
+
+    result = svc.reconnect(cid, yes=True)
+
+    notes = " ".join(result.detection.notes)
+    assert "Amount_duplicated_0" in notes

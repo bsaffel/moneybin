@@ -108,10 +108,10 @@ GsheetCoarsePayload = Annotated[
 class GsheetDetection:
     """Column-detection sub-object inside a connect/reconnect result.
 
-    ``detection_notes`` is populated on ``gsheet_connect`` (first-time detection)
-    and omitted on ``gsheet_reconnect`` (re-detection re-pins silently). The name
-    is deliberately not ``notes`` — these are system-generated structural hints,
-    not the user-authored ``notes`` column (USER_NOTE) in the registry.
+    ``detection_notes`` carries structural hints from whichever detection ran,
+    on both ``gsheet_connect`` and ``gsheet_reconnect``. The name is deliberately
+    not ``notes`` — these are system-generated structural hints, not the
+    user-authored ``notes`` column (USER_NOTE) in the registry.
     """
 
     # "high" | "medium" | "low" — a detection-confidence measure; AGGREGATE to

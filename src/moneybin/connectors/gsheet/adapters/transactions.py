@@ -117,6 +117,8 @@ class TransactionsAdapter:
     """Strict Tiller-style adapter targeting `raw.tabular_transactions`."""
 
     name: str = "transactions"
+    # Only mapped source headers are read; everything else is ignored.
+    imports_every_column: bool = False
 
     def detect(
         self,

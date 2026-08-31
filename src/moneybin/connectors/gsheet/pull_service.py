@@ -25,6 +25,7 @@ from moneybin.connectors.gsheet.connection_service import (
     row_to_connection,
     rows_to_df,
 )
+from moneybin.connectors.gsheet.drift import duplicate_mapped_header_drift
 from moneybin.connectors.gsheet.errors import (
     GSheetAuthError,
     GSheetError,
@@ -150,7 +151,19 @@ class GSheetPullService:
             # transform/load guard below closes; the symmetric fix lives here.
             logger.exception(f"rows_to_df failed for connection={conn.connection_id}")
             return self._record_unexpected_failure(conn, import_id)
-        drift = adapter.check_drift(conn, df)
+        # A header duplicated since connect is renamed by rows_to_df, which
+        # makes it look like an ordinary new column to detect_drift — and new
+        # columns are not drift. The pinned mapping would keep importing the
+        # first occurrence while the twin's values were dropped, with the pull
+        # still reporting success. Check before delegating so the adapter's own
+        # signature comparison never sees a duplicate it cannot recognize.
+        drift = None
+        if not adapter.imports_every_column:
+            drift = duplicate_mapped_header_drift(
+                raw_headers=rows[0], mapped_sources=conn.column_mapping
+            )
+        if drift is None:
+            drift = adapter.check_drift(conn, df)
         if drift.is_drift:
             # Drift closes the import_log row as "failed" — import_log's status
             # enum is source-agnostic and has no "drift_detected" value, and we

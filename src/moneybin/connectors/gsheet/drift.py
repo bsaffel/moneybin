@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, field
 
 import polars as pl
@@ -19,6 +20,47 @@ class DriftReport:
 
 
 _NULL_THRESHOLD = 0.5  # >50% null in sample counts as "mapped column is empty"
+
+
+def duplicated_headers(headers: list[str]) -> list[str]:
+    """Header texts that appear more than once, in first-seen order."""
+    seen: set[str] = set()
+    repeated: dict[str, None] = {}
+    for header in headers:
+        if header in seen:
+            repeated[header] = None
+        seen.add(header)
+    return list(repeated)
+
+
+def duplicate_mapped_header_drift(
+    *,
+    raw_headers: list[str],
+    mapped_sources: Collection[str],
+) -> DriftReport | None:
+    """Drift when a header the pinned mapping reads has gained a twin.
+
+    ``rows_to_df`` renames the second occurrence, so by the time headers reach
+    ``detect_drift`` the duplicate looks like an ordinary new column — and new
+    columns are explicitly not drift. The pinned mapping then keeps importing
+    the first occurrence while the twin's values are dropped and the pull still
+    reports success. Callers pass the raw header row, before deduplication,
+    because that is the only place the duplication is still visible.
+
+    Only for adapters that read a mapping. One that imports every column loses
+    nothing to a rename and must not be pinned into drift over it.
+    """
+    duplicated = [h for h in duplicated_headers(raw_headers) if h in mapped_sources]
+    if not duplicated:
+        return None
+    return DriftReport(
+        is_drift=True,
+        reason=(
+            f"duplicated mapped headers: {duplicated}. Only the first column of "
+            "each is imported. Reconnect to re-pin the mapping, or remove the "
+            "duplicate column in the sheet."
+        ),
+    )
 
 
 def detect_drift(

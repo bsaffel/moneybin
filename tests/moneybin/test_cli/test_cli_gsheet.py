@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -851,3 +852,88 @@ def test_gsheet_disconnect_purge_non_tty_requires_yes(
     assert result.exit_code == 2
     service.disconnect.assert_not_called()
     assert "--yes" in result.stderr or "--yes" in result.output
+
+
+def _make_detection_with_note() -> DetectionResult:
+    detection = _make_detection()
+    return replace(
+        detection,
+        notes=[
+            "Duplicate header(s) renamed: Amount -> Amount_duplicated_0. "
+            "Only the first column of each duplicated name is matched to a "
+            "field; the renamed copies are not imported."
+        ],
+    )
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_connect_text_output_shows_detection_notes(
+    mock_build: MagicMock,
+) -> None:
+    """Text is the default surface, so a note only in --output json is invisible."""
+    service = MagicMock()
+    service.connect.return_value = ConnectResult(
+        connection=_make_connection(),
+        detection=_make_detection_with_note(),
+        initial_pull=_make_load_result(),
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(
+        app,
+        [
+            "gsheet",
+            "connect",
+            "https://docs.google.com/spreadsheets/d/ssid_xyz/edit#gid=0",
+            "--account-name",
+            "Checking",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Amount_duplicated_0" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_reconnect_text_output_shows_detection_notes(
+    mock_build: MagicMock,
+) -> None:
+    """Reconnect renames duplicates too, and its text output never said so."""
+    service = MagicMock()
+    service.reconnect.return_value = ConnectResult(
+        connection=_make_connection(),
+        detection=_make_detection_with_note(),
+        initial_pull=_make_load_result(),
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(app, ["gsheet", "reconnect", "conn_abc123"])
+
+    assert result.exit_code == 0, result.output
+    assert "Amount_duplicated_0" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_reconnect_json_output_carries_detection_notes(
+    mock_build: MagicMock,
+) -> None:
+    """The reconnect JSON payload omitted notes entirely; connect's carries them."""
+    service = MagicMock()
+    service.reconnect.return_value = ConnectResult(
+        connection=_make_connection(),
+        detection=_make_detection_with_note(),
+        initial_pull=_make_load_result(),
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(
+        app, ["gsheet", "reconnect", "conn_abc123", "--output", "json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    notes = " ".join(payload["detection"]["notes"])
+    assert "Amount_duplicated_0" in notes

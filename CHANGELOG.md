@@ -1308,6 +1308,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **A Google Sheet with a repeated header connects instead of being refused.**
+  The connector rejected any sheet whose header row repeated a name, telling you
+  to rename a column first — a precondition for reading data MoneyBin only ever
+  reads. Repeats are renamed to `name`, `name_duplicated_0`, … now, the same
+  naming polars already applies to the equivalent CSV, and the rename is
+  reported on connect, on reconnect, and in both CLI and MCP output. What the
+  rename costs depends on the adapter and the note says which: a transactions
+  mapping reads only the headers it matched, so the renamed copy is not
+  imported; the seed adapter stores every column. A header that gains a twin
+  *after* connect is a different case and stops the pull as drift — the pinned
+  mapping would keep importing the first column and silently drop the second's
+  amounts (#488).
+
 - **A non-finite amount no longer crashes a report, or prices as though it were
   a number.** A `NaN` in a money column left `format_money` through
   `amount < 0` as a raw `decimal.InvalidOperation` traceback rather than a
