@@ -9,19 +9,30 @@ from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 
+_AUDIT_ROWS_WITH_PARENT_QUERY = """
+    SELECT action, target_schema, target_table, target_id,
+           before_value, after_value, actor, parent_audit_id
+      FROM app.audit_log
+     WHERE target_id = ?
+     ORDER BY occurred_at ASC, audit_id ASC
+"""
+_AUDIT_ROWS_QUERY = """
+    SELECT action, target_schema, target_table, target_id,
+           before_value, after_value, actor
+      FROM app.audit_log
+     WHERE target_id = ?
+     ORDER BY occurred_at ASC, audit_id ASC
+"""
 
-def audit_rows_for(db: Database, target_id: str) -> list[tuple[Any, ...]]:
+
+def audit_rows_for(
+    db: Database, target_id: str, *, include_parent_audit_id: bool = True
+) -> list[tuple[Any, ...]]:
     """Return ordered audit rows for one target."""
-    return db.conn.execute(
-        """
-        SELECT action, target_schema, target_table, target_id,
-               before_value, after_value, actor, parent_audit_id
-          FROM app.audit_log
-         WHERE target_id = ?
-         ORDER BY occurred_at ASC, audit_id ASC
-        """,
-        [target_id],
-    ).fetchall()
+    query = (
+        _AUDIT_ROWS_WITH_PARENT_QUERY if include_parent_audit_id else _AUDIT_ROWS_QUERY
+    )
+    return db.conn.execute(query, [target_id]).fetchall()
 
 
 def metric(repository: str, action: str) -> float:

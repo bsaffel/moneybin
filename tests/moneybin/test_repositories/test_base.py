@@ -16,11 +16,11 @@ from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
-from prometheus_client import REGISTRY
 
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import TableRef
+from tests.moneybin.test_repositories.conftest import metric_for
 
 
 class _FakeRepo(BaseRepo):
@@ -31,14 +31,7 @@ class _FakeRepo(BaseRepo):
     pk_columns = ("id",)
 
 
-def _metric_value(action: str) -> float:
-    return (
-        REGISTRY.get_sample_value(
-            "moneybin_app_mutation_audit_emitted_total",
-            {"repository": "fake", "action": action},
-        )
-        or 0.0
-    )
+_metric_value = metric_for("fake")
 
 
 @pytest.mark.unit
