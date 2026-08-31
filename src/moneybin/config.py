@@ -302,13 +302,17 @@ class MCPConfig(BaseModel):
         default=1000, ge=1, description="Maximum rows returned by any MCP query tool"
     )
     max_chars: int = Field(
-        default=50000, ge=1, description="Maximum characters in any MCP tool response"
+        default=50000,
+        ge=1,
+        deprecated="Accepted for compatibility but no longer enforced.",
+        description="Deprecated compatibility setting. Accepted but inert.",
     )
     allowed_tables: list[str] | None = Field(
         default=None,
+        deprecated="Accepted for compatibility but no longer enforced.",
         description=(
-            "Optional allowlist of fully-qualified table names the query tool may access "
-            '(e.g. ["core.fct_transactions"]). None means all tables are permitted.'
+            "Deprecated compatibility setting. Accepted but inert; it does not "
+            "restrict query access."
         ),
     )
     max_items: int = Field(

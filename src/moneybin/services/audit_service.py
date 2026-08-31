@@ -176,6 +176,82 @@ class AuditService:
             undoes_operation_id=undoes_operation_id,
         )
 
+    def record_audit_events(
+        self,
+        *,
+        action: str,
+        changes: list[
+            tuple[
+                tuple[str | None, str | None, str | None],
+                dict[str, Any] | None,
+                dict[str, Any] | None,
+            ]
+        ],
+        actor: str,
+        parent_audit_id: str | None = None,
+    ) -> list[AuditEvent]:
+        """Insert same-action audit rows with one multi-row statement.
+
+        Each change remains a separate audit row, so operation-level undo keeps
+        its existing row-grain behavior while batch writers avoid one round trip
+        per affected record.
+        """
+        if not changes:
+            return []
+        operation_id = current_operation_id()
+        events: list[AuditEvent] = []
+        params: list[Any] = []
+        for target, before, after in changes:
+            target_schema, target_table, target_id = target
+            audit_id = uuid.uuid4().hex
+            params.extend([
+                audit_id,
+                actor,
+                action,
+                target_schema,
+                target_table,
+                target_id,
+                json.dumps(before) if before is not None else None,
+                json.dumps(after) if after is not None else None,
+                parent_audit_id,
+                operation_id,
+                None,
+                False,
+                None,
+            ])
+            events.append(
+                AuditEvent(
+                    audit_id=audit_id,
+                    occurred_at="",
+                    actor=actor,
+                    action=action,
+                    target_schema=target_schema,
+                    target_table=target_table,
+                    target_id=target_id,
+                    before_value=before,
+                    after_value=after,
+                    parent_audit_id=parent_audit_id,
+                    operation_id=operation_id,
+                )
+            )
+        values = ", ".join(
+            "(" + ", ".join("?" for _ in range(13)) + ")" for _ in changes
+        )
+        self._db.conn.execute(
+            f"""
+            INSERT INTO app.audit_log (
+                audit_id, actor, action,
+                target_schema, target_table, target_id,
+                before_value, after_value, parent_audit_id, operation_id,
+                context_json, is_undo, undoes_operation_id
+            ) VALUES {values}
+            """,  # noqa: S608  # Placeholder count derives only from batch length
+            params,
+        )
+        audit_events_emitted_total.labels(action=action, actor=actor).inc(len(events))
+        logger.debug(f"audit_events count={len(events)} action={action} actor={actor}")
+        return events
+
     def list_events(
         self,
         *,

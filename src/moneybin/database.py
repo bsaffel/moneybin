@@ -84,7 +84,6 @@ _call_conn_holder: ContextVar[list[Any] | None] = ContextVar(
 )
 
 _migration_check_done: set[Path] = set()
-_database_accessed: bool = False
 _database_written: bool = False
 
 # --- Extension seal ---------------------------------------------------------
@@ -1226,11 +1225,6 @@ def _lock_error_message(db_path: "Path", max_wait: float) -> str:
     )
 
 
-def database_was_accessed() -> bool:
-    """Return True if any Database connection was opened in this process."""
-    return _database_accessed
-
-
 def database_was_written() -> bool:
     """Return True if any write (non-read-only) Database connection was opened."""
     return _database_written
@@ -1271,7 +1265,7 @@ def get_database(
     acquiring the writer lock so a concurrent deletion cannot turn maintenance
     into implicit database creation.
     """
-    global _database_accessed, _database_written, _active_write_conn  # noqa: PLW0603
+    global _database_written, _active_write_conn  # noqa: PLW0603
 
     # Lazy import: db_lock.lock imports DatabaseLockError from this module,
     # so deferring the import past module-load time breaks the cycle.
@@ -1392,7 +1386,6 @@ def _open_with_attach_retry(
     ``_active_write_conn``, MCP per-call holder) stays in
     ``get_database()`` so it runs only after a successful write open.
     """
-    global _database_accessed  # noqa: PLW0603
     delay = 0.05
     while True:
         try:
@@ -1401,7 +1394,6 @@ def _open_with_attach_retry(
                 read_only=read_only,
                 no_auto_upgrade=skip_upgrade,
             )
-            _database_accessed = True
             return db
         except DatabaseLockError:
             if time.monotonic() >= deadline:

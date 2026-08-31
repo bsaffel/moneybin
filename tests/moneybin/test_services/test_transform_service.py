@@ -6,12 +6,19 @@ import logging
 from collections.abc import Callable, Generator
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.database import Database
-from moneybin.services.transform_service import TransformService, TransformStatus
+from moneybin.services.transform_service import (
+    TransformService,
+    TransformStatus,
+    _InitialPlan,  # pyright: ignore[reportPrivateUsage]  # direct predicate coverage
+    _plan_backfills_full_models,  # pyright: ignore[reportPrivateUsage]  # direct predicate coverage
+)
 from tests.moneybin.db_helpers import record_sqlmesh_apply
 
 # raw.import_log columns required by NOT NULL constraints. The table is
@@ -415,6 +422,41 @@ def test_unrebuilt_model_kinds_cover_every_symbolic_kind() -> None:
     assert _SYMBOLIC_MODEL_KINDS <= _UNREBUILT_MODEL_KINDS
 
 
+@pytest.mark.parametrize(
+    ("planned_models", "expected"),
+    [
+        ((("core.first", True), ("core.second", True)), True),
+        ((("core.first", True), ("reports.view", False)), False),
+    ],
+)
+def test_plan_backfills_full_models_only_when_every_full_model_is_scheduled(
+    planned_models: tuple[tuple[str, bool], tuple[str, bool]], expected: bool
+) -> None:
+    """A partial FULL-model backfill must retain the later restate."""
+    snapshots = {
+        "first": SimpleNamespace(
+            name=planned_models[0][0], is_full=planned_models[0][1]
+        ),
+        "second": SimpleNamespace(
+            name=planned_models[1][0], is_full=planned_models[1][1]
+        ),
+    }
+    plan = SimpleNamespace(
+        snapshots=snapshots,
+        missing_intervals=[
+            SimpleNamespace(snapshot_id="first"),
+            SimpleNamespace(snapshot_id="second"),
+        ],
+    )
+
+    assert (
+        _plan_backfills_full_models(
+            cast(_InitialPlan, plan), {"core.first", "core.second"}
+        )
+        is expected
+    )
+
+
 def test_apply_returns_apply_result_shape(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -452,7 +494,8 @@ def test_apply_returns_apply_result_shape(
     assert result.applied is True
     assert result.duration_seconds >= 0
     assert result.error is None
-    fake_ctx.plan.assert_called_once_with(auto_apply=True, no_prompts=True)
+    fake_ctx.plan.assert_called_once_with(no_prompts=True)
+    fake_ctx.apply.assert_called_once_with(fake_ctx.plan.return_value)
 
 
 def test_a_failing_duration_metric_does_not_abort_a_completed_apply(

@@ -10,6 +10,8 @@ audit verb (transaction-curation.md) is preserved, not renamed:
 
 - :meth:`set` — the user-manual-edit path: a partial-column upsert that leaves
   ``merchant_id`` / ``rule_id`` / ``confidence`` untouched on conflict.
+- :meth:`update_links` — the maintenance path: updates only ``merchant_id`` and
+  ``rule_id`` while preserving the category metadata.
 - :meth:`upsert_guarded` — the engine path: a full-column upsert gated by the
   source-precedence ladder, so a lower-authority source never overwrites a
   higher one. The precedence CASE is generated from ``SOURCE_PRIORITY`` (the
@@ -106,6 +108,42 @@ class TransactionCategoriesRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
             )
 
+    def update_links(
+        self,
+        transaction_id: str,
+        *,
+        merchant_id: str | None,
+        rule_id: str | None,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Update categorization links without changing category metadata."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._require(
+                self._fetch_row(transaction_id),
+                "transaction_id",
+                transaction_id,
+            )
+            self._db.execute(
+                f"UPDATE {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef + parameterized values
+                "SET merchant_id = ?, rule_id = ? WHERE transaction_id = ?",
+                [merchant_id, rule_id, transaction_id],
+            )
+            after = self._require(
+                self._fetch_row(transaction_id),
+                "transaction_id",
+                transaction_id,
+            )
+            return self._emit_audit(
+                action="category.set",
+                target=(*self._audit_target, transaction_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
     def upsert_guarded(
         self,
         transaction_id: str,
@@ -192,6 +230,110 @@ class TransactionCategoriesRepo(BaseRepo):
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
+
+    def upsert_guarded_many(
+        self,
+        categorizations: list[dict[str, Any]],
+        *,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> set[str]:
+        """Apply guarded engine categorizations with one write and row-grain audits."""
+        if not categorizations:
+            return set()
+        from moneybin.services.categorization._shared import (  # noqa: PLC0415
+            priority_case_sql,
+        )
+
+        transaction_ids = [str(item["transaction_id"]) for item in categorizations]
+        if len(set(transaction_ids)) != len(transaction_ids):
+            raise ValueError("batch categorization requires unique transaction_ids")
+        placeholders = ", ".join("?" for _ in transaction_ids)
+        columns = ", ".join(quote_ident(c) for c in _TRANSACTION_CATEGORIES_COLUMNS)
+        values = ", ".join(
+            "(?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)" for _ in categorizations
+        )
+        params: list[Any] = []
+        for item in categorizations:
+            params.extend([
+                item["transaction_id"],
+                item["category"],
+                item["subcategory"],
+                item["category_id"],
+                item["categorized_by"],
+                item["merchant_id"],
+                item["rule_id"],
+                item["confidence"],
+                item["source_type"],
+            ])
+        excluded_priority = priority_case_sql("EXCLUDED.categorized_by")
+        existing_priority = priority_case_sql(
+            f"{TRANSACTION_CATEGORIES.full_name}.categorized_by"
+        )
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before_rows = self._db.execute(
+                f"SELECT {columns} FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef + code-constant columns
+                f"WHERE transaction_id IN ({placeholders})",
+                transaction_ids,
+            ).fetchall()
+            before_by_id: dict[str, dict[str, Any]] = {
+                str(row[0]): dict(
+                    zip(_TRANSACTION_CATEGORIES_COLUMNS, row, strict=True)
+                )
+                for row in before_rows
+            }
+            wrote = self._db.execute(
+                f"""
+                INSERT INTO {TRANSACTION_CATEGORIES.full_name}
+                    (transaction_id, category, subcategory, category_id,
+                     categorized_at, categorized_by, merchant_id, rule_id,
+                     confidence, source_type)
+                VALUES {values}
+                ON CONFLICT (transaction_id) DO UPDATE SET
+                    category = EXCLUDED.category,
+                    subcategory = EXCLUDED.subcategory,
+                    category_id = EXCLUDED.category_id,
+                    categorized_at = EXCLUDED.categorized_at,
+                    categorized_by = EXCLUDED.categorized_by,
+                    merchant_id = EXCLUDED.merchant_id,
+                    rule_id = EXCLUDED.rule_id,
+                    confidence = EXCLUDED.confidence,
+                    source_type = EXCLUDED.source_type
+                WHERE {excluded_priority} <= {existing_priority}
+                RETURNING transaction_id
+                """,  # noqa: S608  # TableRef, CASE, and placeholder count are code controlled
+                params,
+            ).fetchall()
+            written_ids = {str(row[0]) for row in wrote}
+            if not written_ids:
+                return set()
+            written_placeholders = ", ".join("?" for _ in written_ids)
+            after_rows = self._db.execute(
+                f"SELECT {columns} FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef + code-constant columns
+                f"WHERE transaction_id IN ({written_placeholders})",
+                sorted(written_ids),
+            ).fetchall()
+            after_by_id: dict[str, dict[str, Any]] = {
+                str(row[0]): dict(
+                    zip(_TRANSACTION_CATEGORIES_COLUMNS, row, strict=True)
+                )
+                for row in after_rows
+            }
+            self._emit_audits(
+                action="category.set",
+                changes=[
+                    (
+                        (*self._audit_target, transaction_id),
+                        self._serialize_for_audit(before_by_id.get(transaction_id)),
+                        self._serialize_for_audit(after_by_id[transaction_id]),
+                    )
+                    for transaction_id in sorted(written_ids)
+                ],
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+            return written_ids
 
     def clear(
         self,

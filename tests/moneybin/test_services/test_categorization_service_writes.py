@@ -9,7 +9,7 @@ service-layer behavior independently.
 from __future__ import annotations
 
 import logging
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -1466,6 +1466,101 @@ class TestWriteCategorizationSourceType:
         ).fetchone()
         assert row is not None
         assert row[0] == "internal"
+
+
+class TestBatchCategorizationWrites:
+    """Batch categorization avoids repeated lookup and diagnostic queries."""
+
+    def test_reuses_category_resolution_for_matching_taxonomy_pairs(
+        self, applier: MatchApplier, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _insert_txn(db, "batch-cache-1")
+        _insert_txn(db, "batch-cache-2")
+        resolved: list[tuple[str, str | None]] = []
+
+        def resolve_once(
+            _db: Database, category: str, subcategory: str | None
+        ) -> str | None:
+            resolved.append((category, subcategory))
+            return None
+
+        monkeypatch.setattr(
+            "moneybin.services.categorization.applier.resolve_category_id",
+            resolve_once,
+        )
+
+        written = applier.write_categorizations([
+            {
+                "transaction_id": "batch-cache-1",
+                "category": "Dining",
+                "subcategory": None,
+                "categorized_by": "rule",
+                "merchant_id": None,
+                "rule_id": "r1",
+                "confidence": 1.0,
+                "source_type": "internal",
+            },
+            {
+                "transaction_id": "batch-cache-2",
+                "category": "Dining",
+                "subcategory": None,
+                "categorized_by": "rule",
+                "merchant_id": None,
+                "rule_id": "r1",
+                "confidence": 1.0,
+                "source_type": "internal",
+            },
+        ])
+
+        assert written == {"batch-cache-1", "batch-cache-2"}
+        assert resolved == [("Dining", None)]
+
+    def test_batches_precedence_skip_diagnostics(
+        self, applier: MatchApplier, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for transaction_id in ("batch-skip-1", "batch-skip-2"):
+            _insert_txn(db, transaction_id)
+            applier.write_categorization(
+                transaction_id=transaction_id,
+                category="Protected",
+                subcategory=None,
+                categorized_by="user",
+            )
+
+        database_calls = 0
+        execute = db.execute
+
+        def count_execute(query: str, params: list[Any] | None = None) -> Any:
+            nonlocal database_calls
+            database_calls += 1
+            return execute(query, params)
+
+        monkeypatch.setattr(db, "execute", count_execute)
+        written = applier.write_categorizations([
+            {
+                "transaction_id": "batch-skip-1",
+                "category": "Attempt",
+                "subcategory": None,
+                "categorized_by": "ai",
+                "merchant_id": None,
+                "rule_id": None,
+                "confidence": 0.5,
+                "source_type": "internal",
+            },
+            {
+                "transaction_id": "batch-skip-2",
+                "category": "Attempt",
+                "subcategory": None,
+                "categorized_by": "ai",
+                "merchant_id": None,
+                "rule_id": None,
+                "confidence": 0.5,
+                "source_type": "internal",
+            },
+        ])
+
+        assert written == set()
+        assert database_calls == 4
 
 
 def test_taxonomy_target_batch_rolls_back_late_failure(
