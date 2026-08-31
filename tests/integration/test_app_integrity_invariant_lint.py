@@ -211,8 +211,8 @@ def _scope_bindings(
 
 
 def _violations_in_path(path: Path) -> list[_Violation]:
-    is_repository = path.parent.name == "repositories" and path.name.endswith(
-        "_repo.py"
+    is_repository = path.parent.name == "repositories" and (
+        path.name == "base.py" or path.name.endswith("_repo.py")
     )
     is_audit_service = (
         path.parent.name == "services" and path.name == "audit_service.py"
@@ -238,11 +238,20 @@ def _violations_in_path(path: Path) -> list[_Violation]:
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in ("execute", "executemany")
-            and node.args
         ):
             continue
+        query = (
+            node.args[0]
+            if node.args
+            else next(
+                (keyword.value for keyword in node.keywords if keyword.arg == "query"),
+                None,
+            )
+        )
+        if query is None:
+            continue
         sqls = _static_sqls(
-            node.args[0],
+            query,
             table_refs=table_refs,
             locals_=_scope_bindings(node, tree=tree, parents=parents),
         )
@@ -287,6 +296,29 @@ def test_rejects_bulk_protected_write_in_service(tmp_path: Path) -> None:
         "\n"
         "def create_many(db, rows):\n"
         '    db.executemany(f"INSERT INTO {USER_CATEGORIES.full_name} VALUES (?)", rows)\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=4, table="app.user_categories")
+    ]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        'db.execute(query=f"INSERT INTO {USER_CATEGORIES.full_name} VALUES (?)")',
+        'db.executemany(query=f"INSERT INTO {USER_CATEGORIES.full_name} VALUES (?)", params=[["id"]])',
+    ],
+)
+def test_rejects_keyword_query_protected_write(
+    tmp_path: Path,
+    call: str,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        f"from moneybin.tables import USER_CATEGORIES\n\ndef create(db):\n    {call}\n",
         encoding="utf-8",
     )
 
@@ -497,6 +529,18 @@ def test_rejects_insert_or_ignore_in_service(tmp_path: Path) -> None:
     assert _violations_in_path(source) == [
         _Violation(path=source, line=4, table="app.user_categories")
     ]
+
+
+def test_allows_base_repository_writes(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/repositories/base.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "def delete(db):\n"
+        '    db.execute("DELETE FROM app.user_categories WHERE category_id = ?")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
 
 
 @pytest.mark.parametrize(
