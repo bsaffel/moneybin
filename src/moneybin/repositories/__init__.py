@@ -24,15 +24,21 @@ def concrete_repo_classes() -> list[type[BaseRepo]]:
     registry and the metadata/coverage tests all derive from it, so a new repo is
     discoverable everywhere the moment it is defined.
 
-    Repos MUST be **direct** subclasses of ``BaseRepo``: ``__subclasses__()`` does
-    not walk further descendants, so a concrete repo behind an intermediate
-    abstract base would be silently invisible here (and to undo dispatch).
+    Abstract repository bases are excluded while their concrete descendants are
+    included, so shared repository mechanics do not hide an owned table from
+    undo dispatch.
     """
     for mod in pkgutil.iter_modules(__path__):
         if mod.name != "base":
             importlib.import_module(f"{__name__}.{mod.name}")
+
+    def descendants(parent: type[BaseRepo]) -> list[type[BaseRepo]]:
+        """Return every descendant, including repos behind an abstract base."""
+        children = parent.__subclasses__()
+        return children + [child for cls in children for child in descendants(cls)]
+
     return [
         cls
-        for cls in BaseRepo.__subclasses__()
-        if cls.__module__.startswith(f"{__name__}.")
+        for cls in descendants(BaseRepo)
+        if cls.__module__.startswith(f"{__name__}.") and not cls.abstract
     ]
