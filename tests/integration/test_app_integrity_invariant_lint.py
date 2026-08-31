@@ -12,6 +12,8 @@ import pytest
 from moneybin.repositories import concrete_repo_classes
 from moneybin.tables import TableRef
 
+pytestmark = pytest.mark.integration
+
 _MUTATION_RE = re.compile(
     r"\b(?:INSERT\s+(?:OR\s+(?:IGNORE|REPLACE)\s+)?INTO|UPDATE|DELETE\s+FROM)\s+"
     r"(app\.[a-z_][a-z0-9_]*)\b",
@@ -42,23 +44,29 @@ class _Violation:
     table: str
 
 
-def _table_ref_bindings(tree: ast.Module) -> dict[str, str]:
-    bindings: dict[str, str] = {}
+def _table_ref_bindings(tree: ast.Module) -> dict[str, list[str]]:
+    bindings: dict[str, list[str]] = {}
     tables_module = __import__("moneybin.tables", fromlist=["TableRef"])
-    for node in tree.body:
+    for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "moneybin.tables":
             for imported in node.names:
-                value = getattr(tables_module, imported.name)
+                value = getattr(tables_module, imported.name, None)
                 if isinstance(value, TableRef):
-                    bindings[imported.asname or imported.name] = value.full_name
+                    name = imported.asname or imported.name
+                    if value.full_name not in bindings.setdefault(name, []):
+                        bindings[name].append(value.full_name)
     return bindings
 
 
-def _local_bindings(scope: ast.AST, *, before_line: int) -> dict[str, list[ast.expr]]:
+def _local_bindings(
+    scope: ast.AST,
+    *,
+    before_line: int | None,
+) -> dict[str, list[ast.expr]]:
     candidates: dict[str, list[ast.expr]] = {}
 
     def add(name: str, node: ast.expr, line: int) -> None:
-        if line < before_line:
+        if before_line is None or line < before_line:
             candidates.setdefault(name, []).append(node)
 
     class Collector(ast.NodeVisitor):
@@ -86,28 +94,61 @@ def _local_bindings(scope: ast.AST, *, before_line: int) -> dict[str, list[ast.e
         def visit_Lambda(self, node: ast.Lambda) -> None:
             return
 
+    # The executing scope replaces straight-line assignments; outer/control-flow
+    # candidates append conservatively.
     for statement in getattr(scope, "body", []):
-        if isinstance(statement, ast.Assign) and statement.lineno < before_line:
+        if isinstance(statement, ast.Assign) and (
+            before_line is None or statement.lineno < before_line
+        ):
             for target in statement.targets:
                 if isinstance(target, ast.Name):
-                    candidates[target.id] = [statement.value]
+                    if before_line is None:
+                        add(target.id, statement.value, statement.lineno)
+                    else:
+                        candidates[target.id] = [statement.value]
             continue
         if (
             isinstance(statement, ast.AnnAssign)
             and statement.value is not None
-            and statement.lineno < before_line
+            and (before_line is None or statement.lineno < before_line)
         ):
             if isinstance(statement.target, ast.Name):
-                candidates[statement.target.id] = [statement.value]
+                if before_line is None:
+                    add(statement.target.id, statement.value, statement.lineno)
+                else:
+                    candidates[statement.target.id] = [statement.value]
             continue
         Collector().visit(statement)
     return candidates
 
 
+def _static_table_names(
+    node: ast.expr,
+    *,
+    table_refs: dict[str, list[str]],
+    locals_: dict[str, list[ast.expr]],
+    seen_names: frozenset[str],
+) -> list[str]:
+    if not isinstance(node, ast.Name) or node.id in seen_names:
+        return []
+    if node.id in table_refs:
+        return table_refs[node.id]
+    return [
+        table
+        for value in locals_.get(node.id, [])
+        for table in _static_table_names(
+            value,
+            table_refs=table_refs,
+            locals_=locals_,
+            seen_names=seen_names | {node.id},
+        )
+    ]
+
+
 def _static_sqls(
     node: ast.expr,
     *,
-    table_refs: dict[str, str],
+    table_refs: dict[str, list[str]],
     locals_: dict[str, list[ast.expr]],
     seen_names: frozenset[str] = frozenset(),
 ) -> list[str]:
@@ -128,20 +169,46 @@ def _static_sqls(
         ]
     if not isinstance(node, ast.JoinedStr):
         return []
-    parts: list[str] = []
+    sqls = [""]
     for part in node.values:
         if isinstance(part, ast.Constant) and isinstance(part.value, str):
-            parts.append(part.value)
+            choices = [part.value]
         elif (
             isinstance(part, ast.FormattedValue)
             and isinstance(part.value, ast.Attribute)
             and part.value.attr == "full_name"
-            and isinstance(part.value.value, ast.Name)
         ):
-            parts.append(table_refs.get(part.value.value.id, " "))
+            choices = _static_table_names(
+                part.value.value,
+                table_refs=table_refs,
+                locals_=locals_,
+                seen_names=seen_names,
+            ) or [" "]
         else:
-            parts.append(" ")
-    return ["".join(parts)]
+            choices = [" "]
+        sqls = [prefix + choice for prefix in sqls for choice in choices]
+    return sqls
+
+
+def _scope_bindings(
+    node: ast.Call,
+    *,
+    tree: ast.Module,
+    parents: dict[ast.AST, ast.AST],
+) -> dict[str, list[ast.expr]]:
+    scopes: list[ast.AST] = []
+    scope = node
+    while scope is not tree:
+        scope = parents[scope]
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scopes.append(scope)
+    scopes.append(tree)
+
+    bindings: dict[str, list[ast.expr]] = {}
+    for enclosing_scope in reversed(scopes):
+        before_line = node.lineno if enclosing_scope is scopes[0] else None
+        bindings.update(_local_bindings(enclosing_scope, before_line=before_line))
+    return bindings
 
 
 def _violations_in_path(path: Path) -> list[_Violation]:
@@ -175,15 +242,10 @@ def _violations_in_path(path: Path) -> list[_Violation]:
             and node.args
         ):
             continue
-        scope: ast.AST = node
-        while scope is not tree and not isinstance(
-            scope, (ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
-            scope = parents[scope]
         sqls = _static_sqls(
             node.args[0],
             table_refs=table_refs,
-            locals_=_local_bindings(scope, before_line=node.lineno),
+            locals_=_scope_bindings(node, tree=tree, parents=parents),
         )
         tables = {
             match.group(1).lower()
@@ -232,6 +294,103 @@ def test_rejects_function_local_protected_write_in_service(tmp_path: Path) -> No
 
     assert _violations_in_path(source) == [
         _Violation(path=source, line=5, table="app.user_categories")
+    ]
+
+
+def test_rejects_protected_write_with_function_local_import(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "def create(db):\n"
+        "    from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        '    db.execute(f"INSERT INTO {USER_CATEGORIES.full_name} VALUES (?)")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=4, table="app.user_categories")
+    ]
+
+
+def test_rejects_protected_write_through_table_ref_alias(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        "def create(db):\n"
+        "    table = USER_CATEGORIES\n"
+        '    db.execute(f"INSERT INTO {table.full_name} VALUES (?)")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=5, table="app.user_categories")
+    ]
+
+
+def test_rejects_protected_write_captured_from_enclosing_scope(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        "def outer(db):\n"
+        '    sql = f"DELETE FROM {USER_CATEGORIES.full_name}"\n'
+        "    def run():\n"
+        "        db.execute(sql)\n"
+        "    run()\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=6, table="app.user_categories")
+    ]
+
+
+def test_rejects_closure_defined_before_captured_write_assignment(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        "def outer(db):\n"
+        "    def run():\n"
+        "        db.execute(sql)\n"
+        '    sql = f"DELETE FROM {USER_CATEGORIES.full_name}"\n'
+        "    run()\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=5, table="app.user_categories")
+    ]
+
+
+def test_rejects_closure_invoked_before_safe_outer_reassignment(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        "def outer(db):\n"
+        '    sql = f"DELETE FROM {USER_CATEGORIES.full_name}"\n'
+        "    def run():\n"
+        "        db.execute(sql)\n"
+        "    run()\n"
+        '    sql = "SELECT * FROM app.user_categories"\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=6, table="app.user_categories")
     ]
 
 
