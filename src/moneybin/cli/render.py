@@ -177,12 +177,71 @@ def color_enabled(stream: object, env: Mapping[str, str]) -> bool:
     return bool(isatty and isatty())
 
 
+#: Stands in for the columns a width fit dropped, in the position it dropped
+#: them. DuckDB's box renderer and pandas both mark the gap this way rather
+#: than silently splicing the ends together, which would read as a projection
+#: that never had a middle.
+ELISION = "…"
+
+
+def _cell_width(cell: RenderableType) -> int:
+    from rich.cells import cell_len  # noqa: PLC0415 — defer heavy import
+    from rich.text import Text  # noqa: PLC0415 — defer heavy import
+
+    return cell_len(cell.plain if isinstance(cell, Text) else str(cell))
+
+
+def _table_width(widths: Sequence[int]) -> int:
+    """Rendered width of a default-box table whose columns hold ``widths``.
+
+    Measured against Rich rather than derived from its source: one padding
+    column either side of each cell plus one border between and around them
+    comes to ``3n + 1``, exact for every column count and content width tried.
+    """
+    return sum(widths) + 3 * len(widths) + 1
+
+
+def _fit_columns(widths: Sequence[int], available: int) -> tuple[int, ...]:
+    """Indices of the columns that fit ``available``, keeping first and last.
+
+    The ends are what identify a row and carry the answer — a spending table
+    reads as `month … total`, and dropping either end for two middle dimensions
+    loses the question and keeps the qualifiers. Columns are then added
+    outside-in, so what survives a hard squeeze is the widest possible frame
+    rather than a prefix. This is DuckDB's and pandas' behaviour, measured.
+
+    Returns every index when the whole projection fits, so a caller can tell an
+    elided table from a complete one by length alone.
+    """
+    total = len(widths)
+    if total == 0 or _table_width(widths) <= available:
+        return tuple(range(total))
+    # One column of ELISION stands between the two halves from here on, so its
+    # width is reserved before anything competes for the remainder.
+    kept = [0] if total == 1 else [0, total - 1]
+    budget = [widths[i] for i in kept] + [len(ELISION)]
+    head, tail = 1, total - 2
+    while head <= tail:
+        # Outside-in, alternating, so neither end is favoured by parity.
+        nxt = head if (head - 1) <= (total - 2 - tail) else tail
+        if _table_width([*budget, widths[nxt]]) > available:
+            break
+        budget.append(widths[nxt])
+        kept.append(nxt)
+        if nxt == head:
+            head += 1
+        else:
+            tail -= 1
+    return tuple(sorted(kept))
+
+
 def render_rows(
     columns: Sequence[str],
     rows: Iterable[Sequence[object]],
     *,
     money: Mapping[str, Money] | None = None,
     total_columns: int | None = None,
+    fit: bool = False,
 ) -> None:
     """Render ``rows`` as a table to stdout (requirement 2).
 
@@ -217,8 +276,27 @@ def render_rows(
         highlight=False,
         no_color=not color_enabled(sys.stdout, os.environ),
     )
+    rendered = [_cells(columns, row, declared) for row in rows]
+    kept = tuple(range(len(columns)))
+    if fit and columns:
+        widths = [
+            max(
+                _cell_width(name),
+                max((_cell_width(cells[i]) for cells in rendered), default=0),
+            )
+            for i, name in enumerate(columns)
+        ]
+        kept = _fit_columns(widths, console.width)
+    # The single gap in a prefix-plus-suffix selection, or None when nothing
+    # was dropped.
+    gap = next(
+        (at for at, i in enumerate(kept[:-1]) if kept[at + 1] != i + 1),
+        None,
+    )
+
     table = Table()
-    for name in columns:
+    for at, i in enumerate(kept):
+        name = columns[i]
         table.add_column(
             name,
             justify="right" if name in declared else "left",
@@ -230,15 +308,24 @@ def render_rows(
             # apart. A ragged row is the cheaper failure than a wrong one.
             overflow="fold",
         )
-    for row in rows:
-        table.add_row(*_cells(columns, row, declared))
+        if at == gap:
+            table.add_column(ELISION, justify="center", overflow="fold")
+    for cells in rendered:
+        row_cells = [cells[i] for i in kept]
+        if gap is not None:
+            row_cells.insert(gap + 1, ELISION)
+        table.add_row(*row_cells)
     console.print(table)
-    if total_columns is not None and total_columns > len(columns):
+    # Counted from what was actually printed, so a caller's declared narrowing
+    # and the renderer's own width fit are disclosed by one line rather than
+    # two — and a fit the caller never asked about still cannot happen silently.
+    whole = total_columns if total_columns is not None else len(columns)
+    if whole > len(kept):
         # stdout, and reachable under `-q` (this renderer takes no such
         # parameter): both are load-bearing. `moneybin reports spending >
         # report.txt` has to capture the disclosure with the table it describes,
         # or the file records a truncated result that reads as a whole one.
-        typer.echo(f"{len(columns)} of {total_columns} columns shown — --wide for all")
+        typer.echo(f"{len(kept)} of {whole} columns shown — --wide for all")
 
 
 def render_summary(

@@ -799,7 +799,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   either would leave you knowing something was off and unable to see what.
   `--verbose` shows the full roll, alongside the affected transaction IDs it
   already showed. `--output json` is unchanged and still carries every
-  invariant.
+  invariant. The summary itself now survives `-q`, which previously took it:
+  with passing invariants no longer narrated, a quiet clean run would otherwise
+  have printed nothing at all. `-q` now silences the 💡 next-step hints and
+  nothing else, and a failing invariant still prints under it.
 
 - **A report's table fits your terminal, and says what it left out.** Six of the
   eight built-in reports returned nine to fourteen columns and printed all of
@@ -821,6 +824,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   argument and then ignored it — the view returns all three comparisons
   regardless — so `--compare mom` was documented as intent and observable
   nowhere. It selects which comparison the table shows by default.
+
+  A report that declares no columns — one you saved yourself, or one a
+  third-party extension provides — is fitted to your terminal instead. It keeps
+  the first and last columns, drops from the middle outwards until the table
+  fits the window you actually have, and marks the gap with `…`, the way DuckDB
+  and pandas render a result too wide to print. So the same saved report shows
+  more of itself in a maximized window than in a narrow one, and `--wide` still
+  returns the whole projection.
+
+  A converted read keeps its `original_currency_code` column whichever
+  narrowing applies. Display conversion relabels every amount into the target
+  currency, so dropping it would leave the table stating what each row is worth
+  and losing what it was — and the only other disclosure goes to stderr, which
+  a redirect to a file does not capture.
 - **Google Sheets connects with no setup.** MoneyBin now ships the OAuth client
   secret alongside its public client ID, so `moneybin gsheet auth` completes on
   a bare install. Google's Desktop clients require both halves, and a wheel

@@ -52,7 +52,10 @@ import moneybin.reports.service_reports as service_reports
 from moneybin.cli.render import MINUS
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import RegisteredReport
-from moneybin.reports._framework.cli_register import visible_columns
+from moneybin.reports._framework.cli_register import (
+    resolve_default_columns,
+    visible_columns,
+)
 from moneybin.reports._framework.contract import OutputColumn
 from moneybin.reports._framework.registry import discover_reports, spec_of
 from moneybin.reports.definitions._shared import (
@@ -156,16 +159,17 @@ def _parameter_combinations(report_id: str) -> list[dict[str, object]]:
 
 @pytest.mark.parametrize("spec", _in_tree_reports(), ids=lambda spec: spec.report_id)
 def test_every_report_declares_a_default_column_set(spec: RegisteredReport) -> None:
-    """Requirement 6: an in-tree report never relies on the extension fallback.
+    """Requirement 6: an in-tree report never relies on the renderer's fit.
 
-    The fallback — the first six declared columns — is a cap for a report
-    defined outside this repo, not a design. Every report here has an author
-    who knows which columns answer its question, and none of the six current
-    ones fits 80 characters on its first six columns.
+    Fitting to the terminal is what a surface does when nobody told it which
+    columns matter — it keeps the ends and drops the middle by width alone.
+    Every report here has an author who knows which columns answer its
+    question, and that judgement is not recoverable from column widths: the
+    fit would keep whichever end happened to be narrow.
     """
     assert spec.default_columns is not None, (
-        f"{spec.report_id} has no default_columns; a text reader gets its first "
-        "six columns, which is a fallback for extensions rather than a choice"
+        f"{spec.report_id} has no default_columns, so a text reader gets "
+        "whichever columns happen to fit rather than the ones that answer it"
     )
 
 
@@ -178,13 +182,17 @@ def test_every_default_column_set_fits_eighty_characters(
     declared = [column.name for column in spec.columns]
 
     for parameters in _parameter_combinations(spec.report_id):
-        names = visible_columns(spec, declared, parameters=parameters, wide=False)
         # Requirement 6: a default set that does not resolve is a spec
-        # violation. `visible_columns` fails open to the whole projection, so
-        # an unresolved set would otherwise show up only as a width failure
-        # with a misleading cause.
+        # violation. Checked against the raw declaration, not against
+        # `visible_columns`, which intersects with the columns it is handed and
+        # would make every surviving name trivially declared — a guard that
+        # cannot fail. `validate_default_columns` takes callables on trust, so
+        # a typo in one reaches a user's terminal as a quietly narrower table
+        # and this is the only assertion standing between the two.
+        names = resolve_default_columns(spec, parameters)
         assert set(names) <= set(declared), (
-            f"{spec.report_id} with {parameters} names undeclared columns"
+            f"{spec.report_id} with {parameters} names undeclared columns: "
+            f"{', '.join(sorted(set(names) - set(declared)))}"
         )
         width = _rendered_width(spec.report_id, [by_name[name] for name in names])
         assert width <= MAX_WIDTH, (

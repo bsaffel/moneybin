@@ -26,6 +26,7 @@ from moneybin.reports._framework.cli_register import (
     visible_columns,
 )
 from moneybin.reports._framework.contract import (
+    ORIGINAL_CURRENCY_COLUMN,
     DefaultColumns,
     OutputColumn,
     ReportQuery,
@@ -861,20 +862,20 @@ def test_a_default_column_absent_from_this_projection_is_dropped() -> None:
     assert visible == ("year_month", "net")
 
 
-def test_an_undeclared_report_falls_back_to_its_first_six_columns() -> None:
-    """Requirement 6: an extension that declares nothing still gets a cap.
+def test_an_undeclared_report_hands_its_whole_projection_to_the_renderer() -> None:
+    """Requirement 6: a report that declares nothing is fitted, not capped.
 
-    Six is a fixed count rather than a computed fit — `OutputColumn` carries no
-    display width, so "the columns that fit 80" is not answerable without
-    measuring runtime values, which would make an extension's column set vary
-    with its data.
+    A fixed count here would be the wrong answer at both ends — under-filling a
+    wide terminal and still overflowing a narrow one — and it cannot know a
+    column's display width, which depends on the values. So the resolution
+    passes everything through and `render_rows(fit=True)` measures it against
+    the real terminal, as DuckDB and pandas do.
     """
     visible = visible_columns(
         _wide_spec(), _WIDE_COLUMN_NAMES, parameters={}, wide=False
     )
 
-    assert visible == _WIDE_COLUMN_NAMES[:6]
-    assert "txn_count" not in visible
+    assert visible == _WIDE_COLUMN_NAMES
 
 
 def test_a_default_set_matching_nothing_renders_the_whole_result() -> None:
@@ -897,6 +898,37 @@ def test_a_default_set_matching_nothing_renders_the_whole_result() -> None:
     )
 
     assert visible == _WIDE_COLUMN_NAMES
+
+
+def test_a_converted_read_keeps_the_column_naming_what_it_was() -> None:
+    """Display conversion attaches `original_currency_code` at run time.
+
+    No declaration can name a column the projection does not have, so the
+    intersection would drop it — while conversion has relabelled every amount
+    into the target currency. The table would then state what each row is worth
+    and lose what it was. The only other disclosure, `echo_applied_rates`, goes
+    to stderr, which `moneybin reports cashflow … > out.txt` does not capture.
+    """
+    visible = visible_columns(
+        _wide_spec(("year_month", "net")),
+        (*_WIDE_COLUMN_NAMES, ORIGINAL_CURRENCY_COLUMN),
+        parameters={},
+        wide=False,
+    )
+
+    assert visible == ("year_month", "net", ORIGINAL_CURRENCY_COLUMN)
+
+
+def test_an_unconverted_read_does_not_invent_that_column() -> None:
+    """It rides on the result carrying it, never on the declaration."""
+    visible = visible_columns(
+        _wide_spec(("year_month", "net")),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+    )
+
+    assert ORIGINAL_CURRENCY_COLUMN not in visible
 
 
 def _invoke_wide(*args: str) -> Result:

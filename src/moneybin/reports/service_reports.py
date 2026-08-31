@@ -517,14 +517,19 @@ NETWORTH_REPORT = ServiceReportSpec(
     executor=_execute_networth,
     validator=_validate_networth_parameters,
     on_converted=_restate_networth_total,
-    # Requirement 6, for `reports run core:networth`. The `reports networth`
-    # command renders the headline figures as a summary block instead and picks
-    # its own columns for the account table; this is the generic table view of
-    # the same rows, so it leads with what identifies a row — the account — and
-    # leaves the per-currency totals to `--wide`.
+    # Requirement 6, for `reports run core:networth`. This projection is two
+    # row shapes in one table: `_totals_row` fills the headline figures and
+    # nulls the account ones, `_account_row` does the reverse. So the default
+    # set has to name a column from each side — an account-only set renders
+    # every totals row blank but for its date and currency, and a profile with
+    # no positions is a single empty row. `net_worth` is the headline of the
+    # four totals columns; the rest stay behind `--wide`. `balance_date` is
+    # what makes room for it — measured, the five-column set renders 81
+    # characters against requirement 9's 80 — and it is the right column to
+    # lose: every row of one snapshot repeats the same date.
     default_columns=(
-        "balance_date",
         "currency_code",
+        "net_worth",
         "account_name",
         "account_balance",
     ),

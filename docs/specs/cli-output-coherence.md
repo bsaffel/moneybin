@@ -181,18 +181,26 @@ Numbered, each independently testable.
    `src/moneybin/reports/_framework/registry.py:53`) share the same `@report` /
    `ReportSpec` contract and the same `register_report_cli` path, so the field is
    **optional** on `ReportSpec`: an extension that declares nothing keeps working
-   unchanged. Its fallback is the **first six columns** of the declared
-   projection, with the remainder reachable via `--wide`. Six is a fixed count,
-   not a computed fit: `OutputColumn` carries only `name`, `description`, and
-   `data_class` (`src/moneybin/reports/_framework/contract.py:139-144`) — no
-   display width — so "the columns that fit 80" is not computable without
-   measuring runtime values, which would make an extension's column set vary with
-   its data. A fixed count is deterministic and needs no new metadata. The
-   consequence is stated rather than hidden: **requirement 9's 80-column
-   guarantee is contract-tested for in-tree reports and best-effort for
-   extensions** until one declares `DEFAULT_COLUMNS`. Requirement 10's framing
-   line discloses the omission either way, so a wide extension report is legible
-   as truncated rather than silently clipped.
+   unchanged. An undeclared report is **fitted to the terminal** rather than
+   capped: `render_rows(fit=True)` measures the rendered cells, keeps the first
+   and last columns, and drops from the middle outwards until the table fits the
+   real console width, marking the gap with a `…` column. This is what DuckDB's
+   box renderer and pandas both do, verified against both
+   (`14 columns (6 shown)`, `[1 rows x 14 columns]`), and it is strictly better
+   than the fixed count first specified here: a fixed six under-fills a 200-column
+   window and still overflows a 40-column one, and it cannot know a column's
+   display width, which depends on the values rather than on `OutputColumn`
+   (`src/moneybin/reports/_framework/contract.py:139-144`). Measuring at render
+   time is exactly where the values are.
+
+   The ends are kept because they are what identify a row and carry its answer —
+   a spending table reads as `month … total`, and dropping either end for two
+   middle dimensions keeps the qualifiers and loses the question. Requirement
+   10's framing line reports the fit from what was actually printed, so a
+   narrowing the caller never requested is disclosed by the same line as a
+   declared one. **Requirement 9's 80-column guarantee remains contract-tested
+   for in-tree reports only** — a declared set is a curated answer that the fit
+   must not re-decide, so a report that declares columns is never fitted.
    `docs/specs/extension-contracts.md` gains the optional field and its fallback
    in the same change.
 7. Every command with a `DEFAULT_COLUMNS` narrower than its full projection
@@ -499,6 +507,17 @@ Numbered, each independently testable.
     than two flags a reader has to choose between.
 22. The failure path is unchanged in content: a failing invariant prints its name
     and its detail.
+
+    **The summary survives `-q`.** Once requirement 20 stops narrating a
+    passing invariant, the summary is the only thing a clean run prints, and
+    the pre-existing `if not quiet` gate on it would make
+    `moneybin system doctor -q` succeed in total silence — a command whose
+    whole job is to report on the ledger saying nothing about it. The summary
+    is doctor's result, not a status line about producing one, and requirement
+    5 already forbids `-q` suppressing result data. What `-q` does silence is
+    the 💡 recovery-action hints, which is the line `echo_report_notes` already
+    draws for reports: quiet reaches next-step hints and nothing else. A
+    failing invariant still prints under `-q`.
 
 **Stats (F5)**
 

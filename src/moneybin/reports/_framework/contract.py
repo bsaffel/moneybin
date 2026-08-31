@@ -437,7 +437,8 @@ def report(
             holding a value computed from an amount needs one.
         default_columns: The columns a text reader sees before ``--wide``,
             as a tuple or a callable of the report's effective parameters.
-            Omitted means undeclared, which falls back to the first six.
+            Omitted means undeclared: the renderer then fits the whole
+            projection to the terminal, keeping the first and last columns.
     """
     # Imported lazily to avoid a contract<->introspect import cycle.
     from moneybin.reports._framework.introspect import build_spec

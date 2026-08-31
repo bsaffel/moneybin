@@ -527,12 +527,17 @@ the full projection either way; `--wide` restores every column; and when
 anything is omitted the CLI prints `4 of 11 columns shown — --wide for all`
 beneath the table, so a narrowed view is never a silent one.
 
-Omitting the field is legal and leaves the report rendering its **first six**
-columns. Six is a fixed count rather than a measured fit: `OutputColumn` carries
-no display width, so "the columns that fit 80" cannot be answered without
-measuring runtime values, which would make the column set vary with the data.
-The 80-column guarantee is contract-tested for in-repo reports and best-effort
-for an extension until it declares its own set.
+Omitting the field is legal. An undeclared report is **fitted to the reader's
+terminal**: the renderer measures the cells it is about to print, keeps the
+first and last columns, and drops from the middle outwards until the table fits,
+marking the gap with a `…` column — the behaviour DuckDB's box renderer and
+pandas both have. So a wide extension report stays legible in any window
+without its author doing anything.
+
+Declare the field anyway when you know which columns answer your report. The fit
+works from widths alone, so it keeps whichever end happens to be narrow; only an
+author knows that `category` matters more than `currency_code`. A declared set
+is never fitted — it is taken as the answer and rendered as given.
 
 Full rationale, including why the field is not called `kind` — `ReportSemantics.kind`
 already exists at report level and cannot describe two columns of one result —

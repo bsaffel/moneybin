@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import io
+import re
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -557,6 +558,105 @@ def test_no_framing_line_when_every_column_is_shown(
     render_rows(["year_month", "net"], [("2026-08", 1)], total_columns=2)
 
     assert "columns shown" not in capsys.readouterr().out
+
+
+_FIT_COLUMNS = [f"column_number_{i}" for i in range(1, 15)]
+_FIT_ROW = tuple(f"value{i}" for i in range(1, 15))
+
+
+def test_a_fitted_table_keeps_the_ends_and_marks_the_gap(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requirement 6, for a report that declared no columns of its own.
+
+    The ends are what identify a row and carry its answer, so a squeeze drops
+    the middle — the behaviour DuckDB's box renderer and pandas both have. The
+    gap is marked rather than spliced shut, because adjacent columns that were
+    never adjacent read as the whole projection.
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+
+    render_rows(_FIT_COLUMNS, [_FIT_ROW], fit=True)
+
+    out = capsys.readouterr().out
+    assert "column_number_1 " in out
+    assert "column_number_14" in out
+    assert "column_number_7" not in out
+    assert "…" in out
+
+
+def test_a_fitted_table_discloses_what_it_dropped(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requirement 10 reaches a narrowing the caller never asked for.
+
+    The renderer decided this one from the terminal width, so the caller passed
+    no `total_columns` and could not have framed it. Counting from what was
+    printed is what keeps the disclosure attached to the decision.
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+
+    render_rows(_FIT_COLUMNS, [_FIT_ROW], fit=True)
+
+    out = capsys.readouterr().out
+    # Counted off the rendered headers, not by substring: `column_number_1`
+    # occurs inside `column_number_14`, so a naive count agrees with a wrong
+    # framing line as readily as a right one.
+    shown = len(set(re.findall(r"column_number_\d+", out)))
+    assert f"{shown} of 14 columns shown — --wide for all" in out
+    assert shown < len(_FIT_COLUMNS)
+
+
+def test_a_wide_terminal_fits_more_of_the_same_result(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of fitting rather than capping: the window decides."""
+
+    def _shown(out: str) -> int:
+        found = re.search(r"(\d+) of 14 columns shown", out)
+        assert found is not None, out
+        return int(found.group(1))
+
+    monkeypatch.setenv("COLUMNS", "200")
+    render_rows(_FIT_COLUMNS, [_FIT_ROW], fit=True)
+    wide = _shown(capsys.readouterr().out)
+
+    monkeypatch.setenv("COLUMNS", "80")
+    render_rows(_FIT_COLUMNS, [_FIT_ROW], fit=True)
+    narrow = _shown(capsys.readouterr().out)
+
+    assert wide > narrow
+
+
+def test_a_result_that_already_fits_is_left_whole(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fitting is not a cap: nothing is dropped or disclosed when it all fits."""
+    monkeypatch.setenv("COLUMNS", "80")
+
+    render_rows(["year_month", "net"], [("2026-08", 1)], fit=True)
+
+    out = capsys.readouterr().out
+    assert "…" not in out
+    assert "columns shown" not in out
+
+
+def test_the_fit_measures_values_not_just_headers(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A column is as wide as its widest cell, which the headers do not say.
+
+    Deciding from header lengths alone is how a table of short names holding
+    long values overflows anyway — the failure the fixed count had.
+    """
+    # Headers alone measure 17 characters and would fit; the values make the
+    # real table 56, so only a value-aware fit narrows here.
+    monkeypatch.setenv("COLUMNS", "30")
+    columns = ["a", "b", "c", "d"]
+
+    render_rows(columns, [("x" * 40, "y", "z", "w")], fit=True)
+
+    assert "columns shown" in capsys.readouterr().out
 
 
 def test_an_undeclared_total_frames_nothing(

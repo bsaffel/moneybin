@@ -190,6 +190,7 @@ def reports_run(
             columns = visible_columns(
                 spec, result.columns, parameters=parameters, wide=wide
             )
+            fit_to_terminal = spec.default_columns is None
     render_report_result(
         result,
         output,
@@ -197,6 +198,10 @@ def reports_run(
         money=money,
         quiet=quiet,
         columns=columns,
+        # A saved report names no default columns — the user's own SELECT is
+        # the projection — so the renderer fits it to the terminal. `--wide` is
+        # a request for the whole thing, not for a fitted one.
+        fit=fit_to_terminal and not wide,
     )
 
 

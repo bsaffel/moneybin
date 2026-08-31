@@ -85,6 +85,64 @@ def test_a_fully_passing_run_prints_only_its_summary(
 
 @patch("moneybin.cli.commands.system.doctor.get_database")
 @patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_quiet_still_reports_the_verdict_on_a_clean_run(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """The summary is doctor's result, so `-q` does not take it.
+
+    Once requirement 20 stops narrating a passing invariant, the summary is the
+    only thing a clean run prints. Gating it on `quiet` too would make
+    `moneybin system doctor -q` succeed in total silence — a command whose
+    whole job is to report on the ledger saying nothing about it.
+    """
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _PASSING_REPORT
+    result = runner.invoke(app, ["system", "doctor", "-q"])
+
+    assert result.exit_code == 0
+    assert "5 invariants checked" in result.output
+    assert "all passing" in result.output
+    assert result.output.strip()
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_quiet_never_hides_a_failing_invariant(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """A flag asking for less chatter is not a claim that nothing is wrong."""
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _FAILING_REPORT
+    result = runner.invoke(app, ["system", "doctor", "-q"])
+
+    assert result.exit_code == 1
+    assert "❌ fct_transactions_sign_convention — 1 violation(s)" in result.output
+    assert "⚠️  categorization_coverage — 80% uncategorized" in result.output
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_quiet_silences_the_next_step_hints_and_nothing_else(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """The one thing `-q` takes, on the line `echo_report_notes` already draws.
+
+    A 💡 suggests a command to run next, which is the informational status the
+    flag is for. The invariant above it and the summary below it are the
+    answer.
+    """
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _RECOVERY_REPORT
+    result = runner.invoke(app, ["system", "doctor", "-q"])
+
+    assert result.exit_code == 1
+    assert "💡" not in result.output
+    assert "transactions_notes_delete" not in result.output
+    assert "invariants checked" in result.output
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
 def test_a_failing_invariant_prints_its_name_and_detail(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
 ) -> None:
