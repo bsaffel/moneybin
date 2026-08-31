@@ -25,7 +25,7 @@ flowchart LR
   consumers -. "read-only SQL<br/>masked by value shape" .-> prep
 ```
 
-The arrow direction is the rule. Data flows left to right through `raw → prep → core → reports`. Consumers read from `core` and `reports` for analysis; the agent-safe SQL paths (`sql_query` and `moneybin sql query`) also read `raw` and `prep` for inspection, masked by value shape rather than by column declaration. Managed writes from the CLI and MCP target `app.*` (notes, tags, splits, categorizations, match decisions, balance assertions) and `raw.*` (imports and manual entry). DDL, writes to `core.*`, and any write outside the allowlist are rejected by the privacy middleware on the MCP side and are not exposed by the CLI.
+The arrow direction is the rule. Data flows left to right through `raw → prep → core → reports`. Consumers read from `core` and `reports` for analysis; the agent-safe SQL paths (`sql_query` and `moneybin sql query`) also read `raw` and `prep` for inspection, masked by value shape rather than by column declaration. CLI and MCP mutation operations target `app.*` (notes, tags, splits, categorizations, match decisions, balance assertions) and `raw.*` (imports and manual entry) through service-backed write paths. The general MCP SQL tool rejects DDL and writes.
 
 ## Layer reference
 

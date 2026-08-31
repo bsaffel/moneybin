@@ -35,7 +35,7 @@ Implement [ADR-010](../decisions/010-writer-coordination.md): replace the long-l
 9. CLI commands that only read data declare `read_only=True`; commands that write (import, categorize, curation) declare `read_only=False`.
 10. `interrupt_and_reset_database()` interrupts and closes the currently-active write connection, if any.
 11. `sqlmesh_context()` accepts an explicit `db: Database` parameter (the caller's write connection) instead of reading the module-level singleton.
-12. The atexit metrics flush opens a fresh connection only if the database was accessed during the session.
+12. The atexit metrics flush opens a fresh connection only if the database was written during the session.
 13. `DatabaseNotInitializedError` is caught at all CLI error handlers alongside `DatabaseKeyError`, displayed as a one-line message with no traceback.
 14. The `.claude/rules/database.md` connection-management section is updated to reflect the new per-operation model.
 15. `Database.__init__()` and `get_database()` both require `read_only` as a keyword-only argument; there is no default. All call sites declare intent explicitly. Pyright catches any missing kwarg at type-check time.

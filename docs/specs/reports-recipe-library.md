@@ -432,7 +432,7 @@ src/moneybin/sqlmesh/models/core/
 
 ### Privacy middleware
 
-The privacy middleware's managed-write validation enforces that writes target only `app.*` and `raw.*`. **`reports.*` is read-only by design and never appears in `_WRITABLE_SCHEMAS`** (per `architecture-shared-primitives.md` §Cascading Edits line 412). No middleware changes needed.
+**`reports.*` is read-only by design.** No middleware changes needed.
 
 ## Schema Discoverability
 
@@ -605,7 +605,7 @@ Same architectural fix as migration 3. The Python-built `app.merchants` view (in
 | `seeds.categories` | SQLMesh seed | unchanged |
 | `seeds.merchants_global/us/ca` | SQLMesh seeds (retired 2026-05-15) | removed |
 
-Privacy middleware's `_WRITABLE_SCHEMAS` is unchanged — `app.*` and `raw.*` remain the only writable schemas. Writes against the user-state tables continue to work; reads from the resolution views move to `core.dim_*`.
+Writes against the user-state tables continue to work; reads from the resolution views move to `core.dim_*`.
 
 ## Testing Strategy
 

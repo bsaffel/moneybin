@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from moneybin.config import get_settings
-from moneybin.mcp.privacy import validate_read_only_query
+from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
 from moneybin.privacy.log import write_privacy_event
 
 
@@ -19,10 +19,6 @@ async def test_privacy_coarse_status_is_default(mcp_db: object) -> None:
 
 
 def test_get_max_rows_uses_the_mcp_configuration() -> None:
-    from moneybin.mcp import privacy
-
-    get_max_rows = getattr(privacy, "get_max_rows", lambda: None)
-
     assert get_max_rows() == get_settings().mcp.max_rows
 
 
