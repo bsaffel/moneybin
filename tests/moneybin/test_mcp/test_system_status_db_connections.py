@@ -232,13 +232,14 @@ def test_block_tolerates_corrupted_lock_file_while_held(tmp_path: Path) -> None:
         patch(
             "moneybin.mcp.tools.system.find_blocking_processes",
             return_value=[],
-        ),
+        ) as find_processes,
     ):
         # Overwrite the held lock file's contents in place (same inode, so the
         # holder's fcntl lock is unaffected) with invalid JSON.
         lock_path.write_text("not-json{{")
         block = _database_connections_block(db_path)
     assert block["writers"] == []
+    find_processes.assert_called_once_with(db_path.resolve())
 
 
 def test_block_tolerates_non_dict_json_while_held(tmp_path: Path) -> None:
@@ -255,11 +256,12 @@ def test_block_tolerates_non_dict_json_while_held(tmp_path: Path) -> None:
         patch(
             "moneybin.mcp.tools.system.find_blocking_processes",
             return_value=[],
-        ),
+        ) as find_processes,
     ):
         lock_path.write_text("null")
         block = _database_connections_block(db_path)
     assert block["writers"] == []
+    find_processes.assert_called_once_with(db_path.resolve())
 
 
 def test_read_writer_metadata_retries_transient_empty_read(

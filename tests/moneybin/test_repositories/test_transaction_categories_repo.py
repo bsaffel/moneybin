@@ -252,10 +252,10 @@ def test_upsert_guarded_many_preserves_precedence_and_row_grain_audits(
     database_calls = 0
     execute = db.execute
 
-    def count_execute(*args: object, **kwargs: object) -> object:
+    def count_execute(query: str, params: list[Any] | None = None) -> Any:
         nonlocal database_calls
         database_calls += 1
-        return execute(*args, **kwargs)
+        return execute(query, params)
 
     monkeypatch.setattr(db, "execute", count_execute)
     written = repo.upsert_guarded_many(

@@ -259,7 +259,8 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
     # No separate exists() check: _writer_is_live opens the lock file and
     # returns False if it is absent, so an exists() guard would be a redundant,
     # TOCTOU-prone stat.
-    if _writer_is_live(lock_path):
+    writer_is_live = _writer_is_live(lock_path)
+    if writer_is_live:
         metadata = _read_writer_metadata(lock_path)
         if metadata is not None:
             writer_pid = metadata["pid"]
@@ -273,7 +274,7 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
     # The lock probe above is sufficient to establish a healthy status; only
     # enumerate processes when diagnosing the live writer that needs a holder.
     readers: list[dict[str, Any]] = []
-    processes = find_blocking_processes(resolved) if writers else []
+    processes = find_blocking_processes(resolved) if writer_is_live else []
     for proc in processes:
         if writer_pid is not None and proc["pid"] == writer_pid:
             continue  # Avoid double-listing the writer as a reader
