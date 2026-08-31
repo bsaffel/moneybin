@@ -919,6 +919,30 @@ def test_a_converted_read_keeps_the_column_naming_what_it_was() -> None:
     assert visible == ("year_month", "net", ORIGINAL_CURRENCY_COLUMN)
 
 
+def test_a_declaration_naming_that_column_itself_does_not_double_it() -> None:
+    """A callable is taken on trust at construction, so the guard belongs here.
+
+    `validate_default_columns` refuses a static tuple naming a column the
+    report does not declare, and `original_currency_code` is never declared —
+    conversion attaches it at run time. A callable's result is checked by
+    nothing, so an extension that copies `ORIGINAL_CURRENCY_COLUMN` into its
+    declaration would take the column through the intersection and then again
+    through the append below it, and render the same column twice.
+    """
+
+    def _names_it(parameters: Mapping[str, Any]) -> tuple[str, ...]:
+        return ("year_month", ORIGINAL_CURRENCY_COLUMN)
+
+    visible = visible_columns(
+        _wide_spec(_names_it),
+        (*_WIDE_COLUMN_NAMES, ORIGINAL_CURRENCY_COLUMN),
+        parameters={},
+        wide=False,
+    )
+
+    assert visible == ("year_month", ORIGINAL_CURRENCY_COLUMN)
+
+
 def test_an_unconverted_read_does_not_invent_that_column() -> None:
     """It rides on the result carrying it, never on the declaration."""
     visible = visible_columns(

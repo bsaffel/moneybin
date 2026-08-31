@@ -221,7 +221,13 @@ def visible_columns(
     # goes to stderr, which `> report.txt` does not capture. Requirement 9's
     # 80-column bar is measured on declared projections; an explicit
     # `--display-currency` may exceed it rather than drop the provenance.
-    if ORIGINAL_CURRENCY_COLUMN in available:
+    # `not in visible` because nothing checks a callable declaration —
+    # `validate_default_columns` takes one on trust — so one that names this
+    # column itself would otherwise pick it up here a second time.
+    if (
+        ORIGINAL_CURRENCY_COLUMN in available
+        and ORIGINAL_CURRENCY_COLUMN not in visible
+    ):
         visible = (*visible, ORIGINAL_CURRENCY_COLUMN)
     return visible
 

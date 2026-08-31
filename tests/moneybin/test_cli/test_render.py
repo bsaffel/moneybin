@@ -16,8 +16,10 @@ import ast
 import io
 import re
 import sys
+from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -682,6 +684,42 @@ def test_one_unkeepable_column_does_not_end_the_fit(
     assert "fourth" in out
     # Not "wide": the framing line's own `--wide for all` contains it.
     assert "sprawling" not in out
+
+
+def test_an_unfitted_table_streams_its_rows(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the fitted path may buffer, because only it has to measure.
+
+    `reports run` defaults to `CLI_MAX_ROWS` (1,000,000) rows, and Rich's
+    `Table` already retains every cell it is given. Holding a second copy of
+    the whole result alongside it is what turns a large-but-renderable report
+    into an out-of-memory failure, so a table that is not being fitted hands
+    each record straight to Rich and keeps none of its own.
+    """
+    from rich.table import Table
+
+    produced: list[int] = []
+    seen_when_added: list[int] = []
+    add_row = Table.add_row
+
+    def _spy(self: Table, *cells: Any, **kwargs: Any) -> None:
+        seen_when_added.append(len(produced))
+        add_row(self, *cells, **kwargs)
+
+    monkeypatch.setattr(Table, "add_row", _spy)
+
+    def _rows() -> Iterator[tuple[str]]:
+        for i in range(4):
+            produced.append(i)
+            yield (f"row{i}",)
+
+    render_rows(["value"], _rows())
+
+    # Streaming: each record reaches Rich before the next one is produced.
+    # Buffering first would make every entry 4.
+    assert seen_when_added == [1, 2, 3, 4]
+    assert "row3" in capsys.readouterr().out
 
 
 def test_an_undeclared_total_frames_nothing(

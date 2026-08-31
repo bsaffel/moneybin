@@ -288,13 +288,23 @@ def render_rows(
         highlight=False,
         no_color=not color_enabled(sys.stdout, os.environ),
     )
-    rendered = [_cells(columns, row, declared) for row in rows]
+    cells_source: Iterable[list[RenderableType]] = (
+        _cells(columns, row, declared) for row in rows
+    )
     kept = tuple(range(len(columns)))
     if fit and columns:
+        # The one path that buffers the whole result, and it has no choice: a
+        # column is as wide as its widest value, so every record has to be
+        # rendered before the first column can be sized. Every other path
+        # streams. `reports run` defaults to `CLI_MAX_ROWS` (1,000,000) records
+        # and Rich already keeps its own copy of each cell, so a second copy of
+        # the result is what turns a large-but-renderable report into an
+        # out-of-memory failure.
+        cells_source = list(cells_source)
         widths = [
             max(
                 _cell_width(name),
-                max((_cell_width(cells[i]) for cells in rendered), default=0),
+                max((_cell_width(cells[i]) for cells in cells_source), default=0),
             )
             for i, name in enumerate(columns)
         ]
@@ -322,11 +332,14 @@ def render_rows(
         )
         if at == gap:
             table.add_column(ELISION, justify="center", overflow="fold")
-    for cells in rendered:
+    for cells in cells_source:
         row_cells = [cells[i] for i in kept]
         if gap is not None:
             row_cells.insert(gap + 1, ELISION)
         table.add_row(*row_cells)
+    # Rich holds every cell now, so let a buffered measurement copy go before
+    # rendering allocates its own.
+    del cells_source
     console.print(table)
     # Counted from what was actually printed, so a caller's declared narrowing
     # and the renderer's own width fit are disclosed by one line rather than
