@@ -287,7 +287,7 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 ### PR 13 — Lint rule + final doctor invariants + spec → `implemented`
 
 - Lint rule per Req 8. Implementation chosen during PR 2's spike (ruff plugin if feasible, pytest as fallback). Allowlist:
-  - Path: `**/repositories/base.py`, `**/repositories/*_repo.py`, `services/audit_service.py`, `src/moneybin/sql/migrations/V*.py` (historical migrations — per Req 7).
+  - Path: `src/moneybin/repositories/base.py`, `src/moneybin/repositories/*_repo.py`, `src/moneybin/services/audit_service.py`, `src/moneybin/sql/migrations/V*.py` (historical migrations — per Req 7).
   - Tables: `app.audit_log`, `app.metrics`, `app.seed_source_priority`, `app.schema_migrations`, `app.versions`.
 - Backfill any doctor invariants not yet added (audit coverage check is reusable; per-table FK/orphan checks land per-PR).
 - Spec status → `implemented`; `INDEX.md` updated. No CHANGELOG entry: the final change is a lint-rule/test-only gate, which `.claude/rules/shipping.md` excludes.
@@ -300,7 +300,7 @@ Per `.claude/rules/testing.md` test layers.
 |---|---|---|
 | Unit | `tests/moneybin/test_repositories/test_<table>_repo.py` (per repo) | `upsert`/`delete` happy path; `before_value` captures the full prior row (not a diff); `parent_audit_id` is recorded when supplied; audit emission and DB write are atomic (rollback test: simulate a failure between write and audit, assert the row is not present) |
 | Unit | `tests/moneybin/test_repositories/test_base.py` | Repository contract: methods return `AuditEvent`; `_emit_audit()` is the single emission point; metric `app_mutation_audit_emitted_total` increments per call |
-| Integration | `tests/integration/test_app_integrity_invariant_lint.py` | Lint rule rejects protected writes through positional and keyword `query` arguments to `execute`, `executemany`, and `sql`, plus positional and keyword `table` targets to `ingest_dataframe`, in a service-shaped fixture file; restricts the migration exemption to `src/moneybin/sql/migrations/V*.py`; allows sanctioned writes in `repositories/base.py` and `*_repo.py`; honors the allowlist for exempt tables |
+| Integration | `tests/integration/test_app_integrity_invariant_lint.py` | Lint rule rejects protected writes through positional and keyword `query` arguments to `execute`, `executemany`, and `sql`, plus positional and keyword `table` targets to `ingest_dataframe`, in a service-shaped fixture file; resolves local write-call aliases and literal tuple/list unpacking; restricts repository, audit-service, and migration exemptions to their exact canonical paths; honors the allowlist for exempt tables |
 | Service | `tests/moneybin/test_services/test_security_links_service.py` | A security-merge cascade produces one parent audit row plus child rows for lot selection, link repointing, and security deletion that share the parent's `audit_id` as `parent_audit_id` |
 | Service | `tests/moneybin/test_services/test_doctor_app_integrity.py` | Doctor audit-coverage checks enumerate the live repo registry and require every repo table to have coverage or an exact named exemption |
 | Migration regression | covered by existing per-service tests | Per-service tests that already exist (`test_services/test_categorization_service.py`, etc.) must pass unchanged after migration. Repository migration is mechanical — public service surface is preserved, audit emission is added (not changed). New asserts added where existing tests would otherwise silently accept a missing audit row. |
