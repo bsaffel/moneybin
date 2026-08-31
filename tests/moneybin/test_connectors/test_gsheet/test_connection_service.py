@@ -1250,6 +1250,11 @@ def test_reconnect_refuses_to_strand_an_unbound_connection(
     cid = result.connection.connection_id
 
     sheets.register_workbook("ssU", _renamed_account_column_workbook())
+    before = _confirmation_count("accepted")
 
     with pytest.raises(GSheetError, match="account column"):
         svc.reconnect(cid, yes=True)
+
+    # A refusal that still books an accepted confirmation overstates the
+    # metric for a mapping that was never persisted.
+    assert _confirmation_count("accepted") == before

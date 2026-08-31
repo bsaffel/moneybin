@@ -399,6 +399,62 @@ def test_a_filler_label_is_not_recorded_as_an_authored_account_label(
     ]
 
 
+def test_an_authored_name_outranks_a_filler_that_reached_the_key_first(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """A blank cell and a typed "Unknown" share a key; the typed name wins.
+
+    First-label-wins would otherwise record the synthesized filler as the
+    account's authored label — the exact promotion the filler is flagged to
+    prevent — purely because the blank row came first.
+    """
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    df = _multi_account_df().with_columns(
+        pl.Series("Account", ["", "Unknown", "Unknown"])
+    )
+
+    transformed = adapter.transform(df, conn)
+    adapter.load(transformed, conn, in_memory_db, import_id="imp1", source_df=df)
+
+    rows = in_memory_db.execute(
+        "SELECT account_id, account_name, account_label "
+        "FROM raw.tabular_accounts WHERE source_origin = ?",
+        [conn.connection_id],
+    ).fetchall()
+    assert rows == [("unknown", "Unknown", "Unknown")]
+
+
+def test_load_does_not_mint_an_account_for_a_row_the_transform_dropped(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """A trailing summary row must not create an account owning no transactions.
+
+    ``transform_dataframe`` drops rows whose date or amount will not parse, so
+    registering straight off the raw pull mints an account the ledger never
+    references.
+    """
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    df = pl.DataFrame({
+        "Date": ["2026-01-15", "2026-01-16", ""],
+        "Description": ["Coffee", "Salary", "TOTAL"],
+        "Category": ["Dining", "Income", ""],
+        "Amount": ["-4.50", "5000.00", ""],
+        "Account": ["Everyday Checking", "Everyday Checking", ""],
+        "Tags": ["", "", ""],
+    })
+
+    transformed = adapter.transform(df, conn)
+    adapter.load(transformed, conn, in_memory_db, import_id="imp1", source_df=df)
+
+    rows = in_memory_db.execute(
+        "SELECT account_id FROM raw.tabular_accounts WHERE source_origin = ?",
+        [conn.connection_id],
+    ).fetchall()
+    assert rows == [("everyday-checking",)]
+
+
 def test_check_drift_flags_a_blanked_account_column_when_unbound(
     sample_connection: GSheetConnection,
 ) -> None:

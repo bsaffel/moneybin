@@ -157,9 +157,19 @@ def _resolve_account_ids(
 
     Unbound, the sheet's own account column supplies a per-row native key.
     These keys are source-NATIVE (DP-1), not ``dim_accounts`` ids; the
-    resolver maps native → canonical through ``app.account_links``, so the
-    same key scheme as the tabular path lets one account exported through
-    both channels land on one canonical account.
+    resolver maps native → canonical through ``app.account_links``, so an
+    account exported through both this channel and a file import lands on one
+    canonical account.
+
+    That holds for every label ``slugify`` survives, which is the overlap the
+    two channels share today. It does NOT hold for a label written in a
+    non-Latin script: ``label_account_key`` digests those into distinct keys
+    here, while the tabular multi-account branch still slugifies them to ``""``
+    (``import_service.py``, ``account_ids = [slugify(name) ...]``). Matching
+    that would mean re-adopting a key that merges every such account into one,
+    so this channel is deliberately correct rather than bug-compatible; moving
+    the tabular path over rotates native keys for existing installs and needs
+    its own migration.
     """
     from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
         label_account_key,
@@ -227,6 +237,7 @@ def _register_sheet_accounts(
     connection: GSheetConnection,
     db: Database,
     import_id: str,
+    keys_in_ledger: set[str],
 ) -> None:
     """Write one ``raw.tabular_accounts`` row per account the sheet names.
 
@@ -246,16 +257,25 @@ def _register_sheet_accounts(
         return
 
     # First label seen wins per key, matching the tabular path — later rows
-    # spelling the same account differently must not re-key it.
+    # spelling the same account differently must not re-key it. An authored
+    # name is the exception: a blank cell and a typed "Unknown" share a key,
+    # and letting the filler hold it purely by arriving first would record the
+    # synthesized label as one a person wrote.
     name_by_key: dict[str, str] = {}
     authored_keys: set[str] = set()
     for label, authored in _account_labels_from(source_df, account_col):
         key = label_account_key(label)
-        name_by_key.setdefault(key, label)
         if authored:
-            authored_keys.add(key)
+            if key not in authored_keys:
+                name_by_key[key] = label
+                authored_keys.add(key)
+        else:
+            name_by_key.setdefault(key, label)
 
-    keys = sorted(name_by_key)
+    # Only accounts the ledger actually references. transform_dataframe drops
+    # rows whose date or amount will not parse, so a trailing summary row would
+    # otherwise mint an account owning no transactions.
+    keys = sorted(name_by_key.keys() & keys_in_ledger)
     parsed = {key: authored_label_parts(name_by_key[key]) for key in keys}
     _link_sheet_accounts(connection, db, parsed, authored_keys)
     db.ingest_dataframe(
@@ -465,7 +485,13 @@ class TransactionsAdapter:
                     "unbound connection; it carries the account labels the "
                     f"transform keyed away (connection {connection.connection_id})"
                 )
-            _register_sheet_accounts(source_df, connection, db, import_id)
+            _register_sheet_accounts(
+                source_df,
+                connection,
+                db,
+                import_id,
+                keys_in_ledger=set(df["account_id"].to_list()),
+            )
 
         # Stamp the import_id on every row (transform left a placeholder).
         # Also explicitly NULL deleted_from_source_at — DuckDB's INSERT OR

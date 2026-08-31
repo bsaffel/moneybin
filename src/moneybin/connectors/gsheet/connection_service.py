@@ -739,13 +739,9 @@ class GSheetConnectionService:
             human_sign_confirmation=human_sign_confirmation,
         )
 
-        if existing["adapter"] == "transactions":
-            IMPORT_CONFIRMATIONS_TOTAL.labels(
-                channel="gsheet",
-                tier=tier,
-                outcome="accepted",
-            ).inc()
-
+        # Ahead of the metric, matching connect's order: a refused reconnect
+        # persists no mapping, so booking an accepted confirmation for it
+        # overstates the counter.
         _require_keyable_accounts(
             adapter=existing["adapter"],
             account_id=existing["account_id"],
@@ -755,6 +751,13 @@ class GSheetConnectionService:
                 "reconnect with --account-name / --account-id to bind it."
             ),
         )
+
+        if existing["adapter"] == "transactions":
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="gsheet",
+                tier=tier,
+                outcome="accepted",
+            ).inc()
 
         self._repo.update_mapping(
             connection_id,
