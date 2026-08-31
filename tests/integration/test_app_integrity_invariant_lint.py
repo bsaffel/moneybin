@@ -16,8 +16,14 @@ pytestmark = pytest.mark.integration
 
 _MUTATION_RE = re.compile(
     r"\b(?:INSERT\s+(?:OR\s+(?:IGNORE|REPLACE)\s+)?INTO|MERGE\s+INTO|UPDATE|"
-    r"DELETE\s+FROM)\s+"
+    r"DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?)\s+"
     r'"?(app)"?\s*\.\s*"?([a-z_][a-z0-9_]*)"?(?![a-z0-9_"])',
+    re.IGNORECASE,
+)
+_COPY_FROM_RE = re.compile(
+    r"\bCOPY\s+"
+    r'"?(app)"?\s*\.\s*"?([a-z_][a-z0-9_]*)"?(?![a-z0-9_"])'
+    r"(?:\s*\([^)]*\))?\s+FROM\b",
     re.IGNORECASE,
 )
 _EXEMPT_TABLES = frozenset({
@@ -209,6 +215,34 @@ def _for_bindings(
             if name not in bound_names
         ),
     ]
+
+
+def _contains_node(root: ast.AST, node: ast.AST) -> bool:
+    return any(candidate is node for candidate in ast.walk(root))
+
+
+def _comprehension_bindings(
+    scope: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    *,
+    node: ast.Call,
+    outer_bindings: dict[str, list[_BindingValue]],
+) -> dict[str, list[_BindingValue]]:
+    candidates: dict[str, list[_BindingValue]] = {}
+    for generator in scope.generators:
+        if _contains_node(generator.iter, node):
+            break
+        visible_bindings = {**outer_bindings, **candidates}
+        current: dict[str, list[_BindingValue]] = {}
+        for name, value in _for_bindings(
+            generator.target,
+            generator.iter,
+            locals_=visible_bindings,
+        ):
+            current.setdefault(name, []).append(value)
+        candidates.update(current)
+        if any(_contains_node(condition, node) for condition in generator.ifs):
+            break
+    return candidates
 
 
 def _local_bindings(
@@ -612,20 +646,51 @@ def _scope_bindings(
     scope = node
     while scope is not tree:
         scope = parents[scope]
-        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(
+            scope,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.GeneratorExp,
+            ),
+        ):
             scopes.append(scope)
     scopes.append(tree)
 
+    execution_scope = next(
+        (
+            scope
+            for scope in scopes
+            if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ),
+        tree,
+    )
     bindings: dict[str, list[_BindingValue]] = {}
     for enclosing_scope in reversed(scopes):
-        before_line = node.lineno if enclosing_scope is scopes[0] else None
-        bindings.update(
-            _local_bindings(
-                enclosing_scope,
-                before_line=before_line,
-                outer_bindings=bindings,
+        if isinstance(
+            enclosing_scope,
+            (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp),
+        ):
+            bindings.update(
+                _comprehension_bindings(
+                    enclosing_scope,
+                    node=node,
+                    outer_bindings=bindings,
+                )
             )
-        )
+        else:
+            bindings.update(
+                _local_bindings(
+                    enclosing_scope,
+                    before_line=(
+                        node.lineno if enclosing_scope is execution_scope else None
+                    ),
+                    outer_bindings=bindings,
+                )
+            )
     return bindings
 
 
@@ -703,7 +768,8 @@ def _violations_in_path(path: Path) -> list[_Violation]:
                 protected_tables.update(
                     f"{match.group(1)}.{match.group(2)}".lower()
                     for sql in sqls
-                    for match in _MUTATION_RE.finditer(
+                    for mutation_re in (_MUTATION_RE, _COPY_FROM_RE)
+                    for match in mutation_re.finditer(
                         _sql_without_literals_and_comments(sql)
                     )
                     if f"{match.group(1)}.{match.group(2)}".lower() in _PROTECTED_TABLES
@@ -1124,8 +1190,12 @@ def test_ignores_mutation_text_in_fstring_value(tmp_path: Path) -> None:
         "SELECT $$INSERT INTO app.user_categories VALUES (1)$$",
         "SELECT $note$DELETE FROM app.user_categories$note$",
         "SELECT '-- DELETE FROM app.user_categories'",
+        "SELECT 'COPY app.user_categories FROM categories.csv'",
+        "SELECT 'TRUNCATE app.user_categories'",
         "-- DELETE FROM app.user_categories\nSELECT 1",
+        "-- COPY app.user_categories FROM categories.csv\nSELECT 1",
         "/* UPDATE app.user_categories SET active = FALSE */ SELECT 1",
+        "/* TRUNCATE app.user_categories */ SELECT 1",
     ],
 )
 def test_ignores_mutation_text_in_sql_literals_and_comments(
@@ -1436,6 +1506,90 @@ def test_unknown_for_loop_binding_shadows_outer_table_ref_import(
     assert _violations_in_path(source) == []
 
 
+@pytest.mark.parametrize(
+    "expression",
+    [
+        '[db.execute(f"DELETE FROM {table.full_name}") for table in [USER_CATEGORIES]]',
+        '{db.execute(f"DELETE FROM {table.full_name}") for table in [USER_CATEGORIES]}',
+        '{table.full_name: db.execute(f"DELETE FROM {table.full_name}") for table in [USER_CATEGORIES]}',
+        'list(db.execute(f"DELETE FROM {table.full_name}") for table in [USER_CATEGORIES])',
+        '[db.execute(f"DELETE FROM {table.full_name}") for tables in [[USER_CATEGORIES]] for table in tables]',
+        '[db.execute(f"DELETE FROM {table.full_name}") for _, table in [(0, USER_CATEGORIES)]]',
+        '[None for table in [USER_CATEGORIES] if db.execute(f"DELETE FROM {table.full_name}")]',
+        '[None for table in [USER_CATEGORIES] for _ in db.execute(f"DELETE FROM {table.full_name}")]',
+    ],
+)
+def test_rejects_protected_write_through_comprehension_binding(
+    tmp_path: Path,
+    expression: str,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import DIM_ACCOUNTS as table, USER_CATEGORIES\n"
+        "\n"
+        "def delete(db):\n"
+        f"    {expression}\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=4, table="app.user_categories")
+    ]
+
+
+def test_safe_comprehension_binding_shadows_protected_outer_import(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import DIM_ACCOUNTS, USER_CATEGORIES as table\n"
+        "\n"
+        "def update(db):\n"
+        '    [db.execute(f"UPDATE {table.full_name} SET active = FALSE") '
+        "for table in [DIM_ACCOUNTS]]\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
+
+
+def test_unknown_comprehension_binding_shadows_protected_outer_import(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES as table\n"
+        "\n"
+        "def update(db, tables):\n"
+        '    [db.execute(f"UPDATE {table.full_name} SET active = FALSE") '
+        "for table in tables]\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
+
+
+def test_comprehension_target_does_not_shadow_its_own_iterable(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES as table\n"
+        "\n"
+        "def delete(db):\n"
+        '    [None for table in db.execute(f"DELETE FROM {table.full_name}")]\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=4, table="app.user_categories")
+    ]
+
+
 def test_rejects_insert_or_ignore_in_service(tmp_path: Path) -> None:
     source = tmp_path / "src/moneybin/services/example_service.py"
     source.parent.mkdir(parents=True)
@@ -1471,6 +1625,43 @@ def test_rejects_merge_into_protected_table(tmp_path: Path, target: str) -> None
     assert _violations_in_path(source) == [
         _Violation(path=source, line=2, table="app.user_categories")
     ]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "COPY app.user_categories FROM 'categories.csv'",
+        'COPY "app"."user_categories"(category_id) FROM \'categories.csv\'',
+        "TRUNCATE app.user_categories",
+        'TRUNCATE TABLE "app"."user_categories"',
+    ],
+)
+def test_rejects_copy_or_truncate_of_protected_table(
+    tmp_path: Path,
+    sql: str,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        f"def mutate(db):\n    db.execute({sql!r})\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=2, table="app.user_categories")
+    ]
+
+
+def test_allows_copying_protected_table_to_file(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "def export(db):\n"
+        "    db.execute(\"COPY app.user_categories TO 'categories.csv'\")\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
 
 
 @pytest.mark.parametrize(
