@@ -16,7 +16,7 @@ pytestmark = pytest.mark.integration
 
 _MUTATION_RE = re.compile(
     r"\b(?:INSERT\s+(?:OR\s+(?:IGNORE|REPLACE)\s+)?INTO|UPDATE|DELETE\s+FROM)\s+"
-    r"(app\.[a-z_][a-z0-9_]*)\b",
+    r'"?(app)"?\s*\.\s*"?([a-z_][a-z0-9_]*)"?(?![a-z0-9_"])',
     re.IGNORECASE,
 )
 _EXEMPT_TABLES = frozenset({
@@ -44,17 +44,38 @@ class _Violation:
     table: str
 
 
-def _table_ref_bindings(tree: ast.Module) -> dict[str, list[str]]:
-    bindings: dict[str, list[str]] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "moneybin.tables":
-            for imported in node.names:
-                value = getattr(tables_module, imported.name, None)
-                if isinstance(value, tables_module.TableRef):
-                    name = imported.asname or imported.name
-                    if value.full_name not in bindings.setdefault(name, []):
-                        bindings[name].append(value.full_name)
-    return bindings
+class _TablesModuleBinding:
+    pass
+
+
+class _UnknownBinding:
+    pass
+
+
+_TABLES_MODULE = _TablesModuleBinding()
+_UNKNOWN = _UnknownBinding()
+type _BindingValue = (
+    ast.expr | tables_module.TableRef | _TablesModuleBinding | _UnknownBinding
+)
+
+
+def _import_bindings(
+    node: ast.Import | ast.ImportFrom,
+) -> list[tuple[str, _BindingValue]]:
+    if isinstance(node, ast.ImportFrom) and node.module == "moneybin.tables":
+        bindings: list[tuple[str, _BindingValue]] = []
+        for imported in node.names:
+            value = getattr(tables_module, imported.name, None)
+            if isinstance(value, tables_module.TableRef):
+                bindings.append((imported.asname or imported.name, value))
+        return bindings
+    if isinstance(node, ast.Import):
+        return [
+            (imported.asname, _TABLES_MODULE)
+            for imported in node.names
+            if imported.name == "moneybin.tables" and imported.asname is not None
+        ]
+    return []
 
 
 def _assignment_bindings(
@@ -84,10 +105,10 @@ def _local_bindings(
     scope: ast.AST,
     *,
     before_line: int | None,
-) -> dict[str, list[ast.expr]]:
-    candidates: dict[str, list[ast.expr]] = {}
+) -> dict[str, list[_BindingValue]]:
+    candidates: dict[str, list[_BindingValue]] = {}
 
-    def add(name: str, node: ast.expr, line: int) -> None:
+    def add(name: str, node: _BindingValue, line: int) -> None:
         if before_line is None or line < before_line:
             candidates.setdefault(name, []).append(node)
 
@@ -104,6 +125,14 @@ def _local_bindings(
                     add(node.target.id, node.value, node.lineno)
                 self.generic_visit(node.value)
 
+        def visit_Import(self, node: ast.Import) -> None:
+            for name, value in _import_bindings(node):
+                add(name, value, node.lineno)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            for name, value in _import_bindings(node):
+                add(name, value, node.lineno)
+
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
             return
 
@@ -115,6 +144,19 @@ def _local_bindings(
 
         def visit_Lambda(self, node: ast.Lambda) -> None:
             return
+
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        arguments = [
+            *scope.args.posonlyargs,
+            *scope.args.args,
+            *scope.args.kwonlyargs,
+        ]
+        if scope.args.vararg is not None:
+            arguments.append(scope.args.vararg)
+        if scope.args.kwarg is not None:
+            arguments.append(scope.args.kwarg)
+        for argument in arguments:
+            candidates[argument.arg] = [_UNKNOWN]
 
     # The executing scope replaces straight-line assignments; outer/control-flow
     # candidates append conservatively.
@@ -140,29 +182,71 @@ def _local_bindings(
                 else:
                     candidates[statement.target.id] = [statement.value]
             continue
+        if isinstance(statement, (ast.Import, ast.ImportFrom)) and (
+            before_line is None or statement.lineno < before_line
+        ):
+            for name, value in _import_bindings(statement):
+                if before_line is None:
+                    add(name, value, statement.lineno)
+                else:
+                    candidates[name] = [value]
+            continue
         Collector().visit(statement)
     return candidates
+
+
+def _resolves_tables_module(
+    node: ast.expr,
+    *,
+    locals_: dict[str, list[_BindingValue]],
+    seen_names: frozenset[str],
+) -> bool:
+    if not isinstance(node, ast.Name) or node.id in seen_names:
+        return False
+    return any(
+        isinstance(value, _TablesModuleBinding)
+        or (
+            isinstance(value, ast.expr)
+            and _resolves_tables_module(
+                value,
+                locals_=locals_,
+                seen_names=seen_names | {node.id},
+            )
+        )
+        for value in locals_.get(node.id, [])
+    )
 
 
 def _static_table_names(
     node: ast.expr,
     *,
-    table_refs: dict[str, list[str]],
-    locals_: dict[str, list[ast.expr]],
+    locals_: dict[str, list[_BindingValue]],
     seen_names: frozenset[str],
 ) -> list[str]:
+    if isinstance(node, ast.Attribute) and _resolves_tables_module(
+        node.value,
+        locals_=locals_,
+        seen_names=seen_names,
+    ):
+        value = getattr(tables_module, node.attr, None)
+        return [value.full_name] if isinstance(value, tables_module.TableRef) else []
     if not isinstance(node, ast.Name) or node.id in seen_names:
         return []
-    if node.id in table_refs:
-        return table_refs[node.id]
     return [
         table
         for value in locals_.get(node.id, [])
-        for table in _static_table_names(
-            value,
-            table_refs=table_refs,
-            locals_=locals_,
-            seen_names=seen_names | {node.id},
+        for table in (
+            [value.full_name]
+            if isinstance(value, tables_module.TableRef)
+            else (
+                _static_table_names(
+                    value,
+                    locals_=locals_,
+                    seen_names=seen_names | {node.id},
+                )
+                if isinstance(value, ast.expr)
+                else []
+            )
         )
     ]
 
@@ -170,14 +254,12 @@ def _static_table_names(
 def _static_full_name_targets(
     node: ast.expr,
     *,
-    table_refs: dict[str, list[str]],
-    locals_: dict[str, list[ast.expr]],
+    locals_: dict[str, list[_BindingValue]],
     seen_names: frozenset[str],
 ) -> list[str]:
     if isinstance(node, ast.Attribute) and node.attr == "full_name":
         return _static_table_names(
             node.value,
-            table_refs=table_refs,
             locals_=locals_,
             seen_names=seen_names,
         )
@@ -186,9 +268,9 @@ def _static_full_name_targets(
     return [
         table
         for value in locals_.get(node.id, [])
+        if isinstance(value, ast.expr)
         for table in _static_full_name_targets(
             value,
-            table_refs=table_refs,
             locals_=locals_,
             seen_names=seen_names | {node.id},
         )
@@ -198,8 +280,7 @@ def _static_full_name_targets(
 def _static_sqls(
     node: ast.expr,
     *,
-    table_refs: dict[str, list[str]],
-    locals_: dict[str, list[ast.expr]],
+    locals_: dict[str, list[_BindingValue]],
     seen_names: frozenset[str] = frozenset(),
 ) -> list[str]:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -210,9 +291,9 @@ def _static_sqls(
         return [
             sql
             for value in locals_.get(node.id, [])
+            if isinstance(value, ast.expr)
             for sql in _static_sqls(
                 value,
-                table_refs=table_refs,
                 locals_=locals_,
                 seen_names=seen_names | {node.id},
             )
@@ -226,7 +307,6 @@ def _static_sqls(
         elif isinstance(part, ast.FormattedValue):
             choices = _static_full_name_targets(
                 part.value,
-                table_refs=table_refs,
                 locals_=locals_,
                 seen_names=seen_names,
             ) or [" "]
@@ -239,8 +319,7 @@ def _static_sqls(
 def _static_table_targets(
     node: ast.expr,
     *,
-    table_refs: dict[str, list[str]],
-    locals_: dict[str, list[ast.expr]],
+    locals_: dict[str, list[_BindingValue]],
     seen_names: frozenset[str] = frozenset(),
 ) -> list[str]:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -248,14 +327,12 @@ def _static_table_targets(
     if isinstance(node, ast.Attribute) and node.attr == "full_name":
         return _static_table_names(
             node.value,
-            table_refs=table_refs,
             locals_=locals_,
             seen_names=seen_names,
         )
     if isinstance(node, ast.JoinedStr):
         return _static_sqls(
             node,
-            table_refs=table_refs,
             locals_=locals_,
             seen_names=seen_names,
         )
@@ -264,9 +341,9 @@ def _static_table_targets(
     return [
         table
         for value in locals_.get(node.id, [])
+        if isinstance(value, ast.expr)
         for table in _static_table_targets(
             value,
-            table_refs=table_refs,
             locals_=locals_,
             seen_names=seen_names | {node.id},
         )
@@ -278,7 +355,7 @@ def _scope_bindings(
     *,
     tree: ast.Module,
     parents: dict[ast.AST, ast.AST],
-) -> dict[str, list[ast.expr]]:
+) -> dict[str, list[_BindingValue]]:
     scopes: list[ast.AST] = []
     scope = node
     while scope is not tree:
@@ -287,7 +364,7 @@ def _scope_bindings(
             scopes.append(scope)
     scopes.append(tree)
 
-    bindings: dict[str, list[ast.expr]] = {}
+    bindings: dict[str, list[_BindingValue]] = {}
     for enclosing_scope in reversed(scopes):
         before_line = node.lineno if enclosing_scope is scopes[0] else None
         bindings.update(_local_bindings(enclosing_scope, before_line=before_line))
@@ -297,7 +374,7 @@ def _scope_bindings(
 def _static_call_methods(
     node: ast.expr,
     *,
-    locals_: dict[str, list[ast.expr]],
+    locals_: dict[str, list[_BindingValue]],
     seen_names: frozenset[str] = frozenset(),
 ) -> list[str]:
     if isinstance(node, ast.Attribute):
@@ -307,6 +384,7 @@ def _static_call_methods(
     return [
         method
         for value in locals_.get(node.id, [])
+        if isinstance(value, ast.expr)
         for method in _static_call_methods(
             value,
             locals_=locals_,
@@ -333,7 +411,6 @@ def _violations_in_path(path: Path) -> list[_Violation]:
     if is_repository or is_audit_service or is_migration:
         return []
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    table_refs = _table_ref_bindings(tree)
     parents = {
         child: parent
         for parent in ast.walk(tree)
@@ -363,14 +440,13 @@ def _violations_in_path(path: Path) -> list[_Violation]:
             if query is not None:
                 sqls = _static_sqls(
                     query,
-                    table_refs=table_refs,
                     locals_=locals_,
                 )
                 protected_tables.update(
-                    match.group(1).lower()
+                    f"{match.group(1)}.{match.group(2)}".lower()
                     for sql in sqls
                     for match in _MUTATION_RE.finditer(sql)
-                    if match.group(1).lower() in _PROTECTED_TABLES
+                    if f"{match.group(1)}.{match.group(2)}".lower() in _PROTECTED_TABLES
                 )
         if "ingest_dataframe" in call_methods:
             target = (
@@ -390,7 +466,6 @@ def _violations_in_path(path: Path) -> list[_Violation]:
                     table.lower()
                     for table in _static_table_targets(
                         target,
-                        table_refs=table_refs,
                         locals_=locals_,
                     )
                     if table.lower() in _PROTECTED_TABLES
@@ -419,6 +494,30 @@ def test_rejects_inline_protected_write_in_service(tmp_path: Path) -> None:
 
     assert _violations_in_path(source) == [
         _Violation(path=source, line=4, table="app.user_categories")
+    ]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        'DELETE FROM "app"."user_categories"',
+        'UPDATE app."user_categories" SET active = FALSE',
+        'INSERT INTO "app".user_categories VALUES (?)',
+    ],
+)
+def test_rejects_quoted_protected_table_identifiers(
+    tmp_path: Path,
+    sql: str,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        f"def mutate(db):\n    db.execute({sql!r})\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=2, table="app.user_categories")
     ]
 
 
@@ -593,6 +692,72 @@ def test_rejects_protected_write_with_function_local_import(tmp_path: Path) -> N
     assert _violations_in_path(source) == [
         _Violation(path=source, line=4, table="app.user_categories")
     ]
+
+
+def test_rejects_protected_write_through_module_import(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "import moneybin.tables as tables\n"
+        "\n"
+        "def create(db):\n"
+        '    db.execute(f"INSERT INTO {tables.USER_CATEGORIES.full_name} VALUES (?)")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=4, table="app.user_categories")
+    ]
+
+
+def test_keeps_table_ref_import_aliases_scoped_to_their_functions(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "def delete_category(db):\n"
+        "    from moneybin.tables import USER_CATEGORIES as table\n"
+        '    db.execute(f"DELETE FROM {table.full_name}")\n'
+        "\n"
+        "def update_account(db):\n"
+        "    from moneybin.tables import DIM_ACCOUNTS as table\n"
+        '    db.execute(f"UPDATE {table.full_name} SET active = FALSE")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=3, table="app.user_categories")
+    ]
+
+
+def test_local_binding_shadows_outer_table_ref_import(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import DIM_ACCOUNTS, USER_CATEGORIES as table\n"
+        "\n"
+        "def update_account(db):\n"
+        "    table = DIM_ACCOUNTS\n"
+        '    db.execute(f"UPDATE {table.full_name} SET active = FALSE")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
+
+
+def test_function_parameter_shadows_outer_table_ref_import(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES as table\n"
+        "\n"
+        "def update(db, table):\n"
+        '    db.execute(f"UPDATE {table.full_name} SET active = FALSE")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == []
 
 
 def test_rejects_protected_write_through_table_ref_alias(tmp_path: Path) -> None:
@@ -890,6 +1055,21 @@ def test_new_declared_app_table_is_protected_without_a_repository(
     reloaded = runpy.run_path(__file__)
 
     assert "app.unrepository_table" in reloaded["_PROTECTED_TABLES"]
+
+
+def test_metrics_remains_exempt_if_it_gains_a_table_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tables_module,
+        "METRICS",
+        tables_module.TableRef("app", "metrics"),
+        raising=False,
+    )
+
+    reloaded = runpy.run_path(__file__)
+
+    assert "app.metrics" not in reloaded["_PROTECTED_TABLES"]
 
 
 def test_rejects_migration_named_runtime_module(tmp_path: Path) -> None:
