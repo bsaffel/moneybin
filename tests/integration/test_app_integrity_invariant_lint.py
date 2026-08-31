@@ -189,6 +189,43 @@ def _static_sqls(
     return sqls
 
 
+def _static_table_targets(
+    node: ast.expr,
+    *,
+    table_refs: dict[str, list[str]],
+    locals_: dict[str, list[ast.expr]],
+    seen_names: frozenset[str] = frozenset(),
+) -> list[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.Attribute) and node.attr == "full_name":
+        return _static_table_names(
+            node.value,
+            table_refs=table_refs,
+            locals_=locals_,
+            seen_names=seen_names,
+        )
+    if isinstance(node, ast.JoinedStr):
+        return _static_sqls(
+            node,
+            table_refs=table_refs,
+            locals_=locals_,
+            seen_names=seen_names,
+        )
+    if not isinstance(node, ast.Name) or node.id in seen_names:
+        return []
+    return [
+        table
+        for value in locals_.get(node.id, [])
+        for table in _static_table_targets(
+            value,
+            table_refs=table_refs,
+            locals_=locals_,
+            seen_names=seen_names | {node.id},
+        )
+    ]
+
+
 def _scope_bindings(
     node: ast.Call,
     *,
@@ -218,7 +255,7 @@ def _violations_in_path(path: Path) -> list[_Violation]:
         path.parent.name == "services" and path.name == "audit_service.py"
     )
     is_migration = (
-        path.parent.name == "migrations"
+        path.parts[-5:-1] == ("src", "moneybin", "sql", "migrations")
         and path.name.startswith("V")
         and path.suffix == ".py"
     )
@@ -234,34 +271,62 @@ def _violations_in_path(path: Path) -> list[_Violation]:
 
     violations: list[_Violation] = []
     for node in ast.walk(tree):
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in ("execute", "executemany")
-        ):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
             continue
-        query = (
-            node.args[0]
-            if node.args
-            else next(
-                (keyword.value for keyword in node.keywords if keyword.arg == "query"),
-                None,
+        locals_ = _scope_bindings(node, tree=tree, parents=parents)
+        if node.func.attr in ("execute", "executemany", "sql"):
+            query = (
+                node.args[0]
+                if node.args
+                else next(
+                    (
+                        keyword.value
+                        for keyword in node.keywords
+                        if keyword.arg == "query"
+                    ),
+                    None,
+                )
             )
-        )
-        if query is None:
+            if query is None:
+                continue
+            sqls = _static_sqls(
+                query,
+                table_refs=table_refs,
+                locals_=locals_,
+            )
+            protected_tables = {
+                match.group(1).lower()
+                for sql in sqls
+                for match in _MUTATION_RE.finditer(sql)
+                if match.group(1).lower() in _PROTECTED_TABLES
+            }
+        elif node.func.attr == "ingest_dataframe":
+            target = (
+                node.args[0]
+                if node.args
+                else next(
+                    (
+                        keyword.value
+                        for keyword in node.keywords
+                        if keyword.arg == "table"
+                    ),
+                    None,
+                )
+            )
+            if target is None:
+                continue
+            protected_tables = {
+                table.lower()
+                for table in _static_table_targets(
+                    target,
+                    table_refs=table_refs,
+                    locals_=locals_,
+                )
+                if table.lower() in _PROTECTED_TABLES
+            }
+        else:
             continue
-        sqls = _static_sqls(
-            query,
-            table_refs=table_refs,
-            locals_=_scope_bindings(node, tree=tree, parents=parents),
-        )
-        tables = {
-            match.group(1).lower()
-            for sql in sqls
-            for match in _MUTATION_RE.finditer(sql)
-            if match.group(1).lower() in _PROTECTED_TABLES
-        }
-        for table in sorted(tables):
+        for table in sorted(protected_tables):
             violations.append(
                 _Violation(
                     path=path,
@@ -304,11 +369,70 @@ def test_rejects_bulk_protected_write_in_service(tmp_path: Path) -> None:
     ]
 
 
+def test_rejects_protected_write_through_sql_method(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        "def delete(db):\n"
+        '    db.sql(f"DELETE FROM {USER_CATEGORIES.full_name}")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=4, table="app.user_categories")
+    ]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "db.ingest_dataframe(USER_CATEGORIES.full_name, frame)",
+        "db.ingest_dataframe(table=USER_CATEGORIES.full_name, df=frame)",
+        'db.ingest_dataframe(f"{USER_CATEGORIES.full_name}", frame)',
+        'db.ingest_dataframe("app.user_categories", frame)',
+    ],
+)
+def test_rejects_protected_ingest_dataframe_target(
+    tmp_path: Path,
+    call: str,
+) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        f"from moneybin.tables import USER_CATEGORIES\n\ndef load(db, frame):\n    {call}\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=4, table="app.user_categories")
+    ]
+
+
+def test_rejects_protected_ingest_dataframe_local_target(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/example_service.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from moneybin.tables import USER_CATEGORIES\n"
+        "\n"
+        "def load(db, frame):\n"
+        "    table = USER_CATEGORIES.full_name\n"
+        "    db.ingest_dataframe(table, frame)\n",
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=5, table="app.user_categories")
+    ]
+
+
 @pytest.mark.parametrize(
     "call",
     [
         'db.execute(query=f"INSERT INTO {USER_CATEGORIES.full_name} VALUES (?)")',
         'db.executemany(query=f"INSERT INTO {USER_CATEGORIES.full_name} VALUES (?)", params=[["id"]])',
+        'db.sql(query=f"DELETE FROM {USER_CATEGORIES.full_name}")',
     ],
 )
 def test_rejects_keyword_query_protected_write(
@@ -541,6 +665,19 @@ def test_allows_base_repository_writes(tmp_path: Path) -> None:
     )
 
     assert _violations_in_path(source) == []
+
+
+def test_rejects_migration_named_runtime_module(tmp_path: Path) -> None:
+    source = tmp_path / "src/moneybin/services/migrations/V999_cleanup.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        'def delete(db):\n    db.execute("DELETE FROM app.user_categories")\n',
+        encoding="utf-8",
+    )
+
+    assert _violations_in_path(source) == [
+        _Violation(path=source, line=2, table="app.user_categories")
+    ]
 
 
 @pytest.mark.parametrize(
