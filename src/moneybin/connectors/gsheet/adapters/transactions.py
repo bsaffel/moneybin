@@ -33,7 +33,6 @@ from moneybin.extractors.tabular.formats import (
 )
 from moneybin.extractors.tabular.transforms import transform_dataframe
 from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
-from moneybin.utils import slugify
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +92,9 @@ def _split_pair_both_null_ratio(
     return both_empty / df.height
 
 
-def required_sources_for_mapping(column_mapping: dict[str, str]) -> set[str]:
+def required_sources_for_mapping(
+    column_mapping: dict[str, str], *, account_source_required: bool = False
+) -> set[str]:
     """Source columns whose emptiness counts as drift for this mapping.
 
     Always includes the source mapped to ``transaction_date``. For amount,
@@ -101,11 +102,18 @@ def required_sources_for_mapping(column_mapping: dict[str, str]) -> set[str]:
     ``credit_amount`` pair — whichever the connection was actually saved
     with. Mapping that satisfies neither returns an empty amount set
     (drift check still gates on transaction_date).
+
+    ``account_source_required`` adds the account column, which is load-bearing
+    only for an unbound connection — there it is what keys each row, so
+    blanking its values silently re-parents the ledger. A bound connection
+    ignores the column entirely, and blank values in it are not drift.
     """
     by_dest = {dest: src for src, dest in column_mapping.items()}
     required: set[str] = set()
     if "transaction_date" in by_dest:
         required.add(by_dest["transaction_date"])
+    if account_source_required and "account_name" in by_dest:
+        required.add(by_dest["account_name"])
     if "amount" in by_dest:
         required.add(by_dest["amount"])
     elif "debit_amount" in by_dest and "credit_amount" in by_dest:
@@ -114,14 +122,26 @@ def required_sources_for_mapping(column_mapping: dict[str, str]) -> set[str]:
     return required
 
 
-def _account_names_from(df: pl.DataFrame, account_col: str) -> list[str]:
-    """Per-row account label from the sheet's account column.
+_BLANK_ACCOUNT_LABEL = "unknown"
 
-    A blank cell arrives as NULL and becomes ``"unknown"`` so the row still has
-    something to group on, matching the tabular import path's handling of the
-    same shape.
+
+def _account_labels_from(df: pl.DataFrame, account_col: str) -> list[tuple[str, bool]]:
+    """Per-row ``(label, authored)`` from the sheet's account column.
+
+    A cell the sheet left empty takes a filler label so the row still has
+    something to group on. Emptiness has to be tested after stripping, not
+    against NULL: the Sheets API stringifies every cell, so a blank arrives as
+    ``""`` where the tabular path's CSV yields NULL, and a bare NULL check
+    would pass it through to an empty key.
+
+    ``authored`` is false for the filler. It reads exactly like a name someone
+    typed, and the label rung is reserved for names someone did.
     """
-    return [str(v) if v is not None else "unknown" for v in df[account_col].to_list()]
+    labels: list[tuple[str, bool]] = []
+    for value in df[account_col].to_list():
+        text = "" if value is None else str(value).strip()
+        labels.append((text, True) if text else (_BLANK_ACCOUNT_LABEL, False))
+    return labels
 
 
 def _resolve_account_ids(
@@ -138,9 +158,13 @@ def _resolve_account_ids(
     Unbound, the sheet's own account column supplies a per-row native key.
     These keys are source-NATIVE (DP-1), not ``dim_accounts`` ids; the
     resolver maps native → canonical through ``app.account_links``, so the
-    same slug scheme as the tabular path lets one account exported through
+    same key scheme as the tabular path lets one account exported through
     both channels land on one canonical account.
     """
+    from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
+        label_account_key,
+    )
+
     if connection.account_id is not None:
         return connection.account_id
 
@@ -152,13 +176,16 @@ def _resolve_account_ids(
             f"connection {connection.connection_id} has neither"
         )
 
-    return [slugify(name) for name in _account_names_from(df, account_col)]
+    return [
+        label_account_key(label) for label, _ in _account_labels_from(df, account_col)
+    ]
 
 
 def _link_sheet_accounts(
     connection: GSheetConnection,
     db: Database,
     parsed: dict[str, tuple[str, str, str | None]],
+    authored_keys: set[str],
 ) -> None:
     """Resolve each sheet account to a canonical id via the shared ladder.
 
@@ -188,7 +215,7 @@ def _link_sheet_accounts(
                 account_name=clean_name,
                 last_four=last_four,
                 name_facts=AccountNameFacts(
-                    source_label=display,
+                    source_label=display if key in authored_keys else None,
                     last_four=last_four,
                 ),
             )
@@ -210,6 +237,7 @@ def _register_sheet_accounts(
     """
     from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
         authored_label_parts,
+        label_account_key,
     )
 
     field_mapping = {dest: src for src, dest in connection.column_mapping.items()}
@@ -220,18 +248,24 @@ def _register_sheet_accounts(
     # First label seen wins per key, matching the tabular path — later rows
     # spelling the same account differently must not re-key it.
     name_by_key: dict[str, str] = {}
-    for name in _account_names_from(source_df, account_col):
-        name_by_key.setdefault(slugify(name), name)
+    authored_keys: set[str] = set()
+    for label, authored in _account_labels_from(source_df, account_col):
+        key = label_account_key(label)
+        name_by_key.setdefault(key, label)
+        if authored:
+            authored_keys.add(key)
 
     keys = sorted(name_by_key)
     parsed = {key: authored_label_parts(name_by_key[key]) for key in keys}
-    _link_sheet_accounts(connection, db, parsed)
+    _link_sheet_accounts(connection, db, parsed, authored_keys)
     db.ingest_dataframe(
         TABULAR_ACCOUNTS.full_name,
         pl.DataFrame({
             "account_id": keys,
             "account_name": [name_by_key[k] for k in keys],
-            "account_label": [parsed[k][0] for k in keys],
+            "account_label": [
+                parsed[k][0] if k in authored_keys else None for k in keys
+            ],
             "account_number": [None] * len(keys),
             "account_number_masked": [
                 f"****{parsed[k][2]}" if parsed[k][2] else None for k in keys
@@ -312,7 +346,10 @@ class TransactionsAdapter:
         only when every sampled row has neither debit nor credit populated.
         """
         by_dest = {dest: src for src, dest in connection.column_mapping.items()}
-        non_split_required = required_sources_for_mapping(connection.column_mapping)
+        non_split_required = required_sources_for_mapping(
+            connection.column_mapping,
+            account_source_required=connection.account_id is None,
+        )
         split_pair: tuple[str, str] | None = None
         if (
             "debit_amount" in by_dest
@@ -417,7 +454,17 @@ class TransactionsAdapter:
           - Empty current pull is a no-op for upsert; previously-active rows are
             still eligible for soft-delete.
         """
-        if connection.account_id is None and source_df is not None:
+        if connection.account_id is None:
+            # Skipping this silently would load transactions keyed by native
+            # slugs that nothing resolves: no raw.tabular_accounts row, no
+            # app.account_links row, so core.dim_accounts has no account to
+            # match and every row is attributed to one that does not exist.
+            if source_df is None:
+                raise ValueError(
+                    "TransactionsAdapter.load requires source_df for an "
+                    "unbound connection; it carries the account labels the "
+                    f"transform keyed away (connection {connection.connection_id})"
+                )
             _register_sheet_accounts(source_df, connection, db, import_id)
 
         # Stamp the import_id on every row (transform left a placeholder).

@@ -701,7 +701,7 @@ def test_connect_transactions_requires_account_when_sheet_names_none(
         adapter="transactions",
         yes=True,
     )
-    with pytest.raises(GSheetError, match="account-id or --account-name"):
+    with pytest.raises(GSheetError, match="no account column"):
         svc.connect(req)
 
 
@@ -1208,3 +1208,48 @@ class TestGSheetSharedConfidenceBands:
         # With T_high=0.70, score=0.75 ≥ T_high → "high" → no --yes needed.
         result = svc.connect(req)
         assert result.connection.adapter == "transactions"
+
+
+def _renamed_account_column_workbook() -> FakeWorkbook:
+    """The same sheet after its account column was renamed past recognition."""
+    return FakeWorkbook(
+        title="Personal Finance",
+        tabs=[
+            FakeSheetTab(
+                name="Transactions",
+                gid=0,
+                headers=["Date", "Description", "Category", "Amount", "Nickname"],
+                rows=[
+                    ["2026-01-15", "Whole Foods", "Groceries", "-87.42", "Everyday"],
+                    ["2026-01-16", "Card payment", "Transfer", "-120.00", "Rewards"],
+                ],
+            )
+        ],
+    )
+
+
+def test_reconnect_refuses_to_strand_an_unbound_connection(
+    in_memory_db: Database,
+) -> None:
+    """Symmetric guard to connect: an unbound connection keeps an account column.
+
+    Re-pinning a mapping without one leaves every later pull raising inside
+    transform, where the failure reaches the user only as a generic ``failed``
+    status — the connection is broken with nothing saying why.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssU", _multi_account_workbook())
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssU/edit#gid=0",
+            adapter="transactions",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+    cid = result.connection.connection_id
+
+    sheets.register_workbook("ssU", _renamed_account_column_workbook())
+
+    with pytest.raises(GSheetError, match="account column"):
+        svc.reconnect(cid, yes=True)

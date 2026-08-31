@@ -959,7 +959,7 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
-def _label_account_key(account_name: str) -> str:
+def label_account_key(account_name: str) -> str:
     """A native key for an account label, guaranteed non-empty.
 
     ``slugify`` keeps only ``[a-z0-9]``, so a name written in a non-Latin
@@ -2576,7 +2576,7 @@ class ImportService:
         # seeds the key exactly as an unpinned import with the same label would;
         # otherwise the file's own content key does.
         own_key = (
-            _label_account_key(account_name)
+            label_account_key(account_name)
             if account_name
             else _bare_account_key(file_path, source_bytes=source_bytes)
         )
@@ -3532,7 +3532,7 @@ class ImportService:
                 )
             )
         elif account_name:
-            native_key = _label_account_key(account_name)
+            native_key = label_account_key(account_name)
             account_ids = native_key
             acct_id_to_name[native_key] = account_name
             (

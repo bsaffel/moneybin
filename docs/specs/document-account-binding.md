@@ -174,7 +174,7 @@ key in the codebase". That is false, and the branch it missed is the one R4 is
 actually about.
 
 *The exception, named rather than implied: `--account-name`.*
-`_label_account_key` (`import_service.py:878`, called at `:2424` and `:3331`)
+`label_account_key` (`import_service.py:962`, called at `:2579` and `:3535`)
 derives an account key from the **caller's** display label, and this spec
 leaves that path alone — its decomposition is Out of Scope (§Testing Strategy).
 Stating R4 as an unqualified "never … or a display label" would make it an

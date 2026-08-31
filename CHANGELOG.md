@@ -28,7 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   already have is queued in the account-link review queue rather than becoming
   a silent duplicate. Naming an account still binds the whole sheet to it, so
   existing connections are unchanged; sheets with no account column still
-  require one.
+  require one. Because that column now decides where every row lands, emptying
+  it marks such a connection `drift_detected` instead of quietly re-filing the
+  whole ledger under one nameless account, and a reconnect that would leave the
+  connection with no way to key its rows is refused rather than saved broken.
 
 - **You can propose a merge for two accounts nothing automatic would pair.**
   `accounts links run` and the newly registered `accounts_links_run` MCP tool

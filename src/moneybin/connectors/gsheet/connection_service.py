@@ -447,20 +447,15 @@ class GSheetConnectionService:
         else:
             column_mapping = detection.column_mapping
 
-        # Neither a bound account nor an account column the rows can be keyed
-        # by. Every pull of such a connection would fail in transform, so
-        # refuse before persisting the row rather than after.
-        if (
-            target_adapter == "transactions"
-            and resolved_account_id is None
-            and "account_name" not in column_mapping.values()
-        ):
-            raise GSheetError(
-                "--account-id or --account-name is required for the "
-                "transactions adapter when the sheet has no account column. "
+        _require_keyable_accounts(
+            adapter=target_adapter,
+            account_id=resolved_account_id,
+            column_mapping=column_mapping,
+            remedy=(
                 "Pass --account-name=<display> (resolved via dim_accounts) or "
                 "--account-id=<dim_accounts.account_id>."
-            )
+            ),
+        )
 
         _require_inferred_sign_confirmation(
             resolved_convention=sign_convention_for_save,
@@ -751,6 +746,16 @@ class GSheetConnectionService:
                 outcome="accepted",
             ).inc()
 
+        _require_keyable_accounts(
+            adapter=existing["adapter"],
+            account_id=existing["account_id"],
+            column_mapping=column_mapping,
+            remedy=(
+                "Restore the account column in the sheet, or disconnect and "
+                "reconnect with --account-name / --account-id to bind it."
+            ),
+        )
+
         self._repo.update_mapping(
             connection_id,
             column_mapping=column_mapping,
@@ -780,6 +785,32 @@ class GSheetConnectionService:
             initial_pull=pull.load_result,
             initial_pull_status=pull.status,
             initial_pull_error=pull.error_message,
+        )
+
+
+def _require_keyable_accounts(
+    *,
+    adapter: str,
+    account_id: str | None,
+    column_mapping: dict[str, str],
+    remedy: str,
+) -> None:
+    """Refuse a transactions mapping whose rows can be keyed to no account.
+
+    Neither a bound account nor an account column leaves every pull raising
+    inside ``transform``, where ``pull_service`` catches it and records a
+    generic ``failed`` status — the connection stays broken with nothing
+    saying why. Both the connect and reconnect paths pin a mapping, so both
+    check here; only the remedy differs, since reconnect takes no account flag.
+    """
+    if (
+        adapter == "transactions"
+        and account_id is None
+        and "account_name" not in column_mapping.values()
+    ):
+        raise GSheetError(
+            "This transactions sheet has no account column and the connection "
+            f"is not bound to an account. {remedy}"
         )
 
 

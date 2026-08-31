@@ -316,3 +316,119 @@ def test_load_does_not_register_accounts_for_a_bound_connection(
     ).fetchone()
     assert rows is not None
     assert rows[0] == 0
+
+
+def _blank_account_df() -> pl.DataFrame:
+    """A named account beside cells the sheet left empty.
+
+    The Sheets API stringifies every cell, so an interior blank arrives as
+    ``""`` rather than NULL — the shape a CSV never produces.
+    """
+    return pl.DataFrame({
+        "Date": ["2026-01-15", "2026-01-16", "2026-01-17"],
+        "Description": ["Coffee", "Salary", "Card payment"],
+        "Category": ["Dining", "Income", "Transfer"],
+        "Amount": ["-4.50", "5000.00", "-120.00"],
+        "Account": ["Everyday Checking", "", "   "],
+        "Tags": ["", "", ""],
+    })
+
+
+def test_blank_account_cells_never_key_a_row_to_the_empty_string(
+    sample_connection: GSheetConnection,
+) -> None:
+    """A blank cell groups under the filler key, never under ``""``.
+
+    An empty key is not a key: every account that produced one would land on
+    the same source-native coordinates and be merged into a single account.
+    """
+    adapter = TransactionsAdapter()
+
+    transformed = adapter.transform(_blank_account_df(), _unbound(sample_connection))
+
+    assert transformed["account_id"].to_list() == [
+        "everyday-checking",
+        "unknown",
+        "unknown",
+    ]
+
+
+def test_accounts_named_in_a_non_latin_script_stay_distinct(
+    sample_connection: GSheetConnection,
+) -> None:
+    """Two differently-named accounts never collapse onto one key.
+
+    ``slugify`` keeps only ``[a-z0-9]``, so every label written in a non-Latin
+    script reduces to ``""`` and silently merges with the next one.
+    """
+    df = _multi_account_df().with_columns(
+        pl.Series("Account", ["貯金口座", "普通預金", "貯金口座"])
+    )
+    adapter = TransactionsAdapter()
+
+    keys = adapter.transform(df, _unbound(sample_connection))["account_id"].to_list()
+
+    assert "" not in keys
+    assert keys[0] == keys[2]
+    assert keys[0] != keys[1]
+
+
+def test_a_filler_label_is_not_recorded_as_an_authored_account_label(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """``account_label`` carries only a name a person actually wrote.
+
+    The filler standing in for a blank cell reads exactly like a typed name,
+    and an account labelled ``unknown`` is what the tabular path avoids.
+    """
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    df = _blank_account_df()
+
+    transformed = adapter.transform(df, conn)
+    adapter.load(transformed, conn, in_memory_db, import_id="imp1", source_df=df)
+
+    rows = in_memory_db.execute(
+        "SELECT account_id, account_label FROM raw.tabular_accounts "
+        "WHERE source_origin = ? ORDER BY account_id",
+        [conn.connection_id],
+    ).fetchall()
+    assert rows == [
+        ("everyday-checking", "Everyday Checking"),
+        ("unknown", None),
+    ]
+
+
+def test_check_drift_flags_a_blanked_account_column_when_unbound(
+    sample_connection: GSheetConnection,
+) -> None:
+    """For an unbound connection the account column is load-bearing.
+
+    A deleted header is caught by the pinned signature; blanked *values* are
+    not. Every row would land under the filler key, silently re-parenting the
+    whole ledger onto one nameless account.
+    """
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    sample = pl.DataFrame({h: ["x", "y", "z"] for h in conn.header_signature})
+    sample = sample.with_columns(pl.lit("").alias("Account"))
+
+    report = adapter.check_drift(conn, sample)
+
+    assert report.is_drift is True
+    assert "Account" in report.empty_mapped_columns
+
+
+def test_check_drift_ignores_a_blanked_account_column_when_bound(
+    sample_connection: GSheetConnection,
+) -> None:
+    """A bound connection keys no row by that column, so blanking it is not drift."""
+    adapter = TransactionsAdapter()
+    sample = pl.DataFrame({
+        h: ["x", "y", "z"] for h in sample_connection.header_signature
+    })
+    sample = sample.with_columns(pl.lit("").alias("Account"))
+
+    report = adapter.check_drift(sample_connection, sample)
+
+    assert report.is_drift is False
