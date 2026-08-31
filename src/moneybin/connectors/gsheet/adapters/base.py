@@ -126,6 +126,13 @@ class GSheetAdapter(Protocol):
         connection: GSheetConnection,
         db: Database,
         import_id: str,
+        source_df: pl.DataFrame | None = None,
     ) -> LoadResult:
-        """Diff + soft-delete + upsert. Returns counts."""
+        """Diff + soft-delete + upsert. Returns counts.
+
+        ``source_df`` is the pre-transform frame. The transactions adapter
+        needs it to register the accounts an unbound multi-account sheet
+        names — the transform keeps only their slugified keys, and an account
+        is named for a human by the label the sheet actually wrote.
+        """
         ...

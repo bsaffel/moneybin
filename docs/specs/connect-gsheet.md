@@ -470,7 +470,7 @@ Downstream `fct_transactions`, `core.bridge_*`, reports, and balances automatica
 | Table | gsheet usage |
 |---|---|
 | `raw.import_log` | One row per pull. `source_type='gsheet'`, `source_origin=<connection_id>`, `source_file='gsheet://<spreadsheet_id>/<gid>'`, `format_name='gsheet:<workbook>/<sheet>'`, `format_source='gsheet'`. |
-| `raw.tabular_accounts` | Accounts inferred from multi-account sheets land here as today, with `source_type='gsheet'`. |
+| `raw.tabular_accounts` | Accounts inferred from multi-account sheets land here as today, with `source_type='gsheet'`. One row per distinct account the sheet names, keyed by the same `slugify(label)` native key the tabular path uses, and upserted on every pull so a rename in the sheet re-labels rather than minting a twin. Each is resolved through `AccountResolver`, so an account already known from another source is proposed for merge in the account-link review queue instead of becoming a silent duplicate. |
 | `app.audit_log` | `GSheetConnectionsRepo` emits paired audit rows on every mutation. New `entity_type='gsheet_connection'`. |
 | `SecretStore` (keyring) | New keys: `gsheet:refresh_token`, `gsheet:access_token`, `gsheet:access_token_expires_at`, `gsheet:granted_scopes`, `gsheet:client_id` (plus the `gsheet:write_*` twin of each). `gsheet:client_id` records which OAuth client obtained the grant, because Google will not refresh a token under a different client than issued it. Single identity per profile in v1. |
 
@@ -662,8 +662,11 @@ Options:
                             transactions, seed]
   --alias=SLUG              Required for --adapter=seed; becomes view name
                             raw.gsheet_<alias>. Refused if alias collides.
-  --account-name=NAME       Destination account (transactions adapter)
-  --account-id=ID           Explicit account ID bypass
+  --account-name=NAME       Destination account for every row (transactions
+                            adapter). Optional when the sheet has its own
+                            account column — each row is then attributed to
+                            the account it names.
+  --account-id=ID           Explicit account ID bypass; same optionality
   --column-mapping=JSON     Partial-merge override of the detected column mapping:
                             only the destination fields you name are overridden;
                             unspecified fields fall back to the detected mapping.

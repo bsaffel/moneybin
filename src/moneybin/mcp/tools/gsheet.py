@@ -615,7 +615,12 @@ async def gsheet_connect_coarse(
     accept_seed_fallback: StrictBool = False,
     no_initial_pull: StrictBool = False,
 ) -> ResponseEnvelope[GsheetConnectCoarsePayload]:
-    """Authenticate, connect, or reconnect through one mode-aware workflow."""
+    """Authenticate, connect, or reconnect through one mode-aware workflow.
+
+    account_name/account_id attribute every row to one account. Omit both for a
+    sheet with its own account column: each row is attributed to the account it
+    names, and new accounts reach the account-link review queue.
+    """
     if url is not None and connection_id is not None:
         raise UserError(
             "url and connection_id select different modes and cannot be combined.",

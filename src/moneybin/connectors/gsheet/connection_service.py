@@ -340,11 +340,13 @@ class GSheetConnectionService:
                 "raw.gsheet_<alias>."
             )
 
-        # TransactionsAdapter.transform requires account_id (see transactions.py).
-        # Persisting without one creates a row that fails every pull. Accept
-        # account_name as a free-text alias and resolve to the canonical id
-        # at the service boundary (identifiers.md Guard 2 — bind filters to
-        # the id; resolve free-text at the boundary).
+        # TransactionsAdapter.transform needs an account for every row: either
+        # one bound here, or the sheet's own account column. Accept account_name
+        # as a free-text alias and resolve to the canonical id at the service
+        # boundary (identifiers.md Guard 2 — bind filters to the id; resolve
+        # free-text at the boundary). The "neither" refusal waits until the
+        # mapping is merged below, because a --column-mapping override can add
+        # or drop the account column that decides it.
         resolved_account_id: str | None = req.account_id
         if target_adapter == "transactions" and not resolved_account_id:
             if req.account_name:
@@ -358,13 +360,6 @@ class GSheetConnectionService:
                 # boundary handlers).
                 resolved_account_id = AccountService(self._db).resolve_strict(
                     req.account_name
-                )
-            else:
-                raise GSheetError(
-                    "--account-id or --account-name is required for the "
-                    "transactions adapter. Pass --account-name=<display> "
-                    "(resolved via dim_accounts) or "
-                    "--account-id=<dim_accounts.account_id>."
                 )
 
         # For seed adapter the column_mapping field holds inferred typed_columns
@@ -451,6 +446,21 @@ class GSheetConnectionService:
                 IMPORT_OVERRIDE_TOTAL.labels(channel="gsheet").inc()
         else:
             column_mapping = detection.column_mapping
+
+        # Neither a bound account nor an account column the rows can be keyed
+        # by. Every pull of such a connection would fail in transform, so
+        # refuse before persisting the row rather than after.
+        if (
+            target_adapter == "transactions"
+            and resolved_account_id is None
+            and "account_name" not in column_mapping.values()
+        ):
+            raise GSheetError(
+                "--account-id or --account-name is required for the "
+                "transactions adapter when the sheet has no account column. "
+                "Pass --account-name=<display> (resolved via dim_accounts) or "
+                "--account-id=<dim_accounts.account_id>."
+            )
 
         _require_inferred_sign_confirmation(
             resolved_convention=sign_convention_for_save,

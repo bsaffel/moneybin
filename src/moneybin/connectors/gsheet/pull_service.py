@@ -179,7 +179,9 @@ class GSheetPullService:
 
         try:
             transformed = adapter.transform(df, conn)
-            load_result = adapter.load(transformed, conn, self._db, import_id)
+            load_result = adapter.load(
+                transformed, conn, self._db, import_id, source_df=df
+            )
         except Exception:
             # Without _record_unexpected_failure the import_log row stays
             # in "importing" AND the connection row stays in "healthy"

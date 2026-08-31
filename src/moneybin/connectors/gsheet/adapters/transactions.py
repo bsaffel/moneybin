@@ -32,7 +32,8 @@ from moneybin.extractors.tabular.formats import (
     SignConventionType,
 )
 from moneybin.extractors.tabular.transforms import transform_dataframe
-from moneybin.tables import TABULAR_TRANSACTIONS
+from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
+from moneybin.utils import slugify
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,145 @@ def required_sources_for_mapping(column_mapping: dict[str, str]) -> set[str]:
         required.add(by_dest["debit_amount"])
         required.add(by_dest["credit_amount"])
     return required
+
+
+def _account_names_from(df: pl.DataFrame, account_col: str) -> list[str]:
+    """Per-row account label from the sheet's account column.
+
+    A blank cell arrives as NULL and becomes ``"unknown"`` so the row still has
+    something to group on, matching the tabular import path's handling of the
+    same shape.
+    """
+    return [str(v) if v is not None else "unknown" for v in df[account_col].to_list()]
+
+
+def _resolve_account_ids(
+    df: pl.DataFrame,
+    connection: GSheetConnection,
+    field_mapping: dict[str, str],
+) -> str | list[str]:
+    """The account key stamped on each row: one bound account, or one per row.
+
+    A bound ``account_id`` wins, mirroring the tabular import path's branch
+    order — naming an account says which account the sheet belongs to, even
+    when the sheet also carries an account column.
+
+    Unbound, the sheet's own account column supplies a per-row native key.
+    These keys are source-NATIVE (DP-1), not ``dim_accounts`` ids; the
+    resolver maps native → canonical through ``app.account_links``, so the
+    same slug scheme as the tabular path lets one account exported through
+    both channels land on one canonical account.
+    """
+    if connection.account_id is not None:
+        return connection.account_id
+
+    account_col = field_mapping.get("account_name")
+    if not account_col or account_col not in df.columns:
+        raise ValueError(
+            "TransactionsAdapter.transform requires either "
+            "connection.account_id or an account column in the pinned mapping; "
+            f"connection {connection.connection_id} has neither"
+        )
+
+    return [slugify(name) for name in _account_names_from(df, account_col)]
+
+
+def _link_sheet_accounts(
+    connection: GSheetConnection,
+    db: Database,
+    parsed: dict[str, tuple[str, str, str | None]],
+) -> None:
+    """Resolve each sheet account to a canonical id via the shared ladder.
+
+    Deliberately resolves rather than gating. A pull runs unattended on every
+    refresh, so there is nobody to answer a confirm; the ladder's own outcomes
+    carry the decision instead — an account key seen before re-adopts (making
+    repeat pulls idempotent), a genuinely new one mints, and one that looks
+    like an existing account mints provisionally and files a pending decision
+    for the account-link review queue. Accepting that decision later re-points
+    the link, so rows already loaded follow rather than stranding.
+    """
+    from moneybin.services.account_display_name import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
+        AccountNameFacts,
+    )
+    from moneybin.services.account_resolution_types import (
+        SourceAccount,  # noqa: PLC0415
+    )
+    from moneybin.services.account_resolver import AccountResolver  # noqa: PLC0415
+
+    resolver = AccountResolver(db)
+    for key, (display, clean_name, last_four) in parsed.items():
+        resolver.resolve(
+            SourceAccount(
+                source_type=_SOURCE_TYPE,
+                source_origin=connection.connection_id,
+                source_account_key=key,
+                account_name=clean_name,
+                last_four=last_four,
+                name_facts=AccountNameFacts(
+                    source_label=display,
+                    last_four=last_four,
+                ),
+            )
+        )
+
+
+def _register_sheet_accounts(
+    source_df: pl.DataFrame,
+    connection: GSheetConnection,
+    db: Database,
+    import_id: str,
+) -> None:
+    """Write one ``raw.tabular_accounts`` row per account the sheet names.
+
+    Keyed by the same native slug the transform stamps on each transaction, so
+    the resolver's native→canonical mapping links both together. Upserted on
+    every pull rather than written once: a sheet is live, and an account
+    renamed in it should re-label rather than mint a second row.
+    """
+    from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
+        authored_label_parts,
+    )
+
+    field_mapping = {dest: src for src, dest in connection.column_mapping.items()}
+    account_col = field_mapping.get("account_name")
+    if not account_col or account_col not in source_df.columns:
+        return
+
+    # First label seen wins per key, matching the tabular path — later rows
+    # spelling the same account differently must not re-key it.
+    name_by_key: dict[str, str] = {}
+    for name in _account_names_from(source_df, account_col):
+        name_by_key.setdefault(slugify(name), name)
+
+    keys = sorted(name_by_key)
+    parsed = {key: authored_label_parts(name_by_key[key]) for key in keys}
+    _link_sheet_accounts(connection, db, parsed)
+    db.ingest_dataframe(
+        TABULAR_ACCOUNTS.full_name,
+        pl.DataFrame({
+            "account_id": keys,
+            "account_name": [name_by_key[k] for k in keys],
+            "account_label": [parsed[k][0] for k in keys],
+            "account_number": [None] * len(keys),
+            "account_number_masked": [
+                f"****{parsed[k][2]}" if parsed[k][2] else None for k in keys
+            ],
+            "account_type": [None] * len(keys),
+            # A sheet names accounts, not institutions. Left NULL rather than
+            # guessed; a mapped institution column is a later adapter concern.
+            "institution_name": [None] * len(keys),
+            "currency": [None] * len(keys),
+            "source_file": [
+                f"gsheet://{connection.spreadsheet_id}/{connection.sheet_gid}"
+            ]
+            * len(keys),
+            "source_type": [_SOURCE_TYPE] * len(keys),
+            "source_origin": [connection.connection_id] * len(keys),
+            "import_id": [import_id] * len(keys),
+        }),
+        on_conflict="upsert",
+    )
 
 
 class TransactionsAdapter:
@@ -221,15 +361,11 @@ class TransactionsAdapter:
         `source_origin=connection.connection_id` stamped. The caller passes
         the resulting frame to `load()` along with the `import_id`.
         """
-        if connection.account_id is None:
-            raise ValueError(
-                "TransactionsAdapter.transform requires connection.account_id; "
-                "transactions adapter is single-account by design"
-            )
-
         # Connection column_mapping is source_header → dest_field; invert to
         # dest_field → source_column for transform_dataframe.
         field_mapping = {dest: src for src, dest in connection.column_mapping.items()}
+
+        account_ids = _resolve_account_ids(df, connection, field_mapping)
 
         # date_format / sign_convention / number_format are pinned at connect
         # time; transform_dataframe requires concrete values, so fall back to
@@ -250,7 +386,7 @@ class TransactionsAdapter:
             date_format=date_format,
             sign_convention=sign_convention,
             number_format=number_format,
-            account_id=connection.account_id,
+            account_id=account_ids,
             source_file=f"gsheet://{connection.spreadsheet_id}/{connection.sheet_gid}",
             source_type=_SOURCE_TYPE,
             source_origin=connection.connection_id,
@@ -264,8 +400,14 @@ class TransactionsAdapter:
         connection: GSheetConnection,
         db: Database,
         import_id: str,
+        source_df: pl.DataFrame | None = None,
     ) -> LoadResult:
         """Diff vs. existing rows, soft-delete missing, upsert present, undelete returning.
+
+        For an unbound (multi-account) connection, also registers the accounts
+        the sheet names in ``raw.tabular_accounts`` — the rung
+        ``core.dim_accounts`` reads to name them. Requires ``source_df``,
+        which still carries the account labels the transform slugified away.
 
         Soft-delete state machine per `transaction_id` within this connection:
           - Row in current pull, not previously stored → INSERT (deleted_from_source_at NULL).
@@ -275,6 +417,9 @@ class TransactionsAdapter:
           - Empty current pull is a no-op for upsert; previously-active rows are
             still eligible for soft-delete.
         """
+        if connection.account_id is None and source_df is not None:
+            _register_sheet_accounts(source_df, connection, db, import_id)
+
         # Stamp the import_id on every row (transform left a placeholder).
         # Also explicitly NULL deleted_from_source_at — DuckDB's INSERT OR
         # REPLACE BY NAME carries over unnamed columns from the prior row,

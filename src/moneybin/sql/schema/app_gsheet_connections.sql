@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS app.gsheet_connections (
     sheet_name VARCHAR NOT NULL, -- Tab name at last successful pull; informational only — may drift, not used for joins
     workbook_name VARCHAR NOT NULL, -- Workbook title at last successful pull; informational
     adapter VARCHAR NOT NULL CHECK (adapter IN ('transactions', 'seed')), -- Adapter target: 'transactions' (Tiller-style ledger → raw.tabular_transactions) or 'seed' (catch-all → raw.gsheet_seeds). v1 values; future values add as new adapters ship.
-    account_id VARCHAR, -- FK to dim_accounts (transactions adapter only); NULL for seed adapter (multi-account by design)
+    account_id VARCHAR, -- FK to dim_accounts: the one account every row is attributed to. NULL for the seed adapter, and for a transactions sheet carrying its own account column — there each row is keyed by the account it names and this stays NULL.
     account_name VARCHAR, -- As provided via --account-name at connect time; denormalized for display
     column_mapping JSON NOT NULL, -- {source_header: dest_field} pinned at connect/reconnect time; the contract for subsequent pulls
     header_signature JSON NOT NULL, -- Ordered list of source headers at connect/reconnect time; drift detection baseline

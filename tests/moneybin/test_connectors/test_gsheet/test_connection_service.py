@@ -657,12 +657,45 @@ def test_connect_falls_through_to_seed_offer_on_low_confidence(
     assert result.connection.alias == "custom"
 
 
-def test_connect_transactions_requires_account_id_or_name(
+def _no_account_column_workbook() -> FakeWorkbook:
+    """A transactions sheet that names no account — nothing to infer one from."""
+    return FakeWorkbook(
+        title="Personal Finance",
+        tabs=[
+            FakeSheetTab(
+                name="Transactions",
+                gid=0,
+                headers=["Date", "Description", "Category", "Amount"],
+                rows=[["2026-01-15", "Whole Foods", "Groceries", "-87.42"]],
+            )
+        ],
+    )
+
+
+def _multi_account_workbook() -> FakeWorkbook:
+    """A transactions sheet whose own Account column names two accounts."""
+    return FakeWorkbook(
+        title="Personal Finance",
+        tabs=[
+            FakeSheetTab(
+                name="Transactions",
+                gid=0,
+                headers=["Date", "Description", "Category", "Amount", "Account"],
+                rows=[
+                    ["2026-01-15", "Whole Foods", "Groceries", "-87.42", "Everyday"],
+                    ["2026-01-16", "Card payment", "Transfer", "-120.00", "Rewards"],
+                ],
+            )
+        ],
+    )
+
+
+def test_connect_transactions_requires_account_when_sheet_names_none(
     in_memory_db: Database,
 ) -> None:
-    """Neither account_id nor account_name supplied → connect refuses."""
+    """No account flag and no account column → connect refuses."""
     svc, sheets, _ = _make_service(in_memory_db)
-    sheets.register_workbook("ss1", _tiller_workbook())
+    sheets.register_workbook("ss1", _no_account_column_workbook())
     req = ConnectionRequest(
         url="https://docs.google.com/spreadsheets/d/ss1/edit#gid=0",
         adapter="transactions",
@@ -670,6 +703,24 @@ def test_connect_transactions_requires_account_id_or_name(
     )
     with pytest.raises(GSheetError, match="account-id or --account-name"):
         svc.connect(req)
+
+
+def test_connect_transactions_unbound_when_sheet_carries_account_column(
+    in_memory_db: Database,
+) -> None:
+    """A sheet that names its own accounts connects without a bound account."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ss1", _multi_account_workbook())
+    req = ConnectionRequest(
+        url="https://docs.google.com/spreadsheets/d/ss1/edit#gid=0",
+        adapter="transactions",
+        yes=True,
+    )
+
+    result = svc.connect(req)
+
+    assert result.connection.account_id is None
+    assert result.connection.column_mapping["Account"] == "account_name"
 
 
 def test_connect_transactions_resolves_account_name_to_id(

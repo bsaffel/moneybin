@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -241,3 +242,77 @@ def test_load_idempotent_when_called_twice_same_data(
     ).fetchone()
     assert row is not None
     assert row[0] == 2
+
+
+def _multi_account_df() -> pl.DataFrame:
+    """Two accounts interleaved in one tab — the shape a Tiller export produces."""
+    return pl.DataFrame({
+        "Date": ["2026-01-15", "2026-01-16", "2026-01-17"],
+        "Description": ["Coffee", "Salary", "Card payment"],
+        "Category": ["Dining", "Income", "Transfer"],
+        "Amount": ["-4.50", "5000.00", "-120.00"],
+        "Account": ["Everyday Checking", "Everyday Checking", "Rewards Card"],
+        "Tags": ["", "", ""],
+    })
+
+
+def _unbound(connection: GSheetConnection) -> GSheetConnection:
+    """The same pinned mapping with no single destination account bound."""
+    return replace(connection, account_id=None, account_name=None)
+
+
+def test_transform_keys_each_row_by_its_own_account_when_unbound(
+    sample_connection: GSheetConnection,
+) -> None:
+    """An unbound multi-account connection keys each row by its own account."""
+    adapter = TransactionsAdapter()
+
+    transformed = adapter.transform(_multi_account_df(), _unbound(sample_connection))
+
+    assert transformed["account_id"].to_list() == [
+        "everyday-checking",
+        "everyday-checking",
+        "rewards-card",
+    ]
+
+
+def test_load_registers_one_account_row_per_distinct_sheet_account(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """Each account the sheet names is registered once, under its own label."""
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    df = _multi_account_df()
+
+    transformed = adapter.transform(df, conn)
+    adapter.load(transformed, conn, in_memory_db, import_id="imp1", source_df=df)
+
+    rows = in_memory_db.execute(
+        "SELECT account_id, account_name FROM raw.tabular_accounts "
+        "WHERE source_origin = ? ORDER BY account_id",
+        [conn.connection_id],
+    ).fetchall()
+    assert rows == [
+        ("everyday-checking", "Everyday Checking"),
+        ("rewards-card", "Rewards Card"),
+    ]
+
+
+def test_load_does_not_register_accounts_for_a_bound_connection(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """A connection bound to one account keeps its existing single-account shape."""
+    adapter = TransactionsAdapter()
+    df = _multi_account_df()
+
+    transformed = adapter.transform(df, sample_connection)
+    adapter.load(
+        transformed, sample_connection, in_memory_db, import_id="imp1", source_df=df
+    )
+
+    rows = in_memory_db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_accounts WHERE source_origin = ?",
+        [sample_connection.connection_id],
+    ).fetchone()
+    assert rows is not None
+    assert rows[0] == 0

@@ -14,6 +14,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 
 ### Added
+- **A Google Sheet that tracks several accounts in one tab now imports as
+  several accounts.** `gsheet connect` previously required you to name one
+  destination account, and every row from every account was filed under it —
+  no error, no warning, just wrong balances. Detection had recognized the
+  sheet's `Account` column all along and the transform discarded it.
+
+  Omit `--account-name` / `--account-id` for such a sheet and each row is now
+  attributed to the account it names, keyed the same way a CSV import keys the
+  same file, so one account exported through both routes lands as one account.
+  Accounts the sheet names are resolved on every pull: one seen before is
+  re-adopted, a genuinely new one is created, and one resembling an account you
+  already have is queued in the account-link review queue rather than becoming
+  a silent duplicate. Naming an account still binds the whole sheet to it, so
+  existing connections are unchanged; sheets with no account column still
+  require one.
+
 - **You can propose a merge for two accounts nothing automatic would pair.**
   `accounts links run` and the newly registered `accounts_links_run` MCP tool
   now accept two account ids and queue exactly that pair for review, under a

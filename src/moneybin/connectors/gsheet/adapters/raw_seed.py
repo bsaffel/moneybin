@@ -163,8 +163,12 @@ class RawSeedAdapter:
         connection: GSheetConnection,
         db: Database,
         import_id: str,
+        source_df: pl.DataFrame | None = None,
     ) -> LoadResult:
         """Diff, soft-delete missing, upsert present, undelete returning, regenerate view.
+
+        ``source_df`` is accepted for Protocol parity and unused: a seed
+        connection registers no accounts.
 
         The view is regenerated on EVERY load so a typed_columns change
         (e.g. user re-detected the sheet) propagates without extra plumbing.
