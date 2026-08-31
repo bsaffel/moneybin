@@ -19,7 +19,7 @@ flowchart LR
 
   sources --> raw --> prep --> core --> reports --> consumers
   app -- joined into --> core
-  consumers -- managed writes --> app
+  consumers -- service-backed writes --> app
   consumers -. read-only SQL .-> core
   consumers -. "read-only SQL<br/>masked by value shape" .-> raw
   consumers -. "read-only SQL<br/>masked by value shape" .-> prep
@@ -36,7 +36,7 @@ The schemas correspond exactly to the directories under `src/moneybin/sqlmesh/mo
 | `raw` | Tables | Python loaders, manual-entry service, Plaid sync | SQLMesh staging; agent-safe SQL (`sql_query`, `moneybin sql query`) for inspection | Untouched source data; re-importable from the original file or API response |
 | `prep` | Views | SQLMesh | SQLMesh core; agent-safe SQL (`sql_query`, `moneybin sql query`) for inspection | Light cleaning, type casting, source unioning; internal to the pipeline — shapes change without notice |
 | `core` | Views and tables | SQLMesh | All consumers (CLI, MCP, SQL shell, reports) | Canonical, deduplicated, multi-source; one table per real-world entity |
-| `app` | Tables | Services, managed-write MCP, migrations | Services and `core.dim_*` joins | User state and application metadata. Mutable; not derivable from `raw` |
+| `app` | Tables | Services, MCP write tools, migrations | Services and `core.dim_*` joins | User state and application metadata. Mutable; not derivable from `raw` |
 | `reports` | Views | SQLMesh | CLI `reports *`, MCP `reports(report_id=...)`, future HTTP | Curated presentation models, one per report surface; read-only by design |
 | `meta` | Tables and views | SQLMesh | Reconciliation tooling, freshness probes | Cross-source provenance and pipeline metadata |
 | `seeds` | Tables | SQLMesh seeds (from CSV) | `prep`, `core`, services | Reference data shipped in-repo (e.g., the category taxonomy) |

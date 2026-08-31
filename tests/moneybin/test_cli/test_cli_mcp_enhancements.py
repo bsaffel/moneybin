@@ -134,6 +134,17 @@ class TestMCPConfig:
         assert result.exit_code == 0
         assert "max_rows" in result.output or "rows" in result.output.lower()
 
+    def test_config_show_marks_legacy_limits_inert(self) -> None:
+        """Mcp config does not present deprecated compatibility settings as limits."""
+        result = runner.invoke(app, ["config"])
+
+        assert result.exit_code == 0
+        assert "max_chars:" not in result.output
+        deprecated_notice = (
+            "Deprecated compatibility settings: max_chars, allowed_tables (inert)."
+        )
+        assert deprecated_notice in result.output
+
 
 class TestMCPInstall:
     """Tests for the mcp install command."""

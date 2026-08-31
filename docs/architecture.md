@@ -32,7 +32,7 @@ flowchart LR
 
   sources --> raw --> prep --> core --> reports --> consumers
   app -.joined into.-> core
-  consumers -- managed writes --> app
+  consumers -- service-backed writes --> app
   core --> meta
   consumers -. read-only SQL .-> core
   consumers -. "read-only SQL<br/>masked by value shape" .-> raw
@@ -45,10 +45,10 @@ Consumers read from `core` and `reports` for analysis; the agent-safe SQL paths 
 
 | Schema | Materialized | Owner (writes) | Consumers (reads) | Purpose |
 |---|---|---|---|---|
-| `raw` | Tables | Python loaders, managed-write MCP | SQLMesh staging; agent-safe SQL (`sql_query`, `moneybin sql query`) for inspection | Untouched source data; re-importable from the original file |
+| `raw` | Tables | Python loaders, MCP write tools | SQLMesh staging; agent-safe SQL (`sql_query`, `moneybin sql query`) for inspection | Untouched source data; re-importable from the original file |
 | `prep` | Views | SQLMesh | SQLMesh core; agent-safe SQL (`sql_query`, `moneybin sql query`) for inspection | Light cleaning, type casting, source-system unioning |
 | `core` | Tables + views | SQLMesh | All consumers (services, MCP, CLI, reports) | Canonical, deduplicated, multi-source. One table per real-world entity at its primary grain |
-| `app` | Tables | Services, managed-write MCP, migrations | Services + `core.dim_*` joins | User state and application metadata. Mutable; not derivable from `raw` |
+| `app` | Tables | Services, MCP write tools, migrations | Services + `core.dim_*` joins | User state and application metadata. Mutable; not derivable from `raw` |
 | `reports` | Views | SQLMesh | CLI `reports *`, MCP `reports`, future HTTP | Curated presentation models, one per report surface. Read-only by design |
 | `meta` | Tables / views | SQLMesh | Reconciliation tooling, freshness probes | Cross-source provenance and pipeline metadata |
 | `seeds` | Tables | SQLMesh seeds (from CSV) | `prep`, `core`, services | Reference data shipped in-repo |
