@@ -211,15 +211,27 @@ def test_block_returns_empty_when_no_lock_file_and_no_lsof_output(
     assert block == {"writers": [], "readers": []}
 
 
-def test_block_defers_lsof_when_no_writer_holds_lock(tmp_path: Path) -> None:
-    """Healthy status avoids the expensive process enumeration subprocess."""
+def test_block_reports_readers_without_live_writer(tmp_path: Path) -> None:
+    """A released writer lock must not hide the reader blocking the next write."""
     db_path = tmp_path / "status.duckdb"
     db_path.touch()
-    with patch("moneybin.mcp.tools.system.find_blocking_processes") as find_processes:
+    with patch(
+        "moneybin.mcp.tools.system.find_blocking_processes",
+        return_value=[
+            {
+                "pid": 9999,
+                "command": "python",
+                "cmdline": "moneybin reports spending",
+            }
+        ],
+    ) as find_processes:
         block = _database_connections_block(db_path)
 
-    assert block == {"writers": [], "readers": []}
-    find_processes.assert_not_called()
+    assert block == {
+        "writers": [],
+        "readers": [{"pid": 9999, "command": "moneybin reports"}],
+    }
+    find_processes.assert_called_once_with(db_path.resolve())
 
 
 def test_block_tolerates_corrupted_lock_file_while_held(tmp_path: Path) -> None:

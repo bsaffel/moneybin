@@ -270,11 +270,11 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
         # back to no writer entry — the lock-file payload is best-effort
         # observability, not a correctness contract.
 
-    # Process inspection takes roughly half a second on a healthy machine.
-    # The lock probe above is sufficient to establish a healthy status; only
-    # enumerate processes when diagnosing the live writer that needs a holder.
+    # A writer can time out and release the advisory lock while a DuckDB reader
+    # still blocks the next write, so recovery diagnostics must enumerate
+    # readers independently of the current writer-lock state.
     readers: list[dict[str, Any]] = []
-    processes = find_blocking_processes(resolved) if writer_is_live else []
+    processes = find_blocking_processes(resolved)
     for proc in processes:
         if writer_pid is not None and proc["pid"] == writer_pid:
             continue  # Avoid double-listing the writer as a reader
