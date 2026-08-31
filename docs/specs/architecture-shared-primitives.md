@@ -180,7 +180,7 @@ Concrete reference: `NetworthService` (`src/moneybin/services/networth_service.p
 
 ### Read-only vs. transactional services
 
-The same shape covers both. A read-only service (e.g., `NetworthService`) only reads from `core.*` / `reports.*`. A transactional service (e.g., `CategorizationService`, `AccountService`) reads from `core` / `reports` and writes to `app.*` (or, in the `import` family, to `raw.*`). Transactional services use `db.begin() / commit() / rollback()` for multi-statement units of work. Transactional services compose `*Repo` classes (`src/moneybin/repositories/`) for protected `app.*` writes; raw mutation SQL against a protected `app.*` table inside a service is a contract violation under [Invariant 10](#architecture-invariants). The privacy middleware's managed-write validation enforces that writes target only `app.*` and `raw.*` schemas (with a `core.*` exception only for SQLMesh-issued `CREATE OR REPLACE TABLE` from the import service).
+The same shape covers both. A read-only service (e.g., `NetworthService`) only reads from `core.*` / `reports.*`. A transactional service (e.g., `CategorizationService`, `AccountService`) reads from `core` / `reports` and writes to `app.*` (or, in the `import` family, to `raw.*`). Transactional services use `db.begin() / commit() / rollback()` for multi-statement units of work. Transactional services compose `*Repo` classes (`src/moneybin/repositories/`) for protected `app.*` writes; raw mutation SQL against a protected `app.*` table inside a service is a contract violation under [Invariant 10](#architecture-invariants).
 
 ## MCP/CLI/SQL Symmetry
 
@@ -211,7 +211,6 @@ Each surface uses its native operation shape while preserving the same result. T
 3. **Privacy middleware** (`src/moneybin/mcp/privacy.py`) provides:
    - **Sensitivity tiers** — derived from typed result fields or computed per call by explicitly dynamic tools. Classification and critical-field masking are active; global consent enforcement and automatic degraded responses remain deferred.
    - **Read-only validation** for the general SQL query tool: rejects writes, file-access functions, URL literals, and quoted-path scans.
-   - **Managed-write validation** for write tools: allows `INSERT`/`UPDATE`/`DELETE` only on `app.*` and `raw.*` schemas; rejects DDL outright (with a narrow exception for SQLMesh-issued `CREATE OR REPLACE TABLE core.*`).
 
 ### Protocol-standard MCP fields are first-class, not optional
 
@@ -461,7 +460,7 @@ currency as formatting-only metadata.
 
 Two narrow naming changes rode along with this spec landing — both shipped. Retained for historical context.
 
-1. **`core.agg_net_worth` → `reports.net_worth`.** Shipped via [`reports-recipe-library.md`](reports-recipe-library.md): the `reports` schema lives in `src/moneybin/schema.py`, the SQLMesh model is `src/moneybin/sqlmesh/models/reports/net_worth.sql`, the module-level `REPORTS_NET_WORTH` constant is the canonical reference, and `NetworthService` reads from it. Privacy middleware's `_WRITABLE_SCHEMAS` is unchanged — `reports.*` is read-only by design and never appears in managed-write validation.
+1. **`core.agg_net_worth` → `reports.net_worth`.** Shipped via [`reports-recipe-library.md`](reports-recipe-library.md): the `reports` schema lives in `src/moneybin/schema.py`, the SQLMesh model is `src/moneybin/sqlmesh/models/reports/net_worth.sql`, the module-level `REPORTS_NET_WORTH` constant is the canonical reference, and `NetworthService` reads from it. `reports.*` is read-only by design.
 
 2. **`core.vw_transaction_lines` → `core.fct_transaction_lines`** in [`transaction-curation.md`](transaction-curation.md). Shipped: the module-level `FCT_TRANSACTION_LINES` constant and `src/moneybin/sqlmesh/models/core/fct_transaction_lines.sql` carry the new name.
 
