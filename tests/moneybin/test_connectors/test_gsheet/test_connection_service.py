@@ -877,15 +877,6 @@ def test_reconnect_inferred_inversion_stops_before_update_or_pull(
     assert unchanged.column_mapping["Amount"] == "amount"
 
 
-def test_rows_to_df_rejects_duplicate_headers() -> None:
-    rows = [
-        ["Date", "Amount", "Amount", "Description"],
-        ["2026-01-01", "10", "20", "Coffee"],
-    ]
-    with pytest.raises(GSheetError, match="Duplicate header"):
-        rows_to_df(rows)
-
-
 def test_connect_no_initial_pull_skips_pull(in_memory_db: Database) -> None:
     svc, sheets, _ = _make_service(in_memory_db)
     sheets.register_workbook("ss1", _tiller_workbook())
@@ -1342,3 +1333,248 @@ def test_purge_leaves_another_connections_account_rows_alone(
     ).fetchone()
     assert survivors is not None
     assert survivors[0] == 2
+
+
+def test_rows_to_df_dedupes_duplicate_headers() -> None:
+    """A duplicated header is renamed, not rejected.
+
+    MoneyBin reads the sheet read-only, so it must not require the user to
+    edit their own data to be readable. Matches the ``_duplicated_N`` naming
+    polars already applies on the CSV import path.
+    """
+    rows = [
+        ["Date", "Amount", "Amount", "Description"],
+        ["2026-01-01", "10", "20", "Coffee"],
+    ]
+
+    df = rows_to_df(rows)
+
+    assert df.columns == ["Date", "Amount", "Amount_duplicated_0", "Description"]
+    assert df["Amount"].to_list() == ["10"]
+    assert df["Amount_duplicated_0"].to_list() == ["20"]
+
+
+def test_rows_to_df_dedupes_three_occurrences_of_one_header() -> None:
+    """Third and later occurrences keep counting up, as polars numbers them."""
+    rows = [["Tag", "Tag", "Tag", "Other"], ["a", "b", "c", "d"]]
+
+    df = rows_to_df(rows)
+
+    assert df.columns == ["Tag", "Tag_duplicated_0", "Tag_duplicated_1", "Other"]
+    assert df["Tag_duplicated_1"].to_list() == ["c"]
+
+
+def test_rows_to_df_dedupe_avoids_colliding_with_a_real_header() -> None:
+    """A synthesized name must not collide with a header the sheet already has.
+
+    Otherwise de-duplication reintroduces the column collapse it exists to
+    prevent: four columns in, three out, one silently overwritten.
+    """
+    rows = [
+        ["Tag", "Tag", "Tag_duplicated_0", "Other"],
+        ["a", "b", "c", "d"],
+    ]
+
+    df = rows_to_df(rows)
+
+    assert len(df.columns) == 4
+    assert len(set(df.columns)) == 4
+    assert df.row(0) == ("a", "b", "c", "d")
+    # The real column keeps its own name: a synthesized name must route
+    # around it, or a pinned mapping silently rebinds to the wrong column
+    # while drift detection sees every pinned header still present.
+    assert df.columns == ["Tag", "Tag_duplicated_1", "Tag_duplicated_0", "Other"]
+    assert df["Tag_duplicated_0"].to_list() == ["c"]
+
+
+def test_connect_notes_renamed_duplicate_headers(in_memory_db: Database) -> None:
+    """A rename must be visible: the renamed copy matches no field alias.
+
+    Its data is therefore never imported, and without a note nothing tells
+    the user that a column they can see in the sheet was dropped.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook(
+        "ss1",
+        FakeWorkbook(
+            title="Budget",
+            tabs=[
+                FakeSheetTab(
+                    name="Transactions",
+                    gid=0,
+                    headers=["Date", "Description", "Category", "Amount", "Amount"],
+                    rows=[
+                        ["2026-01-15", "Whole Foods", "Groceries", "-87.42", "-87.42"]
+                    ],
+                )
+            ],
+        ),
+    )
+    req = ConnectionRequest(
+        url="https://docs.google.com/spreadsheets/d/ss1/edit#gid=0",
+        adapter="transactions",
+        account_name="Chase Checking",
+        account_id="acct_chase",
+        yes=True,
+        no_initial_pull=True,
+    )
+
+    result = svc.connect(req)
+
+    notes = " ".join(result.detection.notes)
+    assert "Amount_duplicated_0" in notes
+
+
+def test_connect_seed_note_describes_seed_import_behavior(
+    in_memory_db: Database,
+) -> None:
+    """The seed adapter imports every column, so the note must not claim otherwise.
+
+    ``RawSeedAdapter.transform`` serializes the whole DataFrame into
+    ``data_json``, renamed duplicates included. Telling a seed user their
+    renamed copy "is not imported" is a false warning about their own data.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook(
+        "ssSeedDup",
+        FakeWorkbook(
+            title="Personal Finance",
+            tabs=[
+                FakeSheetTab(
+                    name="Subscriptions",
+                    gid=7,
+                    headers=["Name", "Amount", "Amount"],
+                    rows=[["Netflix", "15.49", "15.49"]],
+                )
+            ],
+        ),
+    )
+
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssSeedDup/edit#gid=7",
+            adapter="seed",
+            alias="subs_dup",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+
+    notes = " ".join(result.detection.notes)
+    assert "Amount_duplicated_0" in notes
+    assert "not imported" not in notes
+
+
+def test_connect_seed_fallback_retains_duplicate_header_note(
+    in_memory_db: Database,
+) -> None:
+    """The note must survive the seed fall-through, which rebuilds ``detection``."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook(
+        "ssFallDup",
+        FakeWorkbook(
+            title="Random",
+            tabs=[
+                FakeSheetTab(
+                    name="random",
+                    gid=0,
+                    headers=["foo", "bar", "foo"],
+                    rows=[["1", "2", "3"]],
+                )
+            ],
+        ),
+    )
+
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssFallDup/edit#gid=0",
+            adapter=None,
+            accept_seed_fallback=True,
+            alias="fallback_dup",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+
+    assert result.connection.adapter == "seed"
+    notes = " ".join(result.detection.notes)
+    assert "foo_duplicated_0" in notes
+
+
+def test_reconnect_notes_renamed_duplicate_headers(in_memory_db: Database) -> None:
+    """Reconnect renames duplicates exactly as connect does, so it must say so.
+
+    Before the rename landed, a duplicate raised on this path and the failure
+    was impossible to miss. Renaming silently would drop a column the user can
+    see with nothing on any surface reporting it.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssRDup", _tiller_workbook())
+    cid = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssRDup/edit#gid=0",
+            adapter="transactions",
+            account_name="Chase Checking",
+            account_id="acct_chase",
+            yes=True,
+            no_initial_pull=True,
+        )
+    ).connection.connection_id
+
+    sheets.mutate_tab(
+        "ssRDup",
+        0,
+        headers=["Date", "Description", "Amount", "Account", "Amount"],
+        rows=[["2026-01-15", "Whole Foods", "-87.42", "Checking", "-99.99"]],
+    )
+
+    result = svc.reconnect(cid, yes=True)
+
+    notes = " ".join(result.detection.notes)
+    assert "Amount_duplicated_0" in notes
+
+
+def test_connect_note_reflects_an_override_of_a_renamed_column(
+    in_memory_db: Database,
+) -> None:
+    """An override can map the renamed copy, and then it *is* imported.
+
+    ``--column-mapping`` may name the synthesized ``_duplicated_N`` column, and
+    the persisted mapping then reads it. Building the note from the adapter
+    alone, before that merge, states the opposite of what the pull loaded.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook(
+        "ss1",
+        FakeWorkbook(
+            title="Budget",
+            tabs=[
+                FakeSheetTab(
+                    name="Transactions",
+                    gid=0,
+                    headers=["Date", "Description", "Category", "Amount", "Amount"],
+                    rows=[
+                        ["2026-01-15", "Whole Foods", "Groceries", "-87.42", "-99.99"]
+                    ],
+                )
+            ],
+        ),
+    )
+    req = ConnectionRequest(
+        url="https://docs.google.com/spreadsheets/d/ss1/edit#gid=0",
+        adapter="transactions",
+        account_name="Chase Checking",
+        account_id="acct_chase",
+        yes=True,
+        no_initial_pull=True,
+        column_mapping={"Amount_duplicated_0": "amount"},
+        # Replacing the detected amount source discards the column whose
+        # polarity was inferred, so the override path requires an explicit sign.
+        sign="negative_is_expense",
+    )
+
+    result = svc.connect(req)
+
+    notes = " ".join(result.detection.notes)
+    assert "Amount_duplicated_0" in notes
+    assert "not imported" not in notes

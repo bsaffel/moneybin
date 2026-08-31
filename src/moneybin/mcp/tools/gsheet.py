@@ -557,10 +557,13 @@ async def gsheet_reconnect(
 
     data = GsheetConnectPayload(
         connection=_connection_row(result.connection),
-        # Re-detection re-pins silently — no first-time detection notes.
         detection=GsheetDetection(
             confidence=result.detection.confidence,
             column_mapping=result.detection.column_mapping,
+            # Re-pinning is meant to be quiet, but a note here reports a cost
+            # the re-pin imposed — a renamed duplicate header whose column is
+            # not imported. Staying quiet about that is not quiet re-pinning.
+            detection_notes=result.detection.notes,
         ),
         initial_pull=_initial_pull(result),
     )

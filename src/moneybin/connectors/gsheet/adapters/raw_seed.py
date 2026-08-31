@@ -50,6 +50,8 @@ class RawSeedAdapter:
     """Catch-all adapter: JSON rows + auto-generated typed view per connection."""
 
     name: str = "seed"
+    # transform() serializes the whole frame into data_json, every column.
+    imports_every_column: bool = True
 
     def detect(
         self,

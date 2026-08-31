@@ -1091,3 +1091,35 @@ async def test_gsheet_disconnect_unknown_connection_returns_error(
 
     with pytest.raises(ValueError, match="Unknown connection"):
         gsheet_disconnect(connection_id="bogus", purge=True)
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_reconnect_surfaces_duplicate_header_note(
+    mock_build: MagicMock,
+) -> None:
+    """A rename warning is not a first-time detection hint; reconnect must keep it.
+
+    The reconnect payload drops detection notes because re-pinning is meant to
+    be quiet. A duplicate header renamed during that re-pin is the opposite: it
+    reports a column the agent can see in the sheet whose values will not be
+    imported, and dropping it leaves no surface saying so.
+    """
+    note = (
+        "Duplicate header(s) renamed: Amount -> Amount_duplicated_0. "
+        "Only the first column of each duplicated name is matched to a "
+        "field; the renamed copies are not imported."
+    )
+    service = MagicMock()
+    service.reconnect.return_value = ConnectResult(
+        connection=replace(_make_connection(), status="healthy"),
+        detection=replace(_make_detection(), notes=[note]),
+        initial_pull=_make_load_result(),
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    from moneybin.mcp.tools.gsheet import gsheet_reconnect
+
+    envelope = await gsheet_reconnect(connection_id="conn_abc", yes=True)
+
+    assert envelope.data.detection.detection_notes == [note]

@@ -94,6 +94,10 @@ class GSheetAdapter(Protocol):
     """Protocol for adapters that handle specific sheet types (transactions, seeds)."""
 
     name: str  # "transactions" | "seed"
+    # Whether a column absent from this adapter's mapping still reaches the
+    # target. Decides both what a duplicate-header rename costs the user and
+    # whether a newly duplicated header has to stop a pull.
+    imports_every_column: bool
 
     def detect(
         self,
