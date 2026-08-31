@@ -312,6 +312,24 @@ def test_upsert_guarded_many_preserves_precedence_and_row_grain_audits(
         assert json.loads(audit[5])["transaction_id"] == transaction_id
 
 
+def test_upsert_guarded_many_rejects_duplicate_transaction_ids(db: Database) -> None:
+    repo = TransactionCategoriesRepo(db)
+    categorization = {
+        "transaction_id": "duplicate",
+        "category": "Dining",
+        "subcategory": None,
+        "category_id": None,
+        "categorized_by": "rule",
+        "merchant_id": None,
+        "rule_id": "r1",
+        "confidence": 1.0,
+        "source_type": "internal",
+    }
+
+    with pytest.raises(ValueError, match="unique transaction_ids"):
+        repo.upsert_guarded_many([categorization, categorization], actor="system")
+
+
 # ---------------------------------------------------------------------------
 # clear + delete_by_rule
 # ---------------------------------------------------------------------------
