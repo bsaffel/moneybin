@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, NoReturn, Protocol
 
 import duckdb
 import polars as pl
@@ -68,6 +68,24 @@ if TYPE_CHECKING:
     from moneybin.database import Database
 
 logger = logging.getLogger(__name__)
+
+
+def _no_derivation(source_type: str) -> NoReturn:
+    """Refuse to derive a feed key for a source that has no derivation here.
+
+    The registry decides which sources are ROUTED; it cannot supply the
+    provider-specific logic that turns a catalog row into that provider's own
+    identifier. Both call sites below used to fall through to Tiingo's, so a
+    correctly-registered third provider would silently bind or fetch a Tiingo
+    ticker. Failing here keeps the registry honest about what it does and does
+    not decide, and matches ``_adapter_for``'s refusal to guess an adapter.
+    """
+    raise NotImplementedError(
+        f"price source {source_type!r} is routed by the registry but has no feed-key "
+        "derivation implemented in PriceService; add one rather than letting it fall "
+        "through to another provider's, which would bind that provider's identifier"
+    )
+
 
 # Named handles onto seeds.price_source_map rows. Every source_type, ref_kind,
 # and security-type routing decision below reads through one of these, so a new
@@ -875,8 +893,10 @@ class PriceService:
 
         if source_type == COINGECKO.source_type:
             derivation = self._coingecko_key(security)
-        else:
+        elif source_type == TIINGO.source_type:
             derivation = self._tiingo_key(security, adapter)
+        else:
+            _no_derivation(source_type)
 
         if derivation.ref_value is not None and self._was_reversed_by_user(
             security.security_id, ref_kind, source_type, derivation.ref_value
@@ -1035,11 +1055,11 @@ class PriceService:
 
     def _catalog_ref(self, security: HeldSecurity, source_type: str) -> str | None:
         """The catalog value a feed key for this source is derived from."""
-        return (
-            security.coingecko_id
-            if source_type == COINGECKO.source_type
-            else security.ticker
-        )
+        if source_type == COINGECKO.source_type:
+            return security.coingecko_id
+        if source_type == TIINGO.source_type:
+            return security.ticker
+        _no_derivation(source_type)
 
     def _binding_is_stale(
         self, security: HeldSecurity, source_type: str, bound: _Binding

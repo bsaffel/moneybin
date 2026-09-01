@@ -1790,6 +1790,38 @@ def test_every_ref_kind_the_service_queues_is_routed_as_a_feed_key() -> None:
     )
 
 
+def test_a_routed_source_with_no_derivation_refuses_to_borrow_another_providers() -> (
+    None
+):
+    """Registering a provider must not silently give it Tiingo's key derivation.
+
+    ``_route`` selects any source the registry declares security types for, so
+    a third provider becomes reachable the moment its row lands. Both derivation
+    sites used to read "CoinGecko, else Tiingo", which meant that provider would
+    be handed ``security.ticker`` and Tiingo's metadata contract — binding or
+    fetching another provider's identifier while looking correctly registered.
+    That is the same silent default ``_adapter_for`` was made loud for, and all
+    three had to move together or the fix only relocates the failure.
+    """
+    service = PriceService(
+        MagicMock(), tiingo=_FakeTiingo(), coingecko=_FakeCoinGecko()
+    )
+    security = HeldSecurity(
+        security_id="s1",
+        name="Test Security",
+        security_type="equity",
+        quote_currency="USD",
+        ticker="TEST",
+        exchange=None,
+        coingecko_id="test-coin",
+    )
+
+    with pytest.raises(NotImplementedError, match="unregistered_provider"):
+        service._catalog_ref(  # pyright: ignore[reportPrivateUsage]  # the dispatch under test
+            security, "unregistered_provider"
+        )
+
+
 def test_every_source_the_registry_routes_to_has_an_adapter_wired() -> None:
     """A registry row with no adapter behind it reports every holding as cash.
 
