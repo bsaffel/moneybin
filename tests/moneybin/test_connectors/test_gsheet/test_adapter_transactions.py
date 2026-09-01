@@ -857,3 +857,101 @@ def test_a_pull_never_soft_deletes_another_channels_rows(
     ).fetchone()
     assert foreign is not None
     assert foreign[0] is None
+
+
+def _checking_only_df() -> pl.DataFrame:
+    """The history with the card's rows gone, as closing that account leaves it."""
+    return _account_history_df().filter(pl.col("Account") == "Everyday Checking")
+
+
+def _reopened_card_df() -> pl.DataFrame:
+    """The checking history beside a different card wearing the old card's label."""
+    return pl.DataFrame({
+        "Date": ["2026-01-15", "2026-01-16", "2026-03-01", "2026-03-02"],
+        "Description": ["Coffee", "Salary", "Hotel", "Flight"],
+        "Category": ["Dining", "Income", "Travel", "Travel"],
+        "Amount": ["-4.50", "5000.00", "-250.00", "-400.00"],
+        "Account": [
+            "Everyday Checking",
+            "Everyday Checking",
+            "Rewards Card",
+            "Rewards Card",
+        ],
+        "Tags": ["", "", "", ""],
+    })
+
+
+def test_a_label_reused_after_an_absence_does_not_inherit_the_closed_account(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """Closing an account and naming a new one the same thing keeps them apart.
+
+    A label is remembered for as long as the connection lives, so re-adopting
+    its key on sight files a newly opened account's transactions under the
+    closed one — the silent merge the row test exists to prevent, reached
+    through the one door that skipped it. A label the previous pull did not
+    carry has to earn its key back from its rows like any other arrival.
+    """
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    _loaded(adapter, conn, in_memory_db, _account_history_df(), "imp1")
+    _loaded(adapter, conn, in_memory_db, _checking_only_df(), "imp2")
+
+    reopened = _reopened_card_df()
+    keys = adapter.transform(reopened, conn, in_memory_db)["account_id"].to_list()
+
+    assert keys[:2] == ["everyday-checking", "everyday-checking"]
+    assert keys[2] == keys[3]
+    assert keys[2] != "rewards-card"
+
+
+def test_a_closed_accounts_transactions_stay_put_when_its_label_is_reused(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """The closed account keeps every row it owned, under the key it owned them by.
+
+    Separating the two accounts is only half the rule: the transactions already
+    filed under the closed one must neither move to the new account nor vanish.
+    """
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    _loaded(adapter, conn, in_memory_db, _account_history_df(), "imp1")
+    _loaded(adapter, conn, in_memory_db, _checking_only_df(), "imp2")
+    _loaded(adapter, conn, in_memory_db, _reopened_card_df(), "imp3")
+
+    owners = in_memory_db.execute(
+        "SELECT description, account_id FROM raw.tabular_transactions "
+        "WHERE description IN ('Card payment', 'Groceries', 'Hotel', 'Flight') "
+        "ORDER BY description"
+    ).fetchall()
+
+    by_description = {str(row[0]): str(row[1]) for row in owners}
+    assert by_description["Card payment"] == "rewards-card"
+    assert by_description["Groceries"] == "rewards-card"
+    assert by_description["Hotel"] != "rewards-card"
+    assert by_description["Hotel"] == by_description["Flight"]
+
+
+def test_a_dormant_account_returning_with_its_history_keeps_its_key(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """An account that simply had one quiet pull is not a different account.
+
+    Revalidating a returning label has to answer both ways. The same account
+    coming back carries its own history, so it keeps its key and no
+    ``transaction_id`` rotates merely because the sheet skipped it once.
+    """
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    _loaded(adapter, conn, in_memory_db, _account_history_df(), "imp1")
+    _loaded(adapter, conn, in_memory_db, _checking_only_df(), "imp2")
+
+    returned = _account_history_df()
+    keys = adapter.transform(returned, conn, in_memory_db)["account_id"].to_list()
+
+    assert keys == [
+        "everyday-checking",
+        "everyday-checking",
+        "rewards-card",
+        "rewards-card",
+    ]

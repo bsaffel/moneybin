@@ -44,6 +44,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   shared history is too thin to be sure, the import creates a separate account
   you can see and merge rather than folding two accounts into one silently.
 
+  A label is only honored while the sheet still shows the account wearing it.
+  A connection remembers every label it has ever registered, so closing an
+  account, dropping it from the sheet, and later giving a new account the same
+  name would otherwise file the new account's transactions under the closed
+  one. Such a label is now matched by its rows like any other, so the two stay
+  apart — while an account that simply went quiet for a pull and returns with
+  its own history keeps the key, and the id of every transaction on it.
+
   `gsheet disconnect --purge` now also removes the account rows a
   multi-account connection registered, counts them in the total it asks you to
   approve, and scopes both deletions to this connection's own import channel

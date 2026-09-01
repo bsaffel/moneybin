@@ -147,20 +147,54 @@ def _account_labels_from(df: pl.DataFrame, account_col: str) -> list[tuple[str, 
 
 
 def _remembered_account_keys(
-    db: Database, connection: GSheetConnection
+    db: Database, connection: GSheetConnection, live_keys: set[str]
 ) -> dict[str, str]:
     """Label -> native key for every account this connection already registered.
 
     Scoped by the ``(source_type, source_origin)`` pair that is account identity
     in this table. A file import naming its origin the same string would
     otherwise hand this connection accounts it never registered.
+
+    A label two accounts have worn resolves to whichever of them the sheet
+    still shows. Labels are unique within a pull but not across a connection's
+    life: once a closed account's label is reused, two rows answer to it, and
+    picking arbitrarily would move an account's key from one pull to the next.
+    Ordering by ``loaded_at`` cannot break that tie — the upsert below carries
+    unnamed columns over from the prior row, so a re-registered account keeps
+    the timestamp it was first written with.
     """
     rows = db.execute(
         f"SELECT account_name, account_id FROM {TABULAR_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
         "WHERE source_type = ? AND source_origin = ?",
         [GSHEET_SOURCE_TYPE, connection.connection_id],
     ).fetchall()
-    return {str(r[0]): str(r[1]) for r in rows if r[0] is not None}
+    remembered: dict[str, str] = {}
+    for name, account_id in rows:
+        if name is None:
+            continue
+        label, key = str(name), str(account_id)
+        held = remembered.get(label)
+        if held is None or (key in live_keys and held not in live_keys):
+            remembered[label] = key
+    return remembered
+
+
+def _keys_with_live_rows(db: Database, connection: GSheetConnection) -> set[str]:
+    """The native keys this connection still has undeleted transactions for.
+
+    Stands in for "the sheet still shows this account". Every pull soft-deletes
+    the rows it no longer carries, so an account dropped from the sheet is left
+    with none active — the only durable record of a departure there is. Nothing
+    marks an account closed, and its label stays in ``raw.tabular_accounts`` for
+    as long as the connection lives.
+    """
+    rows = db.execute(
+        f"SELECT DISTINCT account_id FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef + parameterized values
+        "WHERE source_type = ? AND source_origin = ? "
+        "AND deleted_from_source_at IS NULL",
+        [GSHEET_SOURCE_TYPE, connection.connection_id],
+    ).fetchall()
+    return {str(r[0]) for r in rows if r[0] is not None}
 
 
 def _pinned_sign_convention(connection: GSheetConnection) -> SignConventionType:
@@ -248,17 +282,43 @@ def _carries_the_history_of(
     )
 
 
+def _key_not_already_owned(label: str, taken: set[str]) -> str:
+    """A native key for ``label`` that no stored account already answers to.
+
+    ``label_account_key`` is a pure function of the label, so a label reused for
+    a second account derives the exact key the first one owns. Minting it would
+    hand the new account every transaction the old one holds -- the merge this
+    path exists to refuse -- so a key that is spoken for is stepped past.
+
+    The derivation stays the single source of a key; this only declines to
+    collide with a stored account. Two *live* labels that slugify alike still
+    share a key, which is a separate known defect and not this one.
+    """
+    from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
+        label_account_key,
+    )
+
+    base = label_account_key(label)
+    if base not in taken:
+        return base
+    suffix = 2
+    while f"{base}-{suffix}" in taken:
+        suffix += 1
+    return f"{base}-{suffix}"
+
+
 def _account_key_by_label(
     labels: list[str],
     remembered: dict[str, str],
     rows_by_label: dict[str, set[tuple[str, str, str]]],
     stored_rows: dict[str, set[tuple[str, str, str]]],
+    live_keys: set[str],
 ) -> dict[str, str]:
     """The native key each label in this pull resolves to.
 
-    A label the connection already knows keeps the key it was registered under.
-    That is what makes a repeat pull idempotent, and what holds a new label on
-    the original key once a rename has been recognised.
+    A label whose account the sheet still shows keeps the key it was registered
+    under. That is what makes a repeat pull idempotent, and what holds a new
+    label on the original key once a rename has been recognised.
 
     ``transaction_id`` folds this key, so re-deriving it from a label the user
     edited would soft-delete every row the account owns and re-insert copies
@@ -271,6 +331,14 @@ def _account_key_by_label(
     and one arrived; only the rows tell them apart, because a renamed account
     still carries its own history and a newly opened one carries none of it.
 
+    A remembered label whose account has no rows left in the sheet is treated
+    as an arrival regardless, and has to earn its old key back from its rows.
+    Closing an account and giving its replacement the same name leaves exactly
+    the trace an account returning after an absence does, so the label alone
+    cannot separate them; and because a label is remembered for as long as the
+    connection lives, honouring it on sight files the new account's
+    transactions under the closed one.
+
     Erring permissively here merges two accounts into one with nothing deleted
     to make it noticeable, which `magic stays visible` ranks as the wrong
     inference hardest to notice and undo. So a key is reused only on an
@@ -279,14 +347,15 @@ def _account_key_by_label(
     second account is a mistake a person can see and merge; a wrong merge is
     not.
     """
-    from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
-        label_account_key,
-    )
-
     current = dict.fromkeys(labels)
-    resolved = {label: key for label, key in remembered.items() if label in current}
-    arrived = [label for label in current if label not in remembered]
-    departed = {remembered[label] for label in remembered if label not in current}
+    held = {
+        label: key
+        for label, key in remembered.items()
+        if label in current and key in live_keys
+    }
+    resolved = dict(held)
+    arrived = [label for label in current if label not in held]
+    departed = set(remembered.values()) - set(held.values())
 
     matches = {
         label: [
@@ -303,10 +372,13 @@ def _account_key_by_label(
         if len(keys) == 1:
             claimants[keys[0]] = claimants.get(keys[0], 0) + 1
 
+    owned = set(remembered.values())
     for label in arrived:
         keys = matches[label]
         unambiguous = len(keys) == 1 and claimants[keys[0]] == 1
-        resolved[label] = keys[0] if unambiguous else label_account_key(label)
+        resolved[label] = (
+            keys[0] if unambiguous else _key_not_already_owned(label, owned)
+        )
     return resolved
 
 
@@ -354,12 +426,14 @@ def _resolve_account_ids(
         )
 
     labels = [label for label, _ in _account_labels_from(df, account_col)]
-    remembered = _remembered_account_keys(db, connection)
+    live_keys = _keys_with_live_rows(db, connection)
+    remembered = _remembered_account_keys(db, connection, live_keys)
     key_by_label = _account_key_by_label(
         labels,
         remembered,
         _sheet_rows_by_label(df, account_col, field_mapping, sign_convention),
         _stored_rows_by_key(db, connection, set(remembered.values())),
+        live_keys,
     )
     return [key_by_label[label] for label in labels]
 
@@ -435,7 +509,10 @@ def _register_sheet_accounts(
     # and letting the filler hold it purely by arriving first would record the
     # synthesized label as one a person wrote.
     labels = _account_labels_from(source_df, account_col)
-    remembered = _remembered_account_keys(db, connection)
+    # Read before this pull's rows are written, so both this and the transform
+    # that keyed them decide identity from the same state of the store.
+    live_keys = _keys_with_live_rows(db, connection)
+    remembered = _remembered_account_keys(db, connection, live_keys)
     key_by_label = _account_key_by_label(
         [label for label, _ in labels],
         remembered,
@@ -443,6 +520,7 @@ def _register_sheet_accounts(
             source_df, account_col, field_mapping, _pinned_sign_convention(connection)
         ),
         _stored_rows_by_key(db, connection, set(remembered.values())),
+        live_keys,
     )
 
     # A recognised rename re-labels the row already sitting on that key, so the
