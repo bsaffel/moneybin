@@ -5589,6 +5589,16 @@ class ImportService:
                 "source_origin": [identity_origin],
                 "import_id": [import_id],
             })
+            # on_conflict="ignore" means a PDF account row imported before
+            # account_label existed on this write (account_id, source_file
+            # already present with account_label=NULL) keeps that NULL on
+            # re-import -- this write only reaches fresh rows. Backfilling
+            # already-materialized NULLs is a data-repair question (a targeted
+            # UPDATE or a migration), not something a per-import write can fix
+            # without risking a full upsert's loss of the original import_id/
+            # extracted_at history "ignore" exists to protect. Known
+            # limitation, not a regression: an account imported before this
+            # fix is no worse off than it was before this fix shipped.
             self._db.ingest_dataframe(
                 TABULAR_ACCOUNTS.full_name, account_df, on_conflict="ignore"
             )
