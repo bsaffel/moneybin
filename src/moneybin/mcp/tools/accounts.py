@@ -97,6 +97,7 @@ from moneybin.protocol.pagination import (
     decode_keyset_cursor,
     paginate_keyset,
     validate_keyset_position,
+    validate_keyset_shape,
 )
 from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
@@ -1038,6 +1039,9 @@ def _coarse_position(
             namespace=tool,
             scope={"filters": filters, "view": view},
         )
+        # Shape before canonicalization: the temporal element is addressed by
+        # index, so a short forged key must be rejected before it is indexed.
+        validate_keyset_shape(position, key_types=(str,) * len(directions))
         if date_index is not None:
             position = canonicalize_keyset_element(
                 position, index=date_index, canonicalize=canonical_iso_date

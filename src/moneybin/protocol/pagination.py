@@ -219,9 +219,13 @@ def canonicalize_keyset_element(
     """
 
     def rewrite(key: tuple[KeysetScalar, ...]) -> tuple[KeysetScalar, ...]:
-        value = key[index]
-        if not isinstance(value, str):
+        # Fails closed on a short key rather than trusting the caller to have
+        # checked arity first: a forged cursor reaches this before any shape
+        # check a caller happens to run, and an IndexError escaping as a crash
+        # is exactly the outcome a cursor guard exists to prevent.
+        if index >= len(key) or not isinstance(key[index], str):
             raise InvalidKeysetCursorError("invalid keyset cursor shape")
+        value = cast(str, key[index])
         return (*key[:index], canonicalize(value), *key[index + 1 :])
 
     return KeysetPosition(

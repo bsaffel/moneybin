@@ -872,34 +872,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pricing the combined quantity at the known currency's close — the same guard
   that already withheld a position holding two different known currencies.
 - **A stale or forged pagination cursor no longer re-serves rows an earlier
-  page already returned.** A keyset cursor carries two keys: the snapshot that
-  froze the top of the walk, and the continuation key of the last row served.
-  When the continuation sorts *ahead* of the snapshot, the continuation
-  predicate stops narrowing the page and widens it back to the rows page one
-  gave — the duplicate arrives as an ordinary successful response, with no
-  error to notice. Cursors are unsigned, so any caller can present one.
-  `transactions list`, the account and balance views, and the import-status
-  view already rejected such a cursor; the `transactions`, `system_audit` and
-  `reviews` MCP tools accepted it. The key-shape check and the ordering guard
-  now live once in `moneybin.protocol.pagination` beside the cursor codec, and
-  every surface paging from a head snapshot — MCP and CLI alike — calls them,
-  so a cursor one refuses the others refuse too. The `investments`, `taxonomy`
-  and `privacy` views page the mirror convention, anchoring on the last row
-  rather than the first, and keep their own equivalent check. Cursors MoneyBin
-  itself mints are unaffected: no page has ever produced an inverted pair.
-
-  A date or timestamp inside a cursor is now normalized before that check runs.
-  ISO 8601 spells one day or instant several ways — `20250101` and
-  `2025-01-01`, a `T` or a space before the time — and the spellings do not
-  sort against each other the way the dates they denote sort, so a cursor
-  pairing two of them could otherwise present a continuation that was ahead of
-  its snapshot in fact while appearing to be behind it. Every walk keyed on a
-  day or an instant now compares the normalized value: `transactions`,
-  `system_audit`, `import_status`, the `reviews` history and pending
-  categorization queues, and the `accounts_balances` history, assertions and
-  reconcile views. A timestamp carrying a UTC offset is refused rather than
-  reinterpreted, because an offset makes a string sort by its wall-clock
-  reading instead of its instant.
+  page already returned.** A continuation key that sorted ahead of its
+  snapshot widened the page back to page one and returned duplicates as an
+  ordinary successful response; the `transactions`, `system_audit` and
+  `reviews` MCP tools accepted such a cursor, and a date or timestamp written
+  in a different-but-valid ISO spelling could slip one past the other paged
+  views too. Cursors MoneyBin mints are unaffected. (#498)
 - **Account merge proposals no longer fire on a shared generated label alone,
   on either side of the comparison.** Two unrelated accounts whose *display
   name* was never set by a person or a source — both resolving to a bare

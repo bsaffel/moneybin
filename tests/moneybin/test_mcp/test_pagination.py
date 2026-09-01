@@ -439,3 +439,51 @@ def test_import_position_refuses_an_offset_bearing_timestamp() -> None:
         _import_status_position(cursor, sections=["imports"])
 
     assert caught.value.code == "import_cursor_invalid"
+
+
+def test_canonicalize_keyset_element_fails_closed_on_a_short_key() -> None:
+    """A forged short key must be refused, never crash on the index.
+
+    The temporal element is addressed by position, so a key with fewer
+    elements than the index reaches a raw `key[index]`. An IndexError is not a
+    ValueError, so it would escape every cursor handler and surface as a crash
+    instead of the refusal a forged cursor is supposed to get.
+    """
+    from moneybin.protocol.pagination import (
+        canonical_iso_date,
+        canonicalize_keyset_element,
+    )
+
+    short = KeysetPosition(snapshot=("acct-a",), after=("acct-b",), total=2)
+
+    with pytest.raises(InvalidKeysetCursorError, match="shape"):
+        canonicalize_keyset_element(short, index=1, canonicalize=canonical_iso_date)
+
+
+def test_balance_position_refuses_a_short_forged_key() -> None:
+    """The assertions view keys its day second, so a one-element key is short."""
+    from moneybin.errors import UserError
+    from moneybin.mcp.tools.accounts import (
+        _BALANCE_KEY_DIRECTIONS,  # pyright: ignore[reportPrivateUsage]
+        _coarse_position,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    cursor = encode_keyset_cursor(
+        namespace="accounts_balances",
+        scope={"filters": {}, "view": "assertions"},
+        snapshot=("acct-a",),
+        after=("acct-b",),
+        total=2,
+    )
+
+    with pytest.raises(UserError) as caught:
+        _coarse_position(
+            cursor,
+            tool="accounts_balances",
+            view="assertions",
+            filters={},
+            directions=_BALANCE_KEY_DIRECTIONS["assertions"],
+            date_index=1,
+        )
+
+    assert caught.value.code == "account_balance_cursor_invalid"
