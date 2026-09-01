@@ -235,6 +235,43 @@ def test_paginate_keyset_does_not_blame_the_cursor_for_unorderable_rows() -> Non
     assert not isinstance(caught.value, InvalidKeysetCursorError)
 
 
+def test_transaction_bounds_reject_an_inversion_spelled_in_two_iso_forms() -> None:
+    """Mixing ISO spellings must not smuggle an inverted continuation through.
+
+    `date.fromisoformat` accepts basic `20250101` and extended `2025-01-02`
+    alike, and those two sort against each other backwards from the days they
+    denote: as raw strings the later day looks like it sorts behind. The keys
+    are canonicalized before the ordering guard, so the comparison sees the
+    days DuckDB will see rather than the characters the caller chose.
+    """
+    from moneybin.services.transaction_service import transaction_keyset_bounds
+
+    inverted = KeysetPosition(
+        snapshot=("20250101", "txn_a"),
+        after=("2025-01-02", "txn_z"),
+        total=5,
+    )
+
+    with pytest.raises(InvalidKeysetCursorError, match="continuation precedes"):
+        transaction_keyset_bounds(inverted)
+
+
+def test_transaction_bounds_canonicalize_an_accepted_key() -> None:
+    """A valid basic-form day still pages, normalized to the extended form."""
+    from moneybin.services.transaction_service import transaction_keyset_bounds
+
+    snapshot, after = transaction_keyset_bounds(
+        KeysetPosition(
+            snapshot=("20250102", "txn_a"),
+            after=("2025-01-01", "txn_z"),
+            total=5,
+        )
+    )
+
+    assert snapshot == ("2025-01-02", "txn_a")
+    assert after == ("2025-01-01", "txn_z")
+
+
 def test_validate_keyset_position_rejects_a_mismatched_contract() -> None:
     """Declaring more key types than directions is a bug, not a bad cursor."""
     position = KeysetPosition(snapshot=("a", "b"), after=("a", "c"), total=2)

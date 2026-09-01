@@ -176,20 +176,41 @@ def validate_keyset_position(
     """
     if len(key_types) != len(directions):
         raise ValueError("key_types and directions describe different keys")
+    validate_keyset_shape(position, key_types=key_types)
+    reject_inverted_keyset(position, directions)
+
+
+def validate_keyset_shape(
+    position: KeysetPosition,
+    *,
+    key_types: tuple[type, ...],
+) -> None:
+    """Reject a decoded position whose keys are not the declared shape."""
     for key in (position.snapshot, position.after):
         if len(key) != len(key_types) or any(
             type(value) is not expected
             for value, expected in zip(key, key_types, strict=True)
         ):
             raise InvalidKeysetCursorError("invalid keyset cursor shape")
-    _reject_inverted_keyset(position, directions)
 
 
-def _reject_inverted_keyset(
+def reject_inverted_keyset(
     position: KeysetPosition,
     directions: tuple[SortDirection, ...],
 ) -> None:
-    """Raise when the continuation key sorts ahead of the snapshot it continues."""
+    """Raise when the continuation key sorts ahead of the snapshot it continues.
+
+    Compares the key values exactly as given, so a surface whose key is a
+    *temporal string* must canonicalize it before calling this. ``date`` and
+    ``datetime.fromisoformat`` each accept several spellings of one instant —
+    ``T`` or space separator, basic ``20250101`` or extended ``2025-01-02``,
+    with or without fractional seconds — and those spellings do not sort
+    against each other the way the database sorts the values they denote. A
+    forged cursor pairing two spellings would otherwise slip past this check
+    while still being inverted, which is the very bug the check exists to stop.
+    Surfaces with a temporal key therefore normalize first and pass the
+    canonical form to both this guard and the SQL predicate.
+    """
     if compare_keyset(position.after, position.snapshot, directions) < 0:
         raise InvalidKeysetCursorError("keyset continuation precedes its snapshot")
 
@@ -235,8 +256,8 @@ def paginate_keyset[T](
         eligible = ordered
         total_count = len(ordered)
     else:
-        _reject_inverted_keyset(position, directions)
         try:
+            reject_inverted_keyset(position, directions)
             eligible = [
                 row
                 for row in ordered

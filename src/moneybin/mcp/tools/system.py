@@ -75,7 +75,8 @@ from moneybin.protocol.pagination import (
     SortDirection,
     decode_keyset_cursor,
     encode_keyset_cursor,
-    validate_keyset_position,
+    reject_inverted_keyset,
+    validate_keyset_shape,
 )
 from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
@@ -937,21 +938,38 @@ def _audit_bounds(
     if position is None:
         return None, None
     try:
-        validate_keyset_position(
-            position, key_types=(str, str), directions=_AUDIT_KEY_DIRECTIONS
+        validate_keyset_shape(position, key_types=(str, str))
+        snapshot = _canonical_audit_key(position.snapshot)
+        after = _canonical_audit_key(position.after)
+        reject_inverted_keyset(
+            KeysetPosition(snapshot=snapshot, after=after, total=position.total),
+            _AUDIT_KEY_DIRECTIONS,
         )
-        snapshot = cast(tuple[str, str], position.snapshot)
-        after = cast(tuple[str, str], position.after)
-        for occurred_at, row_id in (snapshot, after):
-            if not row_id:
-                raise ValueError("audit cursor carries an empty id")
-            datetime.fromisoformat(occurred_at)
     except ValueError as exc:
         raise ValueError("invalid audit cursor") from exc
     return (
         snapshot,
         after,
     )
+
+
+def _canonical_audit_key(key: tuple[object, ...]) -> tuple[str, str]:
+    """Return one audit key with its timestamp in canonical space-separated ISO.
+
+    ``datetime.fromisoformat`` accepts both ``2025-06-01T01:00:00`` and
+    ``2025-06-01 02:00:00``; lexicographically the space form sorts behind the
+    ``T`` form even when it is the later instant, so comparing raw keys would
+    let a forged cursor mixing the two defeat the ordering guard. An offset
+    would break the same ordering, and every timestamp this log stores is
+    naive, so an aware one is refused rather than converted.
+    """
+    occurred_at, row_id = cast(tuple[str, str], key)
+    if not row_id:
+        raise ValueError("audit cursor carries an empty id")
+    parsed = datetime.fromisoformat(occurred_at)
+    if parsed.tzinfo is not None:
+        raise ValueError("audit cursor timestamp must be naive")
+    return parsed.isoformat(sep=" "), row_id
 
 
 def _audit_list_actions(

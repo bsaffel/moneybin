@@ -32,10 +32,12 @@ from moneybin.mcp.write_contracts import (
 )
 from moneybin.protocol.pagination import (
     KeysetPosition,
+    KeysetScalar,
     SortDirection,
     build_keyset_page,
     decode_keyset_cursor,
-    validate_keyset_position,
+    reject_inverted_keyset,
+    validate_keyset_shape,
 )
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
@@ -82,16 +84,31 @@ def transaction_keyset_bounds(
     malformed: ``transaction_id > ''`` is true for every row, so the
     continuation silently re-serves rows the cursor claims to be past.
     """
-    validate_keyset_position(
-        position, key_types=(str, str), directions=TRANSACTION_KEY_DIRECTIONS
+    validate_keyset_shape(position, key_types=(str, str))
+    snapshot = _canonical_transaction_key(position.snapshot)
+    after = _canonical_transaction_key(position.after)
+    reject_inverted_keyset(
+        KeysetPosition(snapshot=snapshot, after=after, total=position.total),
+        TRANSACTION_KEY_DIRECTIONS,
     )
-    snapshot = cast("tuple[str, str]", position.snapshot)
-    after = cast("tuple[str, str]", position.after)
-    for day, transaction_id in (snapshot, after):
-        if not transaction_id:
-            raise ValueError("keyset cursor carries an empty transaction id")
-        date.fromisoformat(day)
     return snapshot, after
+
+
+def _canonical_transaction_key(
+    key: tuple[KeysetScalar, ...],
+) -> tuple[str, str]:
+    """Return one transaction key with its day in canonical extended ISO form.
+
+    ``date.fromisoformat`` accepts basic ``20250101`` as readily as extended
+    ``2025-01-02``, and those two spellings sort against each other backwards
+    from the dates they denote. Comparing raw keys would let a forged cursor
+    mixing the two pass the ordering guard while still being inverted, so the
+    day is normalized before it reaches either the guard or the SQL predicate.
+    """
+    day, transaction_id = cast("tuple[str, str]", key)
+    if not transaction_id:
+        raise ValueError("keyset cursor carries an empty transaction id")
+    return date.fromisoformat(day).isoformat(), transaction_id
 
 
 # Audit target prefixes (schema, table) for the audit events still emitted

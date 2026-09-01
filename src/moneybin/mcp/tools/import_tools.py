@@ -98,7 +98,8 @@ from moneybin.protocol.pagination import (
     SortDirection,
     decode_keyset_cursor,
     encode_keyset_cursor,
-    validate_keyset_position,
+    reject_inverted_keyset,
+    validate_keyset_shape,
 )
 from moneybin.services.import_confirmation import sign_convention_effect
 from moneybin.services.refresh_outcome import (
@@ -1533,6 +1534,14 @@ def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
     )
 
 
+def _canonical_import_timestamp(started_at: str) -> str:
+    """Return one import cursor timestamp in canonical space-separated ISO form."""
+    parsed = datetime.fromisoformat(started_at)
+    if parsed.tzinfo is not None:
+        raise ValueError("import cursor timestamp must be naive")
+    return parsed.isoformat(sep=" ")
+
+
 def _import_status_position(
     cursor: str | None,
     *,
@@ -1551,9 +1560,7 @@ def _import_status_position(
         # element is the frozen imports-section total rather than a sort
         # column; a cursor whose two totals disagree is rejected outright
         # below, so it never reaches a page having steered the comparison.
-        validate_keyset_position(
-            position, key_types=(str, str, int), directions=_IMPORT_KEY_DIRECTIONS
-        )
+        validate_keyset_shape(position, key_types=(str, str, int))
         if (
             not position.snapshot[1]
             or not position.after[1]
@@ -1562,9 +1569,24 @@ def _import_status_position(
             or cast(int, position.snapshot[2]) > position.total
         ):
             raise ValueError("invalid import keyset shape")
-        datetime.fromisoformat(cast(str, position.snapshot[0]))
-        datetime.fromisoformat(cast(str, position.after[0]))
-        return position
+        # Canonicalize before ordering: two valid ISO spellings of one instant
+        # do not sort against each other the way the timestamps do, so a
+        # forged pair mixing them would otherwise pass the guard inverted.
+        canonical = KeysetPosition(
+            snapshot=(
+                _canonical_import_timestamp(cast(str, position.snapshot[0])),
+                position.snapshot[1],
+                position.snapshot[2],
+            ),
+            after=(
+                _canonical_import_timestamp(cast(str, position.after[0])),
+                position.after[1],
+                position.after[2],
+            ),
+            total=position.total,
+        )
+        reject_inverted_keyset(canonical, _IMPORT_KEY_DIRECTIONS)
+        return canonical
     except ValueError as exc:
         raise UserError(
             "Invalid import pagination cursor.",

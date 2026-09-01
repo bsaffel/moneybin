@@ -366,6 +366,45 @@ async def test_transactions_coarse_rejects_continuation_before_its_snapshot() ->
 
 
 @pytest.mark.unit
+async def test_transactions_coarse_rejects_an_inversion_spelled_in_two_iso_forms() -> (
+    None
+):
+    """A basic-form snapshot must not let a later extended-form day through.
+
+    As raw strings `2025-06-02` sorts behind `20250601`, so an uncanonicalized
+    ordering guard reads this pair as a valid continuation even though the
+    continuation day is the later one — re-serving txn_1 and txn_2.
+    """
+    from moneybin.protocol.pagination import encode_keyset_cursor
+
+    _insert_transactions()
+
+    response = await transactions_coarse(
+        account="ACC001",
+        limit=1,
+        cursor=encode_keyset_cursor(
+            namespace="transactions",
+            scope={
+                "account": "acc001",
+                "category": None,
+                "end": None,
+                "max_amount": None,
+                "merchant": None,
+                "min_amount": None,
+                "start": None,
+                "text": None,
+            },
+            snapshot=("20250601", "txn_1"),
+            after=("2025-06-02", "txn_0"),
+            total=2,
+        ),
+    )
+
+    assert response.error is not None
+    assert response.error.code == "transaction_cursor_invalid"
+
+
+@pytest.mark.unit
 async def test_transactions_coarse_cursor_is_bound_to_filters(
     mcp_db: object,
 ) -> None:

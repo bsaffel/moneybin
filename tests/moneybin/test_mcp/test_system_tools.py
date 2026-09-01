@@ -593,6 +593,37 @@ async def test_system_audit_coarse_rejects_continuation_before_its_snapshot(
     assert response.error.code == "infra_invalid_input"
 
 
+async def test_system_audit_coarse_rejects_an_inversion_spelled_in_two_iso_forms(
+    mcp_db: object,
+) -> None:
+    """A later instant written with a space separator is still inverted.
+
+    `datetime.fromisoformat` accepts both `2025-06-01T01:00:00` and
+    `2025-06-01 02:00:00`, and as raw strings the space form sorts behind the
+    `T` form even though it is the later instant — so an uncanonicalized guard
+    would accept this pair and re-serve rows the caller already has.
+    """
+    from moneybin.protocol.pagination import encode_keyset_cursor
+
+    _make_tag_op("spelling-a")
+    _make_tag_op("spelling-b")
+
+    response = await system_audit_coarse(
+        view="events",
+        limit=1,
+        cursor=encode_keyset_cursor(
+            namespace="system_audit",
+            scope={"view": "events"},
+            snapshot=("2025-06-01T01:00:00", "audit-a"),
+            after=("2025-06-01 02:00:00", "audit-b"),
+            total=2,
+        ),
+    )
+
+    assert response.error is not None
+    assert response.error.code == "infra_invalid_input"
+
+
 async def test_system_audit_coarse_rejects_malformed_and_cross_view_cursors(
     mcp_db: object,
 ) -> None:
