@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     display_name VARCHAR,
+    display_name_is_user_set BOOLEAN,
     official_name VARCHAR,
     last_four VARCHAR,
     account_subtype VARCHAR,

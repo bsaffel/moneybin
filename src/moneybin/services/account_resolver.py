@@ -461,6 +461,7 @@ def _retyped_reissue_candidates(
         and row[3]
         and _institution_key(str(row[3])) == target_inst
         and is_a_name(row[1])
+        and row[4]
     ]
     if not vetoed:
         return []
@@ -1207,15 +1208,17 @@ class AccountResolver:
             ):
                 return _dedupe_candidates(out, legacy_candidates)
             name_rows = self._db.execute(
-                f"SELECT account_id, display_name, last_four, institution_slug "  # noqa: S608  # TableRef + parameterized values
-                f"FROM {DIM_ACCOUNTS.full_name} WHERE account_id != ? "
-                "ORDER BY account_id",
+                f"SELECT account_id, display_name, last_four, institution_slug, "  # noqa: S608  # TableRef + parameterized values
+                f"display_name_is_user_set FROM {DIM_ACCOUNTS.full_name} "
+                "WHERE account_id != ? ORDER BY account_id",
                 [exclude_account_id],
             ).fetchall()
             existing = [
                 {"account_id": str(r[0]), "account_name": str(r[1] or "")}
                 for r in name_rows
-                if not _last_fours_disagree(src.last_four, r[2]) and is_a_name(r[1])
+                if not _last_fours_disagree(src.last_four, r[2])
+                and is_a_name(r[1])
+                and r[4]
             ]
             result = (
                 match_account(src.account_name, existing_accounts=existing)

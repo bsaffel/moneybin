@@ -375,23 +375,31 @@ def _seed_dim_account(
     institution_name: str | None = None,
     display_name: str | None = None,
     institution_slug: str | None = None,
+    display_name_is_user_set: bool = True,
 ) -> None:
     """Insert a minimal core.dim_accounts row (simulates a prior transform run).
 
     ``institution_slug`` defaults to ``institution_name`` because most callers
     seed a value that is already slug-shaped. Pass both explicitly to model the
     real dim, where the name is for display and the slug is for matching.
+
+    ``display_name_is_user_set`` defaults ``True``: most fixture names here
+    stand in for an account a person actually named (``"Chase Checking"``),
+    which is what the resolver's name signal requires post-fix. Pass
+    ``False`` only to model a *generated* descriptor -- the case the signal
+    must now ignore.
     """
     db.conn.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
-        "institution_slug, display_name) "
-        "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        "institution_slug, display_name, display_name_is_user_set) "
+        "VALUES (?, ?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
         [
             account_id,
             last_four,
             institution_name,
             institution_slug if institution_slug is not None else institution_name,
             display_name or f"acct {account_id}",
+            display_name_is_user_set,
         ],
     )
 
@@ -1076,6 +1084,38 @@ def test_exact_name_match_writes_pending(db: Database) -> None:
     assert len(second.pending_decision_ids) == 1
 
 
+def test_generated_descriptor_collision_is_not_a_name_match(db: Database) -> None:
+    """Two accounts whose *generated* descriptor coincides mint silently.
+
+    ``display_name_is_user_set=False`` models an account whose display_name
+    came from an institution/subtype/last-four fallback arm, not
+    ``app.account_settings``. A second source resolving to literally the same
+    descriptor text is not evidence of a shared identity -- the resolver
+    already compares institution and last-four separately, and here they
+    disagree (existing has none stated) -- so no "name" candidate should
+    surface. ``last_four`` is stated but distinct from the existing row's
+    (unstated) value so neither the last4 nor reissue rungs can fire and mask
+    the result; ``institution`` is left unstated for the same reason.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_generated",
+        display_name="Chase checking",
+        display_name_is_user_set=False,
+    )
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(
+            account_name="Chase checking",  # collides on generated-descriptor text
+            last_four="1234",
+            institution=None,
+        )
+    )
+    assert resolved.outcome == "minted_new"
+    assert resolved.pending_decision_ids == ()
+
+
 def test_institution_last4_writes_pending_never_merges(db: Database) -> None:
     """A shared institution+last4 produces a pending decision, NOT an auto-merge."""
     # create core.dim_accounts so the candidate pass can see an existing account
@@ -1587,9 +1627,33 @@ def test_the_reissue_rung_also_refuses_to_match_on_the_sentinel() -> None:
         last_four="1234",
         institution="chase",
     )
-    # (account_id, display_name, last_four, institution_slug): same institution
-    # and a contradicting last four, which is exactly what this rung collects.
-    name_rows = [("other_nameless", UNNAMED_ACCOUNT_LABEL, "5678", "chase")]
+    # (account_id, display_name, last_four, institution_slug,
+    # display_name_is_user_set): same institution and a contradicting last
+    # four, which is exactly what this rung collects. True (user-set) here so
+    # this fixture isolates the sentinel guard, not the provenance guard below.
+    name_rows = [("other_nameless", UNNAMED_ACCOUNT_LABEL, "5678", "chase", True)]
+
+    assert _retyped_reissue_candidates(src, name_rows) == []
+
+
+def test_the_reissue_rung_ignores_a_generated_descriptor_collision() -> None:
+    """A same-institution descriptor collision is not user-chosen evidence.
+
+    Mirrors the sentinel guard above at the same seam: ``name_rows`` carries
+    ``display_name_is_user_set=False``, modeling an existing account whose
+    display name is a generated institution/subtype descriptor rather than
+    something a person typed. Two same-institution accounts whose *generated*
+    descriptors happen to collide (e.g. two typeless checking accounts at the
+    same bank) is a coincidence of attributes the resolver already compares
+    separately -- not evidence of a shared identity -- so retyping it into an
+    ``institution_reissue`` candidate would relabel non-evidence.
+    """
+    src = _src(
+        account_name="Chase checking",
+        last_four="1234",
+        institution="chase",
+    )
+    name_rows = [("other_acct", "Chase checking", "5678", "chase", False)]
 
     assert _retyped_reissue_candidates(src, name_rows) == []
 
