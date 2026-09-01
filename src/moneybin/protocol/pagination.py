@@ -16,6 +16,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import cmp_to_key
 from typing import Literal, cast
 
 type KeysetScalar = str | int | float | bool | None
@@ -144,6 +145,94 @@ def build_keyset_page[T](
         snapshot=snapshot if snapshot is not None else key_of(page[0]),
         after=key_of(page[-1]),
         total=total,
+    )
+
+
+def validate_keyset_position(
+    position: KeysetPosition,
+    *,
+    key_types: tuple[type, ...],
+    directions: tuple[SortDirection, ...],
+) -> None:
+    """Reject a decoded position with a misshapen key or an inverted continuation.
+
+    Cursors are unsigned base64 JSON, so a caller can forge one no page ever
+    minted. An ``after`` that sorts *ahead* of its snapshot makes the
+    continuation predicate weaker than the snapshot predicate instead of
+    narrower, and the page re-serves rows page one already returned. Every
+    keyset surface calls this so that rejection is uniform.
+    """
+    for key in (position.snapshot, position.after):
+        if len(key) != len(key_types) or any(
+            type(value) is not expected
+            for value, expected in zip(key, key_types, strict=True)
+        ):
+            raise ValueError("invalid keyset cursor shape")
+    _reject_inverted_keyset(position, directions)
+
+
+def _reject_inverted_keyset(
+    position: KeysetPosition,
+    directions: tuple[SortDirection, ...],
+) -> None:
+    """Raise when the continuation key sorts ahead of the snapshot it continues."""
+    if compare_keyset(position.after, position.snapshot, directions) < 0:
+        raise ValueError("keyset continuation precedes its snapshot")
+
+
+def paginate_keyset[T](
+    rows: Sequence[T],
+    *,
+    limit: int,
+    key_of: Callable[[T], tuple[KeysetScalar, ...]],
+    directions: tuple[SortDirection, ...],
+    namespace: str,
+    scope: Mapping[str, object],
+    position: KeysetPosition | None,
+) -> tuple[list[T], str | None, int]:
+    """Sort a whole result set into display order and serve one keyset page.
+
+    The counterpart to :func:`build_keyset_page` for surfaces whose rows arrive
+    as a complete in-memory list rather than a SQL over-fetch: the snapshot
+    frozen on page one bounds the walk, so rows prepended mid-walk are excluded
+    and the total stays stable. Returns the page, its continuation, and the
+    total the walk is pinned to.
+    """
+
+    def compare_rows(left: T, right: T) -> int:
+        return compare_keyset(key_of(left), key_of(right), directions)
+
+    ordered = sorted(rows, key=cmp_to_key(compare_rows))
+    if position is None:
+        if not ordered:
+            return [], None, 0
+        snapshot = key_of(ordered[0])
+        eligible = ordered
+        total_count = len(ordered)
+    else:
+        _reject_inverted_keyset(position, directions)
+        snapshot = position.snapshot
+        eligible = [
+            row
+            for row in ordered
+            if compare_keyset(key_of(row), snapshot, directions) >= 0
+            and compare_keyset(key_of(row), position.after, directions) > 0
+        ]
+        total_count = position.total
+
+    page = eligible[:limit]
+    if len(eligible) <= limit or not page:
+        return page, None, total_count
+    return (
+        page,
+        encode_keyset_cursor(
+            namespace=namespace,
+            scope=scope,
+            snapshot=snapshot,
+            after=key_of(page[-1]),
+            total=total_count,
+        ),
+        total_count,
     )
 
 

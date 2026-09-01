@@ -72,12 +72,17 @@ from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
     KeysetPosition,
+    SortDirection,
     decode_keyset_cursor,
     encode_keyset_cursor,
+    validate_keyset_position,
 )
 from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
 logger = logging.getLogger(__name__)
+
+# Display order of both audit views: `ORDER BY occurred_at DESC, <id> DESC`.
+_AUDIT_KEY_DIRECTIONS: tuple[SortDirection, ...] = ("desc", "desc")
 
 _HEALTHY_STATUSES = frozenset({"healthy"})
 _DISCONNECTED_STATUSES = frozenset({"disconnected"})
@@ -931,23 +936,18 @@ def _audit_bounds(
     """Validate and narrow decoded audit keys to timestamp/id string pairs."""
     if position is None:
         return None, None
-    if (
-        len(position.snapshot) != 2
-        or len(position.after) != 2
-        or not all(
-            isinstance(value, str) for value in (*position.snapshot, *position.after)
-        )
-    ):
-        raise ValueError("invalid audit cursor")
-    snapshot = cast(tuple[str, str], position.snapshot)
-    after = cast(tuple[str, str], position.after)
     try:
-        datetime.fromisoformat(snapshot[0])
-        datetime.fromisoformat(after[0])
+        validate_keyset_position(
+            position, key_types=(str, str), directions=_AUDIT_KEY_DIRECTIONS
+        )
+        snapshot = cast(tuple[str, str], position.snapshot)
+        after = cast(tuple[str, str], position.after)
+        for occurred_at, row_id in (snapshot, after):
+            if not row_id:
+                raise ValueError("audit cursor carries an empty id")
+            datetime.fromisoformat(occurred_at)
     except ValueError as exc:
         raise ValueError("invalid audit cursor") from exc
-    if not snapshot[1] or not after[1]:
-        raise ValueError("invalid audit cursor")
     return (
         snapshot,
         after,

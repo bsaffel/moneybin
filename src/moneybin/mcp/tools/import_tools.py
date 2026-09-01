@@ -95,9 +95,10 @@ from moneybin.protocol.envelope import (
 )
 from moneybin.protocol.pagination import (
     KeysetPosition,
-    compare_keyset,
+    SortDirection,
     decode_keyset_cursor,
     encode_keyset_cursor,
+    validate_keyset_position,
 )
 from moneybin.services.import_confirmation import sign_convention_effect
 from moneybin.services.refresh_outcome import (
@@ -107,6 +108,9 @@ from moneybin.services.refresh_outcome import (
 from moneybin.utils.file import file_sha256
 
 logger = logging.getLogger(__name__)
+
+# Display order of the imports section: `started_at DESC, import_id DESC`.
+_IMPORT_KEY_DIRECTIONS: tuple[SortDirection, ...] = ("desc", "desc", "asc")
 
 _IMPORT_STATUS_SECTION_ORDER: tuple[Literal["imports", "formats", "inbox"], ...] = (
     "imports",
@@ -1541,33 +1545,21 @@ def _import_status_position(
             namespace="import_status.imports",
             scope={"import_id": None, "sections": sections},
         )
+        # The third key element is the frozen non-imports section count, equal
+        # on both keys, so it never decides the ordering comparison.
+        validate_keyset_position(
+            position, key_types=(str, str, int), directions=_IMPORT_KEY_DIRECTIONS
+        )
         if (
-            len(position.snapshot) != 3
-            or len(position.after) != 3
-            or not all(
-                isinstance(value, str)
-                for value in (
-                    position.snapshot[0],
-                    position.snapshot[1],
-                    position.after[0],
-                    position.after[1],
-                )
-            )
-            or not position.snapshot[1]
+            not position.snapshot[1]
             or not position.after[1]
-            or type(position.snapshot[2]) is not int
-            or type(position.after[2]) is not int
-            or position.snapshot[2] < 0
+            or cast(int, position.snapshot[2]) < 0
             or position.snapshot[2] != position.after[2]
-            or position.snapshot[2] > position.total
+            or cast(int, position.snapshot[2]) > position.total
         ):
             raise ValueError("invalid import keyset shape")
-        snapshot = cast(tuple[str, str], position.snapshot[:2])
-        after = cast(tuple[str, str], position.after[:2])
-        datetime.fromisoformat(snapshot[0])
-        datetime.fromisoformat(after[0])
-        if compare_keyset(snapshot, after, ("desc", "desc")) > 0:
-            raise ValueError("import continuation precedes its snapshot")
+        datetime.fromisoformat(cast(str, position.snapshot[0]))
+        datetime.fromisoformat(cast(str, position.after[0]))
         return position
     except ValueError as exc:
         raise UserError(

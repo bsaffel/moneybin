@@ -32,10 +32,10 @@ from moneybin.mcp.write_contracts import (
 )
 from moneybin.protocol.pagination import (
     KeysetPosition,
-    KeysetScalar,
+    SortDirection,
     build_keyset_page,
-    compare_keyset,
     decode_keyset_cursor,
+    validate_keyset_position,
 )
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
@@ -64,29 +64,34 @@ logger = logging.getLogger(__name__)
 _TRANSACTION_LIST_CURSOR = "transactions_list"
 
 # Display order of the keyset: `ORDER BY transaction_date DESC, transaction_id`.
-_TRANSACTION_KEY_DIRECTIONS: tuple[Literal["asc", "desc"], ...] = ("desc", "asc")
+TRANSACTION_KEY_DIRECTIONS: tuple[SortDirection, ...] = ("desc", "asc")
 
 
-def _is_transaction_key(key: tuple[KeysetScalar, ...]) -> bool:
-    """Validate a decoded cursor key before it reaches the SQL predicate.
+def transaction_keyset_bounds(
+    position: KeysetPosition,
+) -> tuple[tuple[str, str], tuple[str, str]]:
+    """Validate a decoded transaction cursor and narrow it to date/id pairs.
 
-    Cursors are unsigned base64 JSON, so a caller can forge one. Types alone
-    are not enough: a well-typed but non-ISO date reaches DuckDB and raises a
-    ConversionException, which ``classify_user_error`` does not recognize — the
-    caller gets a traceback instead of an envelope. An empty transaction_id is
-    worse than malformed: ``transaction_id > ''`` is true for every row, so the
+    Shared with the MCP ``transactions`` tool: both surfaces page the same
+    ``ORDER BY transaction_date DESC, transaction_id`` walk, so a key one
+    rejects the other must reject. Key shape and continuation order come from
+    ``validate_keyset_position``; what remains is what this key *means*. A
+    well-typed but non-ISO date reaches DuckDB and raises a ConversionException,
+    which ``classify_user_error`` does not recognize — the caller gets a
+    traceback instead of an envelope. An empty transaction_id is worse than
+    malformed: ``transaction_id > ''`` is true for every row, so the
     continuation silently re-serves rows the cursor claims to be past.
     """
-    if len(key) != 2 or not all(isinstance(part, str) for part in key):
-        return False
-    day, transaction_id = cast("tuple[str, str]", key)
-    if not transaction_id:
-        return False
-    try:
+    validate_keyset_position(
+        position, key_types=(str, str), directions=TRANSACTION_KEY_DIRECTIONS
+    )
+    snapshot = cast("tuple[str, str]", position.snapshot)
+    after = cast("tuple[str, str]", position.after)
+    for day, transaction_id in (snapshot, after):
+        if not transaction_id:
+            raise ValueError("keyset cursor carries an empty transaction id")
         date.fromisoformat(day)
-    except ValueError:
-        return False
-    return True
+    return snapshot, after
 
 
 # Audit target prefixes (schema, table) for the audit events still emitted
@@ -808,28 +813,16 @@ class TransactionService:
             uncategorized_only=uncategorized_only,
         )
         position: KeysetPosition | None = None
+        snapshot: tuple[str, str] | None = None
+        after: tuple[str, str] | None = None
         if cursor is not None:
             try:
                 position = decode_keyset_cursor(
                     cursor, namespace=_TRANSACTION_LIST_CURSOR, scope=scope
                 )
+                snapshot, after = transaction_keyset_bounds(position)
             except ValueError as e:
                 raise ValueError("invalid cursor") from e
-            if not _is_transaction_key(position.snapshot) or not _is_transaction_key(
-                position.after
-            ):
-                raise ValueError("invalid cursor")
-            # Both keys are well-formed on their own, but an `after` that sorts
-            # ahead of its snapshot makes the continuation predicate weaker
-            # than the snapshot predicate instead of narrower, re-serving rows
-            # page one already returned. Matches the accounts keyset path.
-            if (
-                compare_keyset(
-                    position.after, position.snapshot, _TRANSACTION_KEY_DIRECTIONS
-                )
-                < 0
-            ):
-                raise ValueError("invalid cursor")
 
         account_ids: list[str] | None = None
         if accounts:
@@ -848,12 +841,8 @@ class TransactionService:
             # page without a second count query.
             limit=limit + 1,
             offset=0,
-            snapshot=cast("tuple[str, str] | None", position.snapshot)
-            if position is not None
-            else None,
-            after=cast("tuple[str, str] | None", position.after)
-            if position is not None
-            else None,
+            snapshot=snapshot,
+            after=after,
         )
         total_count = position.total if position is not None else page.total_count
         transactions, next_cursor = build_keyset_page(

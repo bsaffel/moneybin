@@ -323,6 +323,49 @@ async def test_transaction_continuation_keeps_initial_total_after_tail_insert() 
 
 
 @pytest.mark.unit
+async def test_transactions_coarse_rejects_continuation_before_its_snapshot() -> None:
+    """`after` may never sort ahead of the snapshot it continues.
+
+    Both keys are individually well-formed — two strings, ISO dates, non-empty
+    ids — so only the ordering guard can reject this. Rows sort
+    `transaction_date DESC, transaction_id ASC`, so the far-future `after` sorts
+    ahead of the snapshot page one froze. That makes the continuation predicate
+    weaker than the snapshot predicate rather than narrower, and the page
+    re-serves txn_1, which page one already returned. Cursors are unsigned, so
+    this is a reachable forgery; `TransactionService.get` already rejects it.
+    """
+    from moneybin.protocol.pagination import encode_keyset_cursor
+
+    _insert_transactions()
+    first = await transactions_coarse(account="ACC001", limit=1)
+    assert [row.transaction_id for row in first.data.transactions] == ["txn_1"]
+
+    response = await transactions_coarse(
+        account="ACC001",
+        limit=1,
+        cursor=encode_keyset_cursor(
+            namespace="transactions",
+            scope={
+                "account": "acc001",
+                "category": None,
+                "end": None,
+                "max_amount": None,
+                "merchant": None,
+                "min_amount": None,
+                "start": None,
+                "text": None,
+            },
+            snapshot=("2025-06-01", "txn_1"),
+            after=("2025-12-31", "txn_0"),
+            total=2,
+        ),
+    )
+
+    assert response.error is not None
+    assert response.error.code == "transaction_cursor_invalid"
+
+
+@pytest.mark.unit
 async def test_transactions_coarse_cursor_is_bound_to_filters(
     mcp_db: object,
 ) -> None:
