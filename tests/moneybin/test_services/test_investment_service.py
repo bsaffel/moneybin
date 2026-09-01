@@ -1513,13 +1513,14 @@ def _insert_event(
     type_: str = "buy",
     quantity: Decimal | None = Decimal("10"),
     amount: Decimal | None = Decimal("-1500.00"),
+    currency_code: str | None = "USD",
 ) -> None:
     db.conn.execute(
         """
         INSERT INTO core.fct_investment_transactions
             (investment_transaction_id, account_id, security_id, trade_date,
              type, quantity, amount, currency_code)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'USD')
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,  # noqa: S608  # test fixture insert, static SQL
         [
             investment_transaction_id,
@@ -1529,6 +1530,7 @@ def _insert_event(
             type_,
             quantity,
             amount,
+            currency_code,
         ],
     )
 
@@ -1544,6 +1546,7 @@ def _insert_lot(
     cost_basis_remaining: Decimal = Decimal("1500.00"),
     is_open: bool = True,
     basis_incomplete: bool = False,
+    currency_code: str | None = "USD",
 ) -> None:
     db.conn.execute(
         """
@@ -1552,7 +1555,7 @@ def _insert_lot(
              original_quantity, remaining_quantity, cost_basis_total,
              cost_basis_remaining, cost_basis_method, currency_code, is_open,
              basis_incomplete)
-        VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', 'USD', ?, ?)
+        VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', ?, ?, ?)
         """,  # noqa: S608  # test fixture insert, static SQL
         [
             lot_id,
@@ -1563,6 +1566,7 @@ def _insert_lot(
             remaining_quantity,
             cost_basis_remaining,
             cost_basis_remaining,
+            currency_code,
             is_open,
             basis_incomplete,
         ],
@@ -1583,6 +1587,7 @@ def _insert_gain(
     gain_loss: Decimal = Decimal("200.00"),
     term: str = "long",
     basis_incomplete: bool = False,
+    currency_code: str | None = "USD",
 ) -> None:
     db.conn.execute(
         """
@@ -1590,7 +1595,7 @@ def _insert_gain(
             (realized_gain_id, account_id, security_id, disposal_txn_id, lot_id,
              quantity, acquisition_date, disposal_date, proceeds, cost_basis,
              gain_loss, term, cost_basis_method, basis_incomplete, currency_code)
-        VALUES (?, ?, ?, ?, ?, 5, '2024-01-01'::DATE, ?, ?, ?, ?, ?, 'fifo', ?, 'USD')
+        VALUES (?, ?, ?, ?, ?, 5, '2024-01-01'::DATE, ?, ?, ?, ?, ?, 'fifo', ?, ?)
         """,  # noqa: S608  # test fixture insert, static SQL
         [
             realized_gain_id,
@@ -1604,6 +1609,7 @@ def _insert_gain(
             gain_loss,
             term,
             basis_incomplete,
+            currency_code,
         ],
     )
 
@@ -1621,7 +1627,7 @@ class _Holding(NamedTuple):
     quantity: str = "10"
     cost_basis: str = "1000.00"
     average_cost: str | None = "100.00"
-    currency_code: str = "USD"
+    currency_code: str | None = "USD"
     market_value: str | None = None
     unrealized_gain: str | None = None
     price_date: str | None = None
@@ -1650,7 +1656,7 @@ def _holding_select(h: _Holding) -> str:
             else f"{h.average_cost}::DECIMAL(28,10)"
         )
         + " AS average_cost, "
-        f"'{h.currency_code}' AS currency_code, "
+        f"{text(h.currency_code)} AS currency_code, "
         f"{money(h.market_value)} AS market_value, "
         f"{money(h.unrealized_gain)} AS unrealized_gain, "
         + ("CAST(NULL AS DATE)" if h.price_date is None else f"DATE '{h.price_date}'")
@@ -2529,6 +2535,45 @@ class TestLots:
         _insert_lot(db, lot_id="lot_2", basis_incomplete=False)
         result = db_service(db).lots()
         assert result.warnings == []
+
+
+class TestUnknownCurrencyIsNotRenderedAsText:
+    """An unknown currency reaches every read surface as None, never "None".
+
+    ``core.fct_investment_transactions.currency_code`` is NULL when neither the
+    event nor its account names a currency (multi-currency.md Requirement 3 and
+    Requirement 8: unknown is segmented, not guessed). Each read mapper coerced
+    the column with ``str(...)``, which turns that NULL into the literal token
+    ``"None"`` — and ``holdings`` upper-cases it to ``"NONE"`` — so the surface
+    that exists to stop a fabricated currency would print one of its own. All
+    four mappers are separate limbs; each gets its own test.
+    """
+
+    def test_list_events_reports_an_unknown_currency_as_none(
+        self, db: Database
+    ) -> None:
+        _seed_read_fixtures(db)
+        _insert_event(db, investment_transaction_id="evt_1", currency_code=None)
+        row = db_service(db).list_events().rows[0]
+        assert row.currency_code is None
+
+    def test_holdings_reports_an_unknown_currency_as_none(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _replace_holdings_view(db, [_Holding(currency_code=None)])
+        row = db_service(db).holdings().rows[0]
+        assert row.currency_code is None
+
+    def test_lots_reports_an_unknown_currency_as_none(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_lot(db, lot_id="lot_1", currency_code=None)
+        row = db_service(db).lots().rows[0]
+        assert row.currency_code is None
+
+    def test_gains_reports_an_unknown_currency_as_none(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_gain(db, realized_gain_id="gain_1", currency_code=None)
+        row = db_service(db).gains().rows[0]
+        assert row.currency_code is None
 
 
 class TestGains:

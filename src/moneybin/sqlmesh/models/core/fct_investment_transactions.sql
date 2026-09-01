@@ -109,13 +109,13 @@ SELECT
   u.price, /* Per-unit price; NULL for non-priced events */
   u.amount, /* Signed cash effect: − out (buy), + in (sell/dividend). Already in ledger convention on every branch — never re-flip a provider's sign here */
   u.fees, /* Fee/commission component folded into basis */
-  COALESCE(u.currency_code, a.currency_code) AS currency_code, /* Denominating currency; no FX in v1. The event's own currency, else inherited from core.dim_accounts.currency_code — never a literal, which would relabel a foreign account's ledger and make the unknown-currency segment unreachable (multi-currency.md Requirement 3). NULL when neither is known; system doctor's currency_integrity check surfaces it. */
+  COALESCE(u.currency_code, a.currency_code) AS currency_code, /* Denominating currency; no FX in v1. The event's own currency, else inherited from core.dim_accounts.currency_code — never a literal, which would relabel a foreign account's ledger and make the unknown-currency segment unreachable (multi-currency.md Requirement 3). NULL when neither is known. system doctor's currency_integrity check does not read this table; it surfaces the cause instead — the account's own NULL currency, or an account_id no dim_accounts row resolves (fct_investment_transactions_fk_integrity). */
   u.provider_type, /* Provider's original type string (Plaid investment_transaction_type), preserved verbatim for audit; NULL for manual and bootstrap rows. Never a ledger input — `type` is the closed taxonomy */
   u.provider_subtype, /* Provider's original subtype string, preserved verbatim for audit; NULL for manual and bootstrap rows */
   u.source_type, /* Origin tag (manual | ofx | plaid) */
   u.source_origin, /* Institution/connection scope */
   u.description, /* Free-text description */
-  u.created_at AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. NULL when all contributing inputs are model-level (seeds, reference tables) — query meta.model_freshness for those. Does not advance on idempotent SQLMesh re-applies. v1: the row's own staging created_at (single source; no app-layer joins yet). See docs/specs/core-updated-at-convention.md. */
+  u.created_at AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. NULL when all contributing inputs are model-level (seeds, reference tables) — query meta.model_freshness for those. Does not advance on idempotent SQLMesh re-applies. v1: the row's own staging created_at. An inherited currency_code is the one exception — it tracks core.dim_accounts, which folds in app.account_settings, so an accounts set --currency edit changes this row without advancing updated_at. core.fct_transactions has the identical property for the same reason. See docs/specs/core-updated-at-convention.md. */
 FROM unioned AS u
 LEFT JOIN core.dim_accounts AS a
   ON u.account_id = a.account_id

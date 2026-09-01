@@ -788,6 +788,37 @@ class TestInvestmentsRecord:
         assert rows == [(None,)]
 
     @pytest.mark.unit
+    async def test_blank_currency_is_stored_as_unknown(self, mcp_db: Path) -> None:
+        """`"currency": ""` means "not specified", not a currency named `''`.
+
+        An empty string is neither inheritable nor the documented unknown state:
+        `COALESCE` only replaces NULL, so a stored `''` silently defeats the
+        account inheritance and no check tests for it. `sync_models.py` records
+        the same `''`-vs-code mismatch as a live valuation-join failure.
+        """
+        _seed_investment_core()
+        _add_security(security_id="sec_1", ticker="AAPL")
+        result = await investments_record(
+            events=[
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-15",
+                    "quantity": "10",
+                    "amount": "-1500.00",
+                    "currency": "   ",
+                }
+            ]
+        )
+        assert result.to_dict()["status"] == "ok"
+        with get_database(read_only=True) as db:
+            rows = db.execute(
+                "SELECT currency_code FROM raw.manual_investment_transactions"
+            ).fetchall()
+        assert rows == [(None,)]
+
+    @pytest.mark.unit
     async def test_supplied_currency_is_stored_verbatim(self, mcp_db: Path) -> None:
         """A caller-supplied `currency` still wins over inheritance."""
         _seed_investment_core()

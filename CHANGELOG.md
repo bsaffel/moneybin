@@ -850,8 +850,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Passing `--currency` / `currency` still wins. Events written before this
   change keep their stored currency: every write path passed `USD` explicitly,
   so a fabricated value cannot be told apart from one you typed, and rewriting
-  them would erase real answers. Correct any that are wrong by re-recording the
-  event or by setting the account's currency with `accounts set --currency`.
+  them would erase real answers. Setting the account's currency with
+  `accounts set --currency` repairs every event that carries *no* currency; one
+  that already carries a wrong one cannot be relabelled in-product yet, because
+  a manual investment event has no delete or revert and re-recording it appends
+  a second row rather than replacing the first.
 - **Account merge proposals no longer fire on a shared generated label alone,
   on either side of the comparison.** Two unrelated accounts whose *display
   name* was never set by a person or a source — both resolving to a bare

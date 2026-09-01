@@ -12,8 +12,10 @@ the caller omitted a currency, so a stored ``'USD'`` is indistinguishable from a
 currency the user actually typed. Rewriting them to NULL would erase real
 answers to un-guess the fabricated ones; leaving them keeps existing ledgers
 reading exactly as they do today, and only the *next* omitted currency is left
-unfabricated. Existing rows that are genuinely mislabelled are corrected by
-re-recording the event or setting the account's currency, not by this migration.
+unfabricated. ``accounts set --currency`` repairs every event that carries no currency at
+all; one already carrying a wrong value cannot be relabelled yet — a manual
+investment event has no delete or revert, so re-recording appends a second row
+rather than replacing the first.
 """
 
 from __future__ import annotations

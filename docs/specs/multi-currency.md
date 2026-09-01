@@ -176,7 +176,9 @@ Numbered, testable. Tagged by phase.
    `core.fct_transactions` uses for the cash grain. Rows written before the fix
    keep their stored `'USD'`: every write path passed it explicitly, so a
    fabricated value is indistinguishable from a typed one and a backfill would
-   erase real answers. `app.securities.currency_code` still carries
+   erase real answers. `accounts set --currency` repairs an event carrying no
+   currency; one already carrying a wrong value has no in-product remedy yet,
+   because a manual investment event has no delete or revert. `app.securities.currency_code` still carries
    `NOT NULL DEFAULT 'USD'` — a catalog entry has no account to inherit from, so
    removing that literal needs a nullability decision of its own.
 4. **Home currency setting.** A profile-level `home_currency` (ISO 4217), **mutable**,
