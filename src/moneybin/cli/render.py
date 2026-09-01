@@ -206,9 +206,10 @@ def _fit_columns(widths: Sequence[int], available: int) -> tuple[int, ...]:
 
     The ends are what identify a row and carry the answer — a spending table
     reads as `month … total`, and dropping either end for two middle dimensions
-    loses the question and keeps the qualifiers. Columns are then added
-    outside-in, so what survives a hard squeeze is the widest possible frame
-    rather than a prefix. This is DuckDB's and pandas' behaviour, measured.
+    loses the question and keeps the qualifiers. The rest of the budget buys
+    the most columns it can, split as evenly as it can between the two ends, so
+    what survives a hard squeeze is the widest possible frame rather than a
+    prefix. This is DuckDB's and pandas' behaviour, measured.
 
     Returns every index when the whole projection fits, so a caller can tell an
     elided table from a complete one by length alone.
@@ -216,35 +217,40 @@ def _fit_columns(widths: Sequence[int], available: int) -> tuple[int, ...]:
     total = len(widths)
     if total == 0 or _table_width(widths) <= available:
         return tuple(range(total))
-    # One column of ELISION stands between the two halves from here on, so its
-    # width is reserved before anything competes for the remainder.
-    kept = [0] if total == 1 else [0, total - 1]
-    budget = [widths[i] for i in kept] + [len(ELISION)]
-    head, tail = 1, total - 2
-    # A side closes for good once its next column does not fit: the budget only
-    # grows, so that same column can never fit later. The other side keeps
-    # going — abandoning both would discard narrow columns behind one wide one,
-    # rendering two columns in a terminal with room for five.
-    head_open, tail_open = True, True
-    while head <= tail and (head_open or tail_open):
-        # Outside-in, taking from whichever side has given up less ground so
-        # far. Ties go to the head, so an odd count leans left.
-        take_head = head_open and (not tail_open or (head - 1) <= (total - 2 - tail))
-        nxt = head if take_head else tail
-        if _table_width([*budget, widths[nxt]]) > available:
-            head_open, tail_open = (
-                (False, tail_open) if take_head else (head_open, False)
-            )
-            continue
-        budget.append(widths[nxt])
-        kept.append(nxt)
-        if take_head:
-            head += 1
-        else:
-            tail -= 1
-    # Only ever a prefix and a suffix, so what was dropped stays one contiguous
-    # run and one ELISION column still describes it.
-    return tuple(sorted(kept))
+    if total == 1:
+        return (0,)
+    # Everything dropped is one contiguous run, so a candidate projection is
+    # exactly a head length and a tail length — at most n²/2 of them, over a
+    # column count. Few enough to score them all, which is what a walk
+    # outwards-in cannot do: it pays for the first wide column it reaches and
+    # loses every narrow one behind it, rendering three columns where four fit.
+    # One column of ELISION stands between the two halves, so its width is
+    # reserved before anything competes for the remainder.
+    best = (1, 1)
+    for head in range(1, total):
+        for tail in range(1, total - head + 1):
+            if head + tail == total:
+                continue  # the whole projection, and it did not fit above
+            shown = [
+                *(widths[i] for i in range(head)),
+                *(widths[i] for i in range(total - tail, total)),
+                len(ELISION),
+            ]
+            if _table_width(shown) > available:
+                continue
+            # Most columns wins. Between two that show the same number, the
+            # more balanced split, then the head — so a squeeze keeps the
+            # widest frame rather than a prefix, and an odd count leans left.
+            if (head + tail, -abs(head - tail), head) > (
+                best[0] + best[1],
+                -abs(best[0] - best[1]),
+                best[0],
+            ):
+                best = (head, tail)
+    # The ends are kept whether or not they fit: a table squeezed past its own
+    # frame still has to render something, and they are what identify the row.
+    head, tail = best
+    return (*range(head), *range(total - tail, total))
 
 
 def render_rows(

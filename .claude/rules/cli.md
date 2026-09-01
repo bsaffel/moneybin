@@ -178,7 +178,7 @@ prints — and by `TestMcpStreamKeepsInfoOnStderr` for the host channel.
 
 Every command that **reads but does not mutate** state MUST accept:
 
-- `-o, --output {text,json}` — output format. `text` is human-readable, `json` is machine-readable. The `json` branch must serialize the same data the text branch displays.
+- `-o, --output {text,json}` — output format. `text` is human-readable, `json` is machine-readable. The `json` branch must serialize the same **records and values** the text branch displays: the same rows, the same amounts, the same masking. It may carry more *fields* — where a text table renders a declared subset of its columns, JSON still carries every one (see `--wide` below). Narrowing is a reading aid for a terminal, never a difference in what the two branches know.
 - `-q, --quiet` — suppress informational output (status lines, progress, `✅`). Result rows are NEVER suppressed by `-q` — they are the data.
 - `--wide` — on a command whose text table renders a declared subset of its columns, restore the full projection. Text-only: `--output json` always carries every column. A command that renders everything by default does not need it.
 - `--json-fields` — comma-separated field projection for `--output json` (e.g. `--json-fields id,date,amount`). Only applies when `--output json` is active; silently ignored otherwise. Added progressively as each read-only command is extended — declare as `json_fields: str | None = json_fields_option` and pass to `render_or_json(json_fields=json_fields)`. Commands that implement it MUST enumerate available field names in their `--help` text (e.g. `"Available fields: id, date, amount, description, category, account_id"`).

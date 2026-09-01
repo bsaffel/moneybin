@@ -16,8 +16,9 @@ import ast
 import io
 import re
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from decimal import Decimal
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -25,9 +26,12 @@ import pytest
 
 import moneybin.cli
 from moneybin.cli.render import (
+    ELISION,
     MINUS,
     Money,
     Style,
+    _fit_columns,  # pyright: ignore[reportPrivateUsage]  # the fit is a property, not a rendering
+    _table_width,  # pyright: ignore[reportPrivateUsage]  # so the check agrees with it on "fits"
     color_enabled,
     format_money,
     render_note,
@@ -684,6 +688,49 @@ def test_one_unkeepable_column_does_not_end_the_fit(
     assert "fourth" in out
     # Not "wide": the framing line's own `--wide for all` contains it.
     assert "sprawling" not in out
+
+
+def _widest_one_gap_fit(widths: Sequence[int], available: int) -> tuple[int, ...]:
+    """The most columns any single-gap projection can show in ``available``.
+
+    Derived from the invariant `_fit_columns` documents — everything it drops
+    is one contiguous run, so a projection is exactly a head length and a tail
+    length — and not from the walk that function performs. It measures each
+    candidate with the renderer's own width function so the two agree on what
+    "fits" and disagree on nothing else.
+    """
+    total = len(widths)
+    best: tuple[int, ...] = ()
+    for head in range(1, total):
+        for tail in range(1, total - head + 1):
+            if head + tail == total:
+                continue  # the whole projection, which has no gap to mark
+            kept = (*range(head), *range(total - tail, total))
+            shown = [*(widths[i] for i in kept), len(ELISION)]
+            if _table_width(shown) <= available and len(kept) > len(best):
+                best = kept
+    return best
+
+
+def test_the_fit_keeps_every_column_the_width_allows() -> None:
+    """Requirement 8: the fit buys the most columns, not the nearest ones.
+
+    Walking outside-in and closing a side at its first oversized column pays
+    for that column and drops every narrow one behind it, so an eighty-column
+    window renders four columns where six would fit. The candidates are few —
+    a head length and a tail length, at most n²/2 of them for a column count —
+    so this checks the whole space rather than sampling it.
+    """
+    for total in (4, 5, 6):
+        for widths in product((1, 5, 13, 27), repeat=total):
+            for available in (40, 55, 70, 85):
+                kept = _fit_columns(widths, available)
+                best = _widest_one_gap_fit(widths, available)
+                assert len(kept) >= len(best), (
+                    f"widths={list(widths)} available={available} keeps "
+                    f"{len(kept)} columns {kept}, but {best} keeps "
+                    f"{len(best)} and fits the same width"
+                )
 
 
 def test_an_unfitted_table_streams_its_rows(
