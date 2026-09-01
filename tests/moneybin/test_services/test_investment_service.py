@@ -2000,6 +2000,23 @@ class TestHoldings:
         assert "unpriced" in warning
         assert "withheld" in warning
 
+    def test_the_withheld_warning_names_currency_as_a_reason(
+        self, db: Database
+    ) -> None:
+        """`withheld` is not only a share-count verdict, and the wording decides the fix.
+
+        A position is also withheld when its open lots disagree on currency — the
+        quantity can be perfectly right and only the denomination unresolved. A
+        warning that says the share count is known wrong sends that user to
+        reconcile shares, which changes nothing; the fix is `accounts set
+        --currency` or a per-event currency.
+        """
+        _seed_read_fixtures(db)
+        _replace_holdings_view(db, [_Holding(valuation_status="withheld")])
+        warning = db_service(db).holdings().warnings[0]
+
+        assert "currency" in warning.lower()
+
     def test_max_days_since_observed_reports_the_stalest_priced_position(
         self, db: Database
     ) -> None:

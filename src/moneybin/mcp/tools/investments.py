@@ -168,7 +168,8 @@ def investments_holdings(
     cost), the `price_date` of the close used, and `days_since_observed`.
     `valuation_status` is one of `valued` (close is today's),
     `carried_forward` (the most recent close is older), `unpriced` (no close
-    resolved), or `withheld` (the share count is known wrong). The last two
+    resolved), or `withheld` (a known-wrong share count, or lots that
+    disagree on currency). The last two
     report `market_value`/`unrealized_gain` as null, never zero, and
     `data.warnings` names how many rows those are.
 
@@ -1496,8 +1497,8 @@ def register_investment_coarse_reads(mcp: FastMCP) -> None:
         "except holdings rows, which keep their own currency_code. For holdings, "
         "valuation_status marks each row valued, carried_forward, unpriced, or "
         "withheld; the last two null market_value/unrealized_gain (never zero) "
-        "and data.warnings counts them, withheld means the share count is known "
-        "wrong. Do not sum market_value across rows: read "
+        "and data.warnings counts them, withheld means a wrong share count "
+        "or currency. Do not sum market_value across rows: read "
         "data.total_market_value, in data.total_market_value_currency — mixed "
         "currencies price into home at each position's own close, both null when "
         "no stored rate covers a pair; data.market_value_by_currency gives the "

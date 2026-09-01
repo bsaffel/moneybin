@@ -719,7 +719,8 @@ moneybin investments holdings [--account <id|name>] [--output json|table]
 ```
 - Current positions: quantity, cost basis, average cost, market value, unrealized
   gain, and the date and age of the close each value rests on. A position with no
-  usable price, or one whose share count is known wrong, renders `-` rather than a
+  usable price, or one whose share count is known wrong or whose lots disagree on
+  currency, renders `-` rather than a
   zero; its status column says which.
 
 ```
@@ -788,7 +789,7 @@ a3f19c02b8e1 qty=15.0000000000 cost_basis=2475.00 avg_cost=165.0000000000 market
 c81a5f6039db qty=0.5000000000 cost_basis=18000.00 avg_cost=36000.0000000000 market_value=- unrealized_gain=- USD status=unpriced
 portfolio market_value=27850.00 USD max_days_since_observed=3
 
-⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved) or 'withheld' (the share count is known wrong).
+⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved) or 'withheld' (a known-wrong share count, or lots that disagree on currency).
 ```
 
 The first column is `security_id` (a 12-hex catalog id), not a ticker. Each row

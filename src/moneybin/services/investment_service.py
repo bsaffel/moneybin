@@ -1875,7 +1875,7 @@ class InvestmentService:
             warnings.append(
                 f"{unvalued} position(s) report no market value — see each row's "
                 "valuation_status: 'unpriced' (no close resolved) or 'withheld' "
-                "(the share count is known wrong)."
+                "(a known-wrong share count, or lots that disagree on currency)."
             )
         # Scope the age to the rows carrying a figure: it discloses how old the
         # published numbers are, not how old an absent one would have been.
