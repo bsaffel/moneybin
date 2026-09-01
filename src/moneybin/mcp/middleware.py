@@ -85,7 +85,10 @@ class ValidationErrorMiddleware(Middleware):
         FastMCP's own routing gets a chance to reject it (verified: the
         middleware chain runs ahead of tool lookup), so the metric label is
         coalesced to a fixed sentinel in that case rather than trusting the
-        request payload as a label value.
+        request payload as a label value. The same exception (and therefore
+        the same sentinel) also covers a registered-but-disabled tool — a
+        bounded, known name with no cardinality risk, unlike an unregistered
+        one — since MoneyBin never disables a tool today.
         """
         tool_name = context.message.name
         started = time.monotonic()
@@ -109,10 +112,10 @@ class ValidationErrorMiddleware(Middleware):
             tool_name = _UNKNOWN_TOOL_LABEL
             raise
         finally:
+            duration = time.monotonic() - started
             MCP_TOOL_CALLS_TOTAL.labels(tool_name=tool_name).inc()
-            MCP_TOOL_DURATION_SECONDS.labels(tool_name=tool_name).observe(
-                time.monotonic() - started
-            )
+            MCP_TOOL_DURATION_SECONDS.labels(tool_name=tool_name).observe(duration)
+            logger.debug(f"Tool {tool_name} completed in {duration:.3f}s")
 
 
 def _build_validation_envelope(
