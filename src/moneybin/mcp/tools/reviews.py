@@ -94,9 +94,13 @@ from moneybin.protocol.pagination import (
     KeysetPosition,
     KeysetScalar,
     SortDirection,
+    canonical_iso_date,
+    canonical_iso_timestamp,
+    canonicalize_keyset_element,
     decode_keyset_cursor,
     paginate_keyset,
-    validate_keyset_position,
+    reject_inverted_keyset,
+    validate_keyset_shape,
 )
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
@@ -148,13 +152,44 @@ def _review_position(
             namespace="reviews",
             scope={"kind": kind, "status": status},
         )
-        validate_keyset_position(position, key_types=types, directions=directions)
+        validate_keyset_shape(position, key_types=types)
+        canonical = _canonical_review_position(position, kind=kind, status=status)
+        reject_inverted_keyset(canonical, directions)
     except ValueError as exc:
         raise UserError(
             "Invalid review pagination cursor.",
             code=error_codes.REVIEW_CURSOR_INVALID,
         ) from exc
-    return position
+    return canonical
+
+
+def _canonical_review_position(
+    position: KeysetPosition,
+    *,
+    kind: ReviewQueueKind,
+    status: ReviewStatus,
+) -> KeysetPosition:
+    """Normalize this queue's leading temporal key, if it has one.
+
+    A history queue keys on the instant a decision was made; the pending
+    categorization queue keys on a transaction *day*. Canonicalizing one as the
+    other would rewrite the key into a spelling no row produces, so the page
+    would match nothing at all rather than mis-order — which is why the shape
+    is declared per queue here rather than guessed from the value.
+    """
+    if status == "history":
+        canonicalize = canonical_iso_timestamp
+    elif kind == "categorization":
+        canonicalize = canonical_iso_date
+    else:
+        return position
+
+    def normalize(value: str) -> str:
+        # `_review_ordering` substitutes "" for a row carrying no timestamp, so
+        # the empty key is one a page can mint and must survive normalization.
+        return value if value == "" else canonicalize(value)
+
+    return canonicalize_keyset_element(position, index=0, canonicalize=normalize)
 
 
 def _review_envelope[T](

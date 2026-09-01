@@ -10,7 +10,6 @@ import logging
 import os
 import subprocess  # noqa: S404 — subprocess used for git rev-parse; static args only
 from collections.abc import Callable
-from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
@@ -73,6 +72,7 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
     KeysetPosition,
     SortDirection,
+    canonical_iso_timestamp,
     decode_keyset_cursor,
     encode_keyset_cursor,
     reject_inverted_keyset,
@@ -966,10 +966,7 @@ def _canonical_audit_key(key: tuple[object, ...]) -> tuple[str, str]:
     occurred_at, row_id = cast(tuple[str, str], key)
     if not row_id:
         raise ValueError("audit cursor carries an empty id")
-    parsed = datetime.fromisoformat(occurred_at)
-    if parsed.tzinfo is not None:
-        raise ValueError("audit cursor timestamp must be naive")
-    return parsed.isoformat(sep=" "), row_id
+    return canonical_iso_timestamp(occurred_at), row_id
 
 
 def _audit_list_actions(

@@ -96,6 +96,7 @@ from moneybin.protocol.envelope import (
 from moneybin.protocol.pagination import (
     KeysetPosition,
     SortDirection,
+    canonical_iso_timestamp,
     decode_keyset_cursor,
     encode_keyset_cursor,
     reject_inverted_keyset,
@@ -1534,14 +1535,6 @@ def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
     )
 
 
-def _canonical_import_timestamp(started_at: str) -> str:
-    """Return one import cursor timestamp in canonical space-separated ISO form."""
-    parsed = datetime.fromisoformat(started_at)
-    if parsed.tzinfo is not None:
-        raise ValueError("import cursor timestamp must be naive")
-    return parsed.isoformat(sep=" ")
-
-
 def _import_status_position(
     cursor: str | None,
     *,
@@ -1574,12 +1567,12 @@ def _import_status_position(
         # forged pair mixing them would otherwise pass the guard inverted.
         canonical = KeysetPosition(
             snapshot=(
-                _canonical_import_timestamp(cast(str, position.snapshot[0])),
+                canonical_iso_timestamp(cast(str, position.snapshot[0])),
                 position.snapshot[1],
                 position.snapshot[2],
             ),
             after=(
-                _canonical_import_timestamp(cast(str, position.after[0])),
+                canonical_iso_timestamp(cast(str, position.after[0])),
                 position.after[1],
                 position.after[2],
             ),

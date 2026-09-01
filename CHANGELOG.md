@@ -893,9 +893,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `2025-01-01`, a `T` or a space before the time — and the spellings do not
   sort against each other the way the dates they denote sort, so a cursor
   pairing two of them could otherwise present a continuation that was ahead of
-  its snapshot in fact while appearing to be behind it. The `transactions`,
-  `system_audit` and `import_status` walks compare the normalized value, and a
-  timestamp carrying a UTC offset is refused rather than reinterpreted.
+  its snapshot in fact while appearing to be behind it. Every walk keyed on a
+  day or an instant now compares the normalized value: `transactions`,
+  `system_audit`, `import_status`, the `reviews` history and pending
+  categorization queues, and the `accounts_balances` history, assertions and
+  reconcile views. A timestamp carrying a UTC offset is refused rather than
+  reinterpreted, because an offset makes a string sort by its wall-clock
+  reading instead of its instant.
 - **Account merge proposals no longer fire on a shared generated label alone,
   on either side of the comparison.** Two unrelated accounts whose *display
   name* was never set by a person or a source — both resolving to a bare

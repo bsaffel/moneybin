@@ -16,6 +16,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date, datetime
 from functools import cmp_to_key
 from typing import Literal, cast
 
@@ -178,6 +179,56 @@ def validate_keyset_position(
         raise ValueError("key_types and directions describe different keys")
     validate_keyset_shape(position, key_types=key_types)
     reject_inverted_keyset(position, directions)
+
+
+def canonical_iso_date(value: str) -> str:
+    """Return the one extended-ISO spelling of a day that sorts as the day does."""
+    return date.fromisoformat(value).isoformat()
+
+
+def canonical_iso_timestamp(value: str) -> str:
+    """Return the one space-separated ISO spelling of an instant, or raise.
+
+    Space-separated because that is what ``str()`` on a database timestamp
+    produces, so a cursor this surface minted normalizes to itself unchanged.
+    An offset-bearing value is refused rather than converted: an offset suffix
+    makes the string sort by its wall-clock reading rather than its instant,
+    which is the same defect canonicalizing exists to remove, and every
+    timestamp these walks order is naive.
+    """
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is not None:
+        raise ValueError("keyset cursor timestamp must be naive")
+    return parsed.isoformat(sep=" ")
+
+
+def canonicalize_keyset_element(
+    position: KeysetPosition,
+    *,
+    index: int,
+    canonicalize: Callable[[str], str],
+) -> KeysetPosition:
+    """Return the position with one key element replaced by its canonical form.
+
+    Ordering is only sound when a key compares the way the value it denotes
+    compares. A temporal element breaks that on its own: ISO 8601 admits
+    several spellings of one day or instant whose text order contradicts their
+    chronological order, so a forged cursor pairing two spellings can look
+    like a valid continuation while being inverted. Every walk with a temporal
+    element routes through here before its keys are ordered or handed to SQL.
+    """
+
+    def rewrite(key: tuple[KeysetScalar, ...]) -> tuple[KeysetScalar, ...]:
+        value = key[index]
+        if not isinstance(value, str):
+            raise InvalidKeysetCursorError("invalid keyset cursor shape")
+        return (*key[:index], canonicalize(value), *key[index + 1 :])
+
+    return KeysetPosition(
+        snapshot=rewrite(position.snapshot),
+        after=rewrite(position.after),
+        total=position.total,
+    )
 
 
 def validate_keyset_shape(

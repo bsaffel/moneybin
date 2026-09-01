@@ -308,3 +308,134 @@ def test_compare_keyset_supports_mixed_sort_directions() -> None:
         )
         > 0
     )
+
+
+def test_review_position_rejects_an_inversion_spelled_in_two_iso_forms() -> None:
+    """The history queue keys on an instant, so it needs the same guard.
+
+    `2025-06-01 02:00:00` is the later instant but sorts behind the `T` form as
+    raw text, so an uncanonicalized guard reads this pair as a continuation.
+    """
+    from moneybin.errors import UserError
+    from moneybin.mcp.tools.reviews import (
+        _review_position,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    cursor = encode_keyset_cursor(
+        namespace="reviews",
+        scope={"kind": "matches", "status": "history"},
+        snapshot=("2025-06-01T01:00:00", "dec-a"),
+        after=("2025-06-01 02:00:00", "dec-b"),
+        total=2,
+    )
+
+    with pytest.raises(UserError) as caught:
+        _review_position(cursor, kind="matches", status="history")
+
+    assert caught.value.code == "review_cursor_invalid"
+
+
+def test_review_position_keeps_the_empty_timestamp_a_page_can_mint() -> None:
+    """`_review_ordering` emits "" for a row with no timestamp; it must page."""
+    from moneybin.mcp.tools.reviews import (
+        _review_position,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    cursor = encode_keyset_cursor(
+        namespace="reviews",
+        scope={"kind": "matches", "status": "history"},
+        snapshot=("", "dec-a"),
+        after=("", "dec-b"),
+        total=2,
+    )
+
+    position = _review_position(cursor, kind="matches", status="history")
+
+    assert position is not None
+    assert position.snapshot == ("", "dec-a")
+
+
+def test_balance_position_rejects_an_inversion_spelled_in_two_iso_forms() -> None:
+    """The balances history walk keys on a day and needs the same guard.
+
+    Ascending by date, `20250601` is the earlier day and so sorts ahead of the
+    `2025-06-02` snapshot — inverted — yet as raw text it reads as behind it.
+    """
+    from moneybin.errors import UserError
+    from moneybin.mcp.tools.accounts import (
+        _BALANCE_KEY_DIRECTIONS,  # pyright: ignore[reportPrivateUsage]
+        _coarse_position,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    cursor = encode_keyset_cursor(
+        namespace="accounts_balances",
+        scope={"filters": {}, "view": "history"},
+        snapshot=("2025-06-02", "acct-a"),
+        after=("20250601", "acct-b"),
+        total=2,
+    )
+
+    with pytest.raises(UserError) as caught:
+        _coarse_position(
+            cursor,
+            tool="accounts_balances",
+            view="history",
+            filters={},
+            directions=_BALANCE_KEY_DIRECTIONS["history"],
+            date_index=0,
+        )
+
+    assert caught.value.code == "account_balance_cursor_invalid"
+
+
+def test_canonical_iso_timestamp_refuses_an_offset_bearing_value() -> None:
+    """An offset makes the string sort by wall clock rather than by instant.
+
+    `2025-06-01T09:00:00+09:00` is the earlier instant than a naive
+    `2025-06-01 05:00:00`, but sorts after it as text — the same contradiction
+    canonicalizing exists to remove, so the value is refused rather than
+    converted. Every timestamp these walks order is naive.
+    """
+    from moneybin.protocol.pagination import canonical_iso_timestamp
+
+    assert canonical_iso_timestamp("2025-06-01T05:00:00") == "2025-06-01 05:00:00"
+
+    with pytest.raises(ValueError, match="must be naive"):
+        canonical_iso_timestamp("2025-06-01T09:00:00+09:00")
+
+
+def test_audit_bounds_refuse_an_offset_bearing_timestamp() -> None:
+    """The audit walk refuses an aware cursor rather than reinterpreting it."""
+    from moneybin.mcp.tools.system import (
+        _audit_bounds,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    aware = KeysetPosition(
+        snapshot=("2025-06-01T09:00:00+09:00", "audit-a"),
+        after=("2025-06-01T10:00:00+09:00", "audit-b"),
+        total=2,
+    )
+
+    with pytest.raises(ValueError, match="invalid audit cursor"):
+        _audit_bounds(aware)
+
+
+def test_import_position_refuses_an_offset_bearing_timestamp() -> None:
+    """The import walk refuses an aware cursor for the same reason."""
+    from moneybin.errors import UserError
+    from moneybin.mcp.tools.import_tools import (
+        _import_status_position,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    cursor = encode_keyset_cursor(
+        namespace="import_status.imports",
+        scope={"import_id": None, "sections": ["imports"]},
+        snapshot=("2025-06-01T09:00:00+09:00", "imp_a", 1),
+        after=("2025-06-01T10:00:00+09:00", "imp_b", 1),
+        total=2,
+    )
+
+    with pytest.raises(UserError) as caught:
+        _import_status_position(cursor, sections=["imports"])
+
+    assert caught.value.code == "import_cursor_invalid"

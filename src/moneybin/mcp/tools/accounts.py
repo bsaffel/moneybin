@@ -92,6 +92,8 @@ from moneybin.protocol.pagination import (
     InvalidKeysetCursorError,
     KeysetPosition,
     SortDirection,
+    canonical_iso_date,
+    canonicalize_keyset_element,
     decode_keyset_cursor,
     paginate_keyset,
     validate_keyset_position,
@@ -122,6 +124,14 @@ from moneybin.services.refresh import RefreshResult
 
 # Display order of each paged accounts view's immutable keyset.
 _ACCOUNT_LIST_KEY_DIRECTIONS: tuple[SortDirection, ...] = ("asc",)
+# Which key element of each balances view is a day. Rows render it with
+# `date.isoformat()`, so a cursor must be normalized to that one spelling
+# before it is ordered against them: ISO admits spellings whose text order
+# contradicts their chronological order.
+_BALANCE_DATE_INDEX: dict[
+    Literal["latest", "history", "assertions", "reconcile"], int | None
+] = {"latest": None, "history": 0, "assertions": 1, "reconcile": 1}
+
 _BALANCE_KEY_DIRECTIONS: dict[
     Literal["latest", "history", "assertions", "reconcile"],
     tuple[SortDirection, ...],
@@ -1012,6 +1022,7 @@ def _coarse_position(
     view: str,
     filters: dict[str, object],
     directions: tuple[SortDirection, ...],
+    date_index: int | None = None,
 ) -> KeysetPosition | None:
     """Decode one scope-bound cursor and validate its string key shape."""
     if cursor is None:
@@ -1027,6 +1038,10 @@ def _coarse_position(
             namespace=tool,
             scope={"filters": filters, "view": view},
         )
+        if date_index is not None:
+            position = canonicalize_keyset_element(
+                position, index=date_index, canonicalize=canonical_iso_date
+            )
         validate_keyset_position(
             position, key_types=(str,) * len(directions), directions=directions
         )
@@ -1399,6 +1414,7 @@ async def accounts_balances_coarse(
         view=view,
         filters=filters,
         directions=directions,
+        date_index=_BALANCE_DATE_INDEX[view],
     )
     account_id = (
         await _resolve_account_reference(reference, include_closed=True)

@@ -35,6 +35,7 @@ from moneybin.protocol.pagination import (
     KeysetScalar,
     SortDirection,
     build_keyset_page,
+    canonical_iso_date,
     decode_keyset_cursor,
     reject_inverted_keyset,
     validate_keyset_shape,
@@ -108,7 +109,7 @@ def _canonical_transaction_key(
     day, transaction_id = cast("tuple[str, str]", key)
     if not transaction_id:
         raise ValueError("keyset cursor carries an empty transaction id")
-    return date.fromisoformat(day).isoformat(), transaction_id
+    return canonical_iso_date(day), transaction_id
 
 
 # Audit target prefixes (schema, table) for the audit events still emitted
