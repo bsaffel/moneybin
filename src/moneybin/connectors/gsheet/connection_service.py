@@ -25,6 +25,7 @@ from sqlglot import exp
 from moneybin.config import get_settings
 from moneybin.connectors.gsheet.adapters import ADAPTERS
 from moneybin.connectors.gsheet.adapters.base import (
+    GSHEET_SOURCE_TYPE,
     DetectionResult,
     GSheetConnection,
     LoadResult,
@@ -49,7 +50,7 @@ from moneybin.services.import_confirmation import (
     MappingValidationError,
     validate_partial_mapping,
 )
-from moneybin.tables import GSHEET_SEEDS, TABULAR_TRANSACTIONS
+from moneybin.tables import GSHEET_SEEDS, TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,21 @@ class GSheetPurgePlan:
     connection_id: str
     connection_before_state: dict[str, Any]
     raw_before_state: tuple[dict[str, Any], ...]
+    # Kept separate from raw_before_state rather than concatenated: the two
+    # tables have different columns, and the confirmation renders these rows.
+    account_before_state: tuple[dict[str, Any], ...]
     blast_radius: dict[str, int]
+
+    @property
+    def rows_to_delete(self) -> int:
+        """Every raw row the purge removes, across each table it touches.
+
+        Derived from the snapshots rather than summed at the call site, so a
+        confirmation cannot quote one table's count while the purge empties
+        two. A row class added to this plan has to be added here to be
+        deleted, which is the same edit.
+        """
+        return len(self.raw_before_state) + len(self.account_before_state)
 
 
 def _inferred_sign_evidence_header(detection: DetectionResult) -> str | None:
@@ -340,11 +355,13 @@ class GSheetConnectionService:
                 "raw.gsheet_<alias>."
             )
 
-        # TransactionsAdapter.transform requires account_id (see transactions.py).
-        # Persisting without one creates a row that fails every pull. Accept
-        # account_name as a free-text alias and resolve to the canonical id
-        # at the service boundary (identifiers.md Guard 2 — bind filters to
-        # the id; resolve free-text at the boundary).
+        # TransactionsAdapter.transform needs an account for every row: either
+        # one bound here, or the sheet's own account column. Accept account_name
+        # as a free-text alias and resolve to the canonical id at the service
+        # boundary (identifiers.md Guard 2 — bind filters to the id; resolve
+        # free-text at the boundary). The "neither" refusal waits until the
+        # mapping is merged below, because a --column-mapping override can add
+        # or drop the account column that decides it.
         resolved_account_id: str | None = req.account_id
         if target_adapter == "transactions" and not resolved_account_id:
             if req.account_name:
@@ -358,13 +375,6 @@ class GSheetConnectionService:
                 # boundary handlers).
                 resolved_account_id = AccountService(self._db).resolve_strict(
                     req.account_name
-                )
-            else:
-                raise GSheetError(
-                    "--account-id or --account-name is required for the "
-                    "transactions adapter. Pass --account-name=<display> "
-                    "(resolved via dim_accounts) or "
-                    "--account-id=<dim_accounts.account_id>."
                 )
 
         # For seed adapter the column_mapping field holds inferred typed_columns
@@ -451,6 +461,16 @@ class GSheetConnectionService:
                 IMPORT_OVERRIDE_TOTAL.labels(channel="gsheet").inc()
         else:
             column_mapping = detection.column_mapping
+
+        _require_keyable_accounts(
+            adapter=target_adapter,
+            account_id=resolved_account_id,
+            column_mapping=column_mapping,
+            remedy=(
+                "Pass --account-name=<display> (resolved via dim_accounts) or "
+                "--account-id=<dim_accounts.account_id>."
+            ),
+        )
 
         # Only here are both inputs final: the seed fall-through above rebuilds
         # ``detection`` (discarding anything appended to the earlier one), and
@@ -573,11 +593,32 @@ class GSheetConnectionService:
                 f"""
                 SELECT *
                 FROM {TABULAR_TRANSACTIONS.full_name}
-                WHERE source_origin = ?
+                WHERE source_type = ? AND source_origin = ?
                 ORDER BY transaction_id, account_id, source_file
                 """,  # noqa: S608  # TableRef + parameterized value
-                [conn["connection_id"]],
+                [GSHEET_SOURCE_TYPE, conn["connection_id"]],
             )
+        columns = [str(column[0]) for column in cursor.description]
+        return tuple(dict(zip(columns, row, strict=True)) for row in cursor.fetchall())
+
+    def _account_before_state(self, conn: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+        """Every ``raw.tabular_accounts`` row this connection owns.
+
+        Only an unbound transactions connection registers any: a bound one
+        files every row under an account it did not create, and a seed
+        connection names no accounts at all.
+        """
+        if conn["adapter"] == "seed":
+            return ()
+        cursor = self._db.execute(
+            f"""
+            SELECT *
+            FROM {TABULAR_ACCOUNTS.full_name}
+            WHERE source_type = ? AND source_origin = ?
+            ORDER BY account_id
+            """,  # noqa: S608  # TableRef + parameterized value
+            [GSHEET_SOURCE_TYPE, conn["connection_id"]],
+        )
         columns = [str(column[0]) for column in cursor.description]
         return tuple(dict(zip(columns, row, strict=True)) for row in cursor.fetchall())
 
@@ -587,13 +628,16 @@ class GSheetConnectionService:
         if conn is None:
             raise GSheetError(f"Unknown connection: {connection_id}")
         raw_rows = self._raw_before_state(conn)
+        account_rows = self._account_before_state(conn)
         return GSheetPurgePlan(
             connection_id=connection_id,
             connection_before_state=conn,
             raw_before_state=raw_rows,
+            account_before_state=account_rows,
             blast_radius={
                 "connections": 1,
                 "raw_rows": len(raw_rows),
+                "raw_account_rows": len(account_rows),
                 "views": int(conn["adapter"] == "seed" and bool(conn.get("alias"))),
             },
         )
@@ -636,9 +680,21 @@ class GSheetConnectionService:
                     [connection_id],
                 )
             else:
+                # Scoped by the (source_type, source_origin) pair both tables
+                # treat as account identity. source_origin alone is not unique
+                # across channels — a file import naming its origin the same
+                # string would lose its rows to this connection's purge.
                 self._db.execute(
-                    f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} WHERE source_origin = ?",  # noqa: S608  # TableRef + parameterized value
-                    [connection_id],
+                    f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} WHERE source_type = ? AND source_origin = ?",  # noqa: S608  # TableRef + parameterized value
+                    [GSHEET_SOURCE_TYPE, connection_id],
+                )
+                # An unbound connection registers the accounts its sheet names.
+                # Leaving them would keep user-authored labels — and the
+                # accounts core projects from them — after a purge that says it
+                # deleted everything this connection owns.
+                self._db.execute(
+                    f"DELETE FROM {TABULAR_ACCOUNTS.full_name} WHERE source_type = ? AND source_origin = ?",  # noqa: S608  # TableRef + parameterized value
+                    [GSHEET_SOURCE_TYPE, connection_id],
                 )
 
             self._repo.delete(connection_id, actor=actor, in_outer_txn=True)
@@ -747,6 +803,20 @@ class GSheetConnectionService:
             sign_convention_to_save = sign or detection.sign_convention
             sign_evidence_header = None
 
+        # Both guards sit ahead of the metric: a refused reconnect persists no
+        # mapping, so booking an accepted confirmation for it overstates the
+        # counter. Keyability is asked first, matching connect, so a sheet with
+        # both problems names the same blocker whichever verb reached it.
+        _require_keyable_accounts(
+            adapter=existing["adapter"],
+            account_id=existing["account_id"],
+            column_mapping=column_mapping,
+            remedy=(
+                "Restore the account column in the sheet, or disconnect and "
+                "reconnect with --account-name / --account-id to bind it."
+            ),
+        )
+
         _require_inferred_sign_confirmation(
             resolved_convention=sign_convention_to_save,
             sign_was_explicit=sign is not None,
@@ -790,6 +860,32 @@ class GSheetConnectionService:
             initial_pull=pull.load_result,
             initial_pull_status=pull.status,
             initial_pull_error=pull.error_message,
+        )
+
+
+def _require_keyable_accounts(
+    *,
+    adapter: str,
+    account_id: str | None,
+    column_mapping: dict[str, str],
+    remedy: str,
+) -> None:
+    """Refuse a transactions mapping whose rows can be keyed to no account.
+
+    Neither a bound account nor an account column leaves every pull raising
+    inside ``transform``, where ``pull_service`` catches it and records a
+    generic ``failed`` status — the connection stays broken with nothing
+    saying why. Both the connect and reconnect paths pin a mapping, so both
+    check here; only the remedy differs, since reconnect takes no account flag.
+    """
+    if (
+        adapter == "transactions"
+        and account_id is None
+        and "account_name" not in column_mapping.values()
+    ):
+        raise GSheetError(
+            "This transactions sheet has no account column and the connection "
+            f"is not bound to an account. {remedy}"
         )
 
 

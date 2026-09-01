@@ -12,6 +12,11 @@ from moneybin.database import Database
 
 Confidence = Literal["high", "medium", "low"]
 
+# Every row this connector writes carries it, and account identity is the
+# (source_type, source_origin) pair — so the value has to be the same string
+# where rows are written and where they are read back or deleted.
+GSHEET_SOURCE_TYPE = "gsheet"
+
 
 @dataclass(frozen=True)
 class DetectionResult:
@@ -120,8 +125,15 @@ class GSheetAdapter(Protocol):
         self,
         df: pl.DataFrame,
         connection: GSheetConnection,
+        db: Database,
     ) -> pl.DataFrame:
-        """Apply pinned mapping + typed transforms; produce load-ready frame."""
+        """Apply pinned mapping + typed transforms; produce load-ready frame.
+
+        ``db`` carries the identities this connection has already registered.
+        The transactions adapter keys an unbound sheet's rows by account, and
+        ``transaction_id`` folds that key, so a key recomputed from the current
+        label would rotate every id the account owns whenever the label changes.
+        """
         ...
 
     def load(
@@ -130,6 +142,13 @@ class GSheetAdapter(Protocol):
         connection: GSheetConnection,
         db: Database,
         import_id: str,
+        source_df: pl.DataFrame | None = None,
     ) -> LoadResult:
-        """Diff + soft-delete + upsert. Returns counts."""
+        """Diff + soft-delete + upsert. Returns counts.
+
+        ``source_df`` is the pre-transform frame. The transactions adapter
+        needs it to register the accounts an unbound multi-account sheet
+        names — the transform keeps only their slugified keys, and an account
+        is named for a human by the label the sheet actually wrote.
+        """
         ...

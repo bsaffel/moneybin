@@ -657,19 +657,70 @@ def test_connect_falls_through_to_seed_offer_on_low_confidence(
     assert result.connection.alias == "custom"
 
 
-def test_connect_transactions_requires_account_id_or_name(
+def _no_account_column_workbook() -> FakeWorkbook:
+    """A transactions sheet that names no account — nothing to infer one from."""
+    return FakeWorkbook(
+        title="Personal Finance",
+        tabs=[
+            FakeSheetTab(
+                name="Transactions",
+                gid=0,
+                headers=["Date", "Description", "Category", "Amount"],
+                rows=[["2026-01-15", "Whole Foods", "Groceries", "-87.42"]],
+            )
+        ],
+    )
+
+
+def _multi_account_workbook() -> FakeWorkbook:
+    """A transactions sheet whose own Account column names two accounts."""
+    return FakeWorkbook(
+        title="Personal Finance",
+        tabs=[
+            FakeSheetTab(
+                name="Transactions",
+                gid=0,
+                headers=["Date", "Description", "Category", "Amount", "Account"],
+                rows=[
+                    ["2026-01-15", "Whole Foods", "Groceries", "-87.42", "Everyday"],
+                    ["2026-01-16", "Card payment", "Transfer", "-120.00", "Rewards"],
+                ],
+            )
+        ],
+    )
+
+
+def test_connect_transactions_requires_account_when_sheet_names_none(
     in_memory_db: Database,
 ) -> None:
-    """Neither account_id nor account_name supplied → connect refuses."""
+    """No account flag and no account column → connect refuses."""
     svc, sheets, _ = _make_service(in_memory_db)
-    sheets.register_workbook("ss1", _tiller_workbook())
+    sheets.register_workbook("ss1", _no_account_column_workbook())
     req = ConnectionRequest(
         url="https://docs.google.com/spreadsheets/d/ss1/edit#gid=0",
         adapter="transactions",
         yes=True,
     )
-    with pytest.raises(GSheetError, match="account-id or --account-name"):
+    with pytest.raises(GSheetError, match="no account column"):
         svc.connect(req)
+
+
+def test_connect_transactions_unbound_when_sheet_carries_account_column(
+    in_memory_db: Database,
+) -> None:
+    """A sheet that names its own accounts connects without a bound account."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ss1", _multi_account_workbook())
+    req = ConnectionRequest(
+        url="https://docs.google.com/spreadsheets/d/ss1/edit#gid=0",
+        adapter="transactions",
+        yes=True,
+    )
+
+    result = svc.connect(req)
+
+    assert result.connection.account_id is None
+    assert result.connection.column_mapping["Account"] == "account_name"
 
 
 def test_connect_transactions_resolves_account_name_to_id(
@@ -929,7 +980,12 @@ def test_purge_plan_captures_complete_connection_and_raw_rows(
     assert plan.connection_before_state["column_mapping"]
     assert len(plan.raw_before_state) == 1
     assert plan.raw_before_state[0]["connection_id"] == result.connection.connection_id
-    assert plan.blast_radius == {"connections": 1, "raw_rows": 1, "views": 1}
+    assert plan.blast_radius == {
+        "connections": 1,
+        "raw_rows": 1,
+        "raw_account_rows": 0,
+        "views": 1,
+    }
 
 
 def test_confirmed_purge_revalidates_inside_transaction(
@@ -1148,6 +1204,135 @@ class TestGSheetSharedConfidenceBands:
         # With T_high=0.70, score=0.75 ≥ T_high → "high" → no --yes needed.
         result = svc.connect(req)
         assert result.connection.adapter == "transactions"
+
+
+def _renamed_account_column_workbook() -> FakeWorkbook:
+    """The same sheet after its account column was renamed past recognition."""
+    return FakeWorkbook(
+        title="Personal Finance",
+        tabs=[
+            FakeSheetTab(
+                name="Transactions",
+                gid=0,
+                headers=["Date", "Description", "Category", "Amount", "Nickname"],
+                rows=[
+                    ["2026-01-15", "Whole Foods", "Groceries", "-87.42", "Everyday"],
+                    ["2026-01-16", "Card payment", "Transfer", "-120.00", "Rewards"],
+                ],
+            )
+        ],
+    )
+
+
+def test_reconnect_refuses_to_strand_an_unbound_connection(
+    in_memory_db: Database,
+) -> None:
+    """Symmetric guard to connect: an unbound connection keeps an account column.
+
+    Re-pinning a mapping without one leaves every later pull raising inside
+    transform, where the failure reaches the user only as a generic ``failed``
+    status — the connection is broken with nothing saying why.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssU", _multi_account_workbook())
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssU/edit#gid=0",
+            adapter="transactions",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+    cid = result.connection.connection_id
+
+    sheets.register_workbook("ssU", _renamed_account_column_workbook())
+    before = _confirmation_count("accepted")
+
+    with pytest.raises(GSheetError, match="account column"):
+        svc.reconnect(cid, yes=True)
+
+    # A refusal that still books an accepted confirmation overstates the
+    # metric for a mapping that was never persisted.
+    assert _confirmation_count("accepted") == before
+
+
+def _connect_multi_account(
+    svc: GSheetConnectionService, sheets: TestSheetsClient, ss: str
+) -> str:
+    """Connect an unbound multi-account transactions sheet; return its id."""
+    sheets.register_workbook(ss, _multi_account_workbook())
+    result = svc.connect(
+        ConnectionRequest(
+            url=f"https://docs.google.com/spreadsheets/d/{ss}/edit#gid=0",
+            adapter="transactions",
+            yes=True,
+        )
+    )
+    return result.connection.connection_id
+
+
+def test_purge_removes_the_account_rows_an_unbound_pull_registered(
+    in_memory_db: Database,
+) -> None:
+    """``disconnect --purge`` promises a permanent purge, so nothing may survive.
+
+    An unbound connection registers one ``raw.tabular_accounts`` row per account
+    the sheet names, each holding a label a person wrote. Deleting only the
+    transactions leaves those labels — and the accounts projected from them —
+    behind after the connection itself is gone.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    connection_id = _connect_multi_account(svc, sheets, "ss-purge-accts")
+    before = in_memory_db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_accounts WHERE source_origin = ?",
+        [connection_id],
+    ).fetchone()
+    assert before is not None
+    assert before[0] == 2
+
+    svc.disconnect(connection_id, purge=True)
+
+    after = in_memory_db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_accounts WHERE source_origin = ?",
+        [connection_id],
+    ).fetchone()
+    assert after is not None
+    assert after[0] == 0
+
+
+def test_purge_plan_counts_the_account_rows_it_will_delete(
+    in_memory_db: Database,
+) -> None:
+    """The confirmation quotes a blast radius, so it has to count every row."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    connection_id = _connect_multi_account(svc, sheets, "ss-purge-plan-accts")
+
+    plan = svc.plan_purge(connection_id)
+
+    assert plan.blast_radius["raw_account_rows"] == 2
+    assert len(plan.account_before_state) == 2
+    assert {row["account_id"] for row in plan.account_before_state} == {
+        "everyday",
+        "rewards",
+    }
+
+
+def test_purge_leaves_another_connections_account_rows_alone(
+    in_memory_db: Database,
+) -> None:
+    """The delete is scoped by ``source_origin``, not by the table."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    doomed = _connect_multi_account(svc, sheets, "ss-purge-doomed")
+    kept = _connect_multi_account(svc, sheets, "ss-purge-kept")
+
+    svc.disconnect(doomed, purge=True)
+
+    survivors = in_memory_db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_accounts WHERE source_origin = ?",
+        [kept],
+    ).fetchone()
+    assert survivors is not None
+    assert survivors[0] == 2
 
 
 def test_rows_to_df_dedupes_duplicate_headers() -> None:
@@ -1393,3 +1578,69 @@ def test_connect_note_reflects_an_override_of_a_renamed_column(
     notes = " ".join(result.detection.notes)
     assert "Amount_duplicated_0" in notes
     assert "not imported" not in notes
+
+
+def test_the_purge_plan_totals_every_row_it_will_delete(
+    in_memory_db: Database,
+) -> None:
+    """The confirmation quotes a total, so it counts every table it empties.
+
+    Quoting only the transaction count while the purge also removes the
+    account rows asks the user to approve two rows and then deletes four.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    connection_id = _connect_multi_account(svc, sheets, "ss-purge-total")
+
+    plan = svc.plan_purge(connection_id)
+
+    assert plan.blast_radius["raw_rows"] == 2
+    assert plan.blast_radius["raw_account_rows"] == 2
+    assert plan.rows_to_delete == 4
+
+
+def _insert_foreign_channel_rows(db: Database, source_origin: str) -> None:
+    """A CSV import that happens to name its origin the same string."""
+    db.execute(
+        """
+        INSERT INTO raw.tabular_accounts
+            (account_id, account_name, source_file, source_type,
+             source_origin, import_id)
+        VALUES ('csv-checking', 'CSV Checking', '/tmp/x.csv', 'csv', ?, 'imp-csv')
+        """,
+        [source_origin],
+    )
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, transaction_date, amount, source_file,
+             source_type, source_origin, import_id)
+        VALUES ('csv-t1', 'csv-checking', DATE '2026-01-01', -1.00, '/tmp/x.csv',
+                'csv', ?, 'imp-csv')
+        """,
+        [source_origin],
+    )
+
+
+def test_purge_leaves_another_channels_rows_alone(
+    in_memory_db: Database,
+) -> None:
+    """Account identity is the (source_type, source_origin) pair, so both scope it.
+
+    ``source_origin`` is not unique across channels on its own. A purge scoped
+    to it alone would delete a file import's rows whenever that import's origin
+    string matched this connection's id.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    connection_id = _connect_multi_account(svc, sheets, "ss-purge-scoped")
+    _insert_foreign_channel_rows(in_memory_db, connection_id)
+
+    svc.disconnect(connection_id, purge=True)
+
+    survivors = in_memory_db.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM raw.tabular_accounts WHERE source_type = 'csv'),
+            (SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_type = 'csv')
+        """
+    ).fetchone()
+    assert survivors == (1, 1)

@@ -19,6 +19,7 @@ import polars as pl
 
 from moneybin.connectors.gsheet.adapters import ADAPTERS
 from moneybin.connectors.gsheet.adapters.base import (
+    GSHEET_SOURCE_TYPE,
     DetectionResult,
     GSheetConnection,
     LoadResult,
@@ -31,13 +32,14 @@ from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
 )
-from moneybin.extractors.tabular.transforms import transform_dataframe
-from moneybin.tables import TABULAR_TRANSACTIONS
+from moneybin.extractors.tabular.transforms import (
+    original_source_strings,
+    transform_dataframe,
+)
+from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
 
-
-_SOURCE_TYPE = "gsheet"
 
 # transform_dataframe requires an import_id, but the real one is only known
 # at load() time. transform() stamps this placeholder; load() overwrites it
@@ -92,7 +94,9 @@ def _split_pair_both_null_ratio(
     return both_empty / df.height
 
 
-def required_sources_for_mapping(column_mapping: dict[str, str]) -> set[str]:
+def required_sources_for_mapping(
+    column_mapping: dict[str, str], *, account_source_required: bool = False
+) -> set[str]:
     """Source columns whose emptiness counts as drift for this mapping.
 
     Always includes the source mapped to ``transaction_date``. For amount,
@@ -100,17 +104,486 @@ def required_sources_for_mapping(column_mapping: dict[str, str]) -> set[str]:
     ``credit_amount`` pair — whichever the connection was actually saved
     with. Mapping that satisfies neither returns an empty amount set
     (drift check still gates on transaction_date).
+
+    ``account_source_required`` adds the account column, which is load-bearing
+    only for an unbound connection — there it is what keys each row, so
+    blanking its values silently re-parents the ledger. A bound connection
+    ignores the column entirely, and blank values in it are not drift.
     """
     by_dest = {dest: src for src, dest in column_mapping.items()}
     required: set[str] = set()
     if "transaction_date" in by_dest:
         required.add(by_dest["transaction_date"])
+    if account_source_required and "account_name" in by_dest:
+        required.add(by_dest["account_name"])
     if "amount" in by_dest:
         required.add(by_dest["amount"])
     elif "debit_amount" in by_dest and "credit_amount" in by_dest:
         required.add(by_dest["debit_amount"])
         required.add(by_dest["credit_amount"])
     return required
+
+
+_BLANK_ACCOUNT_LABEL = "unknown"
+
+
+def _account_labels_from(df: pl.DataFrame, account_col: str) -> list[tuple[str, bool]]:
+    """Per-row ``(label, authored)`` from the sheet's account column.
+
+    A cell the sheet left empty takes a filler label so the row still has
+    something to group on. Emptiness has to be tested after stripping, not
+    against NULL: the Sheets API stringifies every cell, so a blank arrives as
+    ``""`` where the tabular path's CSV yields NULL, and a bare NULL check
+    would pass it through to an empty key.
+
+    ``authored`` is false for the filler. It reads exactly like a name someone
+    typed, and the label rung is reserved for names someone did.
+    """
+    labels: list[tuple[str, bool]] = []
+    for value in df[account_col].to_list():
+        text = "" if value is None else str(value).strip()
+        labels.append((text, True) if text else (_BLANK_ACCOUNT_LABEL, False))
+    return labels
+
+
+def _remembered_account_keys(
+    db: Database, connection: GSheetConnection, live_keys: set[str]
+) -> dict[str, str]:
+    """Label -> native key for every account this connection already registered.
+
+    Scoped by the ``(source_type, source_origin)`` pair that is account identity
+    in this table. A file import naming its origin the same string would
+    otherwise hand this connection accounts it never registered.
+
+    A label two accounts have worn resolves to whichever of them the sheet
+    still shows. Labels are unique within a pull but not across a connection's
+    life: once a closed account's label is reused, two rows answer to it, and
+    picking arbitrarily would move an account's key from one pull to the next.
+    Ordering by ``loaded_at`` cannot break that tie — the upsert below carries
+    unnamed columns over from the prior row, so a re-registered account keeps
+    the timestamp it was first written with.
+    """
+    rows = db.execute(
+        f"SELECT account_name, account_id FROM {TABULAR_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
+        "WHERE source_type = ? AND source_origin = ?",
+        [GSHEET_SOURCE_TYPE, connection.connection_id],
+    ).fetchall()
+    remembered: dict[str, str] = {}
+    for name, account_id in rows:
+        if name is None:
+            continue
+        label, key = str(name), str(account_id)
+        held = remembered.get(label)
+        if held is None or (key in live_keys and held not in live_keys):
+            remembered[label] = key
+    return remembered
+
+
+def _keys_with_live_rows(db: Database, connection: GSheetConnection) -> set[str]:
+    """The native keys this connection still has undeleted transactions for.
+
+    Stands in for "the sheet still shows this account". Every pull soft-deletes
+    the rows it no longer carries, so an account dropped from the sheet is left
+    with none active — the only durable record of a departure there is. Nothing
+    marks an account closed, and its label stays in ``raw.tabular_accounts`` for
+    as long as the connection lives.
+    """
+    rows = db.execute(
+        f"SELECT DISTINCT account_id FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef + parameterized values
+        "WHERE source_type = ? AND source_origin = ? "
+        "AND deleted_from_source_at IS NULL",
+        [GSHEET_SOURCE_TYPE, connection.connection_id],
+    ).fetchall()
+    return {str(r[0]) for r in rows if r[0] is not None}
+
+
+def _pinned_sign_convention(connection: GSheetConnection) -> SignConventionType:
+    """The convention pinned at connect time, or the safe default.
+
+    Defined once: the transform and the account registration must read a row's
+    amount the same way, or a rename they both have to recognise is seen by
+    only one of them.
+    """
+    return cast(SignConventionType, connection.sign_convention or "negative_is_expense")
+
+
+def _sheet_rows_by_label(
+    df: pl.DataFrame,
+    account_col: str,
+    field_mapping: dict[str, str],
+    sign_convention: SignConventionType,
+) -> dict[str, set[tuple[str, str, str]]]:
+    """The transactions each label carries, spelled as the sheet spells them."""
+    dates, amounts, descriptions = original_source_strings(
+        df, field_mapping, sign_convention
+    )
+    rows: dict[str, set[tuple[str, str, str]]] = {}
+    for (label, _), date, amount, description in zip(
+        _account_labels_from(df, account_col),
+        dates,
+        amounts,
+        descriptions,
+        strict=True,
+    ):
+        rows.setdefault(label, set()).add((date, amount, description))
+    return rows
+
+
+def _stored_rows_by_key(
+    db: Database, connection: GSheetConnection, keys: set[str]
+) -> dict[str, set[tuple[str, str, str]]]:
+    """The transactions each named key already owns, in that same spelling.
+
+    Reads the columns the store keeps verbatim, so the comparison never depends
+    on re-parsing a date or an amount the same way twice.
+
+    Soft-deleted rows count. A row absent from the sheet today is still part of
+    the account's history, and skipping it would make a rename harder to
+    recognise the longer someone waited to make it.
+    """
+    if not keys:
+        return {}
+    ordered = sorted(keys)
+    placeholders = ",".join(["?"] * len(ordered))
+    rows = db.execute(
+        "SELECT account_id, original_date_str, original_amount, description "  # noqa: S608  # TableRef + placeholders, no user input
+        f"FROM {TABULAR_TRANSACTIONS.full_name} "
+        "WHERE source_type = ? AND source_origin = ? "
+        f"AND account_id IN ({placeholders})",
+        [GSHEET_SOURCE_TYPE, connection.connection_id, *ordered],
+    ).fetchall()
+    stored: dict[str, set[tuple[str, str, str]]] = {}
+    for account_id, date, amount, description in rows:
+        stored.setdefault(str(account_id), set()).add((
+            str(date or ""),
+            str(amount or ""),
+            str(description or ""),
+        ))
+    return stored
+
+
+# Both bounds guard the same mistake from opposite ends. The floor stops a
+# single coincidental row -- two cards can share a date, amount and description
+# on one day -- from merging two small accounts. The fraction stops a handful
+# of coincidences from claiming a long history, which without it gets easier
+# the more transactions an account owns.
+_RENAME_MIN_SHARED_ROWS = 2
+_RENAME_MIN_SHARED_FRACTION = 0.5
+
+
+def _carries_the_history_of(
+    incoming: set[tuple[str, str, str]], stored: set[tuple[str, str, str]]
+) -> bool:
+    """Whether an arriving label brings enough of a departed account with it."""
+    shared = len(incoming & stored)
+    return (
+        shared >= _RENAME_MIN_SHARED_ROWS
+        and shared >= len(stored) * _RENAME_MIN_SHARED_FRACTION
+    )
+
+
+def _key_not_already_owned(label: str, taken: set[str]) -> str:
+    """A native key for ``label`` that no stored account already answers to.
+
+    ``label_account_key`` is a pure function of the label, so a label reused for
+    a second account derives the exact key the first one owns. Minting it would
+    hand the new account every transaction the old one holds -- the merge this
+    path exists to refuse -- so a key that is spoken for is stepped past.
+
+    The derivation stays the single source of a key; this only declines to
+    collide with a stored account. Two *live* labels that slugify alike still
+    share a key, which is a separate known defect and not this one.
+    """
+    from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
+        label_account_key,
+    )
+
+    base = label_account_key(label)
+    if base not in taken:
+        return base
+    suffix = 2
+    while f"{base}-{suffix}" in taken:
+        suffix += 1
+    return f"{base}-{suffix}"
+
+
+def _account_key_by_label(
+    labels: list[str],
+    remembered: dict[str, str],
+    rows_by_label: dict[str, set[tuple[str, str, str]]],
+    stored_rows: dict[str, set[tuple[str, str, str]]],
+    live_keys: set[str],
+) -> dict[str, str]:
+    """The native key each label in this pull resolves to.
+
+    A label whose account the sheet still shows keeps the key it was registered
+    under. That is what makes a repeat pull idempotent, and what holds a new
+    label on the original key once a rename has been recognised.
+
+    ``transaction_id`` folds this key, so re-deriving it from a label the user
+    edited would soft-delete every row the account owns and re-insert copies
+    under fresh ids -- orphaning the notes and splits keyed to the old ones and
+    minting a second account beside the first. So a label that arrives is
+    matched against the accounts that departed.
+
+    The match is decided by transactions, never by counting labels. Renaming an
+    account, and closing one to open another, both leave exactly one label gone
+    and one arrived; only the rows tell them apart, because a renamed account
+    still carries its own history and a newly opened one carries none of it.
+
+    A remembered label whose account has no rows left in the sheet is treated
+    as an arrival regardless, and has to earn its old key back from its rows.
+    Closing an account and giving its replacement the same name leaves exactly
+    the trace an account returning after an absence does, so the label alone
+    cannot separate them; and because a label is remembered for as long as the
+    connection lives, honouring it on sight files the new account's
+    transactions under the closed one.
+
+    Erring permissively here merges two accounts into one with nothing deleted
+    to make it noticeable, which `magic stays visible` ranks as the wrong
+    inference hardest to notice and undo. So a key is reused only on an
+    unambiguous pairing -- one arrival matching one departed account, and that
+    account matching no other arrival. Everything else mints. An unnecessary
+    second account is a mistake a person can see and merge; a wrong merge is
+    not.
+    """
+    current = dict.fromkeys(labels)
+    held = {
+        label: key
+        for label, key in remembered.items()
+        if label in current and key in live_keys
+    }
+    resolved = dict(held)
+    arrived = [label for label in current if label not in held]
+    departed = set(remembered.values()) - set(held.values())
+
+    matches = {
+        label: [
+            key
+            for key in sorted(departed)
+            if _carries_the_history_of(
+                rows_by_label.get(label, set()), stored_rows.get(key, set())
+            )
+        ]
+        for label in arrived
+    }
+    claimants: dict[str, int] = {}
+    for keys in matches.values():
+        if len(keys) == 1:
+            claimants[keys[0]] = claimants.get(keys[0], 0) + 1
+
+    owned = set(remembered.values())
+    for label in arrived:
+        keys = matches[label]
+        unambiguous = len(keys) == 1 and claimants[keys[0]] == 1
+        resolved[label] = (
+            keys[0] if unambiguous else _key_not_already_owned(label, owned)
+        )
+    return resolved
+
+
+def _resolve_account_ids(
+    df: pl.DataFrame,
+    connection: GSheetConnection,
+    field_mapping: dict[str, str],
+    db: Database,
+    sign_convention: SignConventionType,
+) -> str | list[str]:
+    """The account key stamped on each row: one bound account, or one per row.
+
+    A bound ``account_id`` wins, mirroring the tabular import path's branch
+    order — naming an account says which account the sheet belongs to, even
+    when the sheet also carries an account column.
+
+    Unbound, the sheet's own account column supplies a per-row native key.
+    These keys are source-NATIVE (DP-1), not ``dim_accounts`` ids; the
+    resolver maps native → canonical through ``app.account_links``, so an
+    account exported through both this channel and a file import lands on one
+    canonical account.
+
+    That holds for every label ``slugify`` survives, which is the overlap the
+    two channels share today. It does NOT hold for a label written in a
+    non-Latin script: ``label_account_key`` digests those into distinct keys
+    here, while the tabular multi-account branch still slugifies them to ``""``
+    (``import_service.py``, ``account_ids = [slugify(name) ...]``). Matching
+    that would mean re-adopting a key that merges every such account into one,
+    so this channel is deliberately correct rather than bug-compatible; moving
+    the tabular path over rotates native keys for existing installs and needs
+    its own migration.
+
+    A key is looked up before it is derived: see :func:`_account_key_by_label`
+    for why a label the user edits must not re-key the rows it already owns.
+    """
+    if connection.account_id is not None:
+        return connection.account_id
+
+    account_col = field_mapping.get("account_name")
+    if not account_col or account_col not in df.columns:
+        raise ValueError(
+            "TransactionsAdapter.transform requires either "
+            "connection.account_id or an account column in the pinned mapping; "
+            f"connection {connection.connection_id} has neither"
+        )
+
+    labels = [label for label, _ in _account_labels_from(df, account_col)]
+    live_keys = _keys_with_live_rows(db, connection)
+    remembered = _remembered_account_keys(db, connection, live_keys)
+    key_by_label = _account_key_by_label(
+        labels,
+        remembered,
+        _sheet_rows_by_label(df, account_col, field_mapping, sign_convention),
+        _stored_rows_by_key(db, connection, set(remembered.values())),
+        live_keys,
+    )
+    return [key_by_label[label] for label in labels]
+
+
+def _link_sheet_accounts(
+    connection: GSheetConnection,
+    db: Database,
+    parsed: dict[str, tuple[str, str, str | None]],
+    authored_keys: set[str],
+) -> None:
+    """Resolve each sheet account to a canonical id via the shared ladder.
+
+    Deliberately resolves rather than gating. A pull runs unattended on every
+    refresh, so there is nobody to answer a confirm; the ladder's own outcomes
+    carry the decision instead — an account key seen before re-adopts (making
+    repeat pulls idempotent), a genuinely new one mints, and one that looks
+    like an existing account mints provisionally and files a pending decision
+    for the account-link review queue. Accepting that decision later re-points
+    the link, so rows already loaded follow rather than stranding.
+    """
+    from moneybin.services.account_display_name import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
+        AccountNameFacts,
+    )
+    from moneybin.services.account_resolution_types import (
+        SourceAccount,  # noqa: PLC0415
+    )
+    from moneybin.services.account_resolver import AccountResolver  # noqa: PLC0415
+
+    resolver = AccountResolver(db)
+    for key, (display, clean_name, last_four) in parsed.items():
+        resolver.resolve(
+            SourceAccount(
+                source_type=GSHEET_SOURCE_TYPE,
+                source_origin=connection.connection_id,
+                source_account_key=key,
+                account_name=clean_name,
+                last_four=last_four,
+                name_facts=AccountNameFacts(
+                    source_label=display if key in authored_keys else None,
+                    last_four=last_four,
+                ),
+            )
+        )
+
+
+def _register_sheet_accounts(
+    source_df: pl.DataFrame,
+    connection: GSheetConnection,
+    db: Database,
+    import_id: str,
+    keys_in_ledger: set[str],
+) -> None:
+    """Write one ``raw.tabular_accounts`` row per account the sheet names.
+
+    Keyed by the same native key the transform stamps on each transaction — the
+    remembered one where this connection already has it, so both stay in step —
+    so the resolver's native→canonical mapping links them together. Upserted on
+    every pull rather than written once: a sheet is live, and an account renamed
+    in it re-labels the row already on that key rather than minting a second.
+    """
+    from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
+        authored_label_parts,
+    )
+
+    field_mapping = {dest: src for src, dest in connection.column_mapping.items()}
+    account_col = field_mapping.get("account_name")
+    if not account_col or account_col not in source_df.columns:
+        return
+
+    # First label seen wins per key, matching the tabular path — later rows
+    # spelling the same account differently must not re-key it. An authored
+    # name is the exception: a blank cell and a typed "Unknown" share a key,
+    # and letting the filler hold it purely by arriving first would record the
+    # synthesized label as one a person wrote.
+    labels = _account_labels_from(source_df, account_col)
+    # Read before this pull's rows are written, so both this and the transform
+    # that keyed them decide identity from the same state of the store.
+    live_keys = _keys_with_live_rows(db, connection)
+    remembered = _remembered_account_keys(db, connection, live_keys)
+    key_by_label = _account_key_by_label(
+        [label for label, _ in labels],
+        remembered,
+        _sheet_rows_by_label(
+            source_df, account_col, field_mapping, _pinned_sign_convention(connection)
+        ),
+        _stored_rows_by_key(db, connection, set(remembered.values())),
+        live_keys,
+    )
+
+    # A recognised rename re-labels the row already sitting on that key, so the
+    # upsert below leaves no twin behind. Recorded rather than silent: the
+    # shared transactions are strong evidence, not proof, and a wrong merge is
+    # the expensive one to notice.
+    label_by_key = {key: label for label, key in remembered.items()}
+    renamed = [
+        key
+        for label, key in key_by_label.items()
+        if key in label_by_key and label_by_key[key] != label
+    ]
+    if renamed:
+        logger.warning(
+            f"gsheet accounts: connection={connection.connection_id} matched "
+            f"{len(renamed)} new label(s) to the account whose transactions "
+            "they carry and re-labelled it; transaction ids were left unchanged."
+        )
+
+    name_by_key: dict[str, str] = {}
+    authored_keys: set[str] = set()
+    for label, authored in labels:
+        key = key_by_label[label]
+        if authored:
+            if key not in authored_keys:
+                name_by_key[key] = label
+                authored_keys.add(key)
+        else:
+            name_by_key.setdefault(key, label)
+
+    # Only accounts the ledger actually references. transform_dataframe drops
+    # rows whose date or amount will not parse, so a trailing summary row would
+    # otherwise mint an account owning no transactions.
+    keys = sorted(name_by_key.keys() & keys_in_ledger)
+    parsed = {key: authored_label_parts(name_by_key[key]) for key in keys}
+    _link_sheet_accounts(connection, db, parsed, authored_keys)
+    db.ingest_dataframe(
+        TABULAR_ACCOUNTS.full_name,
+        pl.DataFrame({
+            "account_id": keys,
+            "account_name": [name_by_key[k] for k in keys],
+            "account_label": [
+                parsed[k][0] if k in authored_keys else None for k in keys
+            ],
+            "account_number": [None] * len(keys),
+            "account_number_masked": [
+                f"****{parsed[k][2]}" if parsed[k][2] else None for k in keys
+            ],
+            "account_type": [None] * len(keys),
+            # A sheet names accounts, not institutions. Left NULL rather than
+            # guessed; a mapped institution column is a later adapter concern.
+            "institution_name": [None] * len(keys),
+            "currency": [None] * len(keys),
+            "source_file": [
+                f"gsheet://{connection.spreadsheet_id}/{connection.sheet_gid}"
+            ]
+            * len(keys),
+            "source_type": [GSHEET_SOURCE_TYPE] * len(keys),
+            "source_origin": [connection.connection_id] * len(keys),
+            "import_id": [import_id] * len(keys),
+        }),
+        on_conflict="upsert",
+    )
 
 
 class TransactionsAdapter:
@@ -174,7 +647,10 @@ class TransactionsAdapter:
         only when every sampled row has neither debit nor credit populated.
         """
         by_dest = {dest: src for src, dest in connection.column_mapping.items()}
-        non_split_required = required_sources_for_mapping(connection.column_mapping)
+        non_split_required = required_sources_for_mapping(
+            connection.column_mapping,
+            account_source_required=connection.account_id is None,
+        )
         split_pair: tuple[str, str] | None = None
         if (
             "debit_amount" in by_dest
@@ -216,6 +692,7 @@ class TransactionsAdapter:
         self,
         df: pl.DataFrame,
         connection: GSheetConnection,
+        db: Database,
     ) -> pl.DataFrame:
         """Apply the pinned mapping + typed transforms; produce a load-ready frame.
 
@@ -223,12 +700,6 @@ class TransactionsAdapter:
         `source_origin=connection.connection_id` stamped. The caller passes
         the resulting frame to `load()` along with the `import_id`.
         """
-        if connection.account_id is None:
-            raise ValueError(
-                "TransactionsAdapter.transform requires connection.account_id; "
-                "transactions adapter is single-account by design"
-            )
-
         # Connection column_mapping is source_header → dest_field; invert to
         # dest_field → source_column for transform_dataframe.
         field_mapping = {dest: src for src, dest in connection.column_mapping.items()}
@@ -237,9 +708,13 @@ class TransactionsAdapter:
         # time; transform_dataframe requires concrete values, so fall back to
         # safe defaults if the connection didn't pin them.
         date_format = connection.date_format or "%Y-%m-%d"
-        sign_convention = cast(
-            SignConventionType,
-            connection.sign_convention or "negative_is_expense",
+        sign_convention = _pinned_sign_convention(connection)
+
+        # Resolved after the sign convention: recognising a renamed account
+        # compares this pull's rows against stored ones, and the amount string
+        # a row is stored under depends on which convention was pinned.
+        account_ids = _resolve_account_ids(
+            df, connection, field_mapping, db, sign_convention
         )
         number_format = cast(
             NumberFormatType,
@@ -252,9 +727,9 @@ class TransactionsAdapter:
             date_format=date_format,
             sign_convention=sign_convention,
             number_format=number_format,
-            account_id=connection.account_id,
+            account_id=account_ids,
             source_file=f"gsheet://{connection.spreadsheet_id}/{connection.sheet_gid}",
-            source_type=_SOURCE_TYPE,
+            source_type=GSHEET_SOURCE_TYPE,
             source_origin=connection.connection_id,
             import_id=_IMPORT_ID_PLACEHOLDER,  # overwritten in load() per-call
         )
@@ -266,8 +741,14 @@ class TransactionsAdapter:
         connection: GSheetConnection,
         db: Database,
         import_id: str,
+        source_df: pl.DataFrame | None = None,
     ) -> LoadResult:
         """Diff vs. existing rows, soft-delete missing, upsert present, undelete returning.
+
+        For an unbound (multi-account) connection, also registers the accounts
+        the sheet names in ``raw.tabular_accounts`` — the rung
+        ``core.dim_accounts`` reads to name them. Requires ``source_df``,
+        which still carries the account labels the transform slugified away.
 
         Soft-delete state machine per `transaction_id` within this connection:
           - Row in current pull, not previously stored → INSERT (deleted_from_source_at NULL).
@@ -277,6 +758,25 @@ class TransactionsAdapter:
           - Empty current pull is a no-op for upsert; previously-active rows are
             still eligible for soft-delete.
         """
+        if connection.account_id is None:
+            # Skipping this silently would load transactions keyed by native
+            # slugs that nothing resolves: no raw.tabular_accounts row, no
+            # app.account_links row, so core.dim_accounts has no account to
+            # match and every row is attributed to one that does not exist.
+            if source_df is None:
+                raise ValueError(
+                    "TransactionsAdapter.load requires source_df for an "
+                    "unbound connection; it carries the account labels the "
+                    f"transform keyed away (connection {connection.connection_id})"
+                )
+            _register_sheet_accounts(
+                source_df,
+                connection,
+                db,
+                import_id,
+                keys_in_ledger=set(df["account_id"].to_list()),
+            )
+
         # Stamp the import_id on every row (transform left a placeholder).
         # Also explicitly NULL deleted_from_source_at — DuckDB's INSERT OR
         # REPLACE BY NAME carries over unnamed columns from the prior row,
@@ -288,11 +788,15 @@ class TransactionsAdapter:
 
         current_ids: set[str] = set(df["transaction_id"].to_list())
 
-        # Fetch all currently-active (not soft-deleted) ids for this connection.
+        # Fetch all currently-active (not soft-deleted) ids for this connection,
+        # scoped by the (source_type, source_origin) pair rather than the origin
+        # alone — the diff below decides what to soft-delete, so a foreign
+        # channel's rows must not be able to enter it.
         active_rows = db.execute(
             f"SELECT transaction_id FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant, no user input
-            "WHERE source_origin = ? AND deleted_from_source_at IS NULL",
-            [connection.connection_id],
+            "WHERE source_type = ? AND source_origin = ? "
+            "AND deleted_from_source_at IS NULL",
+            [GSHEET_SOURCE_TYPE, connection.connection_id],
         ).fetchall()
         active_ids: set[str] = {r[0] for r in active_rows}
 
@@ -316,8 +820,8 @@ class TransactionsAdapter:
         if diff.to_soft_delete:
             ids = sorted(diff.to_soft_delete)
             placeholders = ",".join(["?"] * len(ids))
-            sql = f"UPDATE {TABULAR_TRANSACTIONS.full_name} SET deleted_from_source_at = CURRENT_TIMESTAMP WHERE source_origin = ? AND transaction_id IN ({placeholders})"  # noqa: S608  # placeholders are "?"-only, ids parameterized
-            db.execute(sql, [connection.connection_id, *ids])
+            sql = f"UPDATE {TABULAR_TRANSACTIONS.full_name} SET deleted_from_source_at = CURRENT_TIMESTAMP WHERE source_type = ? AND source_origin = ? AND transaction_id IN ({placeholders})"  # noqa: S608  # placeholders are "?"-only, ids parameterized
+            db.execute(sql, [GSHEET_SOURCE_TYPE, connection.connection_id, *ids])
             rows_soft_deleted = len(ids)
 
         logger.info(

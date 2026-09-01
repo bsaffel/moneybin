@@ -94,6 +94,7 @@ class RawSeedAdapter:
         self,
         df: pl.DataFrame,
         connection: GSheetConnection,
+        db: Database,
     ) -> pl.DataFrame:
         """Build the `raw.gsheet_seeds` insert frame from a current pull.
 
@@ -110,6 +111,9 @@ class RawSeedAdapter:
         sheet). Returns an empty frame with the correct schema when the
         input is empty.
         """
+        # Accepted for Protocol parity; a seed sheet names no accounts, so it
+        # has no remembered key to look up.
+        _ = db
         records = df.to_dicts()
         rows: list[dict[str, object]] = []
         seen_hashes: dict[str, int] = {}
@@ -165,8 +169,12 @@ class RawSeedAdapter:
         connection: GSheetConnection,
         db: Database,
         import_id: str,
+        source_df: pl.DataFrame | None = None,
     ) -> LoadResult:
         """Diff, soft-delete missing, upsert present, undelete returning, regenerate view.
+
+        ``source_df`` is accepted for Protocol parity and unused: a seed
+        connection registers no accounts.
 
         The view is regenerated on EVERY load so a typed_columns change
         (e.g. user re-detected the sheet) propagates without extra plumbing.

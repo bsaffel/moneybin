@@ -149,12 +149,15 @@ def gsheet_connect(
     account_name: str | None = typer.Option(
         None,
         "--account-name",
-        help="Account name to attribute imported transactions to.",
+        help="Account name to attribute every imported transaction to. "
+        "Omit for a sheet with its own account column — each row is then "
+        "attributed to the account it names.",
     ),
     account_id: str | None = typer.Option(
         None,
         "--account-id",
-        help="Canonical account_id to attribute imported transactions to.",
+        help="Canonical account_id to attribute every imported transaction "
+        "to. Omit for a sheet with its own account column.",
     ),
     column_mapping: str | None = typer.Option(
         None,

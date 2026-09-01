@@ -109,7 +109,7 @@ def test_load_writes_json_rows_to_gsheet_seeds(in_memory_db: Database) -> None:
     fix = load("seed_subscriptions.yaml")
     conn = make_seed_connection()
     df = df_from(fix)
-    transformed = adapter.transform(df, conn)
+    transformed = adapter.transform(df, conn, in_memory_db)
     result = adapter.load(transformed, conn, in_memory_db, import_id="imp1")
     assert result.rows_inserted == 3
     # rows_upserted counts ONLY pre-existing rows that were updated. On a
@@ -131,7 +131,7 @@ def test_second_load_upserts_unchanged_rows(in_memory_db: Database) -> None:
     fix = load("seed_subscriptions.yaml")
     conn = make_seed_connection()
     df = df_from(fix)
-    transformed = adapter.transform(df, conn)
+    transformed = adapter.transform(df, conn, in_memory_db)
     adapter.load(transformed, conn, in_memory_db, import_id="imp1")
 
     # Same data, second pull
@@ -145,7 +145,9 @@ def test_load_creates_per_connection_view(in_memory_db: Database) -> None:
     adapter = RawSeedAdapter()
     fix = load("seed_subscriptions.yaml")
     conn = make_seed_connection()
-    adapter.load(adapter.transform(df_from(fix), conn), conn, in_memory_db, "imp1")
+    adapter.load(
+        adapter.transform(df_from(fix), conn, in_memory_db), conn, in_memory_db, "imp1"
+    )
 
     views = in_memory_db.execute(
         "SELECT view_name FROM duckdb_views() "
@@ -158,7 +160,9 @@ def test_query_view_returns_typed_rows(in_memory_db: Database) -> None:
     adapter = RawSeedAdapter()
     fix = load("seed_subscriptions.yaml")
     conn = make_seed_connection()
-    adapter.load(adapter.transform(df_from(fix), conn), conn, in_memory_db, "imp1")
+    adapter.load(
+        adapter.transform(df_from(fix), conn, in_memory_db), conn, in_memory_db, "imp1"
+    )
 
     rows = in_memory_db.execute(
         "SELECT name, amount FROM raw.gsheet_subscriptions ORDER BY name"
@@ -175,14 +179,16 @@ def test_load_soft_deletes_missing_rows(in_memory_db: Database) -> None:
     adapter = RawSeedAdapter()
     fix = load("seed_subscriptions.yaml")
     conn = make_seed_connection()
-    adapter.load(adapter.transform(df_from(fix), conn), conn, in_memory_db, "imp1")
+    adapter.load(
+        adapter.transform(df_from(fix), conn, in_memory_db), conn, in_memory_db, "imp1"
+    )
 
     # Second pull: drop NYTimes
     fix2 = dict(fix)
     fix2["sheet"] = dict(fix["sheet"])
     fix2["sheet"]["rows"] = fix["sheet"]["rows"][:2]
     result = adapter.load(
-        adapter.transform(df_from(fix2), conn), conn, in_memory_db, "imp2"
+        adapter.transform(df_from(fix2), conn, in_memory_db), conn, in_memory_db, "imp2"
     )
     assert result.rows_soft_deleted == 1
 
@@ -213,7 +219,7 @@ def test_load_raises_when_alias_missing(in_memory_db: Database) -> None:
     adapter = RawSeedAdapter()
     fix = load("seed_subscriptions.yaml")
     conn = make_seed_connection(alias=None)
-    transformed = adapter.transform(df_from(fix), conn)
+    transformed = adapter.transform(df_from(fix), conn, in_memory_db)
     with pytest.raises(ValueError, match="alias"):
         adapter.load(transformed, conn, in_memory_db, import_id="imp1")
 
@@ -232,7 +238,7 @@ def test_row_hash_is_content_only_not_position_sensitive(
     fix = load("seed_subscriptions.yaml")
     conn = make_seed_connection()
     initial = adapter.load(
-        adapter.transform(df_from(fix), conn), conn, in_memory_db, "imp1"
+        adapter.transform(df_from(fix), conn, in_memory_db), conn, in_memory_db, "imp1"
     )
     assert initial.rows_inserted == 3
 
@@ -256,7 +262,7 @@ def test_row_hash_is_content_only_not_position_sensitive(
         *fix["sheet"]["rows"],
     ]
     second = adapter.load(
-        adapter.transform(df_from(fix2), conn), conn, in_memory_db, "imp2"
+        adapter.transform(df_from(fix2), conn, in_memory_db), conn, in_memory_db, "imp2"
     )
     # Exactly one new row, no soft-deletes — the original three rows
     # retain their content-only hashes despite shifting down by one
@@ -299,7 +305,7 @@ def test_transform_rejects_duplicate_content_rows(in_memory_db: Database) -> Non
         "Notes": ["", ""],
     })
     with pytest.raises(GSheetError, match="duplicate row"):
-        adapter.transform(df, conn)
+        adapter.transform(df, conn, in_memory_db)
 
 
 def test_load_with_empty_df_creates_view_but_inserts_zero(
@@ -312,7 +318,7 @@ def test_load_with_empty_df_creates_view_but_inserts_zero(
         {h: [] for h in conn.header_signature},
         schema=dict.fromkeys(conn.header_signature, pl.Utf8),
     )
-    transformed = adapter.transform(empty_df, conn)
+    transformed = adapter.transform(empty_df, conn, in_memory_db)
     result = adapter.load(transformed, conn, in_memory_db, import_id="imp_empty")
     assert result.rows_inserted == 0
     assert result.rows_soft_deleted == 0

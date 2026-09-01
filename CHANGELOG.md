@@ -14,6 +14,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 
 ### Added
+- **A Google Sheet that tracks several accounts in one tab now imports as
+  several accounts.** `gsheet connect` previously required you to name one
+  destination account, and every row from every account was filed under it —
+  no error, no warning, just wrong balances. Detection had recognized the
+  sheet's `Account` column all along and the transform discarded it.
+
+  Omit `--account-name` / `--account-id` for such a sheet and each row is now
+  attributed to the account it names, keyed the same way a CSV import keys the
+  same file, so one account exported through both routes lands as one account.
+  Accounts the sheet names are resolved on every pull: one seen before is
+  re-adopted, a genuinely new one is created, and one resembling an account you
+  already have is queued in the account-link review queue rather than becoming
+  a silent duplicate. Naming an account still binds the whole sheet to it, so
+  existing connections are unchanged; sheets with no account column still
+  require one. Because that column now decides where every row lands, emptying
+  it marks such a connection `drift_detected` instead of quietly re-filing the
+  whole ledger under one nameless account, and a reconnect that would leave the
+  connection with no way to key its rows is refused rather than saved broken.
+
+  Renaming an account in the sheet leaves its transactions where they are. A
+  transaction's id folds its account key, so re-deriving that key from the
+  edited label would soft-delete and re-insert every row the account owns and
+  orphan the notes and splits attached to them. A label that appears is matched
+  to a departed account by the transactions it carries rather than by counting
+  labels, because closing one account and opening another looks identical
+  otherwise — one label gone, one arrived. So a rename re-labels the account,
+  and a newly opened account never inherits a closed one's history. Where the
+  shared history is too thin to be sure, the import creates a separate account
+  you can see and merge rather than folding two accounts into one silently.
+
+  A label is only honored while the sheet still shows the account wearing it.
+  A connection remembers every label it has ever registered, so closing an
+  account, dropping it from the sheet, and later giving a new account the same
+  name would otherwise file the new account's transactions under the closed
+  one. Such a label is now matched by its rows like any other, so the two stay
+  apart — while an account that simply went quiet for a pull and returns with
+  its own history keeps the key, and the id of every transaction on it.
+
+  `gsheet disconnect --purge` now also removes the account rows a
+  multi-account connection registered, counts them in the total it asks you to
+  approve, and scopes both deletions to this connection's own import channel
+  so a file import can never lose rows to a sheet's purge.
+
 - **You can propose a merge for two accounts nothing automatic would pair.**
   `accounts links run` and the newly registered `accounts_links_run` MCP tool
   now accept two account ids and queue exactly that pair for review, under a

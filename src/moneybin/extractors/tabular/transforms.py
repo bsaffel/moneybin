@@ -65,6 +65,31 @@ def _col_as_strings(df: pl.DataFrame, col: str | None, n: int) -> list[str]:
     return [str(v) if v is not None else "" for v in df[col].to_list()]
 
 
+def original_source_strings(
+    df: pl.DataFrame,
+    field_mapping: dict[str, str],
+    sign_convention: SignConventionType,
+) -> tuple[list[str], list[str], list[str]]:
+    """The date, amount and description strings stored verbatim for each row.
+
+    Public because a caller that compares an incoming pull against rows it
+    already stored has to build that comparison out of the same strings the
+    store holds. A private second copy of this derivation drifts the first time
+    either side changes, and the comparison then fails silently rather than
+    loudly — see the gsheet transactions adapter, which uses shared rows to
+    tell a renamed account from a newly opened one.
+    """
+    n = len(df)
+    dates = _col_as_strings(df, field_mapping.get("transaction_date"), n)
+    if sign_convention == "split_debit_credit":
+        amounts = _combine_original_debit_credit(
+            df, field_mapping.get("debit_amount"), field_mapping.get("credit_amount")
+        )
+    else:
+        amounts = _col_as_strings(df, field_mapping.get("amount"), n)
+    return dates, amounts, _col_as_strings(df, field_mapping.get("description"), n)
+
+
 @dataclass
 class RejectionDetail:
     """Details about a rejected row."""
@@ -142,21 +167,14 @@ def transform_dataframe(
     df = df.with_columns(pl.Series("row_number", range(1, len(df) + 1), dtype=pl.Int32))
 
     # Extract raw string columns by canonical field name
-    date_col = field_mapping.get("transaction_date")
-    desc_col = field_mapping.get("description")
     src_txn_id_col = field_mapping.get("source_transaction_id")
 
-    # Preserve originals before parsing
-    original_date_strs = _col_as_strings(df, date_col, len(df))
-
-    # Determine original amount string — for audit, use whichever column was mapped
-    if sign_convention == "split_debit_credit":
-        debit_col = field_mapping.get("debit_amount")
-        credit_col = field_mapping.get("credit_amount")
-        # Combine debit/credit into a single original string representation
-        original_amount_strs = _combine_original_debit_credit(df, debit_col, credit_col)
-    else:
-        original_amount_strs = _col_as_strings(df, field_mapping.get("amount"), len(df))
+    # Preserve originals before parsing. Derived once, by the helper any other
+    # caller must reuse, so a stored row and a comparison built from a later
+    # pull cannot describe the same transaction differently.
+    original_date_strs, original_amount_strs, descriptions = original_source_strings(
+        df, field_mapping, sign_convention
+    )
 
     # Parse amounts
     parsed_amounts, amount_rejections = _extract_amounts(
@@ -217,13 +235,6 @@ def transform_dataframe(
         parsed_balances = [
             parse_amount_str(s, number_format) for s in balance_strs_for_output
         ]
-
-    # Generate transaction IDs
-    descriptions: list[str] = []
-    if desc_col and desc_col in df.columns:
-        descriptions = [str(v) if v is not None else "" for v in df[desc_col].to_list()]
-    else:
-        descriptions = [""] * len(df)
 
     transaction_ids = _generate_transaction_ids(
         df=df,
