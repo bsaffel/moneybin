@@ -79,6 +79,12 @@ def _no_derivation(source_type: str) -> NoReturn:
     correctly-registered third provider would silently bind or fetch a Tiingo
     ticker. Failing here keeps the registry honest about what it does and does
     not decide, and matches ``_adapter_for``'s refusal to guess an adapter.
+
+    ``_catalog_ref`` is the one that actually enforces it: every route into
+    ``_feed_key``'s dispatch passes through it first, so its guard fires before
+    the mirrored branch there can. That branch is defence in depth against the
+    upstream call moving, and is marked unreachable rather than left implying
+    independent coverage it does not have.
     """
     raise NotImplementedError(
         f"price source {source_type!r} is routed by the registry but has no feed-key "
@@ -895,7 +901,13 @@ class PriceService:
             derivation = self._coingecko_key(security)
         elif source_type == TIINGO.source_type:
             derivation = self._tiingo_key(security, adapter)
-        else:
+        else:  # pragma: no cover — _review_settled above raises via _catalog_ref
+            # Defence in depth, not the enforcing guard. Every path that reaches
+            # here has already passed through _catalog_ref — _review_settled calls
+            # it as its first statement, and _binding_is_stale calls it for an
+            # auto binding — so an unregistered source has already been refused.
+            # The one path that skips both (a user-decided binding) returns above.
+            # Kept so this dispatch stays exhaustive if that upstream call moves.
             _no_derivation(source_type)
 
         if derivation.ref_value is not None and self._was_reversed_by_user(
