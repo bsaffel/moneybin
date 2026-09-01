@@ -279,7 +279,12 @@ reversed_by            TEXT
   the display name doesn't slugify back to the registry value (`U.S. Bank` →
   `u-s-bank`, not `us_bank`), and an OFX `<ORG>` is a routing code at some
   issuers (Chase publishes `B1`), so a name-side comparison drops candidates
-  on both ends.
+  on both ends. The `account_name` signal additionally requires
+  `display_name_is_user_set` on both the candidate row and the account being
+  resolved: `display_name` is a fallback ladder that can land on a *generated*
+  descriptor (institution + subtype + last four, or subtype alone) when no
+  person or source ever named the account, and two such descriptors coinciding
+  is a coincidence of already-compared attributes, not name evidence.
   A match produces a `pending` decision row recording which signal fired. Weak
   signals are never an accepted `ref_kind` and never auto-merge. **⚠ Reconciled
   (Decision 8):** "durably present, captured at mint" was the gap — last4 was

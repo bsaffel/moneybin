@@ -2504,11 +2504,11 @@ def test_a_stale_migration_missing_display_name_is_user_set_keeps_last_four_cand
     reviewer should have seen.
 
     Calls ``_find_candidates`` directly rather than through
-    ``propose_existing``: that method's own upfront lookup also selects
-    ``display_name_is_user_set`` and now fails closed (returns ``None``) on
-    the same stale-migration DB, which would otherwise mask what this test
-    is isolating -- ``_find_candidates``'s internal scoping of the exception
-    to just its name-rung query.
+    ``propose_existing``, to isolate this specific scoping fix from
+    ``propose_existing``'s own separate degradation path (covered by
+    ``test_propose_existing_degrades_gracefully_on_a_stale_migration``
+    below) -- both methods independently select ``display_name_is_user_set``
+    and both had to learn to survive its absence.
     """
     create_core_tables(db)
     db.conn.execute(
@@ -2533,6 +2533,44 @@ def test_a_stale_migration_missing_display_name_is_user_set_keeps_last_four_cand
 
     assert candidates, "the bare last-four candidate should not be dropped"
     surfaced = {(c.account_id, c.signal) for c in candidates}
+    assert surfaced == {("twin_acct", "last_four")}, surfaced
+
+
+def test_propose_existing_degrades_gracefully_on_a_stale_migration(
+    db: Database,
+) -> None:
+    """propose_existing must not return None for every account on a stale DB.
+
+    Regression test for a review finding: propose_existing's own upfront
+    lookup also selects display_name_is_user_set, and its first fix returned
+    None unconditionally on BinderException -- meaning `moneybin accounts
+    links run` would report zero backfill proposals for every account on a
+    profile that hasn't re-run `moneybin transform apply` since the column's
+    migration landed, even for a genuine last-four duplicate. It must instead
+    fall back to the older columns and still surface that duplicate.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "ALTER TABLE core.dim_accounts DROP COLUMN display_name_is_user_set"
+    )
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
+        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        ["source_acct", "7777", None, None, "Everyday Spending"],
+    )
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
+        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        ["twin_acct", "7777", "CHASE", "chase", "Vacation Fund"],
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("source_acct")
+
+    assert proposal is not None, (
+        "a genuine last-four duplicate should still surface on a stale-migration DB"
+    )
+    surfaced = {(c.account_id, c.signal) for c in proposal.candidates}
     assert surfaced == {("twin_acct", "last_four")}, surfaced
 
 

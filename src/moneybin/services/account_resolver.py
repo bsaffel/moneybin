@@ -758,22 +758,41 @@ class AccountResolver:
                 "WHERE account_id = ? LIMIT 1",
                 [account_id],
             ).fetchone()
-        except (duckdb.CatalogException, duckdb.BinderException):
-            # CatalogException: dim_accounts doesn't exist yet. BinderException:
-            # dim_accounts exists but predates display_name_is_user_set (a
-            # profile that hasn't run `moneybin transform apply` since that
-            # migration landed). Nothing has been gathered yet at this point in
-            # the method, so returning None here loses no candidates -- unlike
-            # the guard inside _find_candidates, which is scoped to a single
-            # query for exactly that reason.
+        except duckdb.CatalogException:
             logger.debug("core.dim_accounts unavailable in propose_existing")
             return None
-        if row is None:
-            return None
-        # institution_slug, not institution_name: _find_candidates compares
-        # against the slug column, so feeding a display name back in here would
-        # re-create the very mismatch this reads around.
-        institution_slug, last_four, display_name, display_name_is_user_set = row
+        except duckdb.BinderException:
+            # dim_accounts exists but predates display_name_is_user_set (a
+            # profile that hasn't run `moneybin transform apply` since that
+            # migration landed). Degrade like _find_candidates does rather
+            # than disable the whole backfill sweep: keep the last-four/
+            # institution signals, which don't depend on the new column, and
+            # treat this account's own name as unstated. Returning None here
+            # unconditionally meant every account produced zero proposals for
+            # the whole transitional window, including a genuine last-four
+            # duplicate -- `moneybin accounts links run` would silently stop
+            # surfacing any backfill candidates until the migration reapplied.
+            logger.debug(
+                "core.dim_accounts missing display_name_is_user_set; "
+                "propose_existing degrading to last-four/institution signals only"
+            )
+            fallback_row = self._db.execute(
+                f"SELECT institution_slug, last_four "  # noqa: S608  # TableRef + parameterized value
+                f"FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ? LIMIT 1",
+                [account_id],
+            ).fetchone()
+            if fallback_row is None:
+                return None
+            institution_slug, last_four = fallback_row
+            display_name, display_name_is_user_set = None, False
+        else:
+            if row is None:
+                return None
+            # institution_slug, not institution_name: _find_candidates
+            # compares against the slug column, so feeding a display name
+            # back in here would re-create the very mismatch this reads
+            # around.
+            institution_slug, last_four, display_name, display_name_is_user_set = row
         src = SourceAccount(
             source_type="backfill",
             source_origin="backfill",

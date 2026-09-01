@@ -793,6 +793,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on transaction overlap, so a flagged pair may raise no proposal — that same
   binding failure is what split the account in the first place.
 
+### Fixed
+- **`accounts links run` no longer proposes a merge on two accounts' shared
+  generated label alone.** Two unrelated accounts whose *display name* was
+  never set by a person or a source — both resolving to a bare `checking`, or
+  to the same `institution + subtype + last four` shape — read as a name match
+  and queued a merge proposal with no real evidence behind it. `core.dim_accounts`
+  now carries a `display_name_is_user_set` provenance flag, and the resolver's
+  weak name signal requires it on both sides of a match. (#493)
+
 ### Changed
 - **Google Sheets connects with no setup.** MoneyBin now ships the OAuth client
   secret alongside its public client ID, so `moneybin gsheet auth` completes on
