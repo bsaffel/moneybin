@@ -328,7 +328,8 @@ def investments_record(
       rounding).
     - `subtype`, `acquired` (ISO date), `event_group_id`, `description`
       (optional).
-    - `currency` (optional, default "USD"): ISO-4217 code.
+    - `currency` (optional): ISO-4217 code. Omit it and the event inherits
+      the account's own currency — MoneyBin never assumes USD.
 
     Sign convention: `quantity` is positive for acquisitions (buy, reinvest,
     transfer_in), negative for disposals (sell, transfer_out), and must be
@@ -393,7 +394,7 @@ def investments_record(
                 "acquired": _parse_date(item.get("acquired")),
                 "basis": _parse_decimal(item.get("basis")),
                 "event_group_id": _opt_str(item.get("event_group_id")),
-                "currency_code": str(item.get("currency") or "USD"),
+                "currency_code": _opt_str(item.get("currency")),
                 "description": _opt_str(item.get("description")),
             })
         result = InvestmentService(db).record_events(

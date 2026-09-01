@@ -96,24 +96,26 @@ WITH unioned AS (
   FROM prep.stg_plaid__opening_lots
 )
 SELECT
-  investment_transaction_id, /* Canonical ID (source-provided or content hash) */
-  account_id, /* FK to core.dim_accounts */
-  security_id, /* FK to core.dim_securities; NULL for cash-only events (deposit, withdrawal, account fee, cash interest) and for a synced security with no accepted binding */
-  trade_date, /* Trade date; drives holding-period classification */
-  settlement_date, /* Settlement date; informational */
-  original_acquisition_date, /* transfer_in only: original acquisition date; lot uses COALESCE(this, trade_date) */
-  type, /* Closed taxonomy (see investments-data-model.md Requirement 5) */
-  subtype, /* Per-type refinement (tax character, reinvest source); nullable. 'opening_bootstrap' marks a reconstructed pre-window lot, never a real transfer */
-  event_group_id, /* Links legs of one decomposed economic event; nullable */
-  quantity, /* Signed units: + acquire, − dispose, NULL cash-only */
-  price, /* Per-unit price; NULL for non-priced events */
-  amount, /* Signed cash effect: − out (buy), + in (sell/dividend). Already in ledger convention on every branch — never re-flip a provider's sign here */
-  fees, /* Fee/commission component folded into basis */
-  currency_code, /* Denominating currency; no FX in v1 */
-  provider_type, /* Provider's original type string (Plaid investment_transaction_type), preserved verbatim for audit; NULL for manual and bootstrap rows. Never a ledger input — `type` is the closed taxonomy */
-  provider_subtype, /* Provider's original subtype string, preserved verbatim for audit; NULL for manual and bootstrap rows */
-  source_type, /* Origin tag (manual | ofx | plaid) */
-  source_origin, /* Institution/connection scope */
-  description, /* Free-text description */
-  created_at AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. NULL when all contributing inputs are model-level (seeds, reference tables) — query meta.model_freshness for those. Does not advance on idempotent SQLMesh re-applies. v1: the row's own staging created_at (single source; no app-layer joins yet). See docs/specs/core-updated-at-convention.md. */
-FROM unioned
+  u.investment_transaction_id, /* Canonical ID (source-provided or content hash) */
+  u.account_id, /* FK to core.dim_accounts */
+  u.security_id, /* FK to core.dim_securities; NULL for cash-only events (deposit, withdrawal, account fee, cash interest) and for a synced security with no accepted binding */
+  u.trade_date, /* Trade date; drives holding-period classification */
+  u.settlement_date, /* Settlement date; informational */
+  u.original_acquisition_date, /* transfer_in only: original acquisition date; lot uses COALESCE(this, trade_date) */
+  u.type, /* Closed taxonomy (see investments-data-model.md Requirement 5) */
+  u.subtype, /* Per-type refinement (tax character, reinvest source); nullable. 'opening_bootstrap' marks a reconstructed pre-window lot, never a real transfer */
+  u.event_group_id, /* Links legs of one decomposed economic event; nullable */
+  u.quantity, /* Signed units: + acquire, − dispose, NULL cash-only */
+  u.price, /* Per-unit price; NULL for non-priced events */
+  u.amount, /* Signed cash effect: − out (buy), + in (sell/dividend). Already in ledger convention on every branch — never re-flip a provider's sign here */
+  u.fees, /* Fee/commission component folded into basis */
+  COALESCE(u.currency_code, a.currency_code) AS currency_code, /* Denominating currency; no FX in v1. The event's own currency, else inherited from core.dim_accounts.currency_code — never a literal, which would relabel a foreign account's ledger and make the unknown-currency segment unreachable (multi-currency.md Requirement 3). NULL when neither is known; system doctor's currency_integrity check surfaces it. */
+  u.provider_type, /* Provider's original type string (Plaid investment_transaction_type), preserved verbatim for audit; NULL for manual and bootstrap rows. Never a ledger input — `type` is the closed taxonomy */
+  u.provider_subtype, /* Provider's original subtype string, preserved verbatim for audit; NULL for manual and bootstrap rows */
+  u.source_type, /* Origin tag (manual | ofx | plaid) */
+  u.source_origin, /* Institution/connection scope */
+  u.description, /* Free-text description */
+  u.created_at AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. NULL when all contributing inputs are model-level (seeds, reference tables) — query meta.model_freshness for those. Does not advance on idempotent SQLMesh re-applies. v1: the row's own staging created_at (single source; no app-layer joins yet). See docs/specs/core-updated-at-convention.md. */
+FROM unioned AS u
+LEFT JOIN core.dim_accounts AS a
+  ON u.account_id = a.account_id

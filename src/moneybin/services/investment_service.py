@@ -837,7 +837,7 @@ class InvestmentService:
         acquired: date | None,
         basis: Decimal | None,
         event_group_id: str | None,
-        currency_code: str,
+        currency_code: str | None,
         description: str | None,
         actor: str,
         created_by: str,
@@ -850,6 +850,11 @@ class InvestmentService:
         pair sharing a minted ``event_group_id`` and returns both ids. All rows
         for one event land in a single DuckDB transaction under one
         ``raw.import_log`` batch, mirroring the manual-cash-transaction path.
+
+        A ``currency_code`` of ``None`` is stored as NULL, not fabricated:
+        ``core.fct_investment_transactions`` inherits the account's own currency
+        onto it, as ``core.fct_transactions`` does for the cash grain
+        (multi-currency.md Requirement 3).
         """
         if created_by not in _VALID_CREATED_BY:
             raise UserError(
@@ -1087,7 +1092,7 @@ class InvestmentService:
         acquired: date | None,
         basis: Decimal | None,
         event_group_id: str | None,
-        currency_code: str,
+        currency_code: str | None,
         description: str | None,
         created_by: str,
     ) -> list[dict[str, object]]:

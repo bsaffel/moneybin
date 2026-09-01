@@ -114,7 +114,11 @@ def investments_add(
         "--event-group",
         help="Link this event to an existing economic-event group",
     ),
-    currency: str = typer.Option("USD", "--currency", help="ISO-4217 currency code"),
+    currency: str | None = typer.Option(
+        None,
+        "--currency",
+        help="ISO-4217 currency code; defaults to the account's own currency",
+    ),
     description: str | None = typer.Option(
         None, "--description", help="Free-text description"
     ),

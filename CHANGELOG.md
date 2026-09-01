@@ -837,6 +837,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Fixed
+- **An investment event recorded without a currency now inherits its account's
+  currency instead of being written as USD.** `moneybin investments add` and the
+  `investments_record` MCP tool both substituted a literal `USD` when the caller
+  omitted one, and the `raw.manual_investment_transactions` DDL and the manual
+  staging model each supplied the same literal underneath them. A brokerage
+  account denominated in anything but dollars therefore had its lots, cost basis
+  and realized gains labelled in a currency it does not hold. Omitting the
+  currency now stores none, and `core.fct_investment_transactions` resolves it
+  the way `core.fct_transactions` already resolves the cash grain: the event's
+  own currency if given, else the account's, else unknown — never a guess.
+  Passing `--currency` / `currency` still wins. Events written before this
+  change keep their stored currency: every write path passed `USD` explicitly,
+  so a fabricated value cannot be told apart from one you typed, and rewriting
+  them would erase real answers. Correct any that are wrong by re-recording the
+  event or by setting the account's currency with `accounts set --currency`.
 - **Account merge proposals no longer fire on a shared generated label alone,
   on either side of the comparison.** Two unrelated accounts whose *display
   name* was never set by a person or a source — both resolving to a bare

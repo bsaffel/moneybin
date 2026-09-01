@@ -759,6 +759,60 @@ class TestInvestmentsRecord:
         assert parsed["data"]["error_details"] == []
 
     @pytest.mark.unit
+    async def test_omitted_currency_is_stored_as_unknown(self, mcp_db: Path) -> None:
+        """No `currency` key writes NULL, for core to inherit the account's onto.
+
+        Substituting `"USD"` here denominates a EUR account's event in dollars
+        before `core.fct_investment_transactions` can inherit the account's own
+        currency (multi-currency.md Requirement 3).
+        """
+        _seed_investment_core()
+        _add_security(security_id="sec_1", ticker="AAPL")
+        result = await investments_record(
+            events=[
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-15",
+                    "quantity": "10",
+                    "amount": "-1500.00",
+                }
+            ]
+        )
+        assert result.to_dict()["status"] == "ok"
+        with get_database(read_only=True) as db:
+            rows = db.execute(
+                "SELECT currency_code FROM raw.manual_investment_transactions"
+            ).fetchall()
+        assert rows == [(None,)]
+
+    @pytest.mark.unit
+    async def test_supplied_currency_is_stored_verbatim(self, mcp_db: Path) -> None:
+        """A caller-supplied `currency` still wins over inheritance."""
+        _seed_investment_core()
+        _add_security(security_id="sec_1", ticker="AAPL")
+        result = await investments_record(
+            events=[
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-15",
+                    "quantity": "10",
+                    "amount": "-1500.00",
+                    "currency": "EUR",
+                }
+            ]
+        )
+        assert result.to_dict()["status"] == "ok"
+        with get_database(read_only=True) as db:
+            rows = db.execute(
+                "SELECT currency_code FROM raw.manual_investment_transactions"
+            ).fetchall()
+        assert rows == [("EUR",)]
+
+    @pytest.mark.unit
     async def test_reinvest_expands_to_two_rows(self, mcp_db: Path) -> None:
         _seed_investment_core()
         _add_security(security_id="sec_1", name="Vanguard", ticker="VTSAX")

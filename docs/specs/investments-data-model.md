@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_investment_transactions (
     price DECIMAL(28, 10),                     -- Per-unit price; NULL for non-priced events
     amount DECIMAL(18, 2),                     -- Cash effect; signed per Requirement 6
     fees DECIMAL(18, 2),                       -- Commissions/fees component; folded into cost basis
-    currency_code VARCHAR DEFAULT 'USD',       -- Denominating currency as supplied
+    currency_code VARCHAR,                     -- Denominating currency as supplied; NULL when the user named none (never fabricated) — core.fct_investment_transactions inherits the account's (multi-currency.md Requirement 3)
     description VARCHAR,                       -- Free-text description
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
     created_by VARCHAR NOT NULL,               -- 'cli' or 'mcp'; future-extensible for multi-user identity
@@ -697,7 +697,9 @@ moneybin investments add --account <id|name> --security <ticker|name> \
 - Records one event in `raw.manual_investment_transactions`; resolves
   `--security` via the resolution chain, prompting to create a catalog entry if
   unknown. `--event-group` links legs of one economic event (merger pair,
-  spin-off legs).
+  spin-off legs). Omitting `--currency` stores no currency and
+  `core.fct_investment_transactions` inherits the account's, never a blind
+  `'USD'` (multi-currency.md Requirement 3).
 - **Reinvest convenience:** `--type reinvest` records the acquisition leg AND
   atomically writes the paired income row (`dividend` by default;
   `--subtype interest|capital_gain` selects the income type), both sharing a
