@@ -11,6 +11,7 @@ import duckdb
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
+from moneybin.tables import SEED_PRICE_SOURCE_MAP
 from tests.moneybin.price_model_helpers import ref_kind_mapping as _ref_kind_mapping
 
 pytestmark = pytest.mark.integration
@@ -440,20 +441,21 @@ def test_reversed_link_does_not_resolve(security_price_cases: Database) -> None:
 def test_every_mapped_source_resolves_end_to_end(
     security_price_cases: Database,
 ) -> None:
-    """Every source the ref_kind CASE maps must actually reach staging.
+    """Every source seeds.price_source_map maps must actually reach staging.
 
-    The mapped set is read from the model file, so this test grows itself: adding
-    `WHEN 'x' THEN 'x_key'` to the CASE makes this test start seeding an `x` row and an
-    `x_key` binding for it, and fail immediately unless app.security_links.ref_kind is
-    CHECK-constrained to admit `x_key` too. Extending the CASE alone does not make a
-    source resolve; the constraint must be widened in the same change. (That is what
-    V042 did for tiingo_ticker and coingecko_slug.) Pinning the mapping's *shipped* set
-    as a literal here instead would drift the moment someone edited the model, which is
-    exactly when the check needs to fire.
+    The mapped set is read from the registry, so this test grows itself: adding a row
+    with a ref_kind makes this test start seeding an `x` row and an `x_key` binding for
+    it, and fail immediately unless app.security_links.ref_kind is CHECK-constrained to
+    admit `x_key` too. Declaring the mapping alone does not make a source resolve; the
+    constraint must be widened in the same change. (That is what V042 did for
+    tiingo_ticker and coingecko_slug.) Pinning the mapping's *shipped* set as a literal
+    here instead would drift the moment someone edited the registry, which is exactly
+    when the check needs to fire — tests/moneybin/test_price_sources.py holds that pin,
+    where changing it is the point rather than the accident.
 
-    This direction only sees mappings that exist. A writer shipping ahead of its mapping
-    leaves the CASE untouched and this test unchanged — see
-    test_price_service.py::test_every_source_the_service_writes_resolves_in_staging.
+    This direction only sees mappings that exist. A registry row someone deletes merely
+    shrinks the set iterated here; that direction is the rank-order pin in
+    test_price_sources.py and the run-time investment_unmapped_price_source check.
     """
     db = security_price_cases
     mapping = _ref_kind_mapping()
@@ -466,32 +468,54 @@ def test_every_mapped_source_resolves_end_to_end(
         ).fetchall()
     }
     assert resolved == set(mapping), (
-        f"every source mapped in the ref_kind CASE must resolve; mapped={set(mapping)} "
-        f"resolved={resolved}. A source in the CASE but absent here is dropped by the "
-        f"INNER JOIN with no error and no doctor coverage."
+        f"every source the registry maps must resolve; mapped={set(mapping)} "
+        f"resolved={resolved}. A source in the registry but absent here is dropped by "
+        f"the INNER JOIN with no error and no doctor coverage."
     )
+
+
+def test_the_seeded_registry_nulls_the_ref_kind_of_a_derived_source(
+    security_price_cases: Database,
+) -> None:
+    """A blank CSV cell must seed as NULL, not as the empty string.
+
+    ``core.fct_security_prices`` scopes its same-pull withhold to the sources
+    that HAVE a ref_kind, so an empty string seeded in place of NULL would pull
+    ``override`` and ``trade_implied`` into a churn check meant only for
+    provider keys — and would blank a grain whose two rows are a routine pair of
+    partial fills. Nothing else in the suite reads that distinction directly.
+    """
+    db = security_price_cases
+
+    unmapped = {
+        row[0]
+        for row in db.execute(
+            f"SELECT source_type FROM {SEED_PRICE_SOURCE_MAP.full_name} "  # noqa: S608  # TableRef constant, not user input
+            "WHERE ref_kind IS NULL"
+        ).fetchall()
+    }
+    assert unmapped == {"override", "trade_implied"}
 
 
 def test_an_unmapped_source_is_dropped_permanently_not_deferred(
     security_price_cases: Database,
 ) -> None:
-    """A source the ref_kind CASE does not map is discarded silently and forever.
+    """A source the registry does not map is discarded silently and forever.
 
     This is the finding the COVERAGE block in the model documents, pinned as behavior.
     The binding here is *accepted* and its ref_value matches, so the row fails for one
-    reason only: the CASE returns NULL for an unmapped source, making
-    `links.ref_kind = NULL` UNKNOWN and the INNER JOIN drop the row. That is unlike the
+    reason only: seeds.price_source_map holds no row for the source, so the join to it
+    matches nothing and the INNER JOIN drops the row. That is unlike the
     unresolved-binding case, where the observation waits in raw and reappears once its
     security binds — no number of accepted bindings will ever surface this one.
 
     Originally written against 'tiingo' as a tripwire that would fire when the tiingo
-    adapter landed. It did not fire, because it watches the CASE and the adapter shipped
-    a *writer* one commit ahead of its mapping — every tiingo row written in between was
-    dropped here. Two guards replaced that role, in the directions this test cannot see:
-    `test_price_service.py` asserts every source PriceService writes is mapped (build
-    time), and `investment_unmapped_price_source` reports any unmapped source_type
-    already sitting in raw (run time). This test now pins only the drop semantics, using
-    a source with no adapter behind it.
+    adapter landed. It did not fire, because it watched the mapping while the adapter
+    shipped a *writer* one commit ahead of it — every tiingo row written in between was
+    dropped here. One registry row now declares both halves, so that split is
+    structural rather than guarded; `investment_unmapped_price_source` still reports any
+    unmapped source_type already sitting in raw (run time). This test now pins only the
+    drop semantics, using a source with no adapter behind it.
     """
     unmapped = "yahoo"
     assert unmapped not in _ref_kind_mapping(), (

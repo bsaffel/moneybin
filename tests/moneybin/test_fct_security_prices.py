@@ -11,16 +11,15 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
+from moneybin.price_sources import REF_KIND_BY_SOURCE_TYPE
 
 pytestmark = pytest.mark.integration
 
-# source_rank is now mutation-tested across sources, but only via the two DERIVED ones:
-# 'override' (rank 1) and 'trade_implied' (rank 5) reach this model without a
-# provider binding, because neither is a row in raw.security_prices. The three
-# PROVIDER ranks still cannot be tested against each other — only 'plaid' resolves to
-# a canonical security_id through prep.stg_security_prices' 'plaid_security_id' link,
-# so tiingo and coingecko have no binding to reach this model. That provider-vs-provider
-# ordering test lands with C.2's adapters and their ref_kind bindings.
+# source_rank is mutation-tested across every source in seeds.price_source_map: the
+# two DERIVED ones ('override' rank 1, 'trade_implied' rank 5) reach this model
+# without a provider binding, and the three PROVIDER ones are ranked against each
+# other by test_the_provider_ranks_order_against_each_other below, which binds
+# tiingo and coingecko through the ref_kinds C.2's adapters made available.
 
 
 def _insert_price(
@@ -47,16 +46,33 @@ def _insert_price(
     )
 
 
-def _accept_link(db: Database, *, key: str, canonical_id: str) -> None:
+def _accept_link(
+    db: Database,
+    *,
+    key: str,
+    canonical_id: str,
+    source_type: str = "plaid",
+) -> None:
+    """Bind *key* to *canonical_id* with the ref_kind the registry declares.
+
+    Taking the ref_kind from ``REF_KIND_BY_SOURCE_TYPE`` rather than a literal is
+    what lets a tiingo or coingecko row reach this model at all: staging joins
+    the same registry, so a binding spelled any other way is discarded.
+    """
     db.execute(
         """
         INSERT INTO app.security_links
             (link_id, security_id, ref_kind, ref_value, source_type,
              status, decided_by, decided_at)
-        VALUES (?, ?, 'plaid_security_id', ?, 'plaid', 'accepted', 'auto',
-                CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, 'accepted', 'auto', CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [f"link_{key}", canonical_id, key],
+        [
+            f"link_{key}",
+            canonical_id,
+            REF_KIND_BY_SOURCE_TYPE[source_type],
+            key,
+            source_type,
+        ],
     )
 
 
@@ -428,6 +444,33 @@ def security_price_cases_template(
         origin="mb21_unbound",
     )
 
+    # One security priced by all three providers on one date, then the same
+    # without plaid. Adversarial orientation: the source that SHOULD win carries
+    # the STALEST extracted_at and the lowest close, so a rank that stops being
+    # applied falls through to source_type ASC (extracted_at DESC only breaks a
+    # tie after it) and lands on coingecko, never coincidentally on the right
+    # answer.
+    for security, sources in (
+        ("mb21_rank_all", ("plaid", "tiingo", "coingecko")),
+        ("mb21_rank_no_plaid", ("tiingo", "coingecko")),
+    ):
+        for hour, source in enumerate(sources):
+            key = f"{security}_{source}_key"
+            _insert_price(
+                db,
+                key=key,
+                close=f"{100 + hour}.00",
+                source=source,
+                origin=f"{security}_{source}",
+                extracted_at=f"2026-07-15 {9 + hour:02d}:00:00",
+            )
+            _accept_link(
+                db,
+                key=key,
+                canonical_id=f"{security}_security",
+                source_type=source,
+            )
+
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
     db.close()
@@ -779,6 +822,35 @@ def test_an_override_outranks_a_provider_close_on_the_same_date(
     ).fetchall()
     assert rows == [("override", Decimal("300.0000000000"))], (
         "the mark must win its own date despite the provider row being fresher"
+    )
+
+
+@pytest.mark.slow
+def test_the_provider_ranks_order_against_each_other(
+    security_price_cases: Database,
+) -> None:
+    """Plaid (2) beats tiingo (3) beats coingecko (4), per seeds.price_source_map.
+
+    Until C.2's adapters shipped their ref_kinds, only plaid could reach this
+    model, so the three provider ranks had never been ordered against one
+    another in either direction — the ranks were asserted only across the two
+    derived sources that bracket them. Both cases below are oriented so the
+    freshest row is the one that must LOSE, and coingecko carries it in both
+    cases: a rank that stops being applied falls through to source_type ASC and
+    resolves to coingecko either way, never to the expected answer.
+    """
+    db = security_price_cases
+
+    assert db.execute(
+        "SELECT source_type, close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_rank_all_security'"
+    ).fetchall() == [("plaid", Decimal("100.0000000000"))]
+
+    assert db.execute(
+        "SELECT source_type, close FROM core.fct_security_prices "
+        "WHERE security_id = 'mb21_rank_no_plaid_security'"
+    ).fetchall() == [("tiingo", Decimal("100.0000000000"))], (
+        "with plaid absent the next rank must win, not the freshest row"
     )
 
 

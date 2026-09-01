@@ -1,11 +1,12 @@
-"""Read the price-staging model's source -> ref_kind mapping out of the model file.
+"""Read the price models' declared vocabulary rather than restating it in tests.
 
 Shared by the staging model's own tests and by the price service's, because the
 guard that matters spans both: `PriceService` writes `raw.security_prices` rows,
-and `prep.stg_security_prices` resolves them through a per-`source_type` CASE
-with an INNER JOIN. A source the CASE does not map is discarded silently and
-permanently. Deriving the mapping from the model — rather than restating it —
-is what makes editing the CASE extend what the tests exercise.
+and `prep.stg_security_prices` resolves them through the ref_kind
+`seeds.price_source_map` declares, with an INNER JOIN. A source the registry
+does not map is discarded silently and permanently. Deriving from the registry
+and from the model files — rather than restating either — is what makes editing
+one extend what the tests exercise.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import re
 from pathlib import Path
 
 import moneybin
+from moneybin.price_sources import REF_KIND_BY_SOURCE_TYPE
 
 MODEL_PATH = (
     Path(moneybin.__file__).parent
@@ -117,14 +119,26 @@ def historical_reversal_actor() -> str:
 
 
 def ref_kind_mapping() -> dict[str, str]:
-    """The (source_type -> ref_kind) pairs the model's CASE actually maps."""
+    """The (source_type -> ref_kind) pairs the model actually resolves through.
+
+    Read from the registry rather than parsed out of the model, because the
+    model no longer restates the mapping: it joins ``seeds.price_source_map``,
+    which SQLMesh builds from the same CSV ``moneybin.price_sources`` loads.
+    The property the parsing version bought — that editing the mapping edits
+    what these tests exercise — is stronger this way, since the registry is now
+    the only place either side can be edited.
+    """
+    assert REF_KIND_BY_SOURCE_TYPE, "the price-source registry maps no ref_kinds"
     sql = MODEL_PATH.read_text()
-    case_blocks = re.findall(r"CASE\s+p\.source_type(.*?)\bEND\b", sql, re.DOTALL)
-    assert len(case_blocks) == 1, (
-        f"expected exactly one `CASE p.source_type` in {MODEL_PATH.name}; a second one "
-        f"means ref_kind resolution forked and these tests no longer cover it: "
-        f"{case_blocks}"
+    assert re.search(r"\bJOIN\s+seeds\.price_source_map\b", sql), (
+        f"{MODEL_PATH.name} no longer JOINs the registry, so a mapping read from "
+        "it is no longer evidence about what the model resolves. Matching the "
+        "bare table name would not catch this — it appears in this model's prose "
+        "independently of the join."
     )
-    mapping = dict(re.findall(r"WHEN\s+'([^']+)'\s+THEN\s+'([^']+)'", case_blocks[0]))
-    assert mapping, "no WHEN ... THEN pairs parsed out of the ref_kind CASE"
-    return mapping
+    assert not re.search(r"CASE\s+p\.source_type", sql), (
+        f"{MODEL_PATH.name} resolves ref_kind through a restated CASE again; the "
+        "registry and the model can now disagree, which is the split that "
+        "discarded every row C.2's adapters wrote"
+    )
+    return dict(REF_KIND_BY_SOURCE_TYPE)

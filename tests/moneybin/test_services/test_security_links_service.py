@@ -1327,7 +1327,7 @@ def test_accept_reports_binding_a_feed_key_as_a_bind(db: Database) -> None:
     ``accept`` routes on ref_kind, so a surface that reports one fixed outcome
     tells the user it merged two securities when it only created a link. The
     routing decision is the service's; the word for it has to come back with it
-    rather than be re-derived from ``_FEED_KEY_REF_KINDS`` in every adapter.
+    rather than be re-derived from ``FEED_KEY_REF_KINDS`` in every adapter.
     """
     security = _mint(db, name="BHP Group Ltd", created_by="user")
     decision_id = _feed_key_decision(db, security_id=security)

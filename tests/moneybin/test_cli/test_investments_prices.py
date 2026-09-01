@@ -23,6 +23,7 @@ from typer.testing import CliRunner
 from moneybin import error_codes
 from moneybin.cli.commands.investments.prices import PriceSourceChoice, app
 from moneybin.errors import UserError
+from moneybin.price_sources import PRICE_SOURCES
 from moneybin.services.price_service import PullResult
 from moneybin.services.refresh import RefreshResult
 
@@ -508,13 +509,13 @@ class TestPriceSourceFilter:
         from the stored value filters to nothing while still exiting 0. The
         walk below derives its expectation from this enum, so it cannot see
         either — it proves the gate opens, not that it opens on the right five.
+
+        `seeds.price_source_map` supplies the expectation because it is what
+        the fact table ranks and what staging resolves, so a provider appended
+        there fails here until the flag admits it.
         """
         assert {choice.value for choice in PriceSourceChoice} == {
-            "plaid",
-            "tiingo",
-            "coingecko",
-            "override",
-            "trade_implied",
+            source.source_type for source in PRICE_SOURCES
         }
 
     @patch("moneybin.cli.commands.investments.prices.get_database")

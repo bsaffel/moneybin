@@ -8,6 +8,7 @@ rather than any provider's behaviour, which test_connectors/test_prices covers.
 
 from __future__ import annotations
 
+import re
 import time as _time
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -18,6 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 from prometheus_client import REGISTRY
 
+import moneybin
 from moneybin import error_codes
 from moneybin.connectors.prices.errors import PriceFeedAuthError
 from moneybin.connectors.prices.protocol import (
@@ -29,6 +31,11 @@ from moneybin.connectors.prices.protocol import (
 from moneybin.connectors.prices.tiingo import TickerMetadata
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.price_sources import (
+    FEED_KEY_ROLE,
+    PRICE_SOURCES,
+    REF_KIND_BY_SOURCE_TYPE,
+)
 from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
@@ -36,17 +43,14 @@ from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services._validators import NOTE_MAX_LEN
 from moneybin.services.price_service import (
     _AUTO_REVERSAL,  # pyright: ignore[reportPrivateUsage]  # pinned against the model
-    COINGECKO_REF_KIND,
-    COINGECKO_SOURCE_TYPE,
+    COINGECKO,
     MAX_STORED_PRICE,
     PRICE_QUANTUM,
-    TIINGO_REF_KIND,
-    TIINGO_SOURCE_TYPE,
+    TIINGO,
+    HeldSecurity,
     PriceService,
 )
-from moneybin.services.security_links_service import (
-    _FEED_KEY_REF_KINDS,  # pyright: ignore[reportPrivateUsage]  # the routing set under test
-)
+from moneybin.services.security_links_service import SecurityLinksService
 from moneybin.services.undo_service import UndoService
 from moneybin.tables import (
     AUDIT_LOG,
@@ -635,7 +639,7 @@ def test_a_name_that_reduces_to_no_tokens_is_not_treated_as_agreement(
     _service(db, tiingo).pull()
 
     assert _links(db) == []
-    assert _decisions(db) == [(TIINGO_REF_KIND, "TRST", "name_divergence")]
+    assert _decisions(db) == [(TIINGO.feed_ref_kind, "TRST", "name_divergence")]
 
 
 def test_a_rejected_feed_key_is_not_re_proposed_on_the_next_pull(
@@ -694,7 +698,7 @@ def test_an_undone_binding_is_not_silently_recreated(db: Database) -> None:
     service.pull()
 
     assert _links(db) == []
-    assert _decisions(db) == [(TIINGO_REF_KIND, "SOH", "binding_was_reversed")]
+    assert _decisions(db) == [(TIINGO.feed_ref_kind, "SOH", "binding_was_reversed")]
 
 
 def test_a_reversed_binding_is_not_silently_recreated(db: Database) -> None:
@@ -720,7 +724,7 @@ def test_a_reversed_binding_is_not_silently_recreated(db: Database) -> None:
     service.pull()
 
     assert _links(db) == []
-    assert _decisions(db) == [(TIINGO_REF_KIND, "SOH", "binding_was_reversed")]
+    assert _decisions(db) == [(TIINGO.feed_ref_kind, "SOH", "binding_was_reversed")]
 
 
 def test_correcting_a_typod_ticker_stops_the_old_symbols_prices(
@@ -778,7 +782,7 @@ def test_a_user_confirmed_binding_is_never_treated_as_stale(db: Database) -> Non
 
     _service(db, tiingo).pull()
 
-    assert _links(db) == [(TIINGO_REF_KIND, "BRK-B", "s_brk")]
+    assert _links(db) == [(TIINGO.feed_ref_kind, "BRK-B", "s_brk")]
     assert [ref.provider_security_key for ref in tiingo.fetched] == ["BRK-B"]
     assert tiingo.metadata_calls == []
 
@@ -1686,64 +1690,137 @@ def test_listing_prices_can_bound_the_start_date(db: Database) -> None:
 def test_every_source_the_service_writes_resolves_in_staging() -> None:
     """A source_type this service writes MUST be mapped in prep.stg_security_prices.
 
-    The two halves ship in different files, and nothing else connects them.
-    ``PriceService`` writes ``raw.security_prices`` rows tagged with its own
-    ``source_type`` constants; ``prep.stg_security_prices`` resolves each row
-    through a ``CASE p.source_type`` whose result is compared against
-    ``app.security_links.ref_kind`` in an INNER JOIN. An unmapped source makes
-    that CASE return NULL, the comparison UNKNOWN, and the join drops the row —
-    with no error, no counter, and no way to recover it by accepting bindings
-    later, because the failure is in the mapping rather than the binding.
+    The two halves used to ship in different files with nothing connecting them:
+    ``PriceService`` wrote ``raw.security_prices`` rows tagged with its own
+    ``source_type`` constants, and ``prep.stg_security_prices`` restated the
+    ``source_type`` -> ``ref_kind`` mapping in a CASE. An unmapped source made
+    that CASE return NULL, the comparison UNKNOWN, and the INNER JOIN drop the
+    row — with no error, no counter, and no way to recover it by accepting
+    bindings later, because the failure was in the mapping rather than the
+    binding. That is how C.2 discarded every row its writers produced.
 
-    The staging module's own tripwire could not catch this: it reads the CASE and
-    fires only when the CASE changes, so shipping a *writer* for an unmapped
-    source left it green while every row written went nowhere. This test watches
-    the other direction, and lives in the unit gate so it runs on every commit.
+    ``seeds.price_source_map`` now declares both halves in one row, so the
+    failure needs a source declaring the security types it prices while
+    declaring no ref_kind. ``ref_kind_mapping`` additionally fails if the model
+    stops joining the registry, which is the other way the two could part.
     """
     mapping = ref_kind_mapping()
-    written = {TIINGO_SOURCE_TYPE, COINGECKO_SOURCE_TYPE}
+    written = {s.source_type for s in PRICE_SOURCES if s.security_types}
 
+    assert written, (
+        "no price source declares the security types it prices, so the subset "
+        "check below would hold vacuously"
+    )
     assert written <= mapping.keys(), (
-        f"PriceService writes {sorted(written - mapping.keys())} but "
-        f"prep.stg_security_prices maps only {sorted(mapping)} — every row written "
-        f"for an unmapped source is discarded permanently by the INNER JOIN. Add "
-        f"`WHEN '<source>' THEN '<ref_kind>'` to the model's CASE."
+        f"PriceService fetches {sorted(written - mapping.keys())} but "
+        f"prep.stg_security_prices resolves only {sorted(mapping)} — every row "
+        f"written for an unmapped source is discarded permanently by the INNER "
+        f"JOIN. Give the source a ref_kind in the registry."
     )
 
 
-def test_the_ref_kind_the_service_binds_matches_what_staging_expects() -> None:
-    """Mapping the source is only half of it — the ref_kind must agree too.
+def test_every_ref_kind_the_registry_declares_is_admitted_by_the_schema() -> None:
+    """Declaring a ref_kind is only half of it — the CHECK must admit it too.
 
-    ``PriceService`` writes the binding into ``app.security_links.ref_kind``;
-    staging joins on ``ref_kind = CASE ... END``. If the two disagree on the
-    spelling, the source is mapped, the binding is accepted, and the row is
-    still dropped — the same silent loss as an unmapped source, reached a
-    different way.
+    ``PriceService`` writes the binding into ``app.security_links.ref_kind``,
+    whose CHECK constraint is a hand-maintained list in a migration-frozen
+    schema file that no registry edit can reach. A ref_kind the registry
+    declares but the constraint rejects fails every insert at run time, so
+    adding a provider needs a migration in the same change.
+
+    This replaces a comparison of the registry against itself. Before the
+    registry, staging restated the mapping in a CASE and the service held its
+    own constants, so asserting the two agreed was a real cross-check; now both
+    sides read one row and only the schema is genuinely independent.
     """
-    mapping = ref_kind_mapping()
+    schema = (
+        Path(moneybin.__file__).parent / "sql" / "schema" / "app_security_links.sql"
+    ).read_text()
+    check = re.search(r"CHECK\s*\(\s*ref_kind\s+IN\s*\(([^)]*)\)", schema)
+    assert check is not None, (
+        "no `CHECK (ref_kind IN (...))` found in app_security_links.sql; the "
+        "constraint this test crosses the registry against has moved"
+    )
+    admitted = set(re.findall(r"'([^']+)'", check.group(1)))
+    declared = set(REF_KIND_BY_SOURCE_TYPE.values())
 
-    assert mapping[TIINGO_SOURCE_TYPE] == TIINGO_REF_KIND
-    assert mapping[COINGECKO_SOURCE_TYPE] == COINGECKO_REF_KIND
+    assert declared <= admitted, (
+        f"the registry declares {sorted(declared - admitted)}, which "
+        f"app.security_links.ref_kind rejects — every binding the service writes "
+        f"for those sources fails its CHECK. Widen the constraint in a migration."
+    )
 
 
 def test_every_ref_kind_the_service_queues_is_routed_as_a_feed_key() -> None:
     """The opposite direction of the same contract, per the C.2 staging lesson.
 
-    `SecurityLinksService.accept` routes on `_FEED_KEY_REF_KINDS`: a ref_kind in
+    `SecurityLinksService.accept` routes on `FEED_KEY_REF_KINDS`: a ref_kind in
     that set BINDS the feed, one outside it MERGES two securities and DELETEs
     one. So a new adapter whose ref_kind never reaches that set would have its
     review decisions routed into the merge path — destroying the very security
     the user was trying to price.
 
-    The consumer's own tests read the set, so they cannot see a producer that
-    ships ahead of it. This reads the producer.
-    """
-    queued = {TIINGO_REF_KIND, COINGECKO_REF_KIND}
+    Asserted against the router itself, and across two INDEPENDENT registry
+    columns, so it can actually fail. ``security_types`` says what PriceService
+    fetches; ``ref_role`` says what accepting the ref does. Comparing the
+    router against the set it reads, or against the column that set derives
+    from, would restate one expression twice and could never fail.
 
-    assert queued <= _FEED_KEY_REF_KINDS, (
-        "PriceService queues these ref_kinds, but SecurityLinksService.accept "
-        f"routes them to the MERGE path: {sorted(queued - _FEED_KEY_REF_KINDS)}"
+    Only the routed direction is universal. A RETIRED provider keeps
+    ``ref_role = 'feed_key'`` with no ``security_types``, which is exactly the
+    state that must still bind, so the reverse implication is pinned on the
+    concrete identity row instead.
+    """
+    for source in PRICE_SOURCES:
+        if not source.security_types:
+            continue
+        assert SecurityLinksService.binds_a_feed_key(source.feed_ref_kind), (
+            f"PriceService fetches {source.source_type!r}, but accepting a "
+            f"{source.feed_ref_kind!r} decision routes to the MERGE path, which "
+            "re-points every reference and deletes the provisional security — "
+            f"destroying the one the review meant to price. Set ref_role to "
+            f"{FEED_KEY_ROLE!r} in the registry."
+        )
+
+    identity_ref = REF_KIND_BY_SOURCE_TYPE["plaid"]
+    assert not SecurityLinksService.binds_a_feed_key(identity_ref), (
+        f"{identity_ref!r} names a second catalog row for one instrument, not a "
+        "market-data symbol; routing it to the BIND path would create a link and "
+        "skip the merge that accepting it exists to perform"
     )
+
+
+def test_every_source_the_registry_routes_to_has_an_adapter_wired() -> None:
+    """A registry row with no adapter behind it reports every holding as cash.
+
+    ``_route`` returns ``self._adapters.get(...)``, and a ``None`` adapter makes
+    the pull record ``no_price_source`` — the same answer a sweep position gets,
+    which is the one reply that must not be counterfeitable. ``_adapter_for`` was
+    made loud for the UNREGISTERED case; this is the registered-but-unwired one,
+    and wiring an adapter is the step the registry deliberately cannot do for you.
+    """
+    service = PriceService(
+        MagicMock(), tiingo=_FakeTiingo(), coingecko=_FakeCoinGecko()
+    )
+
+    for source in PRICE_SOURCES:
+        for security_type in sorted(source.security_types):
+            held = HeldSecurity(
+                security_id="s1",
+                name="Test Security",
+                security_type=security_type,
+                quote_currency="USD",
+                ticker="TEST",
+                exchange=None,
+                coingecko_id="test-coin",
+            )
+            routed, adapter = service._route(held)  # pyright: ignore[reportPrivateUsage]  # the dispatch under test
+            assert routed == source.source_type
+            assert adapter is not None, (
+                f"{source.source_type!r} is routed for security_type "
+                f"{security_type!r} but no adapter is wired for it, so every such "
+                "holding reports no_price_source and reads as unpriceable"
+            )
 
 
 class TestMarkCurrencyResolution:
@@ -2048,9 +2125,9 @@ def _seed_stale_binding(db: Database, *, ticker: str, ref_value: str) -> None:
     _hold(db, "s1")
     SecurityLinksRepo(db).insert(
         security_id="s1",
-        ref_kind=TIINGO_REF_KIND,
+        ref_kind=TIINGO.feed_ref_kind,
         ref_value=ref_value,
-        source_type=TIINGO_SOURCE_TYPE,
+        source_type=TIINGO.source_type,
         decided_by="auto",
         actor="system",
     )
@@ -2073,7 +2150,7 @@ def test_a_stale_binding_is_kept_when_no_replacement_can_be_derived(
 
     service.pull()
 
-    assert _links(db) == [(TIINGO_REF_KIND, "FB", "s1")]
+    assert _links(db) == [(TIINGO.feed_ref_kind, "FB", "s1")]
 
 
 def test_a_stale_binding_is_retired_once_its_replacement_is_derived(
@@ -2091,7 +2168,7 @@ def test_a_stale_binding_is_retired_once_its_replacement_is_derived(
 
     service.pull()
 
-    assert _links(db) == [(TIINGO_REF_KIND, "META", "s1")]
+    assert _links(db) == [(TIINGO.feed_ref_kind, "META", "s1")]
 
 
 def test_a_feed_key_carried_across_a_merge_is_still_re_derived(db: Database) -> None:
@@ -2115,9 +2192,9 @@ def test_a_feed_key_carried_across_a_merge_is_still_re_derived(db: Database) -> 
     repo = SecurityLinksRepo(db)
     event = repo.insert(
         security_id="s0",
-        ref_kind=TIINGO_REF_KIND,
+        ref_kind=TIINGO.feed_ref_kind,
         ref_value="FB",
-        source_type=TIINGO_SOURCE_TYPE,
+        source_type=TIINGO.source_type,
         decided_by="auto",
         actor="system",
     )
@@ -2132,7 +2209,7 @@ def test_a_feed_key_carried_across_a_merge_is_still_re_derived(db: Database) -> 
 
     _service(db, tiingo).pull()
 
-    assert _links(db) == [(TIINGO_REF_KIND, "META", "s1")]
+    assert _links(db) == [(TIINGO.feed_ref_kind, "META", "s1")]
 
 
 def test_a_stale_binding_is_retired_even_when_its_replacement_collides(
@@ -2167,9 +2244,9 @@ def test_a_stale_binding_is_retired_even_when_its_replacement_collides(
     _hold(db, "s_holder")
     SecurityLinksRepo(db).insert(
         security_id="s_holder",
-        ref_kind=COINGECKO_REF_KIND,
+        ref_kind=COINGECKO.feed_ref_kind,
         ref_value="bitcoin",
-        source_type=COINGECKO_SOURCE_TYPE,
+        source_type=COINGECKO.source_type,
         decided_by="auto",
         actor="system",
     )
@@ -2183,16 +2260,16 @@ def test_a_stale_binding_is_retired_even_when_its_replacement_collides(
     _hold(db, "s_renamed")
     SecurityLinksRepo(db).insert(
         security_id="s_renamed",
-        ref_kind=COINGECKO_REF_KIND,
+        ref_kind=COINGECKO.feed_ref_kind,
         ref_value="btc-legacy-slug",
-        source_type=COINGECKO_SOURCE_TYPE,
+        source_type=COINGECKO.source_type,
         decided_by="auto",
         actor="system",
     )
 
     result = _service(db, _FakeTiingo(), _FakeCoinGecko()).pull()
 
-    assert _links(db) == [(COINGECKO_REF_KIND, "bitcoin", "s_holder")]
+    assert _links(db) == [(COINGECKO.feed_ref_kind, "bitcoin", "s_holder")]
     assert [u.reason for u in result.unpriced] == ["feed_key_bound_elsewhere"]
 
 
