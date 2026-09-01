@@ -746,6 +746,7 @@ def test_resolve_emits_account_link_metrics(
             source_origin="wells_fargo",
             source_account_key="plaid-token-1",
             account_name="WF Checking",
+            account_name_is_user_set=True,
         )
     )
     assert resolved.outcome == "pending_review"

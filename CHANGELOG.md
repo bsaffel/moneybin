@@ -794,13 +794,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Fixed
-- **`accounts links run` no longer proposes a merge on two accounts' shared
-  generated label alone.** Two unrelated accounts whose *display name* was
-  never set by a person or a source — both resolving to a bare `checking`, or
-  to the same `institution + subtype + last four` shape — read as a name match
-  and queued a merge proposal with no real evidence behind it. `core.dim_accounts`
-  now carries a `display_name_is_user_set` provenance flag, and the resolver's
-  weak name signal requires it on both sides of a match. (#493)
+- **Account merge proposals no longer fire on a shared generated label alone,
+  on either side of the comparison.** Two unrelated accounts whose *display
+  name* was never set by a person or a source — both resolving to a bare
+  `checking`, or to the same `institution + subtype + last four` shape — read
+  as a name match and queued a merge proposal with no real evidence behind it.
+  This applied to `accounts links run`'s backfill sweep and to every live
+  import: OFX has no account-name field, so every OFX-sourced account name is
+  generated, and a same-institution pair could still be proposed as a merge
+  purely because their generated descriptors happened to coincide.
+  `core.dim_accounts` now carries a `display_name_is_user_set` provenance
+  flag, `SourceAccount` carries the equivalent `account_name_is_user_set` for
+  a source account presented at import time, and the resolver's weak name
+  signal requires the applicable flag on both sides of a match. (#493)
 
 ### Changed
 - **Google Sheets connects with no setup.** MoneyBin now ships the OAuth client

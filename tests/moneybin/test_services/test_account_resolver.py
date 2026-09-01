@@ -32,6 +32,11 @@ def _src(**overrides: Any) -> SourceAccount:
         "source_origin": "wells_fargo",
         "source_account_key": "wf-checking",
         "account_name": "WF Checking 1212",
+        # This factory's default account_name reads as a caller-authored
+        # label (e.g. tabular --account-name), so it counts as name evidence
+        # by default. Tests exercising the generated-name path override this
+        # explicitly to False.
+        "account_name_is_user_set": True,
         "account_number": None,
         "last_four": "1212",
         "institution": "wells_fargo",
@@ -1116,6 +1121,33 @@ def test_generated_descriptor_collision_is_not_a_name_match(db: Database) -> Non
     assert resolved.pending_decision_ids == ()
 
 
+def test_a_generated_source_name_is_not_a_name_match(db: Database) -> None:
+    """The live-import gap: a generated SOURCE name is not name evidence.
+
+    Not even against a real, person-set candidate name. Mirrors ``test_generated_descriptor_collision_is_not_a_name_match`` from
+    the candidate side to the source side. ``display_name_is_user_set`` is
+    left at its default True here -- a real account someone named "Chase
+    checking" -- so this isolates ``account_name_is_user_set`` specifically:
+    OFX's ``_ofx_source_accounts`` synthesizes ``account_name`` from
+    institution+type text and sets this flag False, and before the flag
+    existed that generated string still drove ``match_account`` and produced
+    a "name" candidate whenever it happened to collide.
+    """
+    create_core_tables(db)
+    _seed_dim_account(db, account_id="acct_real_name", display_name="Chase checking")
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(
+            account_name="Chase checking",  # collides with a REAL authored name
+            account_name_is_user_set=False,  # ...but this source never named it
+            last_four="1234",
+            institution=None,
+        )
+    )
+    assert resolved.outcome == "minted_new"
+    assert resolved.pending_decision_ids == ()
+
+
 def test_institution_last4_writes_pending_never_merges(db: Database) -> None:
     """A shared institution+last4 produces a pending decision, NOT an auto-merge."""
     # create core.dim_accounts so the candidate pass can see an existing account
@@ -1654,6 +1686,31 @@ def test_the_reissue_rung_ignores_a_generated_descriptor_collision() -> None:
         institution="chase",
     )
     name_rows = [("other_acct", "Chase checking", "5678", "chase", False)]
+
+    assert _retyped_reissue_candidates(src, name_rows) == []
+
+
+def test_the_reissue_rung_ignores_a_generated_source_name() -> None:
+    """The source-side twin of the guard above.
+
+    A real candidate name is not enough when the SOURCE'S OWN name is
+    generated, not authored. Isolates ``account_name_is_user_set`` specifically -- ``name_rows`` here
+    carries ``display_name_is_user_set=True`` (a real, person-set candidate
+    name), so the guard above already proved that half is not what refuses
+    this pair. This is the live-import gap Codex flagged on PR #493: OFX
+    synthesizes ``account_name`` from institution+type
+    (``_ofx_source_accounts``, ``account_name_is_user_set=False``), and
+    before this field existed that generated string could still retype a
+    last-four-disagreeing pair as an ``institution_reissue`` candidate just
+    because it happened to collide with a real display_name.
+    """
+    src = _src(
+        account_name="Chase checking",
+        account_name_is_user_set=False,
+        last_four="1234",
+        institution="chase",
+    )
+    name_rows = [("other_acct", "Chase checking", "5678", "chase", True)]
 
     assert _retyped_reissue_candidates(src, name_rows) == []
 

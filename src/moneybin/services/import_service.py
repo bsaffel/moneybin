@@ -1745,6 +1745,14 @@ def _pdf_source_account(
             or decision.metadata.product_name
             or resolved_alias
         ),
+        # account_label is captured from a printed "Account Name:"/"Account
+        # Nickname:" line -- a label the account holder set, the PDF analogue
+        # of Plaid's acc.name and a tabular --account-name. product_name is
+        # the card/product's marketing name (identical across every holder of
+        # that product) and resolved_alias is the filename slug; neither is
+        # authored, so the flag must follow account_label specifically, not
+        # merely "account_name is non-empty".
+        account_name_is_user_set=decision.metadata.account_label is not None,
         account_number=derived.scoped_full_number,
         institution=issuer or None,
         # Before document keys, an anchorless PDF used its filename alias.
@@ -1880,6 +1888,11 @@ def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAcco
                 source_origin=source_origin,
                 source_account_key=acctid,
                 account_name=f"{source_origin} {ofx_account_type(account) or ''}".strip(),
+                # OFX has no account-name element at all (see account_label's
+                # NULL arm in dim_accounts.sql) -- this is always the
+                # generated institution+type fallback, never a person's own
+                # label, so it must never drive the resolver's name rung.
+                account_name_is_user_set=False,
                 # full_number is a strong ref ONLY when institution/routing-scoped
                 # (contains ':'); a bare number is demoted to a candidate signal.
                 account_number=(
@@ -3509,6 +3522,10 @@ class ImportService:
                     source_origin=source_origin,
                     source_account_key=native_key,
                     account_name=clean_name,
+                    # True only when --account-name supplied clean_name; the
+                    # unnamed arm falls back to the filename stem or the
+                    # native key, neither of which a person typed.
+                    account_name_is_user_set=bool(account_name),
                     institution=institution,
                     last_four=label_last4,
                     name_facts=tabular_name_facts(native_key, label_last4),
@@ -3549,6 +3566,9 @@ class ImportService:
                     source_origin=source_origin,
                     source_account_key=native_key,
                     account_name=clean_name,
+                    # This branch is reached only when --account-name was
+                    # supplied; clean_name always comes from it.
+                    account_name_is_user_set=True,
                     institution=institution,
                     last_four=label_last4 or number_last4_by_key.get(native_key),
                     name_facts=tabular_name_facts(
@@ -3610,6 +3630,10 @@ class ImportService:
                     source_origin=source_origin,
                     source_account_key=native_key,
                     account_name=label_parsed_by_key[native_key][0],
+                    # authored_keys excludes the "unknown" filler used for a
+                    # blank account-name cell -- same rung source_label_by_key
+                    # above already gates on.
+                    account_name_is_user_set=native_key in authored_keys,
                     institution=multi_acct_inst.get(native_key),
                     last_four=(
                         label_parsed_by_key[native_key][1]
@@ -3647,6 +3671,9 @@ class ImportService:
                 source_origin=source_origin,
                 source_account_key=native_key,
                 account_name=placeholder_name,
+                # placeholder_name is always the filename stem or the native
+                # key -- no caller-supplied identity exists on this branch.
+                account_name_is_user_set=False,
                 institution=institution,
                 last_four=number_last4_by_key.get(native_key),
                 name_facts=tabular_name_facts(

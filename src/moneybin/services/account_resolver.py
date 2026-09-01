@@ -451,12 +451,17 @@ def _retyped_reissue_candidates(
     last fours is a common word, not a reissued card, and retyping that would
     reintroduce the evidence-free merge proposal the veto exists to prevent.
 
-    Also requires ``display_name_is_user_set`` on the vetoed row, for the same
-    reason the name rung above does: a generated descriptor colliding with the
-    source's name is not evidence a person named either account that way.
+    Also requires ``display_name_is_user_set`` on the vetoed row and
+    ``account_name_is_user_set`` on ``src``, for the same reason the name rung
+    above does: a generated descriptor colliding with the source's name is not
+    evidence a person named either account that way, on either side.
     """
     target_inst = _institution_key(src.institution) if src.institution else None
-    if not target_inst or not is_a_name(src.account_name):
+    if (
+        not target_inst
+        or not is_a_name(src.account_name)
+        or not src.account_name_is_user_set
+    ):
         return []
     vetoed = [
         {"account_id": str(row[0]), "account_name": str(row[1] or "")}
@@ -797,14 +802,15 @@ class AccountResolver:
             source_type="backfill",
             source_origin="backfill",
             source_account_key="",
+            account_name=str(display_name or ""),
             # A generated display_name (display_name_is_user_set False) is not
-            # evidence this account was ever named. Passing it through as
-            # account_name would let it drive the name rung and reissue
-            # retyping from the *source* side, reintroducing the same false
-            # merge evidence the candidate-side display_name_is_user_set gate
-            # exists to keep out -- empty suppresses is_a_name() the same way
-            # an unstated name always has.
-            account_name=str(display_name or "") if display_name_is_user_set else "",
+            # evidence this account was ever named. account_name_is_user_set
+            # is what _find_candidates and _retyped_reissue_candidates now
+            # gate the name/reissue rungs on for every source, so mirroring
+            # the candidate row's own flag here keeps this synthetic source
+            # from smuggling generated-name evidence in from the account
+            # side of a backfill pair.
+            account_name_is_user_set=display_name_is_user_set,
             last_four=str(last_four) if last_four is not None else None,
             institution=str(institution_slug) if institution_slug is not None else None,
         )
@@ -1198,9 +1204,11 @@ class AccountResolver:
         PDF accounts loaded earlier in the batch but not materialized in core yet.
 
         The name rung requires ``display_name_is_user_set`` on the candidate row
-        — a display_name assembled from generated fallback rungs (institution +
-        subtype, etc.) is not name evidence, only a coincidence of attributes
-        already compared separately. It also skips any account whose last four
+        AND ``account_name_is_user_set`` on ``src`` — a display_name (or source
+        account_name) assembled from generated fallback rungs (institution +
+        subtype, a bare filename, etc.) is not name evidence, only a
+        coincidence of attributes already compared separately. It also skips
+        any account whose last four
         positively contradicts the source's (``_last_fours_disagree``). A name
         match across a stated disagreement is not weaker evidence than the
         last-four signal — it is evidence of a *different* account, and
@@ -1278,7 +1286,7 @@ class AccountResolver:
             ]
             result = (
                 match_account(src.account_name, existing_accounts=existing)
-                if is_a_name(src.account_name)
+                if is_a_name(src.account_name) and src.account_name_is_user_set
                 else AccountMatch(matched=False)
             )
             if result.matched and result.account_id:

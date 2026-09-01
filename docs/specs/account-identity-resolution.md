@@ -280,11 +280,19 @@ reversed_by            TEXT
   `u-s-bank`, not `us_bank`), and an OFX `<ORG>` is a routing code at some
   issuers (Chase publishes `B1`), so a name-side comparison drops candidates
   on both ends. The `account_name` signal additionally requires
-  `display_name_is_user_set` on both the candidate row and the account being
-  resolved: `display_name` is a fallback ladder that can land on a *generated*
-  descriptor (institution + subtype + last four, or subtype alone) when no
-  person or source ever named the account, and two such descriptors coinciding
-  is a coincidence of already-compared attributes, not name evidence.
+  `display_name_is_user_set` on the candidate row being resolved and
+  `SourceAccount.account_name_is_user_set` on the presented source: both
+  `display_name` and a source's `account_name` are fallback ladders that can
+  land on a *generated* descriptor (institution + subtype + last four, a bare
+  filename, subtype alone) when no person or source ever named the account,
+  and two such descriptors coinciding is a coincidence of already-compared
+  attributes, not name evidence. Every channel sets its own source-side flag:
+  OFX has no account-name field at all and always sets it False; PDF sets it
+  only from a captured "Account Name:"/"Account Nickname:" line, never from
+  the product marketing name or the filename alias; tabular sets it only when
+  the caller supplied `--account-name` or the file's own account-name column
+  held a real (non-blank) value; Plaid sets it only from the holder's own
+  `name`, never the `official_name` product label.
   A match produces a `pending` decision row recording which signal fired. Weak
   signals are never an accepted `ref_kind` and never auto-merge. **⚠ Reconciled
   (Decision 8):** "durably present, captured at mint" was the gap — last4 was

@@ -315,6 +315,11 @@ class SyncService:
                             else acc.account_id
                         )
                     ),
+                    # acc.name is the holder's own nickname (set at the
+                    # institution or in Plaid); official_name and the two
+                    # generated fallbacks below it are not -- see the
+                    # docstring's note on why official_name can't discriminate.
+                    account_name_is_user_set=bool(acc.name),
                     account_number=None,  # Plaid never exposes a full number
                     last_four=acc.mask,
                     institution=acc.institution_name,
