@@ -369,6 +369,22 @@ def dim_accounts_cases_template(
             source_origin=_case_id("label_unicode_digits_origin"),
         )
 
+        settings_override_native = _case_id("settings_override_native")
+        _insert_tabular_account(
+            db,
+            native_key=settings_override_native,
+            account_name="Row With No Bank Fields",
+            institution_name="Test Bank",
+            account_type="CHECKING",
+            account_number="4001111",
+            extracted_at="2024-03-01 00:00:00",
+            source_origin=_case_id("settings_override_origin"),
+        )
+        db.execute(
+            "INSERT INTO app.account_settings (account_id, display_name) VALUES (?, ?)",
+            [settings_override_native, "My Override Name"],
+        )
+
         with sqlmesh_context(db) as ctx:
             ctx.plan(auto_apply=True, no_prompts=True)
         return db.path
@@ -533,6 +549,29 @@ def test_last_four_derived_for_ofx_without_account_settings(
     assert row[2] is False, (
         f"display_name_is_user_set should be FALSE, not NULL, for a "
         f"generated OFX label: {row[2]!r}"
+    )
+
+
+@pytest.mark.slow
+def test_a_settings_override_marks_display_name_is_user_set(
+    dim_accounts_cases: Database,
+) -> None:
+    """The other human-authored rung -- app.account_settings.display_name -- marks TRUE too.
+
+    The account_label arms are covered elsewhere in this module; this is the
+    remaining documented human-authored rung. A user-set override outranks
+    every account_label arm in the COALESCE and must mark the same
+    provenance flag, not just win the display_name text.
+    """
+    row = dim_accounts_cases.execute(
+        "SELECT display_name, display_name_is_user_set FROM core.dim_accounts "
+        "WHERE account_id = ?",
+        [_case_id("settings_override_native")],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "My Override Name"
+    assert row[1] is True, (
+        f"a settings override should mark display_name_is_user_set TRUE: {row[1]!r}"
     )
 
 

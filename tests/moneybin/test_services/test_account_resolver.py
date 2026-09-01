@@ -2489,6 +2489,43 @@ def test_propose_existing_guards_catalog_exception(db: Database) -> None:
     assert resolver.propose_existing("any_id") is None
 
 
+def test_a_stale_migration_missing_display_name_is_user_set_keeps_last_four_candidates(
+    db: Database,
+) -> None:
+    """A pre-migration dim_accounts must not lose already-gathered candidates.
+
+    Regression test for a review finding: the name-rung query raises
+    ``duckdb.BinderException`` when ``display_name_is_user_set`` doesn't exist
+    yet on a profile that hasn't re-run ``moneybin transform apply`` since this
+    column's migration landed. That exception must be caught locally around
+    just that query -- catching it at the outer ``except`` instead would
+    discard ``out``, including the bare last-four candidate already gathered
+    earlier in the same call, and silently drop merge-candidate evidence a
+    reviewer should have seen.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "ALTER TABLE core.dim_accounts DROP COLUMN display_name_is_user_set"
+    )
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
+        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        ["source_acct", "7777", None, None, "Everyday Spending"],
+    )
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
+        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        ["twin_acct", "7777", "CHASE", "chase", "Vacation Fund"],
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("source_acct")
+
+    assert proposal is not None, "the bare last-four candidate should not be dropped"
+    surfaced = {(c.account_id, c.signal) for c in proposal.candidates}
+    assert surfaced == {("twin_acct", "last_four")}, surfaced
+
+
 def test_resolve_rolls_back_partial_writes_on_failure(db: Database) -> None:
     """resolve() is atomic per account: a mid-resolve failure rolls everything back.
 

@@ -1215,12 +1215,26 @@ class AccountResolver:
                 c.signal == "institution_last4" for c in last_four_candidates
             ):
                 return _dedupe_candidates(out, legacy_candidates)
-            name_rows = self._db.execute(
-                f"SELECT account_id, display_name, last_four, institution_slug, "  # noqa: S608  # TableRef + parameterized values
-                f"display_name_is_user_set FROM {DIM_ACCOUNTS.full_name} "
-                "WHERE account_id != ? ORDER BY account_id",
-                [exclude_account_id],
-            ).fetchall()
+            try:
+                name_rows = self._db.execute(
+                    f"SELECT account_id, display_name, last_four, institution_slug, "  # noqa: S608  # TableRef + parameterized values
+                    f"display_name_is_user_set FROM {DIM_ACCOUNTS.full_name} "
+                    "WHERE account_id != ? ORDER BY account_id",
+                    [exclude_account_id],
+                ).fetchall()
+            except duckdb.BinderException:
+                # dim_accounts exists but predates display_name_is_user_set on
+                # a profile that hasn't run `moneybin transform apply` since
+                # this migration landed. Scoped to just this query: `out`
+                # already holds last_four_candidates gathered above, and it
+                # must survive into the reissue/fallback/dedupe logic below
+                # rather than being discarded along with the name/reissue
+                # signals this query alone feeds.
+                logger.debug(
+                    "core.dim_accounts missing display_name_is_user_set; "
+                    "skipping name/reissue signals"
+                )
+                name_rows = []
             existing = [
                 {"account_id": str(r[0]), "account_name": str(r[1] or "")}
                 for r in name_rows
@@ -1287,11 +1301,12 @@ class AccountResolver:
                 out = self._fallback_candidates(src, exclude_account_id)
                 return _dedupe_candidates(legacy_candidates, out)
             return _dedupe_candidates(out, legacy_candidates)
-        except (duckdb.CatalogException, duckdb.BinderException):
-            # CatalogException: core.dim_accounts doesn't exist yet.
-            # BinderException: dim_accounts exists but predates a column this
-            # query selects (e.g. display_name_is_user_set) on a profile that
-            # hasn't run `moneybin transform apply` since the migration landed.
+        except duckdb.CatalogException:
+            # core.dim_accounts doesn't exist yet. The other query in this
+            # method that could raise duckdb.BinderException (a stale
+            # migration missing display_name_is_user_set) is caught locally
+            # above, scoped to just that query, so it never reaches here and
+            # never discards candidates already gathered in `out`.
             logger.debug("core.dim_accounts unavailable; using raw candidates only")
             return _dedupe_candidates(pending_candidates, legacy_candidates)
 
