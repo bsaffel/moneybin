@@ -202,11 +202,28 @@ id-bearing rows — the two paths cover disjoint inputs, no duplication.
 categorization — the coherence violation we avoid; the account precedent informs
 the *concept*, not the *location*.)
 
-**The provider id stays out of `core`.** Consumers read canonical `merchant_id` /
-`merchant_name` from core, and call `merchant_links` if they ever need the
-provider id — a provider value has no place in the canonical fact view. The id
-lives in exactly two homes: `raw`/`prep` (provider input) and `app.merchant_links`
-(the binding).
+**The provider id stays off `core.fct_transactions`.** Consumers read canonical
+`merchant_id` / `merchant_name` from the fact view, and call `merchant_links` if
+they ever need the provider id — a provider value has no place in the canonical
+fact view.
+
+**Amended 2026-09-01 (MB-53).** As shipped, "stays out of `core`" was read as
+"stays in `prep`", and three consumers — `CategorizationMatcher`'s two row
+projections and `MerchantResolver.harvest()` — bound directly to
+`prep.int_transactions__merged` to reach the id. That violates Layer Rule 2 in
+[`architecture-shared-primitives.md`](architecture-shared-primitives.md): `prep`
+shapes change without notice and nothing downstream may depend on them, so a
+licensed refactor of the merge layer would have silently broken categorization
+and merchant harvesting. The id is therefore exposed through
+**`core.bridge_merchant_entities`** — a view at gold-transaction grain carrying
+`(transaction_id, merchant_entity_id, merchant_entity_source_type,
+source_merchant_name)` for the entity-bearing rows only. The original
+constraint is unchanged and still enforced by
+`tests/scenarios/test_merchant_entity_id_pipeline.py`: the id never becomes a
+`core.fct_transactions` column. A bridge is where a mapping to a foreign
+reference belongs, next to `core.bridge_category_source_map`. The id now lives
+in three homes: `raw`/`prep` (provider input), `core.bridge_merchant_entities`
+(the licensed read surface), and `app.merchant_links` (the binding).
 
 The resolver reads the per-transaction provider id from the **prep resolution
 layer**, where provider values already live and where the gold `transaction_id`
@@ -214,8 +231,8 @@ is assigned (`prep.int_transactions__matched` mints the SHA-256 gold key, so
 Plaid's native `transaction_id` and the gold key differ; the resolver writes
 against the gold key). Implementation choice (plan-time): carry
 `merchant_entity_id` one hop to `prep.int_transactions__merged` riding the same
-`ARG_MIN`-by-priority merge as `merchant_name`/`location_*` — **stopping at prep,
-never `core.fct_transactions`** — vs. a join back through `matched`. The carry is
+`ARG_MIN`-by-priority merge as `merchant_name`/`location_*` — **never
+`core.fct_transactions`** — vs. a join back through `matched`. The carry is
 preferred for coherence (it is "just another source field" through the union),
 and the union is positional `SELECT *`, so the field is added to all four source
 CTEs (NULL for ofx/manual/tabular).

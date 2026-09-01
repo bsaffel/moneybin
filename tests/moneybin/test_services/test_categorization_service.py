@@ -491,7 +491,7 @@ class TestApplyMerchantCategories:
 class TestFetchUncategorizedRowsFallback:
     """fetch_uncategorized_rows includes entity-bearing rows even with blank text.
 
-    Also degrades gracefully when the prep view lacks entity columns.
+    Also degrades gracefully when the bridge lacks entity columns.
     """
 
     @pytest.mark.unit
@@ -505,20 +505,20 @@ class TestFetchUncategorizedRowsFallback:
         """
         from moneybin.services.categorization.matcher import CategorizationMatcher
 
-        # Prep merged view WITH entity columns.
-        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-        db.execute("DROP TABLE IF EXISTS prep.int_transactions__merged")
+        # Core bridge WITH entity columns.
+        db.execute("CREATE SCHEMA IF NOT EXISTS core")
+        db.execute("DROP TABLE IF EXISTS core.bridge_merchant_entities")
         db.execute(
-            "CREATE TABLE prep.int_transactions__merged ("
+            "CREATE TABLE core.bridge_merchant_entities ("
             "  transaction_id VARCHAR PRIMARY KEY, "
             "  merchant_entity_id VARCHAR, "
             "  merchant_entity_source_type VARCHAR, "
-            "  merchant_name VARCHAR"
+            "  source_merchant_name VARCHAR"
             ")"
         )
         # Entity-bearing row: merchant_entity_id set, description and memo both empty.
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXNE1', 'plaid_ent_123', 'plaid', NULL)"
         )
         db.execute(
@@ -544,7 +544,7 @@ class TestFetchUncategorizedRowsFallback:
     def test_missing_entity_columns_falls_back(self, db: Database) -> None:
         """Prep view present but without merchant_entity_* columns → BinderException → fallback.
 
-        Simulates a post-code-upgrade, pre-re-transform DB: the prep view exists
+        Simulates a post-code-upgrade, pre-re-transform DB: the bridge exists
         but predates the M1T entity columns. The ``with_entity`` query raises a
         ``duckdb.BinderException`` (missing column, NOT a catalog error). The
         fetch must catch it and fall back to ``without_entity`` so categorize-run
@@ -552,13 +552,13 @@ class TestFetchUncategorizedRowsFallback:
         """
         from moneybin.services.categorization.matcher import CategorizationMatcher
 
-        # prep view EXISTS but WITHOUT the M1T entity columns.
-        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-        db.execute("DROP TABLE IF EXISTS prep.int_transactions__merged")
+        # bridge EXISTS but WITHOUT the M1T entity columns.
+        db.execute("CREATE SCHEMA IF NOT EXISTS core")
+        db.execute("DROP TABLE IF EXISTS core.bridge_merchant_entities")
         db.execute(
-            "CREATE TABLE prep.int_transactions__merged (transaction_id VARCHAR)"
+            "CREATE TABLE core.bridge_merchant_entities (transaction_id VARCHAR)"
         )
-        db.execute("INSERT INTO prep.int_transactions__merged VALUES ('TXNB1')")
+        db.execute("INSERT INTO core.bridge_merchant_entities VALUES ('TXNB1')")
         db.execute(
             "INSERT INTO core.fct_transactions "
             "(transaction_id, account_id, transaction_date, amount, description, source_type) "
@@ -582,7 +582,7 @@ class TestFetchUncategorizedRowsFallback:
 
 
 class TestCategorizationOrchestratorBinderFallback:
-    """[4] _categorize_items_inner falls back when prep view lacks entity columns."""
+    """[4] _categorize_items_inner falls back when the bridge lacks entity columns."""
 
     @pytest.mark.unit
     def test_binder_exception_caught_inner_not_outer(
@@ -591,7 +591,7 @@ class TestCategorizationOrchestratorBinderFallback:
         """Prep view exists but lacks M1T entity columns → BinderException → inner fallback.
 
         Mirrors TestFetchUncategorizedRowsFallback: simulates a post-code-upgrade,
-        pre-re-transform DB where the prep view predates the M1T entity columns.
+        pre-re-transform DB where the bridge predates the M1T entity columns.
         The ``with_entity`` query raises ``duckdb.BinderException`` (missing
         column). The inner ``except`` must catch it so ``txn_rows`` is populated
         from the ``without_entity`` fallback — not left empty by the outer guard.
@@ -601,12 +601,12 @@ class TestCategorizationOrchestratorBinderFallback:
         """
         import logging
 
-        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-        db.execute("DROP TABLE IF EXISTS prep.int_transactions__merged")
+        db.execute("CREATE SCHEMA IF NOT EXISTS core")
+        db.execute("DROP TABLE IF EXISTS core.bridge_merchant_entities")
         db.execute(
-            "CREATE TABLE prep.int_transactions__merged (transaction_id VARCHAR)"
+            "CREATE TABLE core.bridge_merchant_entities (transaction_id VARCHAR)"
         )
-        db.execute("INSERT INTO prep.int_transactions__merged VALUES ('TXN_BINDER')")
+        db.execute("INSERT INTO core.bridge_merchant_entities VALUES ('TXN_BINDER')")
         db.execute(
             "INSERT INTO core.fct_transactions "
             "(transaction_id, account_id, transaction_date, amount, description, source_type) "
@@ -1070,12 +1070,12 @@ def test_categorize_items_uses_constant_number_of_db_calls(
     from moneybin.tables import FCT_TRANSACTIONS
 
     # In production core.fct_transactions is a view over
-    # prep.int_transactions__merged, so the batched description fetch joins prep
-    # to read merchant_entity_id (M1T rung-0). Provide an (empty) prep view so
+    # core.bridge_merchant_entities, so the batched description fetch joins the
+    # bridge to read merchant_entity_id (M1T rung-0). Provide an (empty) bridge so
     # this perf test exercises the real single-query production path.
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
     db.execute(
-        "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged "
+        "CREATE TABLE IF NOT EXISTS core.bridge_merchant_entities "
         "(transaction_id VARCHAR, merchant_entity_id VARCHAR, "
         "merchant_entity_source_type VARCHAR)"
     )
@@ -1576,22 +1576,22 @@ class TestResolveEntityMerchantSourceTypeGuard:
 # ---------------------------------------------------------------------------
 
 
-def _setup_prep_table(db: Database) -> None:
-    """Create ``prep.int_transactions__merged`` for entity-resolution tests.
+def _setup_bridge_table(db: Database) -> None:
+    """Create ``core.bridge_merchant_entities`` for entity-resolution tests.
 
     ``fetch_uncategorized_rows`` LEFT-JOINs this table for entity columns.
     Without it the query falls back to the ``without_entity`` path which
     projects NULL — making entity-resolution unreachable via
     ``apply_merchant_categories``.
     """
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    db.execute("DROP TABLE IF EXISTS prep.int_transactions__merged")
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute("DROP TABLE IF EXISTS core.bridge_merchant_entities")
     db.execute(
-        "CREATE TABLE prep.int_transactions__merged ("
+        "CREATE TABLE core.bridge_merchant_entities ("
         "  transaction_id VARCHAR PRIMARY KEY, "
         "  merchant_entity_id VARCHAR, "
         "  merchant_entity_source_type VARCHAR, "
-        "  merchant_name VARCHAR"
+        "  source_merchant_name VARCHAR"
         ")"
     )
 
@@ -1619,7 +1619,7 @@ class TestApplyMerchantCategoriesEntityResolution:
         """
         from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         # Create a merchant with a category.
         mid = create_merchant(
@@ -1650,7 +1650,7 @@ class TestApplyMerchantCategoriesEntityResolution:
             "VALUES ('TXN_R6A', 'ACC1', DATE '2026-01-01', -10.00, 'XYZUNKNOWN STORE', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_R6A', 'ent_r6a', 'plaid', 'Fancy Corp')"
         )
 
@@ -1679,7 +1679,7 @@ class TestApplyMerchantCategoriesEntityResolution:
         """
         from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         # Merchant with no category (category=None default).
         mid = create_merchant(
@@ -1706,7 +1706,7 @@ class TestApplyMerchantCategoriesEntityResolution:
             "VALUES ('TXN_R6B', 'ACC1', DATE '2026-01-01', -20.00, 'XYZUNKNOWN2 STORE', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_R6B', 'ent_r6b', 'plaid', 'NoCat Corp')"
         )
 
@@ -1729,7 +1729,7 @@ class TestApplyMerchantCategoriesEntityResolution:
         result (rung-1 adopt when a binding exists, or the name-matched
         merchant when no binding exists).
         """
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         mid = create_merchant(
             db,
@@ -1745,7 +1745,7 @@ class TestApplyMerchantCategoriesEntityResolution:
             "VALUES ('TXN_R6C', 'ACC1', DATE '2026-01-01', -25.00, 'AMZN MKTP ORDER #789', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_R6C', NULL, NULL, NULL)"
         )
 
@@ -1770,7 +1770,7 @@ class TestApplyMerchantCategoriesEntityResolution:
         """
         from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         mid = create_merchant(
             db,
@@ -1797,7 +1797,7 @@ class TestApplyMerchantCategoriesEntityResolution:
             "VALUES ('TXN_R6D', 'ACC1', DATE '2026-01-01', -5.00, 'SQ *STARBUCKS', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_R6D', 'ent_r6d', 'plaid', 'Starbucks')"
         )
 
@@ -1828,7 +1828,7 @@ class TestApplyMerchantCategoriesEntityResolution:
         """
         from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         # Transaction with a merchant_entity_id that has NO pre-existing binding.
         # Resolver will hit rung-4 (no name match, no binding) → mint + auto-bind.
@@ -1838,7 +1838,7 @@ class TestApplyMerchantCategoriesEntityResolution:
             "VALUES ('TXN_D7B', 'ACC1', DATE '2026-01-01', -9.99, 'XYZNOPATTERN99', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_D7B', 'ent_d7b', 'plaid', 'Some Provider Merchant')"
         )
 
@@ -1875,7 +1875,7 @@ class TestApplyMerchantCategoriesEntityResolution:
         """
         from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         # Merchant A — the entity is bound to this one (category C_A = "Business").
         mid_a = create_merchant(
@@ -1916,7 +1916,7 @@ class TestApplyMerchantCategoriesEntityResolution:
             "VALUES ('TXN_R9A', 'ACC1', DATE '2026-01-01', -30.00, 'SHOPSTORE PURCHASE', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_R9A', 'ent_r9', 'plaid', 'Corp A')"
         )
 
@@ -1951,7 +1951,7 @@ class TestApplyMerchantCategoriesEntityResolution:
         """
         from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         # Merchant A — entity bound here, NO category.
         mid_a_nocat = create_merchant(
@@ -1989,7 +1989,7 @@ class TestApplyMerchantCategoriesEntityResolution:
             "VALUES ('TXN_R9B', 'ACC1', DATE '2026-01-01', -12.00, 'FALLBACKSTORE MEAL', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_R9B', 'ent_r9b', 'plaid', 'NoCat Entity Corp')"
         )
 
@@ -2024,7 +2024,7 @@ class TestApplyMerchantCategoriesEntityResolution:
         """
         from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         # No merchant created — fetch_merchants() returns [] from the empty table.
         db.execute(
@@ -2033,7 +2033,7 @@ class TestApplyMerchantCategoriesEntityResolution:
             "VALUES ('TXN_11A', 'ACC1', DATE '2026-01-01', -10.00, 'XYZUNKNOWN11', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_11A', 'ent_11a', 'plaid', 'Some New Merchant')"
         )
 
@@ -2056,7 +2056,7 @@ class TestApplyMerchantCategoriesEntityResolution:
 
         from moneybin.services.categorization.matcher import CategorizationMatcher
 
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         db.execute(
             "INSERT INTO core.fct_transactions "
@@ -2064,7 +2064,7 @@ class TestApplyMerchantCategoriesEntityResolution:
             "VALUES ('TXN_11B', 'ACC1', DATE '2026-01-01', -10.00, 'XYZUNKNOWN11B', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_11B', 'ent_11b', 'plaid', 'Some Merchant 11B')"
         )
 
@@ -2099,7 +2099,7 @@ class TestApplyMerchantCategoriesStampsRule:
         self, db: Database, merchant_created_by: str
     ) -> None:
         """Whatever created the merchant, its default stamps categorized_by='rule'."""
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         mid = create_merchant(
             db,
@@ -2116,7 +2116,7 @@ class TestApplyMerchantCategoriesStampsRule:
             "VALUES ('TXN_PROV', 'ACC1', DATE '2026-01-01', -30.00, 'AMAZON MKTP ORDER', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_PROV', NULL, NULL, NULL)"
         )
 
@@ -2173,7 +2173,7 @@ class TestResolverBindingPrecedesCategorization:
         blocked by the precedence guard), the resolver must have proposed the
         entity-id → merchant candidate in ``app.merchant_link_decisions``.
         """
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         create_merchant(
             db,
@@ -2189,7 +2189,7 @@ class TestResolverBindingPrecedesCategorization:
             "VALUES ('TXN_R7', 'ACC1', DATE '2026-01-01', -4.50, 'STARBUCKS RESERVE', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_R7', 'ent_r7', 'plaid', 'Starbucks')"
         )
 
@@ -2243,7 +2243,7 @@ class TestResolverBindingPrecedesCategorization:
         test locks that correct-by-design behavior so a future "fix" can't
         silently gate the mint behind ``outcome.written``.
         """
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         db.execute(
             "INSERT INTO core.fct_transactions "
@@ -2252,7 +2252,7 @@ class TestResolverBindingPrecedesCategorization:
             "'XYZNOPATTERNMINTSKIP', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_MINT_SKIP', 'ent_mint_skip', 'plaid', 'Brand New Merchant')"
         )
 
@@ -2326,7 +2326,7 @@ class TestCategorizeItemsMerchantCreated:
         binding and no name match triggers rung-4 (mint). The returned
         CategorizationResult.merchants_created must be >= 1.
         """
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         # Transaction with no name-matchable description — forces rung-4 mint.
         db.execute(
@@ -2335,7 +2335,7 @@ class TestCategorizeItemsMerchantCreated:
             "VALUES ('TXN_MINT_1', 'ACC1', DATE '2026-01-01', -12.50, 'XYZNOPATTERNMINT1', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_MINT_1', 'ent_mint_1', 'plaid', 'Chipotle')"
         )
 
@@ -2360,7 +2360,7 @@ class TestCategorizeItemsMerchantCreated:
         """
         from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         # Create a merchant and pre-bind an entity id to it (rung-1 seed).
         mid = create_merchant(
@@ -2387,7 +2387,7 @@ class TestCategorizeItemsMerchantCreated:
             "VALUES ('TXN_CTRL_1', 'ACC1', DATE '2026-01-01', -5.00, 'XYZNOPATTERNCTRL', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_CTRL_1', 'ent_ctrl_1', 'plaid', 'Bound Corp')"
         )
 
@@ -2421,7 +2421,7 @@ class TestMerchantNameMatchRung2:
         only, so a blank description produced no name match and rung-4 minted a
         duplicate. This test must FAIL on old code and PASS after the fix.
         """
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         # Existing "Starbucks" merchant with an exact pattern.
         mid = create_merchant(
@@ -2442,7 +2442,7 @@ class TestMerchantNameMatchRung2:
             "VALUES ('TXN_R2_EXACT', 'ACC1', DATE '2026-01-01', -5.75, '', 'Starbucks', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_R2_EXACT', 'ent_r2_exact', 'plaid', 'Starbucks')"
         )
 
@@ -2475,7 +2475,7 @@ class TestMerchantNameMatchRung2:
         (pending proposal), never rung-2 (auto-bind). Only EXACT name hits
         earn auto-bind.
         """
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         # Merchant matched via "contains" — a fuzzy shape.
         mid_fuzzy = create_merchant(
@@ -2493,7 +2493,7 @@ class TestMerchantNameMatchRung2:
             "VALUES ('TXN_R3_FUZZY', 'ACC1', DATE '2026-01-01', -4.50, '', 'Starbucks', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_R3_FUZZY', 'ent_r3_fuzzy', 'plaid', 'Starbucks')"
         )
 
@@ -2520,7 +2520,7 @@ class TestMerchantNameMatchRung2:
         transaction's description exactly matches merchant A, the resolver
         must NOT bind to merchant B even if ``merchant_name`` would match B.
         """
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         mid_a = create_merchant(
             db,
@@ -2546,7 +2546,7 @@ class TestMerchantNameMatchRung2:
             "'OTHERCORP', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_DESC_CTRL', 'ent_desc_ctrl', 'plaid', 'OTHERCORP')"
         )
 
@@ -2570,7 +2570,7 @@ class TestMerchantNameMatchRung2:
         ``merchant_name``, rung-4 minting must still fire and produce a new
         merchant (preserving current behaviour).
         """
-        _setup_prep_table(db)
+        _setup_bridge_table(db)
 
         # No merchants in catalog.
         db.execute(
@@ -2581,7 +2581,7 @@ class TestMerchantNameMatchRung2:
             "'SomeUnknownBrand', 'plaid')"
         )
         db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
+            "INSERT INTO core.bridge_merchant_entities VALUES "
             "('TXN_MINT_CTRL', 'ent_mint_ctrl', 'plaid', 'SomeUnknownBrand')"
         )
 
@@ -2626,9 +2626,9 @@ def _insert_plaid_txn(
     the e2e test above, which does exactly that). ``apply_plaid_categories``
     reads four columns (the detailed AND primary PFC codes, for the
     two-tier bridge lookup, plus confidence), so this creates just those
-    columns as a physical table — mirroring the ``prep.int_transactions__merged``
-    precedent already used above for entity-resolution tests (see
-    ``_setup_prep_table``).
+    columns as a physical table — mirroring the
+    ``core.bridge_merchant_entities`` stub used for entity-resolution tests
+    (see ``_setup_bridge_table``).
 
     The same transaction also exists in the per-source staging layer,
     ``prep.stg_plaid__transactions``, which the ``plaid_unmapped`` coverage
@@ -3383,7 +3383,7 @@ class TestCategorizePendingPlaidPass:
 
         ``fetch_uncategorized_rows`` (shared by the rules/merchant passes)
         excludes rows with a blank description AND blank memo (and, absent
-        the prep.int_transactions__merged table in this unit DB, has no
+        the core.bridge_merchant_entities table in this unit DB, has no
         entity-id fallback either) — so it returns ``[]`` for a txn like
         this. ``apply_plaid_categories`` matches on the PFC category code,
         not the description, so it can still categorize the row via its own

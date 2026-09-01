@@ -202,6 +202,19 @@ Resolved provider-code → canonical-category bridge. Grain: one row per `(sourc
 
 Two-tier reverse lookup — match a transaction's detailed and primary codes and let detailed win: `WHERE source_category_code IN (detailed, primary) ORDER BY code_level = 'detailed' DESC LIMIT 1`.
 
+### `core.bridge_merchant_entities`
+
+The source system's own merchant-entity reference for a gold transaction. Grain: one row per `transaction_id`. `VIEW` over `prep.int_transactions__merged`, filtered to rows that carry an entity id — sources that issue none (OFX, tabular, manual) are simply absent, so consumers LEFT JOIN.
+
+| Column | Type | Description |
+|---|---|---|
+| `transaction_id` | VARCHAR | FK → `core.fct_transactions.transaction_id`. |
+| `merchant_entity_id` | VARCHAR | The source system's stable merchant id. Opaque — never an account number. |
+| `merchant_entity_source_type` | VARCHAR | `source_type` of the merge member that issued the id — NOT the merge-winner `fct_transactions.source_type`. The two differ whenever an entity-bearing row deduped against a higher-priority source. |
+| `source_merchant_name` | VARCHAR | Merchant name as the source stated it. Distinct from `fct_transactions.merchant_name`, which has already been replaced by the resolved canonical name. |
+
+`(merchant_entity_source_type, merchant_entity_id)` is the pair `app.merchant_links` binds to a canonical `core.dim_merchants` row. Key on the pair, never on the id alone: two sources may mint the same id string for different merchants.
+
 ### `core.bridge_transfers`
 
 Confirmed transfer pairs linking two `fct_transactions` rows. Grain: one row per `transfer_id`. `VIEW` derived from `app.match_decisions` where `match_type = 'transfer'`, `match_status = 'accepted'`, and `reversed_at IS NULL` — a later-reversed match drops out even though its `match_status` still reads `'accepted'`.

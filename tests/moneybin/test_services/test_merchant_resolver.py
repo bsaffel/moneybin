@@ -194,21 +194,21 @@ def test_rung4_mints_with_real_name_when_name_is_provided(
     assert _lookup_canonical_name(db, res.merchant_id or "") == "Real Merchant"  # type: ignore[arg-type]
 
 
-def test_harvest_degrades_when_prep_view_absent(db: Database) -> None:
+def test_harvest_degrades_when_bridge_absent(db: Database) -> None:
     """harvest() returns HarvestResult(0, 0) on a never-transformed DB.
 
     The ``db`` fixture has the app tables (merchant_links, transaction_categories)
-    but SQLMesh has not run, so ``prep.int_transactions__merged`` does not exist.
+    but SQLMesh has not run, so ``core.bridge_merchant_entities`` does not exist.
     Without the CatalogException guard the harvest SELECT raises raw — and
     ``merchants_links_run`` (MCP, no ``handle_cli_errors`` wrapper) would surface
     it. The guard must degrade gracefully like ``list_pending``/``count_pending``.
     """
     view_present = db.execute(
         "SELECT COUNT(*) FROM duckdb_views() "
-        "WHERE schema_name = 'prep' AND view_name = 'int_transactions__merged'"
+        "WHERE schema_name = 'core' AND view_name = 'bridge_merchant_entities'"
     ).fetchone()
     assert view_present is not None and view_present[0] == 0, (
-        "precondition: prep.int_transactions__merged must be absent for this test "
+        "precondition: core.bridge_merchant_entities must be absent for this test "
         "to exercise the CatalogException guard"
     )
 
@@ -575,15 +575,15 @@ def test_propose_returns_true_when_fresh(db: Database) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _setup_merged_table(db: Database) -> None:
-    """Create prep schema and a real int_transactions__merged table for mutation tests."""
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+def _setup_bridge_table(db: Database) -> None:
+    """Create core schema and a real bridge_merchant_entities table for mutation tests."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
     db.execute(
-        "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged ("
+        "CREATE TABLE IF NOT EXISTS core.bridge_merchant_entities ("
         "  transaction_id VARCHAR PRIMARY KEY, "
         "  merchant_entity_id VARCHAR, "
         "  merchant_entity_source_type VARCHAR, "
-        "  merchant_name VARCHAR"
+        "  source_merchant_name VARCHAR"
         ")"
     )
 
@@ -595,12 +595,12 @@ def test_harvest_conflict_not_counted_when_already_queued(db: Database) -> None:
     counted again — re-running harvest on pre-existing data must not inflate
     the conflict count reported to the user.
     """
-    _setup_merged_table(db)
+    _setup_bridge_table(db)
 
     # Seed two transactions: same merchant_entity_id, two different merchant_ids.
     # This creates a conflict scenario for harvest().
     db.execute(
-        "INSERT INTO prep.int_transactions__merged VALUES "
+        "INSERT INTO core.bridge_merchant_entities VALUES "
         "('txn_c1', 'ent_conflict', 'plaid', NULL), "
         "('txn_c2', 'ent_conflict', 'plaid', NULL)"
     )
@@ -642,11 +642,11 @@ def test_harvest_conflict_counted_when_fresh(db: Database) -> None:
     Control test: without a pre-existing decision, the conflict IS newly
     queued and must be counted as 1.
     """
-    _setup_merged_table(db)
+    _setup_bridge_table(db)
 
     # Same conflict scenario, no pre-existing pending decision.
     db.execute(
-        "INSERT INTO prep.int_transactions__merged VALUES "
+        "INSERT INTO core.bridge_merchant_entities VALUES "
         "('txn_f1', 'ent_fresh_c', 'plaid', NULL), "
         "('txn_f2', 'ent_fresh_c', 'plaid', NULL)"
     )
@@ -666,19 +666,19 @@ def test_harvest_conflict_counted_when_fresh(db: Database) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_harvest_degrades_when_prep_view_stale(db: Database) -> None:
-    """harvest() returns HarvestResult(0, 0) when the merged view lacks entity columns.
+def test_harvest_degrades_when_bridge_stale(db: Database) -> None:
+    """harvest() returns HarvestResult(0, 0) when the bridge lacks entity columns.
 
-    On a DB where ``prep.int_transactions__merged`` exists but predates
+    On a DB where ``core.bridge_merchant_entities`` exists but predates
     ``merchant_entity_id`` / ``merchant_entity_source_type`` (e.g. upgraded
     from an older schema), DuckDB raises ``BinderException`` (missing column).
     Without the BinderException guard the SELECT escapes and
     ``merchants_links_run`` (MCP, no ``handle_cli_errors`` wrapper) raises raw.
     The guard must degrade gracefully like the CatalogException guard.
     """
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    db.execute("CREATE TABLE prep.int_transactions__merged (transaction_id VARCHAR)")
-    db.execute("INSERT INTO prep.int_transactions__merged VALUES ('txn_stale')")
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute("CREATE TABLE core.bridge_merchant_entities (transaction_id VARCHAR)")
+    db.execute("INSERT INTO core.bridge_merchant_entities VALUES ('txn_stale')")
 
     r = MerchantResolver(db)
     assert r.harvest() == HarvestResult(bound=0, conflicts=0)
@@ -689,15 +689,15 @@ def test_harvest_degrades_when_prep_view_stale(db: Database) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _setup_merged_table_with_entity(db: Database) -> None:
-    """Create the merged table including entity columns for rejected-filter tests."""
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+def _setup_bridge_table_with_entity(db: Database) -> None:
+    """Create the bridge table including entity columns for rejected-filter tests."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
     db.execute(
-        "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged ("
+        "CREATE TABLE IF NOT EXISTS core.bridge_merchant_entities ("
         "  transaction_id VARCHAR PRIMARY KEY, "
         "  merchant_entity_id VARCHAR, "
         "  merchant_entity_source_type VARCHAR, "
-        "  merchant_name VARCHAR"
+        "  source_merchant_name VARCHAR"
         ")"
     )
 
@@ -709,9 +709,9 @@ def test_harvest_skips_rejected_sole_merchant(db: Database) -> None:
     NOT bind the entity to that rejected merchant — even when it is the only
     observed merchant for the entity id.
     """
-    _setup_merged_table_with_entity(db)
+    _setup_bridge_table_with_entity(db)
     db.execute(
-        "INSERT INTO prep.int_transactions__merged VALUES ('txn_r1', 'ent_rej', 'plaid', NULL)"
+        "INSERT INTO core.bridge_merchant_entities VALUES ('txn_r1', 'ent_rej', 'plaid', NULL)"
     )
     db.execute(
         "INSERT INTO app.transaction_categories "
@@ -747,9 +747,9 @@ def test_harvest_skips_rejected_sole_merchant(db: Database) -> None:
 
 def test_harvest_binds_non_rejected_sole_merchant(db: Database) -> None:
     """Control: single non-rejected merchant IS bound (current behavior preserved)."""
-    _setup_merged_table_with_entity(db)
+    _setup_bridge_table_with_entity(db)
     db.execute(
-        "INSERT INTO prep.int_transactions__merged VALUES ('txn_nr1', 'ent_ok', 'plaid', NULL)"
+        "INSERT INTO core.bridge_merchant_entities VALUES ('txn_nr1', 'ent_ok', 'plaid', NULL)"
     )
     db.execute(
         "INSERT INTO app.transaction_categories "
@@ -772,11 +772,11 @@ def test_harvest_proposes_non_rejected_candidate_in_conflict(db: Database) -> No
     proposes the dominant of the survivors. The rejected merchant must never
     appear as the proposed candidate.
     """
-    _setup_merged_table_with_entity(db)
+    _setup_bridge_table_with_entity(db)
     # m_rejected appears twice (dominant by count) but is rejected.
     # m_zzz and m_aaa each appear once → genuine conflict after filtering.
     db.execute(
-        "INSERT INTO prep.int_transactions__merged VALUES "
+        "INSERT INTO core.bridge_merchant_entities VALUES "
         "('txn_pr1', 'ent_prc', 'plaid', NULL), "
         "('txn_pr2', 'ent_prc', 'plaid', NULL), "
         "('txn_pr3', 'ent_prc', 'plaid', NULL), "
@@ -902,9 +902,9 @@ def test_harvest_skips_entity_with_pending_decision(db: Database) -> None:
     would silently accept a match still awaiting user confirmation ("magic stays
     visible" violation).
     """
-    _setup_merged_table_with_entity(db)
+    _setup_bridge_table_with_entity(db)
     db.execute(
-        "INSERT INTO prep.int_transactions__merged VALUES ('txn_pend1', 'ent_pend', 'plaid', NULL)"
+        "INSERT INTO core.bridge_merchant_entities VALUES ('txn_pend1', 'ent_pend', 'plaid', NULL)"
     )
     db.execute(
         "INSERT INTO app.transaction_categories "
@@ -942,9 +942,9 @@ def test_harvest_binds_entity_with_no_pending_or_rejected_decision(
 
     Preserves the existing harvest behavior when no pending decision exists.
     """
-    _setup_merged_table_with_entity(db)
+    _setup_bridge_table_with_entity(db)
     db.execute(
-        "INSERT INTO prep.int_transactions__merged VALUES "
+        "INSERT INTO core.bridge_merchant_entities VALUES "
         "('txn_ctrl1', 'ent_ctrl', 'plaid', NULL)"
     )
     db.execute(
@@ -1048,17 +1048,17 @@ def test_resolve_mints_when_entity_not_pending(
 
 
 def test_harvest_conflict_carries_provider_name(db: Database) -> None:
-    """harvest() conflict proposals carry provider_merchant_name from the merged view.
+    """harvest() conflict proposals carry provider_merchant_name from the bridge.
 
     When a harvest conflict is queued, _propose must receive the merchant_name
-    from int_transactions__merged so the review queue shows the provider name
+    from bridge_merchant_entities so the review queue shows the provider name
     rather than None.
     """
-    _setup_merged_table(db)
+    _setup_bridge_table(db)
 
     # Same entity id, two different merchant_ids, with a merchant_name set.
     db.execute(
-        "INSERT INTO prep.int_transactions__merged VALUES "
+        "INSERT INTO core.bridge_merchant_entities VALUES "
         "('txn_pn1', 'ent_pn', 'plaid', 'Starbucks'), "
         "('txn_pn2', 'ent_pn', 'plaid', 'Starbucks')"
     )
@@ -1077,7 +1077,7 @@ def test_harvest_conflict_carries_provider_name(db: Database) -> None:
     pending_for_ent = [d for d in pending if d["ref_value"] == "ent_pn"]
     assert len(pending_for_ent) == 1
     assert pending_for_ent[0]["provider_merchant_name"] == "Starbucks", (
-        "harvest conflict proposals must carry provider_merchant_name from the merged view"
+        "harvest conflict proposals must carry provider_merchant_name from the bridge"
     )
 
 
@@ -1255,3 +1255,42 @@ def test_resolve_updates_pending_cache_after_proposing(
     assert res2.merchant_id is None, (
         "second call must NOT mint — entity is under review in the same batch"
     )
+
+
+# ---------------------------------------------------------------------------
+# harvest() binds from core, not prep (MB-53)
+# ---------------------------------------------------------------------------
+
+
+def test_harvest_binds_from_core_bridge_without_prep(db: Database) -> None:
+    """harvest() sources its entity observations from core.bridge_merchant_entities.
+
+    MB-53: ``core.bridge_merchant_entities`` is internal to the pipeline and
+    free to change shape without notice, so harvest must bind to the licensed
+    core bridge instead. With no ``prep`` schema at all, the pre-migration
+    harvest hits its CatalogException guard and returns HarvestResult(0, 0).
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS core.bridge_merchant_entities ("
+        "  transaction_id VARCHAR PRIMARY KEY, "
+        "  merchant_entity_id VARCHAR, "
+        "  merchant_entity_source_type VARCHAR, "
+        "  source_merchant_name VARCHAR"
+        ")"
+    )
+    db.execute(
+        "INSERT INTO core.bridge_merchant_entities VALUES "
+        "('txn_core_h1', 'ent_core_h', 'plaid', 'Example Cafe'), "
+        "('txn_core_h2', 'ent_core_h', 'plaid', 'Example Cafe')"
+    )
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, merchant_id) VALUES "
+        "('txn_core_h1', 'Shopping', 'm_core_h'), "
+        "('txn_core_h2', 'Shopping', 'm_core_h')"
+    )
+
+    result = MerchantResolver(db).harvest()
+
+    assert result == HarvestResult(bound=1, conflicts=0)

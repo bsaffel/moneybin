@@ -1,6 +1,6 @@
 """Scenario: MerchantResolver.harvest() backfills bindings from pre-existing categorizations.
 
-TDD for M1T Task 8. harvest() reads the join of prep.int_transactions__merged
+TDD for M1T Task 8. harvest() reads the join of core.bridge_merchant_entities
 with app.transaction_categories (with merchant_id set) and writes bindings
 for unambiguous (one entity_id -> one merchant_id) cases, routing conflicts
 (one entity_id -> two+ merchant_ids) to the review queue.
@@ -172,13 +172,13 @@ def test_harvest_binds_existing_categorizations() -> None:
         # --- Locate the canonical transaction_id for our seeded entity ---
         # Derived from input: exactly 1 transaction carries ent_seeded.
         row = db.execute(
-            "SELECT transaction_id FROM prep.int_transactions__merged "
+            "SELECT transaction_id FROM core.bridge_merchant_entities "
             "WHERE merchant_entity_id = ? ORDER BY transaction_id LIMIT 1",
             [_ENTITY_SEEDED],
         ).fetchone()
         assert row is not None, (
-            f"No merged row found for entity_id={_ENTITY_SEEDED!r}; "
-            "check that the Plaid payload reached prep.int_transactions__merged"
+            f"No bridge row found for entity_id={_ENTITY_SEEDED!r}; "
+            "check that the Plaid payload reached core.bridge_merchant_entities"
         )
         gold_id = row[0]
 
@@ -264,12 +264,12 @@ def test_harvest_routes_conflict_to_review() -> None:
         # --- Locate both canonical transaction_ids for ent_conflict ---
         # Derived from input: exactly 2 transactions carry ent_conflict.
         rows = db.execute(
-            "SELECT transaction_id FROM prep.int_transactions__merged "
+            "SELECT transaction_id FROM core.bridge_merchant_entities "
             "WHERE merchant_entity_id = ? ORDER BY transaction_id",  # noqa: S608  # static identifiers
             [_ENTITY_CONFLICT],
         ).fetchall()
         assert len(rows) == 2, (
-            f"Expected 2 merged rows for entity_id={_ENTITY_CONFLICT!r}; got {len(rows)}"
+            f"Expected 2 bridge rows for entity_id={_ENTITY_CONFLICT!r}; got {len(rows)}"
         )
         gold_id_a, gold_id_b = rows[0][0], rows[1][0]
 

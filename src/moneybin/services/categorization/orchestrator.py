@@ -276,11 +276,10 @@ class CategorizationOrchestrator:
         )
 
         txn_rows: dict[str, TxnRow] = {}
-        # merchant_entity_id lives in prep.int_transactions__merged (Task 5
-        # deliberately stops it at prep); fetch_rows_for_ids LEFT JOINs on the
-        # gold transaction_id (falling back to a NULL entity id when the prep
-        # layer or its entity columns are absent) so rung-0 entity resolution
-        # can run before name matching.
+        # merchant_entity_id lives on core.bridge_merchant_entities;
+        # fetch_rows_for_ids LEFT JOINs it on the gold transaction_id (falling
+        # back to a NULL entity id when the bridge or its entity columns are
+        # absent) so rung-0 entity resolution can run before name matching.
         try:
             rows = self._matcher.fetch_rows_for_ids(txn_ids)
             txn_rows = {

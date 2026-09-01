@@ -95,6 +95,13 @@ the validator only requires `source_priority` to be non-empty, so a user can omi
 `canonical_source_type`. Precedent: `merchant_entity_source_type` in
 `int_transactions__merged.sql` (#284). Applies to any future provider-specific id.
 
+**Then expose the pair through `core`, not `prep`.** Consumers may not bind to
+`prep` (Layer Rule 2), so a provider id that services actually read needs a
+`core.bridge_*` view carrying the id *and* its paired `source_type` together —
+never one without the other. Precedent: `core.bridge_merchant_entities` (MB-53),
+which promoted `merchant_entity_id` out of `prep.int_transactions__merged` after
+three consumers had bound to the merge layer directly.
+
 ## Reusing a guarded-UPSERT write helper
 
 `upsert_guarded` runs `ON CONFLICT (…) DO UPDATE SET <every column> = EXCLUDED.<col>`
