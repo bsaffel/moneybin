@@ -1168,11 +1168,11 @@ class AccountResolver:
         subtype, etc.) is not name evidence, only a coincidence of attributes
         already compared separately. It also skips any account whose last four
         positively contradicts the source's (``_last_fours_disagree``). A name
-        match across a stated
-        disagreement is not weaker evidence than the last-four signal — it is
-        evidence of a *different* account, and letting it score merely lower put
-        a checking account and a savings account in one merge proposal. When the
-        two also share an institution, ``_retyped_reissue_candidates`` re-surfaces
+        match across a stated disagreement is not weaker evidence than the
+        last-four signal — it is evidence of a *different* account, and
+        letting it score merely lower put a checking account and a savings
+        account in one merge proposal. When the two also share an
+        institution, ``_retyped_reissue_candidates`` re-surfaces
         that exact pair under the signal that is actually true — on every path,
         because the ``reissue`` sweep below is off for backfill and a vetoed pair
         would otherwise have nothing to fall through to. It runs *beside* the
