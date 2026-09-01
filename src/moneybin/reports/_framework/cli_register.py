@@ -36,6 +36,7 @@ from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
     ReportSpec,
+    reject_repeated_default_columns,
 )
 
 if TYPE_CHECKING:
@@ -254,7 +255,14 @@ def resolve_default_columns(
         # and last columns, as DuckDB and pandas do.
         return tuple(column.name for column in spec.columns)
     if callable(declared):
-        return tuple(declared(parameters))
+        # The same rule `validate_default_columns` applies to a static tuple at
+        # construction, applied here because this is the first moment a
+        # callable's answer exists. Refused rather than de-duplicated: a quiet
+        # correction would render a projection nobody declared and leave the
+        # mistake in the report indefinitely.
+        resolved = tuple(declared(parameters))
+        reject_repeated_default_columns(resolved)
+        return resolved
     return tuple(declared)
 
 

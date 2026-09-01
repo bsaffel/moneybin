@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 import typer
 from click.testing import Result
 from typer.testing import CliRunner
@@ -784,6 +785,29 @@ def test_a_static_default_set_narrows_the_result_to_its_own_columns() -> None:
     )
 
     assert visible == ("year_month", "category", "net")
+
+
+def test_a_callable_naming_one_column_twice_is_refused_when_it_resolves() -> None:
+    """The rule holds for a callable too, at the only moment it is knowable.
+
+    `validate_default_columns` catches a repeated name in a static tuple at
+    construction, but a callable's answer does not exist until its parameters
+    do. Left alone it renders that column twice and drops another without the
+    framing line noticing, so it is refused here instead — loudly, naming the
+    column, rather than quietly de-duplicated, which would render a table
+    nobody declared and leave the mistake in the report forever.
+    """
+
+    def _says_it_twice(parameters: Mapping[str, object]) -> tuple[str, ...]:
+        return ("year_month", "net", "year_month")
+
+    with pytest.raises(ValueError, match="year_month"):
+        visible_columns(
+            _wide_spec(_says_it_twice),
+            _WIDE_COLUMN_NAMES,
+            parameters={},
+            wide=False,
+        )
 
 
 def test_the_declared_order_wins_over_the_projections() -> None:

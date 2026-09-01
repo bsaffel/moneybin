@@ -10,6 +10,7 @@ CLI command, and ``TableRef`` wiring from that single definition. See
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -282,6 +283,26 @@ def validate_default_columns(
     if undeclared:
         raise ValueError(
             f"default_columns names undeclared output columns: {', '.join(undeclared)}"
+        )
+    reject_repeated_default_columns(default_columns)
+
+
+def reject_repeated_default_columns(names: Sequence[str]) -> None:
+    """Refuse a default set that names one column twice.
+
+    Shared with the callable path, which resolves its names too late for the
+    check above but is subject to the same rule. A repeat is worse than the
+    doubled column it renders: ``visible_columns`` filters the declaration
+    against the result, so both copies survive, and the framing line compares
+    how many entries were rendered against how many the result carries. Two
+    entries for a two-column result look complete, so the other column is
+    dropped and ``--wide`` is never mentioned — the one silent narrowing the
+    declaration exists to prevent.
+    """
+    repeated = sorted(name for name, count in Counter(names).items() if count > 1)
+    if repeated:
+        raise ValueError(
+            f"default_columns names one column more than once: {', '.join(repeated)}"
         )
 
 

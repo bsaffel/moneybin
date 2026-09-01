@@ -526,6 +526,20 @@ def test_an_empty_default_column_set_is_refused() -> None:
         replace(_build_spec(), default_columns=())
 
 
+def test_a_default_column_set_naming_one_column_twice_is_refused() -> None:
+    """A repeated name renders that column twice and hides another in silence.
+
+    `visible_columns` filters the declaration against the result, so a name
+    given twice survives twice. The framing line then compares how many entries
+    were rendered against how many the result carries, finds them equal, and
+    stays quiet — so a two-column result declared `("value", "value")` prints
+    `value` twice, drops the other column, and never mentions `--wide`. That is
+    the one narrowing this feature is built to make impossible.
+    """
+    with pytest.raises(ValueError, match="value"):
+        replace(_build_spec(), default_columns=("value", "value"))
+
+
 def test_a_callable_default_column_set_is_taken_on_trust() -> None:
     """A parameter-aware default cannot be checked without its parameters.
 
