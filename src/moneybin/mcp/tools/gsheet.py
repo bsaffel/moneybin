@@ -618,7 +618,12 @@ async def gsheet_connect_coarse(
     accept_seed_fallback: StrictBool = False,
     no_initial_pull: StrictBool = False,
 ) -> ResponseEnvelope[GsheetConnectCoarsePayload]:
-    """Authenticate, connect, or reconnect through one mode-aware workflow."""
+    """Authenticate, connect, or reconnect through one mode-aware workflow.
+
+    account_name/account_id attribute every row to one account. Omit both for a
+    sheet with its own account column: each row is attributed to the account it
+    names, and new accounts reach the account-link review queue.
+    """
     if url is not None and connection_id is not None:
         raise UserError(
             "url and connection_id select different modes and cannot be combined.",
@@ -748,6 +753,7 @@ def _purge_binding(plan: Any) -> ConfirmationBinding:
             "state": "absent",
             "connection_before_state": _json_value(plan.connection_before_state),
             "raw_before_state": _json_value(plan.raw_before_state),
+            "account_before_state": _json_value(plan.account_before_state),
         },
         resolved_ids=(plan.connection_id,),
         actor="mcp",
@@ -823,7 +829,7 @@ async def gsheet_disconnect_coarse(
         binding=binding if confirmation_token is None else None,
         message=(
             "Permanently remove this exact Google Sheets connection and all "
-            f"{plan.blast_radius['raw_rows']} raw rows?"
+            f"{plan.rows_to_delete} raw rows?"
         ),
         confirmation_token=confirmation_token,
     )
@@ -904,7 +910,10 @@ def register_gsheet_workflow_tools(mcp: FastMCP) -> None:
         (
             gsheet_connect_coarse,
             "gsheet_connect",
-            "Authenticate, connect, or reconnect in one mode-aware workflow.",
+            "Authenticate, connect, or reconnect in one mode-aware workflow. "
+            "Naming an account is required only when the sheet has no account "
+            "column: omit account_id and account_name for a sheet that names "
+            "its own accounts, and each row is filed under the account it names.",
         ),
         (gsheet_pull_coarse, "gsheet_pull", "Pull one or all connections."),
         (

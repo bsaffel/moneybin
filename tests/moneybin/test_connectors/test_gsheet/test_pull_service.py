@@ -275,6 +275,114 @@ def test_pull_closes_import_log_and_updates_status_on_transform_failure(
     assert conn_row["last_pull_at"] is not None
 
 
+def _multi_account_workbook() -> FakeWorkbook:
+    return FakeWorkbook(
+        title="Tiller",
+        tabs=[
+            FakeSheetTab(
+                name="Transactions",
+                gid=0,
+                headers=["Date", "Description", "Amount", "Account"],
+                rows=[
+                    ["2026-01-15", "Coffee", "-4.50", "Everyday Checking"],
+                    ["2026-01-16", "Card payment", "-120.00", "Rewards Card"],
+                ],
+            )
+        ],
+    )
+
+
+def _setup_unbound(db: Database) -> tuple[GSheetPullService, str]:
+    """Connect a multi-account sheet with no bound account; return service + cid."""
+    oauth = TestOAuthClient(authorized=True)
+    sheets = TestSheetsClient()
+    sheets.register_workbook("ssMulti", _multi_account_workbook())
+    conn_svc = GSheetConnectionService(db=db, sheets_client=sheets, oauth_client=oauth)
+    result = conn_svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssMulti/edit#gid=0",
+            adapter="transactions",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+    return (
+        GSheetPullService(db=db, sheets_client=sheets, oauth_client=oauth),
+        result.connection.connection_id,
+    )
+
+
+def test_pull_files_multi_account_rows_under_their_own_accounts(
+    in_memory_db: Database,
+) -> None:
+    """An unbound connection's pull keys each row by the account the sheet names."""
+    pull_svc, cid = _setup_unbound(in_memory_db)
+
+    result = pull_svc.pull_connection(cid)
+
+    assert result.status == "complete"
+    rows = in_memory_db.execute(
+        "SELECT DISTINCT account_id FROM raw.tabular_transactions "
+        "WHERE source_origin = ? ORDER BY account_id",
+        [cid],
+    ).fetchall()
+    assert [r[0] for r in rows] == ["everyday-checking", "rewards-card"]
+
+
+def test_pull_registers_the_accounts_a_multi_account_sheet_names(
+    in_memory_db: Database,
+) -> None:
+    """The pull records each sheet account so dim_accounts can name it."""
+    pull_svc, cid = _setup_unbound(in_memory_db)
+
+    pull_svc.pull_connection(cid)
+
+    rows = in_memory_db.execute(
+        "SELECT account_id, account_name FROM raw.tabular_accounts "
+        "WHERE source_origin = ? ORDER BY account_id",
+        [cid],
+    ).fetchall()
+    assert rows == [
+        ("everyday-checking", "Everyday Checking"),
+        ("rewards-card", "Rewards Card"),
+    ]
+
+
+def test_pull_links_each_sheet_account_to_a_canonical_account(
+    in_memory_db: Database,
+) -> None:
+    """Each sheet account is resolved, so cross-source merges can be proposed."""
+    pull_svc, cid = _setup_unbound(in_memory_db)
+
+    pull_svc.pull_connection(cid)
+
+    rows = in_memory_db.execute(
+        "SELECT COUNT(DISTINCT account_id) FROM app.account_links "
+        "WHERE source_origin = ? AND status = 'accepted'",
+        [cid],
+    ).fetchone()
+    assert rows is not None
+    assert rows[0] == 2
+
+
+def test_second_pull_does_not_mint_duplicate_accounts(
+    in_memory_db: Database,
+) -> None:
+    """Re-pulling a live sheet re-adopts its accounts instead of minting again."""
+    pull_svc, cid = _setup_unbound(in_memory_db)
+
+    pull_svc.pull_connection(cid)
+    pull_svc.pull_connection(cid)
+
+    rows = in_memory_db.execute(
+        "SELECT COUNT(DISTINCT account_id) FROM app.account_links "
+        "WHERE source_origin = ? AND status = 'accepted'",
+        [cid],
+    ).fetchone()
+    assert rows is not None
+    assert rows[0] == 2
+
+
 def test_pull_flags_newly_duplicated_mapped_header_as_drift(
     in_memory_db: Database,
 ) -> None:

@@ -470,7 +470,7 @@ Downstream `fct_transactions`, `core.bridge_*`, reports, and balances automatica
 | Table | gsheet usage |
 |---|---|
 | `raw.import_log` | One row per pull. `source_type='gsheet'`, `source_origin=<connection_id>`, `source_file='gsheet://<spreadsheet_id>/<gid>'`, `format_name='gsheet:<workbook>/<sheet>'`, `format_source='gsheet'`. |
-| `raw.tabular_accounts` | Accounts inferred from multi-account sheets land here as today, with `source_type='gsheet'`. |
+| `raw.tabular_accounts` | Accounts inferred from multi-account sheets land here as today, with `source_type='gsheet'`. One row per distinct account the sheet names, keyed on first sight by `label_account_key(label)` — the tabular path's derivation for a named account, which unlike bare `slugify` survives a label in a non-Latin script. The key is then remembered against its label and looked up before it is re-derived, because `transaction_id` folds it: recomputing it from an edited label would soft-delete and re-insert every row the account owns. That lookup holds only **while the sheet still shows the account**: every pull soft-deletes the rows it no longer carries, so an account dropped from the sheet is left with none active, and its label — remembered for as long as the connection lives — has to earn the key back from its rows like any other arrival. Without that, closing an account and giving its replacement the same name would file the new account's transactions under the closed one, since `label_account_key` is a pure function of the label and re-derives the very key the closed account owns. An arrival that claims no departed key and whose derived key a stored account already answers to takes the next free key instead of colliding with it. A label that arrives is matched against the accounts that departed **by the transactions it carries**, never by counting labels — renaming an account, and closing one to open another, both leave exactly one label gone and one arrived, and only the shared rows tell them apart. A match requires at least two transactions in common *and* a majority of the departed account's stored history, and must be unambiguous in both directions; anything else mints a fresh key. So a rename re-labels the account instead of minting a twin, while a newly opened account never inherits a closed one's transactions — and an unnecessary second account, which a person can see and merge, is the failure this errs toward. Comparison uses the date, amount and description strings the store keeps verbatim (`original_source_strings`), so it never depends on parsing a value the same way twice. Each key is resolved through `AccountResolver`, so an account already known from another source is proposed for merge in the account-link review queue instead of becoming a silent duplicate. |
 | `app.audit_log` | `GSheetConnectionsRepo` emits paired audit rows on every mutation. New `entity_type='gsheet_connection'`. |
 | `SecretStore` (keyring) | New keys: `gsheet:refresh_token`, `gsheet:access_token`, `gsheet:access_token_expires_at`, `gsheet:granted_scopes`, `gsheet:client_id` (plus the `gsheet:write_*` twin of each). `gsheet:client_id` records which OAuth client obtained the grant, because Google will not refresh a token under a different client than issued it. Single identity per profile in v1. |
 
@@ -662,8 +662,11 @@ Options:
                             transactions, seed]
   --alias=SLUG              Required for --adapter=seed; becomes view name
                             raw.gsheet_<alias>. Refused if alias collides.
-  --account-name=NAME       Destination account (transactions adapter)
-  --account-id=ID           Explicit account ID bypass
+  --account-name=NAME       Destination account for every row (transactions
+                            adapter). Optional when the sheet has its own
+                            account column — each row is then attributed to
+                            the account it names.
+  --account-id=ID           Explicit account ID bypass; same optionality
   --column-mapping=JSON     Partial-merge override of the detected column mapping:
                             only the destination fields you name are overridden;
                             unspecified fields fall back to the detected mapping.

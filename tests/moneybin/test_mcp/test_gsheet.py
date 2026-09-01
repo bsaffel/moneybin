@@ -277,6 +277,7 @@ async def test_gsheet_absent_plan_and_purge_run_off_event_loop() -> None:
             "account_id": None,
         },
         raw_before_state=[{"row_id": "row_1"}],
+        account_before_state=[],
         blast_radius={"connections": 1, "raw_rows": 1},
     )
     loop_thread = threading.get_ident()
@@ -1122,3 +1123,51 @@ async def test_gsheet_reconnect_surfaces_duplicate_header_note(
     envelope = await gsheet_reconnect(connection_id="conn_abc", yes=True)
 
     assert envelope.data.detection.detection_notes == [note]
+
+
+@pytest.mark.unit
+async def test_the_purge_confirmation_quotes_every_row_it_deletes() -> None:
+    """The number in the confirm is what the purge actually removes.
+
+    An unbound connection owns transaction rows and the account rows its sheet
+    named. Quoting only the first count asks for approval to remove two rows
+    and then removes four, which is consent for a different action.
+    """
+    from moneybin.connectors.gsheet.connection_service import GSheetPurgePlan
+
+    plan = GSheetPurgePlan(
+        connection_id="conn_abc",
+        connection_before_state={
+            "connection_id": "conn_abc",
+            "adapter": "transactions",
+            "alias": None,
+        },
+        raw_before_state=({"transaction_id": "t1"}, {"transaction_id": "t2"}),
+        account_before_state=({"account_id": "a1"}, {"account_id": "a2"}),
+        blast_radius={
+            "connections": 1,
+            "raw_rows": 2,
+            "raw_account_rows": 2,
+            "views": 0,
+        },
+    )
+    service = MagicMock()
+    service.plan_purge.return_value = plan
+    service_context = MagicMock()
+    service_context.__enter__.return_value = service
+    confirm = AsyncMock(return_value=MagicMock())
+
+    with (
+        patch.object(
+            gsheet_module, "_build_connection_service", return_value=service_context
+        ),
+        patch.object(gsheet_module, "grant_confirmation_or_raise", new=confirm),
+        patch.object(gsheet_module, "get_settings") as settings,
+    ):
+        settings.return_value.profile = "default"
+        await gsheet_module.gsheet_disconnect_coarse(
+            connection_id="conn_abc", state="absent"
+        )
+
+    assert confirm.await_args is not None
+    assert "all 4 raw rows" in confirm.await_args.kwargs["message"]

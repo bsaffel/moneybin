@@ -1,5 +1,5 @@
 {
-  "sha256": "e4ab65de81ffe8b8b63f1448ab7b151b46924d9155e7b3f64d8f72da4397a4f6",
+  "sha256": "67dae8ca34a784fb48fc7ab2597bc7d3a08437adb037720cb450bfca790977aa",
   "tool_count": 50,
   "tools": [
     {
@@ -980,7 +980,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Authenticate, connect, or reconnect in one mode-aware workflow.",
+        "description": "Authenticate, connect, or reconnect in one mode-aware workflow. Naming an account is required only when the sheet has no account column: omit account_id and account_name for a sheet that names its own accounts, and each row is filed under the account it names.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1090,12 +1090,12 @@
         },
         "name": "gsheet_connect"
       },
-      "description_bytes": 63,
+      "description_bytes": 260,
       "input_schema_bytes": 828,
       "name": "gsheet_connect",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 1084
+      "total_bytes": 1281
     },
     {
       "annotation_bytes": 89,
@@ -5088,5 +5088,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 59577
+  "total_bytes": 59774
 }

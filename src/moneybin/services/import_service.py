@@ -215,7 +215,7 @@ def mask_embedded_account_number(label: str) -> str:
 _MASK_TOKEN = re.compile(r"\*{4}\d{4}")
 
 
-def _authored_label_parts(label: str) -> tuple[str, str, str | None]:
+def authored_label_parts(label: str) -> tuple[str, str, str | None]:
     """Return ``(display_label, clean_name, last_four)`` for an authored label.
 
     Masks *before* parsing, which is the whole point of the helper. Lifting the
@@ -228,7 +228,10 @@ def _authored_label_parts(label: str) -> tuple[str, str, str | None]:
 
     Every authored-label site goes through here so the ordering cannot drift
     back apart: one path derives the key, one takes --account-name, one reads
-    a sheet's Account column, and all three feed the same two consumers.
+    a tabular file's Account column, one reads a connected Google Sheet's, and
+    all four feed the same two consumers. Public for that last caller — the
+    gsheet transactions adapter imports it rather than re-deriving a label,
+    which is what keeps one account exported through both channels named once.
 
     Refuses the remainder when the mask fired and a digit survived outside it,
     because that digit says the remainder is still the identifier. A formatted
@@ -956,7 +959,7 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
-def _label_account_key(account_name: str) -> str:
+def label_account_key(account_name: str) -> str:
     """A native key for an account label, guaranteed non-empty.
 
     ``slugify`` keeps only ``[a-z0-9]``, so a name written in a non-Latin
@@ -2596,7 +2599,7 @@ class ImportService:
         # seeds the key exactly as an unpinned import with the same label would;
         # otherwise the file's own content key does.
         own_key = (
-            _label_account_key(account_name)
+            label_account_key(account_name)
             if account_name
             else _bare_account_key(file_path, source_bytes=source_bytes)
         )
@@ -3420,7 +3423,7 @@ class ImportService:
         acct_id_to_name: dict[str, str] = {}
         # Parse each display label once: (clean_name, label_last4). Reused by the
         # resolver pass (clean name strips mask text → stronger fuzzy match) and
-        # by Stage 5's account_number_masked, so _authored_label_parts runs once.
+        # by Stage 5's account_number_masked, so authored_label_parts runs once.
         label_parsed_by_key: dict[str, tuple[str, str | None]] = {}
         # last4 from the mapped account-number column — the authoritative fallback
         # when a label carries none (e.g. "Checking" alongside an "Account Number"
@@ -3520,7 +3523,7 @@ class ImportService:
                     source_label_by_key[native_key],
                     clean_name,
                     label_last4,
-                ) = _authored_label_parts(account_name)
+                ) = authored_label_parts(account_name)
             else:
                 display_name = file_path.stem or native_key
                 clean_name, label_last4 = display_name, None
@@ -3556,14 +3559,14 @@ class ImportService:
                 )
             )
         elif account_name:
-            native_key = _label_account_key(account_name)
+            native_key = label_account_key(account_name)
             account_ids = native_key
             acct_id_to_name[native_key] = account_name
             (
                 source_label_by_key[native_key],
                 clean_name,
                 label_last4,
-            ) = _authored_label_parts(account_name)
+            ) = authored_label_parts(account_name)
             label_parsed_by_key[native_key] = (clean_name, label_last4)
             if acct_num_col and acct_num_col in df.columns:
                 for value in df[acct_num_col].to_list():
@@ -3606,7 +3609,7 @@ class ImportService:
                 if aid not in acct_id_to_name:
                     acct_id_to_name[aid] = name
             authored_parts = {
-                nk: _authored_label_parts(nm) for nk, nm in acct_id_to_name.items()
+                nk: authored_label_parts(nm) for nk, nm in acct_id_to_name.items()
             }
             label_parsed_by_key = {
                 nk: (clean, last4) for nk, (_, clean, last4) in authored_parts.items()
