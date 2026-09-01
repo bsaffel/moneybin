@@ -109,7 +109,9 @@ from moneybin.utils.file import file_sha256
 
 logger = logging.getLogger(__name__)
 
-# Display order of the imports section: `started_at DESC, import_id DESC`.
+# Display order of the imports section: `started_at DESC, import_id DESC`. The
+# third element is not a sort column but the frozen imports-section total the
+# cursor pins; its direction is inert because the pair below must be equal.
 _IMPORT_KEY_DIRECTIONS: tuple[SortDirection, ...] = ("desc", "desc", "asc")
 
 _IMPORT_STATUS_SECTION_ORDER: tuple[Literal["imports", "formats", "inbox"], ...] = (
@@ -1545,16 +1547,18 @@ def _import_status_position(
             namespace="import_status.imports",
             scope={"import_id": None, "sections": sections},
         )
-        # The third key element is the frozen non-imports section count, equal
-        # on both keys, so it never decides the ordering comparison.
+        # Validates arity first, so the indexing below is safe. The third key
+        # element is the frozen imports-section total rather than a sort
+        # column; a cursor whose two totals disagree is rejected outright
+        # below, so it never reaches a page having steered the comparison.
         validate_keyset_position(
             position, key_types=(str, str, int), directions=_IMPORT_KEY_DIRECTIONS
         )
         if (
             not position.snapshot[1]
             or not position.after[1]
-            or cast(int, position.snapshot[2]) < 0
             or position.snapshot[2] != position.after[2]
+            or cast(int, position.snapshot[2]) < 0
             or cast(int, position.snapshot[2]) > position.total
         ):
             raise ValueError("invalid import keyset shape")

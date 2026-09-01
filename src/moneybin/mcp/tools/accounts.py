@@ -89,6 +89,7 @@ from moneybin.protocol.envelope import (
     build_envelope,
 )
 from moneybin.protocol.pagination import (
+    InvalidKeysetCursorError,
     KeysetPosition,
     SortDirection,
     decode_keyset_cursor,
@@ -1061,7 +1062,7 @@ def _keyset_page[T](
             scope={"filters": filters, "view": view},
             position=position,
         )
-    except ValueError as exc:
+    except InvalidKeysetCursorError as exc:
         raise UserError("Invalid pagination cursor.", code=code) from exc
 
 

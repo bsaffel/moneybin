@@ -8,6 +8,7 @@ import json
 import pytest
 
 from moneybin.protocol.pagination import (
+    InvalidKeysetCursorError,
     KeysetPosition,
     compare_keyset,
     decode_keyset_cursor,
@@ -201,7 +202,7 @@ def test_paginate_keyset_freezes_the_snapshot_and_walks_without_repeats() -> Non
 def test_paginate_keyset_rejects_continuation_before_its_snapshot() -> None:
     inverted = KeysetPosition(snapshot=("b",), after=("a",), total=3)
 
-    with pytest.raises(ValueError, match="continuation precedes"):
+    with pytest.raises(InvalidKeysetCursorError, match="continuation precedes"):
         paginate_keyset(
             ["a", "b", "c"],
             limit=2,
@@ -211,6 +212,36 @@ def test_paginate_keyset_rejects_continuation_before_its_snapshot() -> None:
             scope={},
             position=inverted,
         )
+
+
+def test_paginate_keyset_does_not_blame_the_cursor_for_unorderable_rows() -> None:
+    """A first page carries no cursor, so its failure must not read as one.
+
+    Mixed-type keys make ``compare_keyset`` raise while sorting. That is a
+    defect in the caller's rows; reporting it as an invalid cursor would send
+    a caller chasing a cursor they never sent.
+    """
+    with pytest.raises(ValueError, match="not comparable") as caught:
+        paginate_keyset(
+            ["a", 1],
+            limit=2,
+            key_of=lambda row: (row,),
+            directions=("asc",),
+            namespace="reviews",
+            scope={},
+            position=None,
+        )
+
+    assert not isinstance(caught.value, InvalidKeysetCursorError)
+
+
+def test_validate_keyset_position_rejects_a_mismatched_contract() -> None:
+    """Declaring more key types than directions is a bug, not a bad cursor."""
+    position = KeysetPosition(snapshot=("a", "b"), after=("a", "c"), total=2)
+
+    with pytest.raises(ValueError, match="describe different keys") as caught:
+        validate_keyset_position(position, key_types=(str, str), directions=("asc",))
+    assert not isinstance(caught.value, InvalidKeysetCursorError)
 
 
 def test_compare_keyset_supports_mixed_sort_directions() -> None:

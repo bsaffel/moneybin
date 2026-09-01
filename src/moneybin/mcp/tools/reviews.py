@@ -90,6 +90,7 @@ from moneybin.privacy.redaction import redact_typed
 from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
+    InvalidKeysetCursorError,
     KeysetPosition,
     KeysetScalar,
     SortDirection,
@@ -779,7 +780,7 @@ def _review_page(
             scope={"kind": kind, "status": status},
             position=position,
         )
-    except ValueError as exc:
+    except InvalidKeysetCursorError as exc:
         raise UserError(
             "Invalid review pagination cursor.",
             code=error_codes.REVIEW_CURSOR_INVALID,

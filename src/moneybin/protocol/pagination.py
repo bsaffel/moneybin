@@ -148,6 +148,15 @@ def build_keyset_page[T](
     )
 
 
+class InvalidKeysetCursorError(ValueError):
+    """A decoded cursor no page could have minted.
+
+    Distinct from a bare ``ValueError`` so a surface can map a rejected cursor
+    to its caller-facing error without also swallowing a programming error —
+    an unorderable row key or a broken encode — raised from the same block.
+    """
+
+
 def validate_keyset_position(
     position: KeysetPosition,
     *,
@@ -159,15 +168,20 @@ def validate_keyset_position(
     Cursors are unsigned base64 JSON, so a caller can forge one no page ever
     minted. An ``after`` that sorts *ahead* of its snapshot makes the
     continuation predicate weaker than the snapshot predicate instead of
-    narrower, and the page re-serves rows page one already returned. Every
-    keyset surface calls this so that rejection is uniform.
+    narrower, and the page re-serves rows page one already returned.
+
+    Every surface paging from a *head* snapshot calls this, so that rejection
+    is uniform across them. It does not fit the tail-snapshot surfaces; see
+    :func:`paginate_keyset` for that distinction.
     """
+    if len(key_types) != len(directions):
+        raise ValueError("key_types and directions describe different keys")
     for key in (position.snapshot, position.after):
         if len(key) != len(key_types) or any(
             type(value) is not expected
             for value, expected in zip(key, key_types, strict=True)
         ):
-            raise ValueError("invalid keyset cursor shape")
+            raise InvalidKeysetCursorError("invalid keyset cursor shape")
     _reject_inverted_keyset(position, directions)
 
 
@@ -177,7 +191,7 @@ def _reject_inverted_keyset(
 ) -> None:
     """Raise when the continuation key sorts ahead of the snapshot it continues."""
     if compare_keyset(position.after, position.snapshot, directions) < 0:
-        raise ValueError("keyset continuation precedes its snapshot")
+        raise InvalidKeysetCursorError("keyset continuation precedes its snapshot")
 
 
 def paginate_keyset[T](
@@ -197,6 +211,17 @@ def paginate_keyset[T](
     frozen on page one bounds the walk, so rows prepended mid-walk are excluded
     and the total stays stable. Returns the page, its continuation, and the
     total the walk is pinned to.
+
+    This is the *head*-snapshot convention: the snapshot is the first row in
+    display order and the walk runs away from it. ``investments``, ``taxonomy``
+    and ``privacy`` page the mirror convention — the snapshot is the *last* row
+    and the walk runs back toward it — which is self-consistent rather than
+    unguarded, and is deliberately not folded in here: doing so would change
+    which rows their cursors select.
+
+    Raises :class:`InvalidKeysetCursorError` only for a cursor this page rejects.
+    A row key that cannot be ordered, or a failed encode, raises a plain
+    ``ValueError``: those are defects in the caller's rows, not in the cursor.
     """
 
     def compare_rows(left: T, right: T) -> int:
@@ -211,13 +236,16 @@ def paginate_keyset[T](
         total_count = len(ordered)
     else:
         _reject_inverted_keyset(position, directions)
+        try:
+            eligible = [
+                row
+                for row in ordered
+                if compare_keyset(key_of(row), position.snapshot, directions) >= 0
+                and compare_keyset(key_of(row), position.after, directions) > 0
+            ]
+        except ValueError as exc:
+            raise InvalidKeysetCursorError(str(exc)) from exc
         snapshot = position.snapshot
-        eligible = [
-            row
-            for row in ordered
-            if compare_keyset(key_of(row), snapshot, directions) >= 0
-            and compare_keyset(key_of(row), position.after, directions) > 0
-        ]
         total_count = position.total
 
     page = eligible[:limit]

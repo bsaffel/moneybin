@@ -878,13 +878,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   predicate stops narrowing the page and widens it back to the rows page one
   gave — the duplicate arrives as an ordinary successful response, with no
   error to notice. Cursors are unsigned, so any caller can present one.
-  `transactions list` and the import-status view already rejected such a
-  cursor; the `transactions`, `system_audit` and `reviews` MCP tools accepted
-  it. The key-shape check and the ordering guard now live once in
-  `moneybin.protocol.pagination` beside the cursor codec, and every paged
-  surface — MCP and CLI alike — calls them, so a cursor one surface refuses
-  the others refuse too. Cursors MoneyBin itself mints are unaffected: no page
-  has ever produced an inverted pair.
+  `transactions list`, the account and balance views, and the import-status
+  view already rejected such a cursor; the `transactions`, `system_audit` and
+  `reviews` MCP tools accepted it. The key-shape check and the ordering guard
+  now live once in `moneybin.protocol.pagination` beside the cursor codec, and
+  every surface paging from a head snapshot — MCP and CLI alike — calls them,
+  so a cursor one refuses the others refuse too. The `investments`, `taxonomy`
+  and `privacy` views page the mirror convention, anchoring on the last row
+  rather than the first, and keep their own equivalent check. Cursors MoneyBin
+  itself mints are unaffected: no page has ever produced an inverted pair.
 - **Account merge proposals no longer fire on a shared generated label alone,
   on either side of the comparison.** Two unrelated accounts whose *display
   name* was never set by a person or a source — both resolving to a bare
