@@ -450,6 +450,10 @@ def _retyped_reissue_candidates(
     Same-institution only. "Checking" at two different banks with two different
     last fours is a common word, not a reissued card, and retyping that would
     reintroduce the evidence-free merge proposal the veto exists to prevent.
+
+    Also requires ``display_name_is_user_set`` on the vetoed row, for the same
+    reason the name rung above does: a generated descriptor colliding with the
+    source's name is not evidence a person named either account that way.
     """
     target_inst = _institution_key(src.institution) if src.institution else None
     if not target_inst or not is_a_name(src.account_name):
@@ -1159,8 +1163,12 @@ class AccountResolver:
         Each is a review proposal, never an auto-merge. Batch callers also include
         PDF accounts loaded earlier in the batch but not materialized in core yet.
 
-        The name rung skips any account whose last four positively contradicts
-        the source's (``_last_fours_disagree``). A name match across a stated
+        The name rung requires ``display_name_is_user_set`` on the candidate row
+        — a display_name assembled from generated fallback rungs (institution +
+        subtype, etc.) is not name evidence, only a coincidence of attributes
+        already compared separately. It also skips any account whose last four
+        positively contradicts the source's (``_last_fours_disagree``). A name
+        match across a stated
         disagreement is not weaker evidence than the last-four signal — it is
         evidence of a *different* account, and letting it score merely lower put
         a checking account and a savings account in one merge proposal. When the
@@ -1279,7 +1287,11 @@ class AccountResolver:
                 out = self._fallback_candidates(src, exclude_account_id)
                 return _dedupe_candidates(legacy_candidates, out)
             return _dedupe_candidates(out, legacy_candidates)
-        except duckdb.CatalogException:
+        except (duckdb.CatalogException, duckdb.BinderException):
+            # CatalogException: core.dim_accounts doesn't exist yet.
+            # BinderException: dim_accounts exists but predates a column this
+            # query selects (e.g. display_name_is_user_set) on a profile that
+            # hasn't run `moneybin transform apply` since the migration landed.
             logger.debug("core.dim_accounts unavailable; using raw candidates only")
             return _dedupe_candidates(pending_candidates, legacy_candidates)
 
