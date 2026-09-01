@@ -273,10 +273,11 @@ Numbered, testable. Tagged by phase.
    `sort="date"` is deliberately untouched: `txn_date` is currency-agnostic, so a
    cap drops the oldest rows across every currency alike, and interleaving there
    would only break the "most recent first" contract the sort exists to provide.
-   `SpendingService.by_category` sums `ABS(amount)` with no `currency_code`
-   anywhere in the module and is a real blend, but it has no caller in
-   `src/moneybin/`; it is tracked for deletion or segmentation rather than fixed
-   here, and sits outside the guard's scope because it is not report-reachable.
+   `SpendingService.by_category` summed `ABS(amount)` with no `currency_code`
+   anywhere in the module — a real blend, but it had no caller and sat outside
+   the guard's scope because it was not report-reachable. Removed as dead code
+   (MB-56) rather than fixed; the live spending report is
+   `reports/definitions/spending_trend.py`.
    **Which payloads owe a currency, 2026-07-26.** The MCP-side enumeration
    (`test_money_tools_name_their_currency`) asked whether a payload carries a
    money-classed field and no `DataClass.CURRENCY`, and six tools answered yes.
