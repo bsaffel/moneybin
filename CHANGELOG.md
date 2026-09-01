@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **MCP tool calls now record `moneybin_mcp_tool_calls_total` and `moneybin_mcp_tool_duration_seconds`.** The observability spec described this instrumentation as automatic, but no code path ever recorded either metric — a dashboard built from them stayed at zero permanently. `ValidationErrorMiddleware.on_call_tool`, the single boundary every `tools/call` request passes through, now records both metrics on every call, whether it succeeds, is translated to a validation-error envelope, or raises something else. (#PLACEHOLDER)
+
+### Removed
+- **The unused `@tracked` decorator and `track_duration()` context manager.** Neither had a production call site — every live metric already used the manual-registry pattern (`METRIC.labels(...).inc()` / `.observe()`) that is now the sole documented instrumentation contract. Removed along with the generic `moneybin_tracked_calls_total` / `moneybin_tracked_duration_seconds` / `moneybin_tracked_errors_total` series they wrote, which never carried real data. (#PLACEHOLDER)
+
 ### Deprecated
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 

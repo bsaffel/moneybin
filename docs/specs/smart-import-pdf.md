@@ -248,7 +248,7 @@ The hard semantic call — "this is the table, that's the summary, that's boiler
 
 ## Observability
 
-Per `observability.md` and `src/moneybin/metrics/registry.py`, instrument the import path with `@tracked` / `track_duration`. New metrics (counts/IDs/status only — no PII per `.claude/rules/security.md`):
+Per `observability.md` and `src/moneybin/metrics/registry.py`, instrument the import path with metrics recorded manually at the relevant call sites. New metrics (counts/IDs/status only — no PII per `.claude/rules/security.md`):
 
 | Metric | Type | Purpose |
 |---|---|---|

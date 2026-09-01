@@ -6,7 +6,7 @@
 
 ## Overview
 
-MoneyBin's observability system provides unified logging, metrics collection, and instrumentation through a single entry point. It consolidates the current dual-config logging mess into one Pydantic-based configuration, adds `prometheus_client`-backed metrics with DuckDB persistence, and provides a decorator/context manager API for instrumenting operations with minimal boilerplate.
+MoneyBin's observability system provides unified logging, metrics collection, and instrumentation through a single entry point. It consolidates the current dual-config logging mess into one Pydantic-based configuration, and adds `prometheus_client`-backed metrics with DuckDB persistence, recorded manually at each call site that matters.
 
 ### Design Principles
 
@@ -19,12 +19,11 @@ MoneyBin's observability system provides unified logging, metrics collection, an
 
 | Path | Role |
 |------|------|
-| `src/moneybin/observability.py` | Public API: `setup_observability()`, `@tracked`, `track_duration()`, `flush_metrics()` |
+| `src/moneybin/observability.py` | Public API: `setup_observability()`, `flush_metrics()` |
 | `src/moneybin/logging/config.py` | `setup_logging()` implementation |
 | `src/moneybin/logging/formatters.py` | `HumanFormatter`, `JSONFormatter` |
 | `src/moneybin/log_sanitizer.py` | `SanitizedLogFormatter` (PII safety net) |
-| `src/moneybin/metrics/registry.py` | Metric definitions (Counter, Histogram, Gauge) |
-| `src/moneybin/metrics/instruments.py` | `@tracked`, `track_duration` implementations |
+| `src/moneybin/metrics/registry.py` | Metric definitions (Counter, Histogram, Gauge) and their manual record sites |
 | `src/moneybin/metrics/persistence.py` | `flush_to_duckdb()`, `load_from_duckdb()` |
 | `src/moneybin/cli/commands/logs.py` | `moneybin logs` subcommands |
 | `src/moneybin/cli/commands/stats.py` | `moneybin stats` |
@@ -33,10 +32,10 @@ MoneyBin's observability system provides unified logging, metrics collection, an
 ### Public API
 
 ```python
-from moneybin.observability import setup_observability, tracked, track_duration
+from moneybin.observability import setup_observability
 ```
 
-Consumers never import from `moneybin.logging` or `moneybin.metrics` directly (except for manual gauge/counter access). The `observability` module is the sole public surface for instrumentation.
+Consumers never import from `moneybin.logging` directly. Metrics are recorded by importing the constant from `moneybin.metrics.registry` and calling it manually (`METRIC.labels(...).inc()` / `.observe()` / `.set()`) at the call site that matters — there is no generic instrumentation decorator.
 
 Standard Python logging remains unchanged:
 
@@ -191,30 +190,43 @@ Metric definitions live in `src/moneybin/metrics/registry.py` (single source of 
 
 ### Instrumentation API
 
+Every metric is recorded manually — a `Counter`/`Histogram`/`Gauge` constant
+imported from `moneybin.metrics.registry` and called directly at the call
+site that matters. There is no generic instrumentation decorator or context
+manager; each metric family owns its own touchpoint (e.g. the MCP server
+records `MCP_TOOL_CALLS_TOTAL` / `MCP_TOOL_DURATION_SECONDS` in
+`ValidationErrorMiddleware.on_call_tool`, the sole place every tool call
+passes through).
+
 ```python
-from moneybin.observability import tracked, track_duration
+from moneybin.metrics.registry import (
+    CATEGORIZATION_AUTO_RATE,
+    IMPORT_DURATION_SECONDS,
+    IMPORT_RECORDS_TOTAL,
+)
 
+# Counter
+IMPORT_RECORDS_TOTAL.labels(source_type="csv").inc()
 
-# Decorator — auto records duration, call count, errors
-@tracked("import", labels={"source_type": "csv"})
-def import_file(path: Path) -> ImportResult: ...
-
-
-# Context manager — timing a block within a function
-with track_duration("dedup"):
-    deduplicated = run_dedup(txns)
-
-# Manual — for gauges or custom logic
-from moneybin.metrics import CATEGORIZATION_AUTO_RATE
-
+# Gauge
 CATEGORIZATION_AUTO_RATE.set(0.78)
+
+# Histogram — call site owns the timing
+import time
+
+started = time.monotonic()
+try:
+    ingest_csv(path)
+finally:
+    IMPORT_DURATION_SECONDS.labels(source_type="csv").observe(
+        time.monotonic() - started
+    )
 ```
 
 ### Behavior
 
-- `@tracked` automatically: increments call counter, observes duration in histogram, increments error counter on exception.
-- Both `@tracked` and `track_duration` emit a DEBUG-level log line on completion with operation name, duration, and labels.
-- Adding a new metric: define in `registry.py` (one line), use `@tracked` or record manually at the call site.
+- Adding a new metric: define it in `registry.py` (one line), then record it manually at the call site that matters.
+- Manual recording keeps counting, timing, and error classification a call-site decision — the touchpoint sees exactly what happened (success, which error, which labels) rather than a generic wrapper guessing at it.
 
 ## 5. Metrics Persistence
 
@@ -251,7 +263,12 @@ The MCP server calls `setup_observability(stream="mcp")` at startup.
 ### Specifics
 
 - Metrics flush uses the periodic strategy (every 5 min) since MCP sessions can be long.
-- Tool call instrumentation is automatic — a decorator on all tool handlers records `mcp_tool_calls_total` and `mcp_tool_duration_seconds` without per-tool opt-in.
+- Tool call instrumentation has one touchpoint and no per-tool opt-in:
+  `ValidationErrorMiddleware.on_call_tool` (`src/moneybin/mcp/middleware.py`)
+  wraps every `tools/call` request and records `mcp_tool_calls_total` and
+  `mcp_tool_duration_seconds` in a `finally` block, so a call is counted
+  whether it succeeds, is translated to a validation-error envelope, or
+  raises something else that propagates.
 - Privacy instrumentation records the classified tier and masking outcome.
   Consent-based degradation is deferred and therefore emits no runtime decision
   log today.

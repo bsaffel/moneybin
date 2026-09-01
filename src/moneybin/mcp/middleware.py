@@ -1,9 +1,10 @@
-"""FastMCP middleware: convert Pydantic ValidationError to a friendly envelope.
+"""FastMCP middleware: ValidationError translation and per-call tool metrics.
 
-Without this, an agent that calls a tool with a wrong kwarg name gets a raw
-pydantic_core.ValidationError stringified back ("Unexpected keyword argument
-... For further information visit https://errors.pydantic.dev/..."), with no
-hint of what the accepted parameter names are. That forces guess-and-retry.
+Without the ValidationError translation, an agent that calls a tool with a
+wrong kwarg name gets a raw pydantic_core.ValidationError stringified back
+("Unexpected keyword argument ... For further information visit
+https://errors.pydantic.dev/..."), with no hint of what the accepted
+parameter names are. That forces guess-and-retry.
 
 This middleware intercepts the ValidationError at the call-tool boundary,
 looks up the tool's accepted parameter names from its JSON schema, and
@@ -11,11 +12,18 @@ returns the standard MoneyBin response envelope with ``error.hint`` set to
 the accepted parameter list and ``error.details`` recording which arguments
 were unexpected and which were missing. The tool-author experience is
 unchanged — body code never sees the bad call.
+
+The same ``on_call_tool`` boundary is also the single touchpoint for
+MCP_TOOL_CALLS_TOTAL / MCP_TOOL_DURATION_SECONDS (docs/specs/observability.md):
+every tool call is timed and counted here, regardless of whether it succeeds,
+raises a ValidationError this middleware translates, or raises something else
+that propagates. No per-tool opt-in.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
@@ -24,6 +32,7 @@ from pydantic import ValidationError
 
 from moneybin import error_codes
 from moneybin.errors import UserError
+from moneybin.metrics.registry import MCP_TOOL_CALLS_TOTAL, MCP_TOOL_DURATION_SECONDS
 from moneybin.protocol.envelope import build_error_envelope
 
 if TYPE_CHECKING:
@@ -53,11 +62,17 @@ class ValidationErrorMiddleware(Middleware):
         context: MiddlewareContext[mt.CallToolRequestParams],
         call_next: CallNext[mt.CallToolRequestParams, ToolResult],
     ) -> ToolResult:
-        """Translate ValidationError on arg binding into a response envelope."""
+        """Translate ValidationError on arg binding into a response envelope.
+
+        Records MCP_TOOL_CALLS_TOTAL / MCP_TOOL_DURATION_SECONDS for every
+        call in a ``finally`` block, so a call that raises an exception this
+        middleware does not translate is still counted before it propagates.
+        """
+        tool_name = context.message.name
+        started = time.monotonic()
         try:
             return await call_next(context)
         except ValidationError as exc:
-            tool_name = context.message.name
             accepted = await _accepted_params(context, tool_name, self._server)
             envelope = _build_validation_envelope(exc, tool_name, accepted)
             logger.info(
@@ -70,6 +85,11 @@ class ValidationErrorMiddleware(Middleware):
             return ToolResult(
                 content=envelope.to_json(),
                 structured_content=envelope.to_dict(),
+            )
+        finally:
+            MCP_TOOL_CALLS_TOTAL.labels(tool_name=tool_name).inc()
+            MCP_TOOL_DURATION_SECONDS.labels(tool_name=tool_name).observe(
+                time.monotonic() - started
             )
 
 

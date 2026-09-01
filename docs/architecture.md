@@ -159,7 +159,7 @@ Behind the consumer-facing surface, the codebase enforces a small set of pattern
 - **`SanitizedLogFormatter`** — masks SSN-shaped, account-number-shaped, and dollar-amount-shaped patterns in any log output. Always on; safety net, not first defense.
 - **`Database.ingest_dataframe()`** — the ingestion primitive every loader uses. Takes a DataFrame plus a `TabularProfile`, writes `raw.*`, records an `import_log` row for re-import detection and revert.
 - **`MoneyBinSettings`** — Pydantic Settings root, profile-scoped, frozen after construction. Every tunable is a typed field; `MONEYBIN_` env-var prefix with `__` for nesting.
-- **Observability hooks** — `setup_observability()`, the `@tracked` decorator, the `track_duration()` context manager, `flush_metrics()` at shutdown.
+- **Observability hooks** — `setup_observability()`, manually-recorded `prometheus_client` metrics (`src/moneybin/metrics/registry.py`), `flush_metrics()` at shutdown.
 - **Scenario fixture YAML** — declarative test inputs and expectations at `tests/scenarios/data/<scenario>.yaml`. Five-tier assertion taxonomy. Expectations independently derived — never observe-and-paste.
 
 ## What this doc deliberately does not cover

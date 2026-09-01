@@ -1,4 +1,9 @@
-"""ValidationErrorMiddleware translates pydantic ValidationError to envelopes."""
+"""ValidationErrorMiddleware translates pydantic ValidationError to envelopes.
+
+Also covers MCP_TOOL_CALLS_TOTAL / MCP_TOOL_DURATION_SECONDS instrumentation,
+which lives in this middleware as the single touchpoint for every tool call
+(see docs/specs/observability.md).
+"""
 
 from __future__ import annotations
 
@@ -12,6 +17,24 @@ from fastmcp.tools import ToolResult
 from pydantic import ValidationError
 
 from moneybin.mcp.middleware import ValidationErrorMiddleware
+from moneybin.metrics.registry import MCP_TOOL_CALLS_TOTAL, MCP_TOOL_DURATION_SECONDS
+
+
+def _tool_call_count(tool_name: str) -> float:
+    counter = MCP_TOOL_CALLS_TOTAL.labels(tool_name=tool_name)
+    return counter._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+
+def _tool_duration_observation_count(tool_name: str) -> float:
+    """Total histogram observations for ``tool_name`` (the ``_count`` sample)."""
+    for metric in MCP_TOOL_DURATION_SECONDS.collect():
+        for sample in metric.samples:
+            if (
+                sample.name.endswith("_count")
+                and sample.labels.get("tool_name") == tool_name
+            ):
+                return sample.value
+    return 0.0
 
 
 def _make_test_server() -> FastMCP:
@@ -105,3 +128,48 @@ async def test_middleware_unit_returns_tool_result_with_accepted_list() -> None:
     assert body["error"]["code"] == "infra_invalid_arguments"
     assert "wrong_arg" in body["error"]["details"]["unexpected"]
     assert set(body["error"]["details"]["accepted"]) == {"x", "y"}
+
+
+async def test_successful_call_records_tool_metrics() -> None:
+    """A clean call increments the call counter and observes a duration."""
+    server = _make_test_server()
+    before_calls = _tool_call_count("echo")
+    before_duration = _tool_duration_observation_count("echo")
+    async with Client(server) as client:
+        await client.call_tool("echo", {"x": "hi"})
+    assert _tool_call_count("echo") == before_calls + 1
+    assert _tool_duration_observation_count("echo") == before_duration + 1
+
+
+async def test_validation_error_still_records_tool_metrics() -> None:
+    """A call the middleware itself intercepts is still counted."""
+    server = _make_test_server()
+    before_calls = _tool_call_count("echo")
+    before_duration = _tool_duration_observation_count("echo")
+    async with Client(server) as client:
+        await client.call_tool("echo", {"wrong_arg": "value"})
+    assert _tool_call_count("echo") == before_calls + 1
+    assert _tool_duration_observation_count("echo") == before_duration + 1
+
+
+async def test_unrelated_error_still_records_tool_metrics() -> None:
+    """A tool exception this middleware doesn't intercept is still counted.
+
+    The metric touchpoint must not depend on the middleware's own error
+    handling — instrumentation and the ValidationError translation are
+    independent concerns wrapping the same call.
+    """
+    server = FastMCP("middleware-test")
+
+    @server.tool(output_schema=None)
+    def boom() -> str:  # pyright: ignore[reportUnusedFunction]
+        raise RuntimeError("kaboom")
+
+    server.add_middleware(ValidationErrorMiddleware(server=server))
+    before_calls = _tool_call_count("boom")
+    before_duration = _tool_duration_observation_count("boom")
+    async with Client(server) as client:
+        with pytest.raises(Exception, match="kaboom"):
+            await client.call_tool("boom", {})
+    assert _tool_call_count("boom") == before_calls + 1
+    assert _tool_duration_observation_count("boom") == before_duration + 1
