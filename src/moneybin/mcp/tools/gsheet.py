@@ -829,7 +829,7 @@ async def gsheet_disconnect_coarse(
         binding=binding if confirmation_token is None else None,
         message=(
             "Permanently remove this exact Google Sheets connection and all "
-            f"{plan.blast_radius['raw_rows']} raw rows?"
+            f"{plan.rows_to_delete} raw rows?"
         ),
         confirmation_token=confirmation_token,
     )

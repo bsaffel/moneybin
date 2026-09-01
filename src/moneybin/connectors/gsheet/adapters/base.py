@@ -12,6 +12,11 @@ from moneybin.database import Database
 
 Confidence = Literal["high", "medium", "low"]
 
+# Every row this connector writes carries it, and account identity is the
+# (source_type, source_origin) pair — so the value has to be the same string
+# where rows are written and where they are read back or deleted.
+GSHEET_SOURCE_TYPE = "gsheet"
+
 
 @dataclass(frozen=True)
 class DetectionResult:

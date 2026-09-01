@@ -25,6 +25,7 @@ from sqlglot import exp
 from moneybin.config import get_settings
 from moneybin.connectors.gsheet.adapters import ADAPTERS
 from moneybin.connectors.gsheet.adapters.base import (
+    GSHEET_SOURCE_TYPE,
     DetectionResult,
     GSheetConnection,
     LoadResult,
@@ -117,6 +118,17 @@ class GSheetPurgePlan:
     # tables have different columns, and the confirmation renders these rows.
     account_before_state: tuple[dict[str, Any], ...]
     blast_radius: dict[str, int]
+
+    @property
+    def rows_to_delete(self) -> int:
+        """Every raw row the purge removes, across each table it touches.
+
+        Derived from the snapshots rather than summed at the call site, so a
+        confirmation cannot quote one table's count while the purge empties
+        two. A row class added to this plan has to be added here to be
+        deleted, which is the same edit.
+        """
+        return len(self.raw_before_state) + len(self.account_before_state)
 
 
 def _inferred_sign_evidence_header(detection: DetectionResult) -> str | None:
@@ -581,10 +593,10 @@ class GSheetConnectionService:
                 f"""
                 SELECT *
                 FROM {TABULAR_TRANSACTIONS.full_name}
-                WHERE source_origin = ?
+                WHERE source_type = ? AND source_origin = ?
                 ORDER BY transaction_id, account_id, source_file
                 """,  # noqa: S608  # TableRef + parameterized value
-                [conn["connection_id"]],
+                [GSHEET_SOURCE_TYPE, conn["connection_id"]],
             )
         columns = [str(column[0]) for column in cursor.description]
         return tuple(dict(zip(columns, row, strict=True)) for row in cursor.fetchall())
@@ -602,10 +614,10 @@ class GSheetConnectionService:
             f"""
             SELECT *
             FROM {TABULAR_ACCOUNTS.full_name}
-            WHERE source_origin = ?
+            WHERE source_type = ? AND source_origin = ?
             ORDER BY account_id
             """,  # noqa: S608  # TableRef + parameterized value
-            [conn["connection_id"]],
+            [GSHEET_SOURCE_TYPE, conn["connection_id"]],
         )
         columns = [str(column[0]) for column in cursor.description]
         return tuple(dict(zip(columns, row, strict=True)) for row in cursor.fetchall())
@@ -668,17 +680,21 @@ class GSheetConnectionService:
                     [connection_id],
                 )
             else:
+                # Scoped by the (source_type, source_origin) pair both tables
+                # treat as account identity. source_origin alone is not unique
+                # across channels — a file import naming its origin the same
+                # string would lose its rows to this connection's purge.
                 self._db.execute(
-                    f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} WHERE source_origin = ?",  # noqa: S608  # TableRef + parameterized value
-                    [connection_id],
+                    f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} WHERE source_type = ? AND source_origin = ?",  # noqa: S608  # TableRef + parameterized value
+                    [GSHEET_SOURCE_TYPE, connection_id],
                 )
                 # An unbound connection registers the accounts its sheet names.
                 # Leaving them would keep user-authored labels — and the
                 # accounts core projects from them — after a purge that says it
                 # deleted everything this connection owns.
                 self._db.execute(
-                    f"DELETE FROM {TABULAR_ACCOUNTS.full_name} WHERE source_origin = ?",  # noqa: S608  # TableRef + parameterized value
-                    [connection_id],
+                    f"DELETE FROM {TABULAR_ACCOUNTS.full_name} WHERE source_type = ? AND source_origin = ?",  # noqa: S608  # TableRef + parameterized value
+                    [GSHEET_SOURCE_TYPE, connection_id],
                 )
 
             self._repo.delete(connection_id, actor=actor, in_outer_txn=True)

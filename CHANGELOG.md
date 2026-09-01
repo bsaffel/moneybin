@@ -33,6 +33,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   whole ledger under one nameless account, and a reconnect that would leave the
   connection with no way to key its rows is refused rather than saved broken.
 
+  Renaming an account in the sheet leaves its transactions where they are. A
+  transaction's id folds its account key, so re-deriving that key from the
+  edited label would soft-delete and re-insert every row the account owns and
+  orphan the notes and splits attached to them. A label that appears is matched
+  to a departed account by the transactions it carries rather than by counting
+  labels, because closing one account and opening another looks identical
+  otherwise — one label gone, one arrived. So a rename re-labels the account,
+  and a newly opened account never inherits a closed one's history. Where the
+  shared history is too thin to be sure, the import creates a separate account
+  you can see and merge rather than folding two accounts into one silently.
+
+  `gsheet disconnect --purge` now also removes the account rows a
+  multi-account connection registered, counts them in the total it asks you to
+  approve, and scopes both deletions to this connection's own import channel
+  so a file import can never lose rows to a sheet's purge.
+
 - **You can propose a merge for two accounts nothing automatic would pair.**
   `accounts links run` and the newly registered `accounts_links_run` MCP tool
   now accept two account ids and queue exactly that pair for review, under a

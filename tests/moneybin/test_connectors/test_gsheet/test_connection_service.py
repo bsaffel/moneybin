@@ -1578,3 +1578,69 @@ def test_connect_note_reflects_an_override_of_a_renamed_column(
     notes = " ".join(result.detection.notes)
     assert "Amount_duplicated_0" in notes
     assert "not imported" not in notes
+
+
+def test_the_purge_plan_totals_every_row_it_will_delete(
+    in_memory_db: Database,
+) -> None:
+    """The confirmation quotes a total, so it counts every table it empties.
+
+    Quoting only the transaction count while the purge also removes the
+    account rows asks the user to approve two rows and then deletes four.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    connection_id = _connect_multi_account(svc, sheets, "ss-purge-total")
+
+    plan = svc.plan_purge(connection_id)
+
+    assert plan.blast_radius["raw_rows"] == 2
+    assert plan.blast_radius["raw_account_rows"] == 2
+    assert plan.rows_to_delete == 4
+
+
+def _insert_foreign_channel_rows(db: Database, source_origin: str) -> None:
+    """A CSV import that happens to name its origin the same string."""
+    db.execute(
+        """
+        INSERT INTO raw.tabular_accounts
+            (account_id, account_name, source_file, source_type,
+             source_origin, import_id)
+        VALUES ('csv-checking', 'CSV Checking', '/tmp/x.csv', 'csv', ?, 'imp-csv')
+        """,
+        [source_origin],
+    )
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, transaction_date, amount, source_file,
+             source_type, source_origin, import_id)
+        VALUES ('csv-t1', 'csv-checking', DATE '2026-01-01', -1.00, '/tmp/x.csv',
+                'csv', ?, 'imp-csv')
+        """,
+        [source_origin],
+    )
+
+
+def test_purge_leaves_another_channels_rows_alone(
+    in_memory_db: Database,
+) -> None:
+    """Account identity is the (source_type, source_origin) pair, so both scope it.
+
+    ``source_origin`` is not unique across channels on its own. A purge scoped
+    to it alone would delete a file import's rows whenever that import's origin
+    string matched this connection's id.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    connection_id = _connect_multi_account(svc, sheets, "ss-purge-scoped")
+    _insert_foreign_channel_rows(in_memory_db, connection_id)
+
+    svc.disconnect(connection_id, purge=True)
+
+    survivors = in_memory_db.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM raw.tabular_accounts WHERE source_type = 'csv'),
+            (SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_type = 'csv')
+        """
+    ).fetchone()
+    assert survivors == (1, 1)

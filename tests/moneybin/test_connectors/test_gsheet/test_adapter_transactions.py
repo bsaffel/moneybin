@@ -496,9 +496,31 @@ def test_check_drift_ignores_a_blanked_account_column_when_bound(
     assert report.is_drift is False
 
 
+def _account_history_df() -> pl.DataFrame:
+    """Two accounts carrying enough history each to evidence a rename.
+
+    A rename is recognised from the transactions the label keeps, so each
+    account needs more rows than the coincidence floor. ``_multi_account_df``
+    gives one account a single row, which is deliberately below it.
+    """
+    return pl.DataFrame({
+        "Date": ["2026-01-15", "2026-01-16", "2026-01-17", "2026-01-18"],
+        "Description": ["Coffee", "Salary", "Card payment", "Groceries"],
+        "Category": ["Dining", "Income", "Transfer", "Groceries"],
+        "Amount": ["-4.50", "5000.00", "-120.00", "-62.10"],
+        "Account": [
+            "Everyday Checking",
+            "Everyday Checking",
+            "Rewards Card",
+            "Rewards Card",
+        ],
+        "Tags": ["", "", "", ""],
+    })
+
+
 def _renamed_account_df(old: str, new: str) -> pl.DataFrame:
-    """The multi-account sheet with one account's label rewritten."""
-    df = _multi_account_df()
+    """The two-account history with one account's label rewritten."""
+    df = _account_history_df()
     return df.with_columns(
         pl.Series("Account", [new if a == old else a for a in df["Account"].to_list()])
     )
@@ -516,7 +538,7 @@ def test_a_renamed_account_keeps_the_key_its_transactions_already_use(
     """
     adapter = TransactionsAdapter()
     conn = _unbound(sample_connection)
-    first = _multi_account_df()
+    first = _account_history_df()
     transformed_first = adapter.transform(first, conn, in_memory_db)
     adapter.load(transformed_first, conn, in_memory_db, "imp1", source_df=first)
     ids_before = set(transformed_first["transaction_id"].to_list())
@@ -533,6 +555,7 @@ def test_a_renamed_account_keeps_the_key_its_transactions_already_use(
         "everyday-checking",
         "everyday-checking",
         "rewards-card",
+        "rewards-card",
     ]
 
 
@@ -542,7 +565,7 @@ def test_a_renamed_account_is_relabelled_rather_than_twinned(
     """The registered account row carries the new label under the old key."""
     adapter = TransactionsAdapter()
     conn = _unbound(sample_connection)
-    first = _multi_account_df()
+    first = _account_history_df()
     adapter.load(
         adapter.transform(first, conn, in_memory_db),
         conn,
@@ -577,7 +600,7 @@ def test_a_remembered_rename_survives_the_pull_after_it(
     """The adopted key holds on later pulls; only the first one sees a rename."""
     adapter = TransactionsAdapter()
     conn = _unbound(sample_connection)
-    first = _multi_account_df()
+    first = _account_history_df()
     adapter.load(
         adapter.transform(first, conn, in_memory_db),
         conn,
@@ -604,41 +627,189 @@ def test_a_remembered_rename_survives_the_pull_after_it(
         "everyday-checking",
         "everyday-checking",
         "rewards-card",
+        "rewards-card",
     ]
     assert result.rows_soft_deleted == 0
 
 
-def test_two_accounts_renamed_in_one_pull_are_not_paired_by_guesswork(
+def _loaded(
+    adapter: TransactionsAdapter,
+    conn: GSheetConnection,
+    db: Database,
+    df: pl.DataFrame,
+    import_id: str,
+) -> None:
+    """Transform and load one pull of ``df`` through ``conn``."""
+    adapter.load(adapter.transform(df, conn, db), conn, db, import_id, source_df=df)
+
+
+def test_two_accounts_renamed_in_one_pull_each_keep_their_own_key(
     in_memory_db: Database, sample_connection: GSheetConnection
 ) -> None:
-    """Ambiguous renames mint their own keys rather than grafting silently.
+    """The rows decide the pairing, so two renames at once are not ambiguous.
 
-    One label gone and one arrived is a rename worth adopting. Two of each is a
-    pairing no evidence in the sheet decides, and grafting the wrong pair merges
-    two accounts — the one wrong inference "magic stays visible" ranks highest.
+    Counting labels cannot pair two departures with two arrivals. The
+    transactions can: each arriving label carries the history of exactly one
+    departed account, so both keys survive without anything being guessed.
     """
     adapter = TransactionsAdapter()
     conn = _unbound(sample_connection)
-    first = _multi_account_df()
-    adapter.load(
-        adapter.transform(first, conn, in_memory_db),
-        conn,
-        in_memory_db,
-        "imp1",
-        source_df=first,
-    )
+    _loaded(adapter, conn, in_memory_db, _account_history_df(), "imp1")
 
-    both_renamed = pl.DataFrame({
-        "Date": ["2026-01-15", "2026-01-16", "2026-01-17"],
-        "Description": ["Coffee", "Salary", "Card payment"],
-        "Category": ["Dining", "Income", "Transfer"],
-        "Amount": ["-4.50", "5000.00", "-120.00"],
-        "Account": ["Daily Spending", "Daily Spending", "Travel Rewards Card"],
-        "Tags": ["", "", ""],
-    })
+    both_renamed = _account_history_df().with_columns(
+        pl.Series(
+            "Account",
+            [
+                "Daily Spending",
+                "Daily Spending",
+                "Travel Rewards Card",
+                "Travel Rewards Card",
+            ],
+        )
+    )
     keys = adapter.transform(both_renamed, conn, in_memory_db)["account_id"].to_list()
 
-    assert keys == ["daily-spending", "daily-spending", "travel-rewards-card"]
+    assert keys == [
+        "everyday-checking",
+        "everyday-checking",
+        "rewards-card",
+        "rewards-card",
+    ]
+
+
+def _swapped_account_df() -> pl.DataFrame:
+    """One account closed and a different one opened, in a single pull.
+
+    Everyday Checking keeps its rows. The Rewards Card rows are gone and a
+    Travel Card nobody has seen takes its place, so exactly one label departs
+    as one arrives — the shape a rename also makes. No transaction is shared.
+    """
+    return pl.DataFrame({
+        "Date": ["2026-01-15", "2026-01-16", "2026-02-02", "2026-02-03"],
+        "Description": ["Coffee", "Salary", "Flight", "Hotel"],
+        "Category": ["Dining", "Income", "Travel", "Travel"],
+        "Amount": ["-4.50", "5000.00", "-310.00", "-220.00"],
+        "Account": [
+            "Everyday Checking",
+            "Everyday Checking",
+            "Travel Card",
+            "Travel Card",
+        ],
+        "Tags": ["", "", "", ""],
+    })
+
+
+def test_a_closed_account_does_not_hand_its_key_to_a_newly_opened_one(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """Closing one account and opening another must not merge the two.
+
+    By label count this is indistinguishable from a rename. Reusing the closed
+    account's key would file the new account's transactions under the old one,
+    folding two histories into a single account with nothing deleted to make
+    the mistake noticeable. The absent shared history separates the cases.
+    """
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    _loaded(adapter, conn, in_memory_db, _account_history_df(), "imp1")
+
+    transformed = adapter.transform(_swapped_account_df(), conn, in_memory_db)
+
+    assert transformed["account_id"].to_list() == [
+        "everyday-checking",
+        "everyday-checking",
+        "travel-card",
+        "travel-card",
+    ]
+
+
+def test_a_closed_accounts_transactions_stay_on_their_own_account(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """The closed account keeps its rows and the new account never adopts them."""
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    _loaded(adapter, conn, in_memory_db, _account_history_df(), "imp1")
+    _loaded(adapter, conn, in_memory_db, _swapped_account_df(), "imp2")
+
+    owners = in_memory_db.execute(
+        "SELECT account_id, COUNT(*) FROM raw.tabular_transactions "
+        "WHERE source_origin = ? GROUP BY account_id ORDER BY account_id",
+        [conn.connection_id],
+    ).fetchall()
+
+    assert owners == [
+        ("everyday-checking", 2),
+        ("rewards-card", 2),
+        ("travel-card", 2),
+    ]
+
+
+def test_one_shared_row_is_too_little_evidence_to_reuse_a_key(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """A single coincidental match must not merge two accounts.
+
+    Two cards can carry the same date, amount and description on one day. A
+    lone shared row is a coincidence rather than a history, so the arriving
+    label mints its own key: the cost of being wrong is a visible extra account
+    instead of a silent merge.
+    """
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    _loaded(adapter, conn, in_memory_db, _account_history_df(), "imp1")
+
+    # "Card payment" is one of the two rows the Rewards Card owns; "Hotel" is new.
+    coincidence = pl.DataFrame({
+        "Date": ["2026-01-15", "2026-01-16", "2026-01-17", "2026-02-03"],
+        "Description": ["Coffee", "Salary", "Card payment", "Hotel"],
+        "Category": ["Dining", "Income", "Transfer", "Travel"],
+        "Amount": ["-4.50", "5000.00", "-120.00", "-220.00"],
+        "Account": [
+            "Everyday Checking",
+            "Everyday Checking",
+            "Travel Card",
+            "Travel Card",
+        ],
+        "Tags": ["", "", "", ""],
+    })
+    keys = adapter.transform(coincidence, conn, in_memory_db)["account_id"].to_list()
+
+    assert keys[2:] == ["travel-card", "travel-card"]
+
+
+def test_a_few_shared_rows_cannot_claim_a_long_history(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """Shared rows must be most of the departed account, not a handful of it.
+
+    Otherwise the longer an account's history grows, the easier it is for an
+    unrelated account to clear a fixed floor of coincidences and inherit it.
+    """
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    long_history = pl.DataFrame({
+        "Date": [f"2026-03-{day:02d}" for day in range(1, 7)],
+        "Description": ["Fuel", "Fuel", "Fuel", "Dining", "Dining", "Dining"],
+        "Category": ["Auto"] * 3 + ["Dining"] * 3,
+        "Amount": ["-30.00", "-31.00", "-32.00", "-40.00", "-41.00", "-42.00"],
+        "Account": ["Rewards Card"] * 6,
+        "Tags": [""] * 6,
+    })
+    _loaded(adapter, conn, in_memory_db, long_history, "imp1")
+
+    # Two of the six rows recur under a label the connection has never seen.
+    mostly_new = pl.DataFrame({
+        "Date": ["2026-03-01", "2026-03-02", "2026-04-01", "2026-04-02"],
+        "Description": ["Fuel", "Fuel", "Flight", "Hotel"],
+        "Category": ["Auto", "Auto", "Travel", "Travel"],
+        "Amount": ["-30.00", "-31.00", "-310.00", "-220.00"],
+        "Account": ["Travel Card"] * 4,
+        "Tags": [""] * 4,
+    })
+    keys = adapter.transform(mostly_new, conn, in_memory_db)["account_id"].to_list()
+
+    assert keys == ["travel-card"] * 4
 
 
 def test_a_bound_connection_broadcasts_its_account_to_every_row(
@@ -652,3 +823,37 @@ def test_a_bound_connection_broadcasts_its_account_to_every_row(
     )
 
     assert transformed["account_id"].to_list() == [sample_connection.account_id] * 3
+
+
+def test_a_pull_never_soft_deletes_another_channels_rows(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """The live-mirror diff is scoped to this connection's own channel.
+
+    Rows are identified by the ``(source_type, source_origin)`` pair, and
+    ``source_origin`` alone is not unique across channels. A file import whose
+    origin string matched this connection's id would otherwise be marked
+    deleted-from-source by a sheet pull that never saw it — a write, not just a
+    miscount.
+    """
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    in_memory_db.execute(
+        """
+        INSERT INTO raw.tabular_transactions
+            (transaction_id, account_id, transaction_date, amount, source_file,
+             source_type, source_origin, import_id)
+        VALUES ('csv-t1', 'csv-checking', DATE '2026-01-01', -1.00, '/tmp/x.csv',
+                'csv', ?, 'imp-csv')
+        """,
+        [conn.connection_id],
+    )
+
+    _loaded(adapter, conn, in_memory_db, _account_history_df(), "imp1")
+
+    foreign = in_memory_db.execute(
+        "SELECT deleted_from_source_at FROM raw.tabular_transactions "
+        "WHERE transaction_id = 'csv-t1'"
+    ).fetchone()
+    assert foreign is not None
+    assert foreign[0] is None
