@@ -331,6 +331,7 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "loaded_at",
         "updated_at",
         "display_name",
+        "display_name_is_user_set",
         "official_name",
         "last_four",
         "account_subtype",

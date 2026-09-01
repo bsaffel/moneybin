@@ -698,6 +698,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "credit_limit": DataClass.BALANCE,
         "currency_code": DataClass.CURRENCY,
         "display_name": DataClass.USER_NOTE,
+        "display_name_is_user_set": DataClass.TXN_TYPE,
         "extracted_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "holder_category": DataClass.TXN_TYPE,
         "include_in_net_worth": DataClass.TXN_TYPE,

@@ -29,11 +29,16 @@ _MULTI_ACCOUNT_OFX = (
 
 
 def _seed_existing_account(db: Database, *, account_id: str, display_name: str) -> None:
-    """Materialize core.dim_accounts with one account the name pass can match."""
+    """Materialize core.dim_accounts with one account the name pass can match.
+
+    ``display_name_is_user_set=TRUE``: the resolver's name signal now requires
+    a user-chosen name (not a generated descriptor), and every fixture here
+    stands in for one.
+    """
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts (account_id, display_name) "  # noqa: S608  # test fixture
-        "VALUES (?, ?)",
+        "INSERT INTO core.dim_accounts (account_id, display_name, "  # noqa: S608  # test fixture
+        "display_name_is_user_set) VALUES (?, ?, TRUE)",
         [account_id, display_name],
     )
 
@@ -59,7 +64,8 @@ def _seed_twin(
     create_core_tables(db)
     db.conn.execute(
         "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
-        "(account_id, display_name, institution_slug, last_four) VALUES (?, ?, ?, ?)",
+        "(account_id, display_name, institution_slug, last_four, "
+        "display_name_is_user_set) VALUES (?, ?, ?, ?, TRUE)",
         [account_id, display_name, twin["institution_slug"], twin["last_four"]],
     )
     return account_id
@@ -140,8 +146,8 @@ def _seed_both_multi_bank_twins(db: Database) -> None:
     create_core_tables(db)
     db.conn.execute(
         "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
-        "(account_id, display_name, institution_slug, last_four) "
-        "VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
+        "(account_id, display_name, institution_slug, last_four, "
+        "display_name_is_user_set) VALUES (?, ?, ?, ?, TRUE), (?, ?, ?, ?, TRUE)",
         [
             "acct_first01",
             "First Twin",
@@ -740,6 +746,7 @@ def test_resolve_emits_account_link_metrics(
             source_origin="wells_fargo",
             source_account_key="plaid-token-1",
             account_name="WF Checking",
+            account_name_is_user_set=True,
         )
     )
     assert resolved.outcome == "pending_review"

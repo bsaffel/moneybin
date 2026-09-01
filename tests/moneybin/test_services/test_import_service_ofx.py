@@ -38,6 +38,25 @@ def test_ofx_and_pdf_share_normalized_full_number_scope() -> None:
     assert ofx.account_number == pdf.scoped_full_number == "021000021:AB1234"
 
 
+def test_ofx_source_accounts_never_marks_account_name_as_user_set() -> None:
+    """OFX has no account-name element, so this must always read False.
+
+    Direct-wiring proof for the `_ofx_source_accounts` call site: resolver-level
+    tests (`test_account_resolver.py`) cover what the gate does with the flag,
+    not that this function actually sets it. A regression that silently flipped
+    the literal back to `True` would pass every one of those.
+    """
+    account = SimpleNamespace(
+        account_id="ab-12 34",
+        routing_number="021000021",
+        account_type="CHECKING",
+        type=None,
+        institution=SimpleNamespace(fid="", organization=""),
+    )
+    [ofx] = _ofx_source_accounts(SimpleNamespace(accounts=[account]), "bank")
+    assert ofx.account_name_is_user_set is False
+
+
 class TestImportOFXBatchLifecycle:
     """Import batch lifecycle tests for OFX files."""
 

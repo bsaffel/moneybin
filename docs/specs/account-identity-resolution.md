@@ -279,7 +279,31 @@ reversed_by            TEXT
   the display name doesn't slugify back to the registry value (`U.S. Bank` →
   `u-s-bank`, not `us_bank`), and an OFX `<ORG>` is a routing code at some
   issuers (Chase publishes `B1`), so a name-side comparison drops candidates
-  on both ends.
+  on both ends. The `account_name` signal additionally requires
+  `display_name_is_user_set` on the candidate row being resolved and
+  `SourceAccount.account_name_is_user_set` on the presented source: both
+  `display_name` and a source's `account_name` are fallback ladders that can
+  land on a *generated* descriptor (institution + subtype + last four, a bare
+  filename, subtype alone) when no person or source ever named the account,
+  and two such descriptors coinciding is a coincidence of already-compared
+  attributes, not name evidence. Every channel sets its own source-side flag:
+  OFX has no account-name field at all and always sets it False; PDF sets it
+  only from a captured "Account Name:"/"Account Nickname:" line, never from
+  the product marketing name or the filename alias; tabular sets it only when
+  the caller supplied `--account-name` or the file's own account-name column
+  held a real (non-blank) value; Plaid sets it only from the holder's own
+  `name`, never the `official_name` product label; gsheet sets it only when
+  the sheet's own Account column named the row (the same `authored_keys` test
+  `raw.tabular_accounts.account_label` already gates on for that channel),
+  never from the "unknown" filler standing in for a blank cell. Only the live
+  `SourceAccount` needs this flag; it is not persisted as its own column.
+  `display_name_is_user_set` is recomputed downstream from `raw.*.account_label`
+  once an account materializes into `core.dim_accounts`, so a channel must also
+  persist the authored text into that raw column — not just carry it in memory
+  for the current import — or the account reads as unnamed again on the very
+  next import or backfill sweep. The PDF channel persists its captured
+  "Account Name:"/"Account Nickname:" line into
+  `raw.tabular_accounts.account_label` for exactly this reason.
   A match produces a `pending` decision row recording which signal fired. Weak
   signals are never an accepted `ref_kind` and never auto-merge. **⚠ Reconciled
   (Decision 8):** "durably present, captured at mint" was the gap — last4 was

@@ -369,6 +369,22 @@ def dim_accounts_cases_template(
             source_origin=_case_id("label_unicode_digits_origin"),
         )
 
+        settings_override_native = _case_id("settings_override_native")
+        _insert_tabular_account(
+            db,
+            native_key=settings_override_native,
+            account_name="Row With No Bank Fields",
+            institution_name="Test Bank",
+            account_type="CHECKING",
+            account_number="4001111",
+            extracted_at="2024-03-01 00:00:00",
+            source_origin=_case_id("settings_override_origin"),
+        )
+        db.execute(
+            "INSERT INTO app.account_settings (account_id, display_name) VALUES (?, ?)",
+            [settings_override_native, "My Override Name"],
+        )
+
         with sqlmesh_context(db) as ctx:
             ctx.plan(auto_apply=True, no_prompts=True)
         return db.path
@@ -519,12 +535,44 @@ def test_last_four_derived_for_ofx_without_account_settings(
     canonical_id = _case_id("ofx_last_four")
 
     row = db.execute(
-        "SELECT last_four, display_name FROM core.dim_accounts WHERE account_id = ?",
+        "SELECT last_four, display_name, display_name_is_user_set "
+        "FROM core.dim_accounts WHERE account_id = ?",
         [canonical_id],
     ).fetchone()
     assert row is not None, "derived-last4 canonical row missing from core.dim_accounts"
     assert row[0] == "1212", f"expected derived last_four 1212, got {row[0]!r}"
     assert "1212" in row[1], f"display_name should include last4: {row[1]!r}"
+    # OFX carries no account_label (NULL::TEXT cast upstream), and this
+    # account has no app.account_settings override either, so both operands
+    # of the display_name_is_user_set OR are NULL-producing -- the exact case
+    # the outer COALESCE exists to pin to FALSE rather than leave NULL.
+    assert row[2] is False, (
+        f"display_name_is_user_set should be FALSE, not NULL, for a "
+        f"generated OFX label: {row[2]!r}"
+    )
+
+
+@pytest.mark.slow
+def test_a_settings_override_marks_display_name_is_user_set(
+    dim_accounts_cases: Database,
+) -> None:
+    """The other human-authored rung -- app.account_settings.display_name -- marks TRUE too.
+
+    The account_label arms are covered elsewhere in this module; this is the
+    remaining documented human-authored rung. A user-set override outranks
+    every account_label arm in the COALESCE and must mark the same
+    provenance flag, not just win the display_name text.
+    """
+    row = dim_accounts_cases.execute(
+        "SELECT display_name, display_name_is_user_set FROM core.dim_accounts "
+        "WHERE account_id = ?",
+        [_case_id("settings_override_native")],
+    ).fetchone()
+    assert row is not None, "account missing from core.dim_accounts"
+    assert row[0] == "My Override Name"
+    assert row[1] is True, (
+        f"a settings override should mark display_name_is_user_set TRUE: {row[1]!r}"
+    )
 
 
 @pytest.mark.slow
@@ -679,11 +727,18 @@ def test_a_label_alone_names_an_account_with_no_number(
     bare arm below it names the account by what it does have.
     """
     row = dim_accounts_cases.execute(
-        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        "SELECT display_name, display_name_is_user_set FROM core.dim_accounts "
+        "WHERE account_id = ?",
         [_case_id("label_no_number_native")],
     ).fetchone()
     assert row is not None, "account missing from core.dim_accounts"
     assert row[0] == "Vacation Fund"
+    # The bare account_label arm is human-authored the same as the
+    # with-last-four arm above it -- AccountResolver's weak name-match signal
+    # requires this to be TRUE for either one.
+    assert row[1] is True, (
+        f"a bare account_label should mark display_name_is_user_set TRUE: {row[1]!r}"
+    )
 
 
 @pytest.mark.slow
@@ -727,11 +782,18 @@ def test_the_unnamed_sentinel_is_never_promoted_as_a_source_label(
     the institution-derived name it would otherwise have carried.
     """
     row = dim_accounts_cases.execute(
-        "SELECT display_name FROM core.dim_accounts WHERE account_id = ?",
+        "SELECT display_name, display_name_is_user_set FROM core.dim_accounts "
+        "WHERE account_id = ?",
         [_case_id("label_sentinel_native")],
     ).fetchone()
     assert row is not None, "account missing from core.dim_accounts"
     assert row[0] == "Test Bank savings …1111"
+    # The sentinel is excluded from both account_label arms, so this account
+    # falls to a generated-descriptor fallback -- not a human-chosen name.
+    assert row[1] is False, (
+        f"a sentinel-only label should not mark display_name_is_user_set "
+        f"TRUE: {row[1]!r}"
+    )
 
 
 @pytest.mark.slow

@@ -836,6 +836,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on transaction overlap, so a flagged pair may raise no proposal — that same
   binding failure is what split the account in the first place.
 
+### Fixed
+- **Account merge proposals no longer fire on a shared generated label alone,
+  on either side of the comparison.** Two unrelated accounts whose *display
+  name* was never set by a person or a source — both resolving to a bare
+  `checking`, or to the same `institution + subtype + last four` shape — read
+  as a name match and queued a merge proposal with no real evidence behind it.
+  This applied to `accounts links run`'s backfill sweep and to every live
+  import: OFX has no account-name field, so every OFX-sourced account name is
+  generated, and a same-institution pair could still be proposed as a merge
+  purely because their generated descriptors happened to coincide.
+  `core.dim_accounts` now carries a `display_name_is_user_set` provenance
+  flag, `SourceAccount` carries the equivalent `account_name_is_user_set` for
+  a source account presented at import time, and the resolver's weak name
+  signal requires the applicable flag on both sides of a match. A PDF
+  statement's captured account nickname is now also persisted to
+  `raw.tabular_accounts.account_label` (previously only held in memory for
+  the current import), so a genuinely person-named PDF account keeps reading
+  as named on the next import or backfill sweep. Every source channel sets
+  this flag — OFX, tabular (four import branches), PDF, Plaid, and Google
+  Sheets. (#493)
+
 ### Changed
 - **Google Sheets connects with no setup.** MoneyBin now ships the OAuth client
   secret alongside its public client ID, so `moneybin gsheet auth` completes on

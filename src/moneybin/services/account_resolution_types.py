@@ -257,6 +257,14 @@ class SourceAccount:
     source_origin: str
     source_account_key: str
     account_name: str
+    account_name_is_user_set: bool = False
+    """Whether ``account_name`` is a person- or source-authored label rather
+    than a generated fallback (institution + type, a bare filename, a raw
+    token). Mirrors ``core.dim_accounts.display_name_is_user_set`` on the
+    candidate side: the resolver's name rung requires this on the SOURCE side
+    too, so a channel that has no authored name field (OFX has none at all)
+    can't have its generated placeholder read back as name evidence. Default
+    False is the safe reading for a channel that never sets it."""
     account_number: str | None = None
     last_four: str | None = None
     institution: str | None = None

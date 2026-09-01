@@ -1748,6 +1748,14 @@ def _pdf_source_account(
             or decision.metadata.product_name
             or resolved_alias
         ),
+        # account_label is captured from a printed "Account Name:"/"Account
+        # Nickname:" line -- a label the account holder set, the PDF analogue
+        # of Plaid's acc.name and a tabular --account-name. product_name is
+        # the card/product's marketing name (identical across every holder of
+        # that product) and resolved_alias is the filename slug; neither is
+        # authored, so the flag must follow account_label specifically, not
+        # merely "account_name is non-empty".
+        account_name_is_user_set=decision.metadata.account_label is not None,
         account_number=derived.scoped_full_number,
         institution=issuer or None,
         # Before document keys, an anchorless PDF used its filename alias.
@@ -1778,6 +1786,16 @@ def _pdf_source_account(
             category=account_category(_pdf_account_type(decision)),
             last_four=derived_last_four(
                 _to_account_number_mask(decision.metadata.account_id)
+            ),
+            # Same value and same condition as account_name_is_user_set below
+            # -- a captured "Account Name:"/"Account Nickname:" line is the
+            # only PDF-side source that counts as authored. Masked the way
+            # every other display-safe label site is (mask_embedded_account_
+            # number), never the raw captured text.
+            source_label=(
+                mask_embedded_account_number(decision.metadata.account_label)
+                if decision.metadata.account_label
+                else None
             ),
         ),
         explicit_account_id=account_id_override,
@@ -1883,6 +1901,11 @@ def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAcco
                 source_origin=source_origin,
                 source_account_key=acctid,
                 account_name=f"{source_origin} {ofx_account_type(account) or ''}".strip(),
+                # OFX has no account-name element at all (see account_label's
+                # NULL arm in dim_accounts.sql) -- this is always the
+                # generated institution+type fallback, never a person's own
+                # label, so it must never drive the resolver's name rung.
+                account_name_is_user_set=False,
                 # full_number is a strong ref ONLY when institution/routing-scoped
                 # (contains ':'); a bare number is demoted to a candidate signal.
                 account_number=(
@@ -3512,6 +3535,10 @@ class ImportService:
                     source_origin=source_origin,
                     source_account_key=native_key,
                     account_name=clean_name,
+                    # True only when --account-name supplied clean_name; the
+                    # unnamed arm falls back to the filename stem or the
+                    # native key, neither of which a person typed.
+                    account_name_is_user_set=bool(account_name),
                     institution=institution,
                     last_four=label_last4,
                     name_facts=tabular_name_facts(native_key, label_last4),
@@ -3552,6 +3579,9 @@ class ImportService:
                     source_origin=source_origin,
                     source_account_key=native_key,
                     account_name=clean_name,
+                    # This branch is reached only when --account-name was
+                    # supplied; clean_name always comes from it.
+                    account_name_is_user_set=True,
                     institution=institution,
                     last_four=label_last4 or number_last4_by_key.get(native_key),
                     name_facts=tabular_name_facts(
@@ -3613,6 +3643,10 @@ class ImportService:
                     source_origin=source_origin,
                     source_account_key=native_key,
                     account_name=label_parsed_by_key[native_key][0],
+                    # authored_keys excludes the "unknown" filler used for a
+                    # blank account-name cell -- same rung source_label_by_key
+                    # above already gates on.
+                    account_name_is_user_set=native_key in authored_keys,
                     institution=multi_acct_inst.get(native_key),
                     last_four=(
                         label_parsed_by_key[native_key][1]
@@ -3650,6 +3684,9 @@ class ImportService:
                 source_origin=source_origin,
                 source_account_key=native_key,
                 account_name=placeholder_name,
+                # placeholder_name is always the filename stem or the native
+                # key -- no caller-supplied identity exists on this branch.
+                account_name_is_user_set=False,
                 institution=institution,
                 last_four=number_last4_by_key.get(native_key),
                 name_facts=tabular_name_facts(
@@ -5529,6 +5566,20 @@ class ImportService:
             account_df = pl.DataFrame({
                 "account_id": [account_id],
                 "account_name": [source_account.account_name],
+                # Distinct from account_name above: dim_accounts.sql's
+                # tabular_accounts CTE reads account_label specifically (never
+                # account_name) to decide display_name_is_user_set. Without
+                # this, a PDF's captured "Account Name:"/"Account Nickname:"
+                # line lived only on this live SourceAccount -- once
+                # materialized, the very next import or accounts_links_run
+                # backfill would read display_name_is_user_set=False for an
+                # account a person genuinely named. account_name_is_user_set
+                # is exactly that same provenance test, already computed.
+                "account_label": [
+                    mask_embedded_account_number(source_account.account_name)
+                    if source_account.account_name_is_user_set
+                    else None
+                ],
                 "account_number": [None],
                 "account_number_masked": [_to_account_number_mask(raw_account_id)],
                 "account_type": [account_type],
@@ -5541,6 +5592,16 @@ class ImportService:
                 "source_origin": [identity_origin],
                 "import_id": [import_id],
             })
+            # on_conflict="ignore" means a PDF account row imported before
+            # account_label existed on this write (account_id, source_file
+            # already present with account_label=NULL) keeps that NULL on
+            # re-import -- this write only reaches fresh rows. Backfilling
+            # already-materialized NULLs is a data-repair question (a targeted
+            # UPDATE or a migration), not something a per-import write can fix
+            # without risking a full upsert's loss of the original import_id/
+            # extracted_at history "ignore" exists to protect. Known
+            # limitation, not a regression: an account imported before this
+            # fix is no worse off than it was before this fix shipped.
             self._db.ingest_dataframe(
                 TABULAR_ACCOUNTS.full_name, account_df, on_conflict="ignore"
             )

@@ -32,6 +32,11 @@ def _src(**overrides: Any) -> SourceAccount:
         "source_origin": "wells_fargo",
         "source_account_key": "wf-checking",
         "account_name": "WF Checking 1212",
+        # This factory's default account_name reads as a caller-authored
+        # label (e.g. tabular --account-name), so it counts as name evidence
+        # by default. Tests exercising the generated-name path override this
+        # explicitly to False.
+        "account_name_is_user_set": True,
         "account_number": None,
         "last_four": "1212",
         "institution": "wells_fargo",
@@ -375,23 +380,31 @@ def _seed_dim_account(
     institution_name: str | None = None,
     display_name: str | None = None,
     institution_slug: str | None = None,
+    display_name_is_user_set: bool = True,
 ) -> None:
     """Insert a minimal core.dim_accounts row (simulates a prior transform run).
 
     ``institution_slug`` defaults to ``institution_name`` because most callers
     seed a value that is already slug-shaped. Pass both explicitly to model the
     real dim, where the name is for display and the slug is for matching.
+
+    ``display_name_is_user_set`` defaults ``True``: most fixture names here
+    stand in for an account a person actually named (``"Chase Checking"``),
+    which is what the resolver's name signal requires post-fix. Pass
+    ``False`` only to model a *generated* descriptor -- the case the signal
+    must now ignore.
     """
     db.conn.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
-        "institution_slug, display_name) "
-        "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        "institution_slug, display_name, display_name_is_user_set) "
+        "VALUES (?, ?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
         [
             account_id,
             last_four,
             institution_name,
             institution_slug if institution_slug is not None else institution_name,
             display_name or f"acct {account_id}",
+            display_name_is_user_set,
         ],
     )
 
@@ -1076,6 +1089,65 @@ def test_exact_name_match_writes_pending(db: Database) -> None:
     assert len(second.pending_decision_ids) == 1
 
 
+def test_generated_descriptor_collision_is_not_a_name_match(db: Database) -> None:
+    """Two accounts whose *generated* descriptor coincides mint silently.
+
+    ``display_name_is_user_set=False`` models an account whose display_name
+    came from an institution/subtype/last-four fallback arm, not
+    ``app.account_settings``. A second source resolving to literally the same
+    descriptor text is not evidence of a shared identity -- the resolver
+    already compares institution and last-four separately, and here they
+    disagree (existing has none stated) -- so no "name" candidate should
+    surface. ``last_four`` is stated but distinct from the existing row's
+    (unstated) value so neither the last4 nor reissue rungs can fire and mask
+    the result; ``institution`` is left unstated for the same reason.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_generated",
+        display_name="Chase checking",
+        display_name_is_user_set=False,
+    )
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(
+            account_name="Chase checking",  # collides on generated-descriptor text
+            last_four="1234",
+            institution=None,
+        )
+    )
+    assert resolved.outcome == "minted_new"
+    assert resolved.pending_decision_ids == ()
+
+
+def test_a_generated_source_name_is_not_a_name_match(db: Database) -> None:
+    """The live-import gap: a generated SOURCE name is not name evidence.
+
+    Not even against a real, person-set candidate name. Mirrors ``test_generated_descriptor_collision_is_not_a_name_match`` from
+    the candidate side to the source side. ``display_name_is_user_set`` is
+    left at its default True here -- a real account someone named "Chase
+    checking" -- so this isolates ``account_name_is_user_set`` specifically:
+    OFX's ``_ofx_source_accounts`` synthesizes ``account_name`` from
+    institution+type text and sets this flag False, and before the flag
+    existed that generated string still drove ``match_account`` and produced
+    a "name" candidate whenever it happened to collide.
+    """
+    create_core_tables(db)
+    _seed_dim_account(db, account_id="acct_real_name", display_name="Chase checking")
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(
+            account_name="Chase checking",  # collides with a REAL authored name
+            account_name_is_user_set=False,  # ...but this source never named it
+            last_four="1234",
+            institution=None,
+        )
+    )
+    assert resolved.outcome == "minted_new"
+    assert resolved.pending_decision_ids == ()
+
+
 def test_institution_last4_writes_pending_never_merges(db: Database) -> None:
     """A shared institution+last4 produces a pending decision, NOT an auto-merge."""
     # create core.dim_accounts so the candidate pass can see an existing account
@@ -1587,9 +1659,58 @@ def test_the_reissue_rung_also_refuses_to_match_on_the_sentinel() -> None:
         last_four="1234",
         institution="chase",
     )
-    # (account_id, display_name, last_four, institution_slug): same institution
-    # and a contradicting last four, which is exactly what this rung collects.
-    name_rows = [("other_nameless", UNNAMED_ACCOUNT_LABEL, "5678", "chase")]
+    # (account_id, display_name, last_four, institution_slug,
+    # display_name_is_user_set): same institution and a contradicting last
+    # four, which is exactly what this rung collects. True (user-set) here so
+    # this fixture isolates the sentinel guard, not the provenance guard below.
+    name_rows = [("other_nameless", UNNAMED_ACCOUNT_LABEL, "5678", "chase", True)]
+
+    assert _retyped_reissue_candidates(src, name_rows) == []
+
+
+def test_the_reissue_rung_ignores_a_generated_descriptor_collision() -> None:
+    """A same-institution descriptor collision is not user-chosen evidence.
+
+    Mirrors the sentinel guard above at the same seam: ``name_rows`` carries
+    ``display_name_is_user_set=False``, modeling an existing account whose
+    display name is a generated institution/subtype descriptor rather than
+    something a person typed. Two same-institution accounts whose *generated*
+    descriptors happen to collide (e.g. two typeless checking accounts at the
+    same bank) is a coincidence of attributes the resolver already compares
+    separately -- not evidence of a shared identity -- so retyping it into an
+    ``institution_reissue`` candidate would relabel non-evidence.
+    """
+    src = _src(
+        account_name="Chase checking",
+        last_four="1234",
+        institution="chase",
+    )
+    name_rows = [("other_acct", "Chase checking", "5678", "chase", False)]
+
+    assert _retyped_reissue_candidates(src, name_rows) == []
+
+
+def test_the_reissue_rung_ignores_a_generated_source_name() -> None:
+    """The source-side twin of the guard above.
+
+    A real candidate name is not enough when the SOURCE'S OWN name is
+    generated, not authored. Isolates ``account_name_is_user_set`` specifically -- ``name_rows`` here
+    carries ``display_name_is_user_set=True`` (a real, person-set candidate
+    name), so the guard above already proved that half is not what refuses
+    this pair. This is the live-import gap Codex flagged on PR #493: OFX
+    synthesizes ``account_name`` from institution+type
+    (``_ofx_source_accounts``, ``account_name_is_user_set=False``), and
+    before this field existed that generated string could still retype a
+    last-four-disagreeing pair as an ``institution_reissue`` candidate just
+    because it happened to collide with a real display_name.
+    """
+    src = _src(
+        account_name="Chase checking",
+        account_name_is_user_set=False,
+        last_four="1234",
+        institution="chase",
+    )
+    name_rows = [("other_acct", "Chase checking", "5678", "chase", True)]
 
     assert _retyped_reissue_candidates(src, name_rows) == []
 
@@ -2423,6 +2544,124 @@ def test_propose_existing_guards_catalog_exception(db: Database) -> None:
     # No create_core_tables call → dim_accounts absent → CatalogException guarded
     resolver = AccountResolver(db, actor="system")
     assert resolver.propose_existing("any_id") is None
+
+
+def test_a_stale_migration_missing_display_name_is_user_set_keeps_last_four_candidates(
+    db: Database,
+) -> None:
+    """A pre-migration dim_accounts must not lose already-gathered candidates.
+
+    Regression test for a review finding: the name-rung query raises
+    ``duckdb.BinderException`` when ``display_name_is_user_set`` doesn't exist
+    yet on a profile that hasn't re-run ``moneybin transform apply`` since this
+    column's migration landed. That exception must be caught locally around
+    just that query -- catching it at the outer ``except`` instead would
+    discard ``out``, including the bare last-four candidate already gathered
+    earlier in the same call, and silently drop merge-candidate evidence a
+    reviewer should have seen.
+
+    Calls ``_find_candidates`` directly rather than through
+    ``propose_existing``, to isolate this specific scoping fix from
+    ``propose_existing``'s own separate degradation path (covered by
+    ``test_propose_existing_degrades_gracefully_on_a_stale_migration``
+    below) -- both methods independently select ``display_name_is_user_set``
+    and both had to learn to survive its absence.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "ALTER TABLE core.dim_accounts DROP COLUMN display_name_is_user_set"
+    )
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
+        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        ["source_acct", "7777", None, None, "Everyday Spending"],
+    )
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
+        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        ["twin_acct", "7777", "CHASE", "chase", "Vacation Fund"],
+    )
+    resolver = AccountResolver(db, actor="system")
+    src = _src(institution=None, last_four="7777", account_name="Everyday Spending")
+
+    candidates = resolver._find_candidates(  # pyright: ignore[reportPrivateUsage]
+        src, exclude_account_id="source_acct"
+    )
+
+    assert candidates, "the bare last-four candidate should not be dropped"
+    surfaced = {(c.account_id, c.signal) for c in candidates}
+    assert surfaced == {("twin_acct", "last_four")}, surfaced
+
+
+def test_propose_existing_degrades_gracefully_on_a_stale_migration(
+    db: Database,
+) -> None:
+    """propose_existing must not return None for every account on a stale DB.
+
+    Regression test for a review finding: propose_existing's own upfront
+    lookup also selects display_name_is_user_set, and its first fix returned
+    None unconditionally on BinderException -- meaning `moneybin accounts
+    links run` would report zero backfill proposals for every account on a
+    profile that hasn't re-run `moneybin transform apply` since the column's
+    migration landed, even for a genuine last-four duplicate. It must instead
+    fall back to the older columns and still surface that duplicate.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "ALTER TABLE core.dim_accounts DROP COLUMN display_name_is_user_set"
+    )
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
+        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        ["source_acct", "7777", None, None, "Everyday Spending"],
+    )
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
+        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        ["twin_acct", "7777", "CHASE", "chase", "Vacation Fund"],
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("source_acct")
+
+    assert proposal is not None, (
+        "a genuine last-four duplicate should still surface on a stale-migration DB"
+    )
+    surfaced = {(c.account_id, c.signal) for c in proposal.candidates}
+    assert surfaced == {("twin_acct", "last_four")}, surfaced
+
+
+def test_propose_existing_does_not_pass_a_generated_name_as_source_evidence(
+    db: Database,
+) -> None:
+    """A provisional account's own generated display_name must not drive the name rung.
+
+    Regression test for a review finding: ``_find_candidates`` gates the
+    *candidate* row's ``display_name_is_user_set``, but ``propose_existing``
+    fed the provisional account's own (possibly generated) ``display_name``
+    straight through as ``SourceAccount.account_name`` -- so a generated
+    descriptor ("checking") coinciding with a real user-named account's name
+    still produced a name-signal candidate, just from the other side of the
+    match. Neither account states a last four or institution, so a
+    surfaced proposal here can only be explained by the name pass firing on
+    the generated source name.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="generated_source",
+        display_name="checking",
+        display_name_is_user_set=False,
+    )
+    _seed_dim_account(
+        db,
+        account_id="coincidental_twin",
+        display_name="checking",
+        display_name_is_user_set=True,
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    assert resolver.propose_existing("generated_source") is None
 
 
 def test_resolve_rolls_back_partial_writes_on_failure(db: Database) -> None:
