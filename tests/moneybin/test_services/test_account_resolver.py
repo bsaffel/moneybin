@@ -2502,6 +2502,13 @@ def test_a_stale_migration_missing_display_name_is_user_set_keeps_last_four_cand
     discard ``out``, including the bare last-four candidate already gathered
     earlier in the same call, and silently drop merge-candidate evidence a
     reviewer should have seen.
+
+    Calls ``_find_candidates`` directly rather than through
+    ``propose_existing``: that method's own upfront lookup also selects
+    ``display_name_is_user_set`` and now fails closed (returns ``None``) on
+    the same stale-migration DB, which would otherwise mask what this test
+    is isolating -- ``_find_candidates``'s internal scoping of the exception
+    to just its name-rung query.
     """
     create_core_tables(db)
     db.conn.execute(
@@ -2518,12 +2525,48 @@ def test_a_stale_migration_missing_display_name_is_user_set_keeps_last_four_cand
         ["twin_acct", "7777", "CHASE", "chase", "Vacation Fund"],
     )
     resolver = AccountResolver(db, actor="system")
+    src = _src(institution=None, last_four="7777", account_name="Everyday Spending")
 
-    proposal = resolver.propose_existing("source_acct")
+    candidates = resolver._find_candidates(  # pyright: ignore[reportPrivateUsage]
+        src, exclude_account_id="source_acct"
+    )
 
-    assert proposal is not None, "the bare last-four candidate should not be dropped"
-    surfaced = {(c.account_id, c.signal) for c in proposal.candidates}
+    assert candidates, "the bare last-four candidate should not be dropped"
+    surfaced = {(c.account_id, c.signal) for c in candidates}
     assert surfaced == {("twin_acct", "last_four")}, surfaced
+
+
+def test_propose_existing_does_not_pass_a_generated_name_as_source_evidence(
+    db: Database,
+) -> None:
+    """A provisional account's own generated display_name must not drive the name rung.
+
+    Regression test for a review finding: ``_find_candidates`` gates the
+    *candidate* row's ``display_name_is_user_set``, but ``propose_existing``
+    fed the provisional account's own (possibly generated) ``display_name``
+    straight through as ``SourceAccount.account_name`` -- so a generated
+    descriptor ("checking") coinciding with a real user-named account's name
+    still produced a name-signal candidate, just from the other side of the
+    match. Neither account states a last four or institution, so a
+    surfaced proposal here can only be explained by the name pass firing on
+    the generated source name.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="generated_source",
+        display_name="checking",
+        display_name_is_user_set=False,
+    )
+    _seed_dim_account(
+        db,
+        account_id="coincidental_twin",
+        display_name="checking",
+        display_name_is_user_set=True,
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    assert resolver.propose_existing("generated_source") is None
 
 
 def test_resolve_rolls_back_partial_writes_on_failure(db: Database) -> None:

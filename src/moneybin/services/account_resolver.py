@@ -753,11 +753,19 @@ class AccountResolver:
         """
         try:
             row = self._db.execute(
-                f"SELECT institution_slug, last_four, display_name "  # noqa: S608  # TableRef + parameterized value
-                f"FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ? LIMIT 1",
+                f"SELECT institution_slug, last_four, display_name, "  # noqa: S608  # TableRef + parameterized value
+                f"display_name_is_user_set FROM {DIM_ACCOUNTS.full_name} "
+                "WHERE account_id = ? LIMIT 1",
                 [account_id],
             ).fetchone()
-        except duckdb.CatalogException:
+        except (duckdb.CatalogException, duckdb.BinderException):
+            # CatalogException: dim_accounts doesn't exist yet. BinderException:
+            # dim_accounts exists but predates display_name_is_user_set (a
+            # profile that hasn't run `moneybin transform apply` since that
+            # migration landed). Nothing has been gathered yet at this point in
+            # the method, so returning None here loses no candidates -- unlike
+            # the guard inside _find_candidates, which is scoped to a single
+            # query for exactly that reason.
             logger.debug("core.dim_accounts unavailable in propose_existing")
             return None
         if row is None:
@@ -765,12 +773,19 @@ class AccountResolver:
         # institution_slug, not institution_name: _find_candidates compares
         # against the slug column, so feeding a display name back in here would
         # re-create the very mismatch this reads around.
-        institution_slug, last_four, display_name = row
+        institution_slug, last_four, display_name, display_name_is_user_set = row
         src = SourceAccount(
             source_type="backfill",
             source_origin="backfill",
             source_account_key="",
-            account_name=str(display_name or ""),
+            # A generated display_name (display_name_is_user_set False) is not
+            # evidence this account was ever named. Passing it through as
+            # account_name would let it drive the name rung and reissue
+            # retyping from the *source* side, reintroducing the same false
+            # merge evidence the candidate-side display_name_is_user_set gate
+            # exists to keep out -- empty suppresses is_a_name() the same way
+            # an unstated name always has.
+            account_name=str(display_name or "") if display_name_is_user_set else "",
             last_four=str(last_four) if last_four is not None else None,
             institution=str(institution_slug) if institution_slug is not None else None,
         )
