@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 from _pytest.logging import LogCaptureFixture
+from pytest_mock import MockerFixture
 
 from moneybin.database import Database
 from moneybin.services.import_service import (
@@ -429,6 +430,33 @@ def test_single_account_csv_captures_last4_from_label(
         """
     ).fetchone()
     assert masked is not None and masked[0] == "****1212", masked
+
+
+def test_bare_tabular_source_account_never_marks_account_name_as_user_set(
+    db: Database, mocker: MockerFixture
+) -> None:
+    """The bare single-account branch's placeholder name must read unauthored.
+
+    Direct-wiring proof for the branch with no ``--account-name``, no
+    ``--account-id``, and no account-name column: its ``account_name`` is
+    always the file's stem or a synthesized key, never something a person
+    typed, so it must not drive the resolver's name rung. Mirrors
+    ``test_ofx_source_accounts_never_marks_account_name_as_user_set`` at the
+    tabular bare-file call site -- resolver-level tests alone cannot prove
+    this; they exercise the flag's effect, not that this branch sets it.
+    """
+    from moneybin.services.account_resolver import AccountResolver
+    from moneybin.services.import_service import ImportService
+
+    propose_spy = mocker.spy(AccountResolver, "propose")
+    svc = ImportService(db)
+    import_answering_gate(
+        svc, _STANDARD_CSV, refresh=False, confirm=True, auto_accept=True
+    )
+
+    [call] = propose_spy.call_args_list
+    src = call.args[1]
+    assert src.account_name_is_user_set is False
 
 
 def test_pinned_csv_import_keeps_the_files_own_key_on_the_raw_row(

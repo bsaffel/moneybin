@@ -161,6 +161,35 @@ def _payload_with_shared_official_name() -> SyncDataResponse:
     )
 
 
+def _payload_with_and_without_a_nickname() -> SyncDataResponse:
+    """One account with a holder-set nickname, one with none at all."""
+    return _payload(
+        [
+            {
+                "account_id": "acc_named",
+                "persistent_account_id": "ppa_named",
+                "account_type": "depository",
+                "account_subtype": "checking",
+                "institution_name": "Chase",
+                "name": "Everyday Checking",
+                "official_name": "Total Checking",
+                "mask": "1111",
+            },
+            {
+                "account_id": "acc_unnamed",
+                "persistent_account_id": "ppa_unnamed",
+                "account_type": "depository",
+                "account_subtype": "savings",
+                "institution_name": "Chase",
+                "name": None,
+                "official_name": "Premier Savings",
+                "mask": "2222",
+            },
+        ],
+        item_id="item_chase_nicknames",
+    )
+
+
 @pytest.mark.usefixtures("mock_sync_refresh")
 def test_pull_happy_path(
     mock_client: MagicMock,
@@ -1455,6 +1484,42 @@ class TestPullResolvesAccounts:
 
         names = [getattr(src, "account_name", None) for src in captured]
         assert names == ["Freedom Unlimited", "Sapphire Preferred"]
+
+    def test_pull_sets_account_name_is_user_set_from_the_holders_nickname(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidExtractor,
+    ) -> None:
+        """``account_name_is_user_set`` follows ``acc.name`` alone.
+
+        Direct-wiring proof for ``_resolve_accounts``: resolver-level tests
+        cover what the gate does with the flag, not that this call site
+        actually sets it. ``official_name`` (the product's marketing label)
+        must not read as authored even when it is all Plaid gives an account.
+        """
+        captured: list[object] = []
+
+        class _Capturing:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def resolve(self, src: object) -> object:
+                captured.append(src)
+                return SimpleNamespace(account_id="acct_1", outcome="minted_new")
+
+        mock_client.get_data.return_value = _payload_with_and_without_a_nickname()
+        with patch("moneybin.services.sync_service.AccountResolver", _Capturing):
+            service = SyncService(client=mock_client, db=db, loader=loader)
+            service.pull(refresh=False)
+
+        flags = {
+            getattr(src, "source_account_key", None): getattr(
+                src, "account_name_is_user_set", None
+            )
+            for src in captured
+        }
+        assert flags == {"acc_named": True, "acc_unnamed": False}
 
     def test_pull_resolver_failure_does_not_fail_the_pull(
         self,

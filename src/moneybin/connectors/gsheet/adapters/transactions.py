@@ -470,6 +470,10 @@ def _link_sheet_accounts(
                 source_origin=connection.connection_id,
                 source_account_key=key,
                 account_name=clean_name,
+                # authored_keys marks a key whose sheet row genuinely named
+                # the account (vs. a synthesized fallback) -- the same test
+                # name_facts.source_label already uses below.
+                account_name_is_user_set=key in authored_keys,
                 last_four=last_four,
                 name_facts=AccountNameFacts(
                     source_label=display if key in authored_keys else None,

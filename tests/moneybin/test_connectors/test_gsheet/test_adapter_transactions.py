@@ -13,8 +13,24 @@ import yaml
 from moneybin.connectors.gsheet.adapters.base import GSheetConnection
 from moneybin.connectors.gsheet.adapters.transactions import TransactionsAdapter
 from moneybin.database import Database
+from tests.moneybin.db_helpers import create_core_tables
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _seed_dim_account(db: Database, *, account_id: str, display_name: str) -> None:
+    """Insert a minimal, person-named ``core.dim_accounts`` row.
+
+    Mirrors ``test_account_resolver.py``'s ``_seed_dim_account`` (kept local
+    here rather than imported cross-module): ``display_name_is_user_set``
+    defaults ``True`` because every candidate this file seeds stands in for
+    an account a person actually named.
+    """
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, "
+        "display_name_is_user_set) VALUES (?, ?, TRUE)",  # noqa: S608  # test fixture insert
+        [account_id, display_name],
+    )
 
 
 def load_fixture(name: str) -> dict[str, Any]:
@@ -429,6 +445,46 @@ def test_an_authored_name_outranks_a_filler_that_reached_the_key_first(
         [conn.connection_id],
     ).fetchall()
     assert rows == [("unknown", "Unknown", "Unknown")]
+
+
+def test_account_name_is_user_set_gates_the_resolvers_name_signal(
+    in_memory_db: Database, sample_connection: GSheetConnection
+) -> None:
+    """``_link_sheet_accounts`` threads ``account_name_is_user_set`` correctly.
+
+    "Everyday Checking" is text a person typed in the sheet's Account column;
+    a blank cell's filler ("unknown") is not, even though it reads exactly
+    like a name. Seed a real, person-set candidate account under each label
+    and confirm the resolver's weak "name" rung proposes a merge candidate
+    only for the authored one -- mirrors
+    ``test_a_generated_source_name_is_not_a_name_match`` (test_account_resolver.py)
+    at the source side, exercised through the real gsheet ``load()`` wiring
+    rather than a directly constructed ``SourceAccount``.
+    """
+    create_core_tables(in_memory_db)
+    _seed_dim_account(
+        in_memory_db, account_id="acct_authored", display_name="Everyday Checking"
+    )
+    _seed_dim_account(in_memory_db, account_id="acct_filler", display_name="unknown")
+
+    adapter = TransactionsAdapter()
+    conn = _unbound(sample_connection)
+    df = _blank_account_df()
+
+    transformed = adapter.transform(df, conn, in_memory_db)
+    adapter.load(transformed, conn, in_memory_db, import_id="imp1", source_df=df)
+
+    # The resolver's separate, weaker "fallback" rung also proposes the
+    # unnamed sheet account against every unremarkable existing account
+    # regardless of this fix -- orthogonal noise this assertion excludes by
+    # scoping to the "name" signal specifically, which is the one
+    # account_name_is_user_set gates.
+    name_candidates = in_memory_db.execute(
+        "SELECT candidate_account_id FROM app.account_link_decisions "
+        "WHERE status = 'pending' "
+        "AND json_extract_string(match_signals, '$.signal') = 'name'"
+    ).fetchall()
+    assert name_candidates == [("acct_authored",)]
 
 
 def test_load_does_not_mint_an_account_for_a_row_the_transform_dropped(

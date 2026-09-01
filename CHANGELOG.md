@@ -853,7 +853,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   statement's captured account nickname is now also persisted to
   `raw.tabular_accounts.account_label` (previously only held in memory for
   the current import), so a genuinely person-named PDF account keeps reading
-  as named on the next import or backfill sweep. (#493)
+  as named on the next import or backfill sweep. Every source channel sets
+  this flag — OFX, tabular (four import branches), PDF, Plaid, and Google
+  Sheets. (#493)
 
 ### Changed
 - **Google Sheets connects with no setup.** MoneyBin now ships the OAuth client

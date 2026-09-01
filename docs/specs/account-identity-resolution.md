@@ -292,7 +292,10 @@ reversed_by            TEXT
   the product marketing name or the filename alias; tabular sets it only when
   the caller supplied `--account-name` or the file's own account-name column
   held a real (non-blank) value; Plaid sets it only from the holder's own
-  `name`, never the `official_name` product label. Only the live
+  `name`, never the `official_name` product label; gsheet sets it only when
+  the sheet's own Account column named the row (the same `authored_keys` test
+  `raw.tabular_accounts.account_label` already gates on for that channel),
+  never from the "unknown" filler standing in for a blank cell. Only the live
   `SourceAccount` needs this flag; it is not persisted as its own column.
   `display_name_is_user_set` is recomputed downstream from `raw.*.account_label`
   once an account materializes into `core.dim_accounts`, so a channel must also
