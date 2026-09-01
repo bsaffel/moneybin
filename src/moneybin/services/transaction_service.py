@@ -869,7 +869,10 @@ class TransactionService:
             key_of=lambda t: (t.transaction_date, t.transaction_id),
             namespace=_TRANSACTION_LIST_CURSOR,
             scope=scope,
-            snapshot=position.snapshot if position is not None else None,
+            # The canonical local, not position.snapshot: minting from the raw
+            # decoded value would carry a caller's non-canonical spelling into
+            # every later cursor instead of converging on one form.
+            snapshot=snapshot,
             total=total_count,
         )
 

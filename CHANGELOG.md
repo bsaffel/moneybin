@@ -877,7 +877,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ordinary successful response; the `transactions`, `system_audit` and
   `reviews` MCP tools accepted such a cursor, and a date or timestamp written
   in a different-but-valid ISO spelling could slip one past the other paged
-  views too. Cursors MoneyBin mints are unaffected. (#498)
+  views too; cursors MoneyBin mints are unaffected. (#498)
 - **Account merge proposals no longer fire on a shared generated label alone,
   on either side of the comparison.** Two unrelated accounts whose *display
   name* was never set by a person or a source — both resolving to a bare
