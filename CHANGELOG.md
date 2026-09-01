@@ -854,7 +854,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `accounts set --currency` repairs every event that carries *no* currency; one
   that already carries a wrong one cannot be relabelled in-product yet, because
   a manual investment event has no delete or revert and re-recording it appends
-  a second row rather than replacing the first.
+  a second row rather than replacing the first. A position whose open lots mix a
+  known currency with an unknown one now withholds its market value instead of
+  pricing the combined quantity at the known currency's close — the same guard
+  that already withheld a position holding two different known currencies.
 - **Account merge proposals no longer fire on a shared generated label alone,
   on either side of the comparison.** Two unrelated accounts whose *display
   name* was never set by a person or a source — both resolving to a bare
