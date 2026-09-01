@@ -14,27 +14,35 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.server.middleware import MiddlewareContext
 from fastmcp.tools import ToolResult
+from prometheus_client import REGISTRY
 from pydantic import ValidationError
 
 from moneybin.mcp.middleware import ValidationErrorMiddleware
-from moneybin.metrics.registry import MCP_TOOL_CALLS_TOTAL, MCP_TOOL_DURATION_SECONDS
 
 
 def _tool_call_count(tool_name: str) -> float:
-    counter = MCP_TOOL_CALLS_TOTAL.labels(tool_name=tool_name)
-    return counter._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+    """Public read of the call counter — no private attribute access.
+
+    Matches tests/moneybin/test_services/test_price_service.py::_rows_written;
+    the alternative ``.labels(...)._value.get()`` needs a pyright suppression
+    for protected access.
+    """
+    return (
+        REGISTRY.get_sample_value(
+            "moneybin_mcp_tool_calls_total", {"tool_name": tool_name}
+        )
+        or 0.0
+    )
 
 
 def _tool_duration_observation_count(tool_name: str) -> float:
     """Total histogram observations for ``tool_name`` (the ``_count`` sample)."""
-    for metric in MCP_TOOL_DURATION_SECONDS.collect():
-        for sample in metric.samples:
-            if (
-                sample.name.endswith("_count")
-                and sample.labels.get("tool_name") == tool_name
-            ):
-                return sample.value
-    return 0.0
+    return (
+        REGISTRY.get_sample_value(
+            "moneybin_mcp_tool_duration_seconds_count", {"tool_name": tool_name}
+        )
+        or 0.0
+    )
 
 
 def _make_test_server() -> FastMCP:
@@ -173,3 +181,24 @@ async def test_unrelated_error_still_records_tool_metrics() -> None:
             await client.call_tool("boom", {})
     assert _tool_call_count("boom") == before_calls + 1
     assert _tool_duration_observation_count("boom") == before_duration + 1
+
+
+async def test_unregistered_tool_name_is_not_used_as_a_metric_label() -> None:
+    """A request naming no registered tool must not mint a new label series.
+
+    The request name is client-supplied and unbounded. Recording it verbatim
+    would let a buggy or hostile client mint arbitrarily many
+    moneybin_mcp_tool_calls_total / moneybin_mcp_tool_duration_seconds label
+    series just by spraying distinct nonexistent tool names.
+    """
+    server = _make_test_server()
+    garbage_name = "does_not_exist_" + "x" * 40
+    before_unknown_calls = _tool_call_count("unknown")
+    before_unknown_duration = _tool_duration_observation_count("unknown")
+    async with Client(server) as client:
+        with pytest.raises(Exception, match="Unknown tool"):
+            await client.call_tool(garbage_name, {})
+    assert _tool_call_count(garbage_name) == 0
+    assert _tool_duration_observation_count(garbage_name) == 0
+    assert _tool_call_count("unknown") == before_unknown_calls + 1
+    assert _tool_duration_observation_count("unknown") == before_unknown_duration + 1

@@ -226,7 +226,7 @@ finally:
 ### Behavior
 
 - Adding a new metric: define it in `registry.py` (one line), then record it manually at the call site that matters.
-- Manual recording keeps counting, timing, and error classification a call-site decision — the touchpoint sees exactly what happened (success, which error, which labels) rather than a generic wrapper guessing at it.
+- Manual recording keeps what gets counted, timed, and labeled a call-site decision, rather than a generic wrapper guessing at it. A touchpoint decides its own labels — the MCP tool-call touchpoint records `tool_name` only (call volume and latency, no outcome breakdown); a touchpoint that needs an error or outcome label adds one explicitly, the way `CATEGORIZE_ERRORS_TOTAL` and `IMPORT_ERRORS_TOTAL` do.
 
 ## 5. Metrics Persistence
 
@@ -265,10 +265,13 @@ The MCP server calls `setup_observability(stream="mcp")` at startup.
 - Metrics flush uses the periodic strategy (every 5 min) since MCP sessions can be long.
 - Tool call instrumentation has one touchpoint and no per-tool opt-in:
   `ValidationErrorMiddleware.on_call_tool` (`src/moneybin/mcp/middleware.py`)
-  wraps every `tools/call` request and records `mcp_tool_calls_total` and
-  `mcp_tool_duration_seconds` in a `finally` block, so a call is counted
-  whether it succeeds, is translated to a validation-error envelope, or
-  raises something else that propagates.
+  wraps every `tools/call` request and records
+  `moneybin_mcp_tool_calls_total` and `moneybin_mcp_tool_duration_seconds` in
+  a `finally` block, so a call is counted whether it succeeds, is translated
+  to a validation-error envelope, or raises something else that propagates.
+  The `tool_name` label is the raw request name, except when it names no
+  registered tool — that case is coalesced to a fixed `unknown` sentinel so a
+  client cannot mint unbounded label cardinality by spraying garbage names.
 - Privacy instrumentation records the classified tier and masking outcome.
   Consent-based degradation is deferred and therefore emits no runtime decision
   log today.

@@ -17,7 +17,10 @@ The same ``on_call_tool`` boundary is also the single touchpoint for
 MCP_TOOL_CALLS_TOTAL / MCP_TOOL_DURATION_SECONDS (docs/specs/observability.md):
 every tool call is timed and counted here, regardless of whether it succeeds,
 raises a ValidationError this middleware translates, or raises something else
-that propagates. No per-tool opt-in.
+that propagates. No per-tool opt-in. The label is the raw request tool name
+unless the name does not resolve to a registered tool, in which case it is
+coalesced to a fixed sentinel — see ``_UNKNOWN_TOOL_LABEL`` — so a client
+spraying garbage names cannot mint unbounded label cardinality.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from fastmcp.exceptions import NotFoundError
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools import ToolResult
 from pydantic import ValidationError
@@ -40,6 +44,13 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
+
+# Label value for a tools/call request naming a tool that doesn't exist. The
+# raw request name is client-supplied and unbounded — a buggy or hostile
+# client could otherwise mint an unbounded number of Prometheus label series
+# (and, via the periodic metrics flush, `app.metrics` rows) just by spraying
+# distinct nonexistent names.
+_UNKNOWN_TOOL_LABEL = "unknown"
 
 
 class ValidationErrorMiddleware(Middleware):
@@ -67,6 +78,14 @@ class ValidationErrorMiddleware(Middleware):
         Records MCP_TOOL_CALLS_TOTAL / MCP_TOOL_DURATION_SECONDS for every
         call in a ``finally`` block, so a call that raises an exception this
         middleware does not translate is still counted before it propagates.
+
+        ``tool_name`` starts as the raw, client-supplied request name — not
+        yet proven to name a registered tool. A request for a nonexistent
+        tool reaches this boundary and raises ``NotFoundError`` before
+        FastMCP's own routing gets a chance to reject it (verified: the
+        middleware chain runs ahead of tool lookup), so the metric label is
+        coalesced to a fixed sentinel in that case rather than trusting the
+        request payload as a label value.
         """
         tool_name = context.message.name
         started = time.monotonic()
@@ -86,6 +105,9 @@ class ValidationErrorMiddleware(Middleware):
                 content=envelope.to_json(),
                 structured_content=envelope.to_dict(),
             )
+        except NotFoundError:
+            tool_name = _UNKNOWN_TOOL_LABEL
+            raise
         finally:
             MCP_TOOL_CALLS_TOTAL.labels(tool_name=tool_name).inc()
             MCP_TOOL_DURATION_SECONDS.labels(tool_name=tool_name).observe(
