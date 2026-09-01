@@ -197,17 +197,19 @@ flowchart LR
     pkg[Analysis Packages<br/>pip-installed or in-tree]
     rep[Standalone Reports<br/>pip-installed or in-tree]
     ep["moneybin.packages<br/>entry points"]
-    server["FastMCP server<br/>register_*_tools() + entry-point loop"]
+    server["FastMCP server<br/>register_*_tools()"]
+    server_planned["+ entry-point loop (planned)"]
     surface[Registered tool surface]
 
     intree -->|explicit register calls| server
     pkg --> ep
     rep --> ep
-    ep -->|enumerate + validate + register| server
+    ep -.->|planned: enumerate + validate + register| server_planned
     server --> surface
+    server_planned -.-> surface
 ```
 
-For the consuming agent there is one surface, governed by one set of rules. The two paths exist for the contributor — they determine *who* can add a tool and through what review gate — not for the runtime.
+For the consuming agent there is one surface, governed by one set of rules. Path 1 is the runtime today. Path 2 exists only as a contract for the contributor — it determines *who* will be able to add a tool and through what review gate, once the entry-point loop above lands.
 
 ### Tool disclosure: full surface, taxonomy-led
 
