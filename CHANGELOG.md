@@ -806,7 +806,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `core.dim_accounts` now carries a `display_name_is_user_set` provenance
   flag, `SourceAccount` carries the equivalent `account_name_is_user_set` for
   a source account presented at import time, and the resolver's weak name
-  signal requires the applicable flag on both sides of a match. (#493)
+  signal requires the applicable flag on both sides of a match. A PDF
+  statement's captured account nickname is now also persisted to
+  `raw.tabular_accounts.account_label` (previously only held in memory for
+  the current import), so a genuinely person-named PDF account keeps reading
+  as named on the next import or backfill sweep. (#493)
 
 ### Changed
 - **Google Sheets connects with no setup.** MoneyBin now ships the OAuth client

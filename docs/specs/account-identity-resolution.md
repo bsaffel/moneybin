@@ -292,7 +292,15 @@ reversed_by            TEXT
   the product marketing name or the filename alias; tabular sets it only when
   the caller supplied `--account-name` or the file's own account-name column
   held a real (non-blank) value; Plaid sets it only from the holder's own
-  `name`, never the `official_name` product label.
+  `name`, never the `official_name` product label. Only the live
+  `SourceAccount` needs this flag; it is not persisted as its own column.
+  `display_name_is_user_set` is recomputed downstream from `raw.*.account_label`
+  once an account materializes into `core.dim_accounts`, so a channel must also
+  persist the authored text into that raw column — not just carry it in memory
+  for the current import — or the account reads as unnamed again on the very
+  next import or backfill sweep. The PDF channel persists its captured
+  "Account Name:"/"Account Nickname:" line into
+  `raw.tabular_accounts.account_label` for exactly this reason.
   A match produces a `pending` decision row recording which signal fired. Weak
   signals are never an accepted `ref_kind` and never auto-merge. **⚠ Reconciled
   (Decision 8):** "durably present, captured at mint" was the gap — last4 was

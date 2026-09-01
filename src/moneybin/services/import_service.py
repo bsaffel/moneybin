@@ -1784,6 +1784,16 @@ def _pdf_source_account(
             last_four=derived_last_four(
                 _to_account_number_mask(decision.metadata.account_id)
             ),
+            # Same value and same condition as account_name_is_user_set below
+            # -- a captured "Account Name:"/"Account Nickname:" line is the
+            # only PDF-side source that counts as authored. Masked the way
+            # every other display-safe label site is (mask_embedded_account_
+            # number), never the raw captured text.
+            source_label=(
+                mask_embedded_account_number(decision.metadata.account_label)
+                if decision.metadata.account_label
+                else None
+            ),
         ),
         explicit_account_id=account_id_override,
         # Set even when no key is borrowed below; _teach_unpinned_key ignores it
@@ -5553,6 +5563,20 @@ class ImportService:
             account_df = pl.DataFrame({
                 "account_id": [account_id],
                 "account_name": [source_account.account_name],
+                # Distinct from account_name above: dim_accounts.sql's
+                # tabular_accounts CTE reads account_label specifically (never
+                # account_name) to decide display_name_is_user_set. Without
+                # this, a PDF's captured "Account Name:"/"Account Nickname:"
+                # line lived only on this live SourceAccount -- once
+                # materialized, the very next import or accounts_links_run
+                # backfill would read display_name_is_user_set=False for an
+                # account a person genuinely named. account_name_is_user_set
+                # is exactly that same provenance test, already computed.
+                "account_label": [
+                    mask_embedded_account_number(source_account.account_name)
+                    if source_account.account_name_is_user_set
+                    else None
+                ],
                 "account_number": [None],
                 "account_number_masked": [_to_account_number_mask(raw_account_id)],
                 "account_type": [account_type],

@@ -2664,10 +2664,20 @@ def test_pdf_account_metadata_populates_the_raw_account(
 
     assert result.transactions == 2
     row = db.execute(
-        "SELECT account_name, account_type, currency "
+        "SELECT account_name, account_label, account_type, currency "
         "FROM raw.tabular_accounts WHERE source_type = 'pdf'"
     ).fetchone()
-    assert row == ("Household Checking", "Personal Checking", "USD")
+    # account_label distinct from account_name: dim_accounts.sql's
+    # tabular_accounts CTE reads account_label (never account_name) to decide
+    # display_name_is_user_set, so a captured "Account Name:" line must land
+    # there too -- not just on account_name -- or the next import/backfill
+    # would read this genuinely person-named account as unnamed.
+    assert row == (
+        "Household Checking",
+        "Household Checking",
+        "Personal Checking",
+        "USD",
+    )
 
 
 @pytest.mark.integration
