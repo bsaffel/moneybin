@@ -14,6 +14,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 
 ### Added
+- **`core.bridge_merchant_entities`** — a new queryable core view mapping each
+  transaction to the merchant identifier its source system assigned, alongside
+  the source that issued it and the merchant name that source stated. Available
+  through `moneybin sql query` and the MCP schema surface. Categorization and
+  merchant harvesting now read it instead of the internal staging layer, whose
+  shape carries no stability guarantee. `core.fct_transactions` is unchanged.
+  (#494)
 - **A Google Sheet that tracks several accounts in one tab now imports as
   several accounts.** `gsheet connect` previously required you to name one
   destination account, and every row from every account was filed under it —
