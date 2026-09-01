@@ -16,6 +16,7 @@ import ast
 import io
 import re
 import sys
+import time
 from collections.abc import Iterator, Sequence
 from decimal import Decimal
 from itertools import product
@@ -731,6 +732,34 @@ def test_the_fit_keeps_every_column_the_width_allows() -> None:
                     f"{len(kept)} columns {kept}, but {best} keeps "
                     f"{len(best)} and fits the same width"
                 )
+
+
+def test_the_fit_stays_cheap_on_a_projection_with_thousands_of_columns() -> None:
+    """The fit runs before Rich prints anything, so its cost is felt as a hang.
+
+    Nothing caps a report's output columns: a saved or extension report is
+    whatever `SELECT` its author wrote, and the fit path exists precisely for
+    the reports nobody declared columns for. Scoring each candidate by summing
+    its own head-and-tail list is cubic, which is 5 seconds at 800 columns and
+    unbounded past that — the CLI appears to hang on a legitimate query.
+
+    The budget is loose on purpose. A fit whose cost tracks the column count
+    finishes both of these in single-digit milliseconds, so a second leaves
+    room for a loaded CI worker while still failing anything super-linear.
+    """
+    for total in (800, 6400):
+        widths = [1] * total
+        start = time.perf_counter()
+        kept = _fit_columns(widths, 80)
+        elapsed = time.perf_counter() - start
+
+        assert elapsed < 1.0, (
+            f"fitting {total} columns took {elapsed:.2f}s, so the cost grows "
+            "faster than the projection does"
+        )
+        # Asserted alongside the timing so a fit that got fast by giving up on
+        # the columns cannot pass this.
+        assert len(kept) > 2
 
 
 def test_an_unfitted_table_streams_its_rows(

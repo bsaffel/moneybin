@@ -27,6 +27,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from itertools import accumulate
 from typing import TYPE_CHECKING
 
 import typer
@@ -220,35 +221,40 @@ def _fit_columns(widths: Sequence[int], available: int) -> tuple[int, ...]:
     if total == 1:
         return (0,)
     # Everything dropped is one contiguous run, so a candidate projection is
-    # exactly a head length and a tail length — at most n²/2 of them, over a
-    # column count. Few enough to score them all, which is what a walk
-    # outwards-in cannot do: it pays for the first wide column it reaches and
-    # loses every narrow one behind it, rendering three columns where four fit.
-    # One column of ELISION stands between the two halves, so its width is
-    # reserved before anything competes for the remainder.
-    best = (1, 1)
-    for head in range(1, total):
-        for tail in range(1, total - head + 1):
-            if head + tail == total:
-                continue  # the whole projection, and it did not fit above
-            shown = [
-                *(widths[i] for i in range(head)),
-                *(widths[i] for i in range(total - tail, total)),
-                len(ELISION),
-            ]
-            if _table_width(shown) > available:
-                continue
-            # Most columns wins. Between two that show the same number, the
-            # more balanced split, then the head — so a squeeze keeps the
-            # widest frame rather than a prefix, and an odd count leans left.
-            if (head + tail, -abs(head - tail), head) > (
-                best[0] + best[1],
-                -abs(best[0] - best[1]),
-                best[0],
-            ):
-                best = (head, tail)
+    # exactly a head length and a tail length. Running sums price one in
+    # constant time, and the widest affordable tail only shrinks as the head
+    # grows — so one pass over the heads reaches every candidate that could
+    # win. Rebuilding and re-summing each pair instead is cubic, which is five
+    # seconds at 800 columns, and nothing caps a report's output width.
+    prefix = list(accumulate(widths, initial=0))
+    suffix = list(accumulate(reversed(widths), initial=0))
+
+    def fits(head: int, tail: int) -> bool:
+        # One column of ELISION stands between the two halves, so its width is
+        # reserved before anything competes for the remainder.
+        cells = prefix[head] + suffix[tail] + len(ELISION)
+        return cells + 3 * (head + tail + 1) + 1 <= available
+
     # The ends are kept whether or not they fit: a table squeezed past its own
     # frame still has to render something, and they are what identify the row.
+    best = (1, 1)
+    tail = total - 2
+    for head in range(1, total - 1):
+        tail = min(tail, total - head - 1)  # a dropped run needs somewhere to be
+        while tail >= 1 and not fits(head, tail):
+            tail -= 1
+        if tail < 1:
+            # A longer head costs strictly more, so no later head fits either.
+            break
+        # Most columns wins. Between two that show the same number, the more
+        # balanced split, then the head — so a squeeze keeps the widest frame
+        # rather than a prefix, and an odd count leans left.
+        if (head + tail, -abs(head - tail), head) > (
+            best[0] + best[1],
+            -abs(best[0] - best[1]),
+            best[0],
+        ):
+            best = (head, tail)
     head, tail = best
     return (*range(head), *range(total - tail, total))
 
