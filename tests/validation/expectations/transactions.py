@@ -6,8 +6,8 @@ from typing import Any
 
 from moneybin.database import Database
 from moneybin.tables import FCT_TRANSACTION_PROVENANCE, FCT_TRANSACTIONS
-from moneybin.validation.expectations._types import SourceTransactionRef
-from moneybin.validation.result import ExpectationResult
+from tests.validation.expectations._types import SourceTransactionRef
+from tests.validation.result import ExpectationResult
 
 
 def verify_gold_record_count(

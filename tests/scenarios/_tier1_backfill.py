@@ -16,15 +16,15 @@ from datetime import date
 
 from moneybin.database import Database
 from moneybin.synthetic.engine import GeneratorEngine
-from moneybin.validation.assertions import (
+from tests.scenarios._runner.loader import SetupSpec
+from tests.validation.assertions import (
     assert_amount_precision,
     assert_date_bounds,
     assert_row_count_exact,
     assert_schema_snapshot,
     assert_source_system_populated,
 )
-from moneybin.validation.result import AssertionResult
-from tests.scenarios._runner.loader import SetupSpec
+from tests.validation.result import AssertionResult
 
 # Schema enumerated by hand from src/moneybin/sqlmesh/models/core/fct_transactions.sql.
 # Updating this requires inspecting the SQL — never paste a query result.

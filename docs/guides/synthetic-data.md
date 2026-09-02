@@ -119,7 +119,7 @@ moneybin --profile bob db query "
 "
 ```
 
-`core.fct_transactions.transaction_id` is a gold key computed by the dedup/matching pipeline, not the generator's original ID — `synthetic.ground_truth.source_transaction_id` only survives through `prep.int_transactions__matched`, so the join bridges through that table. This is the same join `moneybin`'s own categorization-accuracy evaluation uses (`src/moneybin/validation/evaluations/categorization.py`).
+`core.fct_transactions.transaction_id` is a gold key computed by the dedup/matching pipeline, not the generator's original ID — `synthetic.ground_truth.source_transaction_id` only survives through `prep.int_transactions__matched`, so the join bridges through that table. This is the same join `moneybin`'s own categorization-accuracy evaluation uses (`tests/validation/evaluations/categorization.py`).
 
 Transfers have `expected_category = NULL` (a transfer is not a spending category) — filter them out with the `WHERE` clause above when scoring categorizer accuracy.
 

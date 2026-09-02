@@ -41,8 +41,8 @@ Adding a new invariant in the future: add a `.sql` file to `src/moneybin/sqlmesh
 | Audit file | Name | What it checks | Fails when |
 |---|---|---|---|
 | `fct_transactions_fk_integrity.sql` | `fct_transactions_fk_integrity` | Every `fct_transactions.account_id` resolves to `dim_accounts` | Any orphaned account_id |
-| `fct_transactions_sign_convention.sql` | `fct_transactions_sign_convention` | No amount is NULL (zero is a modeled 'zero' direction, not a violation) | Any NULL amount |
-| `bridge_transfers_balanced.sql` | `bridge_transfers_balanced` | Every transfer pair sums to within $0.01 | Any pair with `ABS(SUM(amount)) > 0.01` |
+| `fct_transactions_sign_convention.sql` | `fct_transactions_sign_convention` | `amount` is non-NULL and both derived columns agree with it: `transaction_direction` matches the sign, `amount_absolute` matches `ABS(amount)` (zero is a modeled 'zero' direction, not a violation; category is deliberately not policed against the sign) | Any NULL amount, or either derived column disagreeing |
+| `bridge_transfers_balanced.sql` | `bridge_transfers_balanced` | Every transfer pair's legs cancel exactly, and both legs are still present in `core.fct_transactions` | Any pair whose legs do not sum to `0`, including a pair with a missing leg |
 | `fct_investment_transactions_fk_integrity.sql` | `fct_investment_transactions_fk_integrity` | Every `fct_investment_transactions.account_id` resolves to `dim_accounts` | Any orphaned account_id |
 | `fct_investment_transactions_sign_convention.sql` | `fct_investment_transactions_sign_convention` | The investment ledger obeys the accounting sign convention | Any violation of the convention |
 | `fct_investment_transactions_uniqueness.sql` | `fct_investment_transactions_uniqueness` | Every `investment_transaction_id` appears once | Any duplicate id |
@@ -226,7 +226,7 @@ moneybin system doctor [--verbose] [--output text|json]
 ```
 ✅ fct_transactions_fk_integrity
 ✅ fct_transactions_sign_convention
-❌ bridge_transfers_balanced — 2 transfer pairs sum to > $0.01
+❌ bridge_transfers_balanced — 2 violation(s)
    Run with --verbose for affected pair IDs
 ⚠️  categorization_coverage — 43% of non-transfer transactions are uncategorized
 ✅ dedup_reconciliation
@@ -236,7 +236,7 @@ moneybin system doctor [--verbose] [--output text|json]
 
 With `--verbose`, affected IDs appear under each failing line:
 ```
-❌ bridge_transfers_balanced — 2 transfer pairs sum to > $0.01
+❌ bridge_transfers_balanced — 2 violation(s)
    Affected: a1b2c3d4e5f6, b7c8d9e0f1a2
 ```
 
@@ -253,7 +253,7 @@ With `--verbose`, affected IDs appear under each failing line:
     "invariants": [
       {"name": "fct_transactions_fk_integrity", "status": "pass", "detail": null, "affected_ids": []},
       {"name": "fct_transactions_sign_convention", "status": "pass", "detail": null, "affected_ids": []},
-      {"name": "bridge_transfers_balanced", "status": "fail", "detail": "2 transfer pairs sum to > $0.01", "affected_ids": []},
+      {"name": "bridge_transfers_balanced", "status": "fail", "detail": "2 violation(s)", "affected_ids": []},
       {"name": "categorization_coverage", "status": "warn", "detail": "43% of non-transfer transactions are uncategorized", "affected_ids": []},
       {"name": "dedup_reconciliation", "status": "pass", "detail": null, "affected_ids": []}
     ]

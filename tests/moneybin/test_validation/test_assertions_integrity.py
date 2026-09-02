@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.validation.assertions.integrity import (
+from tests.validation.assertions.integrity import (
     assert_no_orphans,
     assert_valid_foreign_keys,
 )

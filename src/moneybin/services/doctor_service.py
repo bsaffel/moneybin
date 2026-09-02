@@ -10,8 +10,9 @@ from typing import Any, Literal, cast
 from sqlglot import exp
 
 from moneybin.audits import recipes as recipe_registry
+from moneybin.audits.runner import run_standalone_audits
 from moneybin.config import get_settings
-from moneybin.database import Database, sqlmesh_context
+from moneybin.database import Database
 from moneybin.errors import RecoveryAction, exception_origin
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
 from moneybin.metrics.registry import (
@@ -2046,54 +2047,54 @@ class DoctorService:
             return 0
 
     def _run_sqlmesh_audits(self, verbose: bool) -> list[InvariantResult]:
-        """Discover and run all named SQLMesh standalone audits."""
-        results: list[InvariantResult] = []
+        """Report every SQLMesh standalone audit, via the shared audit runner.
+
+        The audit SQL under ``src/moneybin/sqlmesh/audits/`` is the canonical
+        definition of each check; doctor renders none of it itself, so a
+        scenario run and a ``moneybin system doctor`` cannot disagree about
+        what an audit means.
+        """
         try:
-            with sqlmesh_context(self._db) as ctx:
-                for name, audit in ctx.standalone_audits.items():
-                    try:
-                        sql = audit.render_audit_query().sql(dialect="duckdb")
-                        # Audit SQL must return the violation entity ID in column 0.
-                        rows = self._db.execute(sql).fetchall()  # noqa: S608 — rendered from trusted audit files
-                    except Exception as e:  # noqa: BLE001 — per-audit isolation
-                        results.append(
-                            InvariantResult(
-                                name=name,
-                                status="skipped",
-                                detail=f"audit failed: {e}",
-                                affected_ids=[],
-                            )
-                        )
-                        continue
-                    if rows:
-                        affected = [str(r[0]) for r in rows] if verbose else []
-                        results.append(
-                            InvariantResult(
-                                name=name,
-                                status="fail",
-                                detail=f"{len(rows)} violation(s)",
-                                affected_ids=affected,
-                            )
-                        )
-                    else:
-                        results.append(
-                            InvariantResult(
-                                name=name,
-                                status="pass",
-                                detail=None,
-                                affected_ids=[],
-                            )
-                        )
+            outcomes = run_standalone_audits(self._db)
         except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
             logger.warning(f"Transform audit discovery failed: {e}")
-            results.append(
+            return [
                 InvariantResult(
                     name="transform_audits_unavailable",
                     status="skipped",
                     detail=f"Transform audit discovery failed: {e}",
                     affected_ids=[],
                 )
-            )
+            ]
+        results: list[InvariantResult] = []
+        for outcome in outcomes:
+            if outcome.error is not None:
+                results.append(
+                    InvariantResult(
+                        name=outcome.name,
+                        status="skipped",
+                        detail=outcome.error,
+                        affected_ids=[],
+                    )
+                )
+            elif outcome.violation_ids:
+                results.append(
+                    InvariantResult(
+                        name=outcome.name,
+                        status="fail",
+                        detail=f"{len(outcome.violation_ids)} violation(s)",
+                        affected_ids=outcome.violation_ids if verbose else [],
+                    )
+                )
+            else:
+                results.append(
+                    InvariantResult(
+                        name=outcome.name,
+                        status="pass",
+                        detail=None,
+                        affected_ids=[],
+                    )
+                )
         return results
 
     def _run_dedup_reconciliation(self) -> InvariantResult:

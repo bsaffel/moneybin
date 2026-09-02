@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.validation.assertions.uniqueness import assert_no_duplicates
+from tests.validation.assertions.uniqueness import assert_no_duplicates
 
 
 @pytest.fixture()

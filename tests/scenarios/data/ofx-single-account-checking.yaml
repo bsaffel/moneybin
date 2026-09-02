@@ -44,7 +44,9 @@ assertions:
       table: core.fct_transactions
       expected: 2
   - name: sign_convention
-    fn: assert_sign_convention
+    fn: assert_transform_audit
+    args:
+      audit: fct_transactions_sign_convention
   - name: source_system_populated
     fn: assert_source_system_populated
     args:

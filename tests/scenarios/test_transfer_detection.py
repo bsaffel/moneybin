@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
-from moneybin.validation.assertions import assert_date_continuity
-from moneybin.validation.result import AssertionResult
 from tests.scenarios._runner import load_shipped_scenario, run_scenario
 from tests.scenarios._tier1_backfill import tier1_backfill
+from tests.validation.assertions import assert_date_continuity
+from tests.validation.result import AssertionResult
 
 
 @pytest.mark.scenarios

@@ -61,7 +61,9 @@ assertions:
       table_min_rows:
         core.fct_transactions: 100
   - name: sign_convention
-    fn: assert_sign_convention
+    fn: assert_transform_audit
+    args:
+      audit: fct_transactions_sign_convention
   - name: no_duplicate_transactions
     fn: assert_no_duplicates
     args:

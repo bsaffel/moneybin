@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from moneybin.validation.result import (
+from tests.scenarios._runner.result import ScenarioResult
+from tests.validation.result import (
     AssertionResult,
     EvaluationResult,
     ExpectationResult,
 )
-from tests.scenarios._runner.result import ScenarioResult
 
 
 def _result(**overrides: object) -> ScenarioResult:

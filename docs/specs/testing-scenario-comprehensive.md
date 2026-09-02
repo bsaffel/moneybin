@@ -29,7 +29,7 @@ Worse, one expectation (`family-full-pipeline` row count `~2,900 ±15%`) appears
 
 This spec is **pre-merge + contributor-facing**: scenario YAML / pytest assertions, fixture authoring, AI-agent recipes for translating bug reports into reproductions. It runs in CI and gates merges.
 
-The two share primitives (row accounting, orphan detection, temporal coverage). This spec formalizes that sharing by extracting a common assertion library at `src/moneybin/validation/` that both consumers depend on.
+The two share checks (row accounting, orphan detection, temporal coverage). Since MB-54 that sharing runs through SQLMesh audit SQL under `src/moneybin/sqlmesh/audits/`, which `moneybin system doctor` and this spec's scenarios both read; `tests/validation/` holds only the scenario scaffolding around it.
 
 ### Related specs
 
@@ -63,7 +63,7 @@ Every scenario MUST be evaluated against the following tiers. The scenario YAML 
 | No-duplicates on natural keys (`transaction_id`, `account_id`) | `assert_no_duplicates` (existing) |
 | `source_system` populated and ∈ expected set per scenario | `assert_source_system_populated` |
 | Provenance completeness: every `transaction_id` has ≥1 provenance row | `assert_no_orphans` (existing) |
-| Sign convention: expense<0, income>0, transfers exempt | `assert_sign_convention` (existing) |
+| Sign convention: amount classifiable, derived direction columns agree | `assert_transform_audit` → `fct_transactions_sign_convention` (audit SQL since MB-54) |
 | Amount precision: `DECIMAL(18,2)`, no truncation | `assert_amount_precision` |
 | Date bounds: all `transaction_date` within scenario's declared date range | `assert_date_bounds` |
 
@@ -71,7 +71,7 @@ Every scenario MUST be evaluated against the following tiers. The scenario YAML 
 
 | Check | Primitive |
 |---|---|
-| Balanced transfers: confirmed transfer pairs sum to zero | `assert_balanced_transfers` (existing) |
+| Balanced transfers: both legs present and cancelling exactly | `assert_transform_audit` → `bridge_transfers_balanced` (audit SQL since MB-54) |
 | Categorization accuracy + per-category precision/recall vs ground truth | `score_categorization` (existing — extend with P/R breakdown) |
 | Transfer detection: F1 + raw precision and recall (separately, to catch one-sided bias) | `score_transfer_detection` (existing — extend) |
 | Match confidence distribution within expected bounds | `assert_distribution_within_bounds` (existing — wire in) |
@@ -147,15 +147,22 @@ The scenario runner, steps, loader, fixture loader, expectations module, and YAM
 
 ### R6 — Shared validation library
 
-Reusable check primitives live at `src/moneybin/validation/`, split into three peer subpackages reflecting the three Result types they return:
+> Superseded in part by MB-54: a data-quality check on a `core.*` relation is
+> now SQLMesh audit SQL under `src/moneybin/sqlmesh/audits/`, reached from YAML
+> through `assert_transform_audit`. This package holds what an audit cannot
+> express — scenario-parameterized shape checks, environment checks, and
+> ground-truth scoring — and moved out of `src/moneybin/validation/` because
+> every consumer is under `tests/`.
+
+Reusable check primitives live at `tests/validation/`, split into three peer subpackages reflecting the three Result types they return:
 
 - `assertions/` — table-level predicates returning `AssertionResult`. Categories: `schema`, `completeness`, `uniqueness`, `integrity`, `domain`, `distribution`, `infrastructure`.
 - `expectations/` — per-record predicates returning `ExpectationResult`. Modules: `matching`, `transactions`.
 - `evaluations/` — metric scoring against thresholds, returning `EvaluationResult`. Modules: `categorization`, `matching`.
 
-Every primitive takes `Database` as its first positional argument (per `.claude/rules/database.md`). Top-level `moneybin.validation` re-exports only the three Result types.
+Every primitive takes `Database` as its first positional argument (per `.claude/rules/database.md`). Top-level `tests.validation` re-exports only the three Result types.
 
-This library is the **stable contract** consumed by both this spec's pytest suite and `data-reconciliation.md`'s runtime views. Stability rules:
+This library is the **stable contract** consumed by this spec's pytest suite. (`data-reconciliation.md` is still `draft` and consumes nothing today; when it ships, its runtime checks belong in audit SQL per MB-54, not here.) Stability rules:
 
 - Additive optional kwargs are non-breaking.
 - Renaming or removing a primitive requires a deprecation alias for one release.
@@ -169,8 +176,8 @@ No schema changes. This spec adds tests and assertion primitives, and relocates 
 
 ### Files to Create
 
-- `src/moneybin/validation/assertions/{schema,completeness,uniqueness,integrity,domain,distribution,infrastructure}.py` — assertion primitives, organized along industry-recognized data-quality categories. New Phase 3 primitives slot into the existing module that matches their shape (no new module names without a corresponding new category).
-- `src/moneybin/validation/expectations/{matching,transactions}.py` — per-record predicate library, decoupled from YAML loader. Public API: `verify_*` functions returning `ExpectationResult`.
+- `tests/validation/assertions/{schema,completeness,uniqueness,integrity,domain,distribution,infrastructure}.py` — assertion primitives, organized along industry-recognized data-quality categories. New Phase 3 primitives slot into the existing module that matches their shape (no new module names without a corresponding new category).
+- `tests/validation/expectations/{matching,transactions}.py` — per-record predicate library, decoupled from YAML loader. Public API: `verify_*` functions returning `ExpectationResult`.
 - `tests/scenarios/_runner/_assertion_registry.py`, `_expectation_registry.py`, `_evaluation_registry.py` — explicit YAML-name → callable maps. Adding a new YAML-callable primitive requires a registry entry. (Per Phase 1 relocation; the original draft placed these under `src/moneybin/testing/scenarios/`.)
 - Harness primitives (`assert_idempotent`, `assert_subprocess_parity`, `assert_incremental_safe`, `assert_empty_input_safe`, `assert_malformed_input_rejected`) live in `tests/scenarios/_harnesses.py` (Phase 4), **not** in `validation/`. They are pipeline-execution patterns, not data assertions.
 - `tests/scenarios/conftest.py` — shared fixtures: encrypted DB bootstrap, MONEYBIN_HOME isolation, persona generator helpers
@@ -207,7 +214,7 @@ No schema changes. This spec adds tests and assertion primitives, and relocates 
 ### Sequencing
 
 1. **Phase 1 — Relocation.** Move `src/moneybin/testing/scenarios/` to `tests/scenarios/`, port to pytest, drop ResponseEnvelope, remove `synthetic verify` CLI, update CI workflow. No new behavior; existing assertions/expectations preserved 1:1.
-2. **Phase 2 — Validation library.** Reorganize `src/moneybin/validation/` into seven industry-aligned assertion modules; standardize on `Database` as every primitive's first argument; decouple per-record expectations from the YAML loader; wire two explicit registries (assertions, expectations) co-located with the runner; lock the public API as a stable contract. No new assertions yet — Phase 3 backfills the missing Tier 1 primitives.
+2. **Phase 2 — Validation library.** Reorganize `tests/validation/` into seven industry-aligned assertion modules; standardize on `Database` as every primitive's first argument; decouple per-record expectations from the YAML loader; wire two explicit registries (assertions, expectations) co-located with the runner; lock the public API as a stable contract. No new assertions yet — Phase 3 backfills the missing Tier 1 primitives.
 3. **Phase 3 — Tier 1 backfill.** Add the missing Tier 1 assertions to every existing scenario (source attribution, schema snapshot, amount precision, date bounds). Replace `±15%` and `min_rows ≥ 100` with derived formulas.
 4. **Phase 4 — New scenarios.** Author the four new scenarios (`idempotency-rerun`, `dedup-negative-fixture`, `empty-input-handling`, `malformed-input-rejection`).
 5. **Phase 5 — Tier 2/4 enrichment.** Add P/R breakdowns, ground-truth coverage, date continuity to applicable scenarios.
@@ -220,7 +227,7 @@ The six phases ship as **four** PRs, not six — grouped by review-coherence rat
 | PR | Phases | Plan | Why grouped this way |
 |---|---|---|---|
 | **PR 1** | Phase 1 | _shipped_ | Pure relocation — runner moved to `tests/scenarios/_runner/`, scenarios driven via pytest. |
-| **PR 2a** | Phase 2 | _shipped (#80)_ | Validation-library reorganization, `Database` first-arg standardization, expectation decoupling, explicit registries. Locks the stable `moneybin.validation.*` contract. |
+| **PR 2a** | Phase 2 | _shipped (#80)_ | Validation-library reorganization, `Database` first-arg standardization, expectation decoupling, explicit registries. Locks the stable `tests.validation.*` contract. |
 | **PR 2b** | Phases 3 + 4 | _shipped_ | Tier 1 backfill (`tests/scenarios/_tier1_backfill.py`) computes source attribution, schema snapshot, amount precision, and date bounds per scenario; replaces `±15%` and `min_rows ≥ 100` with derived formulas. The four new scenarios (`idempotency-rerun`, `dedup-negative-fixture`, `empty-input-handling`, `malformed-input-rejection`) ship in `tests/scenarios/`. |
 | **PR 3** | Phases 5 + 6 | _shipped_ | Tier 2/4 enrichment in `test_family_full_pipeline.py` / `test_dedup_cross_source.py` / `test_transfer_detection.py`; contributor recipe at `docs/guides/scenario-authoring.md`. |
 
@@ -241,7 +248,7 @@ Runner unit-test coverage gaps surfaced in PR #73 review. None block Phase 1 (pu
 
 - **Drop ResponseEnvelope.** No installed base; pytest expresses step-level halting via fixture failure context and mixed result types via separate test functions / parametrize cases. `pytest-json-report` covers the CI artifact need. If a future agent loop needs richer metadata, design that on real requirements.
 - **Synthetic generator stays in `src/`.** `moneybin synthetic generate` is a legitimate user command for trying the tool with sample data. Only the *verifier* (a contributor tool) moves to `tests/`.
-- **Validation primitives in `src/moneybin/validation/`.** Both this spec and `data-reconciliation.md` consume them. Tests-only code stays in `tests/`.
+- **Validation primitives in `tests/validation/`.** Tests-only code stays in `tests/` — MB-54 moved the package there once `moneybin data verify`, the live-profile consumer that justified `src/`, turned out never to have been built.
 
 ## CLI Interface
 
