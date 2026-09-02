@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from moneybin.database import Database
-from moneybin.validation.assertions._helpers import quote_ident
-from moneybin.validation.result import AssertionResult
+from tests.validation.assertions._helpers import quote_ident
+from tests.validation.result import AssertionResult
 
 
 def assert_no_nulls(db: Database, *, table: str, columns: list[str]) -> AssertionResult:

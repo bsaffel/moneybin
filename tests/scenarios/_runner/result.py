@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from moneybin.validation.result import (
+from tests.validation.result import (
     AssertionResult,
     EvaluationResult,
     ExpectationResult,

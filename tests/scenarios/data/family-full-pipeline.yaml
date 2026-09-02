@@ -28,7 +28,9 @@ assertions:
       parent: core.dim_accounts
       parent_column: account_id
   - name: sign_convention
-    fn: assert_sign_convention
+    fn: assert_transform_audit
+    args:
+      audit: fct_transactions_sign_convention
   - name: no_duplicate_gold_records
     fn: assert_no_duplicates
     args:
@@ -41,7 +43,9 @@ assertions:
   # .claude/rules/testing.md ("Scenario Expectations Must Be Independently
   # Derived").
   - name: transfers_balance_to_zero
-    fn: assert_balanced_transfers
+    fn: assert_transform_audit
+    args:
+      audit: bridge_transfers_balanced
 
 evaluations:
   - name: categorization_accuracy

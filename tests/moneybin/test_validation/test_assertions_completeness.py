@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.validation.assertions.completeness import (
+from tests.validation.assertions.completeness import (
     assert_no_nulls,
     assert_source_system_populated,
 )

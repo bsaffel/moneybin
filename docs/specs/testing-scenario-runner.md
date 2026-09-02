@@ -15,7 +15,7 @@
 > for the migration plan and taxonomy. The architecture and assertion
 > vocabulary documented below are still accurate; some path and CLI
 > references in the body describe the pre-relocation layout for historical
-> context — current canonical paths are `src/moneybin/validation/` (primitives),
+> context — current canonical paths are `tests/validation/` (primitives),
 > `tests/scenarios/_runner/` (runner code), `tests/scenarios/data/*.yaml`
 > (scenarios), and `tests/scenarios/test_*.py` (pytest entry points).
 
@@ -112,8 +112,8 @@ The SQLMesh-catalog bug is one symptom, not the thesis. The runner exists for th
 
 ### Validation primitive scope
 
-19. The assertion library (`src/moneybin/validation/assertions/`) operates on any DuckDB connection — applicable to synthetic test data and live user data. The same primitives back `moneybin data verify` against a real profile.
-20. The evaluation library (`src/moneybin/validation/evaluations/`) requires `synthetic.ground_truth` to exist. Evaluations raise a typed exception when called without ground truth, which `moneybin data verify` translates into a "no ground truth available — skipping evaluations" line.
+19. Superseded by MB-54. The assertion library is scenario-only scaffolding under `tests/validation/assertions/`; live-data checks are SQLMesh audits under `src/moneybin/sqlmesh/audits/`, surfaced by `moneybin system doctor`. `moneybin data verify` was never built.
+20. The evaluation library (`tests/validation/evaluations/`) requires `synthetic.ground_truth` to exist. Evaluations raise a typed exception when called without ground truth.
 
 ## Scenario file format
 
@@ -150,7 +150,9 @@ assertions:
       parent: core.dim_accounts
       parent_column: account_id
   - name: sign_convention
-    fn: assert_sign_convention
+    fn: assert_transform_audit
+    args:
+      audit: fct_transactions_sign_convention
   - name: no_duplicate_gold_records
     fn: assert_no_duplicates
     args:
@@ -163,7 +165,9 @@ assertions:
       expected: 4500
       tolerance_pct: 10
   - name: transfers_balance_to_zero
-    fn: assert_balanced_transfers
+    fn: assert_transform_audit
+    args:
+      audit: bridge_transfers_balanced
 
 evaluations:
   - name: categorization_accuracy
@@ -365,7 +369,7 @@ The envelope is closed for new top-level fields, but the `data` payload is free-
 
 ## Assertion library API
 
-Location: `src/moneybin/validation/assertions/`. Why `validation` and not `testing`: assertions apply to real data via `moneybin data verify` against a live profile, not just synthetic test runs. The package name should reflect the broader applicability.
+Location: `tests/validation/assertions/`. Superseded by MB-54: the package moved out of `src/moneybin/validation/` once every consumer turned out to live under `tests/`, and `moneybin data verify` — the live-profile command that justified shipping it in `src/` — was never built. `moneybin system doctor` is the live-data surface, and it reads the canonical SQLMesh audits under `src/moneybin/sqlmesh/audits/` through `moneybin.audits.runner`. What remains here is scenario scaffolding an audit cannot express.
 
 ```python
 from dataclasses import dataclass
@@ -407,8 +411,7 @@ Every primitive returns `AssertionResult` — no bare bools, no exceptions on as
 | Referential | `assert_valid_foreign_keys(conn, child, column, parent, parent_column)` | Every child value exists in parent |
 | Referential | `assert_no_orphans(conn, parent, parent_column, child, child_column)` | Every parent has a child |
 | Referential | `assert_no_duplicates(conn, table, columns)` | No duplicate rows for column set |
-| Business rules | `assert_sign_convention(conn)` | Expenses negative, income positive |
-| Business rules | `assert_balanced_transfers(conn)` | Confirmed transfer pairs net to zero |
+| Business rules | `assert_transform_audit(db, audit=...)` | Runs one canonical SQLMesh audit — the home of `fct_transactions_sign_convention` and `bridge_transfers_balanced` since MB-54 |
 | Business rules | `assert_date_continuity(conn, table, date_col, account_col)` | No month-gaps per account |
 | Distributional | `assert_distribution_within_bounds(conn, table, col, min, max, mean_range)` | Column statistics within ranges |
 | Distributional | `assert_unique_value_count(conn, table, col, expected, tolerance_pct)` | Cardinality check |
@@ -427,7 +430,7 @@ The catalog grows organically per the umbrella spec — new specs that need a ch
 
 ## Evaluation library
 
-Location: `src/moneybin/validation/evaluations/`. Each evaluation returns an `EvaluationResult`.
+Location: `tests/validation/evaluations/`. Each evaluation returns an `EvaluationResult`.
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -735,19 +738,20 @@ If the categorization plan ships first, the runner uses the class from day one. 
 
 | File | Purpose |
 |---|---|
-| `src/moneybin/validation/__init__.py` | Package init |
-| `src/moneybin/validation/result.py` | `AssertionResult`, `EvaluationResult` dataclasses |
-| `src/moneybin/validation/assertions/__init__.py` | Re-exports |
-| `src/moneybin/validation/assertions/integrity.py` | FK, orphan primitives (shipped — module renamed from planned `relational.py` during Phase 2 reorganization; see `testing-scenario-comprehensive.md` PR #80) |
-| `src/moneybin/validation/assertions/uniqueness.py` | No-duplicates primitives |
-| `src/moneybin/validation/assertions/domain.py` | Sign convention, balanced transfers, date continuity, amount precision, date bounds (shipped — module renamed from planned `business.py`) |
-| `src/moneybin/validation/assertions/distribution.py` | Distribution / cardinality / ground-truth coverage checks (shipped — module renamed from planned `distributional.py`) |
-| `src/moneybin/validation/assertions/schema.py` | Schema snapshot / columns-exist / row-count primitives |
-| `src/moneybin/validation/assertions/completeness.py` | No-nulls, source-system populated |
-| `src/moneybin/validation/assertions/infrastructure.py` | Catalog, subprocess, migrations primitives |
-| `src/moneybin/validation/evaluations/__init__.py` | Re-exports |
-| `src/moneybin/validation/evaluations/categorization.py` | `score_categorization` |
-| `src/moneybin/validation/evaluations/matching.py` | `score_transfer_detection`, `score_dedup` |
+| `tests/validation/__init__.py` | Package init |
+| `tests/validation/result.py` | `AssertionResult`, `EvaluationResult` dataclasses |
+| `tests/validation/assertions/__init__.py` | Re-exports |
+| `tests/validation/assertions/integrity.py` | FK, orphan primitives (shipped — module renamed from planned `relational.py` during Phase 2 reorganization; see `testing-scenario-comprehensive.md` PR #80) |
+| `tests/validation/assertions/uniqueness.py` | No-duplicates primitives |
+| `tests/validation/assertions/domain.py` | Date continuity, amount precision, date bounds (shipped — module renamed from planned `business.py`; sign convention and balanced transfers moved to audit SQL in MB-54) |
+| `tests/validation/assertions/audits.py` | `assert_transform_audit` — runs one canonical SQLMesh audit (MB-54) |
+| `tests/validation/assertions/distribution.py` | Distribution / cardinality / ground-truth coverage checks (shipped — module renamed from planned `distributional.py`) |
+| `tests/validation/assertions/schema.py` | Schema snapshot / columns-exist / row-count primitives |
+| `tests/validation/assertions/completeness.py` | No-nulls, source-system populated |
+| `tests/validation/assertions/infrastructure.py` | Catalog, subprocess, migrations primitives |
+| `tests/validation/evaluations/__init__.py` | Re-exports |
+| `tests/validation/evaluations/categorization.py` | `score_categorization` |
+| `tests/validation/evaluations/matching.py` | `score_transfer_detection`, `score_dedup` |
 | `src/moneybin/services/matching_service.py` | `MatchingService` thin wrapper class — see §"Service-layer prerequisites" |
 | `tests/moneybin/test_services/test_matching_service.py` | Unit tests for the new service wrapper |
 | `tests/scenarios/_runner/__init__.py` | Package init |
@@ -823,7 +827,7 @@ If the categorization plan ships first, the runner uses the class from day one. 
 
 The five questions raised in the draft were resolved during the 2026-04-26 ready-promotion review:
 
-1. **Existing assertion location** — Greenfield confirmed. Verified `src/moneybin/testing/assertions/` does not exist; no `def assert_*` helpers anywhere in `src/moneybin/`; no SQLMesh audit definitions to migrate. Implementation creates the package fresh under `src/moneybin/validation/`. The umbrella spec's `src/moneybin/testing/assertions/` reference is corrected as part of this spec's "Files to Modify" pass on `testing-overview.md`.
+1. **Existing assertion location** — Greenfield confirmed. Verified `src/moneybin/testing/assertions/` does not exist; no `def assert_*` helpers anywhere in `src/moneybin/`; no SQLMesh audit definitions to migrate. Implementation creates the package fresh under `tests/validation/`. The umbrella spec's `src/moneybin/testing/assertions/` reference is corrected as part of this spec's "Files to Modify" pass on `testing-overview.md`.
 2. **`expectations:` block placement** — Kept as a sibling of `assertions:` and `evaluations:`. The three-way framing (aggregate invariants / aggregate quality / pinned facts) is a load-bearing conceptual model. Folding expectations into assertions would require a polymorphic `AssertionResult` and lose the distinction between "this table has no orphans" and "transaction X matched transaction Y."
 3. **Fixture expectation file format** — This spec owns the contract. Format is **YAML** (`.expectations.yaml`), with a minimum-viable schema defined in §"Fixture file format." Rationale: hand-authored, comments useful, matches existing `testing/synthetic/personas/*.yaml` convention, and these files are the planned contribution unit for community-submitted bug-report fixtures (anonymized export + expected behavior in a reviewable PR-friendly format). `testing-csv-fixtures.md` owns fixture content/curation; this spec owns the metadata schema.
 4. **CI runtime budget** — Accepted at 2–5 min for v1. Scenarios run as a separate parallel `.github/workflows/scenarios.yml` workflow alongside `ci.yml`, so total PR feedback time is `max(ci, scenarios)` rather than additive. `--all` prints per-scenario duration summary at the end so drift is visible without enforcement. Promote to a hard gate when the suite outgrows the budget. See §"CI gating."

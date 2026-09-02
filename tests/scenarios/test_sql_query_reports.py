@@ -18,8 +18,8 @@ import pytest
 from moneybin.database import Database
 from moneybin.privacy.sql_query import execute_sql_query
 from moneybin.privacy.taxonomy import DataClass, Tier
-from moneybin.validation.result import AssertionResult
 from tests.scenarios._runner import load_shipped_scenario, run_scenario
+from tests.validation.result import AssertionResult
 
 
 def _masking_assertions(db: Database) -> list[AssertionResult]:

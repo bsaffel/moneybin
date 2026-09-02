@@ -134,7 +134,7 @@ expectations:
     expected: not_matched
 ```
 
-The full ExpectationSpec shapes live in `tests/scenarios/_runner/loader.py` and the adapters in `_expectation_registry.py`. New expectation kinds require a `Literal` extension, a predicate in `moneybin.validation.expectations`, and an adapter registered in `_expectation_registry.py`.
+The full ExpectationSpec shapes live in `tests/scenarios/_runner/loader.py` and the adapters in `_expectation_registry.py`. New expectation kinds require a `Literal` extension, a predicate in `tests.validation.expectations`, and an adapter registered in `_expectation_registry.py`.
 
 ### Helper API
 
@@ -216,13 +216,13 @@ For a bug-repro PR: Tier 1 plus the single Tier 2 / Tier 3 assertion that captur
 | `assert_schema_snapshot` | Column set + types match a hand-authored snapshot | Always |
 | `assert_amount_precision` | Money columns are `DECIMAL(p,s)` with no truncation | Always |
 | `assert_date_bounds` | All dates fall within the scenario's declared window | Always |
-| `assert_sign_convention` | Expense<0, income>0, transfers exempt | Always |
+| `assert_transform_audit` with `audit: fct_transactions_sign_convention` | Every amount is classifiable and its derived direction columns agree | Always |
 
 ### Tier 2 — Semantic Correctness (when applicable)
 
 | Assertion | What it asserts | Use when |
 |---|---|---|
-| `assert_balanced_transfers` | Confirmed transfer pairs sum to zero | Scenario exercises transfer detection |
+| `assert_transform_audit` with `audit: bridge_transfers_balanced` | Both legs of a confirmed transfer pair exist and cancel exactly | Scenario exercises transfer detection |
 | `score_categorization` | Categorization accuracy + per-category precision/recall vs ground truth | Scenario runs `categorize` |
 | `score_transfer_detection` | Transfer F1 + precision + recall (separately, to catch one-sided bias) | Scenario exercises transfer detection |
 | `assert_distribution_within_bounds` | Match confidence (or amount) distribution within expected bounds | Multi-source matching or amount-distribution checks |
@@ -267,9 +267,23 @@ Scenario YAML can only call functions registered in three explicit registries:
 - `tests/scenarios/_runner/_evaluation_registry.py` — `EVALUATION_REGISTRY` (scored evaluations returning `EvaluationResult`).
 - `tests/scenarios/_runner/_expectation_registry.py` — `EXPECTATION_REGISTRY` (per-record adapters dispatched by `ExpectationSpec.kind`).
 
-To add a new YAML-callable assertion:
+**Checking `core.*` data? Write an audit, not an assertion.** A data-quality
+check on a canonical relation belongs in `src/moneybin/sqlmesh/audits/` as a
+standalone audit, so `moneybin system doctor` and the scenario suite read one
+definition. Add the `.sql` file, run `make format-sql`, and call it from YAML:
 
-1. Write the predicate in `src/moneybin/validation/assertions/<area>.py`. Signature: `def assert_<name>(db: Database, **kwargs) -> AssertionResult`. Return both `passed: bool` and `details: dict` describing the evidence — the runner copies `details` straight into the failure summary.
+```yaml
+  - name: sign_convention
+    fn: assert_transform_audit
+    args:
+      audit: fct_transactions_sign_convention
+```
+
+A Python assertion is for what an audit cannot express: a check parameterized
+by the scenario (table, columns, bounds), an environment check, or scoring
+against `synthetic.ground_truth`. To add one:
+
+1. Write the predicate in `tests/validation/assertions/<area>.py`. Signature: `def assert_<name>(db: Database, **kwargs) -> AssertionResult`. Return both `passed: bool` and `details: dict` describing the evidence — the runner copies `details` straight into the failure summary.
 2. Add a `from ... import` line and an entry to `ASSERTION_REGISTRY` in `_assertion_registry.py`. The registry key is the YAML `fn:` name; gaps between the function name and the registry key are sources of confusion — keep them identical unless you have a reason.
 3. Reference it from YAML as `fn: assert_<name>` with `args:` matching your kwargs.
 

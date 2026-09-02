@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **`moneybin system doctor` reports two data-quality checks more strictly.**
+  `bridge_transfers_balanced` now requires a confirmed transfer pair to cancel
+  exactly, instead of tolerating a $0.01 residue, and reports a pair whose leg
+  has left `core.fct_transactions` rather than skipping it. The transfer matcher
+  pairs on exactly equal amounts and `amount` is `DECIMAL(18,2)` throughout, so
+  a cent of residue is missing money, not rounding. `fct_transactions_sign_convention`
+  now also reports a row whose `transaction_direction` or `amount_absolute`
+  contradicts its own `amount`; it still treats `$0.00` as a legitimate third
+  direction, and it deliberately does not judge an amount's sign against its
+  category label, which would report every refund and statement credit as a
+  defect. A profile that was healthy before may surface a new failure on either
+  check; both name the offending transaction ids under `--verbose`.
+
 ### Fixed
 - **"Uncategorized" now means one thing, and the number is smaller.**
   `moneybin review`, `system_status` and the import-drain hint counted every

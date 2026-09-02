@@ -1,6 +1,6 @@
 """Tests for validation result dataclasses."""
 
-from moneybin.validation.result import AssertionResult, EvaluationResult
+from tests.validation.result import AssertionResult, EvaluationResult
 
 
 def test_assertion_result_frozen() -> None:
@@ -27,7 +27,7 @@ def test_evaluation_result_passed_inferred_externally() -> None:
 
 def test_expectation_result_has_expected_shape():
     """ExpectationResult stores all fields correctly."""
-    from moneybin.validation.result import ExpectationResult
+    from tests.validation.result import ExpectationResult
 
     r = ExpectationResult(
         name="x", kind="match_decision", passed=True, details={"a": 1}
@@ -40,7 +40,7 @@ def test_expectation_result_has_expected_shape():
 
 def test_expectation_result_default_details_empty():
     """ExpectationResult defaults details to an empty dict."""
-    from moneybin.validation.result import ExpectationResult
+    from tests.validation.result import ExpectationResult
 
     r = ExpectationResult(name="x", kind="k", passed=False)
     assert r.details == {}
@@ -48,7 +48,7 @@ def test_expectation_result_default_details_empty():
 
 def test_result_types_importable_from_package_root():
     """Stable contract: data-reconciliation imports the three Result types here."""
-    from moneybin.validation import AssertionResult, EvaluationResult, ExpectationResult
+    from tests.validation import AssertionResult, EvaluationResult, ExpectationResult
 
     assert AssertionResult.__name__ == "AssertionResult"
     assert EvaluationResult.__name__ == "EvaluationResult"
