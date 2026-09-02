@@ -84,6 +84,14 @@ def test_splits_remove_with_yes(runner: CliRunner, db: Database) -> None:
     assert rows is not None and rows[0] == 0
 
 
+def test_splits_remove_missing_exits_1(runner: CliRunner, db: Database) -> None:
+    result = runner.invoke(
+        app, ["transactions", "splits", "remove", "doesnotexist", "--yes"]
+    )
+    assert result.exit_code == 1
+    assert "not found" in result.output
+
+
 def test_splits_clear_with_yes(runner: CliRunner, db: Database) -> None:
     TransactionService(db).add_split("T1", Decimal("-50"), actor="cli")
     TransactionService(db).add_split("T1", Decimal("-25"), actor="cli")

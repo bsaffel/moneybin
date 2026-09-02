@@ -1951,6 +1951,17 @@ def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAcco
     return accounts
 
 
+@dataclass(frozen=True, slots=True)
+class RawTableStat:
+    """One row of :meth:`ImportService.raw_data_summary` — per-table row count and date span."""
+
+    schema: str
+    table: str
+    rows: int
+    date_min: date | None
+    date_max: date | None
+
+
 class ImportService:
     """Orchestrates the full file import pipeline.
 
@@ -2008,6 +2019,56 @@ class ImportService:
             format_name=format_name,
             format_source="manual",
         )
+
+    def raw_data_summary(self) -> list[RawTableStat]:
+        """Return row counts and date ranges for every ``raw.*`` table.
+
+        Backs ``moneybin import status``. Transaction tables (name containing
+        ``"transaction"``) additionally report a date range, read from
+        ``date_posted`` for OFX tables and ``transaction_date`` otherwise.
+        """
+        from sqlglot import exp  # noqa: PLC0415
+
+        tables = self._db.execute("""
+            SELECT table_schema, table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'raw'
+            ORDER BY table_name
+        """).fetchall()
+
+        results: list[RawTableStat] = []
+        for schema, table in tables:
+            safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
+            safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
+            row_count = self._db.execute(
+                f"SELECT COUNT(*) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers
+            ).fetchone()
+            count = row_count[0] if row_count else 0
+
+            date_min: date | None = None
+            date_max: date | None = None
+            if "transaction" in table:
+                date_col = "date_posted" if "ofx" in table else "transaction_date"
+                safe_date_col = exp.to_identifier(date_col, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
+                try:
+                    dates = self._db.execute(
+                        f"SELECT MIN(CAST({safe_date_col} AS DATE)), MAX(CAST({safe_date_col} AS DATE)) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers; date_col from hardcoded map
+                    ).fetchone()
+                    if dates and dates[0]:
+                        date_min, date_max = dates[0], dates[1]
+                except Exception:  # noqa: BLE001 — date range is best-effort; any DB failure returns empty range
+                    logger.debug(f"Could not get date range for {schema}.{table}")
+
+            results.append(
+                RawTableStat(
+                    schema=schema,
+                    table=table,
+                    rows=count,
+                    date_min=date_min,
+                    date_max=date_max,
+                )
+            )
+        return results
 
     def _query_date_range(
         self,

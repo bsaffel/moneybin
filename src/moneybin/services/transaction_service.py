@@ -1913,6 +1913,24 @@ class TransactionService:
         ).fetchall()
         return [_row_to_split(r) for r in rows]
 
+    def get_split(self, split_id: str) -> Split | None:
+        """Return one split by id, or None if not found."""
+        row = self._splits_repo.get(split_id)
+        if row is None:
+            return None
+        amount = row["amount"]
+        return Split(
+            split_id=row["split_id"],
+            transaction_id=row["transaction_id"],
+            amount=amount if isinstance(amount, Decimal) else Decimal(str(amount)),
+            category=row["category"],
+            subcategory=row["subcategory"],
+            note=row["note"],
+            ord=row["ord"],
+            created_at=str(row["created_at"]),
+            created_by=str(row["created_by"]),
+        )
+
     def splits_balance(self, transaction_id: str) -> Decimal:
         """Return signed residual ``parent.amount - SUM(children.amount)``.
 

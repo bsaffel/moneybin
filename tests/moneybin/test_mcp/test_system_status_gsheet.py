@@ -66,6 +66,20 @@ async def test_system_status_gsheet_block_present_when_no_connections(
 
 
 @pytest.mark.unit
+async def test_system_status_gsheet_block_zero_shape_when_table_absent(
+    mcp_db: object,
+) -> None:
+    """On a bare DB before init_schemas, an absent table reports zero-shape."""
+    with get_database(read_only=False) as db:
+        db.execute("DROP TABLE app.gsheet_connections")
+    env = system_status()
+    block = env.to_dict()["data"]["gsheet"]
+    assert block["total_connections"] == 0
+    assert block["by_status"] == {}
+    assert block["needs_attention"] == []
+
+
+@pytest.mark.unit
 async def test_system_status_groups_connections_by_status(mcp_db: object) -> None:
     """Mixed-status connections produce correct by_status counts."""
     _insert_connection(connection_id="c_h", status="healthy")

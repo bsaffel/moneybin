@@ -45,6 +45,10 @@ class TransactionSplitsRepo(BaseRepo):
             TRANSACTION_SPLITS, _SPLITS_COLUMNS, "split_id", split_id
         )
 
+    def get(self, split_id: str) -> dict[str, Any] | None:
+        """Return one split row by id, or None if not found."""
+        return self._fetch_row(split_id)
+
     def insert(
         self,
         *,

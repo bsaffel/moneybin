@@ -77,6 +77,7 @@ from moneybin.protocol.pagination import (
     reject_inverted_keyset,
     validate_keyset_shape,
 )
+from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
 from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
 logger = logging.getLogger(__name__)
@@ -98,13 +99,7 @@ def _gsheet_block(db: Any) -> dict[str, Any]:
     healthy and disconnected connections are excluded from ``needs_attention``.
     """
     try:
-        rows = db.execute(
-            """
-            SELECT connection_id, workbook_name, sheet_name, status, last_status_reason
-            FROM app.gsheet_connections
-            ORDER BY created_at ASC, connection_id ASC
-            """
-        ).fetchall()
+        connections = GSheetConnectionsRepo(db).list_all()
     except duckdb.CatalogException:
         # Table absent on bare DBs before init_schemas — report empty rather
         # than error. Narrowed from a blanket except so real DB/query problems
@@ -114,20 +109,21 @@ def _gsheet_block(db: Any) -> dict[str, Any]:
 
     by_status: dict[str, int] = {}
     needs_attention: list[dict[str, Any]] = []
-    for connection_id, workbook, sheet, status, drift_reason in rows:
+    for connection in connections:
+        status = connection["status"]
         by_status[status] = by_status.get(status, 0) + 1
         if status in _HEALTHY_STATUSES or status in _DISCONNECTED_STATUSES:
             continue
         needs_attention.append({
-            "connection_id": connection_id,
-            "workbook_name": workbook,
-            "sheet_name": sheet,
+            "connection_id": connection["connection_id"],
+            "workbook_name": connection["workbook_name"],
+            "sheet_name": connection["sheet_name"],
             "status": status,
-            "reason": drift_reason,
+            "reason": connection["last_status_reason"],
         })
 
     return {
-        "total_connections": len(rows),
+        "total_connections": len(connections),
         "by_status": by_status,
         "needs_attention": needs_attention,
     }
