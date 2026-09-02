@@ -268,9 +268,22 @@ set is curated rather than measured because width knows nothing about meaning.
 
 The reason either is needed: Rich folds an over-narrow cell, and a folded
 amount is *misread*, not merely ugly — `1,200.00` becomes `1,200.` above `00`.
-Do not reach for `no_wrap=True` to stop it. Under real width pressure that
-silently crops `1,234,567.89` to `1,234`: a complete, plausible, wrong number.
 Folding an identifier is the accepted degradation; folding a number is the bug.
+
+`render_rows` already holds that line for you, and you get it by declaring the
+column in `money=` rather than by touching Rich: a declared column is
+`no_wrap=True` with `overflow="ellipsis"`, so Rich spends a narrow terminal's
+squeeze on the *text* columns first and amounts survive whole. Do not copy
+`no_wrap=True` onto the text columns to make a table fit — applied to every
+column it leaves Rich nothing wrappable to give up, and it then crops
+`1,234,567.89` to `1,234`, which is the same misread by another route. The
+ellipsis is the floor under that: a cell too narrow even after the squeeze
+reads `1,234,5…`, which cannot pass for a whole number.
+
+Curation is still the answer for a table that is simply too wide. The renderer
+guarantees no amount is *wrong*; only the author can decide which columns are
+worth showing, and a nine-column projection squeezed into 80 is legible in the
+sense that nothing lies and unreadable in every other sense.
 
 **Guard an empty result.** `render_rows([], ...)` draws a header box with no
 rows under it, so a command that renders unconditionally prints a table for a

@@ -510,6 +510,90 @@ def test_an_unbreakable_cell_wider_than_the_terminal_survives_too(
     assert printed.count("a") == 120
 
 
+def test_a_money_cell_never_folds_while_a_text_column_could_shrink_instead(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Folding is right for an identifier and wrong for an amount.
+
+    The two tests above establish that a long identifier wraps rather than
+    elides, because its characters are what tell two rows apart. An amount
+    inverts that: `1,200.00` folded after the decimal point renders `1,200.`
+    above `00`, and the first line reads as a complete, plausible, much smaller
+    number. `cli.md` calls a folded amount a correctness bug for exactly that
+    reason.
+
+    Nine ordinary columns at 80 is where it bites — the widths here are the
+    real `investments holdings --wide` projection with unremarkable values, not
+    a contrived overflow. Money columns are unwrappable, so Rich spends the
+    squeeze on the text columns first and every amount survives whole.
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+    render_rows(
+        [
+            "security",
+            "quantity",
+            "cost basis",
+            "avg cost",
+            "market value",
+            "unrealized",
+            "currency",
+            "status",
+            "as of",
+        ],
+        [
+            (
+                "VTSAX",
+                "120.5",
+                Decimal("1000.00"),
+                "8.2987654321",
+                Decimal("1200.00"),
+                Decimal("200.00"),
+                "USD",
+                "priced",
+                "2026-08-29 (3d)",
+            )
+        ],
+        money={
+            "cost basis": Money("balance"),
+            "market value": Money("balance"),
+            "unrealized": Money("delta", polarity="income"),
+        },
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    for amount in ("1,000.00", "1,200.00", "+200.00"):
+        assert any(amount in line for line in lines), (
+            f"{amount!r} was split across lines; a folded amount reads as a smaller one"
+        )
+
+
+def test_an_unfittable_money_cell_is_marked_truncated_rather_than_shortened(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When even the squeeze is not enough, say so in the cell.
+
+    Two money columns and nothing else to shrink is the case no layout can
+    satisfy. Cropping silently would print `1,234,56`, which is a complete and
+    entirely believable number that is off by a factor of a hundred. The
+    ellipsis costs one character and makes the cell unmistakably partial, so a
+    reader can tell "wider terminal needed" from "this is what you own".
+    """
+    monkeypatch.setenv("COLUMNS", "24")
+    render_rows(
+        ["market value", "unrealized"],
+        [(Decimal("1234567.89"), Decimal("9876543.21"))],
+        money={
+            "market value": Money("balance"),
+            "unrealized": Money("delta", polarity="income"),
+        },
+    )
+
+    printed = capsys.readouterr().out
+    assert "1,234,5…" in printed
+    # The bare prefix must not appear unmarked: that is the silent-crop failure.
+    assert "1,234,56 " not in printed
+
+
 def test_render_rows_does_not_auto_highlight_a_bare_number(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

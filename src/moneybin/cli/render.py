@@ -378,16 +378,28 @@ def render_rows(
     table = Table()
     for at, i in enumerate(kept):
         name = columns[i]
+        is_money = name in declared
         table.add_column(
             name,
-            justify="right" if name in declared else "left",
-            # Fold rather than inherit Rich's default: wrapping only saves a
-            # value that has a space to break on, and the values most likely
-            # to overflow here have none — an account id, a checksum, a
-            # display name ending in a masked last four. The default elides
-            # those, which drops exactly the characters that tell two rows
-            # apart. A ragged row is the cheaper failure than a wrong one.
-            overflow="fold",
+            justify="right" if is_money else "left",
+            # Text folds; money does not. Folding only saves a value that has a
+            # space to break on, and the text values most likely to overflow
+            # here have none — an account id, a checksum, a display name ending
+            # in a masked last four. Rich's default elides those, dropping
+            # exactly the characters that tell two rows apart, so a ragged row
+            # is the cheaper failure than a wrong one.
+            #
+            # An amount inverts that trade. Folded after the decimal point,
+            # `1,200.00` renders `1,200.` above `00`, and the first line is a
+            # complete, plausible number two orders of magnitude off; `cli.md`
+            # calls that a correctness bug rather than a cosmetic one. Marking
+            # money unwrappable spends the squeeze on the text columns first,
+            # which is what makes nine ordinary columns fit 80 at all. When
+            # even that is not enough the ellipsis leaves the cell visibly
+            # partial, because a silently cropped `1,234,56` is the failure
+            # this whole branch exists to prevent.
+            overflow="ellipsis" if is_money else "fold",
+            no_wrap=is_money,
         )
         if at == gap:
             table.add_column(ELISION, justify="center", overflow="fold")

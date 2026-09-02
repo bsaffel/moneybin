@@ -192,9 +192,22 @@ _EVENTS_COLUMNS: tuple[tuple[str, Callable[[EventRow], object]], ...] = (
     ("currency", lambda r: currency_label(r.currency_code)),
 )
 
-_EVENTS_DEFAULT = ("date", "type", "security", "quantity", "amount")
-"""Currency drops first: it repeats down a single-currency ledger, and the
-amount it qualifies sits right beside it under `--wide`."""
+_EVENTS_DEFAULT = ("date", "type", "security", "quantity", "amount", "currency")
+"""Every declared column — this table has nothing to curate away.
+
+Six narrow columns fit 80 together, which puts this command in the bucket
+`fx list` and `securities list` are already in: show all of them and offer no
+`--wide`, rather than a flag whose help promises columns the default view is
+not holding back.
+
+`currency` is why the set is now the whole declaration. It repeats down a
+single-currency ledger, which is what argued for dropping it, but this command
+takes no currency filter, so one unfiltered call can span accounts denominated
+differently — and `multi-currency.md` makes the row's own `currency_code` the
+canonical unit of its `amount`. Two rows reading `1,500.00` are then not the
+same quantity, with nothing on screen to say so. `investments holdings` keeps
+it for that reason, and the two commands disagreeing was its own defect.
+"""
 
 
 @app.command("list")
@@ -214,9 +227,13 @@ def investments_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter; only data
-    wide: bool = wide_option,
 ) -> None:
-    """List ledger events from the canonical investment-transaction fact table."""
+    """List ledger events from the canonical investment-transaction fact table.
+
+    Shows the trade date, event type, security, quantity, and the signed amount
+    with the currency it is denominated in. There is no ``--wide``: all six
+    columns fit an 80-column terminal, so none is held back.
+    """
     with handle_cli_errors(
         cli_actor="investments_list", payload_type=InvestmentEventsPayload
     ):
@@ -240,7 +257,7 @@ def investments_list(
         return
     if result.rows:
         view = column_view(
-            _EVENTS_COLUMNS, result.rows, default=_EVENTS_DEFAULT, wide=wide
+            _EVENTS_COLUMNS, result.rows, default=_EVENTS_DEFAULT, wide=False
         )
         render_rows(
             view.names,
@@ -248,7 +265,8 @@ def investments_list(
             # An event's amount is cash moving in or out, so it signs itself. The
             # quantity is a share count, not an amount, and is left as stored.
             money={"amount": Money("flow")},
-            total_columns=view.total,
+            # No `total_columns`: the view is the whole declaration, so there is
+            # no narrowing to disclose and no flag that would widen it.
         )
 
 
@@ -278,14 +296,27 @@ _HOLDINGS_COLUMNS: tuple[tuple[str, Callable[[HoldingRow], object]], ...] = (
     ),
 )
 
-_HOLDINGS_DEFAULT = ("security", "quantity", "market value", "unrealized", "currency")
+_HOLDINGS_DEFAULT = (
+    "security",
+    "quantity",
+    "market value",
+    "unrealized",
+    "currency",
+    "status",
+)
 """What the command is for: what you hold, what it is worth, whether you are up.
 
-Cost basis, average cost, valuation status and the observation date are the
-audit trail behind those numbers rather than the answer itself, so `--wide`
-carries them. Chosen by hand, not by width: a fit that measures columns would
-drop `market value` — the figure the command exists to report — because it sits
-in the middle.
+Cost basis, average cost and the observation date are the audit trail behind
+those numbers rather than the answer itself, so `--wide` carries them. Chosen
+by hand, not by width: a fit that measures columns would drop `market value` —
+the figure the command exists to report — because it sits in the middle.
+
+`status` stays because it is the only thing separating two different facts that
+both render `-`: `unpriced` (no close resolved) and `withheld` (a known-wrong
+share count), whose remedies are a price refresh and a position fix
+respectively. `InvestmentService.holdings` warns by telling the reader to see
+each row's `valuation_status`, so a default view without it names something not
+on screen — and that warning is a `render_note`, which `-q` drops.
 """
 
 
@@ -431,7 +462,12 @@ def investments_gains(
     quiet: bool = quiet_option,
     wide: bool = wide_option,
 ) -> None:
-    """Realized gain/loss (the 1099-B surface) from the realized-gains fact table."""
+    """Realized gain/loss (the 1099-B surface) from the realized-gains fact table.
+
+    Shows when each position was disposed, what it was, what it fetched, the
+    gain or loss, and whether the holding term was short or long. ``--wide``
+    adds the quantity and cost basis the gain was computed from.
+    """
     with handle_cli_errors(
         cli_actor="investments_gains", payload_type=InvestmentGainsPayload
     ):

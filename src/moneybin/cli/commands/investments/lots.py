@@ -42,12 +42,16 @@ _LOTS_COLUMNS: tuple[tuple[str, Callable[[LotRow], object]], ...] = (
     ("note", lambda r: "\u26a0\ufe0f basis_incomplete" if r.basis_incomplete else ""),
 )
 
-_LOTS_DEFAULT = ("lot", "security", "acquired", "remaining", "basis")
-"""Which lot, of what, bought when, how much is left, and at what basis.
+_LOTS_DEFAULT = ("lot", "security", "acquired", "remaining", "basis", "note")
+"""Which lot, of what, bought when, how much is left, at what basis — and
+whether that basis is known to be incomplete.
 
-The `note` column is safe to hold back because the incomplete-basis lots are
-already counted in a warning line beside the table (`InvestmentService.lots`);
-`--wide` says which lots they are.
+Method and open/closed state are the qualifiers a reader consults after the
+fact, so `--wide` carries them. `note` is not one of those: it says the `basis`
+cell beside it is a floor rather than a figure, which qualifies the answer
+rather than commenting on the run. Its only substitute was the warning line
+from `InvestmentService.lots`, and that goes through `render_note` — so `-q`
+dropped it and left a conservative basis reading as an authoritative one.
 """
 
 
@@ -68,7 +72,13 @@ def investments_lots_list(
     quiet: bool = quiet_option,
     wide: bool = wide_option,
 ) -> None:
-    """List tax lots with remaining quantity and basis. Open lots only by default."""
+    """List tax lots with remaining quantity and basis. Open lots only by default.
+
+    Shows the lot, its security, when it was acquired, how much remains, the
+    remaining basis, and a note marking any basis known to be incomplete.
+    ``--wide`` adds the cost-basis method and whether the lot is open or
+    closed.
+    """
     with handle_cli_errors(
         cli_actor="investments_lots_list", payload_type=InvestmentLotsPayload
     ):

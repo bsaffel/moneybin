@@ -43,20 +43,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   print as stored.
 
 - **Wide list commands now show a curated set of columns and take `--wide` for
-  the rest.** `investments holdings`, `gains`, `list`, `lots list`,
-  `import history`, and `import formats list --type=pdf` each name the columns
-  that answer the question they exist to answer, and disclose the narrowing
-  (`5 of 9 columns shown — --wide for all`). Without this, nine columns in an
+  the rest.** `investments holdings`, `gains`, `lots list`, `import history`,
+  and `import formats list --type=pdf` each name the columns that answer the
+  question they exist to answer, and disclose the narrowing
+  (`6 of 9 columns shown — --wide for all`). Without this, nine columns in an
   80-column terminal split an amount across two lines — `1,200.00` rendered as
   `1,200.` above `00`, which reads as a smaller number rather than as a wrapped
   one. The default sets are chosen by hand rather than measured: fitting by
   width keeps the first and last columns, which on `holdings` drops
   `market value`.
 
-  Commands whose tables already fit — `fx list`, `investments prices list`,
-  `securities list`, `db ps` — are unchanged and gain no flag.
+  A column that says a figure beside it is *untrustworthy* stays in the default
+  view, because it qualifies the answer rather than commenting on the run:
+  `holdings` keeps `status`, which is the only thing separating an unpriced
+  position from one with a known-wrong share count when both render `-`, and
+  `lots list` keeps the marker that says a cost basis is a floor rather than a
+  figure. Each had one substitute — a warning line — and `-q` suppresses those.
+
+  Commands whose tables already fit — `fx list`, `investments list`,
+  `investments prices list`, `securities list`, `db ps` — show every column and
+  gain no flag.
 
 ### Fixed
+- **An amount no longer folds across two lines.** Folding is the right failure
+  for an identifier — an account id or a display name ending in a masked last
+  four wraps rather than losing the characters that tell two rows apart — but
+  it is the wrong one for money: `1,200.00` folded after the decimal point
+  renders `1,200.` above `00`, and the first line reads as a complete number
+  two orders of magnitude smaller. Money columns are now unwrappable, so a
+  narrow terminal spends its squeeze on the text columns first; `investments
+  holdings --wide` fits nine columns into 80 with every amount intact, where
+  before it folded ordinary values like `1,000.00`. When even that is not
+  enough the cell is marked `1,234,5…` rather than cropped to a shorter number
+  that looks whole.
+
 - **A command with nothing to show no longer draws an empty table.** A header
   row with a closing rule and no rows between them reads as a rendering
   failure, and `-q` could not suppress it, because result output is never
