@@ -19,6 +19,7 @@ the segfault.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
@@ -110,16 +111,25 @@ MONEYBIN_ENV_AT_STARTUP = frozenset(
 )
 
 
-def pytest_report_header() -> list[str] | None:
+def pytest_configure(config: pytest.Config) -> None:
     """Name the ambient ``MONEYBIN_*`` vars this run ignored.
 
     Dropping them silently would make a deliberate
     ``MONEYBIN_LOGGING__LEVEL=DEBUG uv run pytest ...`` look broken rather than
     overridden. Names only, never values — these fields hold credentials.
+
+    Written to stderr rather than through ``pytest_report_header`` because
+    ``addopts`` bakes in ``-q``, which suppresses header hooks and would hide
+    this from ``make test`` and ``make test-integration`` — the two gates run
+    most often, and so the two that most need it. xdist workers inherit an
+    environment the controller already cleared, but they are excluded
+    explicitly so the line cannot multiply by worker count.
     """
-    if not _CLEARED_AMBIENT_ENV:
-        return None
-    return [f"moneybin: ignored ambient env {', '.join(_CLEARED_AMBIENT_ENV)}"]
+    if not _CLEARED_AMBIENT_ENV or hasattr(config, "workerinput"):
+        return
+    sys.stderr.write(
+        f"moneybin: ignored ambient env {', '.join(_CLEARED_AMBIENT_ENV)}\n"
+    )
 
 
 @pytest.fixture(scope="session")
