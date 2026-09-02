@@ -40,12 +40,11 @@ class TestSetupObservability:
 
     @pytest.mark.unit
     def test_public_api_exports(self) -> None:
-        """The observability module should export tracked and track_duration."""
-        from moneybin.observability import setup_observability, track_duration, tracked
+        """The observability module should export setup_observability and flush_metrics."""
+        from moneybin.observability import flush_metrics, setup_observability
 
         assert callable(setup_observability)
-        assert callable(tracked)
-        assert callable(track_duration)
+        assert callable(flush_metrics)
 
     @pytest.mark.unit
     def test_cli_stream_registers_atexit_flush(self) -> None:

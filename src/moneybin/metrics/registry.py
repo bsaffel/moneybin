@@ -3,8 +3,8 @@
 All metrics use the ``moneybin_`` prefix. Each metric is a module-level
 constant bound to the default prometheus_client registry.
 
-Adding a new metric: define it here, then either use ``@tracked`` at the
-call site or record manually (e.g. ``CATEGORIZATION_AUTO_RATE.set(0.78)``).
+Adding a new metric: define it here, then record it manually at the call
+site that matters (e.g. ``CATEGORIZATION_AUTO_RATE.set(0.78)``).
 """
 
 from prometheus_client import Counter, Gauge, Histogram
@@ -623,6 +623,10 @@ SECURITY_RESOLUTION_OUTCOMES_TOTAL = Counter(
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
+# Recorded once per call in ValidationErrorMiddleware.on_call_tool
+# (mcp/middleware.py) — the single boundary every tools/call request passes
+# through, whether it succeeds, is translated to a validation-error envelope,
+# or raises something else. No per-tool opt-in.
 MCP_TOOL_CALLS_TOTAL = Counter(
     "moneybin_mcp_tool_calls_total",
     "Total MCP tool invocations by tool name",

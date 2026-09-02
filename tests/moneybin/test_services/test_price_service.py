@@ -229,8 +229,9 @@ def _decisions(db: Database) -> list[tuple[str, str, str]]:
 def _rows_written(source_type: str) -> float:
     """Public read of the write counter — no private attribute access.
 
-    Matches tests/moneybin/test_metrics/test_instruments.py; the alternative
-    ``._value.get()`` needs a pyright suppression for protected access.
+    Matches tests/moneybin/test_mcp/test_middleware.py::_tool_call_count; the
+    alternative ``.labels(...)._value.get()`` needs a pyright suppression for
+    protected access.
     """
     return (
         REGISTRY.get_sample_value(
