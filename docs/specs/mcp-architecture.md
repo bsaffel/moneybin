@@ -187,7 +187,7 @@ into user-facing domains: 17 prefixes compose 13 domain groups.
 Tools land on the FastMCP server through two discovery paths. Both will produce the same registered shape — the agent cannot distinguish them, and the surface-discipline, taxonomy, and sensitivity rules above apply identically to each.
 
 1. **In-tree imports.** Core MoneyBin tools live under `src/moneybin/mcp/` and are wired in by explicit `register_*_tools(mcp)` calls in `mcp/server.py`. This is the path for the current standard snapshot.
-2. **Entry-point discovery and registration.** The package framework implements `discover_packages()` over the `moneybin.packages` entry-point group and `register_package()` for manifest, capability, prefix, and quality-scale validation before a package hook is imported. Installed package entries therefore remain subject to explicit registration and the same public-surface admission record; installation alone does not create a tool slot or bypass the exact standard registry. An admitted operational package tool must be included in the evaluated registry snapshot. Report extensions instead register a stable report-catalog entry, `TableRef` wiring, and an ergonomic CLI command from one `@report` runner; MCP executes them through the single admitted `reports` tool, never an additional tool. See `extension-contracts.md` §"Auto-generation of report surfaces".
+2. **Entry-point discovery and registration (planned).** The package framework will implement `discover_packages()` over the `moneybin.packages` entry-point group and `register_package()` for manifest, capability, prefix, and quality-scale validation before a package hook is imported. Installed package entries will therefore remain subject to explicit registration and the same public-surface admission record; installation alone will not create a tool slot or bypass the exact standard registry. An admitted operational package tool must be included in the evaluated registry snapshot. Report extensions instead register a stable report-catalog entry, `TableRef` wiring, and an ergonomic CLI command from one `@report` runner; MCP executes them through the single admitted `reports` tool, never an additional tool. See `extension-contracts.md` §"Auto-generation of report surfaces". The first framework implementation was removed as unreachable dead code (MB-56); the extension-package work (MB-29/MB-30/MB-34) designs its replacement fresh, or resurrects the removed one from git history.
 
 The naming conventions above are load-bearing for path 2: a package named `assets` may only register tools prefixed `assets_*`, and registration will refuse to start when a package's tool names violate its declared prefix. This is how the taxonomy will stay coherent as the registered set grows beyond what `mcp/server.py` imports directly.
 
@@ -197,17 +197,19 @@ flowchart LR
     pkg[Analysis Packages<br/>pip-installed or in-tree]
     rep[Standalone Reports<br/>pip-installed or in-tree]
     ep["moneybin.packages<br/>entry points"]
-    server["FastMCP server<br/>register_*_tools() + entry-point loop"]
+    server["FastMCP server<br/>register_*_tools()"]
+    server_planned["+ entry-point loop (planned)"]
     surface[Registered tool surface]
 
     intree -->|explicit register calls| server
     pkg --> ep
     rep --> ep
-    ep -->|enumerate + validate + register| server
+    ep -.->|planned: enumerate + validate + register| server_planned
     server --> surface
+    server_planned -.-> surface
 ```
 
-For the consuming agent there is one surface, governed by one set of rules. The two paths exist for the contributor — they determine *who* can add a tool and through what review gate — not for the runtime.
+For the consuming agent there is one surface, governed by one set of rules. Path 1 is the runtime today. Path 2 exists only as a contract for the contributor — it determines *who* will be able to add a tool and through what review gate, once the entry-point loop above lands.
 
 ### Tool disclosure: full surface, taxonomy-led
 
