@@ -85,6 +85,9 @@ MCP_ROOT = REPO_ROOT / "src" / "moneybin" / "mcp"
 # The one builder that derives both declared fields from the payload contract.
 # Taken from the symbol so a rename cannot leave the scan hunting a dead name.
 BUILDER = build_classified_envelope.__name__
+# Where the real one lives. A module that spells the name without
+# importing it from here is spelling something else.
+BUILDER_MODULE = build_classified_envelope.__module__
 
 # Building an envelope through any of these is building it without the
 # classifier, whatever the branch does with the result afterwards.
@@ -406,6 +409,7 @@ def _declaration(
 _ModuleIndex = tuple[
     dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
     dict[str, tuple[Path, str]],
+    bool,
 ]
 _INDEX_CACHE: dict[Path, _ModuleIndex] = {}
 
@@ -442,15 +446,20 @@ def _index(path: Path) -> _ModuleIndex:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
     }
     imports: dict[str, tuple[Path, str]] = {}
+    imports_the_builder = False
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom) or node.level or node.module is None:
             continue
+        if node.module == BUILDER_MODULE and any(
+            alias.name == BUILDER and alias.asname is None for alias in node.names
+        ):
+            imports_the_builder = True
         source = _mcp_module_path(node.module)
         if source is None:
             continue
         for alias in node.names:
             imports[alias.asname or alias.name] = (source, alias.name)
-    index = (functions, imports)
+    index = (functions, imports, imports_the_builder)
     _INDEX_CACHE[path] = index
     return index
 
@@ -463,7 +472,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
     can stamp the finished envelope, while its own body belongs to whichever
     module defines it.
     """
-    functions, _ = _index(path)
+    functions, _, _ = _index(path)
     assert function in functions, (
         f"{path.name} does not define a module-level {function}(); the registry "
         "and the source disagree, so the guard cannot tell which mechanism the "
@@ -486,7 +495,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
         if (current_path, current_name, produces_envelope) in seen:
             continue
         seen.add((current_path, current_name, produces_envelope))
-        current_functions, imports = _index(current_path)
+        current_functions, imports, imports_the_builder = _index(current_path)
         node = current_functions.get(current_name)
         if node is None:
             continue
@@ -494,6 +503,26 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
         assignments: _Assignments = {}
         for statement in node.body:
             for child in ast.walk(statement):
+                if isinstance(child, ast.AugAssign | ast.AnnAssign):
+                    # `envelope.classes_returned += [...]` names no target the
+                    # Assign arm sees and passes no keyword.
+                    augmented = child.target
+                    if (
+                        isinstance(augmented, ast.Attribute)
+                        and augmented.attr in MUTABLE_DECLARATION_TARGETS
+                        and child.value is not None
+                    ):
+                        declarations.append(
+                            Declaration(
+                                module=current_path.name,
+                                function=current_name,
+                                callee=ast.unparse(augmented),
+                                verb="augments",
+                                fields=(augmented.attr,),
+                                literal_fields=(augmented.attr,),
+                            )
+                        )
+                    continue
                 if not isinstance(child, ast.Assign):
                     continue
                 for target in child.targets:
@@ -576,7 +605,15 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
             if callee is None or callee in shadowed:
                 continue
             if callee == BUILDER:
-                reaches_builder = True
+                # String equality is not identity: a module that defines its
+                # own `build_classified_envelope`, or spells the name without
+                # importing the real one, is not calling the sanctioned
+                # builder. Fail closed — the call then falls to the
+                # unverified-return check like any other unknown callee.
+                if imports_the_builder and BUILDER not in current_functions:
+                    reaches_builder = True
+                else:
+                    continue
             elif callee in RAW_CONSTRUCTORS:
                 constructions.append(
                     Construction(
@@ -612,7 +649,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                         if original in _index(source)[0]
                     }
                     nameable = (
-                        {BUILDER}
+                        ({BUILDER} if imports_the_builder else set())
                         | RAW_CONSTRUCTORS
                         | set(current_functions)
                         | resolvable_imports
@@ -925,6 +962,38 @@ def test_declared_fields_still_name_real_envelope_fields() -> None:
         "DECLARED_FIELDS names something the envelope no longer carries, so the "
         f"scan would stop seeing hand-declarations of it: {missing}"
     )
+
+
+def test_the_builder_is_credited_by_origin_not_by_spelling(tmp_path: Path) -> None:
+    """A module that spells the name without importing the real one is not it.
+
+    Written to a scratch module rather than probed in-file: this file imports
+    the genuine builder, so the not-imported case cannot be expressed here.
+    """
+    impostor = tmp_path / "impostor.py"
+    impostor.write_text(
+        "from typing import Any\n\n\n"
+        "def probe() -> Any:\n"
+        '    """Spells the sanctioned name, imports nothing."""\n'
+        '    return build_classified_envelope({"probe": True})\n',
+        encoding="utf-8",
+    )
+    spelled = mechanism_of(impostor, "probe")
+    assert not spelled.reaches_builder
+    assert [site.expression for site in spelled.unverified_returns] == [
+        "build_classified_envelope({'probe': True})"
+    ]
+
+    genuine = tmp_path / "genuine.py"
+    genuine.write_text(
+        f"from {BUILDER_MODULE} import {BUILDER}\n"
+        "from typing import Any\n\n\n"
+        "def probe() -> Any:\n"
+        '    """Imports the real builder."""\n'
+        f'    return {BUILDER}({{"probe": True}})\n',
+        encoding="utf-8",
+    )
+    assert mechanism_of(genuine, "probe").reaches_builder
 
 
 def test_the_analysis_can_return_a_failing_verdict() -> None:
