@@ -162,7 +162,20 @@ with no referent.
 **The headline measure is last.** Among the measures, the one the report exists
 to answer ends the row: it is where a reader scanning left to right stops, and
 where the fitter — for an extension report that reaches it — is guaranteed to
-keep it. Both readings put the same column in the same place.
+keep it.
+
+**Where the base and the headline are the same column, the base wins.** The
+first clause is about *composition* — line items and the subtotal that sums
+them. The third is about where a reader stops. They usually name different
+columns and never meet, but when a report's headline measure is also the base
+its comparatives are measured against, they demand opposite ends of the block.
+The base leads. `core:spending` is that case: `total_spend` is what
+`prev_month_spend` is compared against *and* the figure the report exists to
+report, so it opens the measure block rather than closing it. Printing
+`mom_delta` before the quantity it is a delta of is the more expensive of the
+two mistakes, and current-then-prior-then-change is the layout every variance
+report already uses. Composition is untouched — nothing composes `total_spend`,
+so the subtotal-last reading never reached it.
 
 Two reports already satisfy this and are the models to copy:
 
@@ -170,12 +183,24 @@ Two reports already satisfy this and are the models to copy:
 - `core:balance_drift` — `asserted_balance`, `computed_balance`, `drift`. The
   two positions being reconciled, then the discrepancy.
 
-Two invert it and are the reason this rule is written down:
+Two inverted it before this rule, and are why it is written down:
 
 - `core:networth` — `net_worth`, `total_assets`, `total_liabilities`. The bottom
   line leads and its components trail, so the row reads backwards and the
   fitter's kept tail is a component rather than the answer.
 - `core:merchants` — `total_spend` precedes `total_inflow` and `total_outflow`.
+
+**A runtime-attached column obeys Rule B too.** A display-currency conversion
+adds `original_currency_code` to a result no report declares it in. It is
+`DataClass.CURRENCY`, the same as the `currency_code` it records, so it goes
+beside that column rather than on the end — otherwise a converted read is the
+one shape that ends on provenance instead of the headline measure, and the
+sweep would be true of every projection except the ones a caller actually asked
+to convert. `execute.py::_original_currency_position` places it for the
+machine-readable projection and `cli_register.py::visible_columns` for the
+narrow table; both anchor on `ReportSemantics.currency` rather than assuming the
+name, and both fall back to appending when the result carries no currency
+column.
 
 This rule governs order only. Alignment, sign glyphs, and colour are settled by
 `money_kind` in `cli-output-coherence.md`, not here.
@@ -264,16 +289,23 @@ is declared `TXN_DATE` and holds an integer day count, so the guard would place
 it among the dates and be satisfied. Ordering rules assume the classes are
 right; fixing a wrong one is its own change.
 
-**Not yet guarded — the `reports/*.sql` model projections.** These are a
-separate surface from the specs above: a SQL-backed runner names its own
-columns, so a model's projection order does not reach a report's consumers —
-but it *is* what a `SELECT *` through `sql_query` or `moneybin sql query`
-returns, so it is observable and Rule B governs it. SQLMesh resolves these
-columns offline (`Context(paths=…)`, `model.columns_to_types`), so unlike Rule
-A this is mechanically checkable; it is simply not checked yet, and the seven
-models have not been swept. `reports.net_worth` is the clearest offender,
-projecting `net_worth` ahead of the `total_assets` / `total_liabilities` that
-compose it. Treat a model projection as review-enforced until that sweep lands.
+**Not guarded — the `reports/*.sql` model projections.** These are a separate
+surface from the specs above: a SQL-backed runner names its own columns, so a
+model's projection order does not reach a report's consumers — but it *is* what
+a `SELECT *` through `sql_query` or `moneybin sql query` returns, so it is
+observable and Rule B governs it. All seven are swept, each mirroring the order
+its report declares.
+
+They stay **review-enforced**, and not for Rule A's reason. The column *names*
+do resolve offline — `derive_report_classes()` parses every model
+connectionlessly and returns them in projection order — but their Rule B
+*category* does not, because that same derivation deliberately over-classifies
+computed columns (`reports.md`). `balance_drift.status` is a `CASE` over two
+balances and derives as `BALANCE`; the percentage columns derive as
+`TXN_AMOUNT`. A guard ranking off derived classes would therefore fail a
+correctly ordered file for putting a "measure" among the dimensions. Reading
+declared classes instead is no way out: a runner-less view has none. So the
+resolvable part is the half that was never in doubt.
 
 **Not guarded — `prep` and `core`.** Rule A is a data-type rule, and SQLMesh
 resolves every `core` column as `UNKNOWN` offline: the type chain bottoms out at

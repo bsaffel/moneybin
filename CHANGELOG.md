@@ -18,7 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   narrowed terminal keeps the column that answers the report rather than one of
   its inputs. Two reports read backwards before this and change most visibly:
   `core:networth` led with `net_worth` and trailed its own components, and
-  `core:merchants` led with `total_spend`; both now end on that figure.
+  `core:merchants` led with `total_spend`; both now end on that figure. The one
+  exception is a report whose headline measure is also the base its comparatives
+  are measured against: `core:spending` now *leads* its measure block with
+  `total_spend`, because a delta printed before the quantity it is a delta of
+  has no referent, and current-then-prior-then-change is the layout every
+  variance report uses.
 
   This changes JSON key order, MCP response field order, and export column
   order, and it changes the `columns` array each report publishes through the
@@ -30,6 +35,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   their query actually returned (`core:cashflow`, `core:recurring`); the
   declaration and the projection now agree, and a test holds them together. The
   convention is `.claude/rules/column-ordering.md`.
+
+  The seven `reports.*` SQLMesh model projections are swept to the same order,
+  so `SELECT * FROM reports.net_worth` through `sql_query` or
+  `moneybin sql query` returns `currency_code, balance_date, account_count,
+  total_assets, total_liabilities, net_worth` rather than leading with the
+  total. A display-currency conversion now places the `original_currency_code`
+  it attaches beside `currency_code` instead of after the amounts, so a
+  converted read ends on the headline measure like an unconverted one.
 
 ### Fixed
 - **MCP tool calls now record `moneybin_mcp_tool_calls_total` and `moneybin_mcp_tool_duration_seconds`.** The observability spec described this instrumentation as automatic, but no code path ever recorded either metric — a dashboard built from them stayed at zero permanently. `ValidationErrorMiddleware.on_call_tool`, the single boundary every `tools/call` request passes through, now records both metrics on every call, whether it succeeds, is translated to a validation-error envelope, or raises something else. (#495)

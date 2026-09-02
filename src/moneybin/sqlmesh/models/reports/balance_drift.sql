@@ -61,13 +61,6 @@ SELECT
   account_id, /* Joinable to core.dim_accounts */
   account_name, /* Account display name */
   currency_code, /* ISO 4217 currency the account is denominated in; both balances and the drift between them share it, so this row never blends currencies (multi-currency.md Requirement 5) */
-  assertion_date, /* User-asserted balance date */
-  asserted_balance, /* User-entered balance for this date */
-  computed_balance, /* Interpolated daily balance or observed balance minus its adjustment; NULL for a missing row or first observation */
-  drift, /* asserted_balance - computed_balance */
-  ABS(drift) AS drift_abs, /* For default sort */
-  CASE WHEN asserted_balance <> 0 THEN drift / asserted_balance ELSE NULL END AS drift_pct, /* drift / asserted_balance */
-  CAST(CURRENT_DATE - assertion_date AS INT) AS days_since_assertion, /* today - assertion_date */
   CASE
     WHEN currency_mismatch
     THEN 'currency-mismatch'
@@ -78,5 +71,12 @@ SELECT
     WHEN ABS(drift) < 10.00
     THEN 'warning'
     ELSE 'drift'
-  END AS status /* clean (<1) | warning (<10) | drift (>=10) | no-data (computed_balance NULL) | currency-mismatch (the account's currency and the observation's disagree, so no drift is computable). The clean/warning thresholds are absolute amounts in the row's own currency_code. A display-converted read re-buckets them against the converted drift, in `reports/definitions/balance_drift.py::_rebucket_status` — SQL cannot read that module's `_CLEAN_BELOW` / `_WARNING_BELOW`, so changing 1.00 or 10.00 here means changing them there in the same edit. */
+  END AS status, /* clean (<1) | warning (<10) | drift (>=10) | no-data (computed_balance NULL) | currency-mismatch (the account's currency and the observation's disagree, so no drift is computable). The clean/warning thresholds are absolute amounts in the row's own currency_code. A display-converted read re-buckets them against the converted drift, in `reports/definitions/balance_drift.py::_rebucket_status` — SQL cannot read that module's `_CLEAN_BELOW` / `_WARNING_BELOW`, so changing 1.00 or 10.00 here means changing them there in the same edit. */
+  assertion_date, /* User-asserted balance date */
+  CAST(CURRENT_DATE - assertion_date AS INT) AS days_since_assertion, /* today - assertion_date */
+  asserted_balance, /* User-entered balance for this date */
+  computed_balance, /* Interpolated daily balance or observed balance minus its adjustment; NULL for a missing row or first observation */
+  ABS(drift) AS drift_abs, /* For default sort */
+  CASE WHEN asserted_balance <> 0 THEN drift / asserted_balance ELSE NULL END AS drift_pct, /* drift / asserted_balance */
+  drift /* asserted_balance - computed_balance */
 FROM deltas

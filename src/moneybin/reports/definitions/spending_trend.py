@@ -50,10 +50,12 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
     # `currency_code` is part of the grain: without it two rows differing only
     # in currency read as one month's category counted twice.
     #
-    # Ordered by Rule B, and `total_spend` ends the row as the headline measure
-    # (`column-ordering.md` Rule C) — which also puts the comparison beside the
-    # figure it compares, rather than trailing a column it says nothing about.
-    return ("category", "currency_code", "year_month", *comparison, "total_spend")
+    # Ordered by Rule B, and `total_spend` leads the measure block rather than
+    # ending it: it is the base every comparison here is measured against, and
+    # `column-ordering.md` Rule C gives a comparative's base precedence over
+    # headline-last precisely so a delta is never printed before the quantity
+    # it is a delta of.
+    return ("category", "currency_code", "year_month", "total_spend", *comparison)
 
 
 @report(
@@ -89,6 +91,15 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
         ),
         OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
         OutputColumn("txn_count", "Outflow transaction count.", DataClass.AGGREGATE),
+        OutputColumn(
+            "total_spend",
+            "Absolute outflow in the month and category.",
+            DataClass.TXN_AMOUNT,
+            # SUM(ABS(t.amount)) in the model: a positive absolute outflow, not
+            # income. Rendering it as a `flow` would sign it `+` and colour it
+            # green — spending reported as earnings.
+            money_kind="magnitude",
+        ),
         OutputColumn(
             "prev_month_spend",
             "Spend in the previous calendar month.",
@@ -132,15 +143,6 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
             "trailing_3mo_avg",
             "Rolling three-month average ending in the current month.",
             DataClass.TXN_AMOUNT,
-            money_kind="magnitude",
-        ),
-        OutputColumn(
-            "total_spend",
-            "Absolute outflow in the month and category.",
-            DataClass.TXN_AMOUNT,
-            # SUM(ABS(t.amount)) in the model: a positive absolute outflow, not
-            # income. Rendering it as a `flow` would sign it `+` and colour it
-            # green — spending reported as earnings.
             money_kind="magnitude",
         ),
     ),
@@ -223,10 +225,10 @@ def spending_trend(
     )
 
     ranked = f"""
-        SELECT category, currency_code, year_month, txn_count,
+        SELECT category, currency_code, year_month, txn_count, total_spend,
                prev_month_spend, mom_delta, mom_pct,
                prev_year_spend, yoy_delta, yoy_pct,
-               trailing_3mo_avg, total_spend,
+               trailing_3mo_avg,
                ROW_NUMBER() OVER (
                    PARTITION BY year_month, currency_code
                    ORDER BY total_spend DESC
@@ -258,10 +260,10 @@ def spending_trend(
     # any prefix of a month holds every currency that fits
     # (multi-currency.md Requirement 5).
     sql = f"""
-        SELECT category, currency_code, year_month, txn_count,
+        SELECT category, currency_code, year_month, txn_count, total_spend,
                prev_month_spend, mom_delta, mom_pct,
                prev_year_spend, yoy_delta, yoy_pct,
-               trailing_3mo_avg, total_spend
+               trailing_3mo_avg
         FROM ({ranked})
         ORDER BY year_month, rank_in_currency, currency_code
     """  # noqa: S608  # subquery built from TableRef + allowlisted filters

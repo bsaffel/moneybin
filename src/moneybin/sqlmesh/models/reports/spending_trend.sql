@@ -80,11 +80,11 @@ WITH monthly AS (
   FROM dense_monthly
 )
 SELECT
-  STRFTIME(month_date, '%Y-%m') AS year_month, /* Calendar month as 'YYYY-MM'; every observed category-currency pair has one row per month in the eligible data window */
   category, /* Spending category text; NULL for uncategorized */
   currency_code, /* ISO 4217 currency this row's spend is denominated in; NULL is the unknown-currency segment, never resolved to the home currency (multi-currency.md Requirement 5) */
-  total_spend, /* Sum of absolute outflow this month in this category; zero when the category has no outflow this month */
+  STRFTIME(month_date, '%Y-%m') AS year_month, /* Calendar month as 'YYYY-MM'; every observed category-currency pair has one row per month in the eligible data window */
   txn_count, /* Outflow transaction count; zero when the category has no outflow this month */
+  total_spend, /* Sum of absolute outflow this month in this category; zero when the category has no outflow this month */
   prev_month_spend, /* Spend in the immediately previous calendar month, same category and currency */
   total_spend - prev_month_spend AS mom_delta, /* total_spend - prev_month_spend */
   CASE
