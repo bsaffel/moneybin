@@ -11,6 +11,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **"Uncategorized" now means one thing, and the number is smaller.**
+  `moneybin review`, `system_status` and the import-drain hint counted every
+  transaction with no row in `app.transaction_categories`, while the review
+  queue beside them listed `core.uncategorized_queue` — which also excludes
+  confirmed transfer legs, archived accounts, and transactions whose source
+  system already supplied a category. Nothing errored; the count simply
+  disagreed with the queue it pointed at. `core.uncategorized_queue` is now
+  the single definition every surface counts, so the reported figure drops
+  wherever those rows were being counted. Categorization itself is unchanged —
+  only which rows are called curator work. A missing queue view is now
+  reported as schema drift on the review surface rather than rendering as an
+  empty queue, which had told a curator their work was done when the refresh
+  that builds the view had never run. (#502)
+
 - **MCP tool calls now record `moneybin_mcp_tool_calls_total` and `moneybin_mcp_tool_duration_seconds`.** The observability spec described this instrumentation as automatic, but no code path ever recorded either metric — a dashboard built from them stayed at zero permanently. `ValidationErrorMiddleware.on_call_tool`, the single boundary every `tools/call` request passes through, now records both metrics on every call, whether it succeeds, is translated to a validation-error envelope, or raises something else. (#495)
 
 ### Removed

@@ -9,22 +9,26 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.services.system_service import SystemService, SystemStatus
-from tests.moneybin.db_helpers import create_core_tables_raw, record_sqlmesh_apply
+from tests.moneybin.db_helpers import (
+    create_core_tables_raw,
+    install_uncategorized_queue_view,
+    record_sqlmesh_apply,
+)
 
 _INSERT_TRANSACTIONS = """
     INSERT INTO core.fct_transactions (
         transaction_id, account_id, transaction_date, amount,
         amount_absolute, transaction_direction, description,
-        transaction_type, is_pending, currency_code, source_type,
+        transaction_type, is_pending, is_transfer, currency_code, source_type,
         source_extracted_at, loaded_at,
         transaction_year, transaction_month, transaction_day,
         transaction_day_of_week, transaction_year_month, transaction_year_quarter
     ) VALUES
     ('T1', 'ACC001', '2026-03-01', -50.00, 50.00, 'expense', 'Coffee Shop',
-     'DEBIT', false, 'USD', 'ofx', '2026-03-01', CURRENT_TIMESTAMP,
+     'DEBIT', false, false, 'USD', 'ofx', '2026-03-01', CURRENT_TIMESTAMP,
      2026, 3, 1, 0, '2026-03', '2026-Q1'),
     ('T2', 'ACC001', '2026-04-15', 5000.00, 5000.00, 'income', 'Employer',
-     'CREDIT', false, 'USD', 'ofx', '2026-04-15', CURRENT_TIMESTAMP,
+     'CREDIT', false, false, 'USD', 'ofx', '2026-04-15', CURRENT_TIMESTAMP,
      2026, 4, 15, 1, '2026-04', '2026-Q2')
 """  # noqa: S608  # test input, not executing SQL
 
@@ -46,6 +50,9 @@ def system_db(db: Database) -> Database:
     """)  # noqa: S608  # test input, not executing SQL
 
     conn.execute(_INSERT_TRANSACTIONS)
+    # categorize_pending counts core.uncategorized_queue, the one definition of
+    # an uncategorized transaction; SQLMesh materializes it in production.
+    install_uncategorized_queue_view(db)
 
     return db
 
