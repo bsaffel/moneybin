@@ -228,14 +228,15 @@ class Declaration:
     callee: str
     fields: tuple[str, ...]
     literal_fields: tuple[str, ...]
+    verb: str = "calls"
 
     def __str__(self) -> str:
         """Render the site the way the assertion message needs to name it."""
-        if self.callee.endswith(" ="):
-            site = f"{self.module}:{self.function} assigns {self.callee[:-2]}"
-        else:
+        if self.verb == "calls":
             rendered = ", ".join(f"{field}=" for field in self.fields)
             site = f"{self.module}:{self.function} calls {self.callee}({rendered})"
+        else:
+            site = f"{self.module}:{self.function} {self.verb} {self.callee}"
         if not self.literal_fields:
             return site
         return f"{site} with {', '.join(self.literal_fields)} spelled out"
@@ -343,6 +344,30 @@ def _is_literal(node: ast.expr, assignments: _Assignments) -> bool:
     return any(_spelled_out(candidate) for candidate in _resolve_all(node, assignments))
 
 
+def _mutation_field(node: ast.Call) -> str | None:
+    """The declared field a call mutates in place, if it mutates one.
+
+    Two shapes reach past a keyword scan and past assignment tracking, because
+    neither is an `ast.Assign` and neither passes the field as a keyword:
+    `setattr(envelope, "classes_returned", …)` names the field in a string,
+    and `envelope.classes_returned.clear()` never names it as a target at all.
+    """
+    if _bare_name(node) == "setattr" and len(node.args) == 3:
+        field = node.args[1]
+        if isinstance(field, ast.Constant) and field.value in (
+            MUTABLE_DECLARATION_TARGETS
+        ):
+            return str(field.value)
+        return None
+    receiver = node.func
+    if isinstance(receiver, ast.Attribute) and isinstance(
+        receiver.value, ast.Attribute
+    ):
+        if receiver.value.attr in DECLARED_FIELDS:
+            return receiver.value.attr
+    return None
+
+
 def _declaration(
     node: ast.Call,
     *,
@@ -350,6 +375,16 @@ def _declaration(
     function: str,
     assignments: _Assignments,
 ) -> Declaration | None:
+    mutated = _mutation_field(node)
+    if mutated is not None:
+        return Declaration(
+            module=module,
+            function=function,
+            callee=f"{ast.unparse(node)[:60]}",
+            verb="mutates",
+            fields=(mutated,),
+            literal_fields=(mutated,),
+        )
     declared = [keyword for keyword in node.keywords if keyword.arg in DECLARED_FIELDS]
     if not declared:
         return None
@@ -476,7 +511,8 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                             Declaration(
                                 module=current_path.name,
                                 function=current_name,
-                                callee=f"{ast.unparse(target)} =",
+                                callee=ast.unparse(target),
+                                verb="overwrites",
                                 fields=(target.attr,),
                                 literal_fields=(
                                     (target.attr,)
@@ -725,6 +761,20 @@ async def test_derived_declarations_are_not_quietly_replaced_by_literals() -> No
     # Dropping a field is the same downgrade as hardcoding it: the omitted one
     # takes the constructor's default, and a check that only reads the values
     # present would never see it go.
+    # Dropping *both* keywords leaves no declaration to inspect at all, so the
+    # checks below would have nothing to say while the constructor supplied
+    # both defaults. The presence of a declaration is itself the contract.
+    silent = sorted(
+        name
+        for name in MUST_DERIVE_ITS_DECLARATION
+        if not mechanisms[name].declarations
+    )
+    assert not silent, (
+        "These tools are credited with deriving their classification but no "
+        "longer declare either field anywhere, so both now take the "
+        f"constructor's default: {silent}"
+    )
+
     partial = sorted(
         str(declaration)
         for name in MUST_DERIVE_ITS_DECLARATION
@@ -795,6 +845,16 @@ def _probe_calling_a_method_named_like_the_builder() -> ResponseEnvelope[Any]:
     """Stand-in for a receiver whose method shares the builder's name."""
     adapter = _Impostor()
     return adapter.build_classified_envelope()
+
+
+def _probe_mutating_the_envelope_through_a_call() -> ResponseEnvelope[Any]:
+    """Stand-in for a mutation that is neither a keyword nor an assignment."""
+    envelope = build_classified_envelope({"probe": True})
+    if _elsewhere() and envelope.classes_returned is not None:
+        envelope.classes_returned.clear()
+    else:
+        setattr(envelope, "classes_returned", ["aggregate"])  # noqa: B010  # the adversarial shape under test
+    return envelope
 
 
 def _probe_hiding_a_literal_behind_an_alias() -> ResponseEnvelope[Any]:
@@ -892,3 +952,12 @@ def test_the_analysis_can_return_a_failing_verdict() -> None:
     assert [site.expression for site in impostor.unverified_returns] == [
         "adapter.build_classified_envelope()"
     ]
+
+    # Neither `setattr` nor an in-place method call is an assignment or a
+    # keyword, so both would read past a scan that only looks at those.
+    mutated = mechanism_of(
+        Path(__file__), _probe_mutating_the_envelope_through_a_call.__name__
+    )
+    assert mutated.reaches_builder
+    assert sorted(d.verb for d in mutated.declarations) == ["mutates", "mutates"]
+    assert all(d.fields == ("classes_returned",) for d in mutated.declarations)
