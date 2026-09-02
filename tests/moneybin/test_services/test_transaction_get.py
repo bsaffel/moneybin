@@ -367,6 +367,55 @@ class TestTransactionGet:
             service.get(limit=2, cursor=forged)
 
     @pytest.mark.unit
+    def test_continuation_cursor_converges_on_the_canonical_day_spelling(
+        self, txn_db: Database
+    ) -> None:
+        """A minted cursor carries the canonical day, not the caller's spelling.
+
+        `date.fromisoformat` accepts basic `20260415` as readily as extended
+        `2026-04-15`. Both name the same day, so this cursor is valid and pages
+        normally — but if the continuation it mints echoed the caller's
+        spelling back, that spelling would ride along through every later page
+        instead of the walk settling on one form.
+        """
+        from moneybin.protocol.pagination import (
+            decode_keyset_cursor,
+            encode_keyset_cursor,
+        )
+        from moneybin.services.transaction_service import (
+            _TRANSACTION_LIST_CURSOR,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        service = TransactionService(txn_db)
+        scope = service._get_cursor_scope(  # pyright: ignore[reportPrivateUsage]
+            accounts=None,
+            date_from=None,
+            date_to=None,
+            categories=None,
+            amount_min=None,
+            amount_max=None,
+            description=None,
+            uncategorized_only=False,
+        )
+        basic_form = encode_keyset_cursor(
+            namespace=_TRANSACTION_LIST_CURSOR,
+            scope=scope,
+            snapshot=("20260415", "T2"),
+            after=("20260415", "T2"),
+            total=4,
+        )
+
+        result = service.get(limit=1, cursor=basic_form)
+
+        assert result.next_cursor is not None
+        continuation = decode_keyset_cursor(
+            result.next_cursor,
+            namespace=_TRANSACTION_LIST_CURSOR,
+            scope=scope,
+        )
+        assert continuation.snapshot == ("2026-04-15", "T2")
+
+    @pytest.mark.unit
     def test_continuation_that_precedes_its_snapshot_is_rejected(
         self, txn_db: Database
     ) -> None:

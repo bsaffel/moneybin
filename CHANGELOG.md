@@ -871,6 +871,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   known currency with an unknown one now withholds its market value instead of
   pricing the combined quantity at the known currency's close — the same guard
   that already withheld a position holding two different known currencies.
+- **A stale or forged pagination cursor no longer re-serves rows an earlier
+  page already returned.** A continuation key that sorted ahead of its
+  snapshot widened the page back to page one and returned duplicates as an
+  ordinary successful response; the `transactions`, `system_audit` and
+  `reviews` MCP tools accepted such a cursor, and a date or timestamp written
+  in a different-but-valid ISO spelling could slip one past the other paged
+  views too; cursors MoneyBin mints are unaffected. (#498)
 - **Account merge proposals no longer fire on a shared generated label alone,
   on either side of the comparison.** Two unrelated accounts whose *display
   name* was never set by a person or a source — both resolving to a bare

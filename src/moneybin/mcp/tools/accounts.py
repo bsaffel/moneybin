@@ -33,7 +33,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date as _date
 from decimal import Decimal
-from functools import cmp_to_key
 from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
@@ -90,10 +89,15 @@ from moneybin.protocol.envelope import (
     build_envelope,
 )
 from moneybin.protocol.pagination import (
+    InvalidKeysetCursorError,
     KeysetPosition,
-    compare_keyset,
+    SortDirection,
+    canonical_iso_date,
+    canonicalize_keyset_element,
     decode_keyset_cursor,
-    encode_keyset_cursor,
+    paginate_keyset,
+    validate_keyset_position,
+    validate_keyset_shape,
 )
 from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
@@ -118,6 +122,26 @@ from moneybin.services.identity_confirmation import (
 )
 from moneybin.services.mutation_context import current_operation_id
 from moneybin.services.refresh import RefreshResult
+
+# Display order of each paged accounts view's immutable keyset.
+_ACCOUNT_LIST_KEY_DIRECTIONS: tuple[SortDirection, ...] = ("asc",)
+# Which key element of each balances view is a day. Rows render it with
+# `date.isoformat()`, so a cursor must be normalized to that one spelling
+# before it is ordered against them: ISO admits spellings whose text order
+# contradicts their chronological order.
+_BALANCE_DATE_INDEX: dict[
+    Literal["latest", "history", "assertions", "reconcile"], int | None
+] = {"latest": None, "history": 0, "assertions": 1, "reconcile": 1}
+
+_BALANCE_KEY_DIRECTIONS: dict[
+    Literal["latest", "history", "assertions", "reconcile"],
+    tuple[SortDirection, ...],
+] = {
+    "latest": ("asc",),
+    "history": ("asc", "asc"),
+    "assertions": ("asc", "desc"),
+    "reconcile": ("asc", "desc"),
+}
 
 # ─── Read tools (entity) ──────────────────────────────────────────────────
 
@@ -998,7 +1022,8 @@ def _coarse_position(
     tool: Literal["accounts", "accounts_balances"],
     view: str,
     filters: dict[str, object],
-    key_size: int,
+    directions: tuple[SortDirection, ...],
+    date_index: int | None = None,
 ) -> KeysetPosition | None:
     """Decode one scope-bound cursor and validate its string key shape."""
     if cursor is None:
@@ -1014,16 +1039,18 @@ def _coarse_position(
             namespace=tool,
             scope={"filters": filters, "view": view},
         )
+        # Shape before canonicalization: the temporal element is addressed by
+        # index, so a short forged key must be rejected before it is indexed.
+        validate_keyset_shape(position, key_types=(str,) * len(directions))
+        if date_index is not None:
+            position = canonicalize_keyset_element(
+                position, index=date_index, canonicalize=canonical_iso_date
+            )
+        validate_keyset_position(
+            position, key_types=(str,) * len(directions), directions=directions
+        )
     except ValueError as exc:
         raise UserError("Invalid pagination cursor.", code=code) from exc
-    if (
-        len(position.snapshot) != key_size
-        or len(position.after) != key_size
-        or not all(
-            type(value) is str for value in (*position.snapshot, *position.after)
-        )
-    ):
-        raise UserError("Invalid pagination cursor.", code=code)
     return position
 
 
@@ -1044,44 +1071,18 @@ def _keyset_page[T](
         if tool == "accounts"
         else error_codes.ACCOUNT_BALANCE_CURSOR_INVALID
     )
-
-    def compare_rows(left: T, right: T) -> int:
-        return compare_keyset(key(left), key(right), directions)
-
-    ordered = sorted(rows, key=cmp_to_key(compare_rows))
-    if position is None:
-        if not ordered:
-            return [], None, 0
-        snapshot = key(ordered[0])
-        eligible = ordered
-        total_count = len(ordered)
-    else:
-        snapshot = cast(tuple[str, ...], position.snapshot)
-        after = cast(tuple[str, ...], position.after)
-        try:
-            if compare_keyset(after, snapshot, directions) < 0:
-                raise ValueError("continuation precedes snapshot")
-            eligible = [
-                row
-                for row in ordered
-                if compare_keyset(key(row), snapshot, directions) >= 0
-                and compare_keyset(key(row), after, directions) > 0
-            ]
-        except ValueError as exc:
-            raise UserError("Invalid pagination cursor.", code=code) from exc
-        total_count = position.total
-
-    page = eligible[:limit]
-    if len(eligible) <= limit or not page:
-        return page, None, total_count
-    next_cursor = encode_keyset_cursor(
-        namespace=tool,
-        scope={"filters": filters, "view": view},
-        snapshot=snapshot,
-        after=key(page[-1]),
-        total=total_count,
-    )
-    return page, next_cursor, total_count
+    try:
+        return paginate_keyset(
+            rows,
+            limit=limit,
+            key_of=key,
+            directions=directions,
+            namespace=tool,
+            scope={"filters": filters, "view": view},
+            position=position,
+        )
+    except InvalidKeysetCursorError as exc:
+        raise UserError("Invalid pagination cursor.", code=code) from exc
 
 
 def _account_candidates(payload: AccountListPayload) -> list[EntityCandidate]:
@@ -1237,7 +1238,7 @@ async def accounts_coarse(
             tool="accounts",
             view="list",
             filters=filters,
-            key_size=1,
+            directions=_ACCOUNT_LIST_KEY_DIRECTIONS,
         )
         response = await _run_account_read(
             accounts,
@@ -1252,7 +1253,7 @@ async def accounts_coarse(
             position=position,
             filters=filters,
             key=lambda row: (row.account_id,),
-            directions=("asc",),
+            directions=_ACCOUNT_LIST_KEY_DIRECTIONS,
         )
         payload = AccountsListView(rows=page)
         return _coarse_envelope(
@@ -1410,13 +1411,14 @@ async def accounts_balances_coarse(
         "start": start.isoformat() if start is not None else None,
         "threshold": str(threshold) if threshold is not None else None,
     }
-    key_size = 1 if view == "latest" else 2
+    directions = _BALANCE_KEY_DIRECTIONS[view]
     position = _coarse_position(
         cursor,
         tool="accounts_balances",
         view=view,
         filters=filters,
-        key_size=key_size,
+        directions=directions,
+        date_index=_BALANCE_DATE_INDEX[view],
     )
     account_id = (
         await _resolve_account_reference(reference, include_closed=True)
@@ -1438,7 +1440,7 @@ async def accounts_balances_coarse(
             position=position,
             filters=filters,
             key=lambda row: (row.account_id,),
-            directions=("asc",),
+            directions=directions,
         )
         payload = AccountsBalancesLatestView(observations=page)
         contract_type = AccountsBalancesLatestView
@@ -1457,7 +1459,7 @@ async def accounts_balances_coarse(
             position=position,
             filters=filters,
             key=lambda row: (row.balance_date.isoformat(), row.account_id),
-            directions=("asc", "asc"),
+            directions=directions,
         )
         payload = AccountsBalancesHistoryView(observations=page)
         contract_type = AccountsBalancesHistoryView
@@ -1474,7 +1476,7 @@ async def accounts_balances_coarse(
             position=position,
             filters=filters,
             key=lambda row: (row.account_id, row.assertion_date.isoformat()),
-            directions=("asc", "desc"),
+            directions=directions,
         )
         payload = AccountsBalancesAssertionsView(assertions=page)
         contract_type = AccountsBalancesAssertionsView
@@ -1492,7 +1494,7 @@ async def accounts_balances_coarse(
             position=position,
             filters=filters,
             key=lambda row: (row.account_id, row.balance_date.isoformat()),
-            directions=("asc", "desc"),
+            directions=directions,
         )
         payload = AccountsBalancesReconcileView(observations=page)
         contract_type = AccountsBalancesReconcileView
