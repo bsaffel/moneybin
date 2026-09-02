@@ -261,6 +261,49 @@ class TestFormatsShowPdf:
         assert "Field mapping" in result.output
 
 
+class TestFormatsShowCountsOneFormat:
+    """`formats show` returns one format, whatever its columns number.
+
+    `ImportFormatDetail.header_signature` is a list of column names, and with
+    `skip_trailing_patterns` unset it is the payload's only list — so the
+    envelope's sole-collection rule counted the signature's columns and every
+    shipped tabular format reported its column count as a row count, which the
+    privacy audit row then inherited.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("name", ["mint", "tiller", "ynab"])
+    def test_builtin_tabular_format_is_one_row(
+        self, runner: CliRunner, mocker: Any, name: str
+    ) -> None:
+        _mock_get_database(mocker, [])
+
+        result = runner.invoke(
+            import_app, ["formats", "show", name, "--output", "json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        envelope = json.loads(result.output)
+        summary = envelope["summary"]
+        assert summary["returned_count"] == 1
+        assert summary["total_count"] == 1
+        # The signature is still reported in full — it is just not a row count.
+        assert len(envelope["data"]["header_signature"]) > 1
+
+    @pytest.mark.unit
+    def test_pdf_format_is_one_row(self, runner: CliRunner, mocker: Any) -> None:
+        pdf_fmt = _make_pdf_format()
+        _mock_get_database(mocker, [pdf_fmt])
+
+        result = runner.invoke(
+            import_app,
+            ["formats", "show", "chase_a1b2c3d4e5f6", "--output", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["summary"]["returned_count"] == 1
+
+
 class TestErrorPathsAuditLikeTheirSuccessPaths:
     """A failure row must not be classified more coarsely than the success row.
 

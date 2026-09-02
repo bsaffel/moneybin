@@ -124,7 +124,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   collection were counted as row collections themselves — the post-load
   refresh's four best-effort lists on the first two, and the
   both-manual-and-Plaid overlap warning on `sync pull`. The privacy audit row
-  inherited the same wrong count.
+  inherited the same wrong count. `import formats show` had the mirror-image
+  version of the same defect — its one returned format carries a
+  `header_signature` list, so the shipped Mint, Tiller and YNAB formats
+  reported their column counts (9, 8 and 11) as row counts — and now states
+  the count rather than leaving it to be inferred.
 
 ### Fixed
 - **A failed `--output json` read is audited like the successful one beside

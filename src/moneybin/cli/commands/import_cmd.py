@@ -2885,7 +2885,12 @@ def formats_show(
             from moneybin.protocol.envelope import build_envelope
 
             render_or_json(
-                build_envelope(data=tabular_format_detail(fmt)),
+                # One format is one row. Stated rather than inferred: the
+                # payload's `header_signature` is a list of column names, and
+                # with `skip_trailing_patterns` unset it is the only list on
+                # the payload, so the sole-collection rule would count the
+                # signature's columns — 9, 8 and 11 for the shipped formats.
+                build_envelope(data=tabular_format_detail(fmt), returned_count=1),
                 output,
                 cli_actor="import_formats_show",
             )
@@ -2929,7 +2934,10 @@ def formats_show(
         from moneybin.protocol.envelope import build_envelope
 
         render_or_json(
-            build_envelope(data=pdf_format_detail(pdf_fmt)),
+            # One format is one row, stated for the same reason as the tabular
+            # branch above: this payload carries no list today, so the rule
+            # happens to agree, and a field added later must not change it.
+            build_envelope(data=pdf_format_detail(pdf_fmt), returned_count=1),
             output,
             cli_actor="import_formats_show",
         )
