@@ -154,6 +154,12 @@ ENVELOPE_FROM_AN_UNFOLLOWABLE_CALL: dict[str, str] = {
         "`import_formats` tool body in this same module, which the decorator "
         "classifies statically."
     ),
+    "system_audit": (
+        "`_run_tool_body` unwraps a tool callback passed as an argument and "
+        "invokes it through `asyncio.to_thread`, so the producer is reached by "
+        "value. The callbacks it receives are this module's own tool bodies, "
+        "which the decorator classifies statically."
+    ),
     "import_confirm": (
         "Its retry loop returns what `asyncio.to_thread(_run_import_confirm_"
         "attempt, …)` produced. The producer is passed as an argument, so the "
@@ -161,6 +167,18 @@ ENVELOPE_FROM_AN_UNFOLLOWABLE_CALL: dict[str, str] = {
         "same module and builds through the classifier."
     ),
 }
+
+# Of the tools above, the ones whose entry says the raw envelope is safe
+# *because the registered tool rebuilds it through the classifier*. That
+# justification is a condition, not a note: if one of them starts returning a
+# helper's raw envelope directly, its reason has stopped being true and the
+# list must not keep vouching for it. So these stay bound to the classifier;
+# only a mechanism that genuinely replaces it is excused.
+REBUILDS_THROUGH_THE_CLASSIFIER = frozenset({
+    "import_preview",
+    "gsheet_connect",
+    "sync_status",
+})
 
 # Where the sanctioned mechanism is a *derivation*, a literal is the silent
 # downgrade set equality cannot see: swapping `result.tier` for "low" keeps the
@@ -398,14 +416,18 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
     constructions: list[Construction] = []
     declarations: list[Declaration] = []
     unverified: list[UnverifiedReturn] = []
-    seen: set[tuple[Path, str]] = set()
-    pending: list[tuple[Path, str]] = [(path, function)]
+    # The third element is "whatever this returns is the tool's envelope".
+    # It is seeded True for the tool itself and propagated to any helper
+    # returned from an envelope-producing one, so a producer annotated `Any`
+    # is still held to the return check.
+    seen: set[tuple[Path, str, bool]] = set()
+    pending: list[tuple[Path, str, bool]] = [(path, function, True)]
 
     while pending:
-        current_path, current_name = pending.pop()
-        if (current_path, current_name) in seen:
+        current_path, current_name, produces_envelope = pending.pop()
+        if (current_path, current_name, produces_envelope) in seen:
             continue
-        seen.add((current_path, current_name))
+        seen.add((current_path, current_name, produces_envelope))
         current_functions, imports = _index(current_path)
         node = current_functions.get(current_name)
         if node is None:
@@ -457,15 +479,16 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                     )
                 )
             if callee in current_functions:
-                pending.append((current_path, callee))
+                pending.append((current_path, callee, False))
             elif callee in imports:
-                pending.append(imports[callee])
+                target_path, target_name = imports[callee]
+                pending.append((target_path, target_name, False))
 
         # A branch the scan cannot read is not a branch it has cleared. Only
         # envelope-typed functions are held to this: every other helper in the
         # tree returns rows, cursors, and counts that no classifier owns.
-        returns_an_envelope = node.returns is not None and (
-            "ResponseEnvelope" in ast.unparse(node.returns)
+        returns_an_envelope = produces_envelope or (
+            node.returns is not None and "ResponseEnvelope" in ast.unparse(node.returns)
         )
         if returns_an_envelope:
             for statement in node.body:
@@ -479,10 +502,17 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                         | set(imports)
                     )
                     for value in _resolve_all(child.value, assignments):
-                        if (
-                            isinstance(value, ast.Call)
-                            and _call_name(value) in nameable
-                        ):
+                        callee = (
+                            _call_name(value) if isinstance(value, ast.Call) else None
+                        )
+                        if callee is not None and callee in nameable:
+                            # Its value becomes this envelope, so hold it to the
+                            # same check even if it is annotated `Any`.
+                            if callee in current_functions:
+                                pending.append((current_path, callee, True))
+                            elif callee in imports:
+                                helper_path, helper_name = imports[callee]
+                                pending.append((helper_path, helper_name, True))
                             continue
                         unverified.append(
                             UnverifiedReturn(
@@ -570,15 +600,24 @@ async def test_envelopes_built_outside_the_classifier_are_the_sanctioned_set() -
 async def test_every_dynamic_tool_reaches_the_classifier_or_is_listed() -> None:
     """A tool declaring from another mechanism is on the list; the rest build."""
     mechanisms = await _dynamic_tool_mechanisms()
+    assert REBUILDS_THROUGH_THE_CLASSIFIER <= set(BUILDS_OUTSIDE_THE_CLASSIFIER), (
+        "REBUILDS_THROUGH_THE_CLASSIFIER names a tool that is not on the list"
+    )
     missing = sorted(
         name
         for name, mechanism in mechanisms.items()
-        if not mechanism.reaches_builder and name not in BUILDS_OUTSIDE_THE_CLASSIFIER
+        if not mechanism.reaches_builder
+        and (
+            name not in BUILDS_OUTSIDE_THE_CLASSIFIER
+            or name in REBUILDS_THROUGH_THE_CLASSIFIER
+        )
     )
     assert not missing, (
         f"These dynamic_classification=True tools never call {BUILDER}(), so "
-        "nothing derives their declared fields from the payload's classes: "
-        f"{missing}"
+        "nothing derives their declared fields from the payload's classes. A "
+        "tool listed in BUILDS_OUTSIDE_THE_CLASSIFIER because it *rebuilds* a "
+        "raw helper envelope has to keep rebuilding one; the list excuses only "
+        f"a mechanism that replaces the classifier outright: {missing}"
     )
 
 
@@ -665,6 +704,16 @@ def _probe_merging_two_branches_into_one_variable() -> ResponseEnvelope[Any]:
     return response
 
 
+def _unannotated_producer() -> Any:
+    """Annotated `Any`, yet its value becomes the caller's envelope."""
+    return _elsewhere().make_envelope()
+
+
+def _probe_delegating_to_an_unannotated_helper() -> ResponseEnvelope[Any]:
+    """Stand-in for a producer whose annotation does not name the envelope."""
+    return _unannotated_producer()
+
+
 def _probe_hiding_a_literal_behind_an_alias() -> ResponseEnvelope[Any]:
     """Stand-in for a constant spelled into a local before the call."""
     hidden = "low"
@@ -740,5 +789,14 @@ def test_the_analysis_can_return_a_failing_verdict() -> None:
     )
     assert merged.reaches_builder
     assert [site.expression for site in merged.unverified_returns] == [
+        "_elsewhere().make_envelope()"
+    ]
+
+    # A producer annotated `Any` is still a producer: the expectation follows
+    # the value, not the annotation.
+    delegated = mechanism_of(
+        Path(__file__), _probe_delegating_to_an_unannotated_helper.__name__
+    )
+    assert [site.expression for site in delegated.unverified_returns] == [
         "_elsewhere().make_envelope()"
     ]
