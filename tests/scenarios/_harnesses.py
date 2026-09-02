@@ -88,7 +88,10 @@ def assert_empty_input_safe(
             name="empty_input_safe",
             passed=False,
             details={"reason": "run raised", "exception_type": type(exc).__name__},
-            error=str(exc),
+            # Type name only — this catches a real pipeline run, so str(exc)
+            # can quote the rows it was processing, and failure_summary()
+            # prints `error` straight into CI output.
+            error=type(exc).__name__,
         )
     counts = {t: _count(db, t) for t in tables}
     nonempty = {t: n for t, n in counts.items() if n > 0}
