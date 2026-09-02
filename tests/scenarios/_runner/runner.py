@@ -195,9 +195,10 @@ def run_scenario(
         assertions = [_run_assertion(a, db, tmpdir=tmp) for a in scenario.assertions]
         try:
             expectations = verify_expectations(db, scenario.expectations)
-        except Exception as exc:  # noqa: BLE001 — surface as halted result
-            named = exc if isinstance(exc, ExpectationCrashError) else None
-            detail = str(named) if named else type(exc).__name__
+        # verify_expectations wraps every adapter exception, so this is the only
+        # type that escapes it; a broader clause would have a dead branch.
+        except ExpectationCrashError as exc:
+            detail = str(exc)
             logger.error(f"scenario {scenario.name} expectations crashed: {detail}")
             logger.debug("scenario expectations traceback", exc_info=True)
             return _build_result(
@@ -289,7 +290,10 @@ def _run_assertion(
             name=spec.name,
             passed=False,
             details={"args": args},
-            error=str(exc),
+            # Type name only — an assertion queries scenario rows, so str(exc)
+            # can quote the values it was comparing, and failure_summary() is
+            # CI-visible. The full traceback goes to the debug log above.
+            error=type(exc).__name__,
             crashed=True,
         )
     # Preserve the scenario-author's name so result output matches the YAML.
@@ -314,7 +318,8 @@ def _run_evaluation(spec: EvaluationSpec, db: Database) -> EvaluationResult:
             value=0.0,
             threshold=spec.threshold.min,
             passed=False,
-            breakdown={"error": str(exc)},
+            # Type name only, for the same reason as the assertion branch.
+            breakdown={"error": type(exc).__name__},
             crashed=True,
         )
 
