@@ -982,64 +982,23 @@ def test_only_the_render_module_imports_rich() -> None:
     )
 
 
-# DEPRECATED: hand-formatted-column — modules still building their own aligned
-# columns instead of calling `render_rows`. Requirement 1 forbids the pattern
-# outright; these are the sites the requirement's own file list did not name,
-# found by this guard rather than by the audit, and they migrate in M3K.3's
-# third pull request. The list only shrinks: it is asserted by set equality
-# below, so a module that migrates must be removed from it and a module that
-# acquires the pattern fails.
-#
-# Residual, stated rather than hidden: an already-listed module could grow a
-# *second* hand-formatted table without this guard noticing, because the pin is
-# per module rather than per call site. Pinning the format specs themselves
-# would catch that and would also churn on every unrelated width change; since
-# the whole list is scheduled to reach empty inside this milestone, the coarser
-# pin is the proportionate one. What it does catch is the regression that
-# matters — the pattern spreading to a module that had shed it.
-_AWAITING_RENDER_ROWS = frozenset({
-    "commands/db.py",
-    "commands/demo.py",
-    "commands/fx.py",
-    "commands/import_cmd.py",
-    "commands/investments/__init__.py",
-    "commands/investments/lots.py",
-    "commands/investments/prices.py",
-    "commands/investments/securities.py",
-})
-
-
 def test_no_command_hand_formats_an_aligned_column() -> None:
-    """Requirement 1: a padded f-string column is a table by another name."""
-    offenders = {
-        name
-        for module in _cli_modules()
-        if _alignment_specs(module)
-        and (name := str(module.relative_to(CLI_ROOT))) not in _AWAITING_RENDER_ROWS
-    }
-    assert offenders == set(), (
-        "these commands hand-format aligned columns instead of calling "
-        f"render_rows: {sorted(offenders)}"
-    )
+    """Requirement 1: a padded f-string column is a table by another name.
 
-
-def test_every_deferred_module_still_has_the_pattern_it_is_excused_for() -> None:
-    """The exemption list is set equality, so it cannot rot in either direction.
-
-    A stale entry is the failure mode that matters: a module that has since
-    been migrated would keep a standing excuse, and the next hand-formatted
-    table added to it would pass. Deriving the live set from the same scan the
-    guard above uses means the two can never disagree.
+    This guard carried an exemption set (`_AWAITING_RENDER_ROWS`) for the
+    eight modules the audit's own file list did not name, plus a second guard
+    asserting set equality so the list could only shrink. The set is now
+    empty, so both are gone: every CLI module is held to the rule
+    unconditionally, which is what the list existed to converge on.
     """
-    live = {
+    offenders = sorted(
         str(module.relative_to(CLI_ROOT))
         for module in _cli_modules()
         if _alignment_specs(module)
-    }
-    assert live & _AWAITING_RENDER_ROWS == _AWAITING_RENDER_ROWS, (
-        "these modules are excused from requirement 1 but no longer need to be; "
-        f"remove them from _AWAITING_RENDER_ROWS: "
-        f"{sorted(_AWAITING_RENDER_ROWS - live)}"
+    )
+    assert offenders == [], (
+        "these commands hand-format aligned columns instead of calling "
+        f"render_rows: {offenders}"
     )
 
 

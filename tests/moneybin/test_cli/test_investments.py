@@ -482,6 +482,13 @@ class TestInvestmentsList:
         result = runner.invoke(app, ["investments", "list"])
         assert result.exit_code == 0, result.output
         assert "buy" in result.output
+        # Requirement 1: the event row was `qty=… amt=…`, which repeats a field
+        # name per line and leaves nothing to align on.
+        assert "┃" in result.stdout
+        for header in ("date", "type", "security", "quantity", "amount", "currency"):
+            assert header in result.stdout
+        assert "qty=" not in result.stdout
+        assert "amt=" not in result.stdout
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -525,7 +532,7 @@ class TestHoldingsAndGains:
 
     @pytest.mark.unit
     def test_holdings_text_renders_value_and_an_unpriced_dash(
-        self, runner: CliRunner, db: Database
+        self, runner: CliRunner, db: Database, wide_terminal: None
     ) -> None:
         """An unpriced position renders "-", never a blank that reads as zero."""
         db.conn.execute(
@@ -550,10 +557,20 @@ class TestHoldingsAndGains:
         )
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
-        assert "market_value=1200.00" in result.output
-        assert "unrealized_gain=200.00 USD" in result.output
-        assert "status=valued as_of=2026-07-15 (0d)" in result.output
-        assert "market_value=- unrealized_gain=- USD status=unpriced" in result.output
+        priced = next(li for li in result.output.splitlines() if "sec_1" in li)
+        unpriced = next(li for li in result.output.splitlines() if "sec_2" in li)
+        # The priced row states every figure; the unpriced one dashes the three
+        # it cannot know, rather than blanking them into an apparent zero.
+        assert "1,200.00" in priced
+        assert "+200.00" in priced
+        assert "valued" in priced
+        assert "2026-07-15 (0d)" in priced
+        assert "unpriced" in unpriced
+        # Market value and unrealized gain are the two figures a missing close
+        # withholds; the cost basis and average cost are known either way.
+        assert unpriced.count("-") == 2
+        assert "1,200.00" not in unpriced
+        assert "USD" in unpriced
 
     @pytest.mark.unit
     def test_holdings_text_reports_the_stalest_close_as_a_number(
@@ -737,6 +754,40 @@ class TestHoldingsAndGains:
         assert len(data["data"]["rows"]) == 1
         assert data["data"]["warnings"]
 
+    @pytest.mark.unit
+    def test_gains_text_names_its_columns_and_signs_the_gain(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """Requirements 1, 12, and 14: named columns, and one signed answer.
+
+        Proceeds and basis are positive by construction, so they render
+        unsigned; the gain is the figure whose direction is the point, so it
+        carries its sign.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id,
+                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                 cost_basis, gain_loss, term, cost_basis_method,
+                 basis_incomplete, currency_code)
+            VALUES ('gain_signed', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a',
+                    5, '2024-01-01', '2024-06-12', 1950.00, 1750.00, 200.00,
+                    'long', 'fifo', false, 'USD')
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        result = runner.invoke(app, ["investments", "gains"])
+
+        assert result.exit_code == 0, result.output
+        assert "┃" in result.stdout
+        for header in ("disposed", "security", "proceeds", "basis", "gain", "term"):
+            assert header in result.stdout
+        assert "1,950.00" in result.stdout
+        assert "1,750.00" in result.stdout
+        assert "+200.00" in result.stdout
+        assert "proceeds=" not in result.stdout
+
 
 # ---------------------------------------------------------------------------
 # investments lots list
@@ -819,7 +870,7 @@ class TestLotsList:
 
     @pytest.mark.unit
     def test_lots_list_text_flags_basis_incomplete_row(
-        self, runner: CliRunner, db: Database
+        self, runner: CliRunner, db: Database, wide_terminal: None
     ) -> None:
         db.conn.execute(
             """
@@ -836,6 +887,38 @@ class TestLotsList:
         assert result.exit_code == 0, result.output
         assert "basis_incomplete" in result.stdout
         assert "incomplete" in result.stderr
+
+    @pytest.mark.unit
+    def test_lots_list_names_its_columns_instead_of_its_fields(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """Requirement 1: `key=value` at a reader is a table spelled badly.
+
+        The row read `acq=2024-01-15 remaining=10 basis_remaining=0.00
+        method=fifo`, which repeats a field name on every line and leaves the
+        values unalignable. The header carries each name once instead.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES ('lot_named', 'acct_brokerage', 'sec_1', '2024-01-15',
+                    'buy', 10, 10, 1234.50, 1234.50, 'fifo', 'USD', true, false)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        result = runner.invoke(app, ["investments", "lots", "list"])
+
+        assert result.exit_code == 0, result.output
+        assert "┃" in result.stdout
+        for header in ("lot", "security", "acquired", "remaining", "method", "state"):
+            assert header in result.stdout
+        assert "remaining=" not in result.stdout
+        # Requirement 11: the basis is an amount, so it is separated.
+        assert "1,234.50" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -1047,6 +1130,22 @@ class TestSecuritiesListAndSet:
         rows = json.loads(result.stdout)["data"]["rows"]
         assert len(rows) == 1
         assert rows[0]["ticker"] == "AAPL"
+
+    @pytest.mark.unit
+    def test_list_text_names_its_columns(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """Requirement 1: four padded values are a table, so render one."""
+        _add_security(runner, name="Apple Inc.", type_="equity", ticker="AAPL")
+
+        result = runner.invoke(app, ["investments", "securities", "list"])
+
+        assert result.exit_code == 0, result.output
+        assert "┃" in result.stdout
+        for header in ("security", "ticker", "name", "type"):
+            assert header in result.stdout
+        assert "AAPL" in result.stdout
+        assert "Apple Inc." in result.stdout
 
     @pytest.mark.unit
     def test_set_method_preserves_other_fields(

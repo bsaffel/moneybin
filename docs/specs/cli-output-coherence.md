@@ -100,16 +100,24 @@ Numbered, each independently testable.
    **The hand-formatted set was larger than the audit found.** The audit named
    the review queues and list commands below under "Files to Modify"; an AST
    scan for an alignment format spec inside a `typer.echo` — the signature of a
-   hand-built column — returned **thirteen** modules. Eight of them are not in
+   hand-built column — returned **thirteen** modules. Eight of them were not in
    that list: `db.py` (the `ps` process table, twice), `demo.py`, `fx.py`,
    `import_cmd.py`, and four under `investments/` (`__init__.py`, `lots.py`,
-   `prices.py`, `securities.py`). They are the same defect and are in scope for
-   this requirement; they are excused only until the third pull request, by a
-   named set in `tests/moneybin/test_cli/test_render.py`
-   (`_AWAITING_RENDER_ROWS`) that is asserted by set equality in both
-   directions — a module acquiring the pattern fails, and a module that has
-   shed it must be removed from the list. The set reaches empty in the same
-   milestone.
+   `prices.py`, `securities.py`). They were the same defect and in scope for
+   this requirement, excused by a named set in
+   `tests/moneybin/test_cli/test_render.py` (`_AWAITING_RENDER_ROWS`) asserted
+   by set equality in both directions. **All eight have migrated and the set is
+   gone** — with no exemption left, one guard holds every CLI module
+   unconditionally and the second one, which existed only to keep the list from
+   rotting, was removed with it.
+
+   **A per-unit price is not an amount.** Three of those migrations render a
+   figure stored `DECIMAL(28, 10)` — `fx list`'s rate, `investments prices
+   list`'s close, `investments holdings`' average cost. Requirement 11's
+   `format_money` rounds to two decimal places, which renders a sub-cent
+   crypto close as `0.00`, so those columns declare no money kind and print as
+   stored. Requirement 11 governs *amounts* — what something is worth — not
+   the per-unit prices an amount is computed from.
 
    The scan is the requirement's enforcement, not a one-off: two more guards
    confine Rich to `render.py` and forbid `typer.secho` / `typer.style`
@@ -781,7 +789,8 @@ removed field and costs a `stats` surface that cannot label nine of its metrics.
 | `src/moneybin/cli/utils.py` | Profile banner (19); **retire `render_rich_table`** into `render_rows` — it is the shared `rich.Table` builder req 1 supersedes |
 | `src/moneybin/cli/commands/stubs.py` | Message copy (32); the parameter carries a user-facing feature name, never a spec filename |
 | `src/moneybin/cli/main.py` + group modules | `hidden=True` on stub registrations, and on the four groups whose every command is a stub (31) |
-| `src/moneybin/cli/commands/db.py` | Route the three `db key` stubs through `_not_implemented` and hide them, keeping their `typer.Exit(1)` (31–33) |
+| `src/moneybin/cli/commands/db.py` | Route the three `db key` stubs through `_not_implemented` and hide them, keeping their `typer.Exit(1)` (31–33). Also the `ps` process roll, printed twice from one format string — one renderer serves `ps` and `kill`'s preamble (1) |
+| `src/moneybin/cli/commands/demo.py`, `fx.py`, `import_cmd.py`, `investments/{__init__,lots,prices,securities}.py` | The eight modules the audit's file list did not name, found by the guard rather than by the audit. All migrated; `_AWAITING_RENDER_ROWS` is empty and the guard that policed it is retired (1) |
 | `src/moneybin/metrics/registry.py` | Add a `unit` field to each histogram declaration (24); add the three counters in Observability below |
 | `.claude/rules/cli.md` | Add a "Text rendering" section pointing at this spec — the rule file is where a future contributor looks first |
 

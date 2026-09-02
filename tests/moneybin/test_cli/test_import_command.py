@@ -391,3 +391,60 @@ def test_import_file_no_sign_warning_when_not_suggested(csv_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "Sign convention" not in result.output
+
+
+_HISTORY_RECORDS = [
+    {
+        "import_id": "imp_0123456789ab",
+        "status": "completed",
+        "rows_imported": 1204,
+        "rows_rejected": 0,
+        "source_file": "/data/statements/january.csv",
+    },
+    {
+        "import_id": "imp_ba9876543210",
+        "status": "failed",
+        "rows_imported": 0,
+        "rows_rejected": 17,
+        "source_file": "/data/statements/february.csv",
+    },
+]
+
+
+def _patched_history() -> Any:
+    return patch(
+        "moneybin.extractors.tabular.TabularExtractor.get_import_history",
+        return_value=_HISTORY_RECORDS,
+    )
+
+
+def test_import_history_renders_a_table_not_a_padded_rule(
+    wide_terminal: None,
+) -> None:
+    """Requirement 1: the roll drew its own header and a 100-character rule.
+
+    The rule was a fixed width regardless of the terminal or the values, so a
+    long source path ran past it and a short one left it dangling.
+    """
+    with patch("moneybin.database.get_database", _fake_db_ctx), _patched_history():
+        result = runner.invoke(app, ["history"], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert "┃" in result.stdout
+    assert "-" * 100 not in result.stdout
+    for header in ("import", "status", "imported", "rejected", "source file"):
+        assert header in result.stdout
+    # The basename is what the roll shows; the directory is not the identity.
+    assert "january.csv" in result.stdout
+    assert "/data/statements" not in result.stdout
+
+
+def test_import_history_renders_one_row_per_import(wide_terminal: None) -> None:
+    """Requirement 35: two imports are two rows, whatever they have in common."""
+    with patch("moneybin.database.get_database", _fake_db_ctx), _patched_history():
+        result = runner.invoke(app, ["history"], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert "imp_0123456789ab" in result.stdout
+    assert "imp_ba9876543210" in result.stdout
+    assert "1,204" in result.stdout or "1204" in result.stdout

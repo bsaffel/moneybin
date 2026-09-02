@@ -242,13 +242,18 @@ Three guards in `tests/moneybin/test_cli/test_render.py` enforce this
 structurally: Rich may be imported only by `render.py`, no `typer.echo` outside
 it carries an alignment format spec, and nothing calls `typer.secho`/`typer.style`.
 
-**Eight modules are still exempt from the second guard**, named in
-`_AWAITING_RENDER_ROWS` in that file: `commands/db.py`, `demo.py`, `fx.py`,
-`import_cmd.py`, and four under `commands/investments/`. They hand-format
-columns today and migrate in the third pull request of M3K.3. The list is
-asserted by set equality in both directions, so it can only shrink — a module
-acquiring the pattern fails, and one that has shed it must be removed. Do not
-copy their approach into anything new, and do not add to the list.
+**No module is exempt.** The second guard carried an `_AWAITING_RENDER_ROWS`
+set for the eight modules the audit's file list did not name; all eight have
+migrated and the set is gone. Every CLI module is held to the rule
+unconditionally.
+
+**A per-unit price is not an amount.** `fx list`'s rate, `investments prices
+list`'s close, and `investments holdings`' average cost are stored to ten
+decimal places, and `format_money` rounds to two — routing a sub-cent price
+through it renders `0.00`. Those columns declare no `Money` and print as
+stored. Requirement 11 governs amounts: a transaction total, a balance, a
+gain. If the column answers "how much is this worth", format it; if it
+answers "what does one unit cost", do not.
 
 Full contract: [`cli-output-coherence.md`](../../docs/specs/cli-output-coherence.md).
 

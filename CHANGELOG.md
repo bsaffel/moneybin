@@ -10,6 +10,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **The last eight commands that drew their own columns now render like every
+  other one.** `db ps`, `db kill`, `demo`, `fx list`, `import history`,
+  `import formats list`, and the four `investments` list commands each built a
+  table by padding an f-string — their own header row, their own fixed-width
+  rule, and their own idea of how wide a column should be. A 100-character rule
+  under a 130-character row, and a path that ran past both, were the visible
+  symptoms. All eight now call `render_rows`, so a value too wide for the
+  terminal folds inside its column instead of running past the frame.
+
+  Three of them printed `key=value` at the reader rather than a table at all —
+  `investments list`, `holdings`, and `gains` emitted lines like
+  `qty=10 cost_basis=1000.00 avg_cost=100.00 market_value=…`, repeating a field
+  name on every row. The names now sit in the header once.
+
+  This empties `_AWAITING_RENDER_ROWS`, the exemption set that carried these
+  eight modules, and retires the second guard that existed only to keep that
+  list from rotting. One guard now holds every CLI module unconditionally.
+
+- **`demo` and the investments commands format their amounts the way every
+  other command does.** `demo` printed `Net worth: 12345.67` while
+  `reports networth` printed `12,480.22` for the same kind of figure — its own
+  comment claimed the two matched. Amounts on these surfaces now carry
+  thousands separators, two decimal places, and the design system's `−` for a
+  negative, and a realized or unrealized gain carries its sign and its colour.
+  A missing amount renders `-` rather than `n/a`, matching every other table.
+
+  **Per-unit prices are deliberately exempt.** An exchange rate, a security's
+  close, and a holding's average cost are stored to ten decimal places, and
+  rounding them to two would render a sub-cent price as `0.00`. Those columns
+  print as stored.
+
 ### Fixed
 - **MCP tool calls now record `moneybin_mcp_tool_calls_total` and `moneybin_mcp_tool_duration_seconds`.** The observability spec described this instrumentation as automatic, but no code path ever recorded either metric — a dashboard built from them stayed at zero permanently. `ValidationErrorMiddleware.on_call_tool`, the single boundary every `tools/call` request passes through, now records both metrics on every call, whether it succeeds, is translated to a validation-error envelope, or raises something else. (#495)
 

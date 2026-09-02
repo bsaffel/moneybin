@@ -28,6 +28,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.render import render_rows
 from moneybin.cli.utils import handle_cli_errors, parse_cli_date, parse_cli_decimal
 from moneybin.database import get_database
 from moneybin.privacy.payloads.currency import (
@@ -139,8 +140,13 @@ def fx_list(
     if output == OutputFormat.JSON:
         render_or_json(build_envelope(data=payload), output, cli_actor="fx_list")
         return
-    for row in payload.rows:
-        typer.echo(f"{row.rate_date}  {row.rate:>18}  {row.source}")
+    # A rate is not an amount: `format_money` rounds to two places, which turns
+    # 0.87138 into 0.87 and loses the precision the series exists to record. It
+    # therefore declares no money column and renders each rate as stored.
+    render_rows(
+        ["date", "rate", "source"],
+        [(row.rate_date, row.rate, row.source) for row in payload.rows],
+    )
 
 
 @app.command("set")

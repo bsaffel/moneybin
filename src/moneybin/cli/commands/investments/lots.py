@@ -12,6 +12,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.render import Money, render_note, render_rows
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
@@ -62,18 +63,37 @@ def investments_lots_list(
             cli_actor="investments_lots_list",
         )
         return
-    for row in result.rows:
-        state = "open" if row.is_open else "closed"
-        flag = " ⚠️ basis_incomplete" if row.basis_incomplete else ""
-        typer.echo(
-            f"{row.lot_id:<10} {row.security_id:<8} acq={row.acquisition_date} "
-            f"remaining={row.remaining_quantity} "
-            f"basis_remaining={row.cost_basis_remaining} "
-            f"method={row.cost_basis_method} [{state}]{flag}"
-        )
-    if not quiet:
-        for w in result.warnings:
-            typer.echo(f"⚠️  {w}", err=True)
+    render_rows(
+        [
+            "lot",
+            "security",
+            "acquired",
+            "remaining",
+            "basis",
+            "method",
+            "state",
+            "note",
+        ],
+        [
+            (
+                row.lot_id,
+                row.security_id,
+                row.acquisition_date,
+                row.remaining_quantity,
+                row.cost_basis_remaining,
+                row.cost_basis_method,
+                "open" if row.is_open else "closed",
+                "⚠️ basis_incomplete" if row.basis_incomplete else "",
+            )
+            for row in result.rows
+        ],
+        # A lot's remaining basis is a position rather than a movement, so it
+        # renders unsigned and uncoloured. The remaining quantity is a share
+        # count, not an amount, and is left as stored.
+        money={"basis": Money("balance")},
+    )
+    for w in result.warnings:
+        render_note(f"⚠️  {w}", quiet=quiet, warn=True)
 
 
 def _parse_lot_selection(entry: str) -> tuple[str, Decimal]:

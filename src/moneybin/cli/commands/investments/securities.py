@@ -14,6 +14,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.render import render_rows
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
@@ -60,11 +61,13 @@ def investments_securities_list(
             cli_actor="investments_securities_list",
         )
         return
-    for row in result.rows:
-        typer.echo(
-            f"{row.security_id:<12} {row.ticker or '-':<8} "
-            f"{row.name:<30} {row.security_type}"
-        )
+    render_rows(
+        ["security", "ticker", "name", "type"],
+        [
+            (row.security_id, row.ticker or "-", row.name, row.security_type)
+            for row in result.rows
+        ],
+    )
 
 
 @app.command("add")

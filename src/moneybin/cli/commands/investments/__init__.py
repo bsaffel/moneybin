@@ -35,6 +35,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.render import Money, render_note, render_rows
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
@@ -209,12 +210,23 @@ def investments_list(
             cli_actor="investments_list",
         )
         return
-    for row in result.rows:
-        sec = row.security_id or "-"
-        typer.echo(
-            f"{row.trade_date}  {row.type:<12} {sec:<10} qty={row.quantity} "
-            f"amt={row.amount} {currency_label(row.currency_code)}"
-        )
+    render_rows(
+        ["date", "type", "security", "quantity", "amount", "currency"],
+        [
+            (
+                row.trade_date,
+                row.type,
+                row.security_id or "-",
+                row.quantity,
+                row.amount,
+                currency_label(row.currency_code),
+            )
+            for row in result.rows
+        ],
+        # An event's amount is cash moving in or out, so it signs itself. The
+        # quantity is a share count, not an amount, and is left as stored.
+        money={"amount": Money("flow")},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -257,26 +269,47 @@ def investments_holdings(
             cli_actor="investments_holdings",
         )
         return
-    for row in result.rows:
-        # "-" for an absent figure, matching avg_cost's existing NULL rendering:
-        # a blank column reads as zero, and NULL here means "no number", not
-        # "worth nothing". Signs come through as the Decimal carries them —
-        # unrealized_gain is negative below cost (same as `gains`' gain_loss).
-        avg = row.average_cost if row.average_cost is not None else "-"
-        value = row.market_value if row.market_value is not None else "-"
-        gain = row.unrealized_gain if row.unrealized_gain is not None else "-"
-        as_of = (
-            f" as_of={row.price_date} ({row.days_since_observed}d)"
-            if row.price_date is not None
-            else ""
-        )
-        typer.echo(
-            f"{row.security_id:<10} qty={row.quantity} "
-            f"cost_basis={row.cost_basis} avg_cost={avg} "
-            f"market_value={value} unrealized_gain={gain} "
-            f"{currency_label(row.currency_code)} "
-            f"status={row.valuation_status}{as_of}"
-        )
+    render_rows(
+        [
+            "security",
+            "quantity",
+            "cost basis",
+            "avg cost",
+            "market value",
+            "unrealized",
+            "currency",
+            "status",
+            "as of",
+        ],
+        [
+            (
+                row.security_id,
+                row.quantity,
+                row.cost_basis,
+                # A per-unit cost is DECIMAL(28,10); `format_money` rounds to
+                # two places, which renders a sub-cent price as 0.00. It is
+                # left as stored for the same reason `fx list` leaves a rate.
+                row.average_cost if row.average_cost is not None else "-",
+                row.market_value,
+                row.unrealized_gain,
+                currency_label(row.currency_code),
+                row.valuation_status,
+                f"{row.price_date} ({row.days_since_observed}d)"
+                if row.price_date is not None
+                else "",
+            )
+            for row in result.rows
+        ],
+        # Both totals are positions, so they render unsigned and uncoloured;
+        # `format_money` already spells an absent one `-` rather than a zero
+        # that would read as "worth nothing". The unrealized figure is the one
+        # signed number here — above cost is the good direction.
+        money={
+            "cost basis": Money("balance"),
+            "market value": Money("balance"),
+            "unrealized": Money("delta", polarity="income"),
+        },
+    )
     if result.rows:
         # Portfolio-level disclosure, not a status line — `-q` keeps it, the
         # same rule that keeps result rows.
@@ -315,9 +348,8 @@ def investments_holdings(
         # part of the disclosure, not a status line. Empty unless a rate was
         # actually applied, so the single-currency case stays silent.
         echo_applied_rates(result.applied_rates, result.total_market_value_currency)
-    if not quiet:
-        for w in result.warnings:
-            typer.echo(f"⚠️  {w}", err=True)
+    for w in result.warnings:
+        render_note(f"⚠️  {w}", quiet=quiet, warn=True)
 
 
 @app.command("gains")
@@ -362,15 +394,30 @@ def investments_gains(
             cli_actor="investments_gains",
         )
         return
-    for row in result.rows:
-        typer.echo(
-            f"{row.disposal_date}  {row.security_id:<8} qty={row.quantity} "
-            f"proceeds={row.proceeds} basis={row.cost_basis} "
-            f"gain_loss={row.gain_loss} term={row.term}"
-        )
-    if not quiet:
-        for w in result.warnings:
-            typer.echo(f"⚠️  {w}", err=True)
+    render_rows(
+        ["disposed", "security", "quantity", "proceeds", "basis", "gain", "term"],
+        [
+            (
+                row.disposal_date,
+                row.security_id,
+                row.quantity,
+                row.proceeds,
+                row.cost_basis,
+                row.gain_loss,
+                row.term,
+            )
+            for row in result.rows
+        ],
+        # Proceeds and basis are positive by construction; the gain is the
+        # signed answer, and up is the good direction on a realized gain.
+        money={
+            "proceeds": Money("magnitude"),
+            "basis": Money("balance"),
+            "gain": Money("delta", polarity="income"),
+        },
+    )
+    for w in result.warnings:
+        render_note(f"⚠️  {w}", quiet=quiet, warn=True)
 
 
 app.add_typer(lots.app, name="lots")

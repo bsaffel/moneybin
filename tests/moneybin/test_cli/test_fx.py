@@ -229,6 +229,26 @@ class TestFxList:
     @patch("moneybin.cli.commands.fx.get_database")
     @patch(
         "moneybin.services.currency_service.CurrencyService.list_rates",
+        return_value=[
+            _resolved(requested=date(2026, 3, 13), published=date(2026, 3, 13))
+        ],
+    )
+    def test_list_names_its_columns(self, _rates: MagicMock, _db: MagicMock) -> None:
+        """Requirement 1: three padded values are a table, so render one.
+
+        The series was three unlabelled columns, which left a reader to infer
+        from the values which one was the rate and which the date.
+        """
+        result = runner.invoke(app, ["list", "USD", "EUR"])
+
+        assert result.exit_code == 0
+        assert "┃" in result.output
+        for header in ("date", "rate", "source"):
+            assert header in result.output
+
+    @patch("moneybin.cli.commands.fx.get_database")
+    @patch(
+        "moneybin.services.currency_service.CurrencyService.list_rates",
         return_value=[],
     )
     def test_list_passes_since_through_as_a_date(

@@ -90,7 +90,7 @@ class TestFormatsListPdf:
     """formats list --type=pdf / --type=tabular / default (all)."""
 
     def test_default_includes_both_types_text(
-        self, runner: CliRunner, mocker: Any
+        self, runner: CliRunner, mocker: Any, wide_terminal: None
     ) -> None:
         """Default `formats list` shows tabular and PDF sections in text mode."""
         pdf_fmt = _make_pdf_format()
@@ -130,7 +130,9 @@ class TestFormatsListPdf:
         assert pdf_row["times_used"] == 3
         assert pdf_row["last_used"] == "2026-05-30"
 
-    def test_filter_pdf_excludes_tabular(self, runner: CliRunner, mocker: Any) -> None:
+    def test_filter_pdf_excludes_tabular(
+        self, runner: CliRunner, mocker: Any, wide_terminal: None
+    ) -> None:
         """--type=pdf shows only PDF rows; no tabular format names in output."""
         pdf_fmt = _make_pdf_format()
         _mock_get_database(mocker, [pdf_fmt])

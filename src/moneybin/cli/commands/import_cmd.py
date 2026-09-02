@@ -27,6 +27,7 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
 )
+from moneybin.cli.render import render_rows, render_summary
 from moneybin.cli.utils import emit_json, warn_refresh_steps, warn_transfers_retired
 from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
@@ -2308,30 +2309,33 @@ def import_history(
                 logger.warning("⚠️  No import history found")
         return
 
-    typer.echo(
-        f"\n{'Import ID':<38} {'Status':<10} {'Imported':>8} {'Rejected':>8}  {'Source File'}"
+    render_rows(
+        ["import", "status", "imported", "rejected", "source file"],
+        [
+            (
+                str(rec.get("import_id", "")),
+                str(rec.get("status", "")),
+                rec.get("rows_imported") or 0,
+                rec.get("rows_rejected") or 0,
+                # The basename, not the path: the directory is not part of the
+                # import's identity and pushes the column past any width.
+                Path(str(rec.get("source_file", ""))).name
+                if rec.get("source_file")
+                else "",
+            )
+            for rec in records
+        ],
     )
-    typer.echo("-" * 100)
-    for rec in records:
-        imp_id = str(rec.get("import_id", ""))
-        status = str(rec.get("status", ""))
-        rows_imported = rec.get("rows_imported") or 0
-        rows_rejected = rec.get("rows_rejected") or 0
-        source_file = str(rec.get("source_file", ""))
-        # Truncate source file path for display
-        display_path = Path(source_file).name if source_file else ""
-        typer.echo(
-            f"{imp_id:<38} {status:<10} {rows_imported:>8} {rows_rejected:>8}  "
-            f"{display_path}"
-        )
 
     if import_id and records:
-        rec = records[0]
-        typer.echo("\nDetails:")
-        for key, value in rec.items():
-            if value is not None:
-                typer.echo(f"  {key}: {value}")
-    typer.echo()
+        render_summary(
+            [
+                (key, str(value))
+                for key, value in records[0].items()
+                if value is not None
+            ],
+            title="\nDetails:",
+        )
 
 
 @app.command("revert")
@@ -2774,17 +2778,19 @@ def formats_list(
             n_user = len(all_formats) - len(builtin)
             section_hdr = f"Tabular formats ({n_builtin} built-in, {n_user} user-saved)"
             typer.echo(f"\n{section_hdr}")
-            typer.echo(
-                f"\n{'Name':<24} {'Institution':<28} {'Sign Convention':<24} "
-                f"{'Date Format'}"
+            render_rows(
+                ["name", "institution", "sign convention", "date format", "source"],
+                [
+                    (
+                        fmt.name,
+                        fmt.institution_name,
+                        fmt.sign_convention,
+                        fmt.date_format,
+                        "user" if fmt.name not in builtin else "built-in",
+                    )
+                    for fmt in sorted(all_formats.values(), key=lambda f: f.name)
+                ],
             )
-            typer.echo("-" * 100)
-            for fmt in sorted(all_formats.values(), key=lambda f: f.name):
-                source_tag = " (user)" if fmt.name not in builtin else ""
-                typer.echo(
-                    f"{fmt.name:<24} {fmt.institution_name:<28} "
-                    f"{fmt.sign_convention:<24} {fmt.date_format}{source_tag}"
-                )
 
     if show_pdf:
         if not pdf_formats:
@@ -2796,22 +2802,31 @@ def formats_list(
             if show_tabular:
                 typer.echo("")
             typer.echo(f"PDF formats ({len(pdf_formats)})")
-            typer.echo(
-                f"\n{'Name':<28} {'Institution':<20} {'Routing':<16} "
-                f"{'Front-end':<14} {'Ver':<5} {'Used':<6} {'Last used'}"
+            render_rows(
+                [
+                    "name",
+                    "institution",
+                    "routing",
+                    "front-end",
+                    "version",
+                    "used",
+                    "last used",
+                ],
+                [
+                    (
+                        pf.name,
+                        pf.institution_name,
+                        pf.routing,
+                        pf.front_end,
+                        pf.version,
+                        pf.times_used,
+                        pf.last_used_at.date().isoformat()
+                        if pf.last_used_at is not None
+                        else "—",
+                    )
+                    for pf in pdf_formats
+                ],
             )
-            typer.echo("-" * 104)
-            for pf in pdf_formats:
-                last_used = (
-                    pf.last_used_at.date().isoformat()
-                    if pf.last_used_at is not None
-                    else "—"
-                )
-                typer.echo(
-                    f"{pf.name:<28} {pf.institution_name:<20} {pf.routing:<16} "
-                    f"{pf.front_end:<14} {pf.version:<5} {pf.times_used:<6} "
-                    f"{last_used}"
-                )
 
     typer.echo("")
 

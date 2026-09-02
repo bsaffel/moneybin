@@ -25,6 +25,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.render import render_rows
 from moneybin.protocol.envelope import build_envelope
 
 from .stubs import _not_implemented
@@ -919,6 +920,19 @@ def _find_db_processes(db_path: Path) -> list[dict[str, str | int]]:
     return find_blocking_processes(db_path)
 
 
+def _render_db_processes(db_path: Path, processes: list[dict[str, str | int]]) -> None:
+    """Render the roll of processes holding `db_path` open (requirement 1).
+
+    One renderer for both `ps` and `kill`'s preamble, which printed the same
+    three columns from two copies of the same format string.
+    """
+    typer.echo(f"Processes holding {db_path} open:\n")
+    render_rows(
+        ["pid", "command", "args"],
+        [(proc["pid"], proc["command"], proc["cmdline"]) for proc in processes],
+    )
+
+
 def _list_db_processes(db_path: Path) -> list[dict[str, str | int]]:
     """Print the table of processes holding `db_path` open and return them.
 
@@ -931,11 +945,7 @@ def _list_db_processes(db_path: Path) -> list[dict[str, str | int]]:
     if not processes:
         logger.info(f"No other processes have {db_path.name} open")
         return []
-    typer.echo(f"Processes holding {db_path} open:\n")
-    typer.echo(f"  {'PID':<8} {'COMMAND':<16} ARGS")
-    typer.echo(f"  {'-' * 7:<8} {'-' * 15:<16} {'-' * 40}")
-    for proc in processes:
-        typer.echo(f"  {proc['pid']:<8} {proc['command']:<16} {proc['cmdline']}")
+    _render_db_processes(db_path, processes)
     return processes
 
 
@@ -974,11 +984,7 @@ def db_ps(
         if not quiet:
             logger.info(f"No other processes have {db_path.name} open")
         return
-    typer.echo(f"Processes holding {db_path} open:\n")
-    typer.echo(f"  {'PID':<8} {'COMMAND':<16} ARGS")
-    typer.echo(f"  {'-' * 7:<8} {'-' * 15:<16} {'-' * 40}")
-    for proc in procs:
-        typer.echo(f"  {proc['pid']:<8} {proc['command']:<16} {proc['cmdline']}")
+    _render_db_processes(db_path, procs)
 
 
 @app.command("kill")
