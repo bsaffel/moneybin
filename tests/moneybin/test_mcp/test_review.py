@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -71,6 +72,7 @@ from moneybin.services.undo_service import UndoService
 from tests.moneybin.db_helpers import (
     CORE_FCT_INVESTMENT_LOTS_DDL,
     CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
+    install_uncategorized_queue_view,
 )
 
 from .schema_assertions import (
@@ -81,6 +83,21 @@ from .schema_assertions import (
 )
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
+
+
+@pytest.fixture(autouse=True)
+def _canonical_uncategorized_queue(  # pyright: ignore[reportUnusedFunction]  # autouse pytest fixture
+    mcp_db: Path,
+) -> None:
+    """Give every review test the canonical queue view production always has.
+
+    ``core.uncategorized_queue`` is the single definition of an uncategorized
+    transaction, so a review DB without it is a drifted one — a state one test
+    below asserts on deliberately by dropping the view again.
+    """
+    with get_database(read_only=False) as db:
+        install_uncategorized_queue_view(db)
+
 
 _NOW = datetime.now(tz=UTC).isoformat()
 
@@ -419,6 +436,23 @@ async def test_review_queue_uses_one_envelope(kind: str) -> None:
     response = await reviews_coarse(kind=kind, status="pending")  # type: ignore[arg-type]
     assert response.data.kind == kind
     assert response.data.status == "pending"
+
+
+async def test_categorization_queue_reports_a_missing_canonical_view() -> None:
+    """An absent core.uncategorized_queue is surfaced, not rendered as "none pending".
+
+    core.uncategorized_queue is the single definition of an uncategorized
+    transaction, so when the view is missing the queue's contents are unknown
+    — not empty. Returning an empty queue would tell a curator their work is
+    done while the refresh that builds the view has never run.
+    """
+    with get_database(read_only=False) as db:
+        db.execute("DROP VIEW core.uncategorized_queue")
+
+    response = await reviews_coarse(kind="categorization", status="pending")
+
+    assert response.error is not None
+    assert response.error.code == error_codes.INFRA_SCHEMA_DRIFT
 
 
 async def test_review_summary_returns_exact_kind_status_matrix() -> None:

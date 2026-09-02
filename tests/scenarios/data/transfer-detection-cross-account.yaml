@@ -14,9 +14,13 @@ pipeline:
 
 assertions:
   - name: balanced_transfers
-    fn: assert_balanced_transfers
+    fn: assert_transform_audit
+    args:
+      audit: bridge_transfers_balanced
   - name: sign_convention
-    fn: assert_sign_convention
+    fn: assert_transform_audit
+    args:
+      audit: fct_transactions_sign_convention
 
 expectations:
   # Binary all-or-nothing companion to the F1 evaluation below: every

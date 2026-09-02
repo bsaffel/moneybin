@@ -240,16 +240,15 @@ def _unavailable_queue(kind: ReviewQueueKind, exc: Exception) -> QueueUnavailabl
 def _pending_categorization_rows(
     service: CategorizationService,
 ) -> list[CategorizationReviewRow]:
-    """Project the existing uncategorized queue into normalized rows."""
-    try:
-        raw_rows = service.list_uncategorized_transactions(limit=None) or []
-    except UserError as exc:
-        if (
-            exc.code != error_codes.INFRA_SCHEMA_DRIFT
-            or service.count_uncategorized() != 0
-        ):
-            raise
-        raw_rows = []
+    """Project the existing uncategorized queue into normalized rows.
+
+    A missing ``core.uncategorized_queue`` propagates as ``INFRA_SCHEMA_DRIFT``
+    rather than degrading to an empty queue. It is the single definition of an
+    uncategorized transaction, so without it the queue's contents are unknown,
+    not zero — and the summary already reports one broken queue as
+    ``unavailable`` instead of failing the aggregate.
+    """
+    raw_rows = service.list_uncategorized_transactions(limit=None) or []
     ordered = sorted(
         raw_rows,
         key=lambda row: (

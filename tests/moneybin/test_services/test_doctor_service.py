@@ -240,7 +240,7 @@ def test_transaction_count_returns_correct_count(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all(verbose=False)
     assert report.transaction_count == 2
@@ -256,7 +256,7 @@ def test_fk_integrity_passes_clean_data(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
     fk = next(r for r in report.invariants if r.name == "fct_transactions_fk_integrity")
@@ -289,7 +289,7 @@ def test_fk_integrity_fails_orphaned_account(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all(verbose=True)
     fk = next(r for r in report.invariants if r.name == "fct_transactions_fk_integrity")
@@ -321,7 +321,7 @@ def test_sign_convention_fails_null_amount(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all(verbose=True)
     sign = next(
@@ -360,7 +360,7 @@ def test_sign_convention_passes_zero_amount(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all(verbose=True)
     sign = next(
@@ -394,7 +394,7 @@ def test_verbose_false_returns_empty_affected_ids(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all(verbose=False)
     fk = next(r for r in report.invariants if r.name == "fct_transactions_fk_integrity")
@@ -414,7 +414,7 @@ def _dedup_result(db: Database, monkeypatch: pytest.MonkeyPatch) -> InvariantRes
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     report = DoctorService(db).run_all()
     return next(r for r in report.invariants if r.name == "dedup_reconciliation")
 
@@ -704,7 +704,7 @@ def test_categorization_coverage_passes_when_all_categorized(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
     cat = next(r for r in report.invariants if r.name == "categorization_coverage")
@@ -722,7 +722,7 @@ def test_categorization_coverage_warns_when_below_50pct(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
     cat = next(r for r in report.invariants if r.name == "categorization_coverage")
@@ -747,7 +747,7 @@ def test_run_all_returns_expected_invariants(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
     # 3 sqlmesh audits + dedup_reconciliation + categorization + 30 app.* integrity
@@ -860,7 +860,7 @@ def test_doctor_audit_coverage_matches_the_repo_registry(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     report = DoctorService(doctor_db).run_all()
 
     covered = {r.name for r in report.invariants if r.name.startswith(_COVERAGE_PREFIX)}
@@ -903,7 +903,7 @@ def test_fk_detail_message_contains_count(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
     fk = next(r for r in report.invariants if r.name == "fct_transactions_fk_integrity")
@@ -945,7 +945,7 @@ def test_bridge_transfers_balanced_fails_unbalanced_pair(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all(verbose=True)
     xfr = next(r for r in report.invariants if r.name == "bridge_transfers_balanced")
@@ -963,9 +963,7 @@ def test_sqlmesh_discovery_failure_emits_skipped_invariant(
         raise RuntimeError(msg)
         yield  # unreachable; satisfies the generator type @contextmanager requires
 
-    monkeypatch.setattr(
-        "moneybin.services.doctor_service.sqlmesh_context", _failing_ctx
-    )
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _failing_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
     skipped = next(
@@ -1000,7 +998,7 @@ def _investment_result(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     report = DoctorService(db).run_all()
     return next(r for r in report.invariants if r.name == name)
 
@@ -1937,7 +1935,7 @@ def test_run_all_includes_investment_checks(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     report = DoctorService(doctor_db).run_all()
     names = [r.name for r in report.invariants]
     assert "investment_staging_rejects" in names
@@ -2548,7 +2546,7 @@ def test_missing_registered_model_fails_an_invariant(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     # `doctor_db` already builds `core.fct_transactions`, which no `db init`
     # creates — that alone marks the warehouse as built, staging layer or not.
     svc = DoctorService(doctor_db)
@@ -2584,7 +2582,7 @@ def test_unreadable_catalog_reports_unavailable_not_a_fresh_profile(
     def _raise(*_args: object, **_kwargs: object) -> object:
         raise RuntimeError("catalog unreadable")
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     monkeypatch.setattr("moneybin.services.doctor_service.model_presence", _raise)
 
     report = DoctorService(doctor_db).run_all()
@@ -2614,7 +2612,7 @@ def test_model_presence_passes_when_every_registered_model_exists(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     # Declare only models this fixture genuinely builds, so a pass is real
     # rather than an artifact of an empty registered set.
     monkeypatch.setattr(
@@ -2644,7 +2642,7 @@ def _currency_result(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     report = DoctorService(doctor_db).run_all()
     return next(r for r in report.invariants if r.name == "currency_integrity")
 
@@ -3020,7 +3018,7 @@ def _overlap_result(db: Database, monkeypatch: pytest.MonkeyPatch) -> InvariantR
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     report = DoctorService(db).run_all()
     return next(r for r in report.invariants if r.name == "duplicate_account_overlap")
 
@@ -3321,7 +3319,7 @@ def _unproposed_result(
     def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         yield mock_ctx
 
-    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     report = DoctorService(db).run_all()
     return next(
         r for r in report.invariants if r.name == "unproposed_cross_source_duplicates"

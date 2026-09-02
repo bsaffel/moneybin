@@ -18,12 +18,6 @@ from pathlib import Path
 from typing import Any
 
 from moneybin.database import Database, get_database
-from moneybin.validation.assertions import assert_sqlmesh_catalog_matches
-from moneybin.validation.result import (
-    AssertionResult,
-    EvaluationResult,
-    ExpectationResult,
-)
 from tests.scenarios._runner._assertion_registry import (
     resolve_assertion as _resolve_assertion,
 )
@@ -36,6 +30,12 @@ from tests.scenarios._runner.loader import (
 )
 from tests.scenarios._runner.result import ScenarioResult
 from tests.scenarios._runner.steps import run_step
+from tests.validation.assertions import assert_sqlmesh_catalog_matches
+from tests.validation.result import (
+    AssertionResult,
+    EvaluationResult,
+    ExpectationResult,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -25,8 +25,8 @@ from typing import Any
 
 from moneybin.database import Database, sqlmesh_context
 from moneybin.migrations import MigrationRunner
-from moneybin.validation.assertions._helpers import quote_ident
-from moneybin.validation.result import AssertionResult
+from tests.validation.assertions._helpers import quote_ident
+from tests.validation.result import AssertionResult
 
 logger = logging.getLogger(__name__)
 

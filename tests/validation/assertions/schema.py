@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from moneybin.database import Database
-from moneybin.validation.assertions._helpers import quote_ident, split_table_ident
-from moneybin.validation.result import AssertionResult
+from tests.validation.assertions._helpers import quote_ident, split_table_ident
+from tests.validation.result import AssertionResult
 
 
 def _columns_with_types(db: Database, table: str) -> dict[str, str]:

@@ -47,7 +47,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `core:spending`: it now returns `currency_code, period, net_worth, change_abs,
   change_pct`, leading with the position the two changes are measured from.
 
+- **`moneybin system doctor` reports two data-quality checks more strictly.**
+  `bridge_transfers_balanced` now requires a confirmed transfer pair to cancel
+  exactly, instead of tolerating a $0.01 residue, and reports a pair whose leg
+  has left `core.fct_transactions` rather than skipping it. The transfer matcher
+  pairs on exactly equal amounts and `amount` is `DECIMAL(18,2)` throughout, so
+  a cent of residue is missing money, not rounding. `fct_transactions_sign_convention`
+  now also reports a row whose `transaction_direction` or `amount_absolute`
+  contradicts its own `amount`; it still treats `$0.00` as a legitimate third
+  direction, and it deliberately does not judge an amount's sign against its
+  category label, which would report every refund and statement credit as a
+  defect. A profile that was healthy before may surface a new failure on either
+  check; both name the offending transaction ids under `--verbose`. (#504)
+
 ### Fixed
+- **"Uncategorized" now means one thing, and the number is smaller.**
+  `moneybin review`, `system_status` and the import-drain hint counted every
+  transaction with no row in `app.transaction_categories`, while the review
+  queue beside them listed `core.uncategorized_queue` — which also excludes
+  confirmed transfer legs, archived accounts, and transactions whose source
+  system already supplied a category. Nothing errored; the count simply
+  disagreed with the queue it pointed at. `core.uncategorized_queue` is now
+  the single definition every surface counts, so the reported figure drops
+  wherever those rows were being counted. Categorization itself is unchanged —
+  only which rows are called curator work. A missing queue view is now
+  reported as schema drift on the review surface rather than rendering as an
+  empty queue, which had told a curator their work was done when the refresh
+  that builds the view had never run. (#502)
+
 - **MCP tool calls now record `moneybin_mcp_tool_calls_total` and `moneybin_mcp_tool_duration_seconds`.** The observability spec described this instrumentation as automatic, but no code path ever recorded either metric — a dashboard built from them stayed at zero permanently. `ValidationErrorMiddleware.on_call_tool`, the single boundary every `tools/call` request passes through, now records both metrics on every call, whether it succeeds, is translated to a validation-error envelope, or raises something else. (#495)
 
 ### Removed

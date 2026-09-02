@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 import yaml
 
-from moneybin.database import SQLMESH_ROOT, Database
+from moneybin.database import Database
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.seeds import refresh_views
 from moneybin.services._text import normalize_description
@@ -25,7 +25,11 @@ from moneybin.services.categorization.assist import (
     _amount_sign_label,  # pyright: ignore[reportPrivateUsage]  # tested directly
 )
 from moneybin.services.categorization.queries import CategorizationQueries
-from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
+from tests.moneybin.db_helpers import (
+    create_core_tables,
+    install_uncategorized_queue_view,
+    seed_categories_view,
+)
 
 
 def create_merchant(db: Database, *args: object, **kwargs: object) -> str:
@@ -1186,7 +1190,15 @@ def test_categorize_items_snowball_fans_out_to_siblings(real_db: Database) -> No
         )
 
     svc = CategorizationService(real_db)
-    assert svc.count_uncategorized() == 3
+    # Nothing categorized yet — the snowball's starting state. Read straight
+    # from app.transaction_categories: core.uncategorized_queue is a SQLMesh
+    # view over a live core.fct_transactions, and this module's fixture table
+    # is static, so the queue cannot observe writes made during the test.
+    seeded = real_db.execute(
+        "SELECT COUNT(*) FROM app.transaction_categories"
+    ).fetchone()
+    assert seeded is not None
+    assert seeded[0] == 0
 
     # Categorize batch 1 (just t1) with a canonical name so an exemplar-merchant
     # is created.
@@ -1203,8 +1215,6 @@ def test_categorize_items_snowball_fans_out_to_siblings(real_db: Database) -> No
     # SNOWBALL: t2 and t3 should now be categorized too because categorize_items
     # invoked categorize_pending() after committing, which applied the new
     # exemplar to remaining uncategorized rows.
-    assert svc.count_uncategorized() == 0
-
     rows = real_db.execute(
         "SELECT category, categorized_by FROM app.transaction_categories "
         "ORDER BY transaction_id"
@@ -3445,31 +3455,6 @@ class TestCategorizePendingPlaidPass:
 # list_uncategorized_transactions — pending transfer match flag (F19)
 # ---------------------------------------------------------------------------
 
-# Resolve via the package's own SQLMESH_ROOT rather than walking up to the repo
-# root: the SQLMesh project lives inside the installed package, so a path built
-# from the test file's parents breaks whenever the project moves (it did — the
-# project relocated to src/moneybin/sqlmesh). SQLMESH_ROOT is what production
-# uses, so this binding cannot drift from it.
-_UNCATEGORIZED_QUEUE_MODEL_FILE = (
-    SQLMESH_ROOT / "models" / "core" / "uncategorized_queue.sql"
-)
-
-
-def _install_uncategorized_queue_view(db: Database) -> None:
-    """Materialize core.uncategorized_queue from the real model SQL.
-
-    core.fct_transactions / core.dim_accounts already exist as physical
-    tables via the module's autouse create_core_tables() fixture; this
-    rebuilds the actual queue view on top of them from the shipped model
-    file so the test binds to the real column contract instead of a
-    hand-typed stub that could drift from it.
-    """
-    raw = _UNCATEGORIZED_QUEUE_MODEL_FILE.read_text()
-    start = raw.index("MODEL")
-    end = raw.index(");", start) + 2
-    body = raw[end:].strip()
-    db.execute(f"CREATE OR REPLACE VIEW core.uncategorized_queue AS\n{body}")  # noqa: S608  # model body read from the repo file, not user input
-
 
 def _install_matched_stub(db: Database) -> None:
     """Minimal prep.int_transactions__matched stub for the pending-match join.
@@ -3488,6 +3473,49 @@ def _install_matched_stub(db: Database) -> None:
             account_id VARCHAR
         )
     """)
+
+
+def test_count_uncategorized_counts_exactly_the_pending_queue(db: Database) -> None:
+    """One definition of "uncategorized": whatever core.uncategorized_queue holds.
+
+    The count and the listing sit side by side on the review surface — the
+    count in `moneybin review` / system_status, the listing in the pending
+    queue — so a count computed from a different predicate shows the user two
+    different Ns for the same question. Each excluded row here is a row the
+    canonical view drops and a hand-rolled LEFT JOIN against
+    app.transaction_categories would have counted.
+    """
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+        "VALUES ('acct_open', 'Checking', false), "
+        "('acct_archived', 'Closed Card', true)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "category, is_transfer) VALUES "
+        # The only genuine curator item.
+        "('t_pending', 'acct_open', DATE '2026-04-01', -12.00, 'Cafe', "
+        "NULL, false), "
+        # A confirmed transfer leg: not spending, so not curator work.
+        "('t_transfer', 'acct_open', DATE '2026-04-02', -500.00, 'Transfer', "
+        "NULL, true), "
+        # An archived account is off the review surface entirely.
+        "('t_archived', 'acct_archived', DATE '2026-04-03', -30.00, 'Old', "
+        "NULL, false), "
+        # Already carries a category from the source system.
+        "('t_source_category', 'acct_open', DATE '2026-04-04', -8.00, 'Bus', "
+        "'Travel', false)"
+    )
+    install_uncategorized_queue_view(db)
+    _install_matched_stub(db)
+
+    queries = CategorizationQueries(db)
+    rows = queries.list_uncategorized_transactions(limit=None)
+
+    assert rows is not None
+    assert [r["transaction_id"] for r in rows] == ["t_pending"]
+    assert queries.count_uncategorized() == len(rows)
 
 
 def test_pending_queue_names_each_row_currency(db: Database) -> None:
@@ -3511,7 +3539,7 @@ def test_pending_queue_names_each_row_currency(db: Database) -> None:
         "('t_usd', 'acct_us', DATE '2026-04-01', -50.00, 'Local cafe', "
         "'USD', false)"
     )
-    _install_uncategorized_queue_view(db)
+    install_uncategorized_queue_view(db)
     _install_matched_stub(db)
 
     rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
@@ -3561,7 +3589,7 @@ def test_pending_queue_flags_rows_with_an_unresolved_transfer_match(
         "('t_expense', 'acct_checking', '2026-06-02', -42.00, "
         "'GROCERY STORE', 'ofx', false)"
     )
-    _install_uncategorized_queue_view(db)
+    install_uncategorized_queue_view(db)
     _install_matched_stub(db)
     db.execute(
         "INSERT INTO prep.int_transactions__matched "
@@ -3631,7 +3659,7 @@ def test_pending_queue_ignores_dedup_decisions_for_transfer_flag(
         "('t_dedup_b', 'acct_checking', '2026-06-02', -8.00, "
         "'COFFEE SHOP', 'ofx', false)"
     )
-    _install_uncategorized_queue_view(db)
+    install_uncategorized_queue_view(db)
     _install_matched_stub(db)
     db.execute(
         "INSERT INTO prep.int_transactions__matched "
@@ -3728,7 +3756,7 @@ def test_pending_queue_degrades_when_matched_view_predates_a_column(
         "('t_expense', 'acct_checking', '2026-06-02', -42.00, "
         "'GROCERY STORE', 'ofx', false)"
     )
-    _install_uncategorized_queue_view(db)
+    install_uncategorized_queue_view(db)
     _install_matched_stub_missing_account_id(db)
 
     rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
@@ -3770,7 +3798,7 @@ def test_impact_queue_spans_currencies_under_cap(db: Database) -> None:
         "('t_usd', 'acct_us', DATE '2026-04-01', -50.00, 'Local cafe', "
         "'USD', false)"
     )
-    _install_uncategorized_queue_view(db)
+    install_uncategorized_queue_view(db)
     _install_matched_stub(db)
 
     rows = CategorizationQueries(db).list_uncategorized_transactions(

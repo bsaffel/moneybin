@@ -432,7 +432,7 @@ gates:
 1. Write the YAML at `tests/scenarios/data/<scenario>.yaml`.
 2. Hand-author or generator-derive the inputs and expectations (no observe-and-paste).
 3. Add a pytest module at `tests/scenarios/test_<scenario>.py` that loads the YAML and dispatches through the harness.
-4. If the scenario needs a new assertion or expectation primitive, add it to `src/moneybin/validation/{assertions,expectations,evaluations}/` and register it in the appropriate registry (`tests/scenarios/_assertion_registry.py` or `_expectation_registry.py`).
+4. If the scenario needs a new assertion or expectation primitive, add it to `tests/validation/{assertions,expectations,evaluations}/` and register it in the appropriate registry (`tests/scenarios/_assertion_registry.py` or `_expectation_registry.py`).
 5. Run `make test-scenarios` to verify it passes (and that it failed against the broken code first, if it's a bug-report scenario).
 
 ## Open Architectural Questions

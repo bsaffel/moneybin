@@ -10,7 +10,7 @@ from datetime import datetime
 
 import duckdb
 
-from moneybin.database import Database
+from moneybin.database import SQLMESH_ROOT, Database
 
 
 def record_sqlmesh_apply(db: Database, when: datetime) -> None:
@@ -557,3 +557,28 @@ def apply_core_table_comments(database: Database) -> None:
             database.execute(  # noqa: S608  # static module constants, not user input
                 f"COMMENT ON COLUMN {table}.{col} IS '{escaped}'"
             )
+
+
+# Resolve via the package's own SQLMESH_ROOT rather than walking up to the repo
+# root: the SQLMesh project lives inside the installed package, so a path built
+# from a test file's parents breaks whenever the project moves (it did — the
+# project relocated to src/moneybin/sqlmesh). SQLMESH_ROOT is what production
+# uses, so this binding cannot drift from it.
+_UNCATEGORIZED_QUEUE_MODEL_FILE = (
+    SQLMESH_ROOT / "models" / "core" / "uncategorized_queue.sql"
+)
+
+
+def install_uncategorized_queue_view(db: Database) -> None:
+    """Materialize core.uncategorized_queue from the real model SQL.
+
+    Requires ``core.fct_transactions`` and ``core.dim_accounts`` to exist
+    (``create_core_tables``). Rebuilds the actual queue view on top of them
+    from the shipped model file so tests bind to the real canonical
+    definition instead of a hand-typed stub that could drift from it.
+    """
+    raw = _UNCATEGORIZED_QUEUE_MODEL_FILE.read_text()
+    start = raw.index("MODEL")
+    end = raw.index(");", start) + 2
+    body = raw[end:].strip()
+    db.execute(f"CREATE OR REPLACE VIEW core.uncategorized_queue AS\n{body}")  # noqa: S608  # model body read from the repo file, not user input

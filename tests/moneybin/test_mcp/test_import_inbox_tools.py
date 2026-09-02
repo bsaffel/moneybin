@@ -9,11 +9,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.mcp.tools.import_inbox import import_inbox_pending, import_inbox_sync
+from moneybin.database import Database
+from moneybin.mcp.tools.import_inbox import (
+    _uncategorized_count,  # pyright: ignore[reportPrivateUsage]  # module-private helper under test
+    import_inbox_pending,
+    import_inbox_sync,
+)
 from moneybin.privacy.redaction import redact_typed
 from moneybin.services.inbox_service import (
     InboxListResult,
     InboxSyncResult,
+)
+from tests.moneybin.db_helpers import (
+    create_core_tables,
+    install_uncategorized_queue_view,
 )
 
 
@@ -193,6 +202,43 @@ class TestImportInboxSync:
         envelope = import_inbox_sync()
         assert any("categorize_assist" in a for a in envelope.actions)
         assert any("50" in a for a in envelope.actions)
+
+    async def test_uncategorized_count_reads_the_canonical_queue(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The drain's assist hint counts the rows the review queue lists.
+
+        A confirmed transfer leg is not curator work, so
+        core.uncategorized_queue drops it — and the hint that offers to
+        categorize "N transactions" must not quote a larger N than the queue
+        the user is then sent to.
+        """
+        create_core_tables(db)
+        db.execute(
+            "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+            "VALUES ('acct_open', 'Checking', false)"
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, "
+            "category, is_transfer) VALUES "
+            "('t_pending', 'acct_open', DATE '2026-04-01', -12.00, 'Cafe', "
+            "NULL, false), "
+            "('t_transfer', 'acct_open', DATE '2026-04-02', -500.00, 'Transfer', "
+            "NULL, true)"
+        )
+        install_uncategorized_queue_view(db)
+
+        @contextmanager
+        def _bound_database(*args: object, **kwargs: object):  # type: ignore[misc]
+            yield db
+
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox.get_database",
+            _bound_database,  # pyright: ignore[reportUnknownArgumentType]
+        )
+
+        assert _uncategorized_count() == 1
 
     async def test_categorize_hint_absent_below_threshold(
         self, patch_service: MagicMock, monkeypatch: pytest.MonkeyPatch
