@@ -38,7 +38,7 @@ import typer
 
 from moneybin.cli.render import render_note
 from moneybin.errors import UserError
-from moneybin.privacy.introspection import derive_tier, extract_data_classes
+from moneybin.privacy.classified_envelope import classify
 from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import has_active_transform, redact_typed
 from moneybin.privacy.taxonomy import DataClass
@@ -360,10 +360,7 @@ def render_or_json(
         event_classes = (
             classes_returned
             if classes_returned is not None
-            else [
-                c.value
-                for c in sorted(extract_data_classes(original_data_type))  # pyright: ignore[reportUnknownArgumentType]
-            ]
+            else classify(original_data_type).classes_returned  # pyright: ignore[reportUnknownArgumentType]
         )
         # envelope.summary.sensitivity is the derived value (stamped above) for
         # typed payloads, or the command's declared value for bare list/dict
@@ -455,7 +452,7 @@ def derive_log_sensitivity(payload_type: type, envelope_sensitivity: str) -> str
     """
     if payload_type in (list, dict, tuple, set, type(None)):
         return envelope_sensitivity
-    return derive_tier(payload_type).name.lower()
+    return classify(payload_type).sensitivity
 
 
 def _has_active_transform(payload_type: type) -> bool:

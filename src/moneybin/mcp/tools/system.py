@@ -27,8 +27,8 @@ from moneybin.errors import (
 )
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
-from moneybin.privacy.introspection import extract_data_classes
+from moneybin.mcp.privacy import Sensitivity
+from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.system import (
     AuditDetail,
     AuditEvents,
@@ -67,7 +67,6 @@ from moneybin.privacy.payloads.system import (
     SystemStatusTransformsInfo,
     SystemStatusWriter,
 )
-from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
     KeysetPosition,
@@ -808,26 +807,15 @@ def _dynamic_coarse_envelope[T](
     degraded_reason: str | None = None,
 ) -> ResponseEnvelope[T]:
     """Build a runtime-classified coarse envelope from its selected variants."""
-    classes = {
-        data_class
-        for contract_type in contract_types
-        for data_class in extract_data_classes(contract_type)
-    }
-    tier = max(data_class.tier for data_class in classes)
-    redacted = cast(T, redact_typed(data, None))
-    return cast(
-        ResponseEnvelope[T],
-        build_envelope(
-            data=redacted,
-            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
-            total_count=total_count,
-            returned_count=returned_count,
-            next_cursor=next_cursor,
-            actions=actions,
-            degraded=degraded,
-            degraded_reason=degraded_reason,
-            classes_returned=sorted(data_class.value for data_class in classes),
-        ),
+    return build_classified_envelope(
+        data,
+        contract_type=contract_types,
+        total_count=total_count,
+        returned_count=returned_count,
+        next_cursor=next_cursor,
+        actions=actions,
+        degraded=degraded,
+        degraded_reason=degraded_reason,
     )
 
 

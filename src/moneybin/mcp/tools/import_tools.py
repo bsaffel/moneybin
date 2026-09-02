@@ -53,9 +53,9 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity
 from moneybin.mcp.rematch_report import retired_transfers_action
-from moneybin.privacy.introspection import extract_data_classes
+from moneybin.privacy.classified_envelope import build_classified_envelope, classify
 from moneybin.privacy.payloads.imports import (
     ImportConfirmationPayload,
     ImportConfirmCoarsePayload,
@@ -1032,23 +1032,6 @@ def _read_pdf_preview_bytes(path: Path) -> bytes:
     return source_bytes
 
 
-def _import_dynamic_envelope[T](
-    data: T,
-    *,
-    actions: list[str],
-) -> ResponseEnvelope[T]:
-    """Build one typed, redacted, dynamically classified import envelope."""
-    classes = extract_data_classes(type(data))
-    tier = max(data_class.tier for data_class in classes)
-    redacted = cast(T, redact_typed(data, None))
-    return build_envelope(
-        data=redacted,
-        sensitivity=cast(Any, tier_to_sensitivity(tier).value),
-        actions=actions,
-        classes_returned=sorted(data_class.value for data_class in classes),
-    )
-
-
 @mcp_tool(
     read_only=False,
     idempotent=False,
@@ -1222,9 +1205,7 @@ def import_preview_coarse(
     snapshot: dict[str, Any] = {
         "data": persisted_data,
         "actions": actions,
-        "sensitivity": tier_to_sensitivity(
-            max(data_class.tier for data_class in extract_data_classes(type(payload)))
-        ).value,
+        "sensitivity": classify(type(payload)).sensitivity,
         "plan": reviewed_plan,
     }
     channel: Literal["tabular", "pdf", "ofx"] = (
@@ -1268,7 +1249,7 @@ def import_preview_coarse(
         ]
     return cast(
         ResponseEnvelope[ImportPreviewCoarsePayload],
-        _import_dynamic_envelope(final_payload, actions=actions),
+        build_classified_envelope(final_payload, actions=actions),
     )
 
 
@@ -1597,28 +1578,14 @@ def _import_status_envelope(
     actions: list[str],
 ) -> ResponseEnvelope[ImportStatusCoarsePayload]:
     """Build and redact a dynamically classified import-status envelope."""
-    classes = {
-        data_class
-        for contract_type in contract_types
-        for data_class in extract_data_classes(contract_type)
-    }
-    tier = max(data_class.tier for data_class in classes)
-    redacted = cast(ImportStatusCoarsePayload, redact_typed(data, None))
-    envelope = cast(
-        ResponseEnvelope[ImportStatusCoarsePayload],
-        build_envelope(
-            data=redacted,
-            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
-            total_count=total_count,
-            returned_count=returned_count,
-            next_cursor=next_cursor,
-            actions=actions,
-            classes_returned=sorted(data_class.value for data_class in classes),
-        ),
-    )
-    return replace(
-        envelope,
-        summary=replace(envelope.summary, has_more=next_cursor is not None),
+    return build_classified_envelope(
+        data,
+        contract_type=contract_types,
+        total_count=total_count,
+        returned_count=returned_count,
+        next_cursor=next_cursor,
+        actions=actions,
+        has_more=next_cursor is not None,
     )
 
 
@@ -2106,7 +2073,7 @@ def _run_import_confirm_attempt(
                 observations.flush("rollback")
                 return cast(
                     ResponseEnvelope[ImportConfirmCoarsePayload],
-                    _import_dynamic_envelope(
+                    build_classified_envelope(
                         ImportPdfBridgeInvalidPayload(
                             kind="pdf_bridge_invalid",
                             preview_id=preview_id,
@@ -2371,7 +2338,7 @@ async def import_confirm_coarse(
                     wire.pop(sign_key, None)
                 return cast(
                     ResponseEnvelope[ImportConfirmCoarsePayload],
-                    _import_dynamic_envelope(
+                    build_classified_envelope(
                         ImportConfirmRequiredPayload(
                             preview_id=preview_id,
                             **cast(Any, wire),
@@ -2484,7 +2451,7 @@ async def import_confirm_coarse(
         )
     return cast(
         ResponseEnvelope[ImportConfirmCoarsePayload],
-        _import_dynamic_envelope(
+        build_classified_envelope(
             payload,
             actions=actions,
         ),

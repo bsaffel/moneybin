@@ -1171,3 +1171,31 @@ async def test_the_purge_confirmation_quotes_every_row_it_deletes() -> None:
 
     assert confirm.await_args is not None
     assert "all 4 raw rows" in confirm.await_args.kwargs["message"]
+
+
+def test_connection_drift_hint_reads_only_passthrough_classes() -> None:
+    """`_gsheet_coarse_envelope` reads its hint fields before redaction.
+
+    The builder redacts `data`, but `actions[]` sits outside that walk and
+    still reaches the wire, so the drift hint may only quote fields whose class
+    the redaction transform leaves alone. Measured from `_TRANSFORMS` rather
+    than restated, so giving `RECORD_ID` or `TXN_TYPE` a real transform fails
+    here instead of shipping a raw `connection_id` inside an action string.
+    """
+    from typing import get_args, get_type_hints
+
+    from moneybin.privacy.payloads.gsheet import GsheetConnectionRow
+    from moneybin.privacy.redaction import MaskStrength, mask_strength
+    from moneybin.privacy.taxonomy import DataClass
+
+    hints = get_type_hints(GsheetConnectionRow, include_extras=True)
+    quoted = {
+        data_class
+        for field_name in ("connection_id", "status")
+        for data_class in get_args(hints[field_name])[1:]
+        if isinstance(data_class, DataClass)
+    }
+
+    assert quoted == {DataClass.RECORD_ID, DataClass.TXN_TYPE}
+    for data_class in quoted:
+        assert mask_strength(data_class) is MaskStrength.PASSTHROUGH
