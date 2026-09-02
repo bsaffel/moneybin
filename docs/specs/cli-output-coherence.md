@@ -806,6 +806,7 @@ removed field and costs a `stats` surface that cannot label nine of its metrics.
 | `src/moneybin/cli/main.py` + group modules | `hidden=True` on stub registrations, and on the four groups whose every command is a stub (31) |
 | `src/moneybin/cli/commands/db.py` | Route the three `db key` stubs through `_not_implemented` and hide them, keeping their `typer.Exit(1)` (31–33). Also the `ps` process roll, printed twice from one format string — one renderer serves `ps` and `kill`'s preamble (1) |
 | `src/moneybin/cli/commands/demo.py`, `fx.py`, `import_cmd.py`, `investments/{__init__,lots,prices,securities}.py` | The eight modules the audit's file list did not name, found by the guard rather than by the audit. All migrated; `_AWAITING_RENDER_ROWS` is empty and the guard that policed it is retired (1) |
+| `src/moneybin/cli/commands/accounts/__init__.py`, `reports/networth.py` | The only two already-migrated commands that still rendered an empty result as a header box. Not part of the eight, but the empty-result rule holds tree-wide or not at all (1) |
 | `src/moneybin/metrics/registry.py` | Add a `unit` field to each histogram declaration (24); add the three counters in Observability below |
 | `.claude/rules/cli.md` | Add a "Text rendering" section pointing at this spec — the rule file is where a future contributor looks first |
 

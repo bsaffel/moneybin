@@ -236,6 +236,25 @@ class TestAccountsList:
         assert "Chase Checking" in result.stdout
         assert "acct_a" not in result.stdout
 
+    @pytest.mark.unit
+    @patch("moneybin.cli.commands.accounts.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_list_prints_nothing_when_no_account_matches(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """An empty result is silence, not a header box drawn over no rows."""
+        mock_get_db.return_value = MagicMock()
+        svc = mock_svc_cls.return_value
+        svc.list_accounts.return_value = AccountListPayload(rows=[])
+
+        result = runner.invoke(app, ["accounts", "list", "--type", "loan"])
+
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout.strip() == ""
+
 
 class TestAccountsSummary:
     """Tests for the aggregate account summary command."""

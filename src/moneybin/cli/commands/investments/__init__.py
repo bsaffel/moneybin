@@ -298,11 +298,13 @@ def investments_holdings(
     quiet: bool = quiet_option,
     wide: bool = wide_option,
 ) -> None:
-    """Current positions: quantity, cost basis, average cost, market value.
+    """Current positions: what you hold, what it is worth, and whether you are up.
 
     Market value and unrealized gain come from the most recent close at or
     before today. A position with no usable price, or one whose share count is
-    known wrong, shows ``-`` rather than a zero — its ``status`` says which.
+    known wrong, shows ``-`` rather than a zero; ``--wide`` adds the ``status``
+    column that says which, along with cost basis, average cost, and the date
+    the price was observed.
 
     The closing portfolio line reports ``max_days_since_observed``: the age in
     days of the stalest close behind any figure above, or ``-`` when no
@@ -343,7 +345,6 @@ def investments_holdings(
             },
             total_columns=view.total,
         )
-    if result.rows:
         # Portfolio-level disclosure, not a status line — `-q` keeps it, the
         # same rule that keeps result rows.
         stalest = (

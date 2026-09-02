@@ -2307,8 +2307,8 @@ def import_history(
 ) -> None:
     """List recent imports with batch details.
 
-    Shows import ID, source file, status, row counts, and detection confidence
-    for each completed import batch.
+    Shows the import ID — what ``import revert`` takes — plus status and row
+    counts for each completed batch. ``--wide`` adds the source file.
 
     Examples:
         moneybin import history
@@ -2747,9 +2747,9 @@ def formats_list(
 ) -> None:
     """List all formats (built-in and user-saved).
 
-    Displays format name, institution, sign convention, and date format
-    for tabular formats, and name, institution, routing, front-end, version,
-    times-used, and last-used for PDF formats.
+    Displays format name, institution, sign convention, date format, and
+    source for tabular formats, and name, institution, routing, and last-used
+    for PDF formats. ``--wide`` adds the PDF front-end, version, and use count.
 
     Example:
         moneybin import formats list
@@ -2810,10 +2810,10 @@ def formats_list(
             if not quiet:
                 logger.warning("⚠️  No tabular formats found")
         else:
-            n_builtin = len(builtin)
-            n_user = len(all_formats) - len(builtin)
-            section_hdr = f"Tabular formats ({n_builtin} built-in, {n_user} user-saved)"
-            typer.echo(f"\n{section_hdr}")
+            # Count only, like the PDF header below: the per-format split now
+            # lives in the `source` column, and spelling it "built-in" here
+            # beside a cell reading `builtin` made one value look like two.
+            typer.echo(f"\nTabular formats ({len(all_formats)})")
             render_rows(
                 ["name", "institution", "sign convention", "date format", "source"],
                 [

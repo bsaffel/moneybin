@@ -57,6 +57,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `securities list`, `db ps` — are unchanged and gain no flag.
 
 ### Fixed
+- **A command with nothing to show no longer draws an empty table.** A header
+  row with a closing rule and no rows between them reads as a rendering
+  failure, and `-q` could not suppress it, because result output is never
+  quieted. `investments prices pull` printed one whenever every security
+  priced successfully — that is, on its most successful runs — and
+  `accounts list` and `reports networth-history` printed one whenever a filter
+  or a date range matched nothing. They now print nothing, which is what the
+  loops they replaced did.
+
 - **MCP tool calls now record `moneybin_mcp_tool_calls_total` and `moneybin_mcp_tool_duration_seconds`.** The observability spec described this instrumentation as automatic, but no code path ever recorded either metric — a dashboard built from them stayed at zero permanently. `ValidationErrorMiddleware.on_call_tool`, the single boundary every `tools/call` request passes through, now records both metrics on every call, whether it succeeds, is translated to a validation-error envelope, or raises something else. (#495)
 
 ### Removed

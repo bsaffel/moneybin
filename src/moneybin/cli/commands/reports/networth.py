@@ -159,28 +159,29 @@ def reports_networth_history(
         # Each currency is its own series, so a period appears once per
         # currency; without the column two rows for the same month read as one
         # position swinging wildly.
-        render_rows(
-            ["period", "currency", "net_worth", "change_abs", "change_pct"],
-            [
-                (
-                    point["period"],
-                    currency_label(point["currency_code"]),
-                    point["net_worth"],
-                    point["change_abs"],
-                    f"{point['change_pct']:.2%}"
-                    if point["change_pct"] is not None
-                    else "-",
-                )
-                for point in result.records
-            ],
-            money={
-                "net_worth": Money("balance"),
-                # A change in a position, not in a spend magnitude: the sign
-                # says which way the position moved, and up is the favourable
-                # direction, so a rise reads as income rather than expense.
-                "change_abs": Money("delta", polarity="income"),
-            },
-        )
+        if result.records:
+            render_rows(
+                ["period", "currency", "net_worth", "change_abs", "change_pct"],
+                [
+                    (
+                        point["period"],
+                        currency_label(point["currency_code"]),
+                        point["net_worth"],
+                        point["change_abs"],
+                        f"{point['change_pct']:.2%}"
+                        if point["change_pct"] is not None
+                        else "-",
+                    )
+                    for point in result.records
+                ],
+                money={
+                    "net_worth": Money("balance"),
+                    # A change in a position, not in a spend magnitude: the sign
+                    # says which way the position moved, and up is the favourable
+                    # direction, so a rise reads as income rather than expense.
+                    "change_abs": Money("delta", polarity="income"),
+                },
+            )
         echo_report_notes(result, quiet=quiet)
 
     render_or_json(

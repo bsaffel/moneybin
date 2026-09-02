@@ -446,6 +446,35 @@ class TestReportsNetworthHistory:
         assert result.exit_code == 2
 
     @pytest.mark.unit
+    def test_empty_series_prints_no_header_box(self, runner: CliRunner) -> None:
+        """A range with no balances renders nothing, not a table of no rows."""
+        with (
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
+            patch(
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
+        ):
+            mock_catalog.return_value.execute.return_value = _result([])
+            result = runner.invoke(
+                app,
+                [
+                    "reports",
+                    "networth-history",
+                    "--from",
+                    "2026-01-01",
+                    "--to",
+                    "2026-02-01",
+                ],
+            )
+
+        assert result.exit_code == 0, result.stderr
+        assert "net_worth" not in result.stdout
+        assert "period" not in result.stdout
+
+    @pytest.mark.unit
     def test_text_render_says_why_a_conversion_fell_back(
         self, runner: CliRunner
     ) -> None:
