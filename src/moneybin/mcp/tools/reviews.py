@@ -433,6 +433,17 @@ def _auto_rule_history_rows(service: AutoRuleService) -> list[AutoRuleReviewRow]
     return rows
 
 
+def _match_summary(match_type: str, score: float | None) -> str:
+    """One-line match summary, saying "unscored" rather than "0.00 confidence".
+
+    An exact-id match records no score; printing 0.00 would tell the agent the
+    engine compared the pair and found nothing in common.
+    """
+    if score is None:
+        return f"{match_type} match, no confidence score recorded"
+    return f"{match_type} match at {score:.2f} confidence"
+
+
 def _pending_match_rows(service: MatchingService) -> list[MatchReviewRow]:
     """Project the complete pending match decision queue."""
     raw_rows = service.get_pending(limit=None)
@@ -451,10 +462,7 @@ def _pending_match_rows(service: MatchingService) -> list[MatchReviewRow]:
                 decision_id=match.match_id,
                 status=match.match_status,
                 created_at=_text(row.get("decided_at")),
-                summary=(
-                    f"{match.match_type} match at "
-                    f"{match.confidence_score:.2f} confidence"
-                ),
+                summary=_match_summary(match.match_type, match.confidence_score),
                 details=MatchPendingDetails(match=match),
             )
         )
@@ -733,7 +741,11 @@ def _review_ordering(
     if kind == "matches":
         return (
             (
-                float(row.details.match.confidence_score),
+                # 0.0 for an unscored (exact-id) match: the keyset contract
+                # above declares this key `float`, and a cursor key has to be a
+                # total order. It sorts, it is not reported — `data` carries the
+                # null.
+                float(row.details.match.confidence_score or 0.0),
                 str(row.decision_id),
             ),
             directions,

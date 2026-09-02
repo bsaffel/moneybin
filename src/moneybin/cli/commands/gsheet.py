@@ -55,13 +55,14 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from moneybin.connectors.gsheet.adapters.base import GSheetConnection
     from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 logger = logging.getLogger(__name__)
 
 
 def _connections_envelope(
-    connections: Sequence[object],
+    connections: Sequence[GSheetConnection],
 ) -> ResponseEnvelope[GsheetConnectionsPayload]:
     """Wrap a connection list, with a reconnect hint per drifted binding.
 

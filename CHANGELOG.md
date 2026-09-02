@@ -29,17 +29,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   nested `by_source` map; the format catalogue reports `institution_name` and
   `last_used_at`; the `auto rules` total moved to `summary.total_count`; and
   the match queues return the same typed rows the MCP tools return, which drops
-  the internal `app.match_decisions` columns neither surface displayed. Four
+  the internal `app.match_decisions` columns neither surface displayed. Six
   commands stay deliberately outside the envelope, each named in the CLI
-  reference: the `db query` operator bypass and the `stats` / `logs` /
-  `migrate status` operations-metadata reads. Nothing these commands returned
-  would have been masked by today's transforms, so this is a contract and audit
-  fix rather than a disclosure fix.
+  reference: the `db query` operator bypass, the `db info` / `db ps` reads that
+  describe the database file rather than its contents, and the `stats` /
+  `logs` / `migrate status` operations-metadata reads. Nothing these commands
+  returned would have been masked by today's transforms, so this is a contract
+  and audit fix rather than a disclosure fix.
 - **`--json-fields` now works on every command that offers it.** The projection
   only ever applied to a bare list payload, so on a typed payload the flag was
   accepted and silently did nothing. It now descends into a typed payload's
   single collection field, after redaction rather than instead of it, and
-  no-ops cleanly when a payload carries no collection or more than one.
+  no-ops cleanly when a payload carries no collection or more than one. A
+  refresh's diagnostic lists (`identity_errors`, the three `rate_pairs_*`
+  lists, `self_heal_actions`) are not collections for this purpose — they
+  describe the rows rather than being a second set of them.
 - **`import formats` (MCP) and `import formats list` (CLI) return one list.**
   The MCP tool previously split its answer into `formats` and `pdf_formats`;
   both surfaces now return a single `formats` list whose rows carry a `type`
@@ -54,6 +58,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`transactions_matches_history` (MCP) carries `match_tier` and both
   `source_type_*` columns.** The terminal has always rendered them; the tool's
   rows had not.
+- **`confidence_score` is nullable on the match queues.** An exact-id match
+  records no score, and both `transactions_matches_pending` and
+  `transactions_matches_history` (MCP and `--output json` alike) coerced that
+  NULL to `0.0` — which reads as the engine having compared the pair and found
+  nothing in common, the opposite of what happened. The field is now `null` for
+  such a row on both surfaces, matching the dash the text tables have always
+  printed. Consumers doing arithmetic on `confidence_score` must handle `null`.
+- **`gsheet pull` and `import files` report the row count they actually
+  returned.** `summary.returned_count` and `summary.total_count` reported `1`
+  regardless of how many connections were pulled or files imported, because the
+  post-load refresh's diagnostic lists were counted as row collections
+  alongside the real one. The privacy audit row inherited the same wrong count.
 
 ### Fixed
 - **"Uncategorized" now means one thing, and the number is smaller.**

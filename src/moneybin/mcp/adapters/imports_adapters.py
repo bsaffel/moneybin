@@ -20,14 +20,20 @@ from moneybin.privacy.payloads.imports import (
 
 if TYPE_CHECKING:
     from collections.abc import Container
+    from datetime import datetime
+
+    from moneybin.extractors.tabular.formats import TabularFormat
+    from moneybin.repositories.pdf_formats_repo import PdfFormat
 
 
-def _iso_day(value: Any) -> str | None:
+def _iso_day(value: datetime | None) -> str | None:
     """The date half of a stored timestamp, or None when it was never used."""
     return None if value is None else value.date().isoformat()
 
 
-def tabular_format_row(fmt: Any, *, builtin: Container[str]) -> ImportFormatRow:
+def tabular_format_row(
+    fmt: TabularFormat, *, builtin: Container[str]
+) -> ImportFormatRow:
     """Project one tabular format for the catalogue listing.
 
     ``builtin`` is the set of shipped format names, so ``source`` distinguishes
@@ -47,7 +53,7 @@ def tabular_format_row(fmt: Any, *, builtin: Container[str]) -> ImportFormatRow:
     )
 
 
-def pdf_format_row(pdf_format: Any) -> ImportPdfFormatRow:
+def pdf_format_row(pdf_format: PdfFormat) -> ImportPdfFormatRow:
     """Project one saved PDF format for the catalogue listing."""
     return ImportPdfFormatRow(
         name=pdf_format.name,
@@ -61,7 +67,7 @@ def pdf_format_row(pdf_format: Any) -> ImportPdfFormatRow:
     )
 
 
-def tabular_format_detail(fmt: Any) -> ImportFormatDetail:
+def tabular_format_detail(fmt: TabularFormat) -> ImportFormatDetail:
     """Project everything stored about one tabular format."""
     return ImportFormatDetail(
         name=fmt.name,
@@ -81,7 +87,7 @@ def tabular_format_detail(fmt: Any) -> ImportFormatDetail:
     )
 
 
-def pdf_format_detail(pdf_format: Any) -> ImportPdfFormatDetail:
+def pdf_format_detail(pdf_format: PdfFormat) -> ImportPdfFormatDetail:
     """Project everything stored about one PDF format, recipe included."""
     return ImportPdfFormatDetail(
         name=pdf_format.name,

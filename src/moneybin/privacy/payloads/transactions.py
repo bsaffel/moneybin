@@ -280,7 +280,12 @@ class MatchPendingRow:
     match_id: Annotated[str, DataClass.RECORD_ID]
     match_type: Annotated[str, DataClass.TXN_TYPE]
     match_tier: Annotated[str | None, DataClass.TXN_TYPE]
-    confidence_score: Annotated[float, DataClass.AGGREGATE]
+    # Nullable, not 0.0-defaulted: an exact-id match records no score, and a
+    # zero reads as the engine having compared the pair and found nothing in
+    # common — evidence against the match, where none was gathered. The text
+    # surface has always printed a dash here (`confidence_cell`); JSON says
+    # null.
+    confidence_score: Annotated[float | None, DataClass.AGGREGATE]
     source_type_a: Annotated[str, DataClass.TXN_TYPE]
     source_transaction_id_a: Annotated[str, DataClass.RECORD_ID]
     source_type_b: Annotated[str, DataClass.TXN_TYPE]
@@ -337,7 +342,12 @@ class MatchHistoryRow:
     match_type: Annotated[str, DataClass.TXN_TYPE]
     match_status: Annotated[str, DataClass.TXN_TYPE]
     match_tier: Annotated[str | None, DataClass.TXN_TYPE]
-    confidence_score: Annotated[float, DataClass.AGGREGATE]
+    # Nullable, not 0.0-defaulted: an exact-id match records no score, and a
+    # zero reads as the engine having compared the pair and found nothing in
+    # common — evidence against the match, where none was gathered. The text
+    # surface has always printed a dash here (`confidence_cell`); JSON says
+    # null.
+    confidence_score: Annotated[float | None, DataClass.AGGREGATE]
     decided_by: Annotated[str, DataClass.TXN_TYPE]
     decided_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
     source_type_a: Annotated[str, DataClass.TXN_TYPE]

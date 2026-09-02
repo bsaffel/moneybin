@@ -69,34 +69,39 @@ def matches_pending(
         with get_database(read_only=True) as db:
             service = MatchingService(db)
             rows = service.get_pending(match_type=match_type, limit=limit)
-            # Both counts span the whole queue, not this page: an agent that
-            # sees `has_more` needs to know how much is behind it, and a
-            # page-local group count would understate the review still to do.
-            total = service.count_pending(match_type=match_type)
-            n_dedup_groups = service.count_pending_dedup_groups(match_type=match_type)
 
-        if output == OutputFormat.JSON:
-            from moneybin.mcp.adapters.matching_adapters import (  # noqa: PLC0415 — defer import
-                matches_pending_envelope,
-            )
+            if output == OutputFormat.JSON:
+                from moneybin.mcp.adapters.matching_adapters import (  # noqa: PLC0415 — defer import
+                    matches_pending_envelope,
+                )
 
-            render_or_json(
-                matches_pending_envelope(
-                    rows,
-                    total_count=total,
-                    n_dedup_groups=n_dedup_groups,
-                    actions=[
-                        "Use 'moneybin transactions matches set <id> --status "
-                        "accepted|rejected' to decide one match",
-                        "Rows sharing a component_key are copies of one "
-                        "transaction — decide the whole cluster together with "
-                        "'moneybin transactions matches set'",
-                    ],
-                ),
-                output,
-                cli_actor="matches_pending",
-            )
-            return
+                # Both counts span the whole queue, not this page: an agent
+                # that sees `has_more` needs to know how much is behind it,
+                # and a page-local group count would understate the review
+                # still to do. Computed inside the JSON branch because the
+                # text branch below renders neither, and
+                # `count_pending_dedup_groups` reloads the entire pending
+                # queue and rebuilds the component graph `get_pending` just
+                # walked.
+                render_or_json(
+                    matches_pending_envelope(
+                        rows,
+                        total_count=service.count_pending(match_type=match_type),
+                        n_dedup_groups=service.count_pending_dedup_groups(
+                            match_type=match_type
+                        ),
+                        actions=[
+                            "Use 'moneybin transactions matches set <id> --status "
+                            "accepted|rejected' to decide one match",
+                            "Rows sharing a component_key are copies of one "
+                            "transaction — decide the whole cluster together with "
+                            "'moneybin transactions matches set'",
+                        ],
+                    ),
+                    output,
+                    cli_actor="matches_pending",
+                )
+                return
 
         if not rows:
             if not quiet:

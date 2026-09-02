@@ -27,12 +27,17 @@ from moneybin.services.refresh_outcome import refresh_steps_fields
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from typing import Any
 
+    from moneybin.connectors.sync_models import (
+        LinkInitiateResponse,
+        LinkStatusResponse,
+        PullResult,
+        SyncConnectionView,
+    )
     from moneybin.errors import RecoveryAction
 
 
-def sync_pull_payload(result: Any) -> SyncPullPayload:
+def sync_pull_payload(result: PullResult) -> SyncPullPayload:
     """Project one pull result, refresh steps flattened onto the top level.
 
     Flattened rather than left in the nested field it travels in, so the four
@@ -76,7 +81,7 @@ def sync_pull_payload(result: Any) -> SyncPullPayload:
 
 
 def sync_pull_envelope(
-    result: Any,
+    result: PullResult,
     *,
     actions: list[str],
     recovery_actions: Sequence[RecoveryAction] | None = None,
@@ -90,7 +95,7 @@ def sync_pull_envelope(
 
 
 def sync_link_envelope(
-    initiate: Any,
+    initiate: LinkInitiateResponse,
     *,
     actions: list[str],
 ) -> ResponseEnvelope[SyncLinkPayload]:
@@ -107,7 +112,7 @@ def sync_link_envelope(
 
 
 def sync_link_status_envelope(
-    status: Any,
+    status: LinkStatusResponse,
     *,
     actions: list[str],
 ) -> ResponseEnvelope[SyncLinkStatusPayload]:
@@ -125,7 +130,7 @@ def sync_link_status_envelope(
     )
 
 
-def sync_connection_row(connection: Any) -> SyncConnectionRow:
+def sync_connection_row(connection: SyncConnectionView) -> SyncConnectionRow:
     """Project one connected institution's health."""
     return SyncConnectionRow(
         id=connection.id,
@@ -140,7 +145,7 @@ def sync_connection_row(connection: Any) -> SyncConnectionRow:
 
 
 def sync_status_envelope(
-    connections: Sequence[Any],
+    connections: Sequence[SyncConnectionView],
     *,
     actions: list[str],
 ) -> ResponseEnvelope[SyncStatusPayload]:

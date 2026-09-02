@@ -11,6 +11,7 @@ import pytest
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, emit_json_error, render_or_json
 from moneybin.errors import UserError
+from moneybin.privacy.payloads.gsheet import GsheetPullPayload, GsheetPullRow
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta, build_envelope
 
@@ -240,6 +241,69 @@ class TestJsonFieldsOnTypedPayloads:
         )
         out = json.loads(capsys.readouterr().out)
         assert out["data"] == {"total": 4}
+
+
+class TestRefreshDiagnosticsAreNotRowCollections:
+    """A refresh's diagnostic lists must not be mistaken for the payload's rows.
+
+    `GsheetPullPayload` carries `pulls` — the per-connection outcomes this call
+    returned — beside the four best-effort refresh diagnostics
+    (`identity_errors`, `rate_pairs_failed`, `rate_pairs_unsupported`,
+    `rate_pairs_discarded`). Counting those as row collections gave the payload
+    five, and both helpers that ask for "the" collection answered "several, so
+    neither": `summary.returned_count` reported 1 for an N-connection pull, and
+    `--json-fields` silently no-opped — the exact "flag accepted, does nothing"
+    defect this path exists to eliminate.
+
+    Pinned on the real payload, not a stand-in: the bug was the auxiliary set
+    going stale against a shipped payload's fields, which a synthetic class
+    cannot reproduce.
+    """
+
+    @staticmethod
+    def _payload(n: int) -> GsheetPullPayload:
+        rows = [
+            GsheetPullRow(
+                connection_id=f"c{i}",
+                status="ok",
+                rows_inserted=i,
+                rows_upserted=0,
+                rows_soft_deleted=0,
+                drift_reason=None,
+                error_message=None,
+            )
+            for i in range(n)
+        ]
+        return GsheetPullPayload(
+            pulls=rows,
+            identity_errors=["identity_resolution_failed"],
+            rate_pairs_failed=["USD/EUR"],
+            rate_pairs_unsupported=["USD/XYZ"],
+            rate_pairs_discarded=["USD/GBP"],
+        )
+
+    @pytest.mark.unit
+    def test_counts_the_pulls_not_the_diagnostics(self) -> None:
+        envelope = build_envelope(data=self._payload(3))
+        assert envelope.summary.returned_count == 3
+        assert envelope.summary.total_count == 3
+
+    @pytest.mark.unit
+    def test_json_fields_still_finds_the_pull_rows(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        render_or_json(
+            build_envelope(data=self._payload(2)),
+            OutputFormat.JSON,
+            json_fields="connection_id,status",
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"]["pulls"] == [
+            {"connection_id": "c0", "status": "ok"},
+            {"connection_id": "c1", "status": "ok"},
+        ]
+        # The diagnostics ride through untouched — they are not rows to narrow.
+        assert out["data"]["rate_pairs_failed"] == ["USD/EUR"]
 
 
 class TestEmitJsonError:

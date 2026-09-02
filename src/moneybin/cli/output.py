@@ -43,6 +43,7 @@ from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import has_active_transform, redact_typed
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import (
+    AUXILIARY_LIST_FIELDS,
     ResponseEnvelope,
     build_envelope,
     build_error_envelope,
@@ -403,11 +404,18 @@ def _project_fields(data: Any, fields: set[str]) -> Any | None:
     command migrated off a hand-rolled JSON path now returns.
 
     Descending into a typed payload is deliberately limited to the case where
-    exactly ONE field holds a list. With two collections there is no way to
-    tell which the caller meant, and projecting one of them would return a
-    payload that is narrowed in a place the caller cannot see; a payload with
-    none has nothing to narrow. Both no-op, matching the flag's documented
-    "silently ignored where it does not apply" behaviour.
+    exactly ONE field holds a row collection. With two there is no way to tell
+    which the caller meant, and projecting one of them would return a payload
+    that is narrowed in a place the caller cannot see; a payload with none has
+    nothing to narrow. Both no-op, matching the flag's documented "silently
+    ignored where it does not apply" behaviour.
+
+    ``AUXILIARY_LIST_FIELDS`` is excluded from that count for the same reason
+    ``_count_primary_lists`` excludes it — a refresh's diagnostic lists describe
+    the rows rather than being a second set of them. Sharing the one set is what
+    keeps "the payload's collection" from meaning one field to the counter and
+    another to the projection: ``GsheetPullPayload`` carries four diagnostics
+    beside its ``pulls``, and counting them made the flag a silent no-op there.
 
     Runs on the *serialized* payload, after ``redact_typed`` has walked the
     original: a projection naming a CRITICAL field must hand back the mask, not
@@ -423,7 +431,11 @@ def _project_fields(data: Any, fields: set[str]) -> Any | None:
     if not isinstance(serialized, dict):
         return None
     body = cast("dict[str, Any]", serialized)
-    list_keys = [key for key, value in body.items() if isinstance(value, list)]
+    list_keys = [
+        key
+        for key, value in body.items()
+        if isinstance(value, list) and key not in AUXILIARY_LIST_FIELDS
+    ]
     if len(list_keys) != 1:
         return None
     key = list_keys[0]

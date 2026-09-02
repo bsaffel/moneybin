@@ -11,7 +11,7 @@ the CLI names commands.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from moneybin.privacy.payloads.gsheet import (
     GsheetConnectionRow,
@@ -24,8 +24,12 @@ from moneybin.privacy.payloads.gsheet import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from moneybin.connectors.gsheet.adapters.base import GSheetConnection
+    from moneybin.connectors.gsheet.connection_service import ConnectResult
+    from moneybin.connectors.gsheet.pull_service import PullResult
 
-def gsheet_connection_row(conn: Any) -> GsheetConnectionRow:
+
+def gsheet_connection_row(conn: GSheetConnection) -> GsheetConnectionRow:
     """Project one stored connection (mirrors ``GSheetConnection.to_dict()``)."""
     return GsheetConnectionRow(
         connection_id=conn.connection_id,
@@ -45,7 +49,7 @@ def gsheet_connection_row(conn: Any) -> GsheetConnectionRow:
     )
 
 
-def gsheet_initial_pull(result: Any) -> GsheetInitialPull | None:
+def gsheet_initial_pull(result: ConnectResult) -> GsheetInitialPull | None:
     """Project the initial-pull outcome of a connect or reconnect.
 
     Rows on success; status plus reason on a pull that ran and failed; None only
@@ -68,7 +72,7 @@ def gsheet_initial_pull(result: Any) -> GsheetInitialPull | None:
     return None
 
 
-def gsheet_connect_payload(result: Any) -> GsheetConnectPayload:
+def gsheet_connect_payload(result: ConnectResult) -> GsheetConnectPayload:
     """Project one connect or reconnect result."""
     return GsheetConnectPayload(
         connection=gsheet_connection_row(result.connection),
@@ -81,7 +85,7 @@ def gsheet_connect_payload(result: Any) -> GsheetConnectPayload:
     )
 
 
-def gsheet_pull_rows(results: Sequence[Any]) -> list[GsheetPullRow]:
+def gsheet_pull_rows(results: Sequence[PullResult]) -> list[GsheetPullRow]:
     """Project each per-connection pull outcome.
 
     Row counts fall back to 0 when the pull produced no load result: the

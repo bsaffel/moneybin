@@ -432,7 +432,7 @@ def build_envelope(
 # heuristic returns len(warnings)=0 for a successful write whose only list is
 # an empty diagnostic field, and propagates that into summary.returned_count
 # and the privacy log's row_count.
-_AUXILIARY_LIST_FIELDS = frozenset({
+AUXILIARY_LIST_FIELDS = frozenset({
     "warnings",
     "errors",
     "error_details",
@@ -444,6 +444,21 @@ _AUXILIARY_LIST_FIELDS = frozenset({
     # and a count of 1 for a read that returned N priced positions. Empty on
     # almost every call, so the field's presence alone would break the count.
     "applied_rates",
+    # The post-load refresh's four best-effort diagnostics, on the same
+    # rationale: they report what the refresh *did to* the rows, not a second
+    # set of rows. `GsheetPullPayload` carries all four beside its `pulls`
+    # collection, so without them the heuristic saw five lists and reported
+    # `returned_count=1` for a pull that returned N per-connection outcomes.
+    "identity_errors",
+    "rate_pairs_failed",
+    "rate_pairs_unsupported",
+    "rate_pairs_discarded",
+    # `RefreshRunPayload`'s record of the self-heal recipes that ran. Listed
+    # with the four above rather than after them: it is the only other list on
+    # that payload, so excluding the four alone would promote it to "the" row
+    # collection and report `returned_count=0` for a clean refresh that healed
+    # nothing. `refresh_run` returns one pipeline outcome, not N recipes.
+    "self_heal_actions",
 })
 
 
@@ -525,7 +540,7 @@ def _primary_rows(data: Any) -> list[Any] | None:
         return None
     primary: list[list[Any]] = []
     for name in names:
-        if name in _AUXILIARY_LIST_FIELDS:
+        if name in AUXILIARY_LIST_FIELDS:
             continue
         value: Any = getattr(data, name)
         if isinstance(value, list):
@@ -536,7 +551,7 @@ def _primary_rows(data: Any) -> list[Any] | None:
 def _count_typed_payload(data: Any) -> int:
     """For a typed payload, return the row count if a primary list field exists, else 1.
 
-    - Skips auxiliary diagnostic list fields (see ``_AUXILIARY_LIST_FIELDS``)
+    - Skips auxiliary diagnostic list fields (see ``AUXILIARY_LIST_FIELDS``)
       so write-result payloads like ``AccountSettingsPayload(warnings=[])``
       report ``returned_count=1`` instead of ``0``.
     - Falls back to ``1`` when the payload has more than one non-auxiliary
@@ -564,12 +579,12 @@ def _count_primary_lists(data: Any, field_names: list[str]) -> int:
     """Return the length of the sole non-auxiliary list field, else 1.
 
     Shared by the dataclass and Pydantic counters. Auxiliary diagnostic lists
-    (see ``_AUXILIARY_LIST_FIELDS``) are skipped; more than one remaining list
+    (see ``AUXILIARY_LIST_FIELDS``) are skipped; more than one remaining list
     means an aggregate result object with no single "returned" collection.
     """
     primary_lists: list[list[Any]] = []
     for name in field_names:
-        if name in _AUXILIARY_LIST_FIELDS:
+        if name in AUXILIARY_LIST_FIELDS:
             continue
         v: Any = getattr(data, name)
         if isinstance(v, list):
