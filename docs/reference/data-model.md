@@ -474,10 +474,10 @@ Cross-account daily net-worth rollup. Grain: one row per `balance_date`. Exclude
 | Column | Type | Description |
 |---|---|---|
 | `balance_date` | DATE | Calendar date. |
-| `net_worth` | DECIMAL(18,2) | `SUM(balance)` across included accounts. |
 | `account_count` | INTEGER | Distinct accounts contributing. |
 | `total_assets` | DECIMAL(18,2) | `SUM(balance WHERE balance > 0)`. |
 | `total_liabilities` | DECIMAL(18,2) | `SUM(balance WHERE balance < 0)`; **kept negative**. |
+| `net_worth` | DECIMAL(18,2) | `SUM(balance)` across included accounts. |
 
 ### `reports.cash_flow`
 
@@ -485,14 +485,14 @@ Monthly inflow/outflow/net per account × category. Grain: one row per `(year_mo
 
 | Column | Type | Description |
 |---|---|---|
-| `year_month` | VARCHAR | `'YYYY-MM'`. |
 | `account_id` | VARCHAR | Joinable to `core.dim_accounts.account_id`. |
 | `account_name` | VARCHAR | Resolved `dim_accounts.display_name`. |
 | `category` | VARCHAR | NULL for uncategorized. |
+| `year_month` | VARCHAR | `'YYYY-MM'`. |
+| `txn_count` | INTEGER | Non-transfer transactions in this cell. |
 | `inflow` | DECIMAL(18,2) | Sum of positive amounts. |
 | `outflow` | DECIMAL(18,2) | Sum of negative amounts; **kept negative**. |
 | `net` | DECIMAL(18,2) | `inflow + outflow`. |
-| `txn_count` | INTEGER | Non-transfer transactions in this cell. |
 
 ### `reports.spending_trend`
 
@@ -500,10 +500,10 @@ Monthly spending per category with MoM, YoY, and trailing-3mo windows. Grain: on
 
 | Column | Type | Description |
 |---|---|---|
-| `year_month` | VARCHAR | `'YYYY-MM'`. |
 | `category` | VARCHAR | Grouping key; NULL for uncategorized. |
-| `total_spend` | DECIMAL(18,2) | `SUM(ABS(amount))`; **positive**. |
+| `year_month` | VARCHAR | `'YYYY-MM'`. |
 | `txn_count` | INTEGER | Outflow count. |
+| `total_spend` | DECIMAL(18,2) | `SUM(ABS(amount))`; **positive**. |
 | `prev_month_spend` | DECIMAL(18,2) | Spend in the previous month, same category. |
 | `mom_delta` | DECIMAL(18,2) | `total_spend − prev_month_spend`. |
 | `mom_pct` | DECIMAL | `mom_delta / prev_month_spend`; NULL when prev = 0. |
@@ -519,13 +519,13 @@ Heuristic detection of likely-recurring outflows. Grain: one row per `(merchant_
 | Column | Type | Description |
 |---|---|---|
 | `merchant_normalized` | VARCHAR | `'(unknown)'` for NULL merchants. |
-| `avg_amount`, `annualized_cost` | DECIMAL(18,2) | Mean absolute charge; estimated yearly cost. |
 | `cadence` | VARCHAR | `weekly` \| `biweekly` \| `monthly` \| `quarterly` \| `yearly` \| `irregular`. |
-| `interval_days_avg`, `interval_days_stddev` | DECIMAL | Inter-arrival statistics. |
-| `occurrence_count` | INTEGER | Charges in the last 18 months. |
-| `first_seen`, `last_seen` | DATE | Earliest / most recent charge. |
 | `status` | VARCHAR | `'active'` if `last_seen` within `max(60 days, 2× cadence)`, else `'inactive'`. |
+| `first_seen`, `last_seen` | DATE | Earliest / most recent charge. |
+| `occurrence_count` | INTEGER | Charges in the last 18 months. |
+| `interval_days_avg`, `interval_days_stddev` | DECIMAL | Inter-arrival statistics. |
 | `confidence` | DECIMAL | `0.0`–`1.0`; saturates at `1.0` with ≥6 occurrences and zero variance. |
+| `avg_amount`, `annualized_cost` | DECIMAL(18,2) | Mean absolute charge; estimated yearly cost. |
 
 ### `reports.merchant_activity`
 
@@ -534,13 +534,13 @@ Per-merchant lifetime aggregations. Grain: one row per `merchant_normalized`. NU
 | Column | Type | Description |
 |---|---|---|
 | `merchant_normalized` | VARCHAR | `'(unknown)'` for NULL merchants. |
-| `total_spend` | DECIMAL(18,2) | Lifetime absolute outflow; **positive**. |
+| `top_category` | VARCHAR | Modal category; NULL if all uncategorized. |
+| `first_seen`, `last_seen` | DATE | Date range. |
+| `txn_count`, `account_count`, `active_months` | INTEGER | Counts (transactions / distinct accounts / distinct year-months). |
 | `total_inflow` | DECIMAL(18,2) | Lifetime sum of positive amounts. |
 | `total_outflow` | DECIMAL(18,2) | Lifetime sum of negative amounts; **kept negative**. |
-| `txn_count`, `account_count`, `active_months` | INTEGER | Counts (transactions / distinct accounts / distinct year-months). |
 | `avg_amount`, `median_amount` | DECIMAL(18,2) | Signed mean / median. |
-| `first_seen`, `last_seen` | DATE | Date range. |
-| `top_category` | VARCHAR | Modal category; NULL if all uncategorized. |
+| `total_spend` | DECIMAL(18,2) | Lifetime absolute outflow; **positive**. |
 
 ### `reports.large_transactions`
 
@@ -551,14 +551,14 @@ All non-transfer transactions with z-scores against account and category baselin
 | `transaction_id` | VARCHAR | Joinable to `core.fct_transactions.transaction_id`. |
 | `account_id` | VARCHAR | Owning account. |
 | `account_name` | VARCHAR | Resolved display name. |
-| `txn_date` | DATE | Transaction date. |
-| `amount` | DECIMAL(18,2) | Signed (source sign preserved). |
-| `description` | VARCHAR | Source description. |
 | `merchant_normalized` | VARCHAR | Resolved merchant; NULL when not curated. |
+| `description` | VARCHAR | Source description. |
 | `category` | VARCHAR | Spending category; NULL if uncategorized. |
+| `txn_date` | DATE | Transaction date. |
 | `amount_zscore_account` | DECIMAL | Modified z-score relative to account median + MAD. NULL when MAD = 0. |
 | `amount_zscore_category` | DECIMAL | Modified z-score relative to category median + MAD; NULL when category has fewer than 5 transactions or MAD = 0. |
 | `is_top_100` | BOOLEAN | TRUE if in the top 100 by `ABS(amount)` overall. |
+| `amount` | DECIMAL(18,2) | Signed (source sign preserved). |
 
 ### `reports.balance_drift`
 
@@ -568,14 +568,14 @@ Per-`(account, assertion_date)` reconciliation deltas: asserted vs computed bala
 |---|---|---|
 | `account_id` | VARCHAR | Joinable to `core.dim_accounts.account_id`. |
 | `account_name` | VARCHAR | Resolved display name. |
+| `status` | VARCHAR | `clean` (< $1) \| `warning` (< $10) \| `drift` (≥ $10) \| `no-data` (computed NULL). |
 | `assertion_date` | DATE | User-asserted balance date. |
+| `days_since_assertion` | INTEGER | `CURRENT_DATE − assertion_date`. |
 | `asserted_balance` | DECIMAL(18,2) | User-entered value. |
 | `computed_balance` | DECIMAL(18,2) | Interpolated daily balance, or observed balance minus its reconciliation adjustment; NULL if the daily row is missing or is the first observation. |
-| `drift` | DECIMAL(18,2) | `asserted_balance − computed_balance`. |
 | `drift_abs` | DECIMAL(18,2) | For default sort. |
 | `drift_pct` | DECIMAL | `drift / asserted_balance`; NULL when asserted is zero. |
-| `days_since_assertion` | INTEGER | `CURRENT_DATE − assertion_date`. |
-| `status` | VARCHAR | `clean` (< $1) \| `warning` (< $10) \| `drift` (≥ $10) \| `no-data` (computed NULL). |
+| `drift` | DECIMAL(18,2) | `asserted_balance − computed_balance`. |
 
 ## Common joins
 
