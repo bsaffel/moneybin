@@ -31,9 +31,9 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity
 from moneybin.mcp.rematch_report import retired_transfers_action
-from moneybin.privacy.introspection import extract_data_classes
+from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.sync import (
     SyncAuthView,
     SyncConnectionRow,
@@ -51,7 +51,6 @@ from moneybin.privacy.payloads.sync import (
     SyncStatusCoarsePayload,
     SyncStatusPayload,
 )
-from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -392,17 +391,7 @@ def sync_status_coarse(
             expiration=response.data.expiration,
         )
         actions = list(response.actions)
-    classes = extract_data_classes(type(data))
-    tier = max(data_class.tier for data_class in classes)
-    return cast(
-        ResponseEnvelope[SyncStatusCoarsePayload],
-        build_envelope(
-            data=redact_typed(data, None),
-            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
-            actions=actions,
-            classes_returned=sorted(data_class.value for data_class in classes),
-        ),
-    )
+    return build_classified_envelope(data, actions=actions)
 
 
 @mcp_tool(read_only=False, idempotent=False, open_world=True)

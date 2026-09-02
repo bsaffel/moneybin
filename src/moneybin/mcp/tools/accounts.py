@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date as _date
 from decimal import Decimal
 from typing import Annotated, Any, Literal, cast
@@ -49,10 +49,10 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity
 from moneybin.mcp.rematch_report import rematch_actions
 from moneybin.mcp.write_contracts import FiniteDecimal
-from moneybin.privacy.introspection import extract_data_classes
+from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountLinksHistoryPayload,
@@ -81,7 +81,6 @@ from moneybin.privacy.payloads.balances import (
     BalanceAssertionPayload,
     BalanceObservationListPayload,
 )
-from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import (
     UNSET,
     ResponseEnvelope,
@@ -990,29 +989,16 @@ def _coarse_envelope[T](
     has_more: bool | None = None,
 ) -> ResponseEnvelope[T]:
     """Build and redact a dynamically classified account-read envelope."""
-    classes = extract_data_classes(contract_type)
-    tier = max(data_class.tier for data_class in classes)
-    redacted = cast(T, redact_typed(data, None))
-    envelope = cast(
-        ResponseEnvelope[T],
-        build_envelope(
-            data=redacted,
-            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
-            total_count=total_count,
-            returned_count=returned_count,
-            next_cursor=next_cursor,
-            period=period,
-            display_currency=display_currency,
-            actions=actions,
-            classes_returned=sorted(data_class.value for data_class in classes),
-        ),
-    )
-    return replace(
-        envelope,
-        summary=replace(
-            envelope.summary,
-            has_more=next_cursor is not None if has_more is None else has_more,
-        ),
+    return build_classified_envelope(
+        data,
+        contract_type=contract_type,
+        total_count=total_count,
+        returned_count=returned_count,
+        next_cursor=next_cursor,
+        period=period,
+        display_currency=display_currency,
+        actions=actions,
+        has_more=next_cursor is not None if has_more is None else has_more,
     )
 
 

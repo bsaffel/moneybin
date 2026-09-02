@@ -13,8 +13,7 @@ deferred — these tools record and report consent only.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Literal, cast
 
 from fastmcp import FastMCP
 from pydantic import Field, JsonValue
@@ -30,9 +29,9 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity
+from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.consent import ConsentMode
-from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.log import (
     MAX_LOG_ROWS,
     read_privacy_events,
@@ -49,7 +48,6 @@ from moneybin.privacy.payloads.consent import (
     PrivacyStatusPayload,
     PrivacyStatusView,
 )
-from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
     KeysetPosition,
@@ -228,25 +226,13 @@ def _privacy_coarse_envelope(
     actions: list[str] | None = None,
 ) -> ResponseEnvelope[PrivacyCoarsePayload]:
     """Build and redact one dynamically classified privacy view."""
-    contract_type = type(data)
-    classes = extract_data_classes(contract_type)
-    tier = max(data_class.tier for data_class in classes)
-    redacted = cast(PrivacyStatusView | PrivacyLogView, redact_typed(data, None))
-    envelope = cast(
-        ResponseEnvelope[PrivacyCoarsePayload],
-        build_envelope(
-            data=redacted,
-            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
-            total_count=total_count,
-            returned_count=returned_count,
-            next_cursor=next_cursor,
-            actions=actions,
-            classes_returned=sorted(data_class.value for data_class in classes),
-        ),
-    )
-    return replace(
-        envelope,
-        summary=replace(envelope.summary, has_more=next_cursor is not None),
+    return build_classified_envelope(
+        data,
+        total_count=total_count,
+        returned_count=returned_count,
+        next_cursor=next_cursor,
+        actions=actions,
+        has_more=next_cursor is not None,
     )
 
 

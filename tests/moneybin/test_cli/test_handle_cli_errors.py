@@ -147,6 +147,20 @@ def test_error_audit_classification_defaults_high_without_payload_type() -> None
     assert classes == []
 
 
+def test_error_audit_classification_falls_back_high_for_an_unclassified_type() -> None:
+    """A payload declaring no classes must not audit as 'low'.
+
+    The classification primitive fails closed on an empty class set, and the
+    error path has to absorb that rather than raise out of the handler it is
+    reporting — a JSON-mode failure must still produce an audit row.
+    """
+    from moneybin.cli.utils import (
+        _error_audit_classification,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert _error_audit_classification(dict) == ("high", [])
+
+
 def test_error_audit_classification_derives_critical_from_payload() -> None:
     """A CRITICAL payload type derives 'critical' + its data classes."""
     from moneybin.cli.utils import (

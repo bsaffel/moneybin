@@ -434,6 +434,16 @@ Every tool is classified through one of two live paths. Static tools derive a
 maximum sensitivity from the data classes on their typed response payload.
 Tools whose projection varies by request declare `dynamic_classification=True`,
 classify the returned payload, and advertise a `maximum_sensitivity` ceiling.
+Such a tool classifies from one of two sources. Most read the classes off a
+declared contract type, and every one of those builds its response through
+`build_classified_envelope` (`src/moneybin/privacy/classified_envelope.py`),
+which derives the classes, takes the max tier across them, redacts, and reports
+the classes for the audit row — one home for those four steps, so a change to
+the classification contract is one edit rather than one per tool. The rest
+classify from SQL lineage, where the classes come from the columns a particular
+query actually projected: `sql_query`, `sql_schema`, and `reports` carry their
+own `tier` and `classes_returned` into `build_envelope`, because no declared
+type can describe a per-call row set.
 
 Both paths read the response. A tool that shows the caller classified data
 somewhere else — today, only the text of a confirmation elicitation — declares

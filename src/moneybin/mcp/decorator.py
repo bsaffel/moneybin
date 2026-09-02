@@ -42,11 +42,8 @@ from moneybin.errors import (
     exception_origin,
 )
 from moneybin.mcp.privacy import Sensitivity, log_tool_call, tier_to_sensitivity
-from moneybin.privacy.introspection import (
-    PrivacyContractError,
-    derive_tier,
-    extract_data_classes,
-)
+from moneybin.privacy.classified_envelope import classify
+from moneybin.privacy.introspection import PrivacyContractError, derive_tier
 from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import has_active_transform, redact_typed
 from moneybin.privacy.taxonomy import Tier
@@ -514,9 +511,7 @@ def mcp_tool(
             if discloses is not None:
                 tier = max(tier, discloses)
             sensitivity = tier_to_sensitivity(tier)
-            classes_for_log = [
-                c.value for c in sorted(extract_data_classes(payload_type_arg))
-            ]
+            classes_for_log = classify(payload_type_arg).classes_returned
             # Skip the redact_typed walk for payloads that would pass through
             # unchanged. Derived from _TRANSFORMS (not `tier == CRITICAL`) so
             # the gate stays correct automatically when PR3 wires real

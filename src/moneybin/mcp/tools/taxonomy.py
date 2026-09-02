@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import replace
 from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
@@ -21,12 +20,12 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity
 from moneybin.mcp.write_contracts import (
     CategoryStateRequest,
     TaxonomyStateRequest,
 )
-from moneybin.privacy.introspection import extract_data_classes
+from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.categories import CategoryRow, MerchantRow
 from moneybin.privacy.payloads.taxonomy import (
     TaxonomyCategoriesView,
@@ -35,7 +34,6 @@ from moneybin.privacy.payloads.taxonomy import (
     TaxonomySetPayload,
     TaxonomyStateResult,
 )
-from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
     KeysetPosition,
@@ -107,24 +105,14 @@ def _taxonomy_envelope[T](
     actions: list[str],
 ) -> ResponseEnvelope[T]:
     """Build one dynamically classified taxonomy envelope."""
-    classes = extract_data_classes(contract_type)
-    tier = max(data_class.tier for data_class in classes)
-    redacted = cast(T, redact_typed(data, None))
-    envelope = cast(
-        ResponseEnvelope[T],
-        build_envelope(
-            data=redacted,
-            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
-            total_count=total_count,
-            returned_count=returned_count,
-            next_cursor=next_cursor,
-            actions=actions,
-            classes_returned=sorted(data_class.value for data_class in classes),
-        ),
-    )
-    return replace(
-        envelope,
-        summary=replace(envelope.summary, has_more=next_cursor is not None),
+    return build_classified_envelope(
+        data,
+        contract_type=contract_type,
+        total_count=total_count,
+        returned_count=returned_count,
+        next_cursor=next_cursor,
+        actions=actions,
+        has_more=next_cursor is not None,
     )
 
 

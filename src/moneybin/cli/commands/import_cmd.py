@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
 
@@ -792,26 +792,19 @@ def import_files_command(
 
     classes_returned: list[str] | None = None
     if any(_gates_an_account(f) for f in files_list):
-        from moneybin.cli.output import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
-            derive_log_sensitivity,
-        )
-        from moneybin.privacy.introspection import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
-            extract_data_classes,
+        from moneybin.privacy.classified_envelope import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+            classify,
         )
         from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
             ImportConfirmationPayload,
         )
 
-        # `derive_log_sensitivity`, not a second inline `derive_tier` call: it
-        # is the existing helper for exactly this question and already serves
-        # the audit path, so one function answers it everywhere.
-        batch_sensitivity = cast(
-            'Literal["low", "medium", "high", "critical"]',
-            derive_log_sensitivity(ImportConfirmationPayload, batch_sensitivity),
-        )
-        classes_returned = sorted(
-            c.value for c in extract_data_classes(ImportConfirmationPayload)
-        )
+        # The shared classification primitive, not a second inline derivation:
+        # one function answers "what tier and classes does this payload carry"
+        # on every surface, so a change to the declarations moves them together.
+        classification = classify(ImportConfirmationPayload)
+        batch_sensitivity = classification.sensitivity
+        classes_returned = classification.classes_returned
     envelope = build_envelope(data=data, sensitivity=batch_sensitivity)
     if batch_result is not None:
         # Same gate the MCP import_files tool applies, from the same function:
