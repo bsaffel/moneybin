@@ -121,10 +121,14 @@ account is something you slice by, not what identifies the row.
 **`AGGREGATE` is two things and the declaration does not say which.** It carries
 both counts of the grain (`txn_count`, `account_count`, `occurrence_count`) and
 derived scores about the row (`drift_pct`, `amount_zscore_account`,
-`confidence`, `is_top_100`). Counts are measures; scores are provenance. Nothing
-in `DataClass` separates them, so **the guard does not check the position of an
-`AGGREGATE` column at all** — placing one is a review judgement against the two
-sentences above, not a checked rule.
+`confidence`, `interval_days_avg`, `is_top_100`). Counts are measures; scores
+are provenance — a mean or a standard deviation counts nothing, it describes the
+rows counted, so it sorts with the scores. The exception is a score Rule C binds
+to a measure: `mom_pct` stays beside `mom_delta`, and `drift_pct` beside `drift`,
+because a ratio parted from the quantity it is a ratio of has no referent.
+Nothing in `DataClass` separates any of this, so **the guard does not check the
+position of an `AGGREGATE` column at all** — placing one is a review judgement
+against the sentences above, not a checked rule.
 
 **The headline measure goes last.** Among a report's measures, the one that
 answers the report's question is the final column. `core:cashflow` ends on

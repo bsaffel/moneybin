@@ -522,9 +522,9 @@ Heuristic detection of likely-recurring outflows. Grain: one row per `(merchant_
 | `cadence` | VARCHAR | `weekly` \| `biweekly` \| `monthly` \| `quarterly` \| `yearly` \| `irregular`. |
 | `status` | VARCHAR | `'active'` if `last_seen` within `max(60 days, 2× cadence)`, else `'inactive'`. |
 | `first_seen`, `last_seen` | DATE | Earliest / most recent charge. |
-| `occurrence_count` | INTEGER | Charges in the last 18 months. |
 | `interval_days_avg`, `interval_days_stddev` | DECIMAL | Inter-arrival statistics. |
 | `confidence` | DECIMAL | `0.0`–`1.0`; saturates at `1.0` with ≥6 occurrences and zero variance. |
+| `occurrence_count` | INTEGER | Charges in the last 18 months. |
 | `avg_amount`, `annualized_cost` | DECIMAL(18,2) | Mean absolute charge; estimated yearly cost. |
 
 ### `reports.merchant_activity`

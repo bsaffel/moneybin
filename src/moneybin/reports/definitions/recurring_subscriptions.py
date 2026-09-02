@@ -62,11 +62,6 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
         ),
         OutputColumn("last_seen", "Latest matching charge date.", DataClass.TXN_DATE),
         OutputColumn(
-            "occurrence_count",
-            "Matching charge count in the observation window.",
-            DataClass.AGGREGATE,
-        ),
-        OutputColumn(
             "interval_days_avg",
             "Mean days between consecutive charges.",
             DataClass.AGGREGATE,
@@ -78,6 +73,11 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
         ),
         OutputColumn(
             "confidence", "Recurrence confidence from 0 to 1.", DataClass.AGGREGATE
+        ),
+        OutputColumn(
+            "occurrence_count",
+            "Matching charge count in the observation window.",
+            DataClass.AGGREGATE,
         ),
         OutputColumn(
             "avg_amount",
@@ -196,9 +196,9 @@ def recurring_subscriptions(
 
     sql = f"""
         SELECT merchant_id, merchant_normalized, currency_code, cadence, status,
-               first_seen, last_seen, occurrence_count,
+               first_seen, last_seen,
                interval_days_avg, interval_days_stddev, confidence,
-               avg_amount, annualized_cost
+               occurrence_count, avg_amount, annualized_cost
         FROM {REPORTS_RECURRING_SUBSCRIPTIONS.full_name}
         WHERE confidence >= ?
     """  # noqa: S608  # TableRef interpolation

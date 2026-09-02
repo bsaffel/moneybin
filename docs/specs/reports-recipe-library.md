@@ -249,10 +249,10 @@ classified under the generic tool's `critical` maximum.
 | `status` | `VARCHAR` | 'active' if last_seen within 60 days, else 'inactive' |
 | `first_seen` | `DATE` | Earliest charge in this cluster |
 | `last_seen` | `DATE` | Most recent charge in this cluster |
-| `occurrence_count` | `INTEGER` | Number of matching charges in the last 18 months |
 | `interval_days_avg` | `DECIMAL(8,2)` | Mean days between consecutive charges |
 | `interval_days_stddev` | `DECIMAL(8,2)` | Stddev of inter-arrival intervals |
 | `confidence` | `DECIMAL(4,3)` | 0.0-1.0 score; see model docstring for formula |
+| `occurrence_count` | `INTEGER` | Number of matching charges in the last 18 months |
 | `avg_amount` | `DECIMAL(18,2)` | Average absolute charge amount across this cluster |
 | `annualized_cost` | `DECIMAL(18,2)` | Estimated yearly cost based on avg_amount and cadence |
 

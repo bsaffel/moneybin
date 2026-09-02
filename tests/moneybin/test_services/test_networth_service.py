@@ -27,12 +27,12 @@ def _seed_reports_net_worth(db: Database, rows: list[dict[str, object]]) -> None
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS reports.net_worth (
-            balance_date DATE,
             currency_code VARCHAR,
-            net_worth DECIMAL(18, 2),
+            balance_date DATE,
             account_count INTEGER,
             total_assets DECIMAL(18, 2),
-            total_liabilities DECIMAL(18, 2)
+            total_liabilities DECIMAL(18, 2),
+            net_worth DECIMAL(18, 2)
         )
         """
     )
@@ -40,17 +40,17 @@ def _seed_reports_net_worth(db: Database, rows: list[dict[str, object]]) -> None
         db.execute(
             """
             INSERT INTO reports.net_worth
-            (balance_date, currency_code, net_worth, account_count,
-             total_assets, total_liabilities)
+            (currency_code, balance_date, account_count,
+             total_assets, total_liabilities, net_worth)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
-                r["balance_date"],
                 r.get("currency_code", "USD"),
-                r["net_worth"],
+                r["balance_date"],
                 r["account_count"],
                 r["total_assets"],
                 r["total_liabilities"],
+                r["net_worth"],
             ],
         )
 

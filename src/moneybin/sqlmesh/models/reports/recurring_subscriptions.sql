@@ -102,10 +102,10 @@ SELECT
   END AS status, /* 'active' if last_seen is within max(60 days, 2× cadence) — scales for yearly/quarterly */
   first_seen, /* Earliest charge in this cluster */
   last_seen, /* Most recent charge */
-  occurrence_count, /* Number of matching charges in the last 18 months */
   interval_days_avg, /* Mean days between consecutive charges */
   interval_days_stddev, /* Stddev of inter-arrival intervals */
   LEAST(1.0, occurrence_count / 6.0) * GREATEST(0.0, 1.0 - LEAST(1.0, COALESCE(interval_days_stddev, 14.0) / 14.0)) AS confidence, /* 0.0-1.0; saturates at 1.0 with >=6 occurrences and 0 variance */
+  occurrence_count, /* Number of matching charges in the last 18 months */
   avg_amount, /* Mean absolute charge */
   CASE
     WHEN interval_days_avg BETWEEN 5 AND 9 AND interval_days_stddev < 2
