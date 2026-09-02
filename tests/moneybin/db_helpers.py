@@ -242,6 +242,15 @@ WHERE FALSE;
 # core.bridge_category_source_map — SQLMesh-managed view in production.
 # Tests stub its shape so schema-catalog and classification checks resolve
 # the name. Column shape mirrors the SQLMesh model / seeds.refresh_views.
+CORE_BRIDGE_MERCHANT_ENTITIES_STUB_DDL = """\
+CREATE OR REPLACE VIEW core.bridge_merchant_entities AS
+SELECT CAST(NULL AS VARCHAR) AS transaction_id,
+       CAST(NULL AS VARCHAR) AS merchant_entity_id,
+       CAST(NULL AS VARCHAR) AS merchant_entity_source_type,
+       CAST(NULL AS VARCHAR) AS source_merchant_name
+WHERE FALSE;
+"""
+
 CORE_BRIDGE_CATEGORY_SOURCE_MAP_STUB_DDL = """\
 CREATE OR REPLACE VIEW core.bridge_category_source_map AS
 SELECT CAST(NULL AS VARCHAR) AS source_type,
@@ -422,6 +431,7 @@ def create_core_dim_stub_views(db: Database) -> None:
     db.execute(CORE_DIM_CATEGORIES_STUB_DDL)
     db.execute(CORE_DIM_MERCHANTS_STUB_DDL)
     db.execute(CORE_BRIDGE_CATEGORY_SOURCE_MAP_STUB_DDL)
+    db.execute(CORE_BRIDGE_MERCHANT_ENTITIES_STUB_DDL)
     db.execute(CORE_DIM_SECURITIES_STUB_DDL)
     db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
     db.execute(CORE_FCT_INVESTMENT_LOTS_DDL)

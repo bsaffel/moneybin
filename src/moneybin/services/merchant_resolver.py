@@ -23,7 +23,7 @@ from moneybin.repositories.merchant_link_decisions_repo import MerchantLinkDecis
 from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 from moneybin.services.categorization.applier import MatchApplier
 from moneybin.tables import (
-    INT_TRANSACTIONS_MERGED,
+    BRIDGE_MERCHANT_ENTITIES,
     MERCHANT_LINK_DECISIONS,
     TRANSACTION_CATEGORIES,
 )
@@ -322,7 +322,7 @@ class MerchantResolver:
         ``canonical_source_type``, so a Plaid entity id riding an OFX+Plaid
         dedup binds under ``('plaid', E)`` like its Plaid-only siblings.
 
-        Degrades to ``HarvestResult(0, 0)`` when ``prep.int_transactions__merged``
+        Degrades to ``HarvestResult(0, 0)`` when ``core.bridge_merchant_entities``
         is absent (never-transformed DB — CatalogException) or exists but predates
         the entity columns (stale-view upgrade — BinderException) so the MCP path
         doesn't raise raw.
@@ -332,8 +332,8 @@ class MerchantResolver:
                 f"""
                 SELECT mt.merchant_entity_source_type AS source_type,
                        mt.merchant_entity_id, c.merchant_id, COUNT(*) AS n,
-                       MAX(mt.merchant_name) AS provider_name
-                FROM {INT_TRANSACTIONS_MERGED.full_name} AS mt
+                       MAX(mt.source_merchant_name) AS provider_name
+                FROM {BRIDGE_MERCHANT_ENTITIES.full_name} AS mt
                 JOIN {TRANSACTION_CATEGORIES.full_name} AS c
                     ON c.transaction_id = mt.transaction_id
                 WHERE mt.merchant_entity_id IS NOT NULL AND c.merchant_id IS NOT NULL

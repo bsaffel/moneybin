@@ -172,6 +172,22 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "core.bridge_merchant_entities": [
+        Example(
+            question="Every transaction sharing one source merchant entity "
+            "(substitute YOUR_ENTITY_ID)",
+            sql="""
+                SELECT t.transaction_id, t.transaction_date, t.amount,
+                       t.currency_code, b.source_merchant_name
+                FROM core.bridge_merchant_entities b
+                JOIN core.fct_transactions t
+                  ON t.transaction_id = b.transaction_id
+                WHERE b.merchant_entity_source_type = 'plaid'
+                AND b.merchant_entity_id = 'YOUR_ENTITY_ID'
+                ORDER BY t.transaction_date DESC
+            """,
+        ),
+    ],
     "core.dim_categories": [
         Example(
             question="All active categories",

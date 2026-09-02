@@ -1,7 +1,7 @@
 """Tests for CategorizationMatcher's named-row projection (UncategorizedRow).
 
 PR1 Task 2 makes CategorizationMatcher the single owner of the
-``merchant_entity_id``-carrying ``prep.int_transactions__merged`` read and
+``merchant_entity_id``-carrying ``core.bridge_merchant_entities`` read and
 returns a named, frozen dataclass instead of positional tuples so column
 order stops being load-bearing at any consumer.
 """
@@ -29,22 +29,22 @@ def _insert_plaid_txn(
     description: str,
     account_id: str = "ACC1",
 ) -> None:
-    """Insert a transaction plus its prep.int_transactions__merged entity carry.
+    """Insert a transaction plus its core.bridge_merchant_entities entity carry.
 
     ``CREATE TABLE IF NOT EXISTS`` (rather than drop-and-recreate) so multiple
     calls within one test accumulate rows instead of wiping prior inserts.
     """
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
     db.execute(
-        "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged ("
+        "CREATE TABLE IF NOT EXISTS core.bridge_merchant_entities ("
         "  transaction_id VARCHAR PRIMARY KEY, "
         "  merchant_entity_id VARCHAR, "
         "  merchant_entity_source_type VARCHAR, "
-        "  merchant_name VARCHAR"
+        "  source_merchant_name VARCHAR"
         ")"
     )
     db.execute(
-        "INSERT INTO prep.int_transactions__merged VALUES (?, ?, 'plaid', NULL)",
+        "INSERT INTO core.bridge_merchant_entities VALUES (?, ?, 'plaid', NULL)",
         [txn_id, merchant_entity_id],
     )
     db.execute(
@@ -89,3 +89,40 @@ def test_fetch_rows_for_ids_filters_and_projects_the_same_row_shape(
 def test_fetch_rows_for_ids_empty_input_short_circuits(db: Database) -> None:
     """An empty id list returns an empty list without issuing a query."""
     assert CategorizationMatcher(db).fetch_rows_for_ids([]) == []
+
+
+@pytest.mark.unit
+def test_entity_carry_reads_core_not_prep(db: Database) -> None:
+    """The entity carry resolves from core.bridge_merchant_entities alone.
+
+    MB-53: ``prep.int_transactions__merged`` is internal to the pipeline and
+    free to change shape without notice, so the matcher must bind to the
+    licensed core bridge instead. Seeding only the bridge — with no ``prep``
+    schema at all — fails on the pre-migration matcher, which drops to its
+    entity-less fallback and projects ``None``.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS core.bridge_merchant_entities ("
+        "  transaction_id VARCHAR PRIMARY KEY, "
+        "  merchant_entity_id VARCHAR, "
+        "  merchant_entity_source_type VARCHAR, "
+        "  source_merchant_name VARCHAR"
+        ")"
+    )
+    db.execute(
+        "INSERT INTO core.bridge_merchant_entities "
+        "VALUES ('t_core', 'ent_core', 'plaid', 'Example Cafe')"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('t_core', 'ACC1', '2025-06-01', -5.00, 'CAFE', 'plaid')"
+    )
+
+    rows = CategorizationMatcher(db).fetch_uncategorized_rows()
+
+    assert rows is not None
+    row = next(r for r in rows if r.transaction_id == "t_core")
+    assert row.merchant_entity_id == "ent_core"
+    assert row.merchant_entity_source_type == "plaid"

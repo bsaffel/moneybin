@@ -31,6 +31,12 @@ DIM_ACCOUNTS = TableRef("core", "dim_accounts", audience="interface")
 FCT_TRANSACTIONS = TableRef("core", "fct_transactions", audience="interface")
 FCT_TRANSACTION_LINES = TableRef("core", "fct_transaction_lines", audience="interface")
 BRIDGE_TRANSFERS = TableRef("core", "bridge_transfers", audience="interface")
+# Gold transaction -> the source system's merchant-entity reference. Promoted
+# out of prep so categorization and merchant resolution bind to a licensed
+# core surface instead of the shape-unstable merge layer.
+BRIDGE_MERCHANT_ENTITIES = TableRef(
+    "core", "bridge_merchant_entities", audience="interface"
+)
 FCT_BALANCES = TableRef("core", "fct_balances", audience="interface")
 FCT_BALANCES_DAILY = TableRef("core", "fct_balances_daily", audience="interface")
 # Service-internal curator-impact queue (moved out of reports.* — reports-foundation.md

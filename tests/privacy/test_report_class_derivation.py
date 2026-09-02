@@ -256,6 +256,7 @@ def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
     _derived, excluded = derive_core_view_classes()
     unresolvable = {
         "core.bridge_category_source_map",  # reads seeds.category_source_map
+        "core.bridge_merchant_entities",  # reads prep.int_transactions__merged
         "core.bridge_transfers",  # reads prep.int_transactions__matched/merged
         "core.dim_categories",  # reads seeds.categories
         "core.dim_holdings",  # reads prep.stg_plaid__investment_holdings* and core.fct_security_prices

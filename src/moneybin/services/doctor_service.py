@@ -224,7 +224,17 @@ class DoctorReport:
 
 
 class DoctorService:
-    """Run pipeline integrity invariants and aggregate results."""
+    """Run pipeline integrity invariants and aggregate results.
+
+    Reads ``prep.*`` directly, by license. Layer Rule 2 in
+    ``docs/specs/architecture-shared-primitives.md`` names doctor's diagnostic
+    staging reads as an exception: inspecting pipeline internals is the check
+    itself, not a leak of the analysis contract. The license is diagnostic
+    only — a check reports what a staging model contains and never feeds a
+    value back into ``core``, ``app``, or a report. A ``prep`` shape change may
+    therefore break a check here, and repairing it belongs to the refactor that
+    changed the shape.
+    """
 
     def __init__(self, db: Database) -> None:
         """Store the open database connection for invariant queries."""
