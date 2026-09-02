@@ -18,10 +18,21 @@ was measured against the tree, not assumed:
 | `moneybin sql query`, MCP `sql_query` | SQL projection — `cli/commands/sql.py` |
 | The narrow `reports` text table | The `default_columns` declaration |
 
-**`ReportSpec.columns` order reaches no surface.** It is read only when a report
-declares no `default_columns`, which in-tree reports never do. Reordering that
-tuple changes nothing a user or agent sees — which is why the mirror rule below
-exists.
+**For a SQL-backed report, `ReportSpec.columns` order reaches no surface.** It is
+read only when a report declares no `default_columns`, which in-tree reports
+never do. Reordering that tuple changes nothing a user or agent sees — which is
+why the mirror rule below exists.
+
+**A service-backed report is the exception: there, the tuple *is* the
+projection.** `service_reports.py` passes `columns=[column.name for column in
+_SNAPSHOT_COLUMNS]` directly into its execution, so for `core:networth` and
+`core:networth_history` the declared order is what JSON, MCP, `--wide`, and every
+export emit. Reordering that tuple is a user-visible change, not a cosmetic one.
+
+Beside it sits a positional `column_types` list in the same call, parallel to the
+tuple by index alone. **Reorder one and you must reorder the other**, or every
+column is handed the type of whichever column now occupies its slot — a silent
+mis-typing with no test between it and a caller.
 
 Reordering a shipped `core` or `reports` column is a public-contract change
 under `design-principles.md`'s trigger list. Pre-launch posture permits it;
@@ -129,6 +140,11 @@ Two invert it and are the reason this rule is written down:
 This rule governs order only. Alignment, sign glyphs, and colour are settled by
 `money_kind` in `cli-output-coherence.md`, not here.
 
+Rule C applies inside Rule A's **numerics** block too, wherever the relationship
+exists. It rarely does: a `core` fact table holds atomic amounts, not subtotals
+over them. Where it does, the same order holds — a `core` model is not exempt
+from reading in the direction its numbers compose.
+
 ## Where A and B conflict
 
 They agree everywhere except one adjacency. **dbt places numerics before dates;
@@ -154,10 +170,14 @@ subsequence of the projection.
 
 ## `ReportSpec.columns` mirrors the projection
 
-A report's declared `columns` tuple must be in the **same order** as the model's
-SQL projection. The declaration is metadata, not a projection: making it mirror
-costs nothing and removes the trap where an author reorders it expecting an
-effect and gets none.
+A **SQL-backed** report's declared `columns` tuple must be in the same order as
+the SQL its runner projects. The declaration is metadata there, not a
+projection: making it mirror costs nothing and removes the trap where an author
+reorders it expecting an effect and gets none.
+
+A **service-backed** report has nothing to mirror against — its tuple is already
+the projection, per the exception above. Rules B and C govern it directly, and
+the `column_types` list beside it moves with it.
 
 ## Enforcement
 
