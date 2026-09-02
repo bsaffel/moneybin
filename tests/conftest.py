@@ -66,6 +66,19 @@ def _typer_init_no_rich(self: typer.Typer, *args: object, **kwargs: object) -> N
 
 typer.Typer.__init__ = _typer_init_no_rich  # type: ignore[method-assign]
 
+# Ambient MoneyBin configuration must not reach the suite. Every field on
+# MoneyBinSettings resolves from a MONEYBIN_-prefixed variable, so one the
+# developer exports — their own Google OAuth client id, a sync server URL —
+# silently replaces the shipped default inside any test that constructs
+# settings without an explicit override. Such a test asserts against the
+# machine it runs on: green in CI where no var is set, red locally, or the
+# reverse. Clear the whole prefix here; the two vars the harness owns are
+# re-added immediately below. The match is case-insensitive because
+# MoneyBinSettings sets `case_sensitive=False`, so a lowercase export reaches
+# the same field. Guarded by tests/moneybin/test_env_isolation.py.
+for _ambient in [_k for _k in os.environ if _k.upper().startswith("MONEYBIN_")]:
+    del os.environ[_ambient]
+
 # Per-xdist-worker MoneyBin home so parallel tests don't trample each other's
 # `.moneybin/profiles/` directory. Each worker (`gw0`, `gw1`, …) gets its own
 # tempdir; serial runs use a single shared dir under `gw-main`.
