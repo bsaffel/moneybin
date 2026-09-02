@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from moneybin.validation.expectations import SourceTransactionRef
+from tests.validation.expectations import SourceTransactionRef
 
 
 def test_source_transaction_ref_constructs_with_expected_fields() -> None:

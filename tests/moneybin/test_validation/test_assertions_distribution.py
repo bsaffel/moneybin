@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.validation.assertions.distribution import (
+from tests.validation.assertions.distribution import (
     assert_distribution_within_bounds,
     assert_ground_truth_coverage,
     assert_unique_value_count,

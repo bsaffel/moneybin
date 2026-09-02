@@ -1,12 +1,12 @@
 """YAML-driven adapter for expectation predicates.
 
-The library predicates in moneybin.validation.expectations take typed kwargs.
+The library predicates in tests.validation.expectations take typed kwargs.
 Scenario YAML provides loosely-typed dicts via ExpectationSpec. This module is
 the only place that translates between the two.
 
 Adding a new ExpectationSpec.kind:
 1. Add a Literal to loader.ExpectationSpec.kind.
-2. Implement the predicate in moneybin.validation.expectations.
+2. Implement the predicate in tests.validation.expectations.
 3. Register an adapter here.
 """
 
@@ -15,7 +15,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from moneybin.database import Database
-from moneybin.validation.expectations import (
+from tests.scenarios._runner.loader import ExpectationSpec
+from tests.validation.expectations import (
     SourceTransactionRef,
     verify_category_for_transaction,
     verify_gold_record_count,
@@ -23,8 +24,7 @@ from moneybin.validation.expectations import (
     verify_provenance_for_transaction,
     verify_transfers_match_ground_truth,
 )
-from moneybin.validation.result import ExpectationResult
-from tests.scenarios._runner.loader import ExpectationSpec
+from tests.validation.result import ExpectationResult
 
 ExpectationAdapter = Callable[[Database, ExpectationSpec], ExpectationResult]
 

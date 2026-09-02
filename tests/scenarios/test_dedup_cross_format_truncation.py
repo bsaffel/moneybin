@@ -11,9 +11,9 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
-from moneybin.validation.assertions import assert_row_count_exact
-from moneybin.validation.result import AssertionResult
 from tests.scenarios._runner import load_shipped_scenario, run_scenario
+from tests.validation.assertions import assert_row_count_exact
+from tests.validation.result import AssertionResult
 
 
 @pytest.mark.scenarios

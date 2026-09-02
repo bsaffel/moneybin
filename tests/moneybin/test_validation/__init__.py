@@ -1,1 +1,1 @@
-"""Tests for moneybin.validation package."""
+"""Tests for the tests.validation scenario-support primitives."""

@@ -4,10 +4,9 @@ from tests.scenarios._runner._assertion_registry import ASSERTION_REGISTRY
 
 
 def test_registry_includes_all_yaml_callable_assertions() -> None:
-    """Registry covers exactly the 22 YAML-callable assertions."""
+    """Registry covers exactly the 21 YAML-callable assertions."""
     expected = {
         "assert_amount_precision",
-        "assert_balanced_transfers",
         "assert_column_types",
         "assert_columns_exist",
         "assert_date_bounds",
@@ -23,9 +22,9 @@ def test_registry_includes_all_yaml_callable_assertions() -> None:
         "assert_row_count_delta",
         "assert_row_count_exact",
         "assert_schema_snapshot",
-        "assert_sign_convention",
         "assert_source_system_populated",
         "assert_sqlmesh_catalog_matches",
+        "assert_transform_audit",
         "assert_unique_value_count",
         "assert_valid_foreign_keys",
     }
