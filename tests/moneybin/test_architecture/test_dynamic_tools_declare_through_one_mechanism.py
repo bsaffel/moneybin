@@ -31,16 +31,24 @@ mechanism it uses instead. The list is asserted by set equality in both
 directions, so a seventh such tool fails until someone adds it deliberately, and
 an entry that stops applying fails until someone removes it.
 
-Three boundaries, stated rather than implied:
+Four boundaries, stated rather than implied:
 
 - Reachability follows calls by name through ``src/moneybin/mcp``. The sibling
   guard scans `cli` too; this one does not, because an MCP tool's envelope is
   built on the MCP surface and `_mcp_module_path` resolves nothing outside it. A
-  call it cannot resolve (a method, a callback passed as an argument, a helper
-  in another package) ends that branch, so a tool that moves its envelope
-  building out of `mcp/` reads as reaching nothing and fails. That is the
-  intended direction: a false alarm is a review, a missed hand-declaration is an
-  unmasked payload.
+  call it cannot resolve — a method, a callback passed as an argument, a helper
+  in another package — ends that branch. Ending a branch is not the same as
+  clearing it: a sibling branch reaching the builder must not vouch for one the
+  scan never read. So every ``return`` in a function *annotated* as returning a
+  ``ResponseEnvelope`` has to land on something this scan can name, and a tool
+  whose envelope arrives through a call it cannot follow is listed in
+  ``ENVELOPE_FROM_AN_UNFOLLOWABLE_CALL`` rather than passing silently.
+- The literal check reads the expression as written, resolving a local alias
+  back to its assignment first. It cannot tell a named constant reached through
+  an attribute chain (``Sensitivity.LOW.value``) from a runtime derivation
+  (``result.tier``), so it bounds the spelled-out case only. Say so rather than
+  imply more: a guard that overstates its reach is the defect this file exists
+  to fix.
 - The unit is the tool, not the call site. A finer (module, function) list would
   pin each branch, but these files are refactored often enough that the churn
   would land on unrelated PRs; the tool is what an agent calls and what the
@@ -131,6 +139,24 @@ BUILDS_OUTSIDE_THE_CLASSIFIER: dict[str, str] = {
     ),
 }
 
+# Registered dynamic tools whose envelope arrives from a call this scan cannot
+# follow, so the branch returning it is unread rather than approved.
+ENVELOPE_FROM_AN_UNFOLLOWABLE_CALL: dict[str, str] = {
+    "import_status": (
+        "The `formats` section calls `inspect.unwrap(import_formats)` and "
+        "invokes the result through a local `body` variable, so the producing "
+        "function is reached by value rather than by name. It is the "
+        "`import_formats` tool body in this same module, which the decorator "
+        "classifies statically."
+    ),
+    "import_confirm": (
+        "Its retry loop returns what `asyncio.to_thread(_run_import_confirm_"
+        "attempt, …)` produced. The producer is passed as an argument, so the "
+        "scan cannot follow it; `_run_import_confirm_attempt` lives in this "
+        "same module and builds through the classifier."
+    ),
+}
+
 # Where the sanctioned mechanism is a *derivation*, a literal is the silent
 # downgrade set equality cannot see: swapping `result.tier` for "low" keeps the
 # tool on this list while turning its declaration into an assertion. Tracked per
@@ -150,6 +176,19 @@ class Construction:
     def __str__(self) -> str:
         """Render the site the way the assertion message needs to name it."""
         return f"{self.module}:{self.function} builds {self.constructor}()"
+
+
+@dataclass(frozen=True, slots=True)
+class UnverifiedReturn:
+    """One envelope-typed return whose value this scan could not name."""
+
+    module: str
+    function: str
+    expression: str
+
+    def __str__(self) -> str:
+        """Render the site the way the assertion message needs to name it."""
+        return f"{self.module}:{self.function} returns {self.expression}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +217,7 @@ class Mechanism:
     reaches_builder: bool
     constructions: tuple[Construction, ...]
     declarations: tuple[Declaration, ...]
+    unverified_returns: tuple[UnverifiedReturn, ...]
 
     @property
     def builds_outside_the_classifier(self) -> bool:
@@ -204,8 +244,36 @@ def _call_name(node: ast.Call) -> str | None:
     return None
 
 
-def _is_literal(node: ast.expr) -> bool:
-    """Whether an argument is spelled out rather than derived at runtime."""
+def _resolve(node: ast.expr, assignments: dict[str, ast.expr]) -> ast.expr:
+    """Unwrap `await` / `cast(T, x)` and follow one local alias to its value."""
+    seen: set[str] = set()
+    while True:
+        if isinstance(node, ast.Await):
+            node = node.value
+        elif (
+            isinstance(node, ast.Call)
+            and _call_name(node) == "cast"
+            and len(node.args) == 2
+        ):
+            node = node.args[1]
+        elif (
+            isinstance(node, ast.Name)
+            and node.id in assignments
+            and node.id not in seen
+        ):
+            seen.add(node.id)
+            node = assignments[node.id]
+        else:
+            return node
+
+
+def _is_literal(node: ast.expr, assignments: dict[str, ast.expr]) -> bool:
+    """Whether an argument is spelled out rather than derived at runtime.
+
+    A local alias is followed to what it was assigned, so hiding a constant
+    behind one name does not read as a derivation.
+    """
+    node = _resolve(node, assignments)
     if isinstance(node, ast.Constant):
         return True
     if isinstance(node, ast.List | ast.Tuple):
@@ -213,7 +281,13 @@ def _is_literal(node: ast.expr) -> bool:
     return False
 
 
-def _declaration(node: ast.Call, *, module: str, function: str) -> Declaration | None:
+def _declaration(
+    node: ast.Call,
+    *,
+    module: str,
+    function: str,
+    assignments: dict[str, ast.expr],
+) -> Declaration | None:
     declared = [keyword for keyword in node.keywords if keyword.arg in DECLARED_FIELDS]
     if not declared:
         return None
@@ -224,7 +298,9 @@ def _declaration(node: ast.Call, *, module: str, function: str) -> Declaration |
         fields=tuple(sorted(str(keyword.arg) for keyword in declared)),
         literal_fields=tuple(
             sorted(
-                str(keyword.arg) for keyword in declared if _is_literal(keyword.value)
+                str(keyword.arg)
+                for keyword in declared
+                if _is_literal(keyword.value, assignments)
             )
         ),
     )
@@ -300,6 +376,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
     reaches_builder = False
     constructions: list[Construction] = []
     declarations: list[Declaration] = []
+    unverified: list[UnverifiedReturn] = []
     seen: set[tuple[Path, str]] = set()
     pending: list[tuple[Path, str]] = [(path, function)]
 
@@ -312,6 +389,15 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
         node = current_functions.get(current_name)
         if node is None:
             continue
+
+        assignments: dict[str, ast.expr] = {}
+        for statement in node.body:
+            for child in ast.walk(statement):
+                if not isinstance(child, ast.Assign):
+                    continue
+                for target in child.targets:
+                    if isinstance(target, ast.Name):
+                        assignments.setdefault(target.id, child.value)
 
         body_calls = [
             child
@@ -327,7 +413,10 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
         ]
         for call in body_calls + decorator_calls:
             declaration = _declaration(
-                call, module=current_path.name, function=current_name
+                call,
+                module=current_path.name,
+                function=current_name,
+                assignments=assignments,
             )
             if declaration is not None:
                 declarations.append(declaration)
@@ -351,10 +440,39 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
             elif callee in imports:
                 pending.append(imports[callee])
 
+        # A branch the scan cannot read is not a branch it has cleared. Only
+        # envelope-typed functions are held to this: every other helper in the
+        # tree returns rows, cursors, and counts that no classifier owns.
+        returns_an_envelope = node.returns is not None and (
+            "ResponseEnvelope" in ast.unparse(node.returns)
+        )
+        if returns_an_envelope:
+            for statement in node.body:
+                for child in ast.walk(statement):
+                    if not isinstance(child, ast.Return) or child.value is None:
+                        continue
+                    value = _resolve(child.value, assignments)
+                    named = isinstance(value, ast.Call) and _call_name(value) in (
+                        {BUILDER}
+                        | RAW_CONSTRUCTORS
+                        | set(current_functions)
+                        | set(imports)
+                    )
+                    if named:
+                        continue
+                    unverified.append(
+                        UnverifiedReturn(
+                            module=current_path.name,
+                            function=current_name,
+                            expression=ast.unparse(value).splitlines()[0][:60],
+                        )
+                    )
+
     return Mechanism(
         reaches_builder=reaches_builder,
         constructions=tuple(dict.fromkeys(constructions)),
         declarations=tuple(dict.fromkeys(declarations)),
+        unverified_returns=tuple(dict.fromkeys(unverified)),
     )
 
 
@@ -440,6 +558,34 @@ async def test_every_dynamic_tool_reaches_the_classifier_or_is_listed() -> None:
     )
 
 
+async def test_envelopes_from_an_unfollowable_call_are_the_sanctioned_set() -> None:
+    """A branch the scan cannot read is listed, not vouched for by a sibling."""
+    mechanisms = await _dynamic_tool_mechanisms()
+    actual = {name for name, m in mechanisms.items() if m.unverified_returns}
+
+    unlisted = sorted(actual - set(ENVELOPE_FROM_AN_UNFOLLOWABLE_CALL))
+    assert not unlisted, (
+        "These dynamic_classification=True tools return an envelope this scan "
+        "cannot trace to a builder, a constructor, or a function it can follow "
+        "— a method, or a callee reached by value rather than by name. Another "
+        "branch reaching the builder says nothing about this one. Call the "
+        "producer by name, or add an ENVELOPE_FROM_AN_UNFOLLOWABLE_CALL entry "
+        "saying what builds it: "
+        + "; ".join(
+            f"{name} — "
+            + ", ".join(str(site) for site in mechanisms[name].unverified_returns)
+            for name in unlisted
+        )
+    )
+
+    stale = sorted(set(ENVELOPE_FROM_AN_UNFOLLOWABLE_CALL) - actual)
+    assert not stale, (
+        "ENVELOPE_FROM_AN_UNFOLLOWABLE_CALL names tools whose envelope-typed "
+        "returns are all traceable now (or that are no longer registered as "
+        f"dynamic). Drop the entries: {stale}"
+    )
+
+
 async def test_derived_declarations_are_not_quietly_replaced_by_literals() -> None:
     """The two derived mechanisms must keep deriving — per field, not in bulk."""
     mechanisms = await _dynamic_tool_mechanisms()
@@ -476,6 +622,20 @@ def _probe_building_outside_the_classifier() -> ResponseEnvelope[Any]:
     if _elsewhere():
         return build_classified_envelope({"probe": True})
     return build_envelope(data={"probe": True})
+
+
+def _probe_returning_through_an_unfollowable_call() -> ResponseEnvelope[Any]:
+    """Stand-in for the shape a sibling builder call must not vouch for."""
+    if _elsewhere():
+        return build_classified_envelope({"probe": True})
+    producer = _elsewhere()
+    return producer()
+
+
+def _probe_hiding_a_literal_behind_an_alias() -> ResponseEnvelope[Any]:
+    """Stand-in for a constant spelled into a local before the call."""
+    hidden = "low"
+    return build_envelope(data={"probe": True}, sensitivity=hidden)
 
 
 def _probe_declaring_one_field_by_hand() -> ResponseEnvelope[Any]:
@@ -523,3 +683,19 @@ def test_the_analysis_can_return_a_failing_verdict() -> None:
         ("classes_returned", "sensitivity")
     ]
     assert [d.literal_fields for d in partial.declarations] == [("classes_returned",)]
+
+    # The second round's finding: a resolvable branch must not clear a sibling
+    # branch whose producer the scan reaches by value rather than by name.
+    unfollowable = mechanism_of(
+        Path(__file__), _probe_returning_through_an_unfollowable_call.__name__
+    )
+    assert unfollowable.reaches_builder
+    assert [site.expression for site in unfollowable.unverified_returns] == [
+        "producer()"
+    ]
+
+    # A constant put into a local first is still a constant.
+    aliased = mechanism_of(
+        Path(__file__), _probe_hiding_a_literal_behind_an_alias.__name__
+    )
+    assert [d.literal_fields for d in aliased.declarations] == [("sensitivity",)]
