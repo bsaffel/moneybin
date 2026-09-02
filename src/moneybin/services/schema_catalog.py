@@ -489,10 +489,10 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Top merchants by lifetime spend",
             sql="""
                 SELECT merchant_normalized, currency_code, top_category,
-                       txn_count, total_spend,
                        ROW_NUMBER() OVER (
                            PARTITION BY currency_code ORDER BY total_spend DESC
-                       ) AS rank_in_currency
+                       ) AS rank_in_currency,
+                       txn_count, total_spend
                 FROM reports.merchant_activity
                 QUALIFY rank_in_currency <= 25
                 ORDER BY rank_in_currency, currency_code

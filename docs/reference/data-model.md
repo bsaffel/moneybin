@@ -536,7 +536,7 @@ Per-merchant lifetime aggregations. Grain: one row per `merchant_normalized`. NU
 | `merchant_normalized` | VARCHAR | `'(unknown)'` for NULL merchants. |
 | `top_category` | VARCHAR | Modal category; NULL if all uncategorized. |
 | `first_seen`, `last_seen` | DATE | Date range. |
-| `txn_count`, `account_count`, `active_months` | INTEGER | Counts (transactions / distinct accounts / distinct year-months). |
+| `txn_count`, `active_months`, `account_count` | INTEGER | Counts (transactions / distinct year-months / distinct accounts). |
 | `total_inflow` | DECIMAL(18,2) | Lifetime sum of positive amounts. |
 | `total_outflow` | DECIMAL(18,2) | Lifetime sum of negative amounts; **kept negative**. |
 | `avg_amount`, `median_amount` | DECIMAL(18,2) | Signed mean / median. |
