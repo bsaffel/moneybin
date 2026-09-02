@@ -76,7 +76,10 @@ typer.Typer.__init__ = _typer_init_no_rich  # type: ignore[method-assign]
 # re-added immediately below. The match is case-insensitive because
 # MoneyBinSettings sets `case_sensitive=False`, so a lowercase export reaches
 # the same field. Guarded by tests/moneybin/test_env_isolation.py.
-for _ambient in [_k for _k in os.environ if _k.upper().startswith("MONEYBIN_")]:
+_CLEARED_AMBIENT_ENV = sorted(
+    _k for _k in os.environ if _k.upper().startswith("MONEYBIN_")
+)
+for _ambient in _CLEARED_AMBIENT_ENV:
     del os.environ[_ambient]
 
 # Per-xdist-worker MoneyBin home so parallel tests don't trample each other's
@@ -97,6 +100,32 @@ os.environ["MONEYBIN_HOME"] = str(_worker_home)
 _worker_inbox_root = _worker_home / "inbox-root"
 _worker_inbox_root.mkdir(parents=True, exist_ok=True)
 os.environ["MONEYBIN_IMPORT___INBOX_ROOT"] = str(_worker_inbox_root)
+
+# Snapshot the isolated environment now, at import, because import is when the
+# isolation actually happens. A test that instead read os.environ at call time
+# would also see whatever a test sharing its xdist worker had left behind, and
+# would report that as the developer's shell leaking in.
+MONEYBIN_ENV_AT_STARTUP = frozenset(
+    _k for _k in os.environ if _k.upper().startswith("MONEYBIN_")
+)
+
+
+def pytest_report_header() -> list[str] | None:
+    """Name the ambient ``MONEYBIN_*`` vars this run ignored.
+
+    Dropping them silently would make a deliberate
+    ``MONEYBIN_LOGGING__LEVEL=DEBUG uv run pytest ...`` look broken rather than
+    overridden. Names only, never values — these fields hold credentials.
+    """
+    if not _CLEARED_AMBIENT_ENV:
+        return None
+    return [f"moneybin: ignored ambient env {', '.join(_CLEARED_AMBIENT_ENV)}"]
+
+
+@pytest.fixture(scope="session")
+def moneybin_env_at_startup() -> frozenset[str]:
+    """``MONEYBIN_*`` names surviving conftest's environment isolation."""
+    return MONEYBIN_ENV_AT_STARTUP
 
 
 @pytest.fixture(scope="session", autouse=True)
