@@ -412,8 +412,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Net worth today, one row per currency",
             sql="""
-                SELECT balance_date, currency_code, net_worth, account_count,
-                       total_assets, total_liabilities
+                SELECT currency_code, balance_date, account_count,
+                       total_assets, total_liabilities, net_worth
                 FROM reports.net_worth
                 WHERE balance_date = (SELECT MAX(balance_date) FROM reports.net_worth)
                 ORDER BY currency_code
@@ -423,8 +423,8 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Net worth trend over the last 12 months (monthly, per currency)",
             sql="""
                 SELECT
-                    STRFTIME(balance_date, '%Y-%m') AS month,
                     currency_code,
+                    STRFTIME(balance_date, '%Y-%m') AS month,
                     LAST(net_worth ORDER BY balance_date) AS end_of_month_net_worth
                 FROM reports.net_worth
                 WHERE balance_date >= CURRENT_DATE - INTERVAL 12 MONTH
@@ -437,7 +437,7 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Monthly net cash flow across all accounts, per currency",
             sql="""
-                SELECT year_month, currency_code, SUM(net) AS total_net
+                SELECT currency_code, year_month, SUM(net) AS total_net
                 FROM reports.cash_flow
                 GROUP BY year_month, currency_code
                 ORDER BY year_month, currency_code
@@ -460,7 +460,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Latest month's spending with MoM/YoY deltas",
             sql="""
-                SELECT year_month, category, currency_code, total_spend, mom_pct, yoy_pct
+                SELECT category, currency_code, year_month,
+                       total_spend, mom_pct, yoy_pct
                 FROM reports.spending_trend
                 WHERE year_month = (SELECT MAX(year_month) FROM reports.spending_trend)
                 ORDER BY ROW_NUMBER() OVER (
@@ -473,8 +474,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Active high-confidence subscriptions ordered by annualized cost",
             sql="""
-                SELECT merchant_normalized, currency_code, cadence, avg_amount,
-                       annualized_cost, confidence
+                SELECT merchant_normalized, currency_code, cadence,
+                       confidence, avg_amount, annualized_cost
                 FROM reports.recurring_subscriptions
                 WHERE status = 'active' AND confidence >= 0.7
                 ORDER BY ROW_NUMBER() OVER (
@@ -487,11 +488,11 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Top merchants by lifetime spend",
             sql="""
-                SELECT merchant_normalized, currency_code, total_spend, txn_count,
-                       top_category,
+                SELECT merchant_normalized, currency_code, top_category,
                        ROW_NUMBER() OVER (
                            PARTITION BY currency_code ORDER BY total_spend DESC
-                       ) AS rank_in_currency
+                       ) AS rank_in_currency,
+                       txn_count, total_spend
                 FROM reports.merchant_activity
                 QUALIFY rank_in_currency <= 25
                 ORDER BY rank_in_currency, currency_code
@@ -502,8 +503,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Top 100 transactions by absolute amount, per currency",
             sql="""
-                SELECT account_name, txn_date, currency_code, amount,
-                       merchant_normalized, category
+                SELECT account_name, merchant_normalized, category,
+                       currency_code, txn_date, amount
                 FROM reports.large_transactions
                 WHERE is_top_100
                 ORDER BY ROW_NUMBER() OVER (
@@ -514,8 +515,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Account-level outliers (modified z-score > 2.5), per currency",
             sql="""
-                SELECT account_name, txn_date, currency_code, amount,
-                       amount_zscore_account
+                SELECT account_name, currency_code, txn_date,
+                       amount_zscore_account, amount
                 FROM reports.large_transactions
                 WHERE amount_zscore_account > 2.5
                 ORDER BY ROW_NUMBER() OVER (
@@ -528,8 +529,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Reconciliation drift sorted by absolute delta, per currency",
             sql="""
-                SELECT account_name, assertion_date, currency_code,
-                       asserted_balance, computed_balance, drift, status
+                SELECT account_name, currency_code, status, assertion_date,
+                       asserted_balance, computed_balance, drift
                 FROM reports.balance_drift
                 WHERE status IN ('drift', 'warning')
                 ORDER BY ROW_NUMBER() OVER (

@@ -96,14 +96,13 @@ WITH base AS (
 SELECT
   b.transaction_id, /* Joinable to core.fct_transactions */
   b.account_id, /* Owning account */
-  b.account_name, /* Account display name */
-  b.txn_date, /* Transaction date */
-  b.amount, /* Signed amount */
-  b.description, /* Original description */
   b.merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL when no canonical merchant was resolved */
+  b.account_name, /* Account display name */
   b.merchant_normalized, /* Normalized merchant string (display) */
+  b.description, /* Original description */
   b.category, /* Spending category text; NULL if uncategorized */
   b.currency_code, /* ISO 4217 currency this amount is denominated in; NULL is the unknown-currency segment, never resolved to the home currency (multi-currency.md Requirement 5) */
+  b.txn_date, /* Transaction date */
   CASE
     WHEN pa.mad > 0
     THEN (
@@ -128,7 +127,8 @@ SELECT
         transaction_id
       FROM top_n
     )
-  ) AS is_top_100 /* TRUE if in the top 100 by ABS(amount) among transactions sharing this currency_code */
+  ) AS is_top_100, /* TRUE if in the top 100 by ABS(amount) among transactions sharing this currency_code */
+  b.amount /* Signed amount */
 FROM base AS b
 LEFT JOIN per_account AS pa
   ON b.account_id = pa.account_id

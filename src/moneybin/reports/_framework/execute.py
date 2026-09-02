@@ -15,7 +15,7 @@ caller that already holds a spec and wants neither — today only tests.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Protocol, cast
@@ -175,6 +175,34 @@ class CatalogReportExecution:
     """
 
 
+def _reordered(row: Mapping[str, Any], columns: Sequence[str]) -> dict[str, Any]:
+    """One converted row rebuilt in `columns` order.
+
+    A key `columns` does not name keeps its relative position at the end rather
+    than being dropped: this reorders a payload, and silently losing a field a
+    caller reads would be a far worse trade than an out-of-order one.
+    """
+    ordered = {name: row[name] for name in columns if name in row}
+    ordered.update({key: value for key, value in row.items() if key not in ordered})
+    return ordered
+
+
+def _original_currency_position(columns: Sequence[str], currency: str | None) -> int:
+    """Where the runtime provenance column goes: beside the currency it records.
+
+    Both columns are `DataClass.CURRENCY`, so `column-ordering.md` Rule B puts
+    them in the same descriptive block. Appending instead would end a converted
+    read on provenance rather than on the report's headline measure — the one
+    place the declared projections are swept but the runtime one is not. The
+    semantics name the column rather than this module assuming `currency_code`;
+    a report naming none, or naming one this projection does not carry, keeps
+    the old append.
+    """
+    if currency is None or currency not in columns:
+        return len(columns)
+    return columns.index(currency) + 1
+
+
 def convert_execution(
     execution: CatalogReportExecution,
     *,
@@ -223,17 +251,24 @@ def convert_execution(
     columns = execution.columns
     column_types = execution.column_types
     output_classes = execution.output_classes
+    records = outcome.records
     if outcome.applied_rates:
-        columns = [*columns, ORIGINAL_CURRENCY_COLUMN]
-        column_types = [*column_types, "VARCHAR"]
+        at = _original_currency_position(columns, execution.semantics.currency)
+        columns = [*columns[:at], ORIGINAL_CURRENCY_COLUMN, *columns[at:]]
+        column_types = [*column_types[:at], "VARCHAR", *column_types[at:]]
         output_classes = {
             **output_classes,
             ORIGINAL_CURRENCY_COLUMN: DataClass.CURRENCY,
         }
+        # `convert_records` put the same key on every row dict, and a row's own
+        # insertion order is what `to_json()` emits — so repositioning the
+        # column list alone would ship a payload whose keys contradict the
+        # column list beside them. The rows carry the order too.
+        records = [_reordered(row, columns) for row in records]
 
     return replace(
         execution,
-        records=outcome.records,
+        records=records,
         columns=columns,
         column_types=column_types,
         output_classes=output_classes,

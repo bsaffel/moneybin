@@ -31,19 +31,19 @@ SELECT
   merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL for the '(uncategorized)' bucket aggregating transactions without a canonical merchant */
   merchant_normalized, /* Display label: dim_merchants.canonical_name for resolved merchants; '(uncategorized)' when merchant_id IS NULL */
   currency_code, /* ISO 4217 currency this row's totals are denominated in; NULL is the unknown-currency segment, never resolved to the home currency (multi-currency.md Requirement 5) */
-  SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) AS total_spend, /* Lifetime absolute outflow */
-  SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS total_inflow, /* Lifetime sum of positive amounts */
-  SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) AS total_outflow, /* Lifetime sum of negative amounts (kept negative) */
-  COUNT(*) AS txn_count, /* Total transaction count */
-  AVG(amount) AS avg_amount, /* Mean signed amount */
-  MEDIAN(amount) AS median_amount, /* Median signed amount */
-  MIN(transaction_date) AS first_seen, /* Earliest transaction */
-  MAX(transaction_date) AS last_seen, /* Most recent transaction */
-  COUNT(DISTINCT DATE_TRUNC('MONTH', transaction_date)) AS active_months, /* Distinct year-month count */
   MODE(
   ORDER BY
     category) AS top_category, /* Modal category text; NULL if all uncategorized */
-  COUNT(DISTINCT account_id) AS account_count /* Distinct accounts on which this merchant appears */
+  MIN(transaction_date) AS first_seen, /* Earliest transaction */
+  MAX(transaction_date) AS last_seen, /* Most recent transaction */
+  COUNT(*) AS txn_count, /* Total transaction count */
+  COUNT(DISTINCT DATE_TRUNC('MONTH', transaction_date)) AS active_months, /* Distinct year-month count */
+  COUNT(DISTINCT account_id) AS account_count, /* Distinct accounts on which this merchant appears */
+  SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS total_inflow, /* Lifetime sum of positive amounts */
+  SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) AS total_outflow, /* Lifetime sum of negative amounts (kept negative) */
+  AVG(amount) AS avg_amount, /* Mean signed amount */
+  MEDIAN(amount) AS median_amount, /* Median signed amount */
+  SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) AS total_spend /* Lifetime absolute outflow */
 FROM normalized
 GROUP BY
   merchant_id,

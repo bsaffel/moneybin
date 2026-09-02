@@ -38,7 +38,6 @@ from moneybin.tables import REPORTS_CASH_FLOW
         "by": DataClass.TXN_TYPE,
     },
     columns=(
-        OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
         OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
         OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
         OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
@@ -46,6 +45,10 @@ from moneybin.tables import REPORTS_CASH_FLOW
             "currency_code",
             "ISO 4217 currency these sums are denominated in; null means unknown.",
             DataClass.CURRENCY,
+        ),
+        OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
+        OutputColumn(
+            "txn_count", "Non-transfer transaction count.", DataClass.AGGREGATE
         ),
         OutputColumn(
             "inflow",
@@ -70,9 +73,6 @@ from moneybin.tables import REPORTS_CASH_FLOW
             # The one column here whose sign is the answer: positive is a
             # surplus for the period, negative a deficit.
             money_kind="flow",
-        ),
-        OutputColumn(
-            "txn_count", "Non-transfer transaction count.", DataClass.AGGREGATE
         ),
     ),
     semantics=ReportSemantics(
@@ -101,10 +101,10 @@ from moneybin.tables import REPORTS_CASH_FLOW
     # because they are the grain — two rows differing only in a hidden
     # `currency_code` would read as one row duplicated.
     default_columns=(
-        "year_month",
         "account_name",
         "category",
         "currency_code",
+        "year_month",
         "net",
     ),
 )
@@ -140,25 +140,30 @@ def cash_flow(
         report_id="core:cashflow",
     )
 
+    # Assembled in Rule B order — grain key, label, dimensions, then the date —
+    # because this list *is* the projection every consumer reads
+    # (`column-ordering.md`, "there is one source of column order"). Built once
+    # and shared with the GROUP BY: two lists that must agree column-for-column
+    # are a standing invitation to drift.
+    cols: list[str] = []
+    if by in ("account", "account-and-category"):
+        # account_id keeps rows distinct when two accounts share a display_name.
+        cols += ["account_id", "account_name"]
+    if by in ("category", "account-and-category"):
+        cols.append("category")
     # currency_code groups unconditionally, for every `by` value. Dropping it
     # from one grouping would re-blend the currencies the view just separated
     # (multi-currency.md Requirement 5).
-    select_cols = "year_month, currency_code"
-    group_cols = "year_month, currency_code"
-    if by in ("account", "account-and-category"):
-        # account_id keeps rows distinct when two accounts share a display_name.
-        select_cols += ", account_id, account_name"
-        group_cols += ", account_id, account_name"
-    if by in ("category", "account-and-category"):
-        select_cols += ", category"
-        group_cols += ", category"
+    cols += ["currency_code", "year_month"]
+    select_cols = ", ".join(cols)
+    group_cols = select_cols
 
     grouped = f"""
         SELECT {select_cols},
+               SUM(txn_count) AS txn_count,
                SUM(inflow) AS inflow,
                SUM(outflow) AS outflow,
                SUM(net) AS net,
-               SUM(txn_count) AS txn_count,
                ROW_NUMBER() OVER (
                    PARTITION BY year_month, currency_code
                    ORDER BY ABS(SUM(net)) DESC
@@ -185,7 +190,7 @@ def cash_flow(
     # (month, currency), where every rank is 1 and this reduces to the plain
     # chronological listing.
     sql = f"""
-        SELECT {select_cols}, inflow, outflow, net, txn_count
+        SELECT {select_cols}, txn_count, inflow, outflow, net
         FROM ({grouped})
         ORDER BY year_month, rank_in_currency, currency_code
     """  # noqa: S608  # select_cols allowlist

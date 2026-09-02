@@ -53,13 +53,14 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
             "ISO 4217 currency this row is denominated in; null means unknown.",
             DataClass.CURRENCY,
         ),
-        OutputColumn(
-            "avg_amount",
-            "Mean absolute recurring charge.",
-            DataClass.TXN_AMOUNT,
-            money_kind="magnitude",
-        ),
         OutputColumn("cadence", "Inferred recurrence cadence.", DataClass.TXN_TYPE),
+        OutputColumn(
+            "status", "Active or inactive recurrence status.", DataClass.TXN_TYPE
+        ),
+        OutputColumn(
+            "first_seen", "Earliest matching charge date.", DataClass.TXN_DATE
+        ),
+        OutputColumn("last_seen", "Latest matching charge date.", DataClass.TXN_DATE),
         OutputColumn(
             "interval_days_avg",
             "Mean days between consecutive charges.",
@@ -71,25 +72,24 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
             DataClass.AGGREGATE,
         ),
         OutputColumn(
+            "confidence", "Recurrence confidence from 0 to 1.", DataClass.AGGREGATE
+        ),
+        OutputColumn(
             "occurrence_count",
             "Matching charge count in the observation window.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
-            "first_seen", "Earliest matching charge date.", DataClass.TXN_DATE
-        ),
-        OutputColumn("last_seen", "Latest matching charge date.", DataClass.TXN_DATE),
-        OutputColumn(
-            "status", "Active or inactive recurrence status.", DataClass.TXN_TYPE
+            "avg_amount",
+            "Mean absolute recurring charge.",
+            DataClass.TXN_AMOUNT,
+            money_kind="magnitude",
         ),
         OutputColumn(
             "annualized_cost",
             "Estimated yearly cost from inferred cadence.",
             DataClass.TXN_AMOUNT,
             money_kind="magnitude",
-        ),
-        OutputColumn(
-            "confidence", "Recurrence confidence from 0 to 1.", DataClass.AGGREGATE
         ),
     ),
     semantics=ReportSemantics(
@@ -152,8 +152,8 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
         "merchant_normalized",
         "currency_code",
         "cadence",
-        "annualized_cost",
         "status",
+        "annualized_cost",
     ),
 )
 def recurring_subscriptions(
@@ -195,10 +195,10 @@ def recurring_subscriptions(
         )
 
     sql = f"""
-        SELECT merchant_id, merchant_normalized, currency_code, cadence, avg_amount,
-               interval_days_avg, interval_days_stddev,
-               occurrence_count, first_seen, last_seen, status,
-               annualized_cost, confidence
+        SELECT merchant_id, merchant_normalized, currency_code, cadence, status,
+               first_seen, last_seen,
+               interval_days_avg, interval_days_stddev, confidence,
+               occurrence_count, avg_amount, annualized_cost
         FROM {REPORTS_RECURRING_SUBSCRIPTIONS.full_name}
         WHERE confidence >= ?
     """  # noqa: S608  # TableRef interpolation
