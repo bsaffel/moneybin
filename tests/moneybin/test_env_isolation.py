@@ -26,6 +26,8 @@ import os
 import subprocess  # noqa: S404 — a child pytest run is how this proves isolation
 from pathlib import Path
 
+import pytest
+
 # Set by tests/conftest.py: a per-xdist-worker MoneyBin home, and the import
 # inbox root beneath it.
 HARNESS_OWNED = frozenset({"MONEYBIN_HOME", "MONEYBIN_IMPORT___INBOX_ROOT"})
@@ -52,6 +54,12 @@ def test_only_harness_owned_moneybin_env_vars_are_visible(
     assert moneybin_env_at_startup == HARNESS_OWNED
 
 
+# Marked slow because it spawns a whole pytest run — seconds, against a suite
+# whose other tests are microseconds. `make test` (`-m "unit and not slow"`)
+# therefore skips it locally, while CI's unit job (`-m unit`) still runs it.
+# That is the right split: this test only becomes load-bearing on a machine
+# with no ambient MONEYBIN_* vars of its own, which is CI, not a dev laptop.
+@pytest.mark.slow
 def test_seeded_ambient_var_does_not_survive_into_a_child_run() -> None:
     """Conftest strips a ``MONEYBIN_*`` var this test plants itself.
 
