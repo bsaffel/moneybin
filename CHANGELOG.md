@@ -91,7 +91,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   single collection field, after redaction rather than instead of it, and
   no-ops cleanly when a payload carries no collection or more than one. A
   refresh's diagnostic lists (`identity_errors`, the three `rate_pairs_*`
-  lists, `self_heal_actions`) and `sync pull`'s overlap warning
+  lists, `self_heal_actions`) and the both-manual-and-Plaid overlap warning
   (`investment_source_overlap_accounts`) are not collections for this purpose —
   they describe the rows rather than being a second set of them.
 - **`import formats` (MCP) and `import formats list` (CLI) return one list.**
@@ -122,8 +122,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   collection were counted as row collections themselves — the post-load
   refresh's four best-effort lists on the first two, and the
   both-manual-and-Plaid overlap warning on `sync pull`. The privacy audit row
-  inherited the same wrong count, and `--json-fields` silently no-opped on all
-  three.
+  inherited the same wrong count.
 
 ### Fixed
 - **`gsheet status <unknown-id> --output json` attributes its audit row to the
