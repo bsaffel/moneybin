@@ -717,6 +717,41 @@ async def test_review_cursor_snapshot_excludes_prepends_and_preserves_total() ->
     assert first.summary.total_count == second.summary.total_count == 2
 
 
+async def test_review_cursor_rejects_continuation_before_its_snapshot() -> None:
+    """`after` may never sort ahead of the snapshot it continues.
+
+    The forged key is well-shaped — a float and a string, exactly the matches
+    queue contract — so only the ordering guard can reject it. Confidence sorts
+    DESC, so 1.0 sorts ahead of the 0.9 snapshot page one froze, the `> after`
+    filter stops narrowing anything, and the page re-serves match-a.
+    """
+    from moneybin.protocol.pagination import encode_keyset_cursor
+
+    rows = [_pending_match("match-a"), _pending_match("match-b")]
+    with patch(
+        "moneybin.mcp.tools.reviews.MatchingService.get_pending",
+        return_value=rows,
+    ):
+        first = await reviews_coarse(kind="matches", status="pending", limit=1)
+        assert [row.decision_id for row in first.data.rows] == ["match-a"]
+
+        response = await reviews_coarse(
+            kind="matches",
+            status="pending",
+            limit=1,
+            cursor=encode_keyset_cursor(
+                namespace="reviews",
+                scope={"kind": "matches", "status": "pending"},
+                snapshot=(0.9, "match-a"),
+                after=(1.0, "match-z"),
+                total=2,
+            ),
+        )
+
+    assert response.error is not None
+    assert response.error.code == "review_cursor_invalid"
+
+
 async def test_review_cursor_validates_key_shape_when_queue_is_empty() -> None:
     from moneybin.protocol.pagination import encode_keyset_cursor
 

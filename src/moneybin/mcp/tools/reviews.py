@@ -6,7 +6,6 @@ import asyncio
 import logging
 from dataclasses import dataclass, replace
 from decimal import Decimal
-from functools import cmp_to_key
 from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
@@ -91,12 +90,17 @@ from moneybin.privacy.redaction import redact_typed
 from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
+    InvalidKeysetCursorError,
     KeysetPosition,
     KeysetScalar,
     SortDirection,
-    compare_keyset,
+    canonical_iso_date,
+    canonical_iso_timestamp,
+    canonicalize_keyset_element,
     decode_keyset_cursor,
-    encode_keyset_cursor,
+    paginate_keyset,
+    reject_inverted_keyset,
+    validate_keyset_shape,
 )
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
@@ -141,28 +145,51 @@ def _review_position(
     """Decode a keyset cursor and reject cross-queue or cross-status reuse."""
     if cursor is None:
         return None
+    types, directions = _review_key_contract(kind, status)
     try:
         position = decode_keyset_cursor(
             cursor,
             namespace="reviews",
             scope={"kind": kind, "status": status},
         )
+        validate_keyset_shape(position, key_types=types)
+        canonical = _canonical_review_position(position, kind=kind, status=status)
+        reject_inverted_keyset(canonical, directions)
     except ValueError as exc:
         raise UserError(
             "Invalid review pagination cursor.",
             code=error_codes.REVIEW_CURSOR_INVALID,
         ) from exc
-    types, _ = _review_key_contract(kind, status)
-    for key in (position.snapshot, position.after):
-        if len(key) != len(types) or any(
-            type(value) is not expected
-            for value, expected in zip(key, types, strict=True)
-        ):
-            raise UserError(
-                "Invalid review pagination cursor.",
-                code=error_codes.REVIEW_CURSOR_INVALID,
-            )
-    return position
+    return canonical
+
+
+def _canonical_review_position(
+    position: KeysetPosition,
+    *,
+    kind: ReviewQueueKind,
+    status: ReviewStatus,
+) -> KeysetPosition:
+    """Normalize this queue's leading temporal key, if it has one.
+
+    A history queue keys on the instant a decision was made; the pending
+    categorization queue keys on a transaction *day*. Canonicalizing one as the
+    other would rewrite the key into a spelling no row produces, so the page
+    would match nothing at all rather than mis-order — which is why the shape
+    is declared per queue here rather than guessed from the value.
+    """
+    if status == "history":
+        canonicalize = canonical_iso_timestamp
+    elif kind == "categorization":
+        canonicalize = canonical_iso_date
+    else:
+        return position
+
+    def normalize(value: str) -> str:
+        # `_review_ordering` substitutes "" for a row carrying no timestamp, so
+        # the empty key is one a page can mint and must survive normalization.
+        return value if value == "" else canonicalize(value)
+
+    return canonicalize_keyset_element(position, index=0, canonicalize=normalize)
 
 
 def _review_envelope[T](
@@ -777,54 +804,23 @@ def _review_page(
     position: KeysetPosition | None,
 ) -> tuple[list[Any], str | None]:
     """Page one evolving queue without depending on live-list offsets."""
-    if not rows:
-        return [], None
     _, directions = _review_key_contract(kind, status)
-
-    def compare_rows(left: Any, right: Any) -> int:
-        left_key, _ = _review_ordering(kind, status, left)
-        right_key, _ = _review_ordering(kind, status, right)
-        return compare_keyset(left_key, right_key, directions)
-
-    ordered = sorted(rows, key=cmp_to_key(compare_rows))
-    if position is None:
-        snapshot, _ = _review_ordering(kind, status, ordered[0])
-        eligible = ordered
-    else:
-        snapshot = position.snapshot
-        try:
-            eligible = [
-                row
-                for row in ordered
-                if compare_keyset(
-                    _review_ordering(kind, status, row)[0],
-                    snapshot,
-                    directions,
-                )
-                >= 0
-                and compare_keyset(
-                    _review_ordering(kind, status, row)[0],
-                    position.after,
-                    directions,
-                )
-                > 0
-            ]
-        except ValueError as exc:
-            raise UserError(
-                "Invalid review pagination cursor.",
-                code=error_codes.REVIEW_CURSOR_INVALID,
-            ) from exc
-    page = eligible[:limit]
-    if len(eligible) <= limit or not page:
-        return page, None
-    after, _ = _review_ordering(kind, status, page[-1])
-    return page, encode_keyset_cursor(
-        namespace="reviews",
-        scope={"kind": kind, "status": status},
-        snapshot=snapshot,
-        after=after,
-        total=position.total if position is not None else len(ordered),
-    )
+    try:
+        page, next_cursor, _ = paginate_keyset(
+            rows,
+            limit=limit,
+            key_of=lambda row: _review_ordering(kind, status, row)[0],
+            directions=directions,
+            namespace="reviews",
+            scope={"kind": kind, "status": status},
+            position=position,
+        )
+    except InvalidKeysetCursorError as exc:
+        raise UserError(
+            "Invalid review pagination cursor.",
+            code=error_codes.REVIEW_CURSOR_INVALID,
+        ) from exc
+    return page, next_cursor
 
 
 def _review_count(

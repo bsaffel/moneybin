@@ -76,6 +76,7 @@ from moneybin.services.transaction_service import (
     OperationalTransactionResult,
     TransactionGetResult,
     TransactionService,
+    transaction_keyset_bounds,
 )
 
 logger = logging.getLogger(__name__)
@@ -286,36 +287,13 @@ def _transaction_bounds(
     """Validate and narrow decoded transaction keys to date/id pairs."""
     if position is None:
         return None, None
-    if (
-        len(position.snapshot) != 2
-        or len(position.after) != 2
-        or not all(
-            isinstance(value, str) for value in (*position.snapshot, *position.after)
-        )
-    ):
-        raise UserError(
-            "Invalid pagination cursor.",
-            code=error_codes.TRANSACTION_CURSOR_INVALID,
-        )
-    snapshot = cast(tuple[str, str], position.snapshot)
-    after = cast(tuple[str, str], position.after)
     try:
-        date.fromisoformat(snapshot[0])
-        date.fromisoformat(after[0])
+        return transaction_keyset_bounds(position)
     except ValueError as exc:
         raise UserError(
             "Invalid pagination cursor.",
             code=error_codes.TRANSACTION_CURSOR_INVALID,
         ) from exc
-    if not snapshot[1] or not after[1]:
-        raise UserError(
-            "Invalid pagination cursor.",
-            code=error_codes.TRANSACTION_CURSOR_INVALID,
-        )
-    return (
-        snapshot,
-        after,
-    )
 
 
 def _transaction_period(start: date | None, end: date | None) -> str | None:

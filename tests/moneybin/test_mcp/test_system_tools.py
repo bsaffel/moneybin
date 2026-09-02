@@ -552,6 +552,78 @@ async def test_system_audit_history_continuation_ignores_newer_operation() -> No
     assert second.summary.total_count == 3
 
 
+async def test_system_audit_coarse_rejects_continuation_before_its_snapshot(
+    mcp_db: object,
+) -> None:
+    """`after` may never sort ahead of the snapshot it continues.
+
+    The forged key carries two well-formed ISO timestamps and non-empty ids, so
+    only the ordering guard can reject it. Events sort newest-first, so a
+    far-future `after` sorts ahead of the snapshot page one froze and the
+    continuation predicate stops excluding anything the snapshot already admits.
+    """
+    from moneybin.protocol.pagination import (
+        decode_keyset_cursor,
+        encode_keyset_cursor,
+    )
+
+    _make_tag_op("inverted-a")
+    _make_tag_op("inverted-b")
+    first = await system_audit_coarse(view="events", limit=1)
+    assert first.next_cursor is not None
+    position = decode_keyset_cursor(
+        first.next_cursor,
+        namespace="system_audit",
+        scope={"view": "events"},
+    )
+
+    response = await system_audit_coarse(
+        view="events",
+        limit=1,
+        cursor=encode_keyset_cursor(
+            namespace="system_audit",
+            scope={"view": "events"},
+            snapshot=position.snapshot,
+            after=("2999-01-01T00:00:00", "audit-forged"),
+            total=position.total,
+        ),
+    )
+
+    assert response.error is not None
+    assert response.error.code == "infra_invalid_input"
+
+
+async def test_system_audit_coarse_rejects_an_inversion_spelled_in_two_iso_forms(
+    mcp_db: object,
+) -> None:
+    """A later instant written with a space separator is still inverted.
+
+    `datetime.fromisoformat` accepts both `2025-06-01T01:00:00` and
+    `2025-06-01 02:00:00`, and as raw strings the space form sorts behind the
+    `T` form even though it is the later instant — so an uncanonicalized guard
+    would accept this pair and re-serve rows the caller already has.
+    """
+    from moneybin.protocol.pagination import encode_keyset_cursor
+
+    _make_tag_op("spelling-a")
+    _make_tag_op("spelling-b")
+
+    response = await system_audit_coarse(
+        view="events",
+        limit=1,
+        cursor=encode_keyset_cursor(
+            namespace="system_audit",
+            scope={"view": "events"},
+            snapshot=("2025-06-01T01:00:00", "audit-a"),
+            after=("2025-06-01 02:00:00", "audit-b"),
+            total=2,
+        ),
+    )
+
+    assert response.error is not None
+    assert response.error.code == "infra_invalid_input"
+
+
 async def test_system_audit_coarse_rejects_malformed_and_cross_view_cursors(
     mcp_db: object,
 ) -> None:

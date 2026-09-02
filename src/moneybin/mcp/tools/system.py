@@ -10,7 +10,6 @@ import logging
 import os
 import subprocess  # noqa: S404 — subprocess used for git rev-parse; static args only
 from collections.abc import Callable
-from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
@@ -72,12 +71,19 @@ from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
     KeysetPosition,
+    SortDirection,
+    canonical_iso_timestamp,
     decode_keyset_cursor,
     encode_keyset_cursor,
+    reject_inverted_keyset,
+    validate_keyset_shape,
 )
 from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
 logger = logging.getLogger(__name__)
+
+# Display order of both audit views: `ORDER BY occurred_at DESC, <id> DESC`.
+_AUDIT_KEY_DIRECTIONS: tuple[SortDirection, ...] = ("desc", "desc")
 
 _HEALTHY_STATUSES = frozenset({"healthy"})
 _DISCONNECTED_STATUSES = frozenset({"disconnected"})
@@ -931,27 +937,36 @@ def _audit_bounds(
     """Validate and narrow decoded audit keys to timestamp/id string pairs."""
     if position is None:
         return None, None
-    if (
-        len(position.snapshot) != 2
-        or len(position.after) != 2
-        or not all(
-            isinstance(value, str) for value in (*position.snapshot, *position.after)
-        )
-    ):
-        raise ValueError("invalid audit cursor")
-    snapshot = cast(tuple[str, str], position.snapshot)
-    after = cast(tuple[str, str], position.after)
     try:
-        datetime.fromisoformat(snapshot[0])
-        datetime.fromisoformat(after[0])
+        validate_keyset_shape(position, key_types=(str, str))
+        snapshot = _canonical_audit_key(position.snapshot)
+        after = _canonical_audit_key(position.after)
+        reject_inverted_keyset(
+            KeysetPosition(snapshot=snapshot, after=after, total=position.total),
+            _AUDIT_KEY_DIRECTIONS,
+        )
     except ValueError as exc:
         raise ValueError("invalid audit cursor") from exc
-    if not snapshot[1] or not after[1]:
-        raise ValueError("invalid audit cursor")
     return (
         snapshot,
         after,
     )
+
+
+def _canonical_audit_key(key: tuple[object, ...]) -> tuple[str, str]:
+    """Return one audit key with its timestamp in canonical space-separated ISO.
+
+    ``datetime.fromisoformat`` accepts both ``2025-06-01T01:00:00`` and
+    ``2025-06-01 02:00:00``; lexicographically the space form sorts behind the
+    ``T`` form even when it is the later instant, so comparing raw keys would
+    let a forged cursor mixing the two defeat the ordering guard. An offset
+    would break the same ordering, and every timestamp this log stores is
+    naive, so an aware one is refused rather than converted.
+    """
+    occurred_at, row_id = cast(tuple[str, str], key)
+    if not row_id:
+        raise ValueError("audit cursor carries an empty id")
+    return canonical_iso_timestamp(occurred_at), row_id
 
 
 def _audit_list_actions(

@@ -95,9 +95,12 @@ from moneybin.protocol.envelope import (
 )
 from moneybin.protocol.pagination import (
     KeysetPosition,
-    compare_keyset,
+    SortDirection,
+    canonical_iso_timestamp,
     decode_keyset_cursor,
     encode_keyset_cursor,
+    reject_inverted_keyset,
+    validate_keyset_shape,
 )
 from moneybin.services.import_confirmation import sign_convention_effect
 from moneybin.services.refresh_outcome import (
@@ -107,6 +110,11 @@ from moneybin.services.refresh_outcome import (
 from moneybin.utils.file import file_sha256
 
 logger = logging.getLogger(__name__)
+
+# Display order of the imports section: `started_at DESC, import_id DESC`. The
+# third element is not a sort column but the frozen imports-section total the
+# cursor pins; its direction is inert because the pair below must be equal.
+_IMPORT_KEY_DIRECTIONS: tuple[SortDirection, ...] = ("desc", "desc", "asc")
 
 _IMPORT_STATUS_SECTION_ORDER: tuple[Literal["imports", "formats", "inbox"], ...] = (
     "imports",
@@ -1541,34 +1549,37 @@ def _import_status_position(
             namespace="import_status.imports",
             scope={"import_id": None, "sections": sections},
         )
+        # Validates arity first, so the indexing below is safe. The third key
+        # element is the frozen imports-section total rather than a sort
+        # column; a cursor whose two totals disagree is rejected outright
+        # below, so it never reaches a page having steered the comparison.
+        validate_keyset_shape(position, key_types=(str, str, int))
         if (
-            len(position.snapshot) != 3
-            or len(position.after) != 3
-            or not all(
-                isinstance(value, str)
-                for value in (
-                    position.snapshot[0],
-                    position.snapshot[1],
-                    position.after[0],
-                    position.after[1],
-                )
-            )
-            or not position.snapshot[1]
+            not position.snapshot[1]
             or not position.after[1]
-            or type(position.snapshot[2]) is not int
-            or type(position.after[2]) is not int
-            or position.snapshot[2] < 0
             or position.snapshot[2] != position.after[2]
-            or position.snapshot[2] > position.total
+            or cast(int, position.snapshot[2]) < 0
+            or cast(int, position.snapshot[2]) > position.total
         ):
             raise ValueError("invalid import keyset shape")
-        snapshot = cast(tuple[str, str], position.snapshot[:2])
-        after = cast(tuple[str, str], position.after[:2])
-        datetime.fromisoformat(snapshot[0])
-        datetime.fromisoformat(after[0])
-        if compare_keyset(snapshot, after, ("desc", "desc")) > 0:
-            raise ValueError("import continuation precedes its snapshot")
-        return position
+        # Canonicalize before ordering: two valid ISO spellings of one instant
+        # do not sort against each other the way the timestamps do, so a
+        # forged pair mixing them would otherwise pass the guard inverted.
+        canonical = KeysetPosition(
+            snapshot=(
+                canonical_iso_timestamp(cast(str, position.snapshot[0])),
+                position.snapshot[1],
+                position.snapshot[2],
+            ),
+            after=(
+                canonical_iso_timestamp(cast(str, position.after[0])),
+                position.after[1],
+                position.after[2],
+            ),
+            total=position.total,
+        )
+        reject_inverted_keyset(canonical, _IMPORT_KEY_DIRECTIONS)
+        return canonical
     except ValueError as exc:
         raise UserError(
             "Invalid import pagination cursor.",
