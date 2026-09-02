@@ -73,9 +73,9 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
             "total_outflow",
             "Lifetime sum of negative amounts, kept negative.",
             DataClass.TXN_AMOUNT,
-            # Kept negative, unlike `total_spend` one row up, which is the same
-            # money as an absolute. Declaring them the same kind would render
-            # one of the two with a sign it does not carry.
+            # Kept negative, unlike `total_spend` at the end of the tuple, which
+            # is the same money as an absolute. Declaring them the same kind
+            # would render one of the two with a sign it does not carry.
             money_kind="flow",
         ),
         OutputColumn(

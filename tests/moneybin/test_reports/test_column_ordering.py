@@ -6,6 +6,15 @@ from collections.abc import Sequence
 
 import pytest
 
+# Ahead of `cli_register`, and the only reason this import exists.
+# `moneybin.cli.__init__` imports the whole command tree, which reaches back
+# into `cli_register`, so reaching `cli_register` first lands in a
+# partially-initialised cycle and this file cannot be run on its own — the dev
+# inner loop AGENTS.md prescribes. Importing anything under `moneybin.cli`
+# first settles the package. `test_default_column_widths.py` settles the same
+# cycle with a symbol it also uses; nothing here needs one, so both unused-
+# import rules are suppressed for the one reason above.
+import moneybin.cli  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import moneybin.reports.definitions as definitions
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import RegisteredReport

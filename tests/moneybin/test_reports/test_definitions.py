@@ -741,8 +741,13 @@ def _install_mirror_fixture(db: Database, name: str) -> None:
         _install_merchant_activity_view(db, jpy_rows=1)
     elif name == "recurring_subscriptions":
         _install_recurring(db)
-    else:
+    elif name == "spending_trend":
         _install_spending_trend(db)
+    else:
+        # Not a default: a mistyped name silently installing some other
+        # report's view would mirror that report against this one's
+        # declaration and pass, checking nothing.
+        raise AssertionError(f"no mirror fixture for {name}")
 
 
 @pytest.mark.parametrize(

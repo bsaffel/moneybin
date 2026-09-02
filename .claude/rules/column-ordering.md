@@ -17,11 +17,17 @@ was measured against the tree, not assumed:
 | Exports (CSV, XLSX, Parquet, Sheets) | SQL projection — `exports/snapshot.py`, `exports/local.py` |
 | `moneybin sql query`, MCP `sql_query` | SQL projection — `cli/commands/sql.py` |
 | The narrow `reports` text table | The `default_columns` declaration |
+| MCP `reports` catalog, `moneybin reports list` / `describe` | The `ReportSpec.columns` declaration — `_catalog_entry_to_payload` builds the published `columns` array straight from it |
 
-**For a SQL-backed report, `ReportSpec.columns` order reaches no surface.** It is
-read only when a report declares no `default_columns`, which in-tree reports
-never do. Reordering that tuple changes nothing a user or agent sees — which is
-why the mirror rule below exists.
+**For a SQL-backed report, `ReportSpec.columns` orders no result, but it does
+order the *description*.** No row a caller reads is ordered by it, and no
+in-tree report falls back to it for the text table, because every one declares
+`default_columns`. The catalog row above is the surface it does reach:
+`catalog_to_payload` serves both `mcp/tools/reports.py` and
+`cli/commands/reports/user_reports.py`, so the declared order is what an agent
+is told a report returns. An agent that reads the description and then the
+result sees two different orders unless the mirror rule below holds them
+together. Reordering the tuple is a visible change to the catalog, not a no-op.
 
 **A service-backed report is the exception: there, the tuple *is* the
 projection.** `service_reports.py` passes `columns=[column.name for column in
@@ -68,12 +74,24 @@ beside `institution_name`.
 
 **grain keys → identifying labels → dimensions → dates → provenance → measures.**
 
-**Both ends are load-bearing; the middle is the low-value zone.** `_fit_columns`
-keeps the first and last columns and drops one contiguous run from the middle,
-so importance decreases *inward from both edges* rather than left to right.
-Metadata therefore sits between the dates and the measures — the first thing a
-narrowing terminal eats — and never at the tail. Putting provenance last would
-anchor a squeezed table on the column that answers nothing.
+**Both ends are load-bearing; the middle is the low-value zone.** Two separate
+mechanisms make that true, and only one of them is the terminal fitter — do not
+justify an in-tree order by the fitter alone.
+
+`_fit_columns` keeps the first and last columns and drops one contiguous run
+from the middle, so importance decreases *inward from both edges* rather than
+left to right. That path is real but narrow: `column_view` sets
+`fit=spec.default_columns is None and not wide`, and every in-tree report
+declares `default_columns`, so the fitter runs for **no** report in this
+repository — narrow or `--wide`. It governs extension reports that omit the
+field.
+
+For every report here the constraint is the reader rather than the renderer. A
+`--wide` table is read left to right and cut off by the terminal's own width, and
+a JSON record, an export header, and the catalog description are all read in
+order; each puts the last column where a scanner stops. Metadata therefore sits
+between the dates and the measures and never at the tail, because ending a row
+on provenance anchors it on the column that answers nothing.
 
 The `reports` schema is read by humans and by agents answering a human's
 question, so it orders by *importance*, not by storage type. Nielsen Norman
@@ -142,8 +160,9 @@ the difference. A delta separated from the quantity it measures is a number
 with no referent.
 
 **The headline measure is last.** Among the measures, the one the report exists
-to answer ends the row, because it is the column the terminal fitter is
-guaranteed to keep.
+to answer ends the row: it is where a reader scanning left to right stops, and
+where the fitter — for an extension report that reaches it — is guaranteed to
+keep it. Both readings put the same column in the same place.
 
 Two reports already satisfy this and are the models to copy:
 
@@ -210,10 +229,18 @@ checked with no database. Three assertions:
 
 1. `ReportSpec.columns` is non-decreasing under Rule B.
 2. `default_columns` is non-decreasing under Rule B.
-3. A service report's `column_types` list is the same length as its `columns`
-   tuple and types each column consistently with its declared class — the
-   positional-parallel hazard above, which nothing else stands between and a
-   caller.
+3. `_SNAPSHOT_COLUMN_TYPES` is the same length as `_SNAPSHOT_COLUMNS`, and the
+   three entries most likely to drift (`balance_date`, `net_worth`,
+   `account_count`) still pair with the column they name.
+
+Read the third one narrowly. It is a tripwire on `core:networth`, not a
+derivation: it does not check every column against its declared class, and it
+does not cover `core:networth_history` at all — whose `column_types` is the
+subtler instance of the same hazard, since its two leading `"VARCHAR"` literals
+name nothing a reader could check. A `_HISTORY_COLUMNS` reorder that leaves
+that list alone fails only `tests/moneybin/test_exports/test_report_snapshot.py`,
+incidentally, and would pass if that test were narrowed. Closing that is
+outstanding work, not a property this rule can claim.
 
 **The SQL-backed mirror is checked per report, not globally.** A runner builds
 its own `SELECT` over the view rather than inheriting the model's projection, so

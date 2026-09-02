@@ -21,9 +21,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `core:merchants` led with `total_spend`; both now end on that figure.
 
   This changes JSON key order, MCP response field order, and export column
-  order. Values, column names, and types are unchanged, and no column was added
-  or removed — but a caller reading results **by position** rather than by name
-  must be updated. Two reports' declared column tuples also disagreed with what
+  order, and it changes the `columns` array each report publishes through the
+  MCP `reports` catalog and `moneybin reports list` / `describe` — so an agent
+  that reads a report's description sees the new order too. Values, column
+  names, and types are unchanged, and no column was added or removed — but a
+  caller reading results **by position** rather than by name must be updated.
+  Two reports' declared column tuples also disagreed with what
   their query actually returned (`core:cashflow`, `core:recurring`); the
   declaration and the projection now agree, and a test holds them together. The
   convention is `.claude/rules/column-ordering.md`.

@@ -510,12 +510,17 @@ report's effective parameters as a mapping and returning one. Use the callable
 only when a parameter changes which of the *same* columns matter; when a
 parameter changes which columns the query returns, a tuple is enough, because
 the resolver drops any name the result does not carry. The declaration also
-orders the table, so the SQL projection does not have to.
+orders the table, so the SQL projection does not have to — but it orders it by
+the same rule, grain keys before labels before dates before measures, with the
+figure the report answers last. The convention and its rationale are
+[`column-ordering.md`](../../.claude/rules/column-ordering.md); the example
+below follows it. Nothing enforces it on an out-of-tree report, so it is on the
+author.
 
 ```python
 @report(
     ...,
-    default_columns=("txn_date", "account_name", "description", "amount"),
+    default_columns=("account_name", "description", "txn_date", "amount"),
 )
 ```
 
