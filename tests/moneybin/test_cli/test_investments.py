@@ -910,6 +910,39 @@ class TestHoldingsAndGains:
         assert "+200.00" in result.stdout
         assert "proceeds=" not in result.stdout
 
+    @pytest.mark.unit
+    def test_gains_default_view_keeps_the_currency_beside_the_gain(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """A gain without its denomination is not a gain.
+
+        Takes no ``wide_terminal`` on purpose: the column has to reach the
+        curated default view, not merely the full projection. This command has
+        no currency filter, so one unfiltered call can span accounts
+        denominated differently, and `multi-currency.md` makes the row's own
+        `currency_code` the canonical unit of its `proceeds`, `basis` and
+        `gain`. Two rows reading `+200.00` are then not the same quantity.
+        `investments list` and `investments holdings` already keep it.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id,
+                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                 cost_basis, gain_loss, term, cost_basis_method,
+                 basis_incomplete, currency_code)
+            VALUES ('gain_ccy', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a',
+                    5, '2024-01-01', '2024-06-12', 1950.00, 1750.00, 200.00,
+                    'long', 'fifo', false, 'USD')
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        result = runner.invoke(app, ["investments", "gains"])
+
+        assert result.exit_code == 0, result.output
+        assert "currency" in result.stdout
+        assert "USD" in result.stdout
+
 
 # ---------------------------------------------------------------------------
 # investments lots list
@@ -1040,6 +1073,45 @@ class TestLotsList:
         assert "basis_incomplete" in result.stdout
         # The warning is the suppressed half — that is the point of `-q`.
         assert "incomplete" not in result.stderr
+
+    @pytest.mark.unit
+    def test_lots_list_reaches_the_currency_through_wide(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """The one curated table whose default view cannot afford `currency`.
+
+        Its three siblings keep the column, since none of the four takes a
+        currency filter and `multi-currency.md` makes the row's own
+        `currency_code` the canonical unit of its amount. Six columns already
+        spend this table's 80-column budget, though, and a measured seventh
+        folds `lot` and `security` across two lines each while breaking
+        `⚠️ basis_incomplete` mid-word — it costs the lot handle and the trust
+        marker to buy three characters. So it is declared rather than omitted,
+        and `--wide` is the escape; both halves are pinned here, because a
+        column left undeclared has no escape at all.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES ('lot_ccy', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
+                    10, 10, 1500.00, 1500.00, 'fifo', 'USD', true, false)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        wide = runner.invoke(app, ["investments", "lots", "list", "--wide"])
+
+        assert wide.exit_code == 0, wide.output
+        assert "currency" in wide.stdout
+        assert "USD" in wide.stdout
+
+        narrow = runner.invoke(app, ["investments", "lots", "list"])
+
+        assert narrow.exit_code == 0, narrow.output
+        assert "currency" not in narrow.stdout
 
     @pytest.mark.unit
     def test_lots_list_names_its_columns_instead_of_its_fields(

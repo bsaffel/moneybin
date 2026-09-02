@@ -60,6 +60,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `lots list` keeps the marker that says a cost basis is a floor rather than a
   figure. Each had one substitute — a warning line — and `-q` suppresses those.
 
+  An amount's denomination stays with it for the same reason. None of
+  `investments list`, `gains`, `lots list`, or `holdings` takes a currency
+  filter, so one call can span accounts denominated differently, and two rows
+  reading `1,500.00` are then not the same quantity. The first three keep
+  `currency` in the default view; `gains` and `lots list` had not declared the
+  column at all, so `--wide` could not reach it either. `lots list` is the one
+  table that cannot seat it by default — six columns already spend its
+  80-column budget, and a seventh folds the lot id and breaks the
+  incomplete-basis marker mid-word — so there it is declared and `--wide`
+  reaches it.
+
   Commands whose tables already fit — `fx list`, `investments list`,
   `investments prices list`, `securities list`, `db ps` — show every column and
   gain no flag.

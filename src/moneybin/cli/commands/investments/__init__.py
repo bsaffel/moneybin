@@ -430,14 +430,23 @@ _GAINS_COLUMNS: tuple[tuple[str, Callable[[RealizedGainRow], object]], ...] = (
     ("proceeds", lambda r: r.proceeds),
     ("basis", lambda r: r.cost_basis),
     ("gain", lambda r: r.gain_loss),
+    ("currency", lambda r: currency_label(r.currency_code)),
     ("term", lambda r: r.term),
 )
 
-_GAINS_DEFAULT = ("disposed", "security", "proceeds", "gain", "term")
-"""When it sold, what it was, what it fetched, what you made, how it is taxed.
+_GAINS_DEFAULT = ("disposed", "security", "proceeds", "gain", "currency", "term")
+"""When it sold, what it was, what it fetched, what you made, in what currency,
+and how it is taxed.
 
 Quantity and cost basis are the arithmetic behind the gain rather than the
 answer, so `--wide` carries them.
+
+`currency` is not one of those. This command takes no currency filter, so one
+unfiltered call can span accounts denominated differently, and
+`multi-currency.md` makes the row's own `currency_code` the canonical unit of
+its `proceeds`, `basis` and `gain`. Two rows reading `+200.00` are then not the
+same quantity, with nothing on screen to say so — the same reason
+`investments list` and `investments holdings` keep it.
 """
 
 
@@ -465,8 +474,9 @@ def investments_gains(
     """Realized gain/loss (the 1099-B surface) from the realized-gains fact table.
 
     Shows when each position was disposed, what it was, what it fetched, the
-    gain or loss, and whether the holding term was short or long. ``--wide``
-    adds the quantity and cost basis the gain was computed from.
+    gain or loss, the currency those figures are denominated in, and whether
+    the holding term was short or long. ``--wide`` adds the quantity and cost
+    basis the gain was computed from.
     """
     with handle_cli_errors(
         cli_actor="investments_gains", payload_type=InvestmentGainsPayload

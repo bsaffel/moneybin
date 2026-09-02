@@ -122,9 +122,13 @@ Numbered, each independently testable.
    **A migrated table wider than 80 columns curates its default view.** Six of
    the eight — `investments holdings`, `gains`, `list`, `lots list`,
    `import history`, `import formats list --type=pdf` — declare their columns
-   once as `(name, extractor)` pairs plus a `_DEFAULT` subset, and take
-   `--wide`, extending requirement 9's mechanism from `reports` to the list
-   commands. The trigger is that Rich folds an over-narrow cell: a folded
+   once as `(name, extractor)` pairs plus a `_DEFAULT` subset, extending
+   requirement 9's mechanism from `reports` to the list commands. Five of those
+   six take `--wide`. `investments list` does not: its six columns fit 80
+   together, so its `_DEFAULT` is the whole declaration and nothing is held
+   back — a flag there would promise columns already on screen, and the table
+   at the end of this document scopes `--wide` to a default narrower than its
+   projection. The trigger is that Rich folds an over-narrow cell: a folded
    amount reads as a smaller number rather than a wrapped one, which is a
    correctness failure and not a cosmetic one. Width-based fitting
    (`render_rows(fit=True)`) is the fallback where no author judgement exists
