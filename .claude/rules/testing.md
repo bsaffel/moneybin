@@ -270,22 +270,27 @@ This rule applies to YAML scenario expectations, pytest assertions in `tests/sce
 
 ## Triaging Scenario Failures by Symptom
 
-`ScenarioResult` (`tests/scenarios/_runner/result.py`) reports four independent
-failure shapes. Use the symptom to find the owning code — fix code before
-touching a YAML expectation, per the derivation rule above.
+`ScenarioResult` (`tests/scenarios/_runner/result.py`) reports failures from
+four sources. **Start from the named assertion, expectation, or evaluation, not
+from which field is populated** — fix code before touching a YAML expectation,
+per the derivation rule above.
 
-| Symptom | Likely cause | Where to look |
+The runner adds its own fingerprint only when it catches a crash on the way
+out. Everything else — including a message that looks like a Python exception —
+was composed by the implementation the scenario named, and a callback is free
+to catch an exception and return its text
+(`tests/scenarios/test_reports_recipe_library.py` does exactly that).
+
+| Symptom | What it tells you | Where to look |
 |---|---|---|
-| `halted` non-null, no assertions ran | Pipeline step crashed (loader, transform, match, etc.) | `tests/scenarios/_runner/steps.py` and the called service |
-| Assertion failed, `error` reads like a Python exception (`KeyError: ...`) | The assertion fn crashed; the runner also fills `details` with the resolved args | `src/moneybin/validation/assertions/` |
-| Assertion failed, `error` is author-written prose or only `details` is set | The assertion ran and the invariant is genuinely violated | The pipeline step that owns the data, **or** the scenario YAML if the expectation is wrong |
-| Expectation failed | Per-record claim doesn't match | The fixture YAML, the expectation engine, or the categorize/match step |
-| Evaluation below threshold | Score regressed | The pipeline + the threshold itself — was the threshold realistic? |
+| `halted` non-null, no assertions ran | A pipeline step crashed before any assertion ran | `tests/scenarios/_runner/steps.py` and the called service |
+| Assertion failed, `details` is `{"args": ...}` | `_run_assertion` caught an exception out of the assertion fn | That assertion's own implementation |
+| Evaluation failed, `breakdown` has an `error` key and `value` is `0.0` | `_run_evaluation` caught an exception out of the evaluation fn | That evaluation's own implementation |
+| Any other assertion, expectation, or evaluation failure | The named implementation ran and decided this, and wrote the message itself | That implementation first, then the pipeline step owning the data, then the fixture or scenario YAML if the expectation is stale |
 
-Which field is populated does not by itself separate a crash from a violation:
-`_run_assertion` sets both `error` and `details` when it catches an exception,
-and an `extra_assertions` callback returns an ordinary failure as `error=`
-without ever raising. Read what `error` says.
+An assertion's implementation is either the shared assertion library or the
+scenario's own `extra_assertions` callback — the name in the result tells you
+which, and the two fail identically otherwise.
 
 The `Scenarios` CI workflow shards `pytest -m scenarios` four ways and uploads
 one `pytest-json-report` artifact per shard — `scenarios-results-<group>`
