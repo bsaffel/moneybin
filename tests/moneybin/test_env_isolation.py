@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import os
 import subprocess  # noqa: S404 — a child pytest run is how this proves isolation
-import sys
 from pathlib import Path
 
 # Set by tests/conftest.py: a per-xdist-worker MoneyBin home, and the import
@@ -64,8 +63,11 @@ def test_seeded_ambient_var_does_not_survive_into_a_child_run() -> None:
     env = dict(os.environ) | {_SEEDED_VAR: "1"}
     nodeid = f"{Path(__file__).relative_to(_REPO_ROOT)}::{_SNAPSHOT_TEST}"
 
-    result = subprocess.run(  # noqa: S603 — fixed interpreter, literal arguments
-        [sys.executable, "-m", "pytest", nodeid, "-n0", "-p", "no:cacheprovider"],
+    # `uv run pytest`, not `sys.executable -m pytest`: AGENTS.md makes uv the
+    # only supported entry point, and this test is about harness startup, so it
+    # has to start the harness the way the project actually does.
+    result = subprocess.run(  # noqa: S603  # explicit command list, no user input
+        ["uv", "run", "pytest", nodeid, "-n0", "-p", "no:cacheprovider"],  # noqa: S607  # uv resolved via PATH
         cwd=_REPO_ROOT,
         env=env,
         capture_output=True,
