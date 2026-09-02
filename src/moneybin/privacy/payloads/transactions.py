@@ -325,14 +325,23 @@ class MatchSetPayload:
 
 @dataclass(frozen=True, slots=True)
 class MatchHistoryRow:
-    """One past match decision (transactions_matches_history result)."""
+    """One past match decision (transactions_matches_history result).
+
+    ``match_tier`` and the two ``source_type_*`` columns are here because the
+    terminal renders them: `moneybin transactions matches history` prints tier
+    and both sides, and `cli.md` requires the JSON branch to carry every value
+    the text branch displays. They were absent while only MCP read this row.
+    """
 
     match_id: Annotated[str, DataClass.RECORD_ID]
     match_type: Annotated[str, DataClass.TXN_TYPE]
     match_status: Annotated[str, DataClass.TXN_TYPE]
+    match_tier: Annotated[str | None, DataClass.TXN_TYPE]
     confidence_score: Annotated[float, DataClass.AGGREGATE]
     decided_by: Annotated[str, DataClass.TXN_TYPE]
     decided_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    source_type_a: Annotated[str, DataClass.TXN_TYPE]
+    source_type_b: Annotated[str, DataClass.TXN_TYPE]
 
 
 @dataclass(frozen=True, slots=True)

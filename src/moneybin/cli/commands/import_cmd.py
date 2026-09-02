@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from dataclasses import asdict
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -22,11 +21,14 @@ from moneybin import error_codes
 from moneybin.cli.commands import import_inbox, import_labels
 from moneybin.cli.output import (
     OutputFormat,
-    emit_json_error,
     output_option,
     quiet_option,
 )
-from moneybin.cli.utils import emit_json, warn_refresh_steps, warn_transfers_retired
+from moneybin.cli.utils import (
+    handle_cli_errors,
+    warn_refresh_steps,
+    warn_transfers_retired,
+)
 from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
@@ -2279,9 +2281,11 @@ def import_history(
         moneybin import history --limit 50
         moneybin import history --import-id abc123
     """
+    from moneybin.cli.output import render_or_json
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
     from moneybin.extractors.tabular import TabularExtractor
+    from moneybin.protocol.envelope import build_envelope
 
     with handle_cli_errors():
         with get_database(read_only=True) as db:
@@ -2289,7 +2293,21 @@ def import_history(
             records = extractor.get_import_history(limit=limit, import_id=import_id)
 
     if output == OutputFormat.JSON:
-        emit_json("imports", records)
+        from moneybin.privacy.payloads.imports import ImportStatusPayload
+
+        # The same payload the MCP `import_status` tool returns: one query,
+        # one shape. `records` keeps the rows opaque by declaration — see that
+        # payload's docstring for why.
+        render_or_json(
+            build_envelope(
+                data=ImportStatusPayload(records=records),
+                actions=[
+                    "Use 'moneybin import revert <import_id>' to undo one batch",
+                ],
+            ),
+            output,
+            cli_actor="import_history",
+        )
         return
 
     if not records:
@@ -2722,37 +2740,33 @@ def formats_list(
     show_pdf = _type in (_FormatTypeFilter.pdf, _FormatTypeFilter.all)
 
     if output == OutputFormat.JSON:
-        # Uniform list with a 'type' discriminator per row — agents can filter
-        # via jq '.formats | map(select(.type=="pdf"))' with no flag required.
-        formats_payload: list[dict[str, Any]] = []
+        from moneybin.cli.output import render_or_json
+        from moneybin.mcp.adapters.imports_adapters import (
+            pdf_format_row,
+            tabular_format_row,
+        )
+        from moneybin.privacy.payloads.imports import (
+            ImportFormatEntry,
+            ImportFormatsPayload,
+        )
+        from moneybin.protocol.envelope import build_envelope
+
+        # One list with a 'type' discriminator per row — `--type` narrows it,
+        # and an agent filters the unnarrowed answer with
+        # jq '.data.formats | map(select(.type == "pdf"))'.
+        rows: list[ImportFormatEntry] = []
         if show_tabular:
-            for fmt in sorted(all_formats.values(), key=lambda f: f.name):
-                formats_payload.append({
-                    "type": "tabular",
-                    "name": fmt.name,
-                    "institution": fmt.institution_name,
-                    "sign_convention": fmt.sign_convention,
-                    "date_format": fmt.date_format,
-                    "source": "builtin" if fmt.name in builtin else "user",
-                })
+            rows.extend(
+                tabular_format_row(fmt, builtin=builtin)
+                for fmt in sorted(all_formats.values(), key=lambda f: f.name)
+            )
         if show_pdf:
-            for pf in pdf_formats:
-                last_used = (
-                    pf.last_used_at.date().isoformat()
-                    if pf.last_used_at is not None
-                    else None
-                )
-                formats_payload.append({
-                    "type": "pdf",
-                    "name": pf.name,
-                    "institution": pf.institution_name,
-                    "routing": pf.routing,
-                    "front_end": pf.front_end,
-                    "version": pf.version,
-                    "times_used": pf.times_used,
-                    "last_used": last_used,
-                })
-        emit_json("formats", formats_payload)
+            rows.extend(pdf_format_row(pf) for pf in pdf_formats)
+        render_or_json(
+            build_envelope(data=ImportFormatsPayload(formats=rows)),
+            output,
+            cli_actor="import_formats_list",
+        )
         return
 
     # ---- Text output -------------------------------------------------------
@@ -2845,40 +2859,28 @@ def formats_show(
         pdf_names = sorted(pf.name for pf in pdf_formats_list)
         all_names = tabular_names + pdf_names
         available = ", ".join(all_names) or "(none)"
-        if output == OutputFormat.JSON:
-            emit_json_error(
-                UserError(
-                    f"Format not found: {name!r}",
-                    code=error_codes.IMPORT_SAVED_FORMAT_NOT_FOUND,
-                    hint=f"Available formats: {available}",
-                )
+        # Raised rather than emitted: `handle_cli_errors` owns both the JSON
+        # error envelope and the text ❌/💡 pair, so the two branches cannot
+        # drift and the JSON failure gets the audit row every other one gets.
+        with handle_cli_errors(cli_actor="import_formats_show"):
+            raise UserError(
+                f"Format not found: {name!r}",
+                code=error_codes.IMPORT_SAVED_FORMAT_NOT_FOUND,
+                hint=f"Available formats: {available}",
             )
-        else:
-            logger.error(f"❌ Format not found: {name!r}")
-            logger.info(f"💡 Available formats: {available}")
-        raise typer.Exit(1)
 
     # ---- Tabular format ----
     if fmt is not None:
         if output == OutputFormat.JSON:
-            payload = {
-                "type": "tabular",
-                "name": fmt.name,
-                "institution": fmt.institution_name,
-                "file_type": fmt.file_type,
-                "delimiter": fmt.delimiter,
-                "encoding": fmt.encoding,
-                "skip_rows": fmt.skip_rows,
-                "sheet": fmt.sheet,
-                "sign_convention": fmt.sign_convention,
-                "date_format": fmt.date_format,
-                "number_format": fmt.number_format,
-                "multi_account": fmt.multi_account,
-                "header_signature": fmt.header_signature,
-                "field_mapping": dict(fmt.field_mapping),
-                "skip_trailing_patterns": fmt.skip_trailing_patterns,
-            }
-            emit_json("format", payload)
+            from moneybin.cli.output import render_or_json
+            from moneybin.mcp.adapters.imports_adapters import tabular_format_detail
+            from moneybin.protocol.envelope import build_envelope
+
+            render_or_json(
+                build_envelope(data=tabular_format_detail(fmt)),
+                output,
+                cli_actor="import_formats_show",
+            )
             return
 
         typer.echo(f"\nFormat: {fmt.name}")
@@ -2914,23 +2916,15 @@ def formats_show(
         else None
     )
     if output == OutputFormat.JSON:
-        payload_pdf: dict[str, Any] = {
-            "type": "pdf",
-            "name": pdf_fmt.name,
-            "institution": pdf_fmt.institution_name,
-            "document_kind": pdf_fmt.document_kind,
-            "routing": pdf_fmt.routing,
-            "front_end": pdf_fmt.front_end,
-            "sign_convention": pdf_fmt.sign_convention,
-            "date_format": pdf_fmt.date_format,
-            "number_format": pdf_fmt.number_format,
-            "version": pdf_fmt.version,
-            "times_used": pdf_fmt.times_used,
-            "last_used": last_used,
-            "source": pdf_fmt.source,
-            "extraction_recipe": pdf_fmt.extraction_recipe,
-        }
-        emit_json("format", payload_pdf)
+        from moneybin.cli.output import render_or_json
+        from moneybin.mcp.adapters.imports_adapters import pdf_format_detail
+        from moneybin.protocol.envelope import build_envelope
+
+        render_or_json(
+            build_envelope(data=pdf_format_detail(pdf_fmt)),
+            output,
+            cli_actor="import_formats_show",
+        )
         return
 
     typer.echo(f"\nFormat: {pdf_fmt.name}")
@@ -3018,34 +3012,34 @@ def import_status(
     Example:
         moneybin import status
     """
+    from moneybin.cli.output import render_or_json
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_settings
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
+    from moneybin.privacy.payloads.imports import (
+        ImportRawSummaryPayload,
+        ImportRawTableRow,
+    )
+    from moneybin.protocol.envelope import build_envelope
     from moneybin.services.import_service import ImportService  # noqa: PLC0415
 
     db_path = get_settings().database.path
 
     if not db_path.exists():
-        if output == OutputFormat.JSON:
-            typer.echo(
-                json.dumps(
-                    {
-                        "database": str(db_path),
-                        "tables": [],
-                        "exists": False,
-                        "error": "database not found",
-                    },
-                    indent=2,
-                    default=str,
-                )
-            )
-        elif not quiet:
+        if not quiet and output == OutputFormat.TEXT:
             logger.warning(f"Database not found: {db_path}")
             logger.info("Run 'moneybin import files <path>' to import data first.")
         # Both modes exit non-zero so machine consumers can detect missing/
-        # uninitialized state. The JSON payload carries the same signal as
-        # the human warning; the exit code carries it for scripts.
-        raise typer.Exit(1)
+        # uninitialized state. `handle_cli_errors` turns the raise into the
+        # standard error envelope on the JSON branch — the same shape every
+        # other command's failure emits — and the exit code carries it for
+        # scripts either way.
+        with handle_cli_errors(cli_actor="import_status"):
+            raise UserError(
+                "No MoneyBin database found.",
+                code=error_codes.INFRA_DATABASE_NOT_INITIALIZED,
+                hint="Run 'moneybin import files <path>' to import data first.",
+            )
 
     try:
         with handle_cli_errors():
@@ -3056,16 +3050,29 @@ def import_status(
         raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
-        typer.echo(
-            json.dumps(
-                {
-                    "database": str(db_path),
-                    "tables": [asdict(r) for r in rows],
-                    "exists": True,
-                },
-                indent=2,
-                default=str,
-            )
+        render_or_json(
+            build_envelope(
+                data=ImportRawSummaryPayload(
+                    database=str(db_path),
+                    tables=[
+                        ImportRawTableRow(
+                            schema=row.schema,
+                            table=row.table,
+                            rows=row.rows,
+                            date_min=None
+                            if row.date_min is None
+                            else str(row.date_min),
+                            date_max=None
+                            if row.date_max is None
+                            else str(row.date_max),
+                        )
+                        for row in rows
+                    ],
+                    exists=True,
+                ),
+            ),
+            output,
+            cli_actor="import_status",
         )
         return
 

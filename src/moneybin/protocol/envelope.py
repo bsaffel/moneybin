@@ -23,23 +23,23 @@ from moneybin import error_codes
 from moneybin.errors import ErrorDetail, RecoveryAction, UserError
 
 
-def _serialize_payload(value: Any) -> Any:
+def serialize_payload(value: Any) -> Any:
     """Recursively expose payload containers without copying scalar leaves."""
     if is_dataclass(value) and not isinstance(value, type):
         return {
-            item.name: _serialize_payload(getattr(value, item.name))
+            item.name: serialize_payload(getattr(value, item.name))
             for item in fields(value)
         }
     if isinstance(value, BaseModel):
         try:
-            return _serialize_payload(value.model_dump())
+            return serialize_payload(value.model_dump())
         except Exception:  # noqa: BLE001,S110  # preserve existing fallback contract
             return value
     if isinstance(value, Mapping):
         mapping = cast(Mapping[Any, Any], value)
-        return {key: _serialize_payload(item) for key, item in mapping.items()}
+        return {key: serialize_payload(item) for key, item in mapping.items()}
     if isinstance(value, (tuple, list)):
-        return [_serialize_payload(item) for item in value]
+        return [serialize_payload(item) for item in value]
     return value
 
 
@@ -186,7 +186,7 @@ class PayloadEncoder(json.JSONEncoder):
         # Existing: Decimal → float
         if isinstance(o, Decimal):
             return float(o)
-        converted = _serialize_payload(o)
+        converted = serialize_payload(o)
         if converted is not o:
             return converted
         # Existing fallback: str(o) for datetime, UUID, Enum, etc.
@@ -264,7 +264,7 @@ class ResponseEnvelope[T]:
         Typed payloads and JSON containers are recursively converted without
         deep-copying scalar leaves.
         """
-        data_serialized = _serialize_payload(self.data)
+        data_serialized = serialize_payload(self.data)
         d: dict[str, Any] = {
             "status": self.status,
             "summary": self.summary.to_dict(),

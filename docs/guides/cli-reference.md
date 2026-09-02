@@ -101,7 +101,12 @@ Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipe
 }
 ```
 
-`db query` is the exception: it extends `--output` to `text|json|csv|markdown|box` (DuckDB's native formats); its `json` is raw row data, **not** the envelope shape. Use other read commands when you need envelope parity.
+Four commands are the exceptions, and each is one on purpose:
+
+- `db query` extends `--output` to `text|json|csv|markdown|box` (DuckDB's native formats); its `json` is raw row data, **not** the envelope shape. It is the operator-bypass surface, so no privacy middleware applies either — use `sql query` when you need envelope parity and masking.
+- `stats`, `logs`, and `migrate status` emit operations metadata — metric values, log lines, schema versions — rather than ledger data, and stay on their own JSON shapes. `logs` in particular cannot gain masking from the envelope: its content is already-written free text, and the control that governs it is the no-PII log policy at write time.
+
+Every other command's `--output json` is the envelope.
 
 ## Long-running commands
 

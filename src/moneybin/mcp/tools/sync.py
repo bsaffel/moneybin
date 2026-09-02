@@ -25,6 +25,12 @@ from moneybin.mcp.adapters.refresh_adapters import (
     refresh_rate_gap_hints,
     refresh_step_actions,
 )
+from moneybin.mcp.adapters.sync_adapters import (
+    sync_link_envelope,
+    sync_link_status_envelope,
+    sync_pull_envelope,
+    sync_status_envelope,
+)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -36,7 +42,6 @@ from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.sync import (
     SyncAuthView,
-    SyncConnectionRow,
     SyncDisconnectCoarsePayload,
     SyncGlobalStatusView,
     SyncInstitutionDisconnectView,
@@ -45,7 +50,6 @@ from moneybin.privacy.payloads.sync import (
     SyncLinkPayload,
     SyncLinkStatusPayload,
     SyncLogoutView,
-    SyncPullInstitutionRow,
     SyncPullPayload,
     SyncSessionStatusView,
     SyncStatusCoarsePayload,
@@ -56,7 +60,6 @@ from moneybin.protocol.envelope import (
     build_envelope,
     build_error_envelope,
 )
-from moneybin.services.refresh_outcome import refresh_steps_fields
 
 
 def _build_sync_client() -> Any:
@@ -132,42 +135,8 @@ def sync_pull(
     """
     with _build_sync_service() as service:
         result = service.pull(institution=institution, force=force, refresh=refresh)
-    institutions = [
-        SyncPullInstitutionRow(
-            provider_item_id=inst.provider_item_id,
-            institution_name=inst.institution_name,
-            status=inst.status,
-            transaction_count=inst.transaction_count,
-            error=inst.error,
-            error_code=inst.error_code,
-        )
-        for inst in result.institutions
-    ]
-    return build_envelope(
-        data=SyncPullPayload(
-            job_id=result.job_id,
-            transactions_loaded=result.transactions_loaded,
-            accounts_loaded=result.accounts_loaded,
-            balances_loaded=result.balances_loaded,
-            transactions_removed=result.transactions_removed,
-            institutions=institutions,
-            transforms_applied=result.transforms_applied,
-            transforms_duration_seconds=result.transforms_duration_seconds,
-            transforms_error=result.transforms_error,
-            transfers_retired=result.transfers_retired,
-            securities_loaded=result.securities_loaded,
-            investment_transactions_loaded=result.investment_transactions_loaded,
-            holdings_loaded=result.holdings_loaded,
-            holding_lots_loaded=result.holding_lots_loaded,
-            security_prices_loaded=result.security_prices_loaded,
-            opening_bootstrap_rows=result.opening_bootstrap_rows,
-            investment_source_overlap_accounts=list(
-                result.investment_source_overlap_accounts
-            ),
-            security_resolution=dict(result.security_resolution),
-            security_resolution_error=result.security_resolution_error,
-            **refresh_steps_fields(result.refresh_steps),
-        ),
+    return sync_pull_envelope(
+        result,
         actions=_pull_actions(result),
         # `or None` to omit the key when empty, matching `refresh_envelope`:
         # this envelope's `error` is None, so there is no `error.recovery_actions`
@@ -229,20 +198,7 @@ def sync_status() -> ResponseEnvelope[SyncStatusPayload]:
     """Connected institutions, last-sync times, and error-state guidance."""
     with _build_sync_service() as service:
         connections = service.list_connections()
-    rows = [
-        SyncConnectionRow(
-            id=c.id,
-            provider_item_id=c.provider_item_id,
-            institution_name=c.institution_name,
-            provider=c.provider,
-            status=c.status,
-            last_sync=c.last_sync.isoformat() if c.last_sync else None,
-            error_code=c.error_code,
-            guidance=c.guidance,
-        )
-        for c in connections
-    ]
-    return build_envelope(data=SyncStatusPayload(connections=rows), actions=[])
+    return sync_status_envelope(connections, actions=[])
 
 
 def sync_link(
@@ -284,12 +240,8 @@ def sync_link(
         # else: name doesn't match any existing connection → new-connection flow
         # per design Section 8; let the server's Link flow name the institution.
     initiate = client.initiate_link(provider_item_id=provider_item_id)
-    return build_envelope(
-        data=SyncLinkPayload(
-            session_id=initiate.session_id,
-            link_url=initiate.link_url,
-            expiration=initiate.expiration.isoformat(),
-        ),
+    return sync_link_envelope(
+        initiate,
         actions=[
             "Present link_url to the user and ask them to complete the connection in their browser.",
             "After confirmation, call sync_status with session_id to verify.",
@@ -321,17 +273,7 @@ def sync_link_status(
         actions = ["Run sync_pull to fetch transactions from the new institution."]
     elif status.status == "failed":
         actions = ["Run sync_link to retry the connection."]
-    return build_envelope(
-        data=SyncLinkStatusPayload(
-            session_id=status.session_id,
-            status=status.status,
-            provider_item_id=status.provider_item_id,
-            institution_name=status.institution_name,
-            error=status.error,
-            expiration=status.expiration.isoformat(),
-        ),
-        actions=actions,
-    )
+    return sync_link_status_envelope(status, actions=actions)
 
 
 @mcp_tool(

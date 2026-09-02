@@ -3,6 +3,7 @@
 Business logic is tested via auto_rule_service tests.
 """
 
+import json
 import logging
 import re
 from unittest.mock import MagicMock, patch
@@ -11,7 +12,11 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.transactions.categorize import app
-from moneybin.services.auto_rule_service import AutoConfirmResult, AutoReviewResult
+from moneybin.services.auto_rule_service import (
+    AutoConfirmResult,
+    AutoReviewResult,
+    AutoStatsResult,
+)
 
 runner = CliRunner()
 
@@ -274,3 +279,123 @@ def test_auto_accept_rejects_both_all_flags() -> None:
     """--accept-all and --reject-all are mutually exclusive (exit code 2)."""
     result = runner.invoke(app, ["auto", "accept", "--accept-all", "--reject-all"])
     assert result.exit_code == 2
+
+
+# --- `--output json` goes through render_or_json ---------------------------
+#
+# Each of these asserts the standard envelope AND a non-empty `classes_returned`
+# on the privacy audit row. The second half is what makes the first half worth
+# having: `render_or_json` derives both redaction and the audit classes from the
+# payload TYPE, so wrapping an untyped dict in the envelope yields a
+# correct-looking shape with no redaction and an empty audit trail — worse than
+# the bare `{key: payload}` it replaced, because it looks right.
+
+
+@patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
+def test_auto_stats_json_emits_an_envelope_and_audits_its_classes(
+    mock_handle_errors: MagicMock,
+    _mock_get_db: MagicMock,
+    mock_svc_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`auto stats` JSON is an envelope over a typed payload, not `{"stats": …}`."""
+    mock_handle_errors.return_value.__enter__.return_value = MagicMock()
+    mock_svc_cls.return_value.stats.return_value = AutoStatsResult(
+        active_auto_rules=4, pending_proposals=2, transactions_categorized=17
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+
+    result = runner.invoke(app, ["auto", "stats", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    body = json.loads(result.stdout)
+    assert body["status"] == "ok"
+    assert body["data"] == {
+        "active_auto_rules": 4,
+        "pending_proposals": 2,
+        "transactions_categorized": 17,
+    }
+    assert captured["classes_returned"] == ["aggregate"]
+
+
+@patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
+def test_auto_rules_json_reports_the_total_in_the_envelope_summary(
+    mock_handle_errors: MagicMock,
+    _mock_get_db: MagicMock,
+    mock_svc_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `total` that rode beside `rules` is the envelope's own `total_count`."""
+    mock_handle_errors.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.list_active_rules.return_value = [
+        {
+            "rule_id": "r1",
+            "merchant_pattern": "AMZN",
+            "match_type": "contains",
+            "category": "Shopping",
+            "subcategory": None,
+            "priority": 100,
+        }
+    ]
+    svc.count_active_rules.return_value = 7
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+
+    result = runner.invoke(app, ["auto", "rules", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    body = json.loads(result.stdout)
+    assert body["summary"]["total_count"] == 7
+    assert body["summary"]["returned_count"] == 1
+    assert body["data"]["rules"][0]["rule_id"] == "r1"
+    # merchant_pattern is MERCHANT_NAME — the field that makes this payload
+    # worth typing. An untyped dict audited nothing at all.
+    assert "merchant_name" in captured["classes_returned"]  # type: ignore[operator]
+
+
+@patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
+def test_auto_review_json_writes_the_privacy_audit_row(
+    mock_handle_errors: MagicMock,
+    _mock_get_db: MagicMock,
+    mock_svc_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`auto review` built an envelope already and emitted it without the audit row.
+
+    Its shape assertions passed the whole time, which is why this bypass
+    survived: the only observable difference was the missing privacy event.
+    """
+    mock_handle_errors.return_value.__enter__.return_value = MagicMock()
+    mock_svc_cls.return_value.review.return_value = AutoReviewResult(
+        proposals=[
+            {
+                "proposed_rule_id": "p1",
+                "merchant_pattern": "AMZN",
+                "match_type": "contains",
+                "category": "Shopping",
+                "subcategory": None,
+                "trigger_count": 3,
+                "sample_txn_ids": [],
+                "estimated_match_count": 3,
+                "is_broad": False,
+            }
+        ],
+        total_count=1,
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+
+    result = runner.invoke(app, ["auto", "review", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    body = json.loads(result.stdout)
+    assert body["data"]["proposals"][0]["proposed_rule_id"] == "p1"
+    assert "merchant_name" in captured["classes_returned"]  # type: ignore[operator]

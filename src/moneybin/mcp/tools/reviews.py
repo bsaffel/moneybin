@@ -20,6 +20,10 @@ from moneybin.errors import (
     exception_origin,
 )
 from moneybin.mcp._registration import register
+from moneybin.mcp.adapters.matching_adapters import (
+    match_history_row,
+    match_pending_row,
+)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -85,7 +89,6 @@ from moneybin.privacy.payloads.reviews import (
     SecurityLinkPendingDetails,
     SecurityLinkReviewRow,
 )
-from moneybin.privacy.payloads.transactions import MatchHistoryRow, MatchPendingRow
 from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
@@ -442,18 +445,7 @@ def _pending_match_rows(service: MatchingService) -> list[MatchReviewRow]:
     )
     result: list[MatchReviewRow] = []
     for row in ordered:
-        match = MatchPendingRow(
-            match_id=str(row["match_id"]),
-            match_type=str(row.get("match_type") or "dedup"),
-            match_tier=cast(str | None, row.get("match_tier")),
-            confidence_score=float(row.get("confidence_score") or 0.0),
-            source_type_a=str(row["source_type_a"]),
-            source_transaction_id_a=str(row["source_transaction_id_a"]),
-            source_type_b=str(row["source_type_b"]),
-            source_transaction_id_b=str(row["source_transaction_id_b"]),
-            match_status=str(row["match_status"]),
-            component_key=str(row["component_key"]),
-        )
+        match = match_pending_row(row)
         result.append(
             MatchReviewRow(
                 decision_id=match.match_id,
@@ -473,14 +465,7 @@ def _match_history_rows(service: MatchingService) -> list[MatchReviewRow]:
     """Project the actual match history path."""
     result: list[MatchReviewRow] = []
     for row in service.get_log(limit=None):
-        match = MatchHistoryRow(
-            match_id=str(row["match_id"]),
-            match_type=str(row.get("match_type") or "dedup"),
-            match_status=str(row["match_status"]),
-            confidence_score=float(row.get("confidence_score") or 0.0),
-            decided_by=str(row.get("decided_by") or "unknown"),
-            decided_at=_text(row.get("decided_at")),
-        )
+        match = match_history_row(row)
         result.append(
             MatchReviewRow(
                 decision_id=match.match_id,

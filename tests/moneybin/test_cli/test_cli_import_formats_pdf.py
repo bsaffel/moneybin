@@ -113,8 +113,7 @@ class TestFormatsListPdf:
 
         result = runner.invoke(import_app, ["formats", "list", "--output", "json"])
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        formats = data["formats"]
+        formats = json.loads(result.output)["data"]["formats"]
         types = {f["type"] for f in formats}
         assert "tabular" in types, "Expected tabular rows in JSON output"
         assert "pdf" in types, "Expected pdf rows in JSON output"
@@ -124,11 +123,11 @@ class TestFormatsListPdf:
         assert len(pdf_rows) == 1
         pdf_row = pdf_rows[0]
         assert pdf_row["name"] == "chase_a1b2c3d4e5f6"
-        assert pdf_row["institution"] == "Chase"
+        assert pdf_row["institution_name"] == "Chase"
         assert pdf_row["routing"] == "transactions"
         assert pdf_row["version"] == 1
         assert pdf_row["times_used"] == 3
-        assert pdf_row["last_used"] == "2026-05-30"
+        assert pdf_row["last_used_at"] == "2026-05-30"
 
     def test_filter_pdf_excludes_tabular(self, runner: CliRunner, mocker: Any) -> None:
         """--type=pdf shows only PDF rows; no tabular format names in output."""
@@ -153,7 +152,7 @@ class TestFormatsListPdf:
         )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
-        for row in data["formats"]:
+        for row in data["data"]["formats"]:
             assert row["type"] == "pdf", f"Expected only pdf rows; got {row['type']!r}"
 
     def test_filter_tabular_excludes_pdf(self, runner: CliRunner, mocker: Any) -> None:
@@ -177,7 +176,7 @@ class TestFormatsListPdf:
         )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
-        for row in data["formats"]:
+        for row in data["data"]["formats"]:
             assert row["type"] == "tabular", (
                 f"Expected only tabular rows; got {row['type']!r}"
             )
@@ -216,8 +215,7 @@ class TestFormatsShowPdf:
             import_app, ["formats", "show", "chase_a1b2c3d4e5f6", "--output", "json"]
         )
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        fmt = data["format"]
+        fmt = json.loads(result.output)["data"]
         assert fmt["type"] == "pdf"
         assert fmt["name"] == "chase_a1b2c3d4e5f6"
         assert fmt["routing"] == "transactions"

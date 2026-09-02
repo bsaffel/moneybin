@@ -30,7 +30,7 @@ from pydantic import Field, JsonValue, TypeAdapter
 from moneybin import error_codes
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Container, Sequence
 
     from moneybin.services.import_confirmation import ConfirmationRequired
     from moneybin.services.import_service import (
@@ -43,6 +43,10 @@ from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.adapters.imports_adapters import (
+    pdf_format_row,
+    tabular_format_row,
+)
 from moneybin.mcp.adapters.refresh_adapters import (
     refresh_rate_gap_hints,
     refresh_step_actions,
@@ -62,8 +66,8 @@ from moneybin.privacy.payloads.imports import (
     ImportConfirmRequiredPayload,
     ImportCreatedAccount,
     ImportFilesPayload,
+    ImportFormatEntry,
     ImportFormatInfoPayload,
-    ImportFormatRow,
     ImportFormatsPayload,
     ImportInboxSyncPayload,
     ImportLabelsSetPayload,
@@ -71,7 +75,6 @@ from moneybin.privacy.payloads.imports import (
     ImportPdfBridgeInvalidPayload,
     ImportPdfBridgePreviewPayload,
     ImportPdfDirectPreviewPayload,
-    ImportPdfFormatRow,
     ImportPdfSignAppliedPayload,
     ImportPdfSignPreviewPayload,
     ImportPerFileRow,
@@ -1460,55 +1463,38 @@ async def _delete_saved_format(
 def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
     """List all available import formats (tabular + PDF, built-in and user-saved).
 
-    The ``formats`` list holds tabular formats (CSV/Excel/etc.) with column
-    mappings, sign convention, and header signature. The ``pdf_formats`` list
-    (Phase 2a) holds auto-derived PDF recipes keyed by layout fingerprint:
-    institution, document kind, routing target, and replay statistics. Use
-    ``import_preview`` to test a tabular format against a specific file.
+    One ``formats`` list carries both kinds, told apart by each row's ``type``
+    field: ``tabular`` rows (CSV/Excel/etc.) carry column mappings, sign
+    convention, and header signature; ``pdf`` rows (Phase 2a) carry
+    auto-derived recipes keyed by layout fingerprint — institution, document
+    kind, routing target, and replay statistics. Filter by ``type`` to narrow.
+    Use ``import_preview`` to test a tabular format against a specific file.
     """
     from moneybin.services.import_service import ImportService  # noqa: PLC0415
 
-    pdf_format_rows: list[ImportPdfFormatRow] = []
+    pdf_format_rows: list[ImportFormatEntry] = []
+    # `list_formats` hands back the built-ins as a mapping; only membership is
+    # read, so the widest type that admits both it and the fallback set.
+    builtin: Container[str] = frozenset()
     try:
         with get_database(read_only=True) as db:
-            formats, _, pdf_formats = ImportService(db).list_formats()
-            for pf in pdf_formats:
-                pdf_format_rows.append(
-                    ImportPdfFormatRow(
-                        name=pf.name,
-                        institution_name=pf.institution_name,
-                        document_kind=pf.document_kind,
-                        routing=pf.routing,
-                        front_end=pf.front_end,
-                        version=pf.version,
-                        times_used=pf.times_used,
-                        last_used_at=pf.last_used_at.isoformat()
-                        if pf.last_used_at is not None
-                        else None,
-                    )
-                )
+            formats, builtin, pdf_formats = ImportService(db).list_formats()
+            pdf_format_rows = [pdf_format_row(pf) for pf in pdf_formats]
     except Exception:  # noqa: BLE001 -- DB may not exist; fall back to built-in only
         from moneybin.extractors.tabular.formats import (  # noqa: PLC0415
             load_builtin_formats,
         )
 
         formats = load_builtin_formats()
+        builtin = set(formats)
 
-    format_rows = [
-        ImportFormatRow(
-            name=fmt.name,
-            institution_name=fmt.institution_name,
-            file_type=fmt.file_type,
-            sign_convention=fmt.sign_convention,
-            date_format=fmt.date_format,
-            number_format=fmt.number_format,
-            multi_account=fmt.multi_account,
-            header_signature=fmt.header_signature,
-        )
+    rows: list[ImportFormatEntry] = [
+        tabular_format_row(fmt, builtin=builtin)
         for fmt in sorted(formats.values(), key=lambda f: f.name)
     ]
+    rows.extend(pdf_format_rows)
     return build_envelope(
-        data=ImportFormatsPayload(formats=format_rows, pdf_formats=pdf_format_rows),
+        data=ImportFormatsPayload(formats=rows),
         actions=[
             "Use import_preview to test a tabular format against a file",
             "Use import_files to import a file once you have the format name available",
@@ -1720,13 +1706,10 @@ def import_status_coarse(
             response = cast(ResponseEnvelope[ImportFormatsPayload], body())
             if response.error is not None:
                 return cast(ResponseEnvelope[ImportStatusCoarsePayload], response)
-            formats = ImportStatusFormatsSection(
-                formats=response.data.formats,
-                pdf_formats=response.data.pdf_formats,
-            )
+            formats = ImportStatusFormatsSection(formats=response.data.formats)
             selected.append(formats)
             contract_types.append(ImportStatusFormatsSection)
-            count = len(formats.formats) + len(formats.pdf_formats)
+            count = len(formats.formats)
             total_count += count
             returned_count += count
             actions.extend(response.actions)

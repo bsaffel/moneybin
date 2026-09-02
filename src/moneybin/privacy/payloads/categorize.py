@@ -21,6 +21,8 @@ Tier derivation summary:
   - ``AutoReviewPayload``          → Tier.MEDIUM (via AutoReviewProposalRow)
   - ``AutoAcceptPayload``          → Tier.LOW  (AGGREGATE only — counts + IDs)
   - ``AutoStatsPayload``           → Tier.LOW  (AGGREGATE only — counts)
+  - ``AutoRuleRow``                → Tier.MEDIUM (merchant_pattern = MERCHANT_NAME)
+  - ``AutoRulesPayload``           → Tier.MEDIUM (via AutoRuleRow)
   - ``AssistRow``                  → Tier.MEDIUM (description_scrubbed = DESCRIPTION)
   - ``CatAssistPayload``           → Tier.MEDIUM (via AssistRow)
 
@@ -310,6 +312,37 @@ class AutoStatsPayload:
     active_auto_rules: Annotated[int, DataClass.AGGREGATE]
     pending_proposals: Annotated[int, DataClass.AGGREGATE]
     transactions_categorized: Annotated[int, DataClass.AGGREGATE]
+
+
+# ---------------------------------------------------------------------------
+# transactions categorize auto rules
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AutoRuleRow:
+    """One active auto-generated rule.
+
+    A narrower projection than ``RuleRow``, not a duplicate of it:
+    ``AutoRuleService.list_active_rules`` selects six columns of
+    ``app.categorization_rules``, and reusing ``RuleRow`` would emit its other
+    five as ``null`` — reporting "this rule has no amount bounds" where the
+    truth is "this query did not ask".
+    """
+
+    rule_id: Annotated[str, DataClass.RECORD_ID]
+    merchant_pattern: Annotated[str | None, DataClass.MERCHANT_NAME]
+    match_type: Annotated[str | None, DataClass.TXN_TYPE]
+    category: Annotated[str | None, DataClass.CATEGORY]
+    subcategory: Annotated[str | None, DataClass.CATEGORY]
+    priority: Annotated[int | None, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class AutoRulesPayload:
+    """Payload for ``moneybin transactions categorize auto rules``."""
+
+    rules: list[AutoRuleRow]
 
 
 # ---------------------------------------------------------------------------

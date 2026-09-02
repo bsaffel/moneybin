@@ -32,7 +32,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 import typer
 
@@ -46,6 +46,7 @@ from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
     build_error_envelope,
+    serialize_payload,
 )
 
 if TYPE_CHECKING:
@@ -280,14 +281,13 @@ def render_or_json(
       before serialising, mirroring the ``@mcp_tool`` decorator's behaviour.
     - When ``cli_actor`` is provided, writes a ``privacy.log.jsonl`` event with
       ``actor="cli.<cli_actor>"`` and ``action="tool_call"``.
-    - ``json_fields`` field-filter (``--fields`` flag) runs post-redaction on
-      ``list`` payloads; typed dataclass payloads skip this filter (no-op
-      because Phase 5 migrated CLI commands to typed payloads).
+    - ``json_fields`` field-filter (``--json-fields`` flag) runs post-redaction,
+      on a bare ``list`` payload or on the single list-valued field of a typed
+      payload. See ``_project_fields`` for why exactly one is the condition.
 
     When ``json_fields`` is supplied (and non-empty) and ``output`` is JSON,
-    only those comma-separated keys are kept in each ``data`` list item.
+    only those comma-separated keys are kept in each row.
     An empty string ``""`` is treated the same as ``None`` — no filtering.
-    Silently skipped when ``data`` is not a list.
     Leading/trailing whitespace around each field name is stripped; empty
     segments (e.g. from ``"id,,amount"``) are silently ignored.
 
@@ -345,13 +345,11 @@ def render_or_json(
         )
         envelope = dataclasses.replace(envelope, summary=updated_summary)  # pyright: ignore[reportUnknownArgumentType]
 
-    if json_fields and isinstance(envelope.data, list):  # pyright: ignore[reportUnknownMemberType]
+    if json_fields:
         fields = {f.strip() for f in json_fields.split(",") if f.strip()}
-        filtered = [
-            {k: v for k, v in row.items() if k in fields}  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-            for row in envelope.data  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-        ]
-        envelope = dataclasses.replace(envelope, data=filtered)  # pyright: ignore[reportUnknownArgumentType]
+        projected = _project_fields(envelope.data, fields)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        if projected is not None:
+            envelope = dataclasses.replace(envelope, data=projected)  # pyright: ignore[reportUnknownArgumentType]
 
     if cli_actor is not None:
         # Dynamic-classification commands (sql query) resolve classes via SQL
@@ -375,6 +373,51 @@ def render_or_json(
         )
 
     typer.echo(envelope.to_json())
+
+
+def _project_rows(rows: list[Any], fields: set[str]) -> list[dict[str, Any]]:
+    """Keep only ``fields`` on each already-serialized row."""
+    return [
+        {key: value for key, value in row.items() if key in fields}
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
+def _project_fields(data: Any, fields: set[str]) -> Any | None:
+    """Apply the ``--json-fields`` projection, or return None to leave data alone.
+
+    Two shapes carry rows. A bare ``list`` payload is the rows themselves
+    (``sql query``). A typed payload wraps them in a named field beside its
+    counts — ``SyncStatusPayload(connections=[...])`` — which is what every
+    command migrated off a hand-rolled JSON path now returns.
+
+    Descending into a typed payload is deliberately limited to the case where
+    exactly ONE field holds a list. With two collections there is no way to
+    tell which the caller meant, and projecting one of them would return a
+    payload that is narrowed in a place the caller cannot see; a payload with
+    none has nothing to narrow. Both no-op, matching the flag's documented
+    "silently ignored where it does not apply" behaviour.
+
+    Runs on the *serialized* payload, after ``redact_typed`` has walked the
+    original: a projection naming a CRITICAL field must hand back the mask, not
+    the value. Returning a plain dict rather than a rebuilt dataclass is what
+    makes that safe — a rebuilt payload would have to hold `dict` rows in a
+    field typed for row objects.
+    """
+    if isinstance(data, list):
+        return _project_rows(cast("list[Any]", data), fields)
+    if data is None or isinstance(data, (str, bytes, int, float, bool)):
+        return None
+    serialized = serialize_payload(data)
+    if not isinstance(serialized, dict):
+        return None
+    body = cast("dict[str, Any]", serialized)
+    list_keys = [key for key, value in body.items() if isinstance(value, list)]
+    if len(list_keys) != 1:
+        return None
+    key = list_keys[0]
+    return {**body, key: _project_rows(cast("list[Any]", body[key]), fields)}
 
 
 def render_export_receipt(

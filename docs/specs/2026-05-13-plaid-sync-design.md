@@ -673,7 +673,11 @@ Cross-source dedup (a transaction appearing in both OFX and Plaid) is handled by
 
 Per `.claude/rules/cli.md`, every mutating command also accepts `--output json` so agents can drive end-to-end without scraping human-formatted text.
 
-**`sync pull --output json`:**
+Every one is the standard `ResponseEnvelope` — `status`, `summary`, `data`,
+`actions` — over the same typed payload the matching MCP tool returns. Only
+`data` is shown below.
+
+**`sync pull --output json`** (`SyncPullPayload`):
 
 ```json
 {
@@ -683,21 +687,29 @@ Per `.claude/rules/cli.md`, every mutating command also accepts `--output json` 
   "balances_loaded": 2,
   "transactions_removed": 1,
   "institutions": [
-    {"provider_item_id": "item_abc", "institution_name": "Chase", "status": "completed", "transaction_count": 80, "error_code": null},
-    {"provider_item_id": "item_def", "institution_name": "Schwab", "status": "failed", "error_code": "ITEM_LOGIN_REQUIRED"}
+    {"provider_item_id": "item_abc", "institution_name": "Example Bank", "status": "completed", "transaction_count": 80, "error_code": null},
+    {"provider_item_id": "item_def", "institution_name": "Example Brokerage", "status": "failed", "error_code": "ITEM_LOGIN_REQUIRED"}
   ]
 }
 ```
 
-**`sync link --output json --no-browser`:** returns the link URL and exits without polling, mirroring MCP `sync_link`:
+**`sync link --output json --no-browser`** (`SyncLinkPayload`): returns the link
+URL and exits without polling, mirroring MCP `sync_link`. `link_type` says
+whether the URL opens a widget the user completes in the browser or a token the
+user pastes back.
 
 ```json
 {
   "session_id": "sess_abc123",
   "link_url": "https://hosted.plaid.com/link/...",
-  "expiration": "2026-05-13T13:30:00Z"
+  "expiration": "2026-05-13T13:30:00Z",
+  "link_type": "widget_flow"
 }
 ```
+
+**`sync status --output json`** (`SyncStatusPayload`): the rows are at
+`data.connections`, each carrying `institution_name`, `status`, `last_sync`,
+`error_code`, and `guidance`. `--json-fields` narrows those rows.
 
 The agent then calls `sync link-status --session-id sess_abc123 --output json` to verify.
 

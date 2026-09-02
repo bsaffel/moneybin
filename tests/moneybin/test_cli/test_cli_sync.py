@@ -114,7 +114,7 @@ def test_sync_pull_json_output(mock_build: MagicMock) -> None:
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull", "--output", "json"])
     assert result.exit_code == 0, result.output
-    data = json.loads(result.stdout)
+    data = json.loads(result.stdout)["data"]
     assert data["job_id"] == "job-xyz"
     assert data["transactions_loaded"] == 10
     assert data["institutions"][0]["institution_name"] == "Chase"
@@ -295,7 +295,7 @@ def test_sync_pull_json_mode_exits_nonzero_on_transforms_error(
     assert result.exit_code == 1
     # JSON payload must still be emitted on stdout so agents can read the
     # structured error before observing the non-zero exit.
-    payload = json.loads(result.stdout)
+    payload = json.loads(result.stdout)["data"]
     assert payload["transforms_applied"] is False
     assert payload["transforms_error"] == "SQLMeshError"
 
@@ -336,7 +336,7 @@ def test_sync_pull_json_mode_exits_nonzero_on_security_resolution_error(
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull", "--output", "json"])
     assert result.exit_code == 1
-    payload = json.loads(result.stdout)
+    payload = json.loads(result.stdout)["data"]
     assert payload["security_resolution_error"] == "boom"
 
 
@@ -603,11 +603,10 @@ def test_sync_status_json_output(mock_build: MagicMock) -> None:
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "status", "--output", "json"])
     assert result.exit_code == 0, result.output
-    data = json.loads(result.stdout)
-    assert isinstance(data, list)
-    assert data[0]["institution_name"] == "Chase"
-    assert data[0]["status"] == "active"
-    assert data[0]["error_code"] is None
+    rows = json.loads(result.stdout)["data"]["connections"]
+    assert rows[0]["institution_name"] == "Chase"
+    assert rows[0]["status"] == "active"
+    assert rows[0]["error_code"] is None
 
 
 @pytest.mark.unit
@@ -688,7 +687,7 @@ def test_sync_pull_json_carries_the_refresh_step_outcome(
     result = runner.invoke(app, ["sync", "pull", "--output", "json"])
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
+    payload = json.loads(result.stdout)["data"]
     assert payload["rates_written"] == 4
     assert payload["rate_pairs_unsupported"] == ["EUR/XTS"]
     assert payload["matching_error"] is None

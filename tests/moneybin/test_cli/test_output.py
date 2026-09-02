@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from dataclasses import dataclass
+from typing import Annotated, Any
 
 import pytest
 
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, emit_json_error, render_or_json
 from moneybin.errors import UserError
-from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
+from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta, build_envelope
 
 
 def _make_envelope(
@@ -21,6 +23,38 @@ def _make_envelope(
         summary=SummaryMeta(total_count=len(data), returned_count=len(data)),
         data=data,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _AccountRow:
+    """A row whose account number carries an active masking transform."""
+
+    id: Annotated[str, DataClass.RECORD_ID]
+    account_number: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    label: Annotated[str, DataClass.USER_NOTE]
+
+
+@dataclass(frozen=True, slots=True)
+class _OneListPayload:
+    """The shape every migrated collection command uses: one list, plus counts."""
+
+    rows: list[_AccountRow]
+    total: Annotated[int, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class _TwoListPayload:
+    """Two collections in one payload — no single list to project into."""
+
+    rows: list[_AccountRow]
+    others: list[_AccountRow]
+
+
+@dataclass(frozen=True, slots=True)
+class _NoListPayload:
+    """A scalar-only payload."""
+
+    total: Annotated[int, DataClass.AGGREGATE]
 
 
 class TestRenderOrJson:
@@ -113,6 +147,81 @@ class TestRenderOrJson:
         )
         out = json.loads(capsys.readouterr().out)
         assert out["data"] == [{"id": "a1", "amount": "10.00"}]
+
+
+class TestJsonFieldsOnTypedPayloads:
+    """`--json-fields` reaches the rows inside a typed collection payload.
+
+    The filter used to require a bare `list` payload, so every command migrated
+    to a typed payload got a documented flag that silently did nothing — and
+    the one command that kept the projection working (`sync status`) did it by
+    hand, outside this path.
+    """
+
+    @staticmethod
+    def _rows() -> list[_AccountRow]:
+        return [_AccountRow(id="a1", account_number="123456789", label="Checking")]
+
+    @pytest.mark.unit
+    def test_projects_into_a_typed_payloads_single_list_field(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        render_or_json(
+            build_envelope(data=_OneListPayload(rows=self._rows(), total=1)),
+            OutputFormat.JSON,
+            json_fields="id,label",
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"]["rows"] == [{"id": "a1", "label": "Checking"}]
+        # The sibling scalar is untouched: the projection narrows the rows, not
+        # the payload around them.
+        assert out["data"]["total"] == 1
+
+    @pytest.mark.unit
+    def test_projection_cannot_surface_a_field_redaction_masked(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Asking for a CRITICAL field by name returns it masked, never raw.
+
+        The projection runs after `redact_typed`, and this is the assertion
+        that keeps it there: a filter applied to the pre-redaction payload
+        would hand back the account number the transform exists to hide.
+        """
+        render_or_json(
+            build_envelope(data=_OneListPayload(rows=self._rows(), total=1)),
+            OutputFormat.JSON,
+            json_fields="account_number",
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"]["rows"] == [{"account_number": "****6789"}]
+
+    @pytest.mark.unit
+    def test_no_ops_when_the_payload_carries_two_lists(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Half a projection is worse than none — the caller cannot see which half."""
+        render_or_json(
+            build_envelope(
+                data=_TwoListPayload(rows=self._rows(), others=self._rows())
+            ),
+            OutputFormat.JSON,
+            json_fields="id",
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert set(out["data"]["rows"][0]) == {"id", "account_number", "label"}
+        assert set(out["data"]["others"][0]) == {"id", "account_number", "label"}
+
+    @pytest.mark.unit
+    def test_no_ops_when_the_payload_carries_no_list(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        render_or_json(
+            build_envelope(data=_NoListPayload(total=4)),
+            OutputFormat.JSON,
+            json_fields="total",
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"] == {"total": 4}
 
 
 class TestEmitJsonError:
