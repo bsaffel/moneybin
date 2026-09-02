@@ -32,19 +32,32 @@ from moneybin.reports._framework.execute import (
 from moneybin.services.networth_service import NetworthService
 
 _SNAPSHOT_COLUMNS = (
-    OutputColumn("balance_date", "Resolved snapshot date.", DataClass.TXN_DATE),
+    OutputColumn(
+        "account_id",
+        "Canonical account identifier; null on a currency's totals row.",
+        DataClass.RECORD_ID,
+    ),
+    OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
     OutputColumn(
         "currency_code",
         "ISO 4217 currency this row's totals are denominated in; null means unknown.",
         DataClass.CURRENCY,
     ),
     OutputColumn(
-        "net_worth",
-        "Sum of included balances denominated in currency_code; totals rows only.",
+        "observation_source",
+        "Source of the account balance observation.",
+        DataClass.TXN_TYPE,
+    ),
+    OutputColumn("balance_date", "Resolved snapshot date.", DataClass.TXN_DATE),
+    OutputColumn(
+        "account_count",
+        "Count of accounts contributing to this currency's totals; totals rows only.",
+        DataClass.AGGREGATE,
+    ),
+    OutputColumn(
+        "account_balance",
+        "Balance for the breakdown account.",
         DataClass.BALANCE,
-        # A profile whose liabilities exceed its assets has a negative net
-        # worth, and `balance` is the kind that keeps the `−` while leaving a
-        # positive position undecorated.
         money_kind="balance",
     ),
     OutputColumn(
@@ -61,27 +74,31 @@ _SNAPSHOT_COLUMNS = (
         money_kind="balance",
     ),
     OutputColumn(
-        "account_count",
-        "Count of accounts contributing to this currency's totals; totals rows only.",
-        DataClass.AGGREGATE,
-    ),
-    OutputColumn(
-        "account_id",
-        "Canonical account identifier; null on a currency's totals row.",
-        DataClass.RECORD_ID,
-    ),
-    OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
-    OutputColumn(
-        "account_balance",
-        "Balance for the breakdown account.",
+        "net_worth",
+        "Sum of included balances denominated in currency_code; totals rows only.",
         DataClass.BALANCE,
+        # A profile whose liabilities exceed its assets has a negative net
+        # worth, and `balance` is the kind that keeps the `−` while leaving a
+        # positive position undecorated.
         money_kind="balance",
     ),
-    OutputColumn(
-        "observation_source",
-        "Source of the account balance observation.",
-        DataClass.TXN_TYPE,
-    ),
+)
+
+# Parallel to _SNAPSHOT_COLUMNS **by position alone** — nothing here names a
+# column. Reorder one without the other and every column is handed the type of
+# whichever column took its slot, silently. `test_column_ordering.py` is the
+# only thing between that and a caller.
+_SNAPSHOT_COLUMN_TYPES = (
+    "VARCHAR",
+    "VARCHAR",
+    "VARCHAR",
+    "VARCHAR",
+    "DATE",
+    "BIGINT",
+    "DECIMAL(18,2)",
+    "DECIMAL(18,2)",
+    "DECIMAL(18,2)",
+    "DECIMAL(18,2)",
 )
 _SNAPSHOT_CLASSES = {column.name: column.data_class for column in _SNAPSHOT_COLUMNS}
 _SNAPSHOT_SEMANTICS = ReportSemantics(
@@ -120,12 +137,12 @@ _SNAPSHOT_SEMANTICS = ReportSemantics(
 
 _HISTORY_COLUMNS = (
     OutputColumn(
-        "period", "Start date of the selected period bucket.", DataClass.TXN_DATE
-    ),
-    OutputColumn(
         "currency_code",
         "ISO 4217 currency this series is denominated in; null means unknown.",
         DataClass.CURRENCY,
+    ),
+    OutputColumn(
+        "period", "Start date of the selected period bucket.", DataClass.TXN_DATE
     ),
     OutputColumn(
         "net_worth",
@@ -275,30 +292,30 @@ def _execute_networth(
     # the M1K.2 display-conversion record).
     def _totals_row(segment: NetWorthCurrencySegment | None) -> dict[str, Any]:
         return {
-            "balance_date": snapshot.balance_date,
-            "currency_code": segment.currency_code if segment else None,
-            "net_worth": segment.net_worth if segment else None,
-            "total_assets": segment.total_assets if segment else None,
-            "total_liabilities": segment.total_liabilities if segment else None,
-            "account_count": segment.account_count if segment else None,
             "account_id": None,
             "account_name": None,
-            "account_balance": None,
+            "currency_code": segment.currency_code if segment else None,
             "observation_source": None,
+            "balance_date": snapshot.balance_date,
+            "account_count": segment.account_count if segment else None,
+            "account_balance": None,
+            "total_assets": segment.total_assets if segment else None,
+            "total_liabilities": segment.total_liabilities if segment else None,
+            "net_worth": segment.net_worth if segment else None,
         }
 
     def _account_row(account: NetWorthAccountRow) -> dict[str, Any]:
         return {
-            "balance_date": snapshot.balance_date,
-            "currency_code": account.currency_code,
-            "net_worth": None,
-            "total_assets": None,
-            "total_liabilities": None,
-            "account_count": None,
             "account_id": account.account_id,
             "account_name": account.display_name,
-            "account_balance": account.balance,
+            "currency_code": account.currency_code,
             "observation_source": account.observation_source,
+            "balance_date": snapshot.balance_date,
+            "account_count": None,
+            "account_balance": account.balance,
+            "total_assets": None,
+            "total_liabilities": None,
+            "net_worth": None,
         }
 
     # Totals lead because the row cap is applied as a prefix: a profile holding
@@ -320,18 +337,7 @@ def _execute_networth(
         parameters=params,
         records=rows,
         columns=[column.name for column in _SNAPSHOT_COLUMNS],
-        column_types=[
-            "DATE",
-            "VARCHAR",
-            "DECIMAL(18,2)",
-            "DECIMAL(18,2)",
-            "DECIMAL(18,2)",
-            "BIGINT",
-            "VARCHAR",
-            "VARCHAR",
-            "DECIMAL(18,2)",
-            "VARCHAR",
-        ],
+        column_types=list(_SNAPSHOT_COLUMN_TYPES),
         max_rows=limit,
         actions=[
             "Run reports(report_id='core:networth_history', "
@@ -362,21 +368,28 @@ def _execute_networth_history(
     payload = NetworthService(db).history(from_date, to_date, interval=interval)
     rows = [
         {
-            "period": point.period,
             "currency_code": point.currency_code,
+            "period": point.period,
             "net_worth": point.net_worth,
             "change_abs": point.change_abs,
             "change_pct": point.change_pct,
         }
         for point in payload.points
     ]
-    column_types = [
-        "VARCHAR",
-        "VARCHAR",
-        _decimal_column_type(rows, "net_worth", fallback="DECIMAL(38,2)"),
-        _decimal_column_type(rows, "change_abs", fallback="DECIMAL(38,2)"),
-        _decimal_column_type(rows, "change_pct", fallback="DOUBLE"),
-    ]
+    # Keyed by column name and projected through _HISTORY_COLUMNS, so reordering
+    # that tuple carries the types with it. The positional form this replaced
+    # had to be reordered in lockstep by hand, and nothing checked it — unlike
+    # `_SNAPSHOT_COLUMN_TYPES`, whose parallel list a test does hold down.
+    types_by_name = {
+        "currency_code": "VARCHAR",
+        "period": "VARCHAR",
+        "net_worth": _decimal_column_type(rows, "net_worth", fallback="DECIMAL(38,2)"),
+        "change_abs": _decimal_column_type(
+            rows, "change_abs", fallback="DECIMAL(38,2)"
+        ),
+        "change_pct": _decimal_column_type(rows, "change_pct", fallback="DOUBLE"),
+    }
+    column_types = [types_by_name[column.name] for column in _HISTORY_COLUMNS]
     return build_catalog_execution(
         NETWORTH_HISTORY_REPORT,
         parameters=params,
@@ -528,10 +541,10 @@ NETWORTH_REPORT = ServiceReportSpec(
     # characters against requirement 9's 80 — and it is the right column to
     # lose: every row of one snapshot repeats the same date.
     default_columns=(
-        "currency_code",
-        "net_worth",
         "account_name",
+        "currency_code",
         "account_balance",
+        "net_worth",
     ),
 )
 
@@ -585,8 +598,8 @@ NETWORTH_HISTORY_REPORT = ServiceReportSpec(
     # added later narrows the default and says so, instead of silently
     # widening the table past the bar this spec sets.
     default_columns=(
-        "period",
         "currency_code",
+        "period",
         "net_worth",
         "change_abs",
         "change_pct",

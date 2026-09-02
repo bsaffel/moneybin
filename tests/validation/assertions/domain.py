@@ -1,55 +1,19 @@
-"""Domain (business-rule) assertions for the canonical core schema."""
+"""Domain (business-rule) assertions for the canonical core schema.
+
+Sign convention and transfer balance are NOT here: both are SQLMesh audits
+(``fct_transactions_sign_convention``, ``bridge_transfers_balanced``), reached
+from scenario YAML through ``assert_transform_audit``. What remains are the
+parameterized shape checks an audit cannot express, because the table, column,
+and bounds come from the scenario rather than the model.
+"""
 
 from __future__ import annotations
 
 from datetime import date
 
 from moneybin.database import Database
-from moneybin.tables import FCT_TRANSACTIONS
-from moneybin.validation.assertions._helpers import quote_ident, split_table_ident
-from moneybin.validation.result import AssertionResult
-
-# Each predicate matches *violations*, not valid rows. Transfers are
-# identified by ``is_transfer = TRUE`` in the data model, not by a literal
-# category string — excluding them via that flag (rather than
-# ``category != 'Transfer'``) avoids a NULL-NOT-IN dead path.
-_EXPENSE_SIGN_VIOLATIONS = "category != 'Income' AND amount > 0 AND is_transfer = FALSE"
-_INCOME_SIGN_VIOLATIONS = "category = 'Income' AND amount < 0"
-
-
-def assert_sign_convention(db: Database) -> AssertionResult:
-    """Expenses negative, income positive. Transfers exempted via ``is_transfer``."""
-    violations = int(
-        db.execute(
-            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant + module-level predicate strings
-            f"WHERE ({_EXPENSE_SIGN_VIOLATIONS}) OR ({_INCOME_SIGN_VIOLATIONS})"
-        ).fetchone()[0]  # type: ignore[index]
-    )
-    return AssertionResult(
-        name="sign_convention",
-        passed=violations == 0,
-        details={"violations": violations},
-    )
-
-
-def assert_balanced_transfers(db: Database) -> AssertionResult:
-    """Confirmed transfer pairs (transfer_pair_id NOT NULL) must net to zero."""
-    rows = db.execute(
-        f"SELECT transfer_pair_id, SUM(amount) FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant
-        "WHERE transfer_pair_id IS NOT NULL "
-        "GROUP BY transfer_pair_id HAVING SUM(amount) IS DISTINCT FROM 0"
-    ).fetchall()
-    unbalanced = [
-        (pair, float(total) if total is not None else None) for pair, total in rows
-    ]
-    return AssertionResult(
-        name="balanced_transfers",
-        passed=not unbalanced,
-        details={
-            "unbalanced_pairs": unbalanced[:20],
-            "unbalanced_count": len(unbalanced),
-        },
-    )
+from tests.validation.assertions._helpers import quote_ident, split_table_ident
+from tests.validation.result import AssertionResult
 
 
 def assert_date_continuity(

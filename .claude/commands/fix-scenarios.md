@@ -64,7 +64,7 @@ non-zero CI exit and as per-scenario PASS/FAIL lines in the pytest-json-report a
    | Symptom | Likely cause | Where to look |
    |---|---|---|
    | `halted` non-null, no assertions ran | Pipeline step crashed (loader, transform, match, etc.) | `tests/scenarios/_runner/steps.py` and the called service |
-   | Assertion failed with `error` | Assertion fn raised | `src/moneybin/validation/assertions/` |
+   | Assertion failed with `error` | Assertion fn raised | `tests/validation/assertions/` |
    | Assertion failed with `details` | Pipeline output diverged from spec | The pipeline step that owns the data, **or** the scenario YAML if the expectation is wrong |
    | Expectation failed | Per-record claim doesn't match | The fixture YAML, the expectation engine, or the categorize/match step |
    | Evaluation below threshold | Score regressed | The pipeline + the threshold itself — was the threshold realistic? |

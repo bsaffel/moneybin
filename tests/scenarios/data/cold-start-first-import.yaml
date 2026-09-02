@@ -42,7 +42,9 @@ assertions:
       table: core.fct_transactions
       columns: [transaction_id]
   - name: sign_convention
-    fn: assert_sign_convention
+    fn: assert_transform_audit
+    args:
+      audit: fct_transactions_sign_convention
   - name: fk_account_id
     fn: assert_valid_foreign_keys
     args:

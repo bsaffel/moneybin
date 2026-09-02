@@ -1,6 +1,6 @@
 # Testing & Validation — Overview
 
-> Last updated: 2026-05-17
+> Last updated: 2026-09-01
 > Status: Ready — umbrella doc for the testing & validation initiative. Child specs listed in [Child Specs](#child-specs) are written separately. Four child specs (`testing-synthetic-data.md`, `testing-scenario-runner.md`, `testing-scenario-comprehensive.md`, `testing-normalize-description-fixtures.md`) are implemented; three (`testing-csv-fixtures.md`, `testing-format-compat.md`, `testing-migration-safety.md`) and `testing-anonymized-data.md` remain planned.
 > Companions: `CLAUDE.md` "Architecture: Data Layers", [`sync-overview.md`](sync-overview.md) (owns Plaid Sandbox testing)
 
@@ -18,8 +18,8 @@ Testing & Validation is MoneyBin's umbrella spec for verification infrastructure
 
 Three commitments:
 
-1. **Independently useful capabilities.** The generator, assertion library, fixture library, and scenario format each deliver value on their own. You can generate demo data without running scenarios. You can run assertions without generating data. The scenario format composes them, but doesn't gate them.
-2. **One verification interface, multiple execution contexts.** Users and agents interact with the same assertion catalog whether checking data during development, in CI, or at runtime. Implementation details (SQLMesh audits vs Python assertions) are hidden behind a consistent interface.
+1. **Independently useful capabilities.** The generator, audit catalog, fixture library, and scenario format each deliver value on their own. You can generate demo data without running scenarios. You can run assertions without generating data. The scenario format composes them, but doesn't gate them.
+2. **One definition, multiple execution contexts.** A data-quality check is written once as SQLMesh audit SQL and read the same way during development, in CI, and at runtime — `make test-scenarios` and `moneybin system doctor` both go through `moneybin.audits.runner`, so neither can report a verdict the other would not.
 3. **Life-like data, not test data.** Synthetic data models real financial lives — not minimal fixtures designed to exercise code paths. Realistic data catches realistic bugs.
 
 ## Verification Tiers
@@ -59,47 +59,74 @@ The tiers apply across multiple testing domains. Each domain uses the tiers diff
 | **Resilience** | N/A | Corrupt/truncated input produces graceful error + zero data loss | N/A |
 | **Security** | N/A | No PII in logs, parameterized queries only | N/A |
 
-The first three domains (pipeline, format compatibility, migration safety) each get their own child spec. The bottom three (idempotency, resilience, security) are cross-cutting concerns handled by the assertion library and woven into scenarios as needed.
+The first three domains (pipeline, format compatibility, migration safety) each get their own child spec. The bottom three (idempotency, resilience, security) are cross-cutting concerns woven into scenarios as needed.
 
 ## Data Quality & Verification Infrastructure
 
-One verification interface, different execution contexts. From the perspective of a user, agent, or CI pipeline, you ask one question: "Is my data correct?" You don't care whether the check is implemented as a SQLMesh audit, a Python assertion, or a YAML unit test.
+One definition, different execution contexts. From the perspective of a user, agent, or CI pipeline, you ask one question: "Is my data correct?" The answer comes from one place — the audit SQL — whether you asked through `moneybin system doctor`, a scenario run, or a `sqlmesh run`.
 
-### Assertion Catalog
+### SQLMesh audits — the canonical home for data-quality checks
 
-Location: `src/moneybin/validation/assertions/` (shipped via PR #80; earlier drafts of this spec referenced `src/moneybin/testing/assertions/`)
+Location: `src/moneybin/sqlmesh/audits/*.sql`
 
-The single source of truth for all data quality checks. Reusable functions that take a DuckDB connection and return structured results. Agents call these directly — no pipeline run required.
+A check on a `core.*` relation is written once, as audit SQL, and every
+surface reads that one definition. `src/moneybin/audits/runner.py` renders and
+executes them; `DoctorService` folds the outcomes into `moneybin system
+doctor`, and scenario YAML asserts on them through `assert_transform_audit`.
+Nothing else re-expresses a check in Python.
 
-| Category | Function | Description |
+Each audit projects the offending entity's ID in column 0, carries its
+semantics in a header comment, and declares `standalone TRUE` so it runs
+against every materialized model rather than only where a model references it.
+Standalone audits are non-blocking in SQLMesh — a violation warns rather than
+halting a transform — so the outcome has to be read deliberately, which is
+what doctor and the scenario assertion do.
+
+| Audit | Checks |
+|---|---|
+| `fct_transactions_sign_convention` | `amount` is classifiable, and `transaction_direction` / `amount_absolute` agree with its sign |
+| `fct_transactions_fk_integrity` | Every transaction's `account_id` resolves in `dim_accounts` |
+| `bridge_transfers_balanced` | Both legs of a confirmed transfer pair exist and cancel exactly |
+| `fct_investment_transactions_sign_convention` | Buys and reinvests are cash out, sells are cash in |
+| `fct_investment_transactions_uniqueness` | `investment_transaction_id` holds its declared grain |
+| `fct_investment_transactions_fk_integrity` | Every investment transaction's `account_id` resolves in `dim_accounts` |
+
+The set grows organically — when a feature needs a check that doesn't exist,
+add an audit file. Two rules bound what belongs here: an audit polices what the
+ledger can prove, never what a label implies (a refund carries a positive
+amount under an expense category, so category-vs-sign reports correct data as a
+defect), and a diverged Python twin is never the answer — fix the SQL.
+
+### Scenario-support primitives
+
+Location: `tests/validation/` (assertions, expectations, evaluations)
+
+Test-only scaffolding for the scenario runner, not a second home for
+data-quality truth. Every consumer is under `tests/`, which is why the package
+lives there. Three things an audit cannot express keep it earning its place:
+
+| Kind | Example | Why not an audit |
 |---|---|---|
-| Relationship | `assert_valid_foreign_keys(conn, child, col, parent, col)` | Every child value exists in parent |
-| Relationship | `assert_no_orphans(conn, parent, col, child, col)` | Every parent has at least one child |
-| Business rules | `assert_sign_convention(conn)` | Expenses negative, income positive |
-| Business rules | `assert_date_continuity(conn, table, date_col, account_col)` | No month-gaps per account |
-| Business rules | `assert_balanced_transfers(conn)` | Transfer pairs net to zero |
-| Statistical | `assert_distribution_within_bounds(conn, table, col, min, max, mean_range)` | Column statistics within expected ranges |
-| Statistical | `assert_row_count_delta(conn, table, expected, tolerance_pct)` | Row count within % of expected |
-| Operational | `assert_no_duplicates(conn, table, columns)` | No duplicate rows for column set |
-| Operational | `assert_no_nulls(conn, table, columns)` | Specified columns have no NULLs |
-| Operational | `assert_idempotent(conn, operation_fn)` | Running twice produces identical state |
+| Parameterized shape checks | `assert_no_duplicates(db, table, columns)`, `assert_row_count_delta(db, table, expected, tolerance_pct)` | Table, columns, and bounds come from the scenario, not the model |
+| Environment checks | `assert_migrations_at_head`, `assert_no_unencrypted_db_files`, `assert_sqlmesh_catalog_matches` | Assert about the profile and the filesystem, not about rows |
+| Ground-truth scoring | `score_categorization`, `score_transfer_detection` | Compare against `synthetic.ground_truth`, which no production database has |
 
-The catalog grows organically — when a new child spec or feature needs a check that doesn't exist, add an assertion. No upfront catalog of everything we might ever need.
+`assert_transform_audit(db, audit=...)` is the bridge: it runs one canonical
+audit and reports it as an `AssertionResult`, so a scenario and a doctor run
+cannot disagree about what a check means.
 
 ### Execution Contexts
 
 | Context | When | Who triggers | What runs | What you see |
 |---|---|---|---|---|
-| **Development** | Agent or human building a feature | `make test-scenarios` (pytest scenarios) or direct assertion calls | Everything — unit tests, audits, assertions, evaluations | Structured pass/fail/score report |
+| **Development** | Agent or human building a feature | `make test-scenarios` (pytest scenarios) or `moneybin system doctor` | Everything — unit tests, audits, assertions, evaluations | Structured pass/fail/score report |
 | **Pipeline** | `sqlmesh run` transforms data | Automatic | SQLMesh audits + unit tests fire as part of the run | Pipeline halts or warns on failure |
 | **CI** | PR or commit | GitHub Actions (future) | Full scenario suite against synthetic data | Pass/fail gate on the PR |
-| **Runtime** | After a real data load or import | `moneybin data verify` or post-load hook | Assertions against the live database | User-facing health report |
+| **Runtime** | After a real data load or import | `moneybin system doctor` | Every standalone audit plus doctor's own `app.*` invariants, against the live database | User-facing health report |
 
-### SQLMesh Integration (implementation detail)
+### The rest of the SQLMesh surface
 
-Key assertions from the catalog are also expressed as SQLMesh audits so they fire automatically during pipeline runs. This is an optimization — the canonical definition lives in the assertion catalog. Contributors adding new models should attach appropriate audits, but the assertion library is the primary interface for verification.
-
-- **SQLMesh audits** — built-in (`not_null`, `unique`, `unique_combination_of_columns`, `forall`) plus custom audits in `src/moneybin/sqlmesh/audits/` for reusable domain checks (referential integrity, sign convention, no future dates). Blocking by default; non-blocking variants available for soft checks.
+- **Model-attached audits** — SQLMesh's built-ins (`not_null`, `unique`, `unique_combination_of_columns`, `forall`) declared in a model's `audits (...)` property. These are blocking, and appropriate for a constraint a model must never violate. A check that should report rather than halt belongs in `src/moneybin/sqlmesh/audits/` as a standalone audit.
 - **SQLMesh unit tests** — YAML-defined fixture tests in `src/moneybin/sqlmesh/tests/` that validate transformation logic with controlled inputs and expected outputs. These test the *code*, not the data — "given these raw rows, does the staging model produce the right output?"
 
 ## Persona Catalog
@@ -149,7 +176,7 @@ Child specs under this umbrella. Each is independently useful, designed knowing 
 |---|---|---|---|
 | `testing-synthetic-data.md` (implemented) | Produce life-like financial histories | Four fictional personas (`basic`, `family`, `freelancer`, `international`); deterministic seeding; ground-truth labels; YAML-driven personas and merchant catalogs; Level 2 realism | Declarative YAML architecture, merchant catalogs with real brand names, spending distributions, temporal realism, income patterns. Anonymized mode is a separate child spec (`testing-anonymized-data.md`). |
 | `testing-scenario-runner.md` (implemented) | Whole-pipeline correctness with structured assertions, expectations, and evaluations | YAML scenario format, orchestrator with fresh encrypted DB per run, validation/evaluation primitive libraries, pytest harness (`make test-scenarios`), six shipped scenarios | Database isolation via `MONEYBIN_HOME` override; in-process service-layer execution; fixture expectations as first-class signal |
-| `testing-scenario-comprehensive.md` (implemented) | Five-tier assertion taxonomy; bug-report recipe; architectural authority for all future scenario work | Tier matrix; independent-expectations rule; relocation of scenarios to `tests/scenarios/`; shared validation library at `src/moneybin/validation/` | Pytest-native, contributor recipe, stable validation contract |
+| `testing-scenario-comprehensive.md` (implemented) | Five-tier assertion taxonomy; bug-report recipe; architectural authority for all future scenario work | Tier matrix; independent-expectations rule; relocation of scenarios to `tests/scenarios/`; scenario-support primitives at `tests/validation/` | Pytest-native, contributor recipe, stable validation contract |
 | `testing-normalize-description-fixtures.md` (implemented) | YAML golden cases for `normalize_description()` | Parametrized exact-equality tests; contributor surface for adding cases | Pure-function regression coverage; duplicate-id detection |
 | `testing-csv-fixtures.md` (planned) | Curated bank export samples for format compatibility testing | Directory convention (`tests/fixtures/csv_formats/`), naming schema (`<institution>_<account_type>_<year>.csv` + `.expected.json`), initial fixtures from anonymized real exports | Anonymization checklist, contribution path, expected-result format for scoring smart detection |
 | `testing-format-compat.md` (planned) | Verify parsers handle all known file formats correctly | Test harness that runs each extractor against its fixtures, compares to expected output | Assertion integration, how to add a new format test, failure reporting |

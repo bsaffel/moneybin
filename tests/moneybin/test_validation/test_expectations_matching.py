@@ -8,12 +8,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.validation.expectations import SourceTransactionRef
-from moneybin.validation.expectations.matching import (
+from tests.validation.expectations import SourceTransactionRef
+from tests.validation.expectations.matching import (
     verify_match_decision,
     verify_transfers_match_ground_truth,
 )
-from moneybin.validation.result import ExpectationResult
+from tests.validation.result import ExpectationResult
 
 
 def _make_db(tmp_path: Path, mock_secret_store: MagicMock, name: str) -> Database:

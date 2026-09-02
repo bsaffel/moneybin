@@ -7,7 +7,7 @@ from datetime import datetime
 import pytest
 
 from moneybin.database import Database
-from moneybin.validation.evaluations import (
+from tests.validation.evaluations import (
     GroundTruthMissingError,
     score_categorization,
     score_dedup,

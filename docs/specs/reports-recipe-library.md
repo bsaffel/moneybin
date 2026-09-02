@@ -116,10 +116,10 @@ position in each returned period. If a snapshot has no eligible row,
 | Column | Type | Comment |
 |---|---|---|
 | `balance_date` | `DATE` | Calendar date |
-| `net_worth` | `DECIMAL(18,2)` | Total balance across all included accounts |
+| `account_count` | `INTEGER` | Number of accounts contributing on this date |
 | `total_assets` | `DECIMAL(18,2)` | Sum of positive balances |
 | `total_liabilities` | `DECIMAL(18,2)` | Sum of negative balances (kept negative) |
-| `account_count` | `INTEGER` | Number of accounts contributing on this date |
+| `net_worth` | `DECIMAL(18,2)` | Total balance across all included accounts |
 
 CLI: `moneybin reports networth [--as-of DATE]`, `moneybin reports networth-history [--from DATE] [--to DATE] [--interval daily|weekly|monthly]`.
 MCP: `reports(report_id="core:networth", parameters={...})` (point-in-time)
@@ -147,14 +147,14 @@ Excludes transactions in archived accounts.
 
 | Column | Type | Comment |
 |---|---|---|
-| `year_month` | `VARCHAR` | Calendar month formatted as `YYYY-MM` |
 | `account_id` | `VARCHAR` | Owning account (joinable to core.dim_accounts) |
 | `account_name` | `VARCHAR` | Account display name (resolved from app.account_settings if overridden) |
 | `category` | `VARCHAR` | Spending category text from core.fct_transactions; NULL for uncategorized |
+| `year_month` | `VARCHAR` | Calendar month formatted as `YYYY-MM` |
+| `txn_count` | `INTEGER` | Number of non-transfer transactions in this cell |
 | `inflow` | `DECIMAL(18,2)` | Sum of positive amounts in this (month, account, category) cell |
 | `outflow` | `DECIMAL(18,2)` | Sum of negative amounts in this cell (kept negative) |
 | `net` | `DECIMAL(18,2)` | inflow + outflow |
-| `txn_count` | `INTEGER` | Number of non-transfer transactions in this cell |
 
 CLI: `moneybin reports cashflow [--from-month MONTH] [--to-month MONTH] [--by account|category|account-and-category]`.
 MCP: `reports(report_id="core:cashflow", parameters={...})`, dynamically
@@ -188,10 +188,10 @@ is needed.
 
 | Column | Type | Comment |
 |---|---|---|
-| `year_month` | `VARCHAR` | Calendar month formatted as `YYYY-MM` |
 | `category` | `VARCHAR` | Spending category text; NULL for uncategorized |
-| `total_spend` | `DECIMAL(18,2)` | Sum of absolute outflow this month in this category; zero for a missing category-month |
+| `year_month` | `VARCHAR` | Calendar month formatted as `YYYY-MM` |
 | `txn_count` | `INTEGER` | Outflow transaction count; zero for a missing category-month |
+| `total_spend` | `DECIMAL(18,2)` | Sum of absolute outflow this month in this category; zero for a missing category-month |
 | `prev_month_spend` | `DECIMAL(18,2)` | Spend in the previous calendar month for the same category |
 | `mom_delta` | `DECIMAL(18,2)` | total_spend - prev_month_spend |
 | `mom_pct` | `DECIMAL(8,4)` | mom_delta / prev_month_spend; NULL if prev_month_spend = 0 |
@@ -245,16 +245,16 @@ classified under the generic tool's `critical` maximum.
 |---|---|---|
 | `merchant_id` | `VARCHAR` | Foreign key to `core.dim_merchants.merchant_id`; NULL for the `'(uncategorized)'` bucket. Projected at the view boundary per `.claude/rules/identifiers.md` Guard 1 so downstream aggregations bucket on ID, not display text. |
 | `merchant_normalized` | `VARCHAR` | Display label: `dim_merchants.canonical_name` for resolved merchants; `'(uncategorized)'` when `merchant_id IS NULL` |
-| `avg_amount` | `DECIMAL(18,2)` | Average absolute charge amount across this cluster |
 | `cadence` | `VARCHAR` | One of: weekly, biweekly, monthly, quarterly, yearly, irregular |
-| `interval_days_avg` | `DECIMAL(8,2)` | Mean days between consecutive charges |
-| `interval_days_stddev` | `DECIMAL(8,2)` | Stddev of inter-arrival intervals |
-| `occurrence_count` | `INTEGER` | Number of matching charges in the last 18 months |
+| `status` | `VARCHAR` | 'active' if last_seen within 60 days, else 'inactive' |
 | `first_seen` | `DATE` | Earliest charge in this cluster |
 | `last_seen` | `DATE` | Most recent charge in this cluster |
-| `status` | `VARCHAR` | 'active' if last_seen within 60 days, else 'inactive' |
-| `annualized_cost` | `DECIMAL(18,2)` | Estimated yearly cost based on avg_amount and cadence |
+| `interval_days_avg` | `DECIMAL(8,2)` | Mean days between consecutive charges |
+| `interval_days_stddev` | `DECIMAL(8,2)` | Stddev of inter-arrival intervals |
 | `confidence` | `DECIMAL(4,3)` | 0.0-1.0 score; see model docstring for formula |
+| `occurrence_count` | `INTEGER` | Number of matching charges in the last 18 months |
+| `avg_amount` | `DECIMAL(18,2)` | Average absolute charge amount across this cluster |
+| `annualized_cost` | `DECIMAL(18,2)` | Estimated yearly cost based on avg_amount and cadence |
 
 **Posture:** `reports.recurring_subscriptions` is a **candidate generator**, not authoritative state. The acceptance/rejection loop (where users confirm "yes this is a subscription, track it") belongs to a future spec — see [Out of Scope](#out-of-scope).
 
@@ -277,17 +277,17 @@ classified under the generic tool's `critical` maximum.
 | Column | Type | Comment |
 |---|---|---|
 | `merchant_normalized` | `VARCHAR` | Normalized merchant string; '(unknown)' when source merchant is NULL |
-| `total_spend` | `DECIMAL(18,2)` | Lifetime absolute outflow |
-| `total_inflow` | `DECIMAL(18,2)` | Lifetime sum of positive amounts |
-| `total_outflow` | `DECIMAL(18,2)` | Lifetime sum of negative amounts (kept negative) |
-| `txn_count` | `INTEGER` | Total transaction count |
-| `avg_amount` | `DECIMAL(18,2)` | Mean signed amount across all transactions |
-| `median_amount` | `DECIMAL(18,2)` | Median signed amount (DuckDB MEDIAN aggregate) |
+| `top_category` | `VARCHAR` | Mode of category text across this merchant's transactions; NULL if all uncategorized |
 | `first_seen` | `DATE` | Earliest transaction with this merchant |
 | `last_seen` | `DATE` | Most recent transaction |
+| `txn_count` | `INTEGER` | Total transaction count |
 | `active_months` | `INTEGER` | Distinct year-month count with at least one transaction |
-| `top_category` | `VARCHAR` | Mode of category text across this merchant's transactions; NULL if all uncategorized |
 | `account_count` | `INTEGER` | Distinct accounts on which this merchant appears |
+| `total_inflow` | `DECIMAL(18,2)` | Lifetime sum of positive amounts |
+| `total_outflow` | `DECIMAL(18,2)` | Lifetime sum of negative amounts (kept negative) |
+| `avg_amount` | `DECIMAL(18,2)` | Mean signed amount across all transactions |
+| `median_amount` | `DECIMAL(18,2)` | Median signed amount (DuckDB MEDIAN aggregate) |
+| `total_spend` | `DECIMAL(18,2)` | Lifetime absolute outflow |
 
 CLI: `moneybin reports merchants [--top N] [--sort spend|count|recent]`.
 MCP: `reports(report_id="core:merchants", parameters={...})`, dynamically
@@ -310,14 +310,14 @@ classified under the generic tool's `critical` maximum.
 | `transaction_id` | `VARCHAR` | Joinable to core.fct_transactions |
 | `account_id` | `VARCHAR` | Owning account |
 | `account_name` | `VARCHAR` | Account display name |
-| `txn_date` | `DATE` | Transaction date |
-| `amount` | `DECIMAL(18,2)` | Signed amount |
-| `description` | `VARCHAR` | Original description |
 | `merchant_normalized` | `VARCHAR` | Normalized merchant string |
+| `description` | `VARCHAR` | Original description |
 | `category` | `VARCHAR` | Spending category text; NULL if uncategorized |
+| `txn_date` | `DATE` | Transaction date |
 | `amount_zscore_account` | `DECIMAL(8,3)` | Z-score of |amount| relative to median + MAD within this account |
 | `amount_zscore_category` | `DECIMAL(8,3)` | Z-score of |amount| relative to median + MAD within this category text (NULL if uncategorized or category has fewer than 5 txns) |
 | `is_top_100` | `BOOLEAN` | TRUE if this transaction is in the top 100 by ABS(amount) across the whole table |
+| `amount` | `DECIMAL(18,2)` | Signed amount |
 
 CLI default: `ORDER BY ABS(amount) DESC LIMIT 25`, with z-scores shown as columns for context. CLI flags expose anomaly mode: `--anomaly account` filters to `amount_zscore_account > 2.5`; `--anomaly category` analogous.
 
@@ -352,14 +352,14 @@ The first observation has no prior transaction-derived anchor and remains
 |---|---|---|
 | `account_id` | `VARCHAR` | Joinable to core.dim_accounts |
 | `account_name` | `VARCHAR` | Account display name |
+| `status` | `VARCHAR` | 'clean' if `drift_abs < 1.00`, 'warning' if `< 10.00`, 'drift' if `≥ 10.00`, 'no-data' if computed_balance IS NULL |
 | `assertion_date` | `DATE` | User-asserted balance date |
+| `days_since_assertion` | `INTEGER` | today - assertion_date |
 | `asserted_balance` | `DECIMAL(18,2)` | User-entered balance for this date |
 | `computed_balance` | `DECIMAL(18,2)` | Interpolated daily balance, or observed balance minus its same-day reconciliation adjustment; NULL for a missing row or first observation |
-| `drift` | `DECIMAL(18,2)` | asserted_balance - computed_balance |
 | `drift_abs` | `DECIMAL(18,2)` | ABS(drift); for default sort |
 | `drift_pct` | `DECIMAL(8,4)` | drift / asserted_balance; NULL if asserted_balance = 0 |
-| `days_since_assertion` | `INTEGER` | today - assertion_date |
-| `status` | `VARCHAR` | 'clean' if `drift_abs < 1.00`, 'warning' if `< 10.00`, 'drift' if `≥ 10.00`, 'no-data' if computed_balance IS NULL |
+| `drift` | `DECIMAL(18,2)` | asserted_balance - computed_balance |
 
 Thresholds (`$1`, `$10`) are hardcoded in v1 with a docstring noting they are intentional defaults; future iterations may move them to `MoneyBinSettings.reports.balance_drift_thresholds`.
 

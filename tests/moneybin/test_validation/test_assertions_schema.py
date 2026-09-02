@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.validation.assertions.schema import (
+from tests.validation.assertions.schema import (
     assert_column_types,
     assert_columns_exist,
     assert_row_count_delta,

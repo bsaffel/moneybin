@@ -112,8 +112,14 @@ def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
             "ISO 4217 currency this row is denominated in; null means unknown.",
             DataClass.CURRENCY,
         ),
+        OutputColumn("status", "Reconciliation status bucket.", DataClass.TXN_TYPE),
         OutputColumn(
             "assertion_date", "User-asserted balance date.", DataClass.TXN_DATE
+        ),
+        OutputColumn(
+            "days_since_assertion",
+            "Days from assertion_date through current date.",
+            DataClass.TXN_DATE,
         ),
         OutputColumn(
             "asserted_balance",
@@ -128,6 +134,17 @@ def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
             money_kind="balance",
         ),
         OutputColumn(
+            "drift_abs",
+            "Absolute balance drift.",
+            DataClass.TXN_AMOUNT,
+            money_kind="magnitude",
+        ),
+        OutputColumn(
+            "drift_pct",
+            "Drift divided by asserted balance.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn(
             "drift",
             "Asserted balance minus computed balance.",
             DataClass.TXN_AMOUNT,
@@ -140,23 +157,6 @@ def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
             # than resolved by inventing a fifth kind for one column.
             money_kind="balance",
         ),
-        OutputColumn(
-            "drift_abs",
-            "Absolute balance drift.",
-            DataClass.TXN_AMOUNT,
-            money_kind="magnitude",
-        ),
-        OutputColumn(
-            "drift_pct",
-            "Drift divided by asserted balance.",
-            DataClass.AGGREGATE,
-        ),
-        OutputColumn(
-            "days_since_assertion",
-            "Days from assertion_date through current date.",
-            DataClass.TXN_DATE,
-        ),
-        OutputColumn("status", "Reconciliation status bucket.", DataClass.TXN_TYPE),
     ),
     semantics=ReportSemantics(
         unit="currency",
@@ -211,8 +211,8 @@ def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
         "account_name",
         "currency_code",
         "assertion_date",
-        "drift",
         "drift_pct",
+        "drift",
     ),
 )
 def balance_drift(
@@ -254,9 +254,9 @@ def balance_drift(
         # lexicographically and silently mis-filters.
         validate_date(since, "since")
     sql = f"""
-        SELECT account_id, account_name, currency_code, assertion_date, asserted_balance,
-               computed_balance, drift, drift_abs, drift_pct,
-               days_since_assertion, status
+        SELECT account_id, account_name, currency_code, status, assertion_date,
+               days_since_assertion, asserted_balance, computed_balance,
+               drift_abs, drift_pct, drift
         FROM {REPORTS_BALANCE_DRIFT.full_name}
         WHERE 1=1
     """  # noqa: S608  # TableRef interpolation

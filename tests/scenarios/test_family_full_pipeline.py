@@ -5,13 +5,13 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
-from moneybin.validation.assertions import (
+from tests.scenarios._runner import load_shipped_scenario, run_scenario
+from tests.scenarios._tier1_backfill import tier1_backfill
+from tests.validation.assertions import (
     assert_date_continuity,
     assert_ground_truth_coverage,
 )
-from moneybin.validation.result import AssertionResult
-from tests.scenarios._runner import load_shipped_scenario, run_scenario
-from tests.scenarios._tier1_backfill import tier1_backfill
+from tests.validation.result import AssertionResult
 
 # Per-category recall is too noisy to gate on at small support; skip
 # the assertion for categories with fewer than this many labeled rows.

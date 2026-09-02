@@ -13,9 +13,9 @@ from typing import Any
 
 import pytest
 
-from moneybin.validation.result import AssertionResult
 from tests.scenarios._runner import runner as runner_mod
 from tests.scenarios._runner.loader import Scenario, load_scenario_from_string
+from tests.validation.result import AssertionResult
 
 _MINIMAL_YAML = """
 scenario: unit-test

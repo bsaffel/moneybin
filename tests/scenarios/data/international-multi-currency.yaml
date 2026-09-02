@@ -31,7 +31,9 @@ assertions:
       parent: core.dim_accounts
       parent_column: account_id
   - name: sign_convention
-    fn: assert_sign_convention
+    fn: assert_transform_audit
+    args:
+      audit: fct_transactions_sign_convention
   - name: no_duplicate_gold_records
     fn: assert_no_duplicates
     args:

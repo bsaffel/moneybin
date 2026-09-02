@@ -1,14 +1,14 @@
 """Pipeline-execution harness primitives.
 
-Distinct from ``moneybin.validation.assertions`` (which contain pure data
+Distinct from ``tests.validation.assertions`` (which contain pure data
 predicates): these helpers DRIVE pipeline operations (re-run, run with
 empty input, run with bad input) and report on execution-time invariants
 (no duplicate rows, no crash, expected error raised).
 
 They live under ``tests/`` because they have no consumer outside the
-scenario suite — ``data-reconciliation.md`` only consumes data
-predicates. If a future runtime consumer emerges, lift the relevant
-primitive into ``moneybin.validation``.
+scenario suite. The live-data surface is the SQLMesh audits under
+``src/moneybin/sqlmesh/audits/``, so a future runtime check belongs
+there rather than lifted out of ``tests/``.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from moneybin.database import Database
-from moneybin.validation.assertions._helpers import quote_ident
-from moneybin.validation.result import AssertionResult
+from tests.validation.assertions._helpers import quote_ident
+from tests.validation.result import AssertionResult
 
 
 def assert_idempotent(

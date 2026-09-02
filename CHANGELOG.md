@@ -11,6 +11,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Report columns are now ordered grain-first, with each report's headline
+  figure last.** Every report's projection reads
+  `grain keys → labels → dimensions → dates → provenance → measures`, and
+  within the measures the components precede the figure they compose — so a
+  narrowed terminal keeps the column that answers the report rather than one of
+  its inputs. Two reports read backwards before this and change most visibly:
+  `core:networth` led with `net_worth` and trailed its own components, and
+  `core:merchants` led with `total_spend`; both now end on that figure. The one
+  exception is a report whose headline measure is also the base its comparatives
+  are measured against: `core:spending` now *leads* its measure block with
+  `total_spend`, because a delta printed before the quantity it is a delta of
+  has no referent, and current-then-prior-then-change is the layout every
+  variance report uses.
+
+  This changes JSON key order, MCP response field order, and export column
+  order, and it changes the `columns` array each report publishes through the
+  MCP `reports` catalog and `moneybin reports list` / `describe` — so an agent
+  that reads a report's description sees the new order too. Values, column
+  names, and types are unchanged, and no column was added or removed — but a
+  caller reading results **by position** rather than by name must be updated.
+  Two reports' declared column tuples also disagreed with what
+  their query actually returned (`core:cashflow`, `core:recurring`); the
+  declaration and the projection now agree, and a test holds them together. The
+  convention is `.claude/rules/column-ordering.md`.
+
+  The seven `reports.*` SQLMesh model projections are swept to the same order,
+  so `SELECT * FROM reports.net_worth` through `sql_query` or
+  `moneybin sql query` returns `currency_code, balance_date, account_count,
+  total_assets, total_liabilities, net_worth` rather than leading with the
+  total. A display-currency conversion now places the `original_currency_code`
+  it attaches beside `currency_code` instead of after the amounts — in the rows
+  as well as the column list, so the JSON body and the column list it ships with
+  agree. `core:networth_history` follows the same base-before-comparison rule as
+  `core:spending`: it now returns `currency_code, period, net_worth, change_abs,
+  change_pct`, leading with the position the two changes are measured from.
+
+- **`moneybin system doctor` reports two data-quality checks more strictly.**
+  `bridge_transfers_balanced` now requires a confirmed transfer pair to cancel
+  exactly, instead of tolerating a $0.01 residue, and reports a pair whose leg
+  has left `core.fct_transactions` rather than skipping it. The transfer matcher
+  pairs on exactly equal amounts and `amount` is `DECIMAL(18,2)` throughout, so
+  a cent of residue is missing money, not rounding. `fct_transactions_sign_convention`
+  now also reports a row whose `transaction_direction` or `amount_absolute`
+  contradicts its own `amount`; it still treats `$0.00` as a legitimate third
+  direction, and it deliberately does not judge an amount's sign against its
+  category label, which would report every refund and statement credit as a
+  defect. A profile that was healthy before may surface a new failure on either
+  check; both name the offending transaction ids under `--verbose`. (#504)
+
 - **Every CLI command's `--output json` now returns the standard response
   envelope, and the JSON shapes moved with it.** Twenty-four output paths
   printed a bare `{"key": [...]}` object or a raw model dump beside

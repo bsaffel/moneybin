@@ -696,14 +696,7 @@ def test_cashflow_interleaves_currencies_within_a_month(db: Database) -> None:
     )
 
 
-def test_spending_trend_interleaves_currencies_within_a_month(db: Database) -> None:
-    """A cap of two must not return two EUR categories and no USD one.
-
-    Three EUR categories against one USD category in the same month, so
-    currency-major ordering fills the cap with EUR before USD's row is
-    reached — the response then reports one currency's spending as if it were
-    the month's.
-    """
+def _install_spending_trend(db: Database) -> None:
     db.execute("CREATE SCHEMA IF NOT EXISTS reports")
     db.execute("""
         CREATE OR REPLACE VIEW reports.spending_trend AS
@@ -717,9 +710,78 @@ def test_spending_trend_interleaves_currencies_within_a_month(db: Database) -> N
                prev_year_spend, yoy_delta, yoy_pct, trailing_3mo_avg)
     """)
 
+
+def test_spending_trend_interleaves_currencies_within_a_month(db: Database) -> None:
+    """A cap of two must not return two EUR categories and no USD one.
+
+    Three EUR categories against one USD category in the same month, so
+    currency-major ordering fills the cap with EUR before USD's row is
+    reached — the response then reports one currency's spending as if it were
+    the month's.
+    """
+    _install_spending_trend(db)
+
     rows = _rows(db, spending_trend, from_month="2026-01", to_month="2026-12")
     leading = [row["currency_code"] for row in rows[:2]]
 
     assert set(leading) == {"EUR", "USD"}, (
         f"first two rows are {leading}; a cap here would hide a whole currency"
+    )
+
+
+def _install_mirror_fixture(db: Database, name: str) -> None:
+    """Install just enough of one report's view to read its projection back."""
+    if name == "balance_drift":
+        _install_balance_drift(db)
+    elif name == "cash_flow":
+        _install_cash_flow_view(db)
+    elif name == "large_transactions":
+        _install_large_transactions_view(db, jpy_rows=1)
+    elif name == "merchant_activity":
+        _install_merchant_activity_view(db, jpy_rows=1)
+    elif name == "recurring_subscriptions":
+        _install_recurring(db)
+    elif name == "spending_trend":
+        _install_spending_trend(db)
+    else:
+        # Not a default: a mistyped name silently installing some other
+        # report's view would mirror that report against this one's
+        # declaration and pass, checking nothing.
+        raise AssertionError(f"no mirror fixture for {name}")
+
+
+@pytest.mark.parametrize(
+    ("runner", "fixture"),
+    [
+        (balance_drift, "balance_drift"),
+        (cash_flow, "cash_flow"),
+        (large_transactions, "large_transactions"),
+        (merchant_activity, "merchant_activity"),
+        (recurring_subscriptions, "recurring_subscriptions"),
+        (spending_trend, "spending_trend"),
+    ],
+    ids=lambda value: value if isinstance(value, str) else "",
+)
+def test_returned_columns_mirror_the_declared_order(
+    db: Database, runner: Runner, fixture: str
+) -> None:
+    """`ReportSpec.columns` is in the order the runner's own SELECT projects.
+
+    A SQL-backed runner builds its own SELECT over the view rather than
+    inheriting the model's projection, so no static read of the model gives the
+    runner's order — the two can only be compared against a real result. The
+    declaration reaches no surface on its own (`column-ordering.md`, "there is
+    one source of column order"), which is exactly why it drifts unnoticed: an
+    author reordering the tuple expecting an effect gets none, and the next
+    reader believes it.
+    """
+    _install_mirror_fixture(db, fixture)
+
+    rows = _rows(db, runner)
+    assert rows, "fixture returned no rows, so the projection is unobservable"
+    returned = list(rows[0])
+    declared = [column.name for column in spec_of(runner).columns]
+
+    assert returned == [name for name in declared if name in rows[0]], (
+        f"{spec_of(runner).report_id} returns {returned}, but declares {declared}"
     )

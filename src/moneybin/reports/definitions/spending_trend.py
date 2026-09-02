@@ -49,7 +49,13 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
     )
     # `currency_code` is part of the grain: without it two rows differing only
     # in currency read as one month's category counted twice.
-    return ("year_month", "category", "currency_code", "total_spend", *comparison)
+    #
+    # Ordered by Rule B, and `total_spend` leads the measure block rather than
+    # ending it: it is the base every comparison here is measured against, and
+    # `column-ordering.md` Rule C gives a comparative's base precedence over
+    # headline-last precisely so a delta is never printed before the quantity
+    # it is a delta of.
+    return ("category", "currency_code", "year_month", "total_spend", *comparison)
 
 
 @report(
@@ -77,13 +83,14 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
         "compare": DataClass.TXN_TYPE,
     },
     columns=(
-        OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
         OutputColumn("category", "Spending category.", DataClass.CATEGORY),
         OutputColumn(
             "currency_code",
             "ISO 4217 currency this row is denominated in; null means unknown.",
             DataClass.CURRENCY,
         ),
+        OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
+        OutputColumn("txn_count", "Outflow transaction count.", DataClass.AGGREGATE),
         OutputColumn(
             "total_spend",
             "Absolute outflow in the month and category.",
@@ -93,7 +100,6 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
             # green — spending reported as earnings.
             money_kind="magnitude",
         ),
-        OutputColumn("txn_count", "Outflow transaction count.", DataClass.AGGREGATE),
         OutputColumn(
             "prev_month_spend",
             "Spend in the previous calendar month.",
@@ -219,7 +225,7 @@ def spending_trend(
     )
 
     ranked = f"""
-        SELECT year_month, category, currency_code, total_spend, txn_count,
+        SELECT category, currency_code, year_month, txn_count, total_spend,
                prev_month_spend, mom_delta, mom_pct,
                prev_year_spend, yoy_delta, yoy_pct,
                trailing_3mo_avg,
@@ -254,7 +260,7 @@ def spending_trend(
     # any prefix of a month holds every currency that fits
     # (multi-currency.md Requirement 5).
     sql = f"""
-        SELECT year_month, category, currency_code, total_spend, txn_count,
+        SELECT category, currency_code, year_month, txn_count, total_spend,
                prev_month_spend, mom_delta, mom_pct,
                prev_year_spend, yoy_delta, yoy_pct,
                trailing_3mo_avg
