@@ -2453,7 +2453,7 @@ def _unmapped_source_fixture(db: Database, *, source: str, staged: bool) -> None
 def test_unmapped_price_source_warns_when_a_bound_row_never_stages(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The binding is accepted and matches, so only the ref_kind CASE can be dropping it.
+    """The binding is accepted and matches, so only the registry can be dropping it.
 
     This is the exact defect that made C.2 inert: PriceService wrote tiingo rows
     for a commit while prep.stg_security_prices mapped only 'plaid', and the
@@ -2483,7 +2483,7 @@ def test_unmapped_price_source_passes_when_the_row_stages(
 def test_unmapped_price_source_ignores_a_row_the_ownership_interval_excluded(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Absent from staging is not the same question as absent from the CASE.
+    """Absent from staging is not the same question as absent from the registry.
 
     `prep.stg_security_prices` bounds each key to the interval its current link
     owns, so a close predating a handover — the previous owner of a recycled

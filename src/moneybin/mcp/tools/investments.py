@@ -52,6 +52,7 @@ from moneybin.mcp.confirmation import (
 )
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.price_sources import FEED_KEY_REF_KINDS
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.investments import (
     InvestmentEventsPayload,
@@ -89,8 +90,7 @@ from moneybin.services.entity_reference import (
     resolve_entity_reference,
 )
 from moneybin.services.investment_service import InvestmentService
-from moneybin.services.security_links_service import (  # noqa: I001
-    _FEED_KEY_REF_KINDS,  # pyright: ignore[reportPrivateUsage]  # the routing set
+from moneybin.services.security_links_service import (
     SecurityLinkAcceptImpact,
     SecurityLinksService,
 )
@@ -669,7 +669,7 @@ def _load_pending_proposal(decision_id: str) -> _MergeProposal:
         for group in groups:
             for candidate in group.candidates:
                 if candidate.decision_id == decision_id:
-                    is_feed_key = group.ref_kind in _FEED_KEY_REF_KINDS
+                    is_feed_key = group.ref_kind in FEED_KEY_REF_KINDS
                     if is_feed_key:
                         # accept_impact answers "what does this merge touch", and
                         # raises when no accepted binding exists to move. A feed
@@ -852,7 +852,7 @@ def _apply_accept(
     with get_database(read_only=False) as db:
         service = SecurityLinksService(db, actor="mcp")
         decision = service.decision_by_id(decision_id)
-        if decision is not None and str(decision["ref_kind"]) in _FEED_KEY_REF_KINDS:
+        if decision is not None and str(decision["ref_kind"]) in FEED_KEY_REF_KINDS:
             # The merge branch's verify_accept re-derives the MERGE impact; a
             # feed-key bind has no such impact, but it still has a blast radius —
             # the sibling candidates its accept auto-rejects — and that radius is

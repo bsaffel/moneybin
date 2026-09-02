@@ -1,0 +1,6 @@
+source_type,source_rank,ref_kind,ref_role,security_types
+override,1,,,
+plaid,2,plaid_security_id,identity,
+tiingo,3,tiingo_ticker,feed_key,bond|equity|etf|mutual_fund
+coingecko,4,coingecko_slug,feed_key,crypto
+trade_implied,5,,,

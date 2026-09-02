@@ -1550,14 +1550,16 @@ class DoctorService:
     def _run_investment_unmapped_price_source(self) -> InvariantResult:
         """Price rows whose ``source_type`` the staging view cannot resolve.
 
-        ``prep.stg_security_prices`` maps each ``source_type`` to a ``ref_kind``
-        through a CASE, then INNER JOINs on the result. An unmapped source makes
-        that CASE return NULL, the comparison UNKNOWN, and the join drop the row
-        — silently, and permanently: unlike an unresolved binding, no number of
-        later accepted bindings will ever surface it, because the failure is in
-        the mapping rather than the binding. C.2 shipped a writer one commit
-        ahead of its mapping and every row it wrote in between was discarded
-        this way, which is why this check exists.
+        ``prep.stg_security_prices`` takes each ``source_type``'s ``ref_kind``
+        from ``seeds.price_source_map``, then INNER JOINs on the result. A source
+        absent from that registry — or carrying no ``ref_kind`` — matches
+        nothing, and the join drops the row silently and permanently: unlike an
+        unresolved binding, no number of later accepted bindings will ever
+        surface it, because the failure is in the registry rather than the
+        binding. C.2 shipped a writer one commit ahead of its mapping and every
+        row it wrote in between was discarded this way, which is why this check
+        exists. Declaring a source now declares both halves at once, so this
+        covers the rows already written and a registry row someone deletes.
 
         The accepted-binding join is what separates the two conditions without
         parsing the model's SQL. A row reaching this query already has an
@@ -1568,14 +1570,14 @@ class DoctorService:
         ingestion, before the resolver has minted a canonical security.
 
         The staging test asks whether the SOURCE stages at all, not whether this
-        row did. An unmapped ``source_type`` is a property of the CASE, so it
+        row did. An unmapped ``source_type`` is a property of the registry, so it
         costs the source every row it will ever write. Correlating row-by-row
         instead read a second, unrelated exclusion as the same failure:
         ``prep.stg_security_prices`` also bounds each key to the interval its
         current link owns, so a close predating a key's handover to a new owner
         — or postdating an automatic retirement — is absent from staging by
         design, and the row-wise form reported its source as unmapped when the
-        CASE arm exists and is correct. What that costs: a mapped source whose
+        registry row exists and is correct. What that costs: a mapped source whose
         entire staging output is empty for some other reason still reports here.
         """
         name = "investment_unmapped_price_source"
@@ -1613,8 +1615,8 @@ class DoctorService:
                     "prep.stg_security_prices has no ref_kind mapping for the "
                     "source, so every observation is discarded and no holding "
                     "is valued from it — this cannot be fixed by accepting "
-                    "bindings and needs the source added to that model's "
-                    "ref_kind CASE"
+                    "bindings and needs the source given a ref_kind in the "
+                    "seeds.price_source_map registry"
                 ),
                 affected_ids=[str(r[0]) for r in rows],
             )

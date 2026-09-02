@@ -47,6 +47,7 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.investments.cost_basis import compute_lot_id
 from moneybin.metrics.registry import SECURITY_LINK_DECISION_OUTCOMES_TOTAL
+from moneybin.price_sources import FEED_KEY_REF_KINDS
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.repositories.manual_investment_transactions_repo import (
     ManualInvestmentTransactionsRepo,
@@ -70,14 +71,6 @@ logger = logging.getLogger(__name__)
 # (lot_id, quantity) pairs keyed by disposal — the shape LotSelectionsRepo takes.
 _SelectionSet = dict[str, list[tuple[str, Decimal]]]
 
-# Refs that name a market-data symbol rather than a second catalog row for one
-# instrument. Accepting one BINDS the feed; accepting an identity ref MERGES two
-# securities — opposite operations behind one reviewer intent, which is why
-# `accept` routes on this set. Kept in step with what PriceService actually
-# queues by test_price_service.py, which asserts every ref_kind the service files
-# appears here: a new adapter whose ref_kind is missing would silently route its
-# decisions into the merge path and destroy the security they were meant to price.
-_FEED_KEY_REF_KINDS = frozenset({"tiingo_ticker", "coingecko_slug"})
 
 # What an accepted decision actually did. A feed key BINDS (creates a link,
 # touches nothing else); an identity ref MERGES (re-points every reference and
@@ -321,13 +314,21 @@ class SecurityLinksService:
     def binds_a_feed_key(ref_kind: str) -> bool:
         """Whether accepting this ref binds a price feed rather than merging identities.
 
+        The set comes from ``seeds.price_source_map``: a source PriceService
+        routes to declares both the security types it prices and the ref_kind it
+        binds, so a new adapter reaches this router by existing rather than by a
+        second edit here. Accepting a feed key BINDS; accepting an identity ref
+        MERGES two securities and deletes one, so a ref_kind missing from the
+        registry would route its decisions into the merge path and destroy the
+        very security they were meant to price.
+
         Public because the coarse batch preflight has to route the same way
         ``accept`` does, one step earlier. Re-deriving the rule from
-        ``_FEED_KEY_REF_KINDS`` at that second call site is exactly how the coarse
+        ``FEED_KEY_REF_KINDS`` at that second call site is exactly how the coarse
         path came to run every accept through the merge preflight while the
         fine-grained one routed correctly.
         """
-        return ref_kind in _FEED_KEY_REF_KINDS
+        return ref_kind in FEED_KEY_REF_KINDS
 
     def _require_bindable(
         self,
@@ -398,7 +399,7 @@ class SecurityLinksService:
         Returns which mechanism ran. The caller cannot see the routing and the
         two outcomes are opposite, so a surface that assumed one would tell the
         user it merged two securities when it only created a link. Re-deriving
-        it from ``_FEED_KEY_REF_KINDS`` in each adapter would put the routing
+        it from ``FEED_KEY_REF_KINDS`` in each adapter would put the routing
         rule in two places instead.
 
         ``in_outer_txn`` lets the coarse batch enter through this same router
