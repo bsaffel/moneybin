@@ -268,6 +268,40 @@ When authoring or modifying a scenario:
 
 This rule applies to YAML scenario expectations, pytest assertions in `tests/scenarios/`, and any future bug-report-driven scenario. See [`docs/specs/testing-scenario-comprehensive.md`](../../docs/specs/testing-scenario-comprehensive.md) for the full taxonomy and contributor recipe.
 
+## Triaging Scenario Failures by Symptom
+
+`ScenarioResult` (`tests/scenarios/_runner/result.py`) reports failures from
+four sources. **Start from the named assertion, expectation, or evaluation, not
+from which field is populated** — fix code before touching a YAML expectation,
+per the derivation rule above.
+
+The runner adds its own fingerprint only when it catches a crash on the way
+out, and that fingerprint always names the phase that crashed. Everything else
+— including a message that looks like a Python exception — was composed by the
+implementation the scenario named, and a callback is free to catch an exception
+and return its text (`tests/scenarios/test_reports_recipe_library.py` does
+exactly that).
+
+| Symptom | What it tells you | Where to look |
+|---|---|---|
+| `halted` non-null | The runner aborted the scenario, and the string says where | Match the text: `catalog wiring failed pre-flight` → the SQLMesh catalog wiring; `pipeline step crashed` → `tests/scenarios/_runner/steps.py` and the called service; `expectations crashed` → the named expectation verifier; `extra_assertions crashed` → that scenario's own callback |
+| Assertion failed, `details` is `{"args": ...}` | `_run_assertion` caught an exception out of the assertion fn | That assertion's own implementation |
+| Evaluation failed, `breakdown` has an `error` key and `value` is `0.0` | `_run_evaluation` caught an exception out of the evaluation fn | That evaluation's own implementation |
+| Any other assertion, expectation, or evaluation failure | The named implementation ran and decided this, and wrote the message itself | That implementation first, then the pipeline step owning the data, then the fixture or scenario YAML if the expectation is stale |
+
+Every halted result carries the passed pre-flight assertion, and the later
+halts carry the scenario's own assertions too, so a populated assertion list is
+not evidence the run got past the phase `halted` names. Read the string.
+
+An assertion's implementation is either the shared assertion library or the
+scenario's own `extra_assertions` callback — the name in the result tells you
+which, and the two fail identically otherwise.
+
+The `Scenarios` CI workflow shards `pytest -m scenarios` four ways and uploads
+one `pytest-json-report` artifact per shard — `scenarios-results-<group>`
+containing `scenarios-<group>.json` (group `1`-`4`) — pull that instead of
+scraping logs.
+
 ## No Shortcuts: Exercise the Real Mechanism
 
 A test or scenario must reach its asserted state through the **same mechanism a
