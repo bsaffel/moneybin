@@ -137,18 +137,12 @@ _SNAPSHOT_SEMANTICS = ReportSemantics(
 
 _HISTORY_COLUMNS = (
     OutputColumn(
-        "period", "Start date of the selected period bucket.", DataClass.TXN_DATE
-    ),
-    OutputColumn(
         "currency_code",
         "ISO 4217 currency this series is denominated in; null means unknown.",
         DataClass.CURRENCY,
     ),
     OutputColumn(
-        "net_worth",
-        "Resolved transaction-adjusted period-end position in currency_code.",
-        DataClass.BALANCE,
-        money_kind="balance",
+        "period", "Start date of the selected period bucket.", DataClass.TXN_DATE
     ),
     OutputColumn(
         "change_abs",
@@ -164,6 +158,12 @@ _HISTORY_COLUMNS = (
         "change_pct",
         "Absolute change divided by prior period-end net worth.",
         DataClass.AGGREGATE,
+    ),
+    OutputColumn(
+        "net_worth",
+        "Resolved transaction-adjusted period-end position in currency_code.",
+        DataClass.BALANCE,
+        money_kind="balance",
     ),
 )
 _HISTORY_CLASSES = {column.name: column.data_class for column in _HISTORY_COLUMNS}
@@ -368,20 +368,24 @@ def _execute_networth_history(
     payload = NetworthService(db).history(from_date, to_date, interval=interval)
     rows = [
         {
-            "period": point.period,
             "currency_code": point.currency_code,
-            "net_worth": point.net_worth,
+            "period": point.period,
             "change_abs": point.change_abs,
             "change_pct": point.change_pct,
+            "net_worth": point.net_worth,
         }
         for point in payload.points
     ]
+    # Parallel to _HISTORY_COLUMNS **by position**, not by the column each entry
+    # names: the `_decimal_column_type` calls below read like they bind to their
+    # argument and do not, so this list has to be reordered whenever that tuple
+    # is (`column-ordering.md`, the service-report exception).
     column_types = [
         "VARCHAR",
         "VARCHAR",
-        _decimal_column_type(rows, "net_worth", fallback="DECIMAL(38,2)"),
         _decimal_column_type(rows, "change_abs", fallback="DECIMAL(38,2)"),
         _decimal_column_type(rows, "change_pct", fallback="DOUBLE"),
+        _decimal_column_type(rows, "net_worth", fallback="DECIMAL(38,2)"),
     ]
     return build_catalog_execution(
         NETWORTH_HISTORY_REPORT,
@@ -591,11 +595,11 @@ NETWORTH_HISTORY_REPORT = ServiceReportSpec(
     # added later narrows the default and says so, instead of silently
     # widening the table past the bar this spec sets.
     default_columns=(
-        "period",
         "currency_code",
-        "net_worth",
+        "period",
         "change_abs",
         "change_pct",
+        "net_worth",
     ),
 )
 
