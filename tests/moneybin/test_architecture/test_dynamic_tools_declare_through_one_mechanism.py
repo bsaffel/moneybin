@@ -1,39 +1,55 @@
 """Every dynamically classified tool declares through a sanctioned mechanism.
 
 `test_classified_envelope_is_the_only_pipeline.py` catches a *re-pasted*
-primitive: a surface module that calls `extract_data_classes`, `derive_tier`,
-or `redact_typed` itself. It cannot see the other shape — a
-``dynamic_classification=True`` tool that hand-builds its envelope and calls
-none of the three. Such a tool trips no source scan while setting its own
-``summary.sensitivity`` and ``classes_returned``: the two fields an agent reads
-before it ever sees the payload, and the two that land in the privacy audit row.
+primitive: a module under `src/moneybin/{mcp,cli}` that calls
+`extract_data_classes`, `derive_tier`, or `redact_typed` itself. It cannot see
+the other shape — a ``dynamic_classification=True`` tool that hand-builds its
+envelope and calls none of the three. Such a tool trips no source scan while
+setting its own ``summary.sensitivity`` and ``classes_returned``: the two fields
+an agent reads before it ever sees the payload, and the two that land in the
+privacy audit row.
 
 So this guard starts from the decorator's registry rather than from source
-calls. Every registered dynamic tool must reach ``build_classified_envelope``,
-which derives both fields from the payload's declared classes. A tool that
-sets either field by hand — anywhere in its call tree, through any callee — is
-declaring outside that mechanism and must be listed in ``SELF_DECLARING_TOOLS``
-with the mechanism it uses instead. The list is asserted by set equality in
-both directions, so a sixth such tool fails until someone adds it deliberately,
-and an entry that stops declaring fails until someone removes it.
+calls, and asks two things of every registered dynamic tool.
 
-Two boundaries, stated rather than implied:
+**It must reach ``build_classified_envelope``**, which derives both fields from
+the payload's declared classes.
 
-- Reachability follows calls by name through ``src/moneybin/mcp`` only, the
-  same roots the sibling guard scans. A call it cannot resolve (a method, a
-  callback passed as an argument, a helper outside those roots) ends that
-  branch, so a tool that moves its envelope building out of the package reads
-  as reaching no mechanism and fails. That is the intended direction: a false
-  alarm is a review, a missed hand-declaration is an unmasked payload.
-- The unit is the tool, not the call site. A finer (module, function) list
-  would pin each branch, but these files are refactored often enough that the
-  churn would land on unrelated PRs; the tool is what an agent calls and what
-  the registry names.
-- The scan is deliberately conservative about *where* the declaration sits: a
-  hand-declared field inside a helper counts even where the tool later rebuilds
-  the envelope through the builder, because that arrangement is one refactor
-  away from returning the helper's envelope instead. Two entries below are that
-  shape, and each says why the hand-declared value does not reach the wire.
+**Its call tree must not build an envelope any other way.** Not "must build one
+correctly somewhere" — a tool whose success branch classifies properly and whose
+second branch returns a bare ``build_envelope(data=…)`` ships that branch with
+whatever the constructor defaults, and one builder call elsewhere is not
+coverage for it. So *any* reachable `build_envelope` / `build_error_envelope` /
+`ResponseEnvelope(...)` counts, and so does passing ``sensitivity=`` or
+``classes_returned=`` to any callee at all — including a decorator factory that
+stamps a finished envelope. Naming the fields and the constructors, rather than
+one blessed call site, is what stops the rule from buying exactly one round
+against the next shape.
+
+A tool that does either is listed in ``BUILDS_OUTSIDE_THE_CLASSIFIER`` with the
+mechanism it uses instead. The list is asserted by set equality in both
+directions, so a seventh such tool fails until someone adds it deliberately, and
+an entry that stops applying fails until someone removes it.
+
+Three boundaries, stated rather than implied:
+
+- Reachability follows calls by name through ``src/moneybin/mcp``. The sibling
+  guard scans `cli` too; this one does not, because an MCP tool's envelope is
+  built on the MCP surface and `_mcp_module_path` resolves nothing outside it. A
+  call it cannot resolve (a method, a callback passed as an argument, a helper
+  in another package) ends that branch, so a tool that moves its envelope
+  building out of `mcp/` reads as reaching nothing and fails. That is the
+  intended direction: a false alarm is a review, a missed hand-declaration is an
+  unmasked payload.
+- The unit is the tool, not the call site. A finer (module, function) list would
+  pin each branch, but these files are refactored often enough that the churn
+  would land on unrelated PRs; the tool is what an agent calls and what the
+  registry names.
+- Where the construction sits does not excuse it. A raw envelope built inside a
+  helper counts even where the tool later rebuilds through the classifier,
+  because that arrangement is one refactor away from returning the helper's
+  envelope instead. Three entries below are that shape, and each records why the
+  unclassified value does not reach the wire today.
 """
 
 from __future__ import annotations
@@ -57,15 +73,22 @@ MCP_ROOT = REPO_ROOT / "src" / "moneybin" / "mcp"
 # Taken from the symbol so a rename cannot leave the scan hunting a dead name.
 BUILDER = build_classified_envelope.__name__
 
+# Building an envelope through any of these is building it without the
+# classifier, whatever the branch does with the result afterwards.
+RAW_CONSTRUCTORS = frozenset({
+    build_envelope.__name__,
+    "build_error_envelope",
+    ResponseEnvelope.__name__,
+})
+
 # Passing either as a keyword IS the hand-declaration, whatever the callee is
-# named — `build_envelope`, an error builder, or a decorator factory that
-# stamps the finished envelope. Naming the fields rather than the constructors
-# is what keeps the rule from buying exactly one round against the next shape.
+# named — a constructor, or a decorator factory that stamps the finished
+# envelope.
 DECLARED_FIELDS = frozenset({"sensitivity", "classes_returned"})
 
-# Registered dynamic tools whose call tree sets a declared field by hand, and
-# the mechanism each one declares from instead of the payload's annotations.
-SELF_DECLARING_TOOLS: dict[str, str] = {
+# Registered dynamic tools whose call tree builds an envelope outside the
+# classifier or sets a declared field by hand, and the mechanism each uses.
+BUILDS_OUTSIDE_THE_CLASSIFIER: dict[str, str] = {
     "reports": (
         "The `@report` declared-class contract. A report's rows are arbitrary "
         "SQL-produced columns that payload-type introspection cannot classify, "
@@ -83,28 +106,50 @@ SELF_DECLARING_TOOLS: dict[str, str] = {
     "sql_schema": (
         "Declared constants for a curated schema document — table names, column "
         "comments, and example queries. The payload carries no user data and no "
-        "typed contract, so there is nothing for the builder to classify."
+        "typed contract, so there is nothing for the classifier to read."
     ),
     "import_preview": (
-        "Its preview helpers declare `sensitivity` themselves — the PDF "
+        "Its preview helpers build and declare their own envelopes — the PDF "
         "confirmation branches on a bare dict, the tabular branch beside a "
-        "typed payload. The registered tool consumes those envelopes as "
-        "intermediate values and returns, at its single exit, one the builder "
-        "produced from the payload it assembles, so the hand-declared value "
-        "does not reach the wire through this tool."
+        "typed payload. The registered tool consumes those as intermediate "
+        "values and returns, at its single exit, one the classifier produced "
+        "from the payload it assembles."
     ),
     "gsheet_connect": (
-        "Its internal helpers carry `@internal_envelope_adapter(sensitivity=…)`, "
-        "which stamps a static sensitivity on what they return. The registered "
-        "tool rebuilds all three success branches through the builder and "
-        "passes a helper envelope through only when it carries an error."
+        "Its internal helpers build raw envelopes and carry "
+        "`@internal_envelope_adapter(sensitivity=…)`, which stamps a static "
+        "sensitivity on what they return. The registered tool rebuilds all "
+        "three success branches through the classifier and passes a helper "
+        "envelope through only when it carries an error."
+    ),
+    "sync_status": (
+        "`sync_status` and `sync_link_status` build raw envelopes that declare "
+        "nothing, so they take the constructor's `low` default. The registered "
+        "coarse tool reads their payloads apart and returns, at its single "
+        "exit, one the classifier built — the defaulted envelopes are never "
+        "the returned value."
     ),
 }
 
 # Where the sanctioned mechanism is a *derivation*, a literal is the silent
 # downgrade set equality cannot see: swapping `result.tier` for "low" keeps the
-# tool on this list while turning its declaration into an assertion.
+# tool on this list while turning its declaration into an assertion. Tracked per
+# field, because hardcoding one of the two while the other stays derived is the
+# same defect on half the contract.
 MUST_DERIVE_ITS_DECLARATION = frozenset({"reports", "sql_query"})
+
+
+@dataclass(frozen=True, slots=True)
+class Construction:
+    """One envelope built without the classifier, and where it lives."""
+
+    module: str
+    function: str
+    constructor: str
+
+    def __str__(self) -> str:
+        """Render the site the way the assertion message needs to name it."""
+        return f"{self.module}:{self.function} builds {self.constructor}()"
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,12 +160,15 @@ class Declaration:
     function: str
     callee: str
     fields: tuple[str, ...]
-    literal: bool
+    literal_fields: tuple[str, ...]
 
     def __str__(self) -> str:
         """Render the site the way the assertion message needs to name it."""
         rendered = ", ".join(f"{field}=" for field in self.fields)
-        return f"{self.module}:{self.function} calls {self.callee}({rendered})"
+        site = f"{self.module}:{self.function} calls {self.callee}({rendered})"
+        if not self.literal_fields:
+            return site
+        return f"{site} with {', '.join(self.literal_fields)} spelled out"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,15 +176,23 @@ class Mechanism:
     """What a tool's call tree does about its envelope's declared fields."""
 
     reaches_builder: bool
+    constructions: tuple[Construction, ...]
     declarations: tuple[Declaration, ...]
 
     @property
-    def self_declares(self) -> bool:
-        return bool(self.declarations)
+    def builds_outside_the_classifier(self) -> bool:
+        return bool(self.constructions or self.declarations)
 
     @property
-    def reaches_no_mechanism(self) -> bool:
-        return not self.reaches_builder and not self.declarations
+    def reaches_nothing(self) -> bool:
+        """No classifier call, no construction, no declaration anywhere."""
+        return not self.reaches_builder and not self.builds_outside_the_classifier
+
+    def sites(self) -> list[str]:
+        return sorted(
+            [str(site) for site in self.constructions]
+            + [str(site) for site in self.declarations]
+        )
 
 
 def _call_name(node: ast.Call) -> str | None:
@@ -158,22 +214,18 @@ def _is_literal(node: ast.expr) -> bool:
 
 
 def _declaration(node: ast.Call, *, module: str, function: str) -> Declaration | None:
-    fields = tuple(
-        sorted(
-            keyword.arg for keyword in node.keywords if keyword.arg in DECLARED_FIELDS
-        )
-    )
-    if not fields:
+    declared = [keyword for keyword in node.keywords if keyword.arg in DECLARED_FIELDS]
+    if not declared:
         return None
     return Declaration(
         module=module,
         function=function,
         callee=_call_name(node) or "<computed>",
-        fields=fields,
-        literal=all(
-            _is_literal(keyword.value)
-            for keyword in node.keywords
-            if keyword.arg in DECLARED_FIELDS
+        fields=tuple(sorted(str(keyword.arg) for keyword in declared)),
+        literal_fields=tuple(
+            sorted(
+                str(keyword.arg) for keyword in declared if _is_literal(keyword.value)
+            )
         ),
     )
 
@@ -199,14 +251,21 @@ def _mcp_module_path(dotted: str) -> Path | None:
 
 
 def _index(path: Path) -> _ModuleIndex:
-    """Return a module's function definitions and its ``moneybin.mcp`` imports."""
+    """Return a module's top-level functions and its ``moneybin.mcp`` imports.
+
+    Only module-level ``def``s are indexed. Keying every nested and method
+    definition by bare name would silently resolve a call to whichever
+    same-named body happened to be walked last, and this tree already carries
+    such collisions. A nested helper is not lost by the restriction: it sits
+    inside its enclosing function's body, which the caller walks whole.
+    """
     cached = _INDEX_CACHE.get(path)
     if cached is not None:
         return cached
     tree = ast.parse(path.read_text(encoding="utf-8"))
     functions = {
         node.name: node
-        for node in ast.walk(tree)
+        for node in tree.body
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
     }
     imports: dict[str, tuple[Path, str]] = {}
@@ -233,11 +292,13 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
     """
     functions, _ = _index(path)
     assert function in functions, (
-        f"{path.name} does not define {function}(); the registry and the source "
-        "disagree, so the guard cannot tell which mechanism the tool uses."
+        f"{path.name} does not define a module-level {function}(); the registry "
+        "and the source disagree, so the guard cannot tell which mechanism the "
+        "tool uses."
     )
 
     reaches_builder = False
+    constructions: list[Construction] = []
     declarations: list[Declaration] = []
     seen: set[tuple[Path, str]] = set()
     pending: list[tuple[Path, str]] = [(path, function)]
@@ -277,6 +338,14 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                 continue
             if callee == BUILDER:
                 reaches_builder = True
+            elif callee in RAW_CONSTRUCTORS:
+                constructions.append(
+                    Construction(
+                        module=current_path.name,
+                        function=current_name,
+                        constructor=callee,
+                    )
+                )
             if callee in current_functions:
                 pending.append((current_path, callee))
             elif callee in imports:
@@ -284,6 +353,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
 
     return Mechanism(
         reaches_builder=reaches_builder,
+        constructions=tuple(dict.fromkeys(constructions)),
         declarations=tuple(dict.fromkeys(declarations)),
     )
 
@@ -309,84 +379,110 @@ async def _dynamic_tool_mechanisms() -> dict[str, Mechanism]:
     return mechanisms
 
 
-async def test_every_dynamic_tool_reaches_a_sanctioned_mechanism() -> None:
-    """A tool that neither builds nor declares has no classification at all."""
+async def test_every_dynamic_tool_reaches_a_classification_mechanism() -> None:
+    """A tool whose tree resolves to nothing has no classification at all."""
     mechanisms = await _dynamic_tool_mechanisms()
     assert mechanisms, "no dynamic-classification tools found; the guard is inert"
 
-    # Deliberately not gated on SELF_DECLARING_TOOLS: a tool that declares by
-    # hand is the sibling test's subject, listed or not, so keeping it out here
-    # leaves each test with a fixture only it can catch.
+    # Deliberately not gated on the exemption list: a tool that builds an
+    # envelope outside the classifier is the sibling test's subject, listed or
+    # not, so keeping it out here leaves each test a fixture only it can catch.
     stranded = sorted(
-        name for name, mechanism in mechanisms.items() if mechanism.reaches_no_mechanism
+        name for name, mechanism in mechanisms.items() if mechanism.reaches_nothing
     )
     assert not stranded, (
-        "These dynamic_classification=True tools reach neither "
-        f"{BUILDER}() nor a declaration of their own, so summary.sensitivity "
-        "and classes_returned are whatever build_envelope() defaulted to. "
-        "Route them through the builder, or — if the payload genuinely cannot "
-        "be classified from its type — declare the mechanism in "
-        f"SELF_DECLARING_TOOLS: {stranded}"
+        "These dynamic_classification=True tools build no envelope this guard "
+        f"can see — no {BUILDER}(), no constructor, no declaration — so their "
+        "summary.sensitivity and classes_returned come from somewhere it cannot "
+        "check. Build the envelope on the MCP surface through the builder, or "
+        f"say in the module docstring why the tree ends where it does: {stranded}"
     )
 
 
-async def test_self_declaring_tools_are_exactly_the_sanctioned_set() -> None:
-    """Set equality both ways: a new hand-declaration is a deliberate act."""
+async def test_envelopes_built_outside_the_classifier_are_the_sanctioned_set() -> None:
+    """Set equality both ways: a new unclassified build is a deliberate act."""
     mechanisms = await _dynamic_tool_mechanisms()
-    actual = {name for name, m in mechanisms.items() if m.self_declares}
+    actual = {name for name, m in mechanisms.items() if m.builds_outside_the_classifier}
 
-    unlisted = sorted(actual - set(SELF_DECLARING_TOOLS))
+    unlisted = sorted(actual - set(BUILDS_OUTSIDE_THE_CLASSIFIER))
     assert not unlisted, (
-        "These dynamic_classification=True tools set summary.sensitivity or "
-        "classes_returned by hand instead of deriving both from the payload's "
-        f"declared classes via {BUILDER}(). Route them through the builder, or "
-        "add a SELF_DECLARING_TOOLS entry naming the mechanism they declare "
-        "from: "
+        "These dynamic_classification=True tools build an envelope without "
+        f"{BUILDER}(), or set summary.sensitivity / classes_returned by hand, "
+        "somewhere in their call tree. One correct branch elsewhere does not "
+        "cover the branch that does it. Route them through the builder, or add "
+        "a BUILDS_OUTSIDE_THE_CLASSIFIER entry naming the mechanism: "
         + "; ".join(
-            f"{name} — " + ", ".join(str(d) for d in mechanisms[name].declarations)
-            for name in unlisted
+            f"{name} — " + ", ".join(mechanisms[name].sites()) for name in unlisted
         )
     )
 
-    stale = sorted(set(SELF_DECLARING_TOOLS) - actual)
+    stale = sorted(set(BUILDS_OUTSIDE_THE_CLASSIFIER) - actual)
     assert not stale, (
-        "SELF_DECLARING_TOOLS names tools that no longer declare a field by "
-        "hand (or are no longer registered as dynamic). Drop the entries so "
-        f"the exemption cannot cover a future one silently: {stale}"
+        "BUILDS_OUTSIDE_THE_CLASSIFIER names tools that no longer build an "
+        "envelope outside the classifier (or are no longer registered as "
+        "dynamic). Drop the entries so the exemption cannot cover a future one "
+        f"silently: {stale}"
+    )
+
+
+async def test_every_dynamic_tool_reaches_the_classifier_or_is_listed() -> None:
+    """A tool declaring from another mechanism is on the list; the rest build."""
+    mechanisms = await _dynamic_tool_mechanisms()
+    missing = sorted(
+        name
+        for name, mechanism in mechanisms.items()
+        if not mechanism.reaches_builder and name not in BUILDS_OUTSIDE_THE_CLASSIFIER
+    )
+    assert not missing, (
+        f"These dynamic_classification=True tools never call {BUILDER}(), so "
+        "nothing derives their declared fields from the payload's classes: "
+        f"{missing}"
     )
 
 
 async def test_derived_declarations_are_not_quietly_replaced_by_literals() -> None:
-    """The two derived mechanisms must keep deriving, not assert a constant."""
+    """The two derived mechanisms must keep deriving — per field, not in bulk."""
     mechanisms = await _dynamic_tool_mechanisms()
-    assert MUST_DERIVE_ITS_DECLARATION <= set(SELF_DECLARING_TOOLS), (
-        "MUST_DERIVE_ITS_DECLARATION names a tool that is not self-declaring"
+    assert MUST_DERIVE_ITS_DECLARATION <= set(BUILDS_OUTSIDE_THE_CLASSIFIER), (
+        "MUST_DERIVE_ITS_DECLARATION names a tool that is not on the list"
     )
 
     asserted = sorted(
         str(declaration)
         for name in MUST_DERIVE_ITS_DECLARATION
         for declaration in mechanisms[name].declarations
-        if declaration.literal
+        if declaration.literal_fields
     )
     assert not asserted, (
-        "These declarations are spelled out rather than derived from the "
-        "mechanism SELF_DECLARING_TOOLS credits them with, which downgrades "
-        "the field an agent reads before the payload without changing any "
-        f"list this guard checks: {asserted}"
+        "These fields are spelled out rather than derived from the mechanism "
+        "BUILDS_OUTSIDE_THE_CLASSIFIER credits the tool with, which downgrades "
+        "what an agent reads before the payload without changing any list this "
+        f"guard checks: {asserted}"
     )
 
 
-def _probe_reaching_no_mechanism() -> ResponseEnvelope[Any]:
-    """Stand-in for a tool that hand-builds and classifies nothing."""
+def _probe_reaching_nothing() -> ResponseEnvelope[Any]:
+    """Stand-in for a tool whose envelope comes from outside the scanned tree."""
+    return _elsewhere()
+
+
+def _elsewhere() -> Any:
+    """Unresolvable to the scan on purpose — it builds no envelope itself."""
+    raise NotImplementedError
+
+
+def _probe_building_outside_the_classifier() -> ResponseEnvelope[Any]:
+    """Stand-in for a branch that builds a raw envelope and declares nothing."""
+    if _elsewhere():
+        return build_classified_envelope({"probe": True})
     return build_envelope(data={"probe": True})
 
 
-def _probe_declaring_its_own_fields() -> ResponseEnvelope[Any]:
-    """Stand-in for a tool that declares both fields itself."""
+def _probe_declaring_one_field_by_hand() -> ResponseEnvelope[Any]:
+    """Stand-in for a partial swap: one field derived, the other spelled out."""
     return build_envelope(
         data={"probe": True},
-        sensitivity="low",
+        sensitivity=_elsewhere(),
         classes_returned=["aggregate"],
     )
 
@@ -405,14 +501,25 @@ def test_declared_fields_still_name_real_envelope_fields() -> None:
 
 def test_the_analysis_can_return_a_failing_verdict() -> None:
     """A guard that has never gone red is indistinguishable from an inert one."""
-    stranded = mechanism_of(Path(__file__), _probe_reaching_no_mechanism.__name__)
-    assert stranded.reaches_no_mechanism
-    assert not stranded.self_declares
+    stranded = mechanism_of(Path(__file__), _probe_reaching_nothing.__name__)
+    assert stranded.reaches_nothing
 
-    declaring = mechanism_of(Path(__file__), _probe_declaring_its_own_fields.__name__)
-    assert declaring.self_declares
-    assert not declaring.reaches_builder
-    assert [d.fields for d in declaring.declarations] == [
+    # The finding both reviewers raised on the first cut: one correct branch
+    # must not cover a sibling branch that builds the envelope raw.
+    mixed = mechanism_of(
+        Path(__file__), _probe_building_outside_the_classifier.__name__
+    )
+    assert mixed.reaches_builder
+    assert mixed.builds_outside_the_classifier
+    assert not mixed.reaches_nothing
+    assert [site.constructor for site in mixed.constructions] == [
+        build_envelope.__name__
+    ]
+
+    # Literalness is tracked per field, so hardcoding one of the two is caught
+    # while the other stays derived.
+    partial = mechanism_of(Path(__file__), _probe_declaring_one_field_by_hand.__name__)
+    assert [d.fields for d in partial.declarations] == [
         ("classes_returned", "sensitivity")
     ]
-    assert all(d.literal for d in declaring.declarations)
+    assert [d.literal_fields for d in partial.declarations] == [("classes_returned",)]
