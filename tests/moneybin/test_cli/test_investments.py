@@ -373,6 +373,73 @@ class TestSecuritiesAddAndBuy:
         assert "Traceback" not in result.stderr
         assert "negative" in result.stderr.lower()
 
+    @pytest.mark.unit
+    def test_add_without_currency_stores_no_currency(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """An omitted ``--currency`` writes NULL, for core to inherit onto.
+
+        A default of ``"USD"`` here labels a EUR account's lot in dollars before
+        ``core.fct_investment_transactions`` gets the chance to inherit the
+        account's own currency (multi-currency.md Requirement 3).
+        """
+        _add_security(runner, name="Apple Inc.", type_="equity", ticker="AAPL")
+        result = runner.invoke(
+            app,
+            [
+                "investments",
+                "add",
+                "--account",
+                "acct_brokerage",
+                "--security",
+                "AAPL",
+                "--type",
+                "buy",
+                "--date",
+                "2024-01-15",
+                "--quantity",
+                "10",
+                "--amount",
+                "-1500.00",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        rows = db.conn.execute(
+            "SELECT currency_code FROM raw.manual_investment_transactions"
+        ).fetchall()
+        assert rows == [(None,)]
+
+    @pytest.mark.unit
+    def test_add_with_currency_stores_it(self, runner: CliRunner, db: Database) -> None:
+        """A supplied ``--currency`` is still stored verbatim."""
+        _add_security(runner, name="Apple Inc.", type_="equity", ticker="AAPL")
+        result = runner.invoke(
+            app,
+            [
+                "investments",
+                "add",
+                "--account",
+                "acct_brokerage",
+                "--security",
+                "AAPL",
+                "--type",
+                "buy",
+                "--date",
+                "2024-01-15",
+                "--quantity",
+                "10",
+                "--amount",
+                "-1500.00",
+                "--currency",
+                "EUR",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        rows = db.conn.execute(
+            "SELECT currency_code FROM raw.manual_investment_transactions"
+        ).fetchall()
+        assert rows == [("EUR",)]
+
 
 # ---------------------------------------------------------------------------
 # investments list

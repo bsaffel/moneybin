@@ -139,8 +139,11 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # and an agent that cannot read the field from the description never asks
     # for it — paid for by tightening the prose around it, which is why this
     # lands 4 bytes under the pre-provenance figure. -64.1% against the four
-    # tools it replaced.
-    "investments": (1_761, 4_908),
+    # tools it replaced. One further byte says what `withheld` actually means:
+    # it covered only a wrong share count, and a position is also withheld when
+    # its lots disagree on currency — an agent reading the old wording sends the
+    # user to reconcile shares that are already right.
+    "investments": (1_762, 4_908),
     "transactions": (1_287, 2_383),
     "transactions_categorize_rules": (564, 318),
     "reviews": (703, 8_687),

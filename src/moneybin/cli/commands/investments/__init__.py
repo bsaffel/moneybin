@@ -29,6 +29,7 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    currency_label,
     echo_applied_rates,
     output_option,
     quiet_option,
@@ -114,7 +115,11 @@ def investments_add(
         "--event-group",
         help="Link this event to an existing economic-event group",
     ),
-    currency: str = typer.Option("USD", "--currency", help="ISO-4217 currency code"),
+    currency: str | None = typer.Option(
+        None,
+        "--currency",
+        help="ISO-4217 currency code; defaults to the account's own currency",
+    ),
     description: str | None = typer.Option(
         None, "--description", help="Free-text description"
     ),
@@ -208,7 +213,7 @@ def investments_list(
         sec = row.security_id or "-"
         typer.echo(
             f"{row.trade_date}  {row.type:<12} {sec:<10} qty={row.quantity} "
-            f"amt={row.amount} {row.currency_code}"
+            f"amt={row.amount} {currency_label(row.currency_code)}"
         )
 
 
@@ -268,7 +273,8 @@ def investments_holdings(
         typer.echo(
             f"{row.security_id:<10} qty={row.quantity} "
             f"cost_basis={row.cost_basis} avg_cost={avg} "
-            f"market_value={value} unrealized_gain={gain} {row.currency_code} "
+            f"market_value={value} unrealized_gain={gain} "
+            f"{currency_label(row.currency_code)} "
             f"status={row.valuation_status}{as_of}"
         )
     if result.rows:

@@ -165,6 +165,22 @@ Numbered, testable. Tagged by phase.
    `prep.stg_plaid__balances`, the tabular `currency` column) → `NULL`. Until this
    landed, Requirement 8's unknown-currency rule and Requirement 6's `fail` branch
    were both unreachable in production.
+   **Extended to the investment grain 2026-09-01.** The manual investment write
+   path was the last one still substituting a literal: the CLI option, the MCP
+   adapter, the service parameter, the `raw.manual_investment_transactions` DDL
+   default and a staging `COALESCE` each supplied `'USD'` for an omitted
+   currency, so a foreign-currency brokerage account's lots were denominated in
+   dollars before cost basis and realized gains read them. All five are gone;
+   `core.fct_investment_transactions` now resolves
+   `COALESCE(event.currency_code, account.currency_code)`, the same expression
+   `core.fct_transactions` uses for the cash grain. Rows written before the fix
+   keep their stored `'USD'`: every write path passed it explicitly, so a
+   fabricated value is indistinguishable from a typed one and a backfill would
+   erase real answers. `accounts set --currency` repairs an event carrying no
+   currency; one already carrying a wrong value has no in-product remedy yet,
+   because a manual investment event has no delete or revert. `app.securities.currency_code` still carries
+   `NOT NULL DEFAULT 'USD'` — a catalog entry has no account to inherit from, so
+   removing that literal needs a nullability decision of its own.
 4. **Home currency setting.** A profile-level `home_currency` (ISO 4217), **mutable**,
    defaulted by **locale auto-detection with explicit user confirmation** in the
    [first-run wizard](mcp-first-run-setup.md). Distinct from per-account currency. It is

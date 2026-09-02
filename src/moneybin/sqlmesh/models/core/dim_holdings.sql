@@ -50,6 +50,8 @@ WITH positions AS (
     )::DECIMAL(28, 10) AS average_cost,
     MAX(l.currency_code) AS currency_code,
     COUNT(DISTINCT l.currency_code) AS currency_count,
+    COUNT(*) FILTER(WHERE
+      l.currency_code IS NULL) AS unknown_currency_lots,
     MIN(l.acquisition_date) AS earliest_acquisition_date,
     BOOL_OR(l.basis_incomplete::BOOLEAN) AS basis_incomplete,
     MAX(l.updated_at) AS updated_at
@@ -255,7 +257,15 @@ WITH positions AS (
      lots recorded in more than one currency (the manual event API takes --currency per
      event) have no single close to value the combined quantity against, so quantity x
      price would multiply a mixed-unit sum by one currency's price. Withheld until the
-     lots agree; the arbitrary MAX(currency_code) picked above never reaches a figure. */
+     lots agree; the arbitrary MAX(currency_code) picked above never reaches a figure.
+
+     Its second arm catches the disagreement the count cannot see. COUNT(DISTINCT) ignores
+     NULL, so a lot with no currency beside a known one counts as a single currency and
+     would value the combined quantity at that currency's close, folding an amount with no
+     unit into one that has one. An unknown unit does not agree with a known unit. Lots
+     that are ALL unknown are deliberately not withheld: they disagree with nothing, carry
+     no resolvable close either way (the price join matches on currency, which no NULL
+     satisfies), and land 'unpriced' — the honest label for a unit nobody has stated. */
   SELECT
     pos.account_id,
     pos.security_id,
@@ -290,7 +300,10 @@ WITH positions AS (
           erp.account_id = pos.account_id AND erp.security_id = pos.security_id
       )
     )
-    OR pos.currency_count > 1 AS is_withheld
+    OR pos.currency_count > 1
+    OR (
+      pos.currency_count = 1 AND pos.unknown_currency_lots > 0
+    ) AS is_withheld
   FROM positions AS pos
   LEFT JOIN provider_reported AS pr
     ON pr.account_id = pos.account_id AND pr.security_id = pos.security_id

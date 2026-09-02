@@ -47,7 +47,7 @@ If you sum `outflow` from `cash_flow` and `total_spend` from `spending_trend` in
 
 ### Currency handling
 
-`core.fct_transactions.currency_code` and `core.dim_accounts.currency_code` are ISO 4217 strings. `fct_transactions.currency_code` resolves to the transaction's own captured currency (from OFX `CURDEF` or Plaid), else its account's `currency_code`, else `NULL`; `dim_accounts.currency_code` resolves to the user's `accounts set --currency` override, else the currency the account's own source reported (OFX `CURDEF`, Plaid `iso_currency_code`, the tabular `currency` column), else `NULL`. There is no `'USD'` fallback: an account nobody stated a currency for is unknown, and `moneybin system doctor` reports it rather than guessing.
+`core.fct_transactions.currency_code`, `core.fct_investment_transactions.currency_code` and `core.dim_accounts.currency_code` are ISO 4217 strings. `fct_transactions.currency_code` resolves to the transaction's own captured currency (from OFX `CURDEF` or Plaid), else its account's `currency_code`, else `NULL`, and `fct_investment_transactions.currency_code` resolves the same way from the event's own currency (typed at `investments add`, or reported by Plaid); `dim_accounts.currency_code` resolves to the user's `accounts set --currency` override, else the currency the account's own source reported (OFX `CURDEF`, Plaid `iso_currency_code`, the tabular `currency` column), else `NULL`. There is no `'USD'` fallback: an account nobody stated a currency for is unknown, and `moneybin system doctor` reports it rather than guessing.
 
 Every `reports.*` view that sums money carries a `currency_code` column and groups by it, so a mixed-currency profile gets one sub-total per currency rather than one combined number. A `NULL` currency is its own segment — never resolved to the home currency, because that guess is one nothing downstream could flag. All unknown-currency rows share that one segment and are summed together, since nothing distinguishes two unknowns; `moneybin system doctor` fails on any of them, and `accounts set --currency` is the fix. `reports.net_worth` is one row per `(balance_date, currency_code)`; a consumer that re-aggregates it must keep `currency_code` in its own `GROUP BY` or it re-blends what the view separated. `reports.balance_drift` projects `currency_code` without grouping by it — asserted and computed balances belong to the same account, so the comparison is single-currency by construction.
 
@@ -345,7 +345,7 @@ Current positions: the sum of open lots per `(account_id, security_id)` — a "n
 | `price_date` | DATE | Date of the close used (may be earlier than today). NULL exactly when `market_value` is NULL. |
 | `price_source` | VARCHAR | `source_type` that supplied the close (see `core.fct_security_prices`). NULL exactly when `price_date` is NULL. |
 | `days_since_observed` | INTEGER | `CURRENT_DATE − price_date`. NULL exactly when `price_date` is NULL. |
-| `valuation_status` | VARCHAR | `valued` (priced as of today) \| `carried_forward` (priced, but the close predates today) \| `unpriced` (no usable close resolved) \| `withheld` (the share count is known wrong — a broker snapshot contradiction, an unreconciled split, or a fresh snapshot that dropped a position the ledger still carries). A `withheld` row publishes **no** pricing at all: `market_value`, `unrealized_gain`, `price_date`, `price_source`, `days_since_observed` are all NULL even if a fresh close did resolve — the close itself is not lost, it stays queryable in `core.fct_security_prices`. |
+| `valuation_status` | VARCHAR | `valued` (priced as of today) \| `carried_forward` (priced, but the close predates today) \| `unpriced` (no usable close resolved) \| `withheld` (the figure cannot be trusted — either a known-wrong share count, from a broker snapshot contradiction, an unreconciled split, or a fresh snapshot that dropped a position the ledger still carries; or open lots that disagree on currency, including one lot with a known currency beside one with none, which leaves no single close to value the combined quantity against). A `withheld` row publishes **no** pricing at all: `market_value`, `unrealized_gain`, `price_date`, `price_source`, `days_since_observed` are all NULL even if a fresh close did resolve — the close itself is not lost, it stays queryable in `core.fct_security_prices`. |
 | `provider_reported_quantity` | DECIMAL(28,10) | **NON-AUTHORITATIVE.** The broker's claimed open units from its newest holdings snapshot; reconciliation reference only, never blended into `quantity`. NULL when the broker's newest snapshot doesn't report this position. |
 | `provider_reported_cost_basis` | DECIMAL(18,2) | NON-AUTHORITATIVE broker claim; same NULL rule. |
 | `provider_reported_value` | DECIMAL(18,2) | NON-AUTHORITATIVE broker claim; MoneyBin's own `market_value` is never derived from this. |
@@ -373,12 +373,12 @@ The canonical investment-transaction ledger. Grain: one row per `investment_tran
 | `price` | DECIMAL(28,10) | Per-unit price; NULL for non-priced events. |
 | `amount` | DECIMAL(18,2) | Signed cash effect: negative = out (buy), positive = in (sell/dividend). Every branch arrives in this convention already — never re-flip a provider's sign downstream. |
 | `fees` | DECIMAL(18,2) | Fee/commission component, folded into cost basis. |
-| `currency_code` | VARCHAR | Denominating currency; no FX in v1. |
+| `currency_code` | VARCHAR | Denominating currency; no FX in v1. The event's own captured currency, else its account's `currency_code`, else `NULL` — the same resolution `fct_transactions` uses, and there is no `'USD'` fallback. |
 | `provider_type`, `provider_subtype` | VARCHAR | Provider's original type/subtype strings (e.g. Plaid's), preserved verbatim for audit. NULL for manual and bootstrap rows. Never a ledger input — `type` is the closed taxonomy. |
 | `source_type` | VARCHAR | Origin tag: `manual` \| `plaid`. |
 | `source_origin` | VARCHAR | Institution/connection scope. |
 | `description` | VARCHAR | Free-text description. |
-| `updated_at` | TIMESTAMP | The row's own staging `created_at` (single source; no app-layer joins yet). Does not advance on idempotent SQLMesh re-applies. |
+| `updated_at` | TIMESTAMP | The row's own staging `created_at`. Does not advance on idempotent SQLMesh re-applies, nor when an inherited `currency_code` changes because the account's own currency was edited. |
 
 Logical grain key: `investment_transaction_id`.
 

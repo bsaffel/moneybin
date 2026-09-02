@@ -93,7 +93,7 @@ def _seed_position(
     *,
     security_id: str = _DEFAULT_SECURITY_ID,
     account_id: str = "acc_1",
-    currency_code: str = "USD",
+    currency_code: str | None = "USD",
     price: str | None = "100.00",
     transaction_id: str = "buy_1",
     trade_date: date = _POSITION_TRADE_DATE,
@@ -664,6 +664,28 @@ def valuation_cases_template(
         close="120.00",
         extracted_at="2099-01-01 00:00:00",
     )
+
+    unknown_security = security("unknown_currency_mix")
+    unknown_account = account("unknown_currency_mix")
+    _seed_position(
+        db,
+        account_id=unknown_account,
+        security_id=unknown_security,
+        transaction_id=f"{origin('unknown_currency_mix')}_eur",
+        currency_code="EUR",
+    )
+    _seed_position(
+        db,
+        account_id=unknown_account,
+        security_id=unknown_security,
+        transaction_id=f"{origin('unknown_currency_mix')}_unknown",
+        currency_code=None,
+        trade_date=date(2026, 1, 6),
+        quantity="5",
+        price="90.00",
+        amount="-450.00",
+    )
+    _seed_price(db, security_id=unknown_security, price_date=anchor, close="120.00")
 
     mixed_security = security("mixed_currency")
     mixed_account = account("mixed_currency")
@@ -1289,6 +1311,31 @@ def test_updated_at_reflects_an_omitting_snapshot(
     )
     assert row[1] == datetime(2099, 1, 1), (
         "the omitting pull's receipt freshness must fold into the row watermark"
+    )
+
+
+@pytest.mark.slow
+def test_an_unknown_currency_lot_withholds_the_value_too(
+    valuation_cases: _ValuationCases,
+) -> None:
+    """A lot with no currency beside a EUR lot is a mixed unit the count cannot see.
+
+    ``COUNT(DISTINCT currency_code)`` ignores NULL, so a NULL lot plus a EUR lot counts
+    as one currency and slips past the ``currency_count > 1`` guard — the position then
+    values the combined quantity at the EUR close. The guard exists for lots that do not
+    agree on a unit, and an unknown unit does not agree with a known one. A EUR close DID
+    resolve, so a model missing this half of the guard publishes a figure; every
+    single-currency position in this module is the adversarial partner that must keep
+    valuing normally.
+    """
+    db = valuation_cases.db
+    anchor = valuation_cases.anchor
+    case_security = _case_security("unknown_currency_mix")
+    _assert_withheld_publishes_nothing(
+        _holding(db, _case_account("unknown_currency_mix"))
+    )
+    assert _resolved_close(db, case_security, anchor) == Decimal("120.0000000000"), (
+        "a close resolved; the NULLs above are the currency withhold, not an absent price"
     )
 
 

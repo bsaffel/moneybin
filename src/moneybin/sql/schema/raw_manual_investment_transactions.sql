@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_investment_transactions (
     price DECIMAL(28, 10),                              -- Per-unit price; NULL for non-priced events
     amount DECIMAL(18, 2),                              -- Cash effect; signed per spec Requirement 6
     fees DECIMAL(18, 2),                                -- Commissions/fees component; folded into cost basis
-    currency_code VARCHAR DEFAULT 'USD',                -- Denominating currency as supplied
+    currency_code VARCHAR,                              -- Denominating currency as supplied; NULL when the user named none (never fabricated) — core.fct_investment_transactions inherits the account's
     description VARCHAR,                                -- Free-text description
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
     created_by VARCHAR NOT NULL,                        -- 'cli' or 'mcp'; future-extensible for multi-user identity
