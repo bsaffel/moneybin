@@ -29,10 +29,21 @@ _SNAPSHOT_COLUMNS]` directly into its execution, so for `core:networth` and
 `core:networth_history` the declared order is what JSON, MCP, `--wide`, and every
 export emit. Reordering that tuple is a user-visible change, not a cosmetic one.
 
-Beside it sits a positional `column_types` list in the same call, parallel to the
-tuple by index alone. **Reorder one and you must reorder the other**, or every
-column is handed the type of whichever column now occupies its slot — a silent
-mis-typing with no test between it and a caller.
+A service report in fact carries **three** parallel orderings, and reordering one
+means reordering all three:
+
+1. The `columns` tuple — sets `result.columns`, drives `--wide`.
+2. A positional `column_types` list in the same call, parallel **by index alone**.
+   Reorder one without the other and every column is handed the type of whichever
+   column now occupies its slot — a silent mis-typing with no test between it and
+   a caller. `networth_history`'s entries read `_decimal_column_type(rows,
+   "net_worth", …)`, naming their column in the argument while position is what
+   binds, so they look order-independent and are not.
+3. The **record dict literals** built in the row comprehensions. The envelope
+   carries `data=records` and Python dicts preserve insertion order, so those
+   keys — not the `columns` tuple — are what `--output json` and every MCP caller
+   serialize. Miss this one and a single response reports a column order its own
+   JSON body disagrees with.
 
 Reordering a shipped `core` or `reports` column is a public-contract change
 under `design-principles.md`'s trigger list. Pre-launch posture permits it;
@@ -186,9 +197,22 @@ Honest about what is and is not caught.
 **Guarded, unit tier — `reports` and the report specs.** SQLMesh resolves a
 `reports` model's ordered columns offline (`Context(paths=…)`,
 `model.columns_to_types`), and `DataClass` / `money_kind` supply the categories
-Rule B needs. Three assertions: the projection's category sequence is
-non-decreasing under Rule B, `ReportSpec.columns` mirrors the projection, and
-`default_columns` is non-decreasing under Rule B.
+Rule B needs. Three assertions:
+
+1. `ReportSpec.columns` is non-decreasing under Rule B.
+2. `default_columns` is non-decreasing under Rule B.
+3. A service report's `column_types` list is the same length as its `columns`
+   tuple and types each column consistently with its declared class — the
+   positional-parallel hazard above, which nothing else stands between and a
+   caller.
+
+**The SQL-backed mirror is checked per report, not globally.** A runner builds
+its own `SELECT` over the view rather than inheriting the model's projection, so
+no static read of the model gives the runner's order. Each report's own
+execution test asserts that the columns its result carries appear in the same
+relative order as `ReportSpec.columns`, using the fixture that test already
+has. That is a stronger check than a static one — it reads what the report
+actually returned.
 
 The guard skips `AGGREGATE` columns entirely, for the reason given above. It
 also cannot notice a **mis-declared** class — `balance_drift.days_since_assertion`
