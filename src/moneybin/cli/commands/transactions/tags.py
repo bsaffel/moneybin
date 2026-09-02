@@ -147,7 +147,7 @@ def transactions_tags_list(
         if not quiet:
             logger.info("No tags in use")
         return
-    render_rows(["tag", "transactions"], list(rows))
+    render_rows(["tag", "transactions"], list(rows), numeric=("transactions",))
 
 
 @app.command("rename")

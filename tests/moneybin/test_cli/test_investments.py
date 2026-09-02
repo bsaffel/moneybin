@@ -1104,12 +1104,13 @@ class TestLotsList:
         Its three siblings keep the column, since none of the four takes a
         currency filter and `multi-currency.md` makes the row's own
         `currency_code` the canonical unit of its amount. Six columns already
-        spend this table's 80-column budget, though, and a measured seventh
-        folds `lot` and `security` across two lines each while breaking
-        `⚠️ basis_incomplete` mid-word — it costs the lot handle and the trust
-        marker to buy three characters. So it is declared rather than omitted,
-        and `--wide` is the escape; both halves are pinned here, because a
-        column left undeclared has no escape at all.
+        spend this table's 80-column budget, though: measured at 80 with
+        production-width ids, the default already folds the lot id by a
+        character and breaks `⚠️ basis_incomplete` across lines, and a seventh
+        column folds `security` too and takes the marker to three lines. So it
+        is declared rather than omitted, and `--wide` is the escape; both
+        halves are pinned here, because a column left undeclared has no escape
+        at all.
         """
         db.conn.execute(
             """
@@ -1133,6 +1134,48 @@ class TestLotsList:
 
         assert narrow.exit_code == 0, narrow.output
         assert "currency" not in narrow.stdout
+
+    @pytest.mark.unit
+    def test_lots_list_wide_shows_state_and_the_help_text_says_so(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """`--wide` is every declared column, not a second curated set.
+
+        `column_view` projects the whole declaration whenever `wide` is set and
+        ignores `default` entirely, so `--wide` without `--all` restores
+        `state` as well as the currency and the method — reading `open` on
+        every row, since `--open` is still in force. That is the honest
+        meaning of the flag and the disclosure line already implies it by
+        counting three hidden columns rather than two; what was wrong was the
+        `--help` text promising only two of them. The behaviour and the
+        sentence describing it are pinned together, because this branch has
+        now invalidated four help strings by curating a column and the
+        sentence is the half nothing else checks.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES ('lot_wide', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
+                    10, 10, 1500.00, 1500.00, 'fifo', 'USD', true, false)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        wide = runner.invoke(app, ["investments", "lots", "list", "--wide"])
+
+        assert wide.exit_code == 0, wide.output
+        assert "state" in wide.stdout
+        assert "open" in wide.stdout
+
+        help_text = runner.invoke(app, ["investments", "lots", "list", "--help"]).stdout
+        normalized = " ".join(help_text.split())
+        assert "adds the currency and the cost-basis method" not in normalized, (
+            "the help text promises two columns behind --wide while the flag "
+            "restores three; a curated view must describe itself correctly"
+        )
 
     @pytest.mark.unit
     def test_lots_list_all_says_which_lots_are_closed(

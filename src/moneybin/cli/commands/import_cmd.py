@@ -2329,7 +2329,12 @@ def import_history(
         return
 
     view = column_view(_HISTORY_COLUMNS, records, default=_HISTORY_DEFAULT, wide=wide)
-    render_rows(view.names, view.rows, total_columns=view.total)
+    render_rows(
+        view.names,
+        view.rows,
+        numeric=("imported", "rejected"),
+        total_columns=view.total,
+    )
 
     if import_id and records:
         render_summary(
@@ -2839,7 +2844,12 @@ def formats_list(
                 default=_PDF_FORMAT_DEFAULT,
                 wide=wide,
             )
-            render_rows(pdf_view.names, pdf_view.rows, total_columns=pdf_view.total)
+            render_rows(
+                pdf_view.names,
+                pdf_view.rows,
+                numeric=("version", "used"),
+                total_columns=pdf_view.total,
+            )
 
     typer.echo("")
 

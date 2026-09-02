@@ -85,8 +85,10 @@ neither. The state is strictly derivable — `core.fct_investment_lots` defines
 on screen and not in `--help`, so without this column a reader infers a lot's
 lifecycle from a numeric cell via a rule nothing shows them. Naming it is what
 a column is for. Under `--open` the answer is constant and the column would
-read `open` all the way down, so that view does not pay for it. This is the one
-table whose default set depends on the query, because it is the one command
+read `open` all the way down, so that *default* view does not pay for it —
+`--wide` still shows it there, because `--wide` is every declared column and
+not a second curated set, and the command's own `--help` says so. This is the
+one table whose default set depends on the query, because it is the one command
 whose result changes kind rather than size.
 """
 
@@ -112,8 +114,10 @@ def investments_lots_list(
 
     Shows the lot, its security, when it was acquired, how much remains, the
     remaining basis, and a note marking any basis known to be incomplete.
-    ``--all`` adds an open/closed column, since that view returns both.
-    ``--wide`` adds the currency and the cost-basis method.
+    ``--all`` adds an open/closed ``state`` column, since that view returns
+    both. ``--wide`` shows every declared column: the currency, the cost-basis
+    method, and ``state`` — which under the default ``--open`` reads ``open``
+    on every row.
     """
     with handle_cli_errors(
         cli_actor="investments_lots_list", payload_type=InvestmentLotsPayload
@@ -146,6 +150,7 @@ def investments_lots_list(
             # renders unsigned and uncoloured. The remaining quantity is a share
             # count, not an amount, and is left as stored.
             money={"basis": Money("balance")},
+            numeric=("remaining",),
             total_columns=view.total,
         )
     for w in result.warnings:

@@ -784,27 +784,43 @@ moneybin investments securities set <security_id> [--name ...] [--ticker ...] \
 ```
 $ moneybin investments holdings --account fidelity_brokerage
 
-a3f19c02b8e1 qty=15.0000000000 cost_basis=2475.00 avg_cost=165.0000000000 market_value=2850.00 unrealized_gain=375.00 USD status=valued as_of=2026-07-19 (0d)
-7d40be91c5a2 qty=200.0000000000 cost_basis=23400.00 avg_cost=117.0000000000 market_value=25000.00 unrealized_gain=1600.00 USD status=carried_forward as_of=2026-07-16 (3d)
-c81a5f6039db qty=0.5000000000 cost_basis=18000.00 avg_cost=36000.0000000000 market_value=- unrealized_gain=- USD status=unpriced
-portfolio market_value=27850.00 USD max_days_since_observed=3
+┏━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┓
+┃ security ┃ quantity       ┃ market value ┃ unrealized ┃ currency ┃ status    ┃
+┡━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━┩
+│ a3f19c02 │ 15.0000000000  │     2,850.00 │    +375.00 │ USD      │ valued    │
+│ b8e1     │                │              │            │          │           │
+│ 7d40be91 │ 200.0000000000 │    25,000.00 │  +1,600.00 │ USD      │ carried_f │
+│ c5a2     │                │              │            │          │ orward    │
+│ c81a5f60 │ 0.5000000000   │            - │          - │ USD      │ unpriced  │
+│ 39db     │                │              │            │          │           │
+└──────────┴────────────────┴──────────────┴────────────┴──────────┴───────────┘
+6 of 9 columns shown — --wide for all
+portfolio market_value=27,850.00 USD max_days_since_observed=3
 
 ⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved) or 'withheld' (a known-wrong share count, or lots that disagree on currency).
 ```
 
 The first column is `security_id` (a 12-hex catalog id), not a ticker. Each row
-carries its own currency code after the money figures. An absent figure renders
+carries its own currency code beside the money figures. An absent figure renders
 `-`, matching `avg_cost`'s existing NULL rendering — a blank column reads as zero,
 and NULL here means "no number", not "worth nothing".
+
+The cost basis, the average cost and the observation date follow under `--wide`;
+the six columns above are the curated default. `quantity` is the reason the ids
+fold rather than the share counts: a `DECIMAL(28,10)` count is declared
+`numeric`, so a squeeze is paid out of the text columns and no number is ever
+broken across lines.
 
 ```
 $ moneybin investments gains --account fidelity_brokerage --from 2024-01-01
 
-Date         Security  Qty     Proceeds    Basis       Gain/Loss   Term
-2024-06-12   AAPL      5.000   $950.00     $750.00     +$200.00    long
-2024-09-03   BTC       0.250   $9,500.00   $9,000.00   +$500.00    short
-
-  Realized 2024: +$700.00  (long +$200.00 / short +$500.00)
+┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━┓
+┃ disposed   ┃ security     ┃ proceeds ┃    gain ┃ currency ┃ term  ┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━┩
+│ 2024-06-12 │ a3f19c02b8e1 │   950.00 │ +200.00 │ USD      │ long  │
+│ 2024-09-03 │ c81a5f6039db │ 9,500.00 │ +500.00 │ USD      │ short │
+└────────────┴──────────────┴──────────┴─────────┴──────────┴───────┘
+6 of 8 columns shown — --wide for all
 ```
 
 ## MCP Interface

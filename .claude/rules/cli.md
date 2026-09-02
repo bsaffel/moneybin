@@ -271,9 +271,18 @@ amount is *misread*, not merely ugly — `1,200.00` becomes `1,200.` above `00`.
 Folding an identifier is the accepted degradation; folding a number is the bug.
 
 `render_rows` already holds that line for you, and you get it by declaring the
-column in `money=` rather than by touching Rich: a declared column is
-`no_wrap=True` with `overflow="ellipsis"`, so Rich spends a narrow terminal's
-squeeze on the *text* columns first and amounts survive whole. Do not copy
+column rather than by touching Rich: a declared column is `no_wrap=True` with
+`overflow="ellipsis"`, so Rich spends a narrow terminal's squeeze on the *text*
+columns first and numbers survive whole.
+
+**Two declarations, because formatting and atomicity are different questions.**
+`money=` says how to render an amount — two places, a sign glyph, a colour.
+`numeric=` says only that the cell is a number and must not break across lines.
+A per-unit price, a share count, an FX rate and a match score all belong in
+`numeric=` precisely *because* they are excluded from `money=` — rounding a
+`DECIMAL(28,10)` close to two places would print `0.00` — and that exclusion
+used to take the no-fold guarantee with it. Every column holding a bare number
+declares one of the two; there is no third state. Do not copy
 `no_wrap=True` onto the text columns to make a table fit — applied to every
 column it leaves Rich nothing wrappable to give up, and it then crops
 `1,234,567.89` to `1,234`, which is the same misread by another route. The

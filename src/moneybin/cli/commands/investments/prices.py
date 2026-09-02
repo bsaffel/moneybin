@@ -451,6 +451,7 @@ def investments_prices_list(
                 )
                 for row in result.rows
             ],
+            numeric=("close",),
         )
 
 

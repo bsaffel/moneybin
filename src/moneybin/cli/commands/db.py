@@ -930,6 +930,7 @@ def _render_db_processes(db_path: Path, processes: list[dict[str, str | int]]) -
     render_rows(
         ["pid", "command", "args"],
         [(proc["pid"], proc["command"], proc["cmdline"]) for proc in processes],
+        numeric=("pid",),
     )
 
 

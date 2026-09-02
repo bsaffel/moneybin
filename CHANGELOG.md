@@ -63,12 +63,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   An amount's denomination stays with it for the same reason. None of
   `investments list`, `gains`, `lots list`, or `holdings` takes a currency
   filter, so one call can span accounts denominated differently, and two rows
-  reading `1,500.00` are then not the same quantity. The first three keep
-  `currency` in the default view; `gains` and `lots list` had not declared the
-  column at all, so `--wide` could not reach it either. `lots list` is the one
-  table that cannot seat it by default — at 80 columns its six columns already
-  fold a full-length lot id, and a seventh folds the security id with it — so
-  there it is declared and `--wide` reaches it.
+  reading `1,500.00` are then not the same quantity. `investments list`,
+  `gains` and `holdings` keep `currency` in the default view. `gains` and
+  `lots list` had not declared the column at all, so `--wide` could not reach
+  it either; both declare it now. `lots list` is the sole table that cannot
+  seat it by default — at 80 columns its six columns already fold a full-length
+  lot id, and a seventh folds the security id with it — so there `--wide` is
+  the way to it.
 
   `investments lots list --all` gains an open/closed `state` column instead.
   That view deliberately returns both kinds and the table named neither. The
@@ -81,6 +82,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Commands whose tables already fit — `fx list`, `investments list`,
   `investments prices list`, `securities list`, `db ps` — show every column and
   gain no flag.
+
+  **A number that is not an amount no longer folds either.** The renderer kept
+  amounts whole by declaring them in `money=`, because `1,200.00` folded after
+  the decimal point renders `1,200.` above `00` and the first line is a
+  complete, plausible number two orders of magnitude off. Columns holding a
+  per-unit price, a share count, an FX rate or a match score are deliberately
+  *not* amounts — rounding a `DECIMAL(28,10)` close to two places would print
+  `0.00` — and that exclusion silently took the no-fold guarantee with it, so
+  `8.2987654321` folded to `8.298` above `7654321`. `render_rows` now takes a
+  second declaration, `numeric=`, carrying atomicity without formatting, and
+  every column holding a bare number uses one of the two. Alignment is
+  unchanged: amounts stay right-aligned, these stay left. While a table fits
+  its terminal the output is identical; where one does not, the fold now lands
+  on the identifier beside the number rather than on the number.
 
 - **`moneybin system doctor` reports two data-quality checks more strictly.**
   `bridge_transfers_balanced` now requires a confirmed transfer pair to cancel

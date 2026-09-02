@@ -147,6 +147,7 @@ def fx_list(
         render_rows(
             ["date", "rate", "source"],
             [(row.rate_date, row.rate, row.source) for row in payload.rows],
+            numeric=("rate",),
         )
 
 

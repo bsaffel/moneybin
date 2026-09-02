@@ -567,6 +567,65 @@ def test_a_money_cell_never_folds_while_a_text_column_could_shrink_instead(
         )
 
 
+def test_a_number_that_is_not_an_amount_never_folds_either(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guarantee above belongs to numbers, not to the `money` declaration.
+
+    Same projection and same values as the test above, which asserts only that
+    the three *amounts* survive. `quantity` and `avg cost` are numbers too, and
+    they are absent from `money=` for a reason that has nothing to do with
+    folding: `format_money` rounds to two places, which renders a
+    `DECIMAL(28,10)` per-unit price as `0.00`. That exclusion used to take the
+    no-fold guarantee with it, so `8.2987654321` folded to `8.29` above `8765`
+    — a complete, plausible, three-orders-of-magnitude-wrong price, which is
+    the same defect `cli.md` calls a correctness bug for amounts.
+
+    `numeric=` carries atomicity without formatting, which is why both survive
+    here. Drop it from the call and this test fails on `avg cost` first.
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+    render_rows(
+        [
+            "security",
+            "quantity",
+            "cost basis",
+            "avg cost",
+            "market value",
+            "unrealized",
+            "currency",
+            "status",
+            "as of",
+        ],
+        [
+            (
+                "VTSAX",
+                "120.5",
+                Decimal("1000.00"),
+                "8.2987654321",
+                Decimal("1200.00"),
+                Decimal("200.00"),
+                "USD",
+                "priced",
+                "2026-08-29 (3d)",
+            )
+        ],
+        money={
+            "cost basis": Money("balance"),
+            "market value": Money("balance"),
+            "unrealized": Money("delta", polarity="income"),
+        },
+        numeric=("quantity", "avg cost"),
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    for number in ("120.5", "8.2987654321"):
+        assert any(number in line for line in lines), (
+            f"{number!r} was split across lines; a folded per-unit price or share "
+            "count reads as a different, plausible number exactly as an amount does"
+        )
+
+
 def test_an_unfittable_money_cell_is_marked_truncated_rather_than_shortened(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

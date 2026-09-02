@@ -181,6 +181,10 @@ def reports_networth_history(
                     # direction, so a rise reads as income rather than expense.
                     "change_abs": Money("delta", polarity="income"),
                 },
+                # Formatted to two places by the caller above rather than by
+                # `format_money`, so it takes the no-fold guarantee here: a
+                # folded `12.34%` reads as `12.3` and is off by a factor of ten.
+                numeric=("change_pct",),
             )
         echo_report_notes(result, quiet=quiet)
 

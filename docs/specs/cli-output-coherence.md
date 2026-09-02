@@ -119,6 +119,17 @@ Numbered, each independently testable.
    stored. Requirement 11 governs *amounts* — what something is worth — not
    the per-unit prices an amount is computed from.
 
+   **That exclusion covers formatting only.** A column left out of `money=`
+   still holds a number, and the fold below reads a fragment of one as a whole
+   value whether or not it is an amount: `8.2987654321` folded to `8.298` is
+   wrong the same way `1,200.00` folded to `1,200.` is. `render_rows` therefore
+   takes a second declaration, `numeric=`, carrying atomicity without
+   formatting — share counts, per-unit prices, FX rates, match scores, the
+   counts in `import history`. Every column holding a bare number declares one
+   of the two. Alignment is *not* part of it: requirement 13 covers amounts,
+   and the left-versus-right split recorded below stands until a percent
+   contract settles it.
+
    **A migrated table wider than 80 columns curates its default view.** Six of
    the eight — `investments holdings`, `gains`, `list`, `lots list`,
    `import history`, `import formats list --type=pdf` — declare their columns

@@ -265,6 +265,7 @@ def investments_list(
             # An event's amount is cash moving in or out, so it signs itself. The
             # quantity is a share count, not an amount, and is left as stored.
             money={"amount": Money("flow")},
+            numeric=("quantity",),
             # No `total_columns`: the view is the whole declaration, so there is
             # no narrowing to disclose and no flag that would widen it.
         )
@@ -375,6 +376,10 @@ def investments_holdings(
                 "market value": Money("balance"),
                 "unrealized": Money("delta", polarity="income"),
             },
+            # Neither is an amount — one is a share count, the other a
+            # DECIMAL(28,10) per-unit cost — so both print as stored. They are
+            # named here for the no-fold guarantee alone.
+            numeric=("quantity", "avg cost"),
             total_columns=view.total,
         )
         # Portfolio-level disclosure, not a status line — `-q` keeps it, the
@@ -514,6 +519,7 @@ def investments_gains(
                 "basis": Money("balance"),
                 "gain": Money("delta", polarity="income"),
             },
+            numeric=("quantity",),
             total_columns=view.total,
         )
     for w in result.warnings:
