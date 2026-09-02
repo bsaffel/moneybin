@@ -60,7 +60,90 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   defect. A profile that was healthy before may surface a new failure on either
   check; both name the offending transaction ids under `--verbose`. (#504)
 
+- **Every CLI command's `--output json` now returns the standard response
+  envelope, and the JSON shapes moved with it.** Twenty-four output paths
+  printed a bare `{"key": [...]}` object or a raw model dump beside
+  `render_or_json` — the one path that derives the sensitivity tier from the
+  payload type, applies the redaction transforms, and writes the privacy audit
+  row. `.claude/rules/cli.md`, `docs/features.md`, and the CLI reference all
+  described the envelope as universal; for those commands it was not.
+  Scripts and agents parsing these commands must read the payload under `data`:
+  `transactions matches pending` / `matches history`, `import history`,
+  `import status`, `import formats list` / `formats show`,
+  `transactions categorize stats`, `categorize auto stats` / `auto rules` /
+  `auto review`, `sync link` / `link-status` / `pull` / `status` /
+  `disconnect`, and `gsheet auth` / `connect` / `pull` / `list` / `status` /
+  `reconnect` / `disconnect`. Field-level moves worth naming: the categorize
+  coverage keys are now `total_transactions`, `percent_categorized`, and a
+  nested `by_source` map; the format catalogue reports `institution_name`, and
+  its date-only `last_used` becomes `last_used_at` carrying the full timestamp
+  the MCP tool has always returned (the text table still prints the date); the
+  `auto rules` total moved to `summary.total_count`; and
+  the match queues return the same typed rows the MCP tools return, which drops
+  the internal `app.match_decisions` columns neither surface displayed. Six
+  commands stay deliberately outside the envelope, each named in the CLI
+  reference: the `db query` operator bypass, the `db info` / `db ps` reads that
+  describe the database file rather than its contents, and the `stats` /
+  `logs` / `migrate status` operations-metadata reads. Nothing these commands
+  returned would have been masked by today's transforms, so this is a contract
+  and audit fix rather than a disclosure fix.
+- **`--json-fields` now works on every command that offers it.** The projection
+  only ever applied to a bare list payload, so on a typed payload the flag was
+  accepted and silently did nothing. It now descends into a typed payload's
+  single collection field, after redaction rather than instead of it, and
+  no-ops cleanly when a payload carries no collection or more than one. A
+  refresh's diagnostic lists (`identity_errors`, the three `rate_pairs_*`
+  lists, `self_heal_actions`) and the both-manual-and-Plaid overlap warning
+  (`investment_source_overlap_accounts`) are not collections for this purpose —
+  they describe the rows rather than being a second set of them.
+- **`import formats` (MCP) and `import formats list` (CLI) return one list.**
+  The MCP tool previously split its answer into `formats` and `pdf_formats`;
+  both surfaces now return a single `formats` list whose rows carry a `type`
+  discriminator, so `jq '.data.formats | map(select(.type == "pdf"))'` filters
+  it and an unfiltered read needs no special case. Tabular rows also carry
+  `source` (`builtin` or `user`), which only the CLI reported before.
+- **`sync link` (MCP) reports `link_type`, and `gsheet_pull` (MCP) reports its
+  refresh outcome.** Both fields existed on the CLI side only; the shared
+  payloads now carry them so the two surfaces answer alike. `gsheet_pull`
+  through MCP runs no refresh, so its refresh fields report `null` rather than
+  zero — "the step did not run" and "the step found nothing" stay distinct.
+- **`transactions_matches_history` (MCP) carries `match_tier` and both
+  `source_type_*` columns.** The terminal has always rendered them; the tool's
+  rows had not.
+- **`confidence_score` is nullable on the match queues.** An exact-id match
+  records no score, and both `transactions_matches_pending` and
+  `transactions_matches_history` (MCP and `--output json` alike) coerced that
+  NULL to `0.0` — which reads as the engine having compared the pair and found
+  nothing in common, the opposite of what happened. The field is now `null` for
+  such a row on both surfaces, matching the dash the text tables have always
+  printed. Consumers doing arithmetic on `confidence_score` must handle `null`.
+- **`gsheet pull`, `import files` and `sync pull` report the row count they
+  actually returned.** `summary.returned_count` and `summary.total_count`
+  reported `1` regardless of how many connections were pulled, files imported,
+  or institutions covered, because diagnostic lists riding beside the real row
+  collection were counted as row collections themselves — the post-load
+  refresh's four best-effort lists on the first two, and the
+  both-manual-and-Plaid overlap warning on `sync pull`. The privacy audit row
+  inherited the same wrong count. `import formats show` had the mirror-image
+  version of the same defect — its one returned format carries a
+  `header_signature` list, so the shipped Mint, Tiller and YNAB formats
+  reported their column counts (9, 8 and 11) as row counts — and now states
+  the count rather than leaving it to be inferred.
+
 ### Fixed
+- **A failed `--output json` read is audited like the successful one beside
+  it.** Three commands now raise their not-found and no-database errors into
+  the shared handler rather than hand-writing a JSON error branch, which is
+  what earns those failures a `privacy.log.jsonl` row at all — but the handler
+  falls back to the conservative `high` tier, with no returned classes, unless
+  the command names its payload. `gsheet status <unknown-id>` was recorded as
+  `cli.unknown`/`high` beside a success path recording
+  `cli.gsheet_status`/`medium`; `import formats show <unknown-name>` and
+  `import status` on a machine with no database were recorded at `high` beside
+  success paths classified `medium` and `low`. All three now record the actor
+  and classification their success path records, so one command no longer
+  writes two provenances depending only on whether the thing it was asked for
+  exists.
 - **"Uncategorized" now means one thing, and the number is smaller.**
   `moneybin review`, `system_status` and the import-drain hint counted every
   transaction with no row in `app.transaction_categories`, while the review

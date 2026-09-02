@@ -283,7 +283,7 @@ Every read-only and write-shaped CLI command supports `--output json` and emits 
 
 On extractor failure (single-file path), the same envelope shape is emitted with `failed_count: 1` and `files[0].error` set to the exception class name (e.g. `"ValueError"`, `"PermissionError"`).
 
-**`moneybin sync pull --output json` `data` shape** — the Pydantic `PullResult` model serialized via `model_dump_json` (`src/moneybin/connectors/sync_models.py`):
+**`moneybin sync pull --output json` `data` shape** — the `SyncPullPayload` the `sync_pull` MCP tool also returns (`src/moneybin/privacy/payloads/sync.py`), projected from the internal `PullResult` model:
 
 ```json
 {

@@ -91,6 +91,13 @@ def stats_command(
                 rows = []
 
             if output == OutputFormat.JSON:
+                # Not `render_or_json`: operations metadata, judged by
+                # disclosure rather than by column class (security.md). The
+                # checkable condition is registry-boundedness — every metric
+                # name and label here is declared in `metrics/registry.py` and
+                # every value is numeric, so there is no free text for a typed
+                # transform to mask. A metric that ever carries a free-text
+                # label voids this exemption and the command must migrate.
                 result = {
                     "metrics": [
                         {

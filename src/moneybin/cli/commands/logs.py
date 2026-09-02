@@ -298,6 +298,15 @@ def _do_view(
         )
         filtered = filtered[-lines:]
         if output == OutputFormat.JSON:
+            # Not `render_or_json`: the effective control for log content is
+            # write-time — the no-PII log policy plus `SanitizedLogFormatter`.
+            # `redact_typed` is type-driven and cannot mask free text after the
+            # fact, so enveloping this would add shape without adding masking.
+            # The known gap rides with the exemption rather than being papered
+            # over: the sanitizer's account-number mask is digit-pattern based,
+            # so a label carrying fewer than five digits reaches the log
+            # verbatim (see the refusal path in `import_cmd.py`) — and would
+            # reach this output verbatim either way.
             typer.echo(json.dumps([e.to_dict() for e in filtered], indent=2))
         else:
             for entry in filtered:

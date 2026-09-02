@@ -23,23 +23,23 @@ from moneybin import error_codes
 from moneybin.errors import ErrorDetail, RecoveryAction, UserError
 
 
-def _serialize_payload(value: Any) -> Any:
+def serialize_payload(value: Any) -> Any:
     """Recursively expose payload containers without copying scalar leaves."""
     if is_dataclass(value) and not isinstance(value, type):
         return {
-            item.name: _serialize_payload(getattr(value, item.name))
+            item.name: serialize_payload(getattr(value, item.name))
             for item in fields(value)
         }
     if isinstance(value, BaseModel):
         try:
-            return _serialize_payload(value.model_dump())
+            return serialize_payload(value.model_dump())
         except Exception:  # noqa: BLE001,S110  # preserve existing fallback contract
             return value
     if isinstance(value, Mapping):
         mapping = cast(Mapping[Any, Any], value)
-        return {key: _serialize_payload(item) for key, item in mapping.items()}
+        return {key: serialize_payload(item) for key, item in mapping.items()}
     if isinstance(value, (tuple, list)):
-        return [_serialize_payload(item) for item in value]
+        return [serialize_payload(item) for item in value]
     return value
 
 
@@ -186,7 +186,7 @@ class PayloadEncoder(json.JSONEncoder):
         # Existing: Decimal → float
         if isinstance(o, Decimal):
             return float(o)
-        converted = _serialize_payload(o)
+        converted = serialize_payload(o)
         if converted is not o:
             return converted
         # Existing fallback: str(o) for datetime, UUID, Enum, etc.
@@ -264,7 +264,7 @@ class ResponseEnvelope[T]:
         Typed payloads and JSON containers are recursively converted without
         deep-copying scalar leaves.
         """
-        data_serialized = _serialize_payload(self.data)
+        data_serialized = serialize_payload(self.data)
         d: dict[str, Any] = {
             "status": self.status,
             "summary": self.summary.to_dict(),
@@ -432,7 +432,7 @@ def build_envelope(
 # heuristic returns len(warnings)=0 for a successful write whose only list is
 # an empty diagnostic field, and propagates that into summary.returned_count
 # and the privacy log's row_count.
-_AUXILIARY_LIST_FIELDS = frozenset({
+AUXILIARY_LIST_FIELDS = frozenset({
     "warnings",
     "errors",
     "error_details",
@@ -444,6 +444,28 @@ _AUXILIARY_LIST_FIELDS = frozenset({
     # and a count of 1 for a read that returned N priced positions. Empty on
     # almost every call, so the field's presence alone would break the count.
     "applied_rates",
+    # The post-load refresh's four best-effort diagnostics, on the same
+    # rationale: they report what the refresh *did to* the rows, not a second
+    # set of rows. `GsheetPullPayload` carries all four beside its `pulls`
+    # collection, so without them the heuristic saw five lists and reported
+    # `returned_count=1` for a pull that returned N per-connection outcomes.
+    "identity_errors",
+    "rate_pairs_failed",
+    "rate_pairs_unsupported",
+    "rate_pairs_discarded",
+    # `RefreshRunPayload`'s record of the self-heal recipes that ran. Listed
+    # with the four above rather than after them: it is the only other list on
+    # that payload, so excluding the four alone would promote it to "the" row
+    # collection and report `returned_count=0` for a clean refresh that healed
+    # nothing. `refresh_run` returns one pipeline outcome, not N recipes.
+    "self_heal_actions",
+    # `SyncPullPayload`'s warning that some accounts carry both manual and Plaid
+    # investment history. Same rationale again: it describes a condition
+    # affecting the rows the pull returned, not a second set of them. It sits
+    # beside `identity_errors` and the three `rate_pairs_*` lists on that
+    # payload; without it the heuristic saw two lists and reported
+    # `returned_count=1` for a pull covering N institutions.
+    "investment_source_overlap_accounts",
 })
 
 
@@ -525,7 +547,7 @@ def _primary_rows(data: Any) -> list[Any] | None:
         return None
     primary: list[list[Any]] = []
     for name in names:
-        if name in _AUXILIARY_LIST_FIELDS:
+        if name in AUXILIARY_LIST_FIELDS:
             continue
         value: Any = getattr(data, name)
         if isinstance(value, list):
@@ -536,7 +558,7 @@ def _primary_rows(data: Any) -> list[Any] | None:
 def _count_typed_payload(data: Any) -> int:
     """For a typed payload, return the row count if a primary list field exists, else 1.
 
-    - Skips auxiliary diagnostic list fields (see ``_AUXILIARY_LIST_FIELDS``)
+    - Skips auxiliary diagnostic list fields (see ``AUXILIARY_LIST_FIELDS``)
       so write-result payloads like ``AccountSettingsPayload(warnings=[])``
       report ``returned_count=1`` instead of ``0``.
     - Falls back to ``1`` when the payload has more than one non-auxiliary
@@ -564,12 +586,12 @@ def _count_primary_lists(data: Any, field_names: list[str]) -> int:
     """Return the length of the sole non-auxiliary list field, else 1.
 
     Shared by the dataclass and Pydantic counters. Auxiliary diagnostic lists
-    (see ``_AUXILIARY_LIST_FIELDS``) are skipped; more than one remaining list
+    (see ``AUXILIARY_LIST_FIELDS``) are skipped; more than one remaining list
     means an aggregate result object with no single "returned" collection.
     """
     primary_lists: list[list[Any]] = []
     for name in field_names:
-        if name in _AUXILIARY_LIST_FIELDS:
+        if name in AUXILIARY_LIST_FIELDS:
             continue
         v: Any = getattr(data, name)
         if isinstance(v, list):

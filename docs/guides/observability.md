@@ -221,7 +221,7 @@ For consolidated CLI exit-code and MCP error-envelope taxonomy, see [`cli-refere
 
 Lifetime counters survive restarts; freshness gauges don't. To answer "when did X last succeed," combine three sources:
 
-- **Per-institution sync state**: `moneybin sync status --output json | jq '.data.institutions[] | {name, last_successful_pull_at, error}'`. Look for rows where `error` is non-null or `last_successful_pull_at` is older than your alert threshold.
+- **Per-institution sync state**: `moneybin sync status --output json | jq '.data.connections[] | {institution_name, last_sync, error_code}'`. Look for rows where `error_code` is non-null or `last_sync` is older than your alert threshold.
 - **Refresh log**: `moneybin logs cli --grep "Refresh complete" --since 24h --output json` — empty result means no successful refresh in the last day.
 - **Metric snapshot recency**: query `app.metrics` for the latest `recorded_at` per metric — a successful pipeline writes there at every flush.
 
@@ -253,7 +253,7 @@ moneybin system doctor --output json \
 
 ```bash
 stale=$(moneybin sync status --output json \
-  | jq -r '.data.institutions[] | select(.error != null or .last_successful_pull_at < (now - 86400 | strftime("%Y-%m-%dT%H:%M:%SZ"))) | .name')
+  | jq -r '.data.connections[] | select(.error_code != null or .last_sync < (now - 86400 | strftime("%Y-%m-%dT%H:%M:%SZ"))) | .institution_name')
 [ -n "$stale" ] && /usr/local/bin/alert "moneybin: stale sync — $stale"
 ```
 

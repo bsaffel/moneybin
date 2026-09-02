@@ -38,6 +38,7 @@ from moneybin.mcp.write_contracts import (
     MerchantStateRequest,
     TagsSet,
 )
+from moneybin.services.categorization.queries import CategorizationStats
 from tests.moneybin.db_helpers import create_core_dim_stub_views
 
 OUTCOME_MAP_PATH = (
@@ -372,12 +373,13 @@ def test_flagged_cli_routes_execute_the_mapped_owner(
     db_context = MagicMock()
     db_context.__enter__.return_value = db
     categorization_service = MagicMock()
-    categorization_service.categorization_stats.return_value = {
-        "total": 3,
-        "categorized": 2,
-        "uncategorized": 1,
-        "coverage_pct": 66.7,
-    }
+    categorization_service.stats.return_value = CategorizationStats(
+        total=3,
+        categorized=2,
+        uncategorized=1,
+        percent_categorized=66.7,
+        by_source={"rule": 2},
+    )
 
     def db_factory(**_: Any) -> MagicMock:
         return db_context
@@ -397,7 +399,7 @@ def test_flagged_cli_routes_execute_the_mapped_owner(
         ["transactions", "categorize", "stats", "--output", "json"],
     )
     assert stats.exit_code == 0, stats.output
-    categorization_service.categorization_stats.assert_called_once_with()
+    categorization_service.stats.assert_called_once_with()
     categorization_service.list_rules.return_value.rules = []
     listed_rules = CliRunner().invoke(
         app,
@@ -449,8 +451,8 @@ def test_flagged_cli_routes_execute_the_mapped_owner(
     )
     assert listed.exit_code == shown.exit_code == 0
     assert import_service.list_formats.call_count == 2
-    assert json.loads(listed.stdout)["formats"]
-    assert json.loads(shown.stdout)["format"]["name"] == next(iter(builtin))
+    assert json.loads(listed.stdout)["data"]["formats"]
+    assert json.loads(shown.stdout)["data"]["name"] == next(iter(builtin))
 
 
 def _database_pair(seed: Path, tmp_path: Path) -> tuple[Path, Path]:
