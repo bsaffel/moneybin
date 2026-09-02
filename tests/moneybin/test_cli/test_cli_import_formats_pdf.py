@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app as import_app
+from moneybin.privacy.classified_envelope import classify
+from moneybin.privacy.payloads.imports import (
+    ImportPdfFormatDetail,
+    ImportRawSummaryPayload,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -252,3 +259,73 @@ class TestFormatsShowPdf:
         assert result.exit_code == 0, result.output
         assert "Tiller" in result.output
         assert "Field mapping" in result.output
+
+
+class TestErrorPathsAuditLikeTheirSuccessPaths:
+    """A failure row must not be classified more coarsely than the success row.
+
+    `handle_cli_errors` falls back to the conservative `high` tier with no
+    returned classes when no `payload_type` is supplied. Both of these commands
+    now raise into that handler instead of hand-writing a JSON error branch, so
+    without the payload the same command reports two different classifications
+    depending only on whether the format (or the database) exists.
+    """
+
+    @staticmethod
+    def _log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        log_dir = tmp_path / "profile"
+        log_dir.mkdir(mode=0o700)
+        monkeypatch.setattr(
+            "moneybin.privacy.log._resolve_privacy_log_dir",
+            lambda: log_dir,
+        )
+        return log_dir
+
+    @staticmethod
+    def _event(log_dir: Path) -> dict[str, Any]:
+        return json.loads((log_dir / "privacy.log.jsonl").read_text().splitlines()[0])
+
+    def test_formats_show_not_found_audits_from_a_detail_payload(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        log_dir = self._log_dir(tmp_path, monkeypatch)
+        _mock_get_database(mocker, [])
+
+        result = runner.invoke(
+            import_app, ["formats", "show", "no_such_format", "--output", "json"]
+        )
+
+        assert result.exit_code == 1
+        expected = classify(ImportPdfFormatDetail)
+        event = self._event(log_dir)
+        assert event["actor"] == "cli.import_formats_show"
+        assert event["sensitivity"] == expected.sensitivity
+        assert event["classes_returned"] == expected.classes_returned
+
+    def test_status_without_a_database_audits_from_the_summary_payload(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        log_dir = self._log_dir(tmp_path, monkeypatch)
+        missing = tmp_path / "absent" / "moneybin.duckdb"
+        settings = MagicMock()
+        settings.database.path = missing
+        monkeypatch.setattr(
+            "moneybin.config.get_settings",
+            lambda: settings,
+        )
+
+        result = runner.invoke(import_app, ["status", "--output", "json"])
+
+        assert result.exit_code == 1
+        expected = classify(ImportRawSummaryPayload)
+        event = self._event(log_dir)
+        assert event["actor"] == "cli.import_status"
+        assert event["sensitivity"] == expected.sensitivity
+        assert event["classes_returned"] == expected.classes_returned

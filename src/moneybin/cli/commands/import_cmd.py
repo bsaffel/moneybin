@@ -2840,6 +2840,9 @@ def formats_show(
         moneybin import formats show chase_a1b2c3d4e5f6
     """
     from moneybin.database import get_database
+    from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import
+        ImportPdfFormatDetail,
+    )
     from moneybin.services.import_service import ImportService
 
     try:
@@ -2862,7 +2865,12 @@ def formats_show(
         # Raised rather than emitted: `handle_cli_errors` owns both the JSON
         # error envelope and the text ❌/💡 pair, so the two branches cannot
         # drift and the JSON failure gets the audit row every other one gets.
-        with handle_cli_errors(cli_actor="import_formats_show"):
+        # `ImportPdfFormatDetail` of the two payloads this command can return:
+        # both classify `medium`, and it is the superset by one class, so a
+        # not-found row that names neither over-declares rather than under-.
+        with handle_cli_errors(
+            cli_actor="import_formats_show", payload_type=ImportPdfFormatDetail
+        ):
             raise UserError(
                 f"Format not found: {name!r}",
                 code=error_codes.IMPORT_SAVED_FORMAT_NOT_FOUND,
@@ -3031,7 +3039,9 @@ def import_status(
         # so the two cannot drift and the JSON failure gets the audit row every
         # other one gets. Both modes still exit non-zero, which is how a script
         # detects uninitialized state.
-        with handle_cli_errors(cli_actor="import_status"):
+        with handle_cli_errors(
+            cli_actor="import_status", payload_type=ImportRawSummaryPayload
+        ):
             raise UserError(
                 f"No MoneyBin database at {db_path}.",
                 code=error_codes.INFRA_DATABASE_NOT_INITIALIZED,

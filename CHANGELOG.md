@@ -127,13 +127,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   inherited the same wrong count.
 
 ### Fixed
-- **`gsheet status <unknown-id> --output json` attributes its audit row to the
-  command that ran.** The not-found failure was recorded in
-  `privacy.log.jsonl` as `cli.unknown` at the conservative `high` fallback tier
-  with no returned classes, while the same command's success path recorded
-  `cli.gsheet_status` at the tier derived from its payload — so one command
-  wrote two different provenances depending only on whether the id existed.
-  Both paths now record the same actor and classification.
+- **A failed `--output json` read is audited like the successful one beside
+  it.** Three commands now raise their not-found and no-database errors into
+  the shared handler rather than hand-writing a JSON error branch, which is
+  what earns those failures a `privacy.log.jsonl` row at all — but the handler
+  falls back to the conservative `high` tier, with no returned classes, unless
+  the command names its payload. `gsheet status <unknown-id>` was recorded as
+  `cli.unknown`/`high` beside a success path recording
+  `cli.gsheet_status`/`medium`; `import formats show <unknown-name>` and
+  `import status` on a machine with no database were recorded at `high` beside
+  success paths classified `medium` and `low`. All three now record the actor
+  and classification their success path records, so one command no longer
+  writes two provenances depending only on whether the thing it was asked for
+  exists.
 - **"Uncategorized" now means one thing, and the number is smaller.**
   `moneybin review`, `system_status` and the import-drain hint counted every
   transaction with no row in `app.transaction_categories`, while the review
