@@ -75,8 +75,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `disconnect`, and `gsheet auth` / `connect` / `pull` / `list` / `status` /
   `reconnect` / `disconnect`. Field-level moves worth naming: the categorize
   coverage keys are now `total_transactions`, `percent_categorized`, and a
-  nested `by_source` map; the format catalogue reports `institution_name` and
-  `last_used_at`; the `auto rules` total moved to `summary.total_count`; and
+  nested `by_source` map; the format catalogue reports `institution_name`, and
+  its date-only `last_used` becomes `last_used_at` carrying the full timestamp
+  the MCP tool has always returned (the text table still prints the date); the
+  `auto rules` total moved to `summary.total_count`; and
   the match queues return the same typed rows the MCP tools return, which drops
   the internal `app.match_decisions` columns neither surface displayed. Six
   commands stay deliberately outside the envelope, each named in the CLI

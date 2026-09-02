@@ -127,7 +127,9 @@ class TestFormatsListPdf:
         assert pdf_row["routing"] == "transactions"
         assert pdf_row["version"] == 1
         assert pdf_row["times_used"] == 3
-        assert pdf_row["last_used_at"] == "2026-05-30"
+        # Full timestamp, not the date-only string the text table prints:
+        # `import_formats` over MCP has always emitted one.
+        assert pdf_row["last_used_at"] == "2026-05-30T10:00:00"
 
     def test_filter_pdf_excludes_tabular(self, runner: CliRunner, mocker: Any) -> None:
         """--type=pdf shows only PDF rows; no tabular format names in output."""

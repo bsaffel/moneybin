@@ -707,13 +707,13 @@ user pastes back.
 }
 ```
 
-**`sync status --output json`** (`SyncStatusPayload`): the rows are at
-`data.connections`, each carrying `institution_name`, `status`, `last_sync`,
-`error_code`, and `guidance`. `--json-fields` narrows those rows.
-
 The agent then calls `sync link-status --session-id sess_abc123 --output json` to verify.
 
 **`sync link --output json`** (without `--no-browser`): blocks until linked, returns the full result including the auto-pull summary if applicable.
+
+**`sync status --output json`** (`SyncStatusPayload`): the rows are at
+`data.connections`, each carrying `institution_name`, `status`, `last_sync`,
+`error_code`, and `guidance`. `--json-fields` narrows those rows.
 
 ### `sync link` decision tree
 

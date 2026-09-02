@@ -26,9 +26,15 @@ if TYPE_CHECKING:
     from moneybin.repositories.pdf_formats_repo import PdfFormat
 
 
-def _iso_day(value: datetime | None) -> str | None:
-    """The date half of a stored timestamp, or None when it was never used."""
-    return None if value is None else value.date().isoformat()
+def _iso_timestamp(value: datetime | None) -> str | None:
+    """The stored timestamp in full, or None when the format was never used.
+
+    Full precision, not the date half: the MCP `import_formats` tool has always
+    emitted `last_used_at.isoformat()`, so truncating here to match the CLI
+    table's date-only column would narrow a shipped contract field. The CLI's
+    text branch does its own truncation for display and is unaffected.
+    """
+    return None if value is None else value.isoformat()
 
 
 def tabular_format_row(
@@ -63,7 +69,7 @@ def pdf_format_row(pdf_format: PdfFormat) -> ImportPdfFormatRow:
         front_end=pdf_format.front_end,
         version=pdf_format.version,
         times_used=pdf_format.times_used,
-        last_used_at=_iso_day(pdf_format.last_used_at),
+        last_used_at=_iso_timestamp(pdf_format.last_used_at),
     )
 
 
@@ -100,7 +106,7 @@ def pdf_format_detail(pdf_format: PdfFormat) -> ImportPdfFormatDetail:
         number_format=pdf_format.number_format,
         version=pdf_format.version,
         times_used=pdf_format.times_used,
-        last_used_at=_iso_day(pdf_format.last_used_at),
+        last_used_at=_iso_timestamp(pdf_format.last_used_at),
         source=pdf_format.source,
         extraction_recipe=cast("dict[str, Any] | None", pdf_format.extraction_recipe),
     )
