@@ -47,7 +47,12 @@ def test_expectation_result_default_details_empty():
 
 
 def test_result_types_importable_from_package_root():
-    """Stable contract: data-reconciliation imports the three Result types here."""
+    """Pin the package-root re-export of the three Result types.
+
+    Nothing imports them from the root today — ``data-reconciliation.md``,
+    the intended consumer, is still draft — so this is what keeps the
+    re-export from being dropped as dead before that lands.
+    """
     from tests.validation import AssertionResult, EvaluationResult, ExpectationResult
 
     assert AssertionResult.__name__ == "AssertionResult"

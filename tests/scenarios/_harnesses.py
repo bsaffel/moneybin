@@ -6,9 +6,9 @@ empty input, run with bad input) and report on execution-time invariants
 (no duplicate rows, no crash, expected error raised).
 
 They live under ``tests/`` because they have no consumer outside the
-scenario suite — ``data-reconciliation.md`` only consumes data
-predicates. If a future runtime consumer emerges, lift the relevant
-primitive into ``tests.validation``.
+scenario suite. The live-data surface is the SQLMesh audits under
+``src/moneybin/sqlmesh/audits/``, so a future runtime check belongs
+there rather than lifted out of ``tests/``.
 """
 
 from __future__ import annotations
