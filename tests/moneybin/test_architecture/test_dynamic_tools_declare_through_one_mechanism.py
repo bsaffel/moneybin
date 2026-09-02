@@ -203,10 +203,12 @@ class Construction:
     module: str
     function: str
     constructor: str
+    declares_fields: bool = True
 
     def __str__(self) -> str:
         """Render the site the way the assertion message needs to name it."""
-        return f"{self.module}:{self.function} builds {self.constructor}()"
+        suffix = "" if self.declares_fields else " declaring neither field"
+        return f"{self.module}:{self.function} builds {self.constructor}(){suffix}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +280,26 @@ def _call_name(node: ast.Call) -> str | None:
     if isinstance(func, ast.Attribute):
         return func.attr
     return None
+
+
+def _own_returns(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]:
+    """The function's own `return`s, not those of helpers nested inside it.
+
+    `ast.walk` descends into a nested `def`, and an inner helper's return is
+    not the enclosing tool's. Sweeping it in produces a spurious unverified
+    path and would force a real tool onto an exemption list for a refactor
+    that changed nothing about what it returns.
+    """
+    found: list[ast.Return] = []
+    stack: list[ast.AST] = list(node.body)
+    while stack:
+        current = stack.pop()
+        if isinstance(current, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            continue
+        if isinstance(current, ast.Return):
+            found.append(current)
+        stack.extend(ast.iter_child_nodes(current))
+    return found
 
 
 def _bare_name(node: ast.Call) -> str | None:
@@ -446,14 +468,19 @@ def _index(path: Path) -> _ModuleIndex:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
     }
     imports: dict[str, tuple[Path, str]] = {}
-    imports_the_builder = False
+    # Module level only. An import nested in one function does not put the
+    # builder in another function's scope, and pooling them module-wide is the
+    # same "spelling is not identity" mistake one level out.
+    imports_the_builder = any(
+        isinstance(node, ast.ImportFrom)
+        and not node.level
+        and node.module == BUILDER_MODULE
+        and any(alias.name == BUILDER and alias.asname is None for alias in node.names)
+        for node in tree.body
+    )
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom) or node.level or node.module is None:
             continue
-        if node.module == BUILDER_MODULE and any(
-            alias.name == BUILDER and alias.asname is None for alias in node.names
-        ):
-            imports_the_builder = True
         source = _mcp_module_path(node.module)
         if source is None:
             continue
@@ -557,6 +584,16 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
         # bug over again with the receiver omitted rather than discarded.
         # Imports are deliberately absent: a local `from … import build_…` is
         # the real thing, not a shadow.
+        builder_in_scope = imports_the_builder or any(
+            isinstance(child, ast.ImportFrom)
+            and not child.level
+            and child.module == BUILDER_MODULE
+            and any(
+                alias.name == BUILDER and alias.asname is None for alias in child.names
+            )
+            for statement in node.body
+            for child in ast.walk(statement)
+        )
         arguments = node.args
         shadowed = {
             argument.arg
@@ -610,7 +647,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                 # importing the real one, is not calling the sanctioned
                 # builder. Fail closed — the call then falls to the
                 # unverified-return check like any other unknown callee.
-                if imports_the_builder and BUILDER not in current_functions:
+                if builder_in_scope and BUILDER not in current_functions:
                     reaches_builder = True
                 else:
                     continue
@@ -620,6 +657,9 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                         module=current_path.name,
                         function=current_name,
                         constructor=callee,
+                        declares_fields=any(
+                            keyword.arg in DECLARED_FIELDS for keyword in call.keywords
+                        ),
                     )
                 )
             if callee in current_functions:
@@ -635,49 +675,46 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
             node.returns is not None and "ResponseEnvelope" in ast.unparse(node.returns)
         )
         if returns_an_envelope:
-            for statement in node.body:
-                for child in ast.walk(statement):
-                    if not isinstance(child, ast.Return) or child.value is None:
+            for child in _own_returns(node):
+                if child.value is None:
+                    continue
+                # An imported name counts only if the module it points at
+                # actually defines it. Otherwise the traversal drops the
+                # call silently and this check would read that silence as
+                # a verified path.
+                resolvable_imports = {
+                    local
+                    for local, (source, original) in imports.items()
+                    if original in _index(source)[0]
+                }
+                nameable = (
+                    ({BUILDER} if builder_in_scope else set())
+                    | RAW_CONSTRUCTORS
+                    | set(current_functions)
+                    | resolvable_imports
+                )
+                for value in _resolve_all(child.value, assignments):
+                    callee = _bare_name(value) if isinstance(value, ast.Call) else None
+                    if (
+                        callee is not None
+                        and callee not in shadowed
+                        and callee in nameable
+                    ):
+                        # Its value becomes this envelope, so hold it to the
+                        # same check even if it is annotated `Any`.
+                        if callee in current_functions:
+                            pending.append((current_path, callee, True))
+                        elif callee in imports:
+                            helper_path, helper_name = imports[callee]
+                            pending.append((helper_path, helper_name, True))
                         continue
-                    # An imported name counts only if the module it points at
-                    # actually defines it. Otherwise the traversal drops the
-                    # call silently and this check would read that silence as
-                    # a verified path.
-                    resolvable_imports = {
-                        local
-                        for local, (source, original) in imports.items()
-                        if original in _index(source)[0]
-                    }
-                    nameable = (
-                        ({BUILDER} if imports_the_builder else set())
-                        | RAW_CONSTRUCTORS
-                        | set(current_functions)
-                        | resolvable_imports
+                    unverified.append(
+                        UnverifiedReturn(
+                            module=current_path.name,
+                            function=current_name,
+                            expression=ast.unparse(value).splitlines()[0][:60],
+                        )
                     )
-                    for value in _resolve_all(child.value, assignments):
-                        callee = (
-                            _bare_name(value) if isinstance(value, ast.Call) else None
-                        )
-                        if (
-                            callee is not None
-                            and callee not in shadowed
-                            and callee in nameable
-                        ):
-                            # Its value becomes this envelope, so hold it to the
-                            # same check even if it is annotated `Any`.
-                            if callee in current_functions:
-                                pending.append((current_path, callee, True))
-                            elif callee in imports:
-                                helper_path, helper_name = imports[callee]
-                                pending.append((helper_path, helper_name, True))
-                            continue
-                        unverified.append(
-                            UnverifiedReturn(
-                                module=current_path.name,
-                                function=current_name,
-                                expression=ast.unparse(value).splitlines()[0][:60],
-                            )
-                        )
 
     return Mechanism(
         reaches_builder=reaches_builder,
@@ -843,6 +880,22 @@ async def test_derived_declarations_are_not_quietly_replaced_by_literals() -> No
         f"constructor's default: {silent}"
     )
 
+    # A new branch that builds an envelope and declares nothing takes both
+    # defaults. Set equality cannot see it — the tool is already listed — and
+    # the checks below read only the declarations that exist, so the branch
+    # has to be caught where it is made.
+    undeclared = sorted(
+        str(construction)
+        for name in MUST_DERIVE_ITS_DECLARATION
+        for construction in mechanisms[name].constructions
+        if not construction.declares_fields
+    )
+    assert not undeclared, (
+        "These tools derive their classification, so every envelope they "
+        "build outside the classifier has to carry it. These build one and "
+        f"declare neither field, leaving both on the default: {undeclared}"
+    )
+
     partial = sorted(
         str(declaration)
         for name in MUST_DERIVE_ITS_DECLARATION
@@ -935,6 +988,24 @@ def _probe_shadowing_the_builder(
 def _probe_declaring_only_one_field() -> ResponseEnvelope[Any]:
     """Stand-in for a call that sets one declared field and omits the other."""
     return build_envelope(data={"probe": True}, sensitivity=_elsewhere())
+
+
+def _probe_augmenting_the_envelope() -> ResponseEnvelope[Any]:
+    """Stand-in for `+=` against a declared field: no Assign, no keyword."""
+    envelope = build_classified_envelope({"probe": True})
+    if envelope.classes_returned is not None:
+        envelope.classes_returned += ["aggregate"]
+    return envelope
+
+
+def _probe_with_a_nested_helper() -> ResponseEnvelope[Any]:
+    """Clean tool whose local helper returns something unrelated."""
+
+    def _rows() -> Any:
+        return _elsewhere().fetch()
+
+    _rows()
+    return build_classified_envelope({"probe": True})
 
 
 def _probe_hiding_a_literal_behind_an_alias() -> ResponseEnvelope[Any]:
@@ -1082,6 +1153,20 @@ def test_the_analysis_can_return_a_failing_verdict() -> None:
     assert [site.expression for site in shadowed.unverified_returns] == [
         "build_classified_envelope({'probe': True})"
     ]
+
+    # `+=` against a declared field is neither an assignment the overwrite arm
+    # sees nor a keyword, so it needs its own arm and its own probe.
+    augmented = mechanism_of(Path(__file__), _probe_augmenting_the_envelope.__name__)
+    assert augmented.reaches_builder
+    assert [d.verb for d in augmented.declarations] == ["augments"]
+    assert [d.fields for d in augmented.declarations] == [("classes_returned",)]
+
+    # A nested helper's return is not the tool's. Sweeping it in would force a
+    # clean tool onto an exemption list for a refactor that changed nothing
+    # about what it returns.
+    nested = mechanism_of(Path(__file__), _probe_with_a_nested_helper.__name__)
+    assert nested.reaches_builder
+    assert nested.unverified_returns == ()
 
     # Omitting one field is the half-contract case the `partial` check reads.
     one_field = mechanism_of(Path(__file__), _probe_declaring_only_one_field.__name__)
