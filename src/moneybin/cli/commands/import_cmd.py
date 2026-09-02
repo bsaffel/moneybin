@@ -3026,17 +3026,14 @@ def import_status(
     db_path = get_settings().database.path
 
     if not db_path.exists():
-        if not quiet and output == OutputFormat.TEXT:
-            logger.warning(f"Database not found: {db_path}")
-            logger.info("Run 'moneybin import files <path>' to import data first.")
-        # Both modes exit non-zero so machine consumers can detect missing/
-        # uninitialized state. `handle_cli_errors` turns the raise into the
-        # standard error envelope on the JSON branch — the same shape every
-        # other command's failure emits — and the exit code carries it for
-        # scripts either way.
+        # Raised rather than echoed per branch: `handle_cli_errors` owns the ❌
+        # line and the hint in text mode and the error envelope in JSON mode,
+        # so the two cannot drift and the JSON failure gets the audit row every
+        # other one gets. Both modes still exit non-zero, which is how a script
+        # detects uninitialized state.
         with handle_cli_errors(cli_actor="import_status"):
             raise UserError(
-                "No MoneyBin database found.",
+                f"No MoneyBin database at {db_path}.",
                 code=error_codes.INFRA_DATABASE_NOT_INITIALIZED,
                 hint="Run 'moneybin import files <path>' to import data first.",
             )

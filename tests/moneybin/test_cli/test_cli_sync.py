@@ -611,6 +611,42 @@ def test_sync_status_json_output(mock_build: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_status_json_fields_still_projects_after_the_envelope(
+    mock_build: MagicMock,
+) -> None:
+    """The projection survived the move onto the typed payload.
+
+    This command hand-rolled its own field filter over a bare list, which is
+    the only reason the flag ever worked: `render_or_json` used to project
+    exclusively into a `list` payload, so handing it a typed one would have
+    left a documented flag silently inert.
+    """
+    service = MagicMock()
+    service.list_connections.return_value = [
+        SyncConnectionView(
+            id="u1",
+            provider_item_id="item_a",
+            institution_name="Chase",
+            provider="plaid",
+            status="active",
+            last_sync=datetime(2026, 4, 7, 14, 30, tzinfo=UTC),
+            guidance=None,
+        ),
+    ]
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(
+        app,
+        ["sync", "status", "--output", "json", "--json-fields", "institution_name"],
+    )
+
+    assert result.exit_code == 0, result.output
+    body = json.loads(result.stdout)
+    assert body["data"]["connections"] == [{"institution_name": "Chase"}]
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_status_shows_error_code_when_present(mock_build: MagicMock) -> None:
     """Sync status text output shows the error_code when it is non-null."""
     service = MagicMock()

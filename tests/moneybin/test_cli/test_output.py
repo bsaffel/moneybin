@@ -212,6 +212,24 @@ class TestJsonFieldsOnTypedPayloads:
         assert set(out["data"]["others"][0]) == {"id", "account_number", "label"}
 
     @pytest.mark.unit
+    def test_no_ops_on_a_collection_of_scalars(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A list of bare values has no fields to name.
+
+        The old inline filter called `.items()` on every element, so this
+        raised an AttributeError out of the output path rather than ignoring
+        an inapplicable flag.
+        """
+        envelope: ResponseEnvelope[list[str]] = ResponseEnvelope(
+            summary=SummaryMeta(total_count=2, returned_count=2),
+            data=["a1", "a2"],
+        )
+        render_or_json(envelope, OutputFormat.JSON, json_fields="id")
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"] == ["a1", "a2"]
+
+    @pytest.mark.unit
     def test_no_ops_when_the_payload_carries_no_list(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:

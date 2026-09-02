@@ -375,12 +375,22 @@ def render_or_json(
     typer.echo(envelope.to_json())
 
 
-def _project_rows(rows: list[Any], fields: set[str]) -> list[dict[str, Any]]:
-    """Keep only ``fields`` on each already-serialized row."""
+def _project_rows(rows: list[Any], fields: set[str]) -> list[dict[str, Any]] | None:
+    """Keep only ``fields`` on each already-serialized row.
+
+    None when any element is not a keyed row — a list of scalars has no fields
+    to name, and dropping or passing through the odd one out would return a
+    collection the caller cannot reason about. Empty projects to empty.
+    """
+    if not all(isinstance(row, dict) for row in rows):
+        return None
     return [
-        {key: value for key, value in row.items() if key in fields}
+        {
+            key: value
+            for key, value in cast("dict[str, Any]", row).items()
+            if key in fields
+        }
         for row in rows
-        if isinstance(row, dict)
     ]
 
 
@@ -417,7 +427,8 @@ def _project_fields(data: Any, fields: set[str]) -> Any | None:
     if len(list_keys) != 1:
         return None
     key = list_keys[0]
-    return {**body, key: _project_rows(cast("list[Any]", body[key]), fields)}
+    projected = _project_rows(cast("list[Any]", body[key]), fields)
+    return None if projected is None else {**body, key: projected}
 
 
 def render_export_receipt(

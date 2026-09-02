@@ -10,6 +10,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **Every CLI command's `--output json` now returns the standard response
+  envelope, and the JSON shapes moved with it.** Twenty-four output paths
+  printed a bare `{"key": [...]}` object or a raw model dump beside
+  `render_or_json` — the one path that derives the sensitivity tier from the
+  payload type, applies the redaction transforms, and writes the privacy audit
+  row. `.claude/rules/cli.md`, `docs/features.md`, and the CLI reference all
+  described the envelope as universal; for those commands it was not.
+  Scripts and agents parsing these commands must read the payload under `data`:
+  `transactions matches pending` / `matches history`, `import history`,
+  `import status`, `import formats list` / `formats show`,
+  `transactions categorize stats`, `categorize auto stats` / `auto rules` /
+  `auto review`, `sync link` / `link-status` / `pull` / `status` /
+  `disconnect`, and `gsheet auth` / `connect` / `pull` / `list` / `status` /
+  `reconnect` / `disconnect`. Field-level moves worth naming: the categorize
+  coverage keys are now `total_transactions`, `percent_categorized`, and a
+  nested `by_source` map; the format catalogue reports `institution_name` and
+  `last_used_at`; the `auto rules` total moved to `summary.total_count`; and
+  the match queues return the same typed rows the MCP tools return, which drops
+  the internal `app.match_decisions` columns neither surface displayed. Four
+  commands stay deliberately outside the envelope, each named in the CLI
+  reference: the `db query` operator bypass and the `stats` / `logs` /
+  `migrate status` operations-metadata reads. Nothing these commands returned
+  would have been masked by today's transforms, so this is a contract and audit
+  fix rather than a disclosure fix.
+- **`--json-fields` now works on every command that offers it.** The projection
+  only ever applied to a bare list payload, so on a typed payload the flag was
+  accepted and silently did nothing. It now descends into a typed payload's
+  single collection field, after redaction rather than instead of it, and
+  no-ops cleanly when a payload carries no collection or more than one.
+- **`import formats` (MCP) and `import formats list` (CLI) return one list.**
+  The MCP tool previously split its answer into `formats` and `pdf_formats`;
+  both surfaces now return a single `formats` list whose rows carry a `type`
+  discriminator, so `jq '.data.formats | map(select(.type == "pdf"))'` filters
+  it and an unfiltered read needs no special case. Tabular rows also carry
+  `source` (`builtin` or `user`), which only the CLI reported before.
+- **`sync link` (MCP) reports `link_type`, and `gsheet_pull` (MCP) reports its
+  refresh outcome.** Both fields existed on the CLI side only; the shared
+  payloads now carry them so the two surfaces answer alike. `gsheet_pull`
+  through MCP runs no refresh, so its refresh fields report `null` rather than
+  zero — "the step did not run" and "the step found nothing" stay distinct.
+- **`transactions_matches_history` (MCP) carries `match_tier` and both
+  `source_type_*` columns.** The terminal has always rendered them; the tool's
+  rows had not.
+
 ### Fixed
 - **"Uncategorized" now means one thing, and the number is smaller.**
   `moneybin review`, `system_status` and the import-drain hint counted every
