@@ -87,7 +87,7 @@ The categories, and what declares each:
 | Category | Declared by | Examples |
 |---|---|---|
 | Grain key | `DataClass.RECORD_ID` | `account_id`, `merchant_id`, `transaction_id` |
-| Identifying label | `USER_NOTE`, `MERCHANT_NAME`, `INSTITUTION` | `account_name`, `merchant_normalized` |
+| Identifying label | `USER_NOTE`, `MERCHANT_NAME`, `INSTITUTION`, `DESCRIPTION` | `account_name`, `merchant_normalized`, `description` |
 | Dimension | `CATEGORY`, `CURRENCY`, `TXN_TYPE` | `category`, `currency_code`, `status`, `cadence` |
 | Date | `TXN_DATE` | `year_month`, `txn_date`, `first_seen`, `last_seen` |
 | Provenance | `TIMESTAMP_OBSERVABILITY` | `extracted_at`, `loaded_at` |
@@ -223,6 +223,14 @@ execution test asserts that the columns its result carries appear in the same
 relative order as `ReportSpec.columns`, using the fixture that test already
 has. That is a stronger check than a static one — it reads what the report
 actually returned.
+
+**The guard checks labels and dimensions as one block.** Which of the two a
+name column is depends on whether it names the report's own grain, and no
+declaration carries the grain: `merchant_normalized` is the label on
+`core:merchants` and a dimension on `core:large_transactions`, which is grained
+by transaction. Separating them would enforce a distinction the guard cannot
+see, so it checks only that both precede the dates. Their relative order is
+review's call, against the sentence above.
 
 The guard skips `AGGREGATE` columns entirely, for the reason given above. It
 also cannot notice a **mis-declared** class — `balance_drift.days_since_assertion`

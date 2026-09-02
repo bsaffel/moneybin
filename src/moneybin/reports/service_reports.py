@@ -83,6 +83,23 @@ _SNAPSHOT_COLUMNS = (
         DataClass.TXN_TYPE,
     ),
 )
+
+# Parallel to _SNAPSHOT_COLUMNS **by position alone** — nothing here names a
+# column. Reorder one without the other and every column is handed the type of
+# whichever column took its slot, silently. `test_column_ordering.py` is the
+# only thing between that and a caller.
+_SNAPSHOT_COLUMN_TYPES = (
+    "DATE",
+    "VARCHAR",
+    "DECIMAL(18,2)",
+    "DECIMAL(18,2)",
+    "DECIMAL(18,2)",
+    "BIGINT",
+    "VARCHAR",
+    "VARCHAR",
+    "DECIMAL(18,2)",
+    "VARCHAR",
+)
 _SNAPSHOT_CLASSES = {column.name: column.data_class for column in _SNAPSHOT_COLUMNS}
 _SNAPSHOT_SEMANTICS = ReportSemantics(
     unit="currency",
@@ -320,18 +337,7 @@ def _execute_networth(
         parameters=params,
         records=rows,
         columns=[column.name for column in _SNAPSHOT_COLUMNS],
-        column_types=[
-            "DATE",
-            "VARCHAR",
-            "DECIMAL(18,2)",
-            "DECIMAL(18,2)",
-            "DECIMAL(18,2)",
-            "BIGINT",
-            "VARCHAR",
-            "VARCHAR",
-            "DECIMAL(18,2)",
-            "VARCHAR",
-        ],
+        column_types=list(_SNAPSHOT_COLUMN_TYPES),
         max_rows=limit,
         actions=[
             "Run reports(report_id='core:networth_history', "
