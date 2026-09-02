@@ -259,12 +259,27 @@ class Mechanism:
 
 
 def _call_name(node: ast.Call) -> str | None:
+    """The callee's terminal name, receiver discarded — for labels only."""
     func = node.func
     if isinstance(func, ast.Name):
         return func.id
     if isinstance(func, ast.Attribute):
         return func.attr
     return None
+
+
+def _bare_name(node: ast.Call) -> str | None:
+    """The callee's name only when it is called as a bare name.
+
+    A method keeps its receiver out of this deliberately: `adapter.
+    build_classified_envelope()` shares a terminal name with the sanctioned
+    builder and is a different function, so matching on the terminal name
+    would let any object with the right method satisfy the requirement. The
+    same applies in reverse to resolution — `self.helper()` is not this
+    module's `helper()`. An attribute call is therefore never nameable here,
+    which fails closed into the unverified-return check.
+    """
+    return node.func.id if isinstance(node.func, ast.Name) else None
 
 
 type _Assignments = dict[str, list[ast.expr]]
@@ -465,7 +480,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                 declarations.append(declaration)
 
         for call in body_calls:
-            callee = _call_name(call)
+            callee = _bare_name(call)
             if callee is None:
                 continue
             if callee == BUILDER:
@@ -495,15 +510,24 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                 for child in ast.walk(statement):
                     if not isinstance(child, ast.Return) or child.value is None:
                         continue
+                    # An imported name counts only if the module it points at
+                    # actually defines it. Otherwise the traversal drops the
+                    # call silently and this check would read that silence as
+                    # a verified path.
+                    resolvable_imports = {
+                        local
+                        for local, (source, original) in imports.items()
+                        if original in _index(source)[0]
+                    }
                     nameable = (
                         {BUILDER}
                         | RAW_CONSTRUCTORS
                         | set(current_functions)
-                        | set(imports)
+                        | resolvable_imports
                     )
                     for value in _resolve_all(child.value, assignments):
                         callee = (
-                            _call_name(value) if isinstance(value, ast.Call) else None
+                            _bare_name(value) if isinstance(value, ast.Call) else None
                         )
                         if callee is not None and callee in nameable:
                             # Its value becomes this envelope, so hold it to the
@@ -714,6 +738,20 @@ def _probe_delegating_to_an_unannotated_helper() -> ResponseEnvelope[Any]:
     return _unannotated_producer()
 
 
+class _Impostor:
+    """Carries a method sharing the sanctioned builder's terminal name."""
+
+    def build_classified_envelope(self) -> ResponseEnvelope[Any]:
+        """Not the sanctioned builder, despite the name."""
+        raise NotImplementedError
+
+
+def _probe_calling_a_method_named_like_the_builder() -> ResponseEnvelope[Any]:
+    """Stand-in for a receiver whose method shares the builder's name."""
+    adapter = _Impostor()
+    return adapter.build_classified_envelope()
+
+
 def _probe_hiding_a_literal_behind_an_alias() -> ResponseEnvelope[Any]:
     """Stand-in for a constant spelled into a local before the call."""
     hidden = "low"
@@ -799,4 +837,13 @@ def test_the_analysis_can_return_a_failing_verdict() -> None:
     )
     assert [site.expression for site in delegated.unverified_returns] == [
         "_elsewhere().make_envelope()"
+    ]
+
+    # A method is not the sanctioned builder just because it ends in its name.
+    impostor = mechanism_of(
+        Path(__file__), _probe_calling_a_method_named_like_the_builder.__name__
+    )
+    assert not impostor.reaches_builder
+    assert [site.expression for site in impostor.unverified_returns] == [
+        "adapter.build_classified_envelope()"
     ]
