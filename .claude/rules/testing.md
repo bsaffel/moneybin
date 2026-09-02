@@ -270,32 +270,31 @@ This rule applies to YAML scenario expectations, pytest assertions in `tests/sce
 
 ## Triaging Scenario Failures by Symptom
 
-`ScenarioResult` (`tests/scenarios/_runner/result.py`) reports failures from
-four sources. **Start from the named assertion, expectation, or evaluation, not
-from which field is populated** — fix code before touching a YAML expectation,
-per the derivation rule above.
+`ScenarioResult.failure_summary()` (`tests/scenarios/_runner/result.py`) is the
+only output pytest and CI ever show, so triage from its lines. The runner
+separates a check that **crashed** from one that returned a verdict and says
+which — either `crashed,` in the line or a `halted:` reason naming the phase.
+Start from the named assertion, expectation, or evaluation, and fix code before
+touching a YAML expectation, per the derivation rule above.
 
-The runner adds its own fingerprint only when it catches a crash on the way
-out, and that fingerprint always names the phase that crashed. Everything else
-— including a message that looks like a Python exception — was composed by the
-implementation the scenario named, and a callback is free to catch an exception
-and return its text (`tests/scenarios/test_reports_recipe_library.py` does
-exactly that).
-
-| Symptom | What it tells you | Where to look |
+| Summary line | What it tells you | Where to look |
 |---|---|---|
-| `halted` non-null | The runner aborted the scenario, and the string says where | Match the text: `catalog wiring failed pre-flight` → the SQLMesh catalog wiring; `pipeline step crashed` → `tests/scenarios/_runner/steps.py` and the called service; `expectations crashed` → the named expectation verifier; `extra_assertions crashed` → that scenario's own callback |
-| Assertion failed, `details` is `{"args": ...}` | `_run_assertion` caught an exception out of the assertion fn | That assertion's own implementation |
-| Evaluation failed, `breakdown` has an `error` key and `value` is `0.0` | `_run_evaluation` caught an exception out of the evaluation fn | That evaluation's own implementation |
-| Any other assertion, expectation, or evaluation failure | The named implementation ran and decided this, and wrote the message itself | That implementation first, then the pipeline step owning the data, then the fixture or scenario YAML if the expectation is stale |
+| `halted: catalog wiring failed pre-flight` | The SQLMesh catalog disagreed before the pipeline ran | `assert_sqlmesh_catalog_matches` and the model catalog |
+| `halted: pipeline step crashed: <Type>` | A pipeline step raised | `tests/scenarios/_runner/steps.py` and the called service |
+| `halted: expectations crashed: <kind> (<Type>)` | That adapter raised, aborting the rest | The adapter registered for `<kind>` in `_expectation_registry.py` |
+| `halted: extra_assertions crashed: <Type>` | The scenario's own callback raised | That scenario's `extra_assertions` |
+| `assertion <name>: crashed, ...` | The runner caught an exception out of the assertion fn | That assertion's own implementation |
+| `evaluation <name>: crashed, ...` | The runner caught an exception out of the evaluation fn; its `0.0` is a placeholder, not a measured score | That evaluation's own implementation |
+| `assertion <name>: ...`, `evaluation <name>: <metric>=... < threshold=...`, or `expectation <name>` | The named implementation ran and decided this, and wrote the message itself | That implementation first, then the pipeline step owning the data, then the fixture or scenario YAML if the expectation is stale |
+
+An assertion's implementation is either the shared assertion library or the
+scenario's own `extra_assertions` callback — the name in the result tells you
+which, and the two fail identically otherwise. An assertion whose job is to
+catch (`assert_empty_input_safe`) reports a verdict, not a crash.
 
 Every halted result carries the passed pre-flight assertion, and the later
 halts carry the scenario's own assertions too, so a populated assertion list is
 not evidence the run got past the phase `halted` names. Read the string.
-
-An assertion's implementation is either the shared assertion library or the
-scenario's own `extra_assertions` callback — the name in the result tells you
-which, and the two fail identically otherwise.
 
 The `Scenarios` CI workflow shards `pytest -m scenarios` four ways and uploads
 one `pytest-json-report` artifact per shard — `scenarios-results-<group>`

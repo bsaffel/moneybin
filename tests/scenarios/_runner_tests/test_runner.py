@@ -98,3 +98,45 @@ def test_extra_assertions_crash_halts_scenario(stubbed_runner: None) -> None:  #
     # echo PII from local variables (logger module rule).
     assert "RuntimeError" in result.halted
     assert "explode" not in result.halted
+
+
+_CRASHING_YAML = """
+scenario: unit-test-crash
+description: "assertion and evaluation whose functions do not resolve"
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+pipeline: []
+assertions:
+  - name: broken_assertion
+    fn: no_such_module.no_such_fn
+evaluations:
+  - name: broken_evaluation
+    fn: no_such_module.no_such_fn
+    threshold:
+      metric: precision
+      min: 0.9
+"""
+
+
+def test_runner_marks_crashed_assertions_and_evaluations(stubbed_runner: None) -> None:  # noqa: ARG001 — fixture activation
+    """A caught crash is recorded as a crash, not as a verdict or a low score.
+
+    Without the flag both render identically to the one summary CI ever sees,
+    which is what sends triage at the scenario's data instead of its code.
+    """
+    result = runner_mod.run_scenario(load_scenario_from_string(_CRASHING_YAML))
+
+    assert not result.passed
+    crashed = {a.name for a in result.assertions if a.crashed}
+    assert crashed == {"broken_assertion"}
+    assert all(v.crashed for v in result.evaluations)
+
+    summary = result.failure_summary()
+    assert "assertion broken_assertion: crashed," in summary
+    assert "evaluation broken_evaluation: crashed," in summary
+    # The pre-flight assertion passed and is not a crash — the flag must not
+    # smear across every result in a failing run.
+    assert not any(a.crashed for a in result.assertions if a.name == "catalog")

@@ -22,7 +22,10 @@ from tests.scenarios._runner._assertion_registry import (
     resolve_assertion as _resolve_assertion,
 )
 from tests.scenarios._runner._evaluation_registry import resolve_evaluation
-from tests.scenarios._runner._expectation_registry import verify_expectations
+from tests.scenarios._runner._expectation_registry import (
+    ExpectationCrashError,
+    verify_expectations,
+)
 from tests.scenarios._runner.loader import (
     AssertionSpec,
     EvaluationSpec,
@@ -193,9 +196,9 @@ def run_scenario(
         try:
             expectations = verify_expectations(db, scenario.expectations)
         except Exception as exc:  # noqa: BLE001 — surface as halted result
-            logger.error(
-                f"scenario {scenario.name} expectations crashed: {type(exc).__name__}"
-            )
+            named = exc if isinstance(exc, ExpectationCrashError) else None
+            detail = str(named) if named else type(exc).__name__
+            logger.error(f"scenario {scenario.name} expectations crashed: {detail}")
             logger.debug("scenario expectations traceback", exc_info=True)
             return _build_result(
                 scenario=scenario,
@@ -205,7 +208,7 @@ def run_scenario(
                 assertions=[preflight, *assertions],
                 expectations=[],
                 evaluations=[],
-                halted=f"expectations crashed: {type(exc).__name__}",
+                halted=f"expectations crashed: {detail}",
             )
         evaluations = [_run_evaluation(e, db) for e in scenario.evaluations]
 
@@ -287,6 +290,7 @@ def _run_assertion(
             passed=False,
             details={"args": args},
             error=str(exc),
+            crashed=True,
         )
     # Preserve the scenario-author's name so result output matches the YAML.
     return AssertionResult(
@@ -311,6 +315,7 @@ def _run_evaluation(spec: EvaluationSpec, db: Database) -> EvaluationResult:
             threshold=spec.threshold.min,
             passed=False,
             breakdown={"error": str(exc)},
+            crashed=True,
         )
 
 
