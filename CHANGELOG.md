@@ -91,8 +91,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   single collection field, after redaction rather than instead of it, and
   no-ops cleanly when a payload carries no collection or more than one. A
   refresh's diagnostic lists (`identity_errors`, the three `rate_pairs_*`
-  lists, `self_heal_actions`) are not collections for this purpose — they
-  describe the rows rather than being a second set of them.
+  lists, `self_heal_actions`) and `sync pull`'s overlap warning
+  (`investment_source_overlap_accounts`) are not collections for this purpose —
+  they describe the rows rather than being a second set of them.
 - **`import formats` (MCP) and `import formats list` (CLI) return one list.**
   The MCP tool previously split its answer into `formats` and `pdf_formats`;
   both surfaces now return a single `formats` list whose rows carry a `type`
@@ -114,13 +115,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   nothing in common, the opposite of what happened. The field is now `null` for
   such a row on both surfaces, matching the dash the text tables have always
   printed. Consumers doing arithmetic on `confidence_score` must handle `null`.
-- **`gsheet pull` and `import files` report the row count they actually
-  returned.** `summary.returned_count` and `summary.total_count` reported `1`
-  regardless of how many connections were pulled or files imported, because the
-  post-load refresh's diagnostic lists were counted as row collections
-  alongside the real one. The privacy audit row inherited the same wrong count.
+- **`gsheet pull`, `import files` and `sync pull` report the row count they
+  actually returned.** `summary.returned_count` and `summary.total_count`
+  reported `1` regardless of how many connections were pulled, files imported,
+  or institutions covered, because diagnostic lists riding beside the real row
+  collection were counted as row collections themselves — the post-load
+  refresh's four best-effort lists on the first two, and the
+  both-manual-and-Plaid overlap warning on `sync pull`. The privacy audit row
+  inherited the same wrong count, and `--json-fields` silently no-opped on all
+  three.
 
 ### Fixed
+- **`gsheet status <unknown-id> --output json` attributes its audit row to the
+  command that ran.** The not-found failure was recorded in
+  `privacy.log.jsonl` as `cli.unknown` at the conservative `high` fallback tier
+  with no returned classes, while the same command's success path recorded
+  `cli.gsheet_status` at the tier derived from its payload — so one command
+  wrote two different provenances depending only on whether the id existed.
+  Both paths now record the same actor and classification.
 - **"Uncategorized" now means one thing, and the number is smaller.**
   `moneybin review`, `system_status` and the import-drain hint counted every
   transaction with no row in `app.transaction_categories`, while the review

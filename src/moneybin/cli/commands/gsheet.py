@@ -464,7 +464,9 @@ def gsheet_status(
     output: OutputFormat = output_option,
 ) -> None:
     """Show status for one connection, or a summary of all of them."""
-    with handle_cli_errors():
+    with handle_cli_errors(
+        cli_actor="gsheet_status", payload_type=GsheetConnectionsPayload
+    ):
         with _build_connection_service() as service:
             if connection_id is None:
                 connections = service.list_connections()

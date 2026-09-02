@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +18,8 @@ from moneybin.connectors.gsheet.adapters.base import (
 )
 from moneybin.connectors.gsheet.connection_service import ConnectResult
 from moneybin.connectors.gsheet.pull_service import PullResult
+from moneybin.privacy.classified_envelope import classify
+from moneybin.privacy.payloads.gsheet import GsheetConnectionsPayload
 
 runner = CliRunner()
 
@@ -710,6 +713,43 @@ def test_gsheet_status_unknown_connection_exits_nonzero(
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["gsheet", "status", "conn_missing"])
     assert result.exit_code == 1
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_status_unknown_connection_audits_as_gsheet_status(
+    mock_build: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure row names the same command and payload the success row does.
+
+    `handle_cli_errors` defaults to `cli.unknown` at the conservative `high`
+    tier with no classes; the success path below it records `cli.gsheet_status`
+    off `GsheetConnectionsPayload`. Left unwired, one command wrote two
+    different provenances into `privacy.log.jsonl` depending only on whether
+    the id existed.
+    """
+    log_dir = tmp_path / "profile"
+    log_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir",
+        lambda: log_dir,
+    )
+    service = MagicMock()
+    service.get.return_value = None
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(
+        app, ["gsheet", "status", "conn_missing", "--output", "json"]
+    )
+
+    assert result.exit_code == 1
+    expected = classify(GsheetConnectionsPayload)
+    event = json.loads((log_dir / "privacy.log.jsonl").read_text().splitlines()[0])
+    assert event["actor"] == "cli.gsheet_status"
+    assert event["sensitivity"] == expected.sensitivity
+    assert event["classes_returned"] == expected.classes_returned
 
 
 @pytest.mark.unit

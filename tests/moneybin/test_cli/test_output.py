@@ -12,6 +12,7 @@ from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, emit_json_error, render_or_json
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.gsheet import GsheetPullPayload, GsheetPullRow
+from moneybin.privacy.payloads.sync import SyncPullInstitutionRow, SyncPullPayload
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta, build_envelope
 
@@ -304,6 +305,78 @@ class TestRefreshDiagnosticsAreNotRowCollections:
         ]
         # The diagnostics ride through untouched — they are not rows to narrow.
         assert out["data"]["rate_pairs_failed"] == ["USD/EUR"]
+
+
+class TestSyncPullCountsInstitutions:
+    """The overlap warning must not be mistaken for a second row collection.
+
+    `SyncPullPayload` carries `institutions` — the per-institution outcomes the
+    pull returned — beside `investment_source_overlap_accounts`, which names the
+    accounts holding both manual and Plaid investment history. That is a warning
+    about the rows, not another set of them, so counting it left the payload with
+    two collections and the "sole collection" rule answered "several, so
+    neither": `sync pull --output json`, `sync_pull` over MCP, and the CLI
+    privacy audit row all reported `returned_count=1` however many institutions
+    the pull covered.
+
+    Pinned on the shipped payload rather than a stand-in, for the same reason as
+    the class above: the defect is the auxiliary set going stale against a real
+    payload's fields.
+    """
+
+    @staticmethod
+    def _payload(n: int) -> SyncPullPayload:
+        return SyncPullPayload(
+            job_id="job_1",
+            transactions_loaded=0,
+            accounts_loaded=0,
+            balances_loaded=0,
+            transactions_removed=0,
+            institutions=[
+                SyncPullInstitutionRow(
+                    provider_item_id=f"item_{i}",
+                    institution_name=None,
+                    status="ok",
+                    transaction_count=i,
+                    error=None,
+                    error_code=None,
+                )
+                for i in range(n)
+            ],
+            transforms_applied=True,
+            transforms_duration_seconds=None,
+            transforms_error=None,
+            investment_source_overlap_accounts=["acct_a", "acct_b"],
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("count", [0, 1, 3])
+    def test_counts_the_institutions_not_the_overlap_warning(self, count: int) -> None:
+        payload = self._payload(count)
+        envelope = build_envelope(data=payload)
+        assert envelope.summary.returned_count == len(payload.institutions)
+        assert envelope.summary.returned_count == count
+        assert envelope.summary.total_count == count
+
+    @pytest.mark.unit
+    def test_json_fields_still_finds_the_institution_rows(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        render_or_json(
+            build_envelope(data=self._payload(2)),
+            OutputFormat.JSON,
+            json_fields="provider_item_id,status",
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"]["institutions"] == [
+            {"provider_item_id": "item_0", "status": "ok"},
+            {"provider_item_id": "item_1", "status": "ok"},
+        ]
+        # The warning rides through untouched — it is not a row set to narrow.
+        assert out["data"]["investment_source_overlap_accounts"] == [
+            "acct_a",
+            "acct_b",
+        ]
 
 
 class TestEmitJsonError:

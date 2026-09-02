@@ -459,6 +459,13 @@ AUXILIARY_LIST_FIELDS = frozenset({
     # collection and report `returned_count=0` for a clean refresh that healed
     # nothing. `refresh_run` returns one pipeline outcome, not N recipes.
     "self_heal_actions",
+    # `SyncPullPayload`'s warning that some accounts carry both manual and Plaid
+    # investment history. Same rationale again: it describes a condition
+    # affecting the rows the pull returned, not a second set of them. It sits
+    # beside `identity_errors` and the three `rate_pairs_*` lists on that
+    # payload; without it the heuristic saw two lists and reported
+    # `returned_count=1` for a pull covering N institutions.
+    "investment_source_overlap_accounts",
 })
 
 
