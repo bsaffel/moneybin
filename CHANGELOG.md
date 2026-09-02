@@ -10,6 +10,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **Report columns are now ordered grain-first, with each report's headline
+  figure last.** Every report's projection reads
+  `grain keys → labels → dimensions → dates → provenance → measures`, and
+  within the measures the components precede the figure they compose — so a
+  narrowed terminal keeps the column that answers the report rather than one of
+  its inputs. Two reports read backwards before this and change most visibly:
+  `core:networth` led with `net_worth` and trailed its own components, and
+  `core:merchants` led with `total_spend`; both now end on that figure.
+
+  This changes JSON key order, MCP response field order, and export column
+  order. Values, column names, and types are unchanged, and no column was added
+  or removed — but a caller reading results **by position** rather than by name
+  must be updated. Two reports' declared column tuples also disagreed with what
+  their query actually returned (`core:cashflow`, `core:recurring`); the
+  declaration and the projection now agree, and a test holds them together. The
+  convention is `.claude/rules/column-ordering.md`.
+
 ### Fixed
 - **MCP tool calls now record `moneybin_mcp_tool_calls_total` and `moneybin_mcp_tool_duration_seconds`.** The observability spec described this instrumentation as automatic, but no code path ever recorded either metric — a dashboard built from them stayed at zero permanently. `ValidationErrorMiddleware.on_call_tool`, the single boundary every `tools/call` request passes through, now records both metrics on every call, whether it succeeds, is translated to a validation-error envelope, or raises something else. (#495)
 

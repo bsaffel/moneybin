@@ -204,10 +204,9 @@ the `column_types` list beside it moves with it.
 
 Honest about what is and is not caught.
 
-**Guarded, unit tier — `reports` and the report specs.** SQLMesh resolves a
-`reports` model's ordered columns offline (`Context(paths=…)`,
-`model.columns_to_types`), and `DataClass` / `money_kind` supply the categories
-Rule B needs. Three assertions:
+**Guarded, unit tier — the report specs.** `DataClass` and `money_kind` supply
+the categories Rule B needs, and both live on `OutputColumn`, so a spec can be
+checked with no database. Three assertions:
 
 1. `ReportSpec.columns` is non-decreasing under Rule B.
 2. `default_columns` is non-decreasing under Rule B.
@@ -237,6 +236,17 @@ also cannot notice a **mis-declared** class — `balance_drift.days_since_assert
 is declared `TXN_DATE` and holds an integer day count, so the guard would place
 it among the dates and be satisfied. Ordering rules assume the classes are
 right; fixing a wrong one is its own change.
+
+**Not yet guarded — the `reports/*.sql` model projections.** These are a
+separate surface from the specs above: a SQL-backed runner names its own
+columns, so a model's projection order does not reach a report's consumers —
+but it *is* what a `SELECT *` through `sql_query` or `moneybin sql query`
+returns, so it is observable and Rule B governs it. SQLMesh resolves these
+columns offline (`Context(paths=…)`, `model.columns_to_types`), so unlike Rule
+A this is mechanically checkable; it is simply not checked yet, and the seven
+models have not been swept. `reports.net_worth` is the clearest offender,
+projecting `net_worth` ahead of the `total_assets` / `total_liabilities` that
+compose it. Treat a model projection as review-enforced until that sweep lands.
 
 **Not guarded — `prep` and `core`.** Rule A is a data-type rule, and SQLMesh
 resolves every `core` column as `UNKNOWN` offline: the type chain bottoms out at
