@@ -72,6 +72,7 @@ from typing import Any
 from fastmcp.tools import FunctionTool
 
 from moneybin.privacy.classified_envelope import build_classified_envelope
+from moneybin.protocol import envelope as envelope_module
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     SummaryMeta,
@@ -316,11 +317,16 @@ def _bare_name(node: ast.Call) -> str | None:
     return node.func.id if isinstance(node.func, ast.Name) else None
 
 
-type _Assignments = dict[str, list[ast.expr]]
+type _Assignments = dict[str, list[tuple[int, ast.expr]]]
 
 
 def _resolve_all(
-    node: ast.expr, assignments: _Assignments, seen: set[str] | None = None
+    node: ast.expr,
+    assignments: _Assignments,
+    seen: set[str] | None = None,
+    *,
+    before: int | None = None,
+    casts_are_typing: bool = False,
 ) -> list[ast.expr]:
     """Every value a returned expression can hold, after unwrapping aliases.
 
@@ -328,6 +334,15 @@ def _resolve_all(
     only the first would let a classified assignment vouch for an unresolvable
     sibling that merges into the same variable. So this fans out over all of
     them and the callers fail closed across the set.
+
+    ``cast`` is unwrapped only where the module imports it from ``typing``: a
+    local function spelled `cast` is not the typing helper, and unwrapping it
+    would read past whatever it actually does.
+
+    ``before`` restricts the fan-out to assignments that can actually reach the
+    expression. An early ``return response`` cannot see a rebinding written
+    below it, and pooling every assignment regardless of position would let a
+    later classified one vouch for the earlier return.
     """
     seen = set() if seen is None else seen
     while True:
@@ -335,7 +350,8 @@ def _resolve_all(
             node = node.value
         elif (
             isinstance(node, ast.Call)
-            and _call_name(node) == "cast"
+            and _bare_name(node) == "cast"
+            and casts_are_typing
             and len(node.args) == 2
         ):
             node = node.args[1]
@@ -345,8 +361,15 @@ def _resolve_all(
         seen.add(node.id)
         resolved = [
             candidate
-            for value in assignments[node.id]
-            for candidate in _resolve_all(value, assignments, seen)
+            for line, value in assignments[node.id]
+            if before is None or line < before
+            for candidate in _resolve_all(
+                value,
+                assignments,
+                seen,
+                before=before,
+                casts_are_typing=casts_are_typing,
+            )
         ]
         return resolved or [node]
     return [node]
@@ -360,13 +383,20 @@ def _spelled_out(node: ast.expr) -> bool:
     return False
 
 
-def _is_literal(node: ast.expr, assignments: _Assignments) -> bool:
+def _is_literal(
+    node: ast.expr, assignments: _Assignments, *, casts_are_typing: bool
+) -> bool:
     """Whether an argument is spelled out rather than derived at runtime.
 
     True when *any* value the expression can hold is spelled out: one branch
     hardcoding the field is the defect, whatever the other branch does.
     """
-    return any(_spelled_out(candidate) for candidate in _resolve_all(node, assignments))
+    return any(
+        _spelled_out(candidate)
+        for candidate in _resolve_all(
+            node, assignments, casts_are_typing=casts_are_typing
+        )
+    )
 
 
 def _mutation_field(node: ast.Call) -> str | None:
@@ -399,6 +429,7 @@ def _declaration(
     module: str,
     function: str,
     assignments: _Assignments,
+    casts_are_typing: bool,
 ) -> Declaration | None:
     mutated = _mutation_field(node)
     if mutated is not None:
@@ -422,7 +453,9 @@ def _declaration(
             sorted(
                 str(keyword.arg)
                 for keyword in declared
-                if _is_literal(keyword.value, assignments)
+                if _is_literal(
+                    keyword.value, assignments, casts_are_typing=casts_are_typing
+                )
             )
         ),
     )
@@ -431,6 +464,7 @@ def _declaration(
 _ModuleIndex = tuple[
     dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
     dict[str, tuple[Path, str]],
+    bool,
     bool,
 ]
 _INDEX_CACHE: dict[Path, _ModuleIndex] = {}
@@ -478,7 +512,9 @@ def _index(path: Path) -> _ModuleIndex:
         and any(alias.name == BUILDER and alias.asname is None for alias in node.names)
         for node in tree.body
     )
-    for node in ast.walk(tree):
+    # Module level only, for the same reason as the builder flag above: an
+    # import inside one helper does not bind the name in another function.
+    for node in tree.body:
         if not isinstance(node, ast.ImportFrom) or node.level or node.module is None:
             continue
         source = _mcp_module_path(node.module)
@@ -486,7 +522,13 @@ def _index(path: Path) -> _ModuleIndex:
             continue
         for alias in node.names:
             imports[alias.asname or alias.name] = (source, alias.name)
-    index = (functions, imports, imports_the_builder)
+    casts_are_typing = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "typing"
+        and any(alias.name == "cast" and alias.asname is None for alias in node.names)
+        for node in tree.body
+    )
+    index = (functions, imports, imports_the_builder, casts_are_typing)
     _INDEX_CACHE[path] = index
     return index
 
@@ -499,7 +541,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
     can stamp the finished envelope, while its own body belongs to whichever
     module defines it.
     """
-    functions, _, _ = _index(path)
+    functions, _, _, _ = _index(path)
     assert function in functions, (
         f"{path.name} does not define a module-level {function}(); the registry "
         "and the source disagree, so the guard cannot tell which mechanism the "
@@ -522,7 +564,12 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
         if (current_path, current_name, produces_envelope) in seen:
             continue
         seen.add((current_path, current_name, produces_envelope))
-        current_functions, imports, imports_the_builder = _index(current_path)
+        (
+            current_functions,
+            module_imports,
+            imports_the_builder,
+            casts_are_typing,
+        ) = _index(current_path)
         node = current_functions.get(current_name)
         if node is None:
             continue
@@ -554,7 +601,10 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                     continue
                 for target in child.targets:
                     if isinstance(target, ast.Name):
-                        assignments.setdefault(target.id, []).append(child.value)
+                        assignments.setdefault(target.id, []).append((
+                            child.lineno,
+                            child.value,
+                        ))
                     elif (
                         isinstance(target, ast.Attribute)
                         and target.attr in MUTABLE_DECLARATION_TARGETS
@@ -572,7 +622,11 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                                 fields=(target.attr,),
                                 literal_fields=(
                                     (target.attr,)
-                                    if _is_literal(child.value, assignments)
+                                    if _is_literal(
+                                        child.value,
+                                        assignments,
+                                        casts_are_typing=casts_are_typing,
+                                    )
                                     else ()
                                 ),
                             )
@@ -584,6 +638,21 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
         # bug over again with the receiver omitted rather than discarded.
         # Imports are deliberately absent: a local `from … import build_…` is
         # the real thing, not a shadow.
+        imports = dict(module_imports)
+        for statement in node.body:
+            for child in ast.walk(statement):
+                if (
+                    not isinstance(child, ast.ImportFrom)
+                    or child.level
+                    or child.module is None
+                ):
+                    continue
+                source = _mcp_module_path(child.module)
+                if source is None:
+                    continue
+                for alias in child.names:
+                    imports[alias.asname or alias.name] = (source, alias.name)
+
         builder_in_scope = imports_the_builder or any(
             isinstance(child, ast.ImportFrom)
             and not child.level
@@ -633,13 +702,32 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                 module=current_path.name,
                 function=current_name,
                 assignments=assignments,
+                casts_are_typing=casts_are_typing,
             )
             if declaration is not None:
                 declarations.append(declaration)
 
         for call in body_calls:
             callee = _bare_name(call)
-            if callee is None or callee in shadowed:
+            if callee is not None and callee in shadowed:
+                continue
+            qualified = _call_name(call)
+            if callee is None and qualified in RAW_CONSTRUCTORS:
+                # Direction matters: crediting the builder must be strict, so
+                # a qualified call never counts as it. Flagging a raw build is
+                # the opposite — failing closed means recording more, not
+                # fewer — so `envelope_module.build_envelope(...)` counts here
+                # even though the receiver is unread.
+                constructions.append(
+                    Construction(
+                        module=current_path.name,
+                        function=current_name,
+                        constructor=qualified,
+                        declares_fields=any(
+                            keyword.arg in DECLARED_FIELDS for keyword in call.keywords
+                        ),
+                    )
+                )
                 continue
             if callee == BUILDER:
                 # String equality is not identity: a module that defines its
@@ -662,6 +750,8 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                         ),
                     )
                 )
+            if callee is None:
+                continue
             if callee in current_functions:
                 pending.append((current_path, callee, False))
             elif callee in imports:
@@ -693,7 +783,12 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                     | set(current_functions)
                     | resolvable_imports
                 )
-                for value in _resolve_all(child.value, assignments):
+                for value in _resolve_all(
+                    child.value,
+                    assignments,
+                    before=child.lineno,
+                    casts_are_typing=casts_are_typing,
+                ):
                     callee = _bare_name(value) if isinstance(value, ast.Call) else None
                     if (
                         callee is not None
@@ -1008,6 +1103,20 @@ def _probe_with_a_nested_helper() -> ResponseEnvelope[Any]:
     return build_classified_envelope({"probe": True})
 
 
+def _probe_returning_before_the_classified_assignment() -> ResponseEnvelope[Any]:
+    """Stand-in for a return that a later rebinding cannot reach backwards."""
+    response = _elsewhere().make_envelope()
+    if _elsewhere():
+        return response
+    response = build_classified_envelope({"probe": True})
+    return response
+
+
+def _probe_building_through_a_qualified_constructor() -> ResponseEnvelope[Any]:
+    """Stand-in for a raw build reached through its module."""
+    return envelope_module.build_envelope(data={"probe": True})
+
+
 def _probe_hiding_a_literal_behind_an_alias() -> ResponseEnvelope[Any]:
     """Stand-in for a constant spelled into a local before the call."""
     hidden = "low"
@@ -1167,6 +1276,26 @@ def test_the_analysis_can_return_a_failing_verdict() -> None:
     nested = mechanism_of(Path(__file__), _probe_with_a_nested_helper.__name__)
     assert nested.reaches_builder
     assert nested.unverified_returns == ()
+
+    # An early return cannot see a rebinding written below it. Pooling every
+    # assignment regardless of position let the later classified one vouch for
+    # the earlier return.
+    early = mechanism_of(
+        Path(__file__), _probe_returning_before_the_classified_assignment.__name__
+    )
+    assert early.reaches_builder
+    assert [site.expression for site in early.unverified_returns] == [
+        "_elsewhere().make_envelope()"
+    ]
+
+    # Crediting the builder is strict about receivers; flagging a raw build is
+    # the opposite, so a qualified constructor still counts.
+    qualified = mechanism_of(
+        Path(__file__), _probe_building_through_a_qualified_constructor.__name__
+    )
+    assert [site.constructor for site in qualified.constructions] == [
+        build_envelope.__name__
+    ]
 
     # Omitting one field is the half-contract case the `partial` check reads.
     one_field = mechanism_of(Path(__file__), _probe_declaring_only_one_field.__name__)
