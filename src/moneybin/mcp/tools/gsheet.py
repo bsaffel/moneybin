@@ -48,8 +48,8 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import internal_envelope_adapter, mcp_tool
-from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
-from moneybin.privacy.introspection import extract_data_classes
+from moneybin.mcp.privacy import Sensitivity
+from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.gsheet import (
     GsheetAuthPayload,
     GsheetCoarsePayload,
@@ -68,7 +68,6 @@ from moneybin.privacy.payloads.gsheet import (
     GsheetPullRow,
     GsheetStatusView,
 )
-from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -446,28 +445,22 @@ def _gsheet_coarse_envelope(
     data: GsheetConnectionsView | GsheetStatusView,
 ) -> ResponseEnvelope[GsheetCoarsePayload]:
     """Build and redact a dynamically classified Google Sheets view."""
-    contract_type = type(data)
-    classes = extract_data_classes(contract_type)
-    tier = max(data_class.tier for data_class in classes)
-    redacted = cast(
-        GsheetConnectionsView | GsheetStatusView,
-        redact_typed(data, None),
-    )
-    return cast(
-        ResponseEnvelope[GsheetCoarsePayload],
-        build_envelope(
-            data=redacted,
-            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
-            total_count=len(redacted.connections),
-            returned_count=len(redacted.connections),
-            actions=[
-                f"Use gsheet_connect(connection_id='{row.connection_id}') to "
-                "re-detect and reconnect this binding."
-                for row in redacted.connections
-                if row.status == "drift_detected"
-            ],
-            classes_returned=sorted(data_class.value for data_class in classes),
-        ),
+    # Counts and the drift hint read `connection_id` and `status` before the
+    # builder redacts, which is identical to the redacted copy this used to read
+    # only while both classes pass through. That matters because `actions[]`
+    # sits outside the redaction walk and still reaches the wire, so
+    # `test_connection_drift_hint_reads_only_passthrough_classes` measures the
+    # invariant from `_TRANSFORMS` rather than leaving it to this comment.
+    return build_classified_envelope(
+        data,
+        total_count=len(data.connections),
+        returned_count=len(data.connections),
+        actions=[
+            f"Use gsheet_connect(connection_id='{row.connection_id}') to "
+            "re-detect and reconnect this binding."
+            for row in data.connections
+            if row.status == "drift_detected"
+        ],
     )
 
 
@@ -724,18 +717,7 @@ def _gsheet_connect_envelope(
     actions: list[str],
 ) -> ResponseEnvelope[GsheetConnectCoarsePayload]:
     """Build a typed, redacted, mode-specific consolidated connect result."""
-    classes = extract_data_classes(type(data))
-    tier = max(data_class.tier for data_class in classes)
-    redacted = redact_typed(data, None)
-    return cast(
-        ResponseEnvelope[GsheetConnectCoarsePayload],
-        build_envelope(
-            data=redacted,
-            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
-            actions=actions,
-            classes_returned=sorted(data_class.value for data_class in classes),
-        ),
-    )
+    return build_classified_envelope(data, actions=actions)
 
 
 def _json_value(value: object) -> JsonValue:
@@ -811,7 +793,7 @@ async def gsheet_disconnect_coarse(
                 code=error_codes.GSHEET_CONFIRMATION_NOT_ALLOWED,
             )
         await asyncio.to_thread(_disconnect_gsheet, connection_id)
-        return _gsheet_disconnect_envelope(
+        return build_classified_envelope(
             GsheetDisconnectCoarsePayload(
                 kind="disconnected",
                 connection_id=connection_id,
@@ -835,7 +817,7 @@ async def gsheet_disconnect_coarse(
     )
     await asyncio.to_thread(_purge_gsheet_confirmed, connection_id, grant)
     before = plan.connection_before_state
-    return _gsheet_disconnect_envelope(
+    return build_classified_envelope(
         GsheetDisconnectCoarsePayload(
             kind="absent",
             connection_id=connection_id,
@@ -854,22 +836,6 @@ async def gsheet_disconnect_coarse(
             "This purge is permanent. Recreate the connection from its Google "
             "Sheets URL to resume future pulls.",
         ],
-    )
-
-
-def _gsheet_disconnect_envelope(
-    data: GsheetDisconnectCoarsePayload,
-    *,
-    actions: list[str],
-) -> ResponseEnvelope[GsheetDisconnectCoarsePayload]:
-    """Build one typed consolidated disconnect result."""
-    classes = extract_data_classes(type(data))
-    tier = max(data_class.tier for data_class in classes)
-    return build_envelope(
-        data=cast(GsheetDisconnectCoarsePayload, redact_typed(data, None)),
-        sensitivity=cast(Any, tier_to_sensitivity(tier).value),
-        actions=actions,
-        classes_returned=sorted(data_class.value for data_class in classes),
     )
 
 

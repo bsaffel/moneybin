@@ -1024,6 +1024,29 @@ class TestSplits:
             txn_service.remove_split("doesnotexist", actor="cli")
 
     @pytest.mark.unit
+    def test_get_split_returns_matching_split(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        added = txn_service.add_split(
+            sample_transaction_id,
+            Decimal("-15.00"),
+            category="Coffee",
+            actor="cli",
+        )
+        found = txn_service.get_split(added.split_id)
+        assert found is not None
+        assert found.split_id == added.split_id
+        assert found.transaction_id == sample_transaction_id
+        assert found.amount == Decimal("-15.00")
+        assert found.category == "Coffee"
+
+    @pytest.mark.unit
+    def test_get_split_returns_none_when_missing(
+        self, txn_service: TransactionService
+    ) -> None:
+        assert txn_service.get_split("doesnotexist") is None
+
+    @pytest.mark.unit
     def test_clear_splits_removes_all_and_emits_per_row_remove(
         self,
         txn_service: TransactionService,

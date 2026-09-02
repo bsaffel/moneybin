@@ -153,14 +153,11 @@ def transactions_splits_remove(
             with get_database(read_only=False) as db:
                 svc = TransactionService(db)
                 # Look up parent before delete so we can report residual after.
-                parent = db.conn.execute(
-                    "SELECT transaction_id FROM app.transaction_splits WHERE split_id = ?",
-                    [split_id],
-                ).fetchone()
-                if parent is None:
+                existing = svc.get_split(split_id)
+                if existing is None:
                     typer.echo(f"❌ split_id={split_id} not found", err=True)
                     raise typer.Exit(1)
-                transaction_id = parent[0]
+                transaction_id = existing.transaction_id
                 svc.remove_split(split_id, actor="cli")
                 residual = svc.splits_balance(transaction_id)
     except LookupError as e:

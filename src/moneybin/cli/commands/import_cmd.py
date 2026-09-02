@@ -11,11 +11,10 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from dataclasses import asdict, dataclass
-from datetime import date
+from dataclasses import asdict
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
 
@@ -792,26 +791,19 @@ def import_files_command(
 
     classes_returned: list[str] | None = None
     if any(_gates_an_account(f) for f in files_list):
-        from moneybin.cli.output import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
-            derive_log_sensitivity,
-        )
-        from moneybin.privacy.introspection import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
-            extract_data_classes,
+        from moneybin.privacy.classified_envelope import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+            classify,
         )
         from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
             ImportConfirmationPayload,
         )
 
-        # `derive_log_sensitivity`, not a second inline `derive_tier` call: it
-        # is the existing helper for exactly this question and already serves
-        # the audit path, so one function answers it everywhere.
-        batch_sensitivity = cast(
-            'Literal["low", "medium", "high", "critical"]',
-            derive_log_sensitivity(ImportConfirmationPayload, batch_sensitivity),
-        )
-        classes_returned = sorted(
-            c.value for c in extract_data_classes(ImportConfirmationPayload)
-        )
+        # The shared classification primitive, not a second inline derivation:
+        # one function answers "what tier and classes does this payload carry"
+        # on every surface, so a change to the declarations moves them together.
+        classification = classify(ImportConfirmationPayload)
+        batch_sensitivity = classification.sensitivity
+        classes_returned = classification.classes_returned
     envelope = build_envelope(data=data, sensitivity=batch_sensitivity)
     if batch_result is not None:
         # Same gate the MCP import_files tool applies, from the same function:
@@ -3029,6 +3021,7 @@ def import_status(
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_settings
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
+    from moneybin.services.import_service import ImportService  # noqa: PLC0415
 
     db_path = get_settings().database.path
 
@@ -3057,7 +3050,7 @@ def import_status(
     try:
         with handle_cli_errors():
             with get_database(read_only=True) as db:
-                rows = _collect_import_status(db)
+                rows = ImportService(db).raw_data_summary()
     except Exception as e:  # noqa: BLE001 — surface connection errors generically
         logger.error(f"❌ Could not open database: {e}")
         raise typer.Exit(1) from e
@@ -3094,58 +3087,3 @@ def import_status(
 
     if not quiet:
         typer.echo()
-
-
-@dataclass(frozen=True, slots=True)
-class _ImportStatusRow:
-    schema: str
-    table: str
-    rows: int
-    date_min: date | None
-    date_max: date | None
-
-
-def _collect_import_status(db: Database) -> list[_ImportStatusRow]:
-    """Query raw tables and return per-table row counts and date ranges."""
-    tables = db.execute("""
-        SELECT table_schema, table_name
-        FROM information_schema.tables
-        WHERE table_schema = 'raw'
-        ORDER BY table_name
-    """).fetchall()
-
-    from sqlglot import exp
-
-    results: list[_ImportStatusRow] = []
-    for schema, table in tables:
-        safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
-        safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
-        row_count = db.execute(
-            f"SELECT COUNT(*) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers
-        ).fetchone()
-        count = row_count[0] if row_count else 0
-
-        date_min: date | None = None
-        date_max: date | None = None
-        if "transaction" in table:
-            date_col = "date_posted" if "ofx" in table else "transaction_date"
-            safe_date_col = exp.to_identifier(date_col, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
-            try:
-                dates = db.execute(
-                    f"SELECT MIN(CAST({safe_date_col} AS DATE)), MAX(CAST({safe_date_col} AS DATE)) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers; date_col from hardcoded map
-                ).fetchone()
-                if dates and dates[0]:
-                    date_min, date_max = dates[0], dates[1]
-            except Exception:  # noqa: BLE001 — column may not exist in all tables
-                logger.debug(f"Could not get date range for {schema}.{table}")
-
-        results.append(
-            _ImportStatusRow(
-                schema=schema,
-                table=table,
-                rows=count,
-                date_min=date_min,
-                date_max=date_max,
-            )
-        )
-    return results

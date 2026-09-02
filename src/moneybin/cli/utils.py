@@ -48,18 +48,14 @@ def _error_audit_classification(payload_type: type | None) -> tuple[str, list[st
     """
     if payload_type is None:
         return "high", []
-    from moneybin.cli.output import derive_log_sensitivity  # noqa: PLC0415
-    from moneybin.privacy.introspection import (  # noqa: PLC0415
-        PrivacyContractError,
-        extract_data_classes,
-    )
+    from moneybin.privacy.classified_envelope import classify  # noqa: PLC0415
+    from moneybin.privacy.introspection import PrivacyContractError  # noqa: PLC0415
 
+    classification = classify(payload_type)
     try:
-        sensitivity = derive_log_sensitivity(payload_type, "high")
-        classes = [c.value for c in sorted(extract_data_classes(payload_type))]
+        return classification.sensitivity, classification.classes_returned
     except PrivacyContractError:
         return "high", []
-    return sensitivity, classes
 
 
 @contextmanager
