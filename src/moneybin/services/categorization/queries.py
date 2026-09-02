@@ -438,18 +438,19 @@ class CategorizationQueries:
         return {str(r[0]) for r in rows}
 
     def count_uncategorized(self) -> int:
-        """Return the number of transactions without a category assignment."""
+        """Return the size of the canonical uncategorized queue.
+
+        ``core.uncategorized_queue`` is the one definition of "uncategorized":
+        no resolved category, not a confirmed transfer leg, not on an archived
+        account. Counting anything else here puts a different N beside the same
+        queue the user is sent to (:meth:`list_uncategorized_transactions`).
+        """
         try:
             row = self._db.execute(
-                f"""
-                SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                    ON t.transaction_id = c.transaction_id
-                WHERE c.transaction_id IS NULL
-                """  # noqa: S608  # TableRef constants, no user input interpolated
+                f"SELECT COUNT(*) FROM {CORE_UNCATEGORIZED_QUEUE.full_name}"  # noqa: S608  # TableRef constant, no user input interpolated
             ).fetchone()
             return int(row[0]) if row else 0
-        except Exception:  # noqa: BLE001 — tables may not exist before first import
+        except Exception:  # noqa: BLE001 — the view is absent before first refresh
             return 0
 
     def categorization_stats(self) -> dict[str, int | float]:

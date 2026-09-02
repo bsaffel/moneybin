@@ -19,6 +19,7 @@ from moneybin.privacy.payloads.imports import (
     ImportInboxSyncPayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services.categorization.queries import CategorizationQueries
 from moneybin.services.inbox_service import InboxService
 from moneybin.services.refresh_outcome import refresh_steps_fields
 
@@ -26,23 +27,15 @@ logger = logging.getLogger(__name__)
 
 
 def _uncategorized_count() -> int:
-    """Return the count of transactions lacking a category entry.
+    """Return the size of the canonical uncategorized queue.
 
-    Returns 0 on any error so a DB hiccup never breaks the import summary.
+    Reads through ``CategorizationQueries`` so the hint quotes the same N the
+    review queue it points at will show. Returns 0 on any error so a DB hiccup
+    never breaks the import summary.
     """
     try:
-        from moneybin.tables import FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
-
         with get_database(read_only=True) as db:
-            row = db.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM {FCT_TRANSACTIONS.full_name} t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
-                WHERE tc.transaction_id IS NULL
-                """,  # noqa: S608  # table names are TableRef constants, not user input
-            ).fetchone()
-        return int(row[0]) if row else 0
+            return CategorizationQueries(db).count_uncategorized()
     except Exception:  # noqa: BLE001 — never surface DB errors in summary hint
         return 0
 
