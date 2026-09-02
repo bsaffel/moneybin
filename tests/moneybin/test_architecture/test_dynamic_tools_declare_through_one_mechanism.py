@@ -522,6 +522,33 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                             )
                         )
 
+        # A name bound inside the function is not the module-level function it
+        # spells. A parameter called `build_classified_envelope` impersonates
+        # the builder perfectly under a spelling match, which is the receiver
+        # bug over again with the receiver omitted rather than discarded.
+        # Imports are deliberately absent: a local `from … import build_…` is
+        # the real thing, not a shadow.
+        arguments = node.args
+        shadowed = {
+            argument.arg
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+                *([arguments.vararg] if arguments.vararg else []),
+                *([arguments.kwarg] if arguments.kwarg else []),
+            )
+        } | set(assignments)
+        for statement in node.body:
+            for child in ast.walk(statement):
+                target = None
+                if isinstance(child, ast.For | ast.AsyncFor | ast.comprehension):
+                    target = child.target
+                elif isinstance(child, ast.withitem):
+                    target = child.optional_vars
+                if isinstance(target, ast.Name):
+                    shadowed.add(target.id)
+
         body_calls = [
             child
             for statement in node.body
@@ -546,7 +573,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
 
         for call in body_calls:
             callee = _bare_name(call)
-            if callee is None:
+            if callee is None or callee in shadowed:
                 continue
             if callee == BUILDER:
                 reaches_builder = True
@@ -594,7 +621,11 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                         callee = (
                             _bare_name(value) if isinstance(value, ast.Call) else None
                         )
-                        if callee is not None and callee in nameable:
+                        if (
+                            callee is not None
+                            and callee not in shadowed
+                            and callee in nameable
+                        ):
                             # Its value becomes this envelope, so hold it to the
                             # same check even if it is annotated `Any`.
                             if callee in current_functions:
@@ -857,6 +888,18 @@ def _probe_mutating_the_envelope_through_a_call() -> ResponseEnvelope[Any]:
     return envelope
 
 
+def _probe_shadowing_the_builder(
+    build_classified_envelope: Any,
+) -> ResponseEnvelope[Any]:
+    """Stand-in for a caller-supplied callable spelled like the builder."""
+    return build_classified_envelope({"probe": True})
+
+
+def _probe_declaring_only_one_field() -> ResponseEnvelope[Any]:
+    """Stand-in for a call that sets one declared field and omits the other."""
+    return build_envelope(data={"probe": True}, sensitivity=_elsewhere())
+
+
 def _probe_hiding_a_literal_behind_an_alias() -> ResponseEnvelope[Any]:
     """Stand-in for a constant spelled into a local before the call."""
     hidden = "low"
@@ -961,3 +1004,17 @@ def test_the_analysis_can_return_a_failing_verdict() -> None:
     assert mutated.reaches_builder
     assert sorted(d.verb for d in mutated.declarations) == ["mutates", "mutates"]
     assert all(d.fields == ("classes_returned",) for d in mutated.declarations)
+
+    # A parameter spelled like the builder is the receiver bug with the
+    # receiver left out rather than discarded: same spelling, different
+    # function, and nothing about it is the sanctioned mechanism.
+    shadowed = mechanism_of(Path(__file__), _probe_shadowing_the_builder.__name__)
+    assert not shadowed.reaches_builder
+    assert [site.expression for site in shadowed.unverified_returns] == [
+        "build_classified_envelope({'probe': True})"
+    ]
+
+    # Omitting one field is the half-contract case the `partial` check reads.
+    one_field = mechanism_of(Path(__file__), _probe_declaring_only_one_field.__name__)
+    assert [d.fields for d in one_field.declarations] == [("sensitivity",)]
+    assert [d.literal_fields for d in one_field.declarations] == [()]
