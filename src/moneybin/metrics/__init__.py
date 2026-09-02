@@ -4,8 +4,8 @@ Public API:
     - Metric constants (``IMPORT_RECORDS_TOTAL``, etc.) for manual recording
     - ``flush_to_duckdb()`` / ``load_from_duckdb()`` in ``persistence`` submodule
 
-For instrumentation, use ``moneybin.observability.tracked`` and
-``moneybin.observability.track_duration`` instead of importing from here.
+Record a metric manually at its call site (``METRIC.labels(...).inc()`` /
+``.observe()``) — see ``registry.py`` for the full list.
 """
 
 from .registry import (

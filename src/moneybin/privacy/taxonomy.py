@@ -681,6 +681,18 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "source_taxonomy_version": DataClass.AGGREGATE,
         "source_type": DataClass.TXN_TYPE,
     },
+    ("core", "bridge_merchant_entities"): {
+        # merchant_entity_id is an opaque source-system merchant id, never a
+        # financial account number — RECORD_ID (LOW), matching
+        # app.merchant_links.ref_value's rationale, not the ACCOUNT_IDENTIFIER
+        # exception app.account_links.ref_value carries.
+        "merchant_entity_id": DataClass.RECORD_ID,
+        "merchant_entity_source_type": DataClass.TXN_TYPE,
+        # The name the source stated, unresolved — may embed identifying brand
+        # text exactly like core.fct_transactions.merchant_name.
+        "source_merchant_name": DataClass.MERCHANT_NAME,
+        "transaction_id": DataClass.RECORD_ID,
+    },
     ("core", "bridge_transfers"): {
         "amount": DataClass.TXN_AMOUNT,
         "credit_transaction_id": DataClass.RECORD_ID,

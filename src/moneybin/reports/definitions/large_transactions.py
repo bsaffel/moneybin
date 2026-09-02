@@ -201,6 +201,19 @@ def _blank_original_currency_analytics(
         "this view, so the ratio does not carry the amount that produced it",
     },
     on_converted=_blank_original_currency_analytics,
+    # Requirement 6: the shape of a transaction listing — when, where, what,
+    # how much. `description` is free text and may elide; the two z-scores and
+    # the `is_top_100` flag are why a row is *here* rather than what it is, and
+    # a reader who wants them asks for `--wide`. `transaction_id` and
+    # `account_id` are deliberately out: an id is unbounded in width and would
+    # crowd out the columns that identify the row to a human.
+    default_columns=(
+        "txn_date",
+        "account_name",
+        "description",
+        "currency_code",
+        "amount",
+    ),
 )
 def large_transactions(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL

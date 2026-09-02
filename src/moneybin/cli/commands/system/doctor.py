@@ -26,7 +26,10 @@ verbose_option: bool = typer.Option(
     False,
     "--verbose",
     "-V",
-    help="Show affected transaction IDs for each failing invariant.",
+    help=(
+        "Show every invariant that ran, not just the ones that need attention, "
+        "plus the affected transaction IDs for each failing one."
+    ),
 )
 
 full_option: bool = typer.Option(
@@ -114,6 +117,14 @@ def doctor_command(
         return
 
     for result in report.invariants:
+        # Requirement 20: a passing invariant is not news, and five ✅ lines are
+        # five a reader has to rule out before finding the one ❌ among them.
+        # Suppressed by status rather than by "not failing": a warn or a skip is
+        # not a pass, the summary counts them without naming them, and hiding
+        # one would leave a reader knowing something is off and unable to see
+        # what. `--verbose` restores the whole roll (requirement 21).
+        if result.status == "pass" and not verbose:
+            continue
         icon = status_icon.get(result.status, "?")
         line = f"{icon} {result.name}"
         if result.detail:
@@ -121,15 +132,20 @@ def doctor_command(
         typer.echo(line)
         if verbose and result.affected_ids:
             typer.echo(f"   Affected: {', '.join(result.affected_ids)}")
-        # Recovery actions render unconditionally (no --verbose gate). This is
-        # asymmetric with affected_ids on purpose: raw IDs are debug-only
-        # (operator inspecting the failure), but the actions are the agent's
-        # next-step contract — they need to be visible on a plain
-        # `moneybin system doctor` call too, since the CLI is a first-class
-        # agent surface (AGENTS.md). The 5-action cap below keeps that
-        # unconditional-render output bounded when a single invariant flags
-        # many orphans.
-        recovery = result.recovery_actions or []
+        # Recovery actions carry no --verbose gate. This is asymmetric with
+        # affected_ids on purpose: raw IDs are debug-only (operator inspecting
+        # the failure), but the actions are the agent's next-step contract —
+        # they need to be visible on a plain `moneybin system doctor` call too,
+        # since the CLI is a first-class agent surface (AGENTS.md). The 5-action
+        # cap below keeps that output bounded when one invariant flags many
+        # orphans.
+        #
+        # They are the one thing `-q` does silence, which is the same line
+        # `echo_report_notes` draws: quiet reaches next-step hints and nothing
+        # else. A 💡 suggests a command to run next; the invariant above it and
+        # the summary below it are the answer, and a flag asking for less
+        # chatter is not a claim that anything stopped being wrong.
+        recovery = [] if quiet else (result.recovery_actions or [])
         max_actions_rendered = 5
         for action in recovery[:max_actions_rendered]:
             # Render arguments as Python kwargs (key=repr(value)) so an agent
@@ -148,22 +164,27 @@ def doctor_command(
                 "(use --output json for the full list)"
             )
 
-    if not quiet:
-        n = len(report.invariants)
-        summary = (
-            f"\n{n} invariants checked across {report.transaction_count:,} transactions"
-        )
-        if failing:
-            summary += f" — {failing} failing"
-            if warning or skipped:
-                summary += f" ({warning} warn, {skipped} skipped)"
-            if not verbose:
-                summary += " — run --verbose for affected IDs"
-        elif warning or skipped:
-            summary += f" — {passing} passing, {warning} warn, {skipped} skipped"
-        else:
-            summary += " — all passing"
-        typer.echo(summary)
+    # Ungated by `quiet`, unlike most summary lines: once requirement 20 stops
+    # narrating a passing invariant, this is the only thing a clean run prints,
+    # and `-q` would otherwise make `moneybin system doctor` succeed in total
+    # silence — a command whose entire job is to report on the ledger saying
+    # nothing about it. It is doctor's result, not a status line about
+    # producing one.
+    n = len(report.invariants)
+    summary = (
+        f"\n{n} invariants checked across {report.transaction_count:,} transactions"
+    )
+    if failing:
+        summary += f" — {failing} failing"
+        if warning or skipped:
+            summary += f" ({warning} warn, {skipped} skipped)"
+        if not verbose:
+            summary += " — run --verbose for affected IDs"
+    elif warning or skipped:
+        summary += f" — {passing} passing, {warning} warn, {skipped} skipped"
+    else:
+        summary += " — all passing"
+    typer.echo(summary)
 
     if failing > 0:
         raise typer.Exit(1)

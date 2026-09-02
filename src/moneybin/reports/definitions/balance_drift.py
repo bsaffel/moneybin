@@ -195,6 +195,25 @@ def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
         "no-data, currency-mismatch), never the drift or balance values themselves",
     },
     on_converted=_rebucket_status,
+    # Requirement 6: which accounts disagree with their statements, as of when
+    # and by how much. `assertion_date` is grain, not detail — one row per
+    # assertion and an account may hold several, so without it two rows differ
+    # only in figures no reader can anchor to a date, and read as one row
+    # duplicated. `drift_pct` earns its place beside `drift` because a $40
+    # drift means one thing on a $200 balance and another on $40,000.
+    # `status` is what the date displaces: requirement 9's 80 columns fit one
+    # of the two, and `status` buckets the |drift| already printed beside it.
+    # Its real cost is the `no-data` / `currency-mismatch` row, where `drift`
+    # is null and the bucket was the only reason given — accepted because a
+    # blank cell shows a reader that something is missing, and an undated row
+    # does not. The bucket and both balances are one `--wide` away.
+    default_columns=(
+        "account_name",
+        "currency_code",
+        "assertion_date",
+        "drift",
+        "drift_pct",
+    ),
 )
 def balance_drift(
     db: Database,

@@ -1,12 +1,14 @@
-"""Scenario: merchant_entity_id propagates through prep pipeline, not into core.
+"""Scenario: merchant_entity_id propagates to the core bridge, never onto the fact.
 
 TDD for M1T Task 5: Carry merchant_entity_id to the resolution layer (prep models).
+MB-53 then promoted it out of prep onto core.bridge_merchant_entities so consumers
+bind to a licensed surface.
 
 The plaid_sync_response fixture already contains merchant_entity_id on txn_001
 (entity_starbucks_001). After the transform step the value must be visible in
-prep.int_transactions__merged and MUST NOT appear in core.fct_transactions.
-The resolver (a later task) reads merchant_entity_id from prep and writes only
-the canonical merchant_id into core.
+prep.int_transactions__merged and on core.bridge_merchant_entities, and MUST NOT
+appear on core.fct_transactions — the fact carries the resolved canonical
+merchant_id, not the source system's entity reference.
 """
 
 from __future__ import annotations
@@ -102,7 +104,26 @@ def test_merchant_entity_id_reaches_merged_not_core() -> None:
         }
         assert "merchant_entity_id" not in fct_cols, (
             "merchant_entity_id must NOT appear in core.fct_transactions — "
-            "the resolver (Task 6) reads from prep and writes only merchant_id"
+            "the fact carries the resolved merchant_id; the source system's "
+            "entity reference lives on core.bridge_merchant_entities"
+        )
+
+        # --- Assertion 2b: it DOES reach core.bridge_merchant_entities (MB-53) ---
+        bridge_cols = {
+            r[0]
+            for r in db.execute(
+                "SELECT column_name FROM duckdb_columns() "
+                "WHERE schema_name = 'core' AND table_name = 'bridge_merchant_entities'"
+            ).fetchall()
+        }
+        assert {
+            "transaction_id",
+            "merchant_entity_id",
+            "merchant_entity_source_type",
+            "source_merchant_name",
+        } <= bridge_cols, (
+            "core.bridge_merchant_entities must expose the entity key so "
+            "categorization and merchant resolution stop reading prep"
         )
 
         # --- Assertion 3: at least one non-NULL value survives (the real mechanism) ---
@@ -114,4 +135,13 @@ def test_merchant_entity_id_reaches_merged_not_core() -> None:
         assert count is not None and count[0] > 0, (
             "At least one non-NULL merchant_entity_id must reach merged "
             "(fixture txn_001 carries entity_starbucks_001)"
+        )
+
+        # --- Assertion 4: the same rows land on the core bridge (MB-53) ---
+        bridge_count = db.execute(
+            "SELECT COUNT(*) FROM core.bridge_merchant_entities"
+        ).fetchone()
+        assert bridge_count is not None and bridge_count[0] == count[0], (
+            "core.bridge_merchant_entities must carry exactly the entity-bearing "
+            "merged rows"
         )

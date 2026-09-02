@@ -13,8 +13,8 @@ MODEL (
    catches one carrying modeled transactions. A price-only observation for a security
    that is neither held nor transacted has no doctor coverage — it simply waits in raw.
 
-   ref_kind is mapped per source rather than hardcoded, so C.2's tiingo_ticker and
-   coingecko_slug extend the CASE instead of forking a second resolution path.
+   ref_kind comes from seeds.price_source_map rather than being hardcoded, so a new
+   provider extends one registry row instead of forking a second resolution path.
 
    RETIRED KEYS still resolve their own history. A reversed link is one of two very
    different things, and only reversed_by tells them apart. PriceService retires an
@@ -53,36 +53,37 @@ MODEL (
    arm reads as "this security has no history", and one in the handover CTE silently
    turns a user's rejection into a transfer of ownership.
 
-   COVERAGE — read this before adding a price adapter. The CASE below maps three
-   sources: 'plaid', 'tiingo', and 'coingecko'. That is the complete set that resolves
-   today. Any other value of raw.security_prices.source_type makes the CASE return NULL,
-   `links.ref_kind = NULL` evaluates to UNKNOWN, and this INNER JOIN discards the row
-   silently — no error and no counter. The doctor check
-   investment_unmapped_price_source is the safety net: it reports any source_type
-   present in raw.security_prices that this CASE does not map. It reports rows already
-   written, so it cannot prevent the drop — extending this CASE in the same change that
-   starts writing a source is still the requirement.
+   COVERAGE — read this before adding a price adapter. seeds.price_source_map supplies
+   the ref_kind, and only its rows carrying one resolve here: 'plaid', 'tiingo', and
+   'coingecko' today. A source_type absent from the registry, or present with a NULL
+   ref_kind, matches nothing in that join — or makes `links.ref_kind = NULL` UNKNOWN —
+   and this INNER JOIN discards the row silently, with no error and no counter. The
+   doctor check investment_unmapped_price_source is the safety net: it reports any
+   source_type present in raw.security_prices that never reaches this view. It reports
+   rows already written, so it cannot prevent the drop.
 
    That drop is PERMANENT, not deferred, and this is the one way it differs from the
    unresolved-binding case described above. An unresolved observation waits in raw and
    reappears here the moment its security binds. A row whose source_type has no ref_kind
-   mapping never reappears no matter how many bindings are accepted, because the
-   failure is in the mapping, not the binding. It is invisible and unrecoverable until
-   someone edits this file.
+   never reappears no matter how many bindings are accepted, because the failure is in
+   the registry, not the binding. It is invisible and unrecoverable until someone edits
+   the registry.
 
-   Nothing upstream prevents it: raw.security_prices.source_type carries no CHECK constraint
-   (unlike price_basis), and core.fct_security_prices already ranks override and
-   trade_implied, neither of which passes through this view at all. So a new adapter MUST
-   extend this CASE in the SAME change that starts writing its rows — the tiingo and
-   coingecko arms below were added one commit late, and every row those adapters wrote in
-   between was discarded here.
+   Nothing upstream prevents it: raw.security_prices.source_type carries no CHECK
+   constraint (unlike price_basis), and core.fct_security_prices ranks override and
+   trade_implied, neither of which passes through this view at all. What the registry
+   buys is that a writer can no longer ship ahead of its mapping the way the tiingo and
+   coingecko adapters did — a source_type PriceService dispatches on and the ref_kind
+   this join needs are now the same CSV row, so declaring one declares the other.
 
-   Two tests guard the two directions, because one alone cannot see both. This model's own
-   coverage test reads the CASE and grows itself when a mapping is added, so it catches a
-   mapping whose ref_kind or CHECK constraint is wrong. It cannot catch a writer shipping
-   ahead of its mapping — the CASE is unchanged, so the test is unchanged. That direction is
-   tests/moneybin/test_services/test_price_service.py, which asserts every source_type
-   PriceService writes appears here.
+   Two tests still guard what the registry alone cannot. This model's own coverage test
+   reads the registry and grows itself when a source is added, so it catches a mapping
+   whose ref_kind or CHECK constraint is wrong; it cannot see a registry row someone
+   DELETES, since removing one merely shrinks the set it iterates. That direction is
+   tests/moneybin/test_price_sources.py, which pins the shipped rows and their rank
+   order, and tests/moneybin/test_services/test_price_service.py, which asserts every
+   source PriceService routes to still carries a ref_kind and that this model still joins
+   the registry rather than restating it.
 
    No close-positivity filter follows: raw.security_prices enforces CHECK (close > 0) at
    write, so a zero or negative close can never reach this view — the guard lives at the
@@ -116,17 +117,12 @@ SELECT
   p.extracted_at,
   p.loaded_at
 FROM raw.security_prices AS p
+JOIN seeds.price_source_map AS src
+  ON src.source_type = p.source_type
 JOIN app.security_links AS links
   ON links.source_type = p.source_type
   AND links.ref_value = p.provider_security_key
-  AND links.ref_kind = CASE p.source_type
-    WHEN 'plaid'
-    THEN 'plaid_security_id'
-    WHEN 'tiingo'
-    THEN 'tiingo_ticker'
-    WHEN 'coingecko'
-    THEN 'coingecko_slug'
-  END
+  AND links.ref_kind = src.ref_kind
 LEFT JOIN handover AS h
   ON h.link_id = links.link_id
 WHERE

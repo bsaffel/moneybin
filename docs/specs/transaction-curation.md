@@ -752,7 +752,7 @@ response, and declarative-set diff correctness for the `tags_set` variant of
 - DuckDB native types: `LIST`, `STRUCT`, `STRUCT_PACK`, `UNNEST` (existing capability)
 - SQLMesh: existing model infrastructure; no new SQLMesh primitives needed
 - Existing services: `TransactionService`, `ImportService`, `CategorizationService`, `AutoRuleService`, matching engine
-- Existing infrastructure: `Database`, `TableRef`, `MoneyBinSettings`, `SanitizedLogFormatter`, `@mcp_tool` decorator + privacy middleware, `@tracked` / `track_duration`
+- Existing infrastructure: `Database`, `TableRef`, `MoneyBinSettings`, `SanitizedLogFormatter`, `@mcp_tool` decorator + privacy middleware, manually-recorded `prometheus_client` metrics (`src/moneybin/metrics/registry.py`)
 - Cross-spec dependencies: `matching-same-record-dedup.md` (gold-key contract), `categorization-overview.md` (priority hierarchy contract), `smart-import-tabular.md` (raw column shape, `Database.ingest_dataframe`), `moneybin-cli.md` v2 (CLI/MCP taxonomy), `mcp-architecture.md` (sensitivity tiers, response envelopes), `moneybin-mcp.md` v2 (in-progress; this spec contributes the declarative-set pattern)
 
 ## Out of Scope

@@ -14,8 +14,8 @@ parameter name takes down the whole reports command group at import.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import typer
 
@@ -27,12 +27,17 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
     render_or_json,
+    wide_option,
 )
 from moneybin.cli.render import Money, render_note, render_rows
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.protocol.envelope import ResponseEnvelope
-from moneybin.reports._framework.contract import ReportSpec
+from moneybin.reports._framework.contract import (
+    ORIGINAL_CURRENCY_COLUMN,
+    ReportSpec,
+    reject_repeated_default_columns,
+)
 
 if TYPE_CHECKING:
     # Type-only: importing `execute` here would pull sql_lineage → sqlglot into
@@ -73,6 +78,17 @@ def _cli_signature(spec: ReportSpec) -> inspect.Signature:
             "quiet",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             default=quiet_option,
+            annotation=bool,
+        )
+    )
+    # Injected on every report, including one whose default set is its whole
+    # projection: the flag is then a no-op, which is cheaper than a signature
+    # that varies per report and a `--help` where the option comes and goes.
+    params.append(
+        inspect.Parameter(
+            "wide",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            default=wide_option,
             annotation=bool,
         )
     )
@@ -140,6 +156,116 @@ def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> No
         render_note(f"💡 {action}", quiet=quiet)
 
 
+class ColumnView(NamedTuple):
+    """What the text branch renders, and whether the renderer fits it."""
+
+    columns: tuple[str, ...]
+    fit: bool
+
+
+def column_view(
+    spec: RegisteredReport,
+    result_columns: Sequence[str],
+    *,
+    parameters: Mapping[str, Any],
+    wide: bool,
+) -> ColumnView:
+    """One report's whole text-branch column decision (requirements 6, 7).
+
+    Both CLI paths reach the same renderer — a built-in's generated command and
+    ``reports run``, which serves every tier — so resolving the narrowed set and
+    the fit flag separately in each is two copies of one decision. They were,
+    and the tested copy was not the one `run` used.
+    """
+    return ColumnView(
+        visible_columns(spec, result_columns, parameters=parameters, wide=wide),
+        # Only a report that named no columns of its own. `--wide` is a request
+        # for the whole projection, not for a fitted one.
+        fit=spec.default_columns is None and not wide,
+    )
+
+
+def visible_columns(
+    spec: RegisteredReport,
+    result_columns: Sequence[str],
+    *,
+    parameters: Mapping[str, Any],
+    wide: bool,
+) -> tuple[str, ...]:
+    """The columns this result renders as text (requirements 6, 7).
+
+    Resolves the report's own declaration against the columns the result
+    actually carries. The declaration orders the table — an author putting the
+    identifying column first must not have to reorder the SQL projection, which
+    ``--wide``, ``--output json``, and every MCP caller also read.
+
+    A declared name absent from ``result_columns`` is dropped rather than
+    rendered empty: a `cash_flow` grouped by account returns no ``category``,
+    and the result is the authority on what exists. A declaration matching
+    nothing at all fails open to the whole result — requirement 6 makes that a
+    spec violation, caught by the width contract test rather than at a user's
+    terminal, and an empty table under ``0 of 9 columns shown`` reads as a
+    report that returned nothing.
+    """
+    if wide:
+        return tuple(result_columns)
+    names = resolve_default_columns(spec, parameters)
+    available = set(result_columns)
+    visible = tuple(name for name in names if name in available)
+    if not visible:
+        return tuple(result_columns)
+    # `original_currency_code` is attached at runtime by display conversion, so
+    # no declaration can name it and the intersection above would drop it. It
+    # survives on its own terms: conversion relabels every amount into the
+    # target currency, so without it the table states what a row is worth and
+    # loses what it was — and `echo_applied_rates`, the only other disclosure,
+    # goes to stderr, which `> report.txt` does not capture. Requirement 9's
+    # 80-column bar is measured on declared projections; an explicit
+    # `--display-currency` may exceed it rather than drop the provenance.
+    # `not in visible` because nothing checks a callable declaration —
+    # `validate_default_columns` takes one on trust — so one that names this
+    # column itself would otherwise pick it up here a second time.
+    if (
+        ORIGINAL_CURRENCY_COLUMN in available
+        and ORIGINAL_CURRENCY_COLUMN not in visible
+    ):
+        visible = (*visible, ORIGINAL_CURRENCY_COLUMN)
+    return visible
+
+
+def resolve_default_columns(
+    spec: RegisteredReport, parameters: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """The names a report's declaration resolves to, before any intersection.
+
+    Split out of ``visible_columns`` so requirement 9's contract test can check
+    what a declaration *names* rather than what survived intersection with a
+    result. Intersecting first makes every surviving name trivially present,
+    which is how a typo in a callable declaration would otherwise stay
+    invisible — ``validate_default_columns`` cannot check a callable, so this
+    is the only place a wrong name is catchable.
+    """
+    declared = spec.default_columns
+    if declared is None:
+        # The whole projection, left to the renderer to fit against the real
+        # terminal. A fixed count here would be a worse answer at both ends —
+        # under-filling a wide window and still overflowing a narrow one —
+        # and it cannot know a column's display width, which depends on the
+        # values. `render_rows(fit=True)` measures those and keeps the first
+        # and last columns, as DuckDB and pandas do.
+        return tuple(column.name for column in spec.columns)
+    if callable(declared):
+        # The same rule `validate_default_columns` applies to a static tuple at
+        # construction, applied here because this is the first moment a
+        # callable's answer exists. Refused rather than de-duplicated: a quiet
+        # correction would render a projection nobody declared and leave the
+        # mistake in the report indefinitely.
+        resolved = tuple(declared(parameters))
+        reject_repeated_default_columns(resolved)
+        return resolved
+    return tuple(declared)
+
+
 def money_columns(spec: RegisteredReport) -> dict[str, Money]:
     """Build the renderer's money declarations from a report's own columns.
 
@@ -162,6 +288,8 @@ def render_report_result(
     cli_actor: str,
     money: Mapping[str, Money] | None = None,
     quiet: bool = False,
+    columns: Sequence[str] | None = None,
+    fit: bool = False,
 ) -> None:
     """Render one report result as a table or the JSON envelope.
 
@@ -172,15 +300,32 @@ def render_report_result(
     ``money`` carries the report's own column declarations, from
     :func:`money_columns`. Both callers resolve it from the spec, so one report
     renders its amounts identically whichever command ran it.
+
+    ``columns`` is the text branch's narrowed view, from
+    :func:`visible_columns`. It never reaches the JSON envelope — requirement 8
+    keeps that projection whole, filtered only by ``--json-fields``.
+
+    ``fit`` asks the renderer to measure the result against the terminal and
+    drop middle columns to fit. It is for a report that declares no default
+    set: a declared set is a curated answer to "what does this report say",
+    contract-tested at 80 characters, and re-deciding it from column widths
+    would discard the author's judgement.
     """
+    visible = list(result.columns if columns is None else columns)
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
         if result.records:
             rows: list[tuple[object, ...]] = [
-                tuple(record.get(column) for column in result.columns)
+                tuple(record.get(column) for column in visible)
                 for record in result.records
             ]
-            render_rows(result.columns, rows, money=money)
+            render_rows(
+                visible,
+                rows,
+                money=money,
+                total_columns=len(result.columns),
+                fit=fit,
+            )
         echo_report_notes(result, quiet=quiet)
 
     render_or_json(
@@ -210,6 +355,9 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
         # Reaches the next-step hints in `echo_report_notes` and nothing else —
         # the table is data (requirement 5) and JSON output has no notes.
         quiet: bool = bool(kwargs.pop("quiet", False))
+        # Popped for the same reason as `display_currency`: a framework option
+        # the runner never declared and would reject as unknown.
+        wide: bool = bool(kwargs.pop("wide", False))
         # Popped before `kwargs` becomes `parameters`: display conversion is the
         # framework's, not the runner's, so a runner would reject it as unknown.
         display_currency: str | None = kwargs.pop("display_currency", None)
@@ -233,12 +381,15 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                     display_currency=display_currency,
                     home_currency=profile_home_currency(db),
                 )
+            view = column_view(spec, result.columns, parameters=kwargs, wide=wide)
             render_report_result(
                 result,
                 output,
                 cli_actor=cli_actor,
                 money=money_columns(spec),
                 quiet=quiet,
+                columns=view.columns,
+                fit=view.fit,
             )
 
     _impl.__name__ = spec.name

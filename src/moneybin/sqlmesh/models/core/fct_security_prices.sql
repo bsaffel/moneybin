@@ -74,9 +74,11 @@
    for. Withholding there would blank a routine grain and report the position unpriced.
    A rank threshold cannot express the distinction (override is rank 1 and trade_implied
    rank 5, so the two derived sources bracket the three provider ones) and a rank RANGE
-   would break silently the first time a new adapter takes rank 6. The provider set is
-   therefore enumerated; keep it in step with investment_price_disagreement, which
-   restricts its comparison to the same three sources for the same reason.
+   would break silently the first time a new adapter takes rank 6. The scope is therefore
+   the sources that carry a ref_kind in seeds.price_source_map — exactly the ones whose
+   rows arrive through app.security_links, which is what a churning provider key means
+   and what the two derived sources structurally are not. It follows the registry rather
+   than naming a set, so a new adapter is covered by declaring its ref_kind.
 
    This is a total order over the emitted columns. The model exposes security_id,
    price_date, and quote_currency (the partition), plus close, source_type, price_basis,
@@ -96,7 +98,10 @@
    this layer — the ordering is deterministic, not exhaustive over information staging
    already threw away. app.security_price_overrides has the same shape for the same
    reason (quote_currency is in its primary key), and resolves it the same way. A new
-   adapter takes the next free rank. See
+   adapter appends the next free rank to seeds.price_source_map, which is where every
+   rank here comes from; the LEFT JOIN is deliberate, since an INNER one would drop a
+   source missing from the registry rather than bucket it at 99, repeating in core the
+   silent discard prep exists to warn about. See
    docs/specs/investments-price-feeds.md. */
 MODEL (
   name core.fct_security_prices,
@@ -210,25 +215,15 @@ WITH provider AS (
     c.observation_key,
     c.price_basis,
     c.extracted_at,
-    CASE c.source_type
-      WHEN 'override'
-      THEN 1
-      WHEN 'plaid'
-      THEN 2
-      WHEN 'tiingo'
-      THEN 3
-      WHEN 'coingecko'
-      THEN 4
-      WHEN 'trade_implied'
-      THEN 5
-      ELSE 99
-    END AS source_rank,
+    COALESCE(src.source_rank, 99) AS source_rank,
     (
-      c.source_type IN ('plaid', 'tiingo', 'coingecko')
+      NOT src.ref_kind IS NULL
       AND MIN(c.observation_key) OVER same_pull <> MAX(c.observation_key) OVER same_pull
       AND MIN(c.close) OVER same_pull <> MAX(c.close) OVER same_pull
     ) AS same_pull_key_conflict
   FROM candidates AS c
+  LEFT JOIN seeds.price_source_map AS src
+    ON src.source_type = c.source_type
   WINDOW same_pull AS (
     PARTITION BY c.security_id, c.price_date, c.quote_currency, c.source_type, c.source_origin, c.extracted_at
   )
@@ -238,7 +233,7 @@ SELECT
   price_date, /* The date this close applies to (grain) */
   quote_currency, /* ISO 4217 the close is expressed in (grain); this model converts nothing — M1K.2 owns FX */
   close, /* The winning close for one unit, in quote_currency */
-  source_type, /* Which source supplied the winning close: plaid, override, or trade_implied today; tiingo and coingecko join when their adapters land — see docs/specs/investments-price-feeds.md */
+  source_type, /* Which source supplied the winning close; seeds.price_source_map is the closed set it can name — see docs/specs/investments-price-feeds.md */
   price_basis, /* Always 'raw' here; adjusted provider observations are excluded upstream and stay visible in prep.stg_security_prices, and the two derived sources are raw by construction */
   extracted_at AS updated_at /* When the winning observation was served: the provider's own timestamp, the mark's last edit, or the trade's ledger timestamp */
 FROM ranked

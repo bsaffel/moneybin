@@ -366,6 +366,33 @@ def test_balance_drift_ambiguous_account_raises(db: Database) -> None:
         balance_drift(db, account="Joint")
 
 
+def test_balance_drift_default_columns_keep_the_assertion_date() -> None:
+    """One row per assertion, so the date is half the grain, not detail.
+
+    An account may hold several assertions -- the shape both an unfiltered read
+    and a broad `since` return -- and every row is a different `assertion_date`.
+    Every sibling report keeps its non-id grain columns in the default set:
+    `cash_flow` its `year_month`, `large_transactions` its `txn_date`,
+    `merchants` its `last_seen`. Without the date here, two assertions for one
+    account differ only in figures a reader cannot tie to a point in time, and
+    otherwise identical assertions read as one row duplicated.
+
+    `account_id` is deliberately not the answer to the same question: the width
+    contract keeps a source-provided id out of every default set
+    (`test_default_column_widths.py`), which is why the temporal half of the
+    grain has to carry it.
+    """
+    declared = spec_of(balance_drift).default_columns
+
+    assert isinstance(declared, tuple), (
+        "balance_drift declares a static default column set"
+    )
+    assert "assertion_date" in declared, (
+        f"default columns are {declared}; two assertions for one account "
+        "render as indistinguishable rows without the date"
+    )
+
+
 #: Every binding site in every shipped runner, with the class each declares.
 #: The kwargs fire every conditional append, so ``isinstance`` over the result is
 #: a completeness check rather than a spot check — R9's requirement that every

@@ -99,7 +99,7 @@ class InvestmentEventRow:
     price: Annotated[Decimal | None, DataClass.TXN_AMOUNT]
     amount: Annotated[Decimal | None, DataClass.TXN_AMOUNT]
     fees: Annotated[Decimal | None, DataClass.TXN_AMOUNT]
-    currency_code: Annotated[str, DataClass.CURRENCY]
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
     description: Annotated[str | None, DataClass.DESCRIPTION]
 
     @classmethod
@@ -164,7 +164,7 @@ class InvestmentHoldingRow:
     quantity: Annotated[Decimal, DataClass.TXN_AMOUNT]
     cost_basis: Annotated[Decimal, DataClass.BALANCE]
     average_cost: Annotated[Decimal | None, DataClass.BALANCE]
-    currency_code: Annotated[str, DataClass.CURRENCY]
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
     market_value: Annotated[Decimal | None, DataClass.BALANCE]
     unrealized_gain: Annotated[Decimal | None, DataClass.BALANCE]
     price_date: Annotated[date | None, DataClass.TIMESTAMP_OBSERVABILITY]
@@ -256,7 +256,7 @@ class InvestmentLotRow:
     cost_basis_total: Annotated[Decimal, DataClass.BALANCE]
     cost_basis_remaining: Annotated[Decimal, DataClass.BALANCE]
     cost_basis_method: Annotated[str, DataClass.TXN_TYPE]
-    currency_code: Annotated[str, DataClass.CURRENCY]
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
     is_open: Annotated[bool, DataClass.TXN_TYPE]
     basis_incomplete: Annotated[bool, DataClass.TXN_TYPE]
 
@@ -320,7 +320,7 @@ class InvestmentGainRow:
     term: Annotated[str, DataClass.TXN_TYPE]
     cost_basis_method: Annotated[str, DataClass.TXN_TYPE]
     basis_incomplete: Annotated[bool, DataClass.TXN_TYPE]
-    currency_code: Annotated[str, DataClass.CURRENCY]
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
 
     @classmethod
     def from_row(cls, row: RealizedGainRow) -> InvestmentGainRow:

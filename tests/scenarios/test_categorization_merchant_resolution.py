@@ -8,7 +8,7 @@ MerchantResolver wired into the categorization orchestrator, not by pre-seeding
 ``app.merchant_links`` (per .claude/rules/testing.md "No Shortcuts").
 
 This is a whole-pipeline test: it drives PlaidExtractor → account resolution →
-SQLMesh transform so ``prep.int_transactions__merged`` and
+SQLMesh transform so ``core.bridge_merchant_entities`` and
 ``core.fct_transactions`` are real views before categorization runs.
 """
 
@@ -108,19 +108,19 @@ def test_same_entity_id_collapses_to_one_merchant() -> None:
                 )
             )
 
-        # Materialize prep + core views (incl. prep.int_transactions__merged
+        # Materialize prep + core views (incl. core.bridge_merchant_entities
         # and core.fct_transactions) through the real SQLMesh transform.
         run_step("transform", scenario.setup, db, env=env)
 
         # Ground truth derived from the input: both transactions carry the
-        # shared entity id, so both gold rows must expose it in merged.
+        # shared entity id, so both gold rows must expose it on the bridge.
         gold_ids = [
             r[0]
             for r in db.execute(
                 """
                 SELECT t.transaction_id
                 FROM core.fct_transactions AS t
-                JOIN prep.int_transactions__merged AS m
+                JOIN core.bridge_merchant_entities AS m
                     ON t.transaction_id = m.transaction_id
                 WHERE m.merchant_entity_id = ?
                 ORDER BY t.transaction_date

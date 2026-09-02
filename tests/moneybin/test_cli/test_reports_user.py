@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
+from click.testing import Result
 from typer.testing import CliRunner
 
 from moneybin import error_codes
@@ -24,13 +25,18 @@ from moneybin.cli.commands.reports import user_reports
 from moneybin.cli.main import app
 from moneybin.cli.output import CLI_MAX_ROWS
 from moneybin.cli.report_params import parse_parameter_value
+from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.reports._framework.contract import DefaultColumns, ReportQuery
 from moneybin.reports._framework.execute import ReportResult
 from moneybin.reports._framework.explain import ColumnProvenance, ReportExplanation
+from moneybin.reports._framework.introspect import build_spec
 from moneybin.repositories.user_reports_repo import UNSET
 from moneybin.services.user_reports_service import ReclassifyOutcome, SaveOutcome
+from moneybin.tables import TableRef
 from tests.database_mocks import no_profile_database
+from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 runner = CliRunner()
 
@@ -341,6 +347,150 @@ def test_run_rejects_a_limit_below_one() -> None:
 
     assert result.exit_code == 2
     assert "at least 1" in result.output
+
+
+# ---------------------------------------------------------------------------
+# run: default columns, --wide, and the terminal fit (requirements 6-10)
+# ---------------------------------------------------------------------------
+
+_RUN_CLASSES = {
+    "year_month": DataClass.TXN_DATE,
+    "account_name": DataClass.USER_NOTE,
+    "category": DataClass.CATEGORY,
+    "currency_code": DataClass.CURRENCY,
+    "net": DataClass.TXN_AMOUNT,
+    "txn_count": DataClass.AGGREGATE,
+}
+_RUN_COLUMN_NAMES = tuple(_RUN_CLASSES)
+
+
+def _run_runner(db: Database) -> ReportQuery:
+    """Grouped rollup.
+
+    Args:
+        db: Open read-only database connection.
+    """
+    return ReportQuery("SELECT 1", [])
+
+
+def _run_spec(default_columns: DefaultColumns | None):  # noqa: ANN202 — test helper
+    return build_spec(
+        _run_runner,
+        report_id="test:run",
+        name="run_report",
+        view=TableRef("reports", "test_run"),
+        classes=_RUN_CLASSES,
+        parameter_classes={},
+        columns=output_columns(_RUN_CLASSES),
+        semantics=TEST_SEMANTICS,
+        default_columns=default_columns,
+    )
+
+
+def _invoke_run(
+    *args: str,
+    default_columns: DefaultColumns | None,
+    columns_env: str = "200",
+) -> Result:
+    """Run ``reports run`` against a real spec rather than a MagicMock one.
+
+    A MagicMock catalog answers ``spec.default_columns`` with a callable child
+    mock, so the declaration is neither ``None`` nor a tuple: the resolution
+    takes the callable branch, iterates an auto-created empty return, and fails
+    open to the whole projection. The command then renders every column and
+    fits nothing — passing whatever this path does, because it never runs.
+    """
+    catalog = MagicMock()
+    catalog.resolve.return_value = _run_spec(default_columns)
+    catalog.execute.return_value = ReportResult(
+        records=[dict.fromkeys(_RUN_COLUMN_NAMES, "value")],
+        columns=list(_RUN_COLUMN_NAMES),
+        output_classes=dict(_RUN_CLASSES),
+        tier=Tier.LOW,
+        total_count=1,
+        truncated=False,
+    )
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=catalog,
+        ),
+        patch(
+            "moneybin.cli.report_params.parse_report_parameters",
+            return_value={},
+        ),
+    ):
+        return runner.invoke(
+            app,
+            ["reports", "run", "test:run", *args],
+            env={"COLUMNS": columns_env},
+        )
+
+
+def test_run_renders_only_the_reports_default_columns() -> None:
+    """Requirement 7: one report renders the same whichever command ran it.
+
+    `reports run` reaches every tier, built-ins included, so a report narrowed
+    by its generated command and widened by `run` would answer the same
+    question two ways.
+    """
+    result = _invoke_run(default_columns=("year_month", "net"))
+
+    assert result.exit_code == 0, result.output
+    assert "year_month" in result.output
+    assert "txn_count" not in result.output
+
+
+def test_run_frames_the_columns_it_omitted() -> None:
+    """Requirement 10: the omission is disclosed on this path too."""
+    result = _invoke_run(default_columns=("year_month", "net"))
+
+    assert "2 of 6 columns shown — --wide for all" in result.output
+
+
+def test_wide_restores_the_full_projection_on_run() -> None:
+    """Requirement 7's escape hatch, and nothing left to disclose."""
+    result = _invoke_run("--wide", default_columns=("year_month", "net"))
+
+    assert result.exit_code == 0, result.output
+    assert "txn_count" in result.output
+    assert "columns shown" not in result.output
+
+
+def test_run_fits_a_report_that_declares_no_columns_to_the_terminal() -> None:
+    """Requirement 6 for the saved reports this command exists to run.
+
+    A user's report names no default set — their own SELECT is the projection —
+    so the renderer measures it against the real terminal instead of capping
+    it. Every column here fits at 200 and cannot at 40.
+    """
+    narrow = _invoke_run(default_columns=None, columns_env="40")
+
+    assert narrow.exit_code == 0, narrow.output
+    assert "…" in narrow.output
+    assert "columns shown — --wide for all" in narrow.output
+
+
+def test_run_does_not_fit_a_report_that_declares_no_columns_under_wide() -> None:
+    """`--wide` asks for the whole projection, not for a fitted one."""
+    result = _invoke_run("--wide", default_columns=None, columns_env="40")
+
+    assert result.exit_code == 0, result.output
+    assert "columns shown" not in result.output
+
+
+def test_run_leaves_a_declared_set_unfitted() -> None:
+    """A declared set is a curated answer, not a width budget.
+
+    Re-deciding it from the terminal would discard the author's judgement, so
+    the narrowing a report asked for is the only one it gets — the framing line
+    still counts two, not one, in a terminal too narrow for both.
+    """
+    result = _invoke_run(default_columns=("year_month", "net"), columns_env="20")
+
+    assert result.exit_code == 0, result.output
+    assert "2 of 6 columns shown — --wide for all" in result.output
 
 
 # ---------------------------------------------------------------------------

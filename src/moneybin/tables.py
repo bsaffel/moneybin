@@ -31,6 +31,12 @@ DIM_ACCOUNTS = TableRef("core", "dim_accounts", audience="interface")
 FCT_TRANSACTIONS = TableRef("core", "fct_transactions", audience="interface")
 FCT_TRANSACTION_LINES = TableRef("core", "fct_transaction_lines", audience="interface")
 BRIDGE_TRANSFERS = TableRef("core", "bridge_transfers", audience="interface")
+# Gold transaction -> the source system's merchant-entity reference. Promoted
+# out of prep so categorization and merchant resolution bind to a licensed
+# core surface instead of the shape-unstable merge layer.
+BRIDGE_MERCHANT_ENTITIES = TableRef(
+    "core", "bridge_merchant_entities", audience="interface"
+)
 FCT_BALANCES = TableRef("core", "fct_balances", audience="interface")
 FCT_BALANCES_DAILY = TableRef("core", "fct_balances_daily", audience="interface")
 # Service-internal curator-impact queue (moved out of reports.* — reports-foundation.md
@@ -144,6 +150,7 @@ SEED_CATEGORY_SOURCE_MAP = TableRef("seeds", "category_source_map")
 SEED_EXCHANGE_MIC_MAP = TableRef("seeds", "exchange_mic_map")
 SEED_ACCOUNT_TYPE_MAP = TableRef("seeds", "account_type_map")
 SEED_INSTITUTIONS = TableRef("seeds", "institutions")
+SEED_PRICE_SOURCE_MAP = TableRef("seeds", "price_source_map")
 
 # -- Prep / staging views (built by SQLMesh transforms) --
 INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")

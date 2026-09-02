@@ -635,7 +635,8 @@ deterministic-resolution requirement.
 | 4 | `coingecko` | A settled public close; ranked below tiingo only to break ties, since the two never cover the same security. |
 | 5 | `trade_implied` | An execution price reflects one order's size and spread. |
 
-A new adapter takes the next free rank. Where two providers disagree on the same
+A new adapter appends the next free rank to `seeds.price_source_map`. Where
+two providers disagree on the same
 date the rank picks one deterministically and `system doctor` reports the
 disagreement — resolution stays stable, and the conflict stays visible.
 
@@ -647,34 +648,42 @@ Both are cheap to honour and expensive to discover late.
   both hold a row, which silently revalues `core.dim_holdings.market_value` and
   the C.3 daily series. The code change is one line either way; the consequence
   is not. Reordering is a deliberate, announced revaluation, not a refactor.
-- **A retired provider's `source_type` mapping stays forever.** Because
+- **A retired provider's registry row stays forever.** Because
   `raw.security_prices` is append-only, a provider's rows outlive the decision to
   stop fetching from it — and `prep.stg_security_prices` resolves each row through
-  a per-`source_type` `ref_kind` CASE with an INNER JOIN. Deleting a retired
-  source's arm of that CASE therefore discards every historical row it wrote,
-  silently and unrecoverably. Retiring a provider means ceasing to *write*, never
-  removing its mapping or its `ref_kind`.
+  the `ref_kind` its `seeds.price_source_map` row declares, with an INNER JOIN.
+  Deleting a retired source's row therefore discards every historical row it wrote,
+  silently and unrecoverably. Retiring a provider means clearing its
+  `security_types` so nothing routes to it, never removing the row or its
+  `ref_kind`.
 
-  **Three guards cover this, because no one of them sees every direction.**
+  **One registry, then three guards over what it cannot see.**
+
+  `seeds.price_source_map` is the single declaration: one CSV row supplies the
+  `ref_kind` `prep.stg_security_prices` joins on, the `source_rank`
+  `core.fct_security_prices` orders by, and — through `moneybin.price_sources` —
+  the adapter routing, `feed_ref_kind`, and feed-key set that `PriceService` and
+  `SecurityLinksService` dispatch on. The C.2 failure mode is therefore structural
+  rather than guarded: a writer cannot ship ahead of its mapping, because
+  declaring the source declares both.
 
   `tests/moneybin/test_stg_security_prices.py::test_every_mapped_source_resolves_end_to_end`
-  derives its source list by parsing the CASE out of the model file, so adding an
-  arm without widening the `ref_kind` CHECK fails loudly. It cannot see a removed
-  arm (removing one merely shrinks the set it iterates), nor a writer that ships
-  ahead of its mapping — in both cases the CASE is what changed or failed to
-  change, and this test reads only the CASE.
+  iterates the registry and asserts each mapped source resolves end to end, so
+  adding a row without widening the `ref_kind` CHECK fails loudly. It cannot see a
+  *deleted* row — removing one merely shrinks the set it iterates — which is what
+  `tests/moneybin/test_price_sources.py` pins, along with the shipped rank order.
 
   `tests/moneybin/test_services/test_price_service.py::test_every_source_the_service_writes_resolves_in_staging`
-  watches the opposite direction: every `source_type` `PriceService` writes must
-  appear in the CASE, spelled with the same `ref_kind` the service binds. This is
-  the guard that was missing when C.2's writer shipped one commit ahead of its
-  mapping, leaving every `tiingo` and `coingecko` row it wrote discarded.
+  watches the remaining direction: every source the service routes to must carry a
+  `ref_kind`. The shared helper additionally fails if `prep.stg_security_prices`
+  stops JOINing the registry or restates a `CASE p.source_type` beside it, so the
+  mapping cannot quietly fork back into two places.
 
   `investment_price_disagreement`'s sibling `investment_unmapped_price_source`
   closes the run-time half: any `source_type` present in `raw.security_prices`
   with an accepted binding whose rows still never reach staging. It covers rows
-  already written and sources no Python constant names — including a retired
-  provider whose arm someone deletes.
+  already written and sources no registry row names — including a retired
+  provider whose row someone deletes.
 
 **Freshness dominates rank.** An override applies to one
 `(security_id, price_date, quote_currency)`. Within that date it beats every

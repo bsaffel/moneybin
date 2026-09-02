@@ -10,10 +10,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **MCP tool calls now record `moneybin_mcp_tool_calls_total` and `moneybin_mcp_tool_duration_seconds`.** The observability spec described this instrumentation as automatic, but no code path ever recorded either metric — a dashboard built from them stayed at zero permanently. `ValidationErrorMiddleware.on_call_tool`, the single boundary every `tools/call` request passes through, now records both metrics on every call, whether it succeeds, is translated to a validation-error envelope, or raises something else. (#495)
+
+### Removed
+- **The unused `@tracked` decorator and `track_duration()` context manager.** Neither had a production call site — every live metric already used the manual-registry pattern (`METRIC.labels(...).inc()` / `.observe()`) that is now the sole documented instrumentation contract. Removed along with the generic `moneybin_tracked_calls_total` / `moneybin_tracked_duration_seconds` / `moneybin_tracked_errors_total` series they wrote, which never carried real data. (#495)
+
 ### Deprecated
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 
 ### Added
+- **`core.bridge_merchant_entities`** — a new queryable core view mapping each
+  transaction to the merchant identifier its source system assigned, alongside
+  the source that issued it and the merchant name that source stated. Available
+  through `moneybin sql query` and the MCP schema surface. Categorization and
+  merchant harvesting now read it instead of the internal staging layer, whose
+  shape carries no stability guarantee. `core.fct_transactions` is unchanged.
+  (#494)
 - **A Google Sheet that tracks several accounts in one tab now imports as
   several accounts.** `gsheet connect` previously required you to name one
   destination account, and every row from every account was filed under it —
@@ -837,6 +850,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Fixed
+- **An investment event recorded without a currency now inherits its account's
+  currency instead of being written as USD.** `moneybin investments add` and the
+  `investments_record` MCP tool both substituted a literal `USD` when the caller
+  omitted one, and the `raw.manual_investment_transactions` DDL and the manual
+  staging model each supplied the same literal underneath them. A brokerage
+  account denominated in anything but dollars therefore had its lots, cost basis
+  and realized gains labelled in a currency it does not hold. Omitting the
+  currency now stores none, and `core.fct_investment_transactions` resolves it
+  the way `core.fct_transactions` already resolves the cash grain: the event's
+  own currency if given, else the account's, else unknown — never a guess.
+  Passing `--currency` / `currency` still wins. Events written before this
+  change keep their stored currency: every write path passed `USD` explicitly,
+  so a fabricated value cannot be told apart from one you typed, and rewriting
+  them would erase real answers. Setting the account's currency with
+  `accounts set --currency` repairs every event that carries *no* currency; one
+  that already carries a wrong one cannot be relabelled in-product yet, because
+  a manual investment event has no delete or revert and re-recording it appends
+  a second row rather than replacing the first. A position whose open lots mix a
+  known currency with an unknown one now withholds its market value instead of
+  pricing the combined quantity at the known currency's close — the same guard
+  that already withheld a position holding two different known currencies.
 - **Account merge proposals no longer fire on a shared generated label alone,
   on either side of the comparison.** Two unrelated accounts whose *display
   name* was never set by a person or a source — both resolving to a bare
@@ -858,6 +892,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Sheets. (#493)
 
 ### Changed
+- **`system doctor` stops narrating its successes.** Every run printed a ✅ line
+  per invariant, so the one ❌ that mattered sat in a block of nine lines saying
+  nothing was wrong. A clean run now prints just its summary; a run with
+  problems prints only the invariants that have one. Warnings and skipped
+  checks still print — the summary counts them without naming them, so hiding
+  either would leave you knowing something was off and unable to see what.
+  `--verbose` shows the full roll, alongside the affected transaction IDs it
+  already showed. `--output json` is unchanged and still carries every
+  invariant. The summary itself now survives `-q`, which previously took it:
+  with passing invariants no longer narrated, a quiet clean run would otherwise
+  have printed nothing at all. `-q` now silences the 💡 next-step hints and
+  nothing else, and a failing invariant still prints under it.
+
+- **A report's table fits your terminal, and says what it left out.** Six of the
+  eight built-in reports returned nine to fourteen columns and printed all of
+  them, so an 80-column terminal wrapped every row into an unreadable block —
+  `large-transactions` alone needed 243 characters. Each report now declares the
+  columns that answer it, and prints those. `--wide` restores the rest, and when
+  anything is omitted the table is followed by `4 of 13 columns shown — --wide
+  for all`, so a narrowed view is never a silent one. That line prints to stdout
+  with the table and survives `-q`: redirecting a report to a file has to capture
+  the disclosure along with the data.
+
+  `--output json` and every MCP caller keep the full projection — the column
+  choice is a text-rendering decision, and `--json-fields` remains the JSON
+  caller's own filter. The currency column stays visible in every default set:
+  amounts are aggregated per currency, so two rows differing only in a hidden
+  `currency_code` would read as one row counted twice.
+
+  `reports spending --compare` now changes what you see. It validated its
+  argument and then ignored it — the view returns all three comparisons
+  regardless — so `--compare mom` was documented as intent and observable
+  nowhere. It selects which comparison the table shows by default.
+
+  A report that declares no columns — one you saved yourself, or one a
+  third-party extension provides — is fitted to your terminal instead. It keeps
+  the first and last columns, drops from the middle outwards until the table
+  fits the window you actually have, and marks the gap with `…`, the way DuckDB
+  and pandas render a result too wide to print. So the same saved report shows
+  more of itself in a maximized window than in a narrow one, and `--wide` still
+  returns the whole projection.
+
+  A converted read keeps its `original_currency_code` column whichever
+  narrowing applies. Display conversion relabels every amount into the target
+  currency, so dropping it would leave the table stating what each row is worth
+  and losing what it was — and the only other disclosure goes to stderr, which
+  a redirect to a file does not capture.
 - **Google Sheets connects with no setup.** MoneyBin now ships the OAuth client
   secret alongside its public client ID, so `moneybin gsheet auth` completes on
   a bare install. Google's Desktop clients require both halves, and a wheel

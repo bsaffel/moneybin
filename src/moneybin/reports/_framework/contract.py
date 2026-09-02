@@ -10,6 +10,7 @@ CLI command, and ``TableRef`` wiring from that single definition. See
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -236,6 +237,75 @@ class OutputColumn:
             )
 
 
+type DefaultColumns = tuple[str, ...] | Callable[[Mapping[str, Any]], tuple[str, ...]]
+"""Which of a report's columns a text reader sees before asking for the rest.
+
+A static tuple where the projection is fixed, and a callable of the report's
+own effective parameters where it is not — `cash_flow` selects its columns from
+``by``, and any single tuple would either name a field one grouping does not
+return or drop a dimension another one does. The callable takes the parameter
+*mapping* rather than keyword arguments so a caller that omitted an optional
+parameter does not raise on a missing keyword; it reads its own defaults with
+``.get``.
+
+``None`` means undeclared, which is a legal state: an extension report keeps
+rendering exactly as it did before this field existed and opts in when its
+author is ready. See :func:`~moneybin.reports._framework.cli_register.visible_columns`
+for what undeclared falls back to.
+"""
+
+
+def validate_default_columns(
+    default_columns: DefaultColumns | None,
+    columns: Sequence[OutputColumn],
+) -> None:
+    """Reject a static default set that cannot resolve, at construction.
+
+    A callable is taken on trust — its result depends on parameters nobody has
+    yet — and is covered instead by the width contract test, which resolves
+    every in-tree report against every legal parameter combination.
+
+    Both failures are silent at render time, which is why they are caught here:
+    the resolver drops a name it does not recognise, so a typo narrows the table
+    by one column and the framing line reports the narrower count as though it
+    were the intent, while an empty set renders an empty table under
+    ``0 of 9 columns shown`` — a report that looks like it returned nothing.
+    """
+    if default_columns is None or callable(default_columns):
+        return
+    if not default_columns:
+        raise ValueError(
+            "default_columns must name at least one column; use None to declare none"
+        )
+    undeclared = [
+        name for name in default_columns if name not in {c.name for c in columns}
+    ]
+    if undeclared:
+        raise ValueError(
+            f"default_columns names undeclared output columns: {', '.join(undeclared)}"
+        )
+    reject_repeated_default_columns(default_columns)
+
+
+def reject_repeated_default_columns(names: Sequence[str]) -> None:
+    """Refuse a default set that names one column twice.
+
+    Shared with the callable path, which resolves its names too late for the
+    check above but is subject to the same rule. A repeat is worse than the
+    doubled column it renders: ``visible_columns`` filters the declaration
+    against the result, so both copies survive, and the framing line compares
+    how many entries were rendered against how many the result carries. Two
+    entries for a two-column result look complete, so the other column is
+    dropped and ``--wide`` is never mentioned — the one silent narrowing the
+    declaration exists to prevent.
+    """
+    repeated = sorted(name for name, count in Counter(names).items() if count > 1)
+    if repeated:
+        raise ValueError(
+            f"default_columns names one column more than once: {', '.join(repeated)}"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ReportSemantics:
     """Financial interpretation metadata for a report's metrics.
@@ -307,6 +377,8 @@ class ReportSpec:
     semantics: ReportSemantics
     params: tuple[ParamSpec, ...] = ()
     examples: tuple[str, ...] = ()
+    default_columns: DefaultColumns | None = None
+    """The columns a text reader sees before ``--wide`` (requirement 6)."""
     domain: str | None = None
     class_downgrades: Mapping[str, str] = field(default_factory=dict)
     """Column → why it is declared below its derived class. CI requires a reason
@@ -329,6 +401,7 @@ class ReportSpec:
                 "columns and classes must declare the same output fields "
                 "with identical privacy classes"
             )
+        validate_default_columns(self.default_columns, self.columns)
         object.__setattr__(self, "classes", MappingProxyType(dict(self.classes)))
 
     @property
@@ -354,6 +427,7 @@ def report(
     domain: str | None = None,
     class_downgrades: Mapping[str, str] | None = None,
     on_converted: RecomputeDerived | None = None,
+    default_columns: DefaultColumns | None = None,
 ) -> Callable[[Runner], Runner]:
     """Mark a runner as a report and attach its introspected :class:`ReportSpec`.
 
@@ -382,6 +456,10 @@ def report(
         on_converted: Repair for columns derived from this report's money
             columns, run after display conversion prices them. Only a report
             holding a value computed from an amount needs one.
+        default_columns: The columns a text reader sees before ``--wide``,
+            as a tuple or a callable of the report's effective parameters.
+            Omitted means undeclared: the renderer then fits the whole
+            projection to the terminal, keeping the first and last columns.
     """
     # Imported lazily to avoid a contract<->introspect import cycle.
     from moneybin.reports._framework.introspect import build_spec
@@ -399,6 +477,7 @@ def report(
             domain=domain,
             class_downgrades=class_downgrades,
             on_converted=on_converted,
+            default_columns=default_columns,
         )
         return fn
 

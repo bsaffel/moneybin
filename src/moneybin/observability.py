@@ -3,7 +3,7 @@
 This module is the single public entry point for all observability setup.
 Consumers use:
 
-    from moneybin.observability import setup_observability, tracked, track_duration
+    from moneybin.observability import setup_observability
 
 Standard Python logging remains unchanged:
 
@@ -12,18 +12,19 @@ Standard Python logging remains unchanged:
 
 Internal modules (``moneybin.logging``, ``moneybin.metrics``) should not
 be imported directly by application code except for manual gauge/counter
-access.
+access — see ``moneybin.metrics.registry`` for the metric definitions and
+record calls (``COUNTER.labels(...).inc()``, ``HISTOGRAM.observe(...)``)
+directly at the call site that matters.
 """
 
 import logging
 from typing import Literal
 
 from moneybin.logging.config import setup_logging
-from moneybin.metrics.instruments import track_duration, tracked
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["setup_observability", "tracked", "track_duration", "flush_metrics"]
+__all__ = ["setup_observability", "flush_metrics"]
 
 _atexit_registered = False
 

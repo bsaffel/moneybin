@@ -68,6 +68,8 @@ MoneyBin uses eight schemas under this spec — seven that exist today plus `rep
    - The `import` family writes to `raw.*`.
    - Reconciliation tooling reads `meta.*`.
    - **The agent-safe SQL surface reads `raw.*` and `prep.*` for inspection** (M2O.2). `sql_query` and `moneybin sql query` admit `core`, `app`, `reports`, `raw`, and `prep`, and refuse `meta` and `seeds`. This is an inspection exception, not a widening of the analysis contract: shapes in `prep` still change without notice, nothing downstream may depend on them, and the two schemas are masked by a value-shape scan rather than by the per-column declarations `core`/`app` carry. See [`privacy-data-classification.md`](privacy-data-classification.md) and [`sql-access.md`](../guides/sql-access.md).
+   - **`DoctorService` reads `prep.*` diagnostically.** Its job is to inspect pipeline internals — staging rejects, unresolved securities, price-source disagreement, dedup reconciliation — so binding to `prep.stg_*` and `prep.int_*` is the check, not a leak of the analysis contract. The exception is diagnostic only: a doctor check reports what a staging model contains and never feeds a value back into `core`, `app`, or a report. A `prep` shape change may therefore break a doctor check, and fixing that check is part of the refactor that changed the shape.
+   - **The account-identity resolver reads `raw.tabular_accounts`.** Resolution runs *before* an account exists in `core.dim_accounts` — deriving a fallback display label and detecting same-batch PDF duplicates both need the source rows themselves. Reading `core` there would be circular. See [`account-identity-resolution.md`](account-identity-resolution.md).
 3. **Core dimensions are the single source of truth.** When `app.*` metadata refines or overrides a `core.dim_*` entity (e.g., `app.account_settings.display_name` overriding `dim_accounts`-derived display), the join lives in the dim model itself — consumers read the resolved view. Per `.claude/rules/database.md` "Core Dimensions Are the Single Source of Truth".
 4. **`app.*` may surface as nested-type columns on `core.fct_*`.** The pattern is owned by [`transaction-curation.md`](transaction-curation.md): flat `app.*` tables for write ergonomics, presented as `LIST(VARCHAR)` or `LIST(STRUCT(...))` columns inline on `core.fct_*` so consumers never join `app.*` directly. This generalizes the dimension rule above to nested-type aggregates.
 5. **Multi-source unioning happens in `core`.** Core models `UNION ALL` from every staging source with a `source_type` column. Per `.claude/rules/database.md` "Column Name Consistency Across Layers".
@@ -249,17 +251,15 @@ Per `.claude/rules/mcp.md` design philosophy point 5: agents (Claude Code, Codex
 
 ## Observability Hooks
 
-`src/moneybin/observability.py` is the single public entry point: `setup_observability(stream=...)`, `tracked` (decorator), `track_duration` (context manager), `flush_metrics`. Internal modules (`moneybin.logging`, `moneybin.metrics`) are not imported by application code except for manual gauge/counter access.
+`src/moneybin/observability.py` is the single public entry point: `setup_observability(stream=...)`, `flush_metrics`. Internal modules (`moneybin.logging`, `moneybin.metrics`) are not imported by application code except for manual gauge/counter access.
 
 Every service that follows the contract gets these for free:
 
 - **Stream-aware logging.** `setup_observability(stream="cli" | "mcp" | "sqlmesh")` configures handlers, formatters, and the always-on `SanitizedLogFormatter` PII safety net. The MCP stream additionally starts a periodic metrics flush (every `MoneyBinSettings.metrics.flush_interval_seconds`, default 300).
-- **`@tracked(operation=..., labels=...)`** decorator records call count, duration histogram, and error count with `operation` and optional `source_type` labels. Emits a DEBUG log on completion. Use on the public methods that matter for ops dashboards.
-- **`track_duration(operation=...)`** context manager records a histogram observation for a block. Use when decorating the whole function would be too coarse (e.g., timing one phase of an import).
 - **`SanitizedLogFormatter`** masks SSN-shaped patterns (`NNN-NN-NNNN` → `***-**-****`), 8+-digit account-number-shaped patterns (last-four preserved), and dollar-amount-shaped patterns (`$N,NNN.NN` → `$***`) in formatted output. Always on; cannot be disabled. Per `.claude/rules/security.md` "PII in Logs and Errors" — clean log statements first, formatter as safety net.
 - **`flush_metrics()`** is registered as an `atexit` handler. Best-effort: never blocks shutdown, never raises. Only flushes if a database was actually opened during the session — won't recreate a deleted profile's directory tree.
 
-Domain-specific metrics (e.g., `IMPORT_RECORDS_TOTAL`) live in `src/moneybin/metrics/registry.py` and are recorded manually at the relevant call sites. Per [`observability.md`](observability.md): specs touching app code must include metrics.
+Metrics (e.g., `IMPORT_RECORDS_TOTAL`) live in `src/moneybin/metrics/registry.py` and are recorded manually — `COUNTER.labels(...).inc()` / `HISTOGRAM.observe(...)` — at the relevant call site. There is no generic instrumentation decorator; every metric family, including the MCP server's per-tool call count and duration, is wired at its own touchpoint. Per [`observability.md`](observability.md): specs touching app code must include metrics.
 
 ## Configuration Model
 
@@ -500,7 +500,7 @@ Two narrow naming changes rode along with this spec landing — both shipped. Re
 - `src/moneybin/protocol/envelope.py` — `ResponseEnvelope`, `SummaryMeta`, `build_envelope`, `build_error_envelope`.
 - `src/moneybin/mcp/decorator.py` — `mcp_tool` decorator.
 - `src/moneybin/mcp/privacy.py` — `Sensitivity` enum and the `validate_read_only_query` re-export.
-- `src/moneybin/observability.py` — `setup_observability`, `tracked`, `track_duration`, `flush_metrics`.
+- `src/moneybin/observability.py` — `setup_observability`, `flush_metrics`.
 - `src/moneybin/log_sanitizer.py` — `SanitizedLogFormatter`.
 - `src/moneybin/privacy/taxonomy.py` — `DataClass` / `Tier` registry; column-level classification source of truth (PR #169, see `privacy-data-classification.md`).
 - `src/moneybin/privacy/comment_sync.py` — `sync_classification_comments()` writes DataClass sigils into DuckDB column comments.

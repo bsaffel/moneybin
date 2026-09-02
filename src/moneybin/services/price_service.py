@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, NoReturn, Protocol
 
 import duckdb
 import polars as pl
@@ -44,6 +44,7 @@ from moneybin.metrics.registry import (
     PRICE_REFRESH_SECURITIES_TOTAL,
     PRICE_ROWS_WRITTEN_TOTAL,
 )
+from moneybin.price_sources import price_source, source_for_security_type
 from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
@@ -68,14 +69,35 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-TIINGO_SOURCE_TYPE = "tiingo"
-COINGECKO_SOURCE_TYPE = "coingecko"
-TIINGO_REF_KIND = "tiingo_ticker"
-COINGECKO_REF_KIND = "coingecko_slug"
 
-# Security types Tiingo prices. Crypto routes to CoinGecko instead; cash and
-# other carry no market quote at all.
-_TIINGO_SECURITY_TYPES = frozenset({"equity", "etf", "mutual_fund", "bond"})
+def _no_derivation(source_type: str) -> NoReturn:
+    """Refuse to derive a feed key for a source that has no derivation here.
+
+    The registry decides which sources are ROUTED; it cannot supply the
+    provider-specific logic that turns a catalog row into that provider's own
+    identifier. Both call sites below used to fall through to Tiingo's, so a
+    correctly-registered third provider would silently bind or fetch a Tiingo
+    ticker. Failing here keeps the registry honest about what it does and does
+    not decide, and matches ``_adapter_for``'s refusal to guess an adapter.
+
+    ``_catalog_ref`` is the one that actually enforces it: every route into
+    ``_feed_key``'s dispatch passes through it first, so its guard fires before
+    the mirrored branch there can. That branch is defence in depth against the
+    upstream call moving, and is marked unreachable rather than left implying
+    independent coverage it does not have.
+    """
+    raise NotImplementedError(
+        f"price source {source_type!r} is routed by the registry but has no feed-key "
+        "derivation implemented in PriceService; add one rather than letting it fall "
+        "through to another provider's, which would bind that provider's identifier"
+    )
+
+
+# Named handles onto seeds.price_source_map rows. Every source_type, ref_kind,
+# and security-type routing decision below reads through one of these, so a new
+# adapter is a row in that CSV rather than an edit here and in two SQL models.
+TIINGO = price_source("tiingo")
+COINGECKO = price_source("coingecko")
 
 # Matches SecurityResolver's name cutoff — the same question ("do these two
 # strings name the same issuer?") must not have two different answers.
@@ -294,8 +316,12 @@ class PriceService:
         owns that date permanently.
         """
         self._db = db
-        self._tiingo = tiingo
-        self._coingecko = coingecko
+        # Keyed by the registry's own source_type so dispatch is a lookup rather
+        # than a chain of comparisons against two named attributes.
+        self._adapters: dict[str, _PriceAdapter | None] = {
+            TIINGO.source_type: tiingo,
+            COINGECKO.source_type: coingecko,
+        }
         self._actor = actor
         self._today = today or datetime.now(UTC).date()
         self._links = SecurityLinksRepo(db)
@@ -828,19 +854,27 @@ class PriceService:
     # --------------------------- key derivation ---------------------------
 
     def _route(self, security: HeldSecurity) -> tuple[str, _PriceAdapter | None]:
-        """Which provider prices this security type."""
-        if security.security_type == "crypto":
-            return COINGECKO_SOURCE_TYPE, self._coingecko
-        if security.security_type in _TIINGO_SECURITY_TYPES:
-            return TIINGO_SOURCE_TYPE, self._tiingo
-        # cash and other carry no market quote; a sweep position's unit value is
-        # its face value, not a traded price.
-        return TIINGO_SOURCE_TYPE, None
+        """Which provider prices this security type, per the registry.
+
+        The returned ``source_type`` labels the outcome even when no adapter
+        answers, so a skip is counted under a real source rather than a
+        synthetic bucket the metric's other rows never use.
+        """
+        source = source_for_security_type(security.security_type)
+        if source is None:
+            # cash and other carry no market quote; a sweep position's unit value
+            # is its face value, not a traded price.
+            return TIINGO.source_type, None
+        return source.source_type, self._adapters.get(source.source_type)
 
     def _adapter_for(self, source_type: str) -> _PriceAdapter | None:
-        if source_type == COINGECKO_SOURCE_TYPE:
-            return self._coingecko
-        return self._tiingo
+        """The adapter that fetches *source_type*; raises if it is unregistered.
+
+        Deliberately not a two-way branch. The previous form returned the Tiingo
+        adapter for every value that was not CoinGecko, so an unregistered
+        source_type silently fetched another provider's series.
+        """
+        return self._adapters.get(price_source(source_type).source_type)
 
     def _feed_key(
         self, security: HeldSecurity, source_type: str, adapter: _PriceAdapter
@@ -851,11 +885,7 @@ class PriceService:
         The user already confirmed it, or a previous pull derived it with
         certainty; re-deriving would re-ask a settled question.
         """
-        ref_kind = (
-            COINGECKO_REF_KIND
-            if source_type == COINGECKO_SOURCE_TYPE
-            else TIINGO_REF_KIND
-        )
+        ref_kind = price_source(source_type).feed_ref_kind
         bound = self._bound_ref(security.security_id, ref_kind, source_type)
         stale = bound is not None and self._binding_is_stale(
             security, source_type, bound
@@ -867,10 +897,18 @@ class PriceService:
         if settled is not None:
             return _Derivation(ref_value=None, unpriced_reason=settled)
 
-        if source_type == COINGECKO_SOURCE_TYPE:
+        if source_type == COINGECKO.source_type:
             derivation = self._coingecko_key(security)
-        else:
+        elif source_type == TIINGO.source_type:
             derivation = self._tiingo_key(security, adapter)
+        else:  # pragma: no cover — _review_settled above raises via _catalog_ref
+            # Defence in depth, not the enforcing guard. Every path that reaches
+            # here has already passed through _catalog_ref — _review_settled calls
+            # it as its first statement, and _binding_is_stale calls it for an
+            # auto binding — so an unregistered source has already been refused.
+            # The one path that skips both (a user-decided binding) returns above.
+            # Kept so this dispatch stays exhaustive if that upstream call moves.
+            _no_derivation(source_type)
 
         if derivation.ref_value is not None and self._was_reversed_by_user(
             security.security_id, ref_kind, source_type, derivation.ref_value
@@ -1029,11 +1067,11 @@ class PriceService:
 
     def _catalog_ref(self, security: HeldSecurity, source_type: str) -> str | None:
         """The catalog value a feed key for this source is derived from."""
-        return (
-            security.coingecko_id
-            if source_type == COINGECKO_SOURCE_TYPE
-            else security.ticker
-        )
+        if source_type == COINGECKO.source_type:
+            return security.coingecko_id
+        if source_type == TIINGO.source_type:
+            return security.ticker
+        _no_derivation(source_type)
 
     def _binding_is_stale(
         self, security: HeldSecurity, source_type: str, bound: _Binding
@@ -1153,16 +1191,8 @@ class PriceService:
         self, security: HeldSecurity, source_type: str, derivation: _Derivation
     ) -> bool:
         """File one pending decision for an ambiguous derivation. ``True`` if filed."""
-        ref_kind = (
-            COINGECKO_REF_KIND
-            if source_type == COINGECKO_SOURCE_TYPE
-            else TIINGO_REF_KIND
-        )
-        ref_value = (
-            security.coingecko_id
-            if source_type == COINGECKO_SOURCE_TYPE
-            else security.ticker
-        )
+        ref_kind = price_source(source_type).feed_ref_kind
+        ref_value = self._catalog_ref(security, source_type)
         if ref_value is None:  # pragma: no cover — a review always has a ref
             return False
         self._decisions.insert(

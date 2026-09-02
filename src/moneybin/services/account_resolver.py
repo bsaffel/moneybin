@@ -225,6 +225,10 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
         return names
     placeholders = ", ".join("?" * len(missing))
     try:
+        # Reads raw.tabular_accounts by license (Layer Rule 2, account-identity
+        # resolver exception): this is the fallback for accounts core cannot
+        # name yet, so core has nothing to read.
+        #
         # ROW_NUMBER rather than ARG_MAX: ARG_MAX skips a row whose
         # extracted_at is NULL and silently answers from an older import.
         # Newest *nameable* row wins -- the label can now be NULL (an import
@@ -1501,7 +1505,15 @@ class AccountResolver:
     def _pending_pdf_candidates(
         self, src: SourceAccount, exclude_account_id: str
     ) -> list[_Candidate]:
-        """Match PDF accounts loaded earlier in a batch but not refreshed yet."""
+        """Match PDF accounts loaded earlier in a batch but not refreshed yet.
+
+        Reads ``raw.tabular_accounts`` by license: these rows are loaded but not
+        yet refreshed into ``core.dim_accounts``, so ``core`` cannot see them.
+        Layer Rule 2 in ``docs/specs/architecture-shared-primitives.md`` names
+        the account-identity resolver's raw reads as an exception — resolution
+        runs before the account exists in ``core``, so reading ``core`` here
+        would be circular.
+        """
         if src.source_type != "pdf" or not src.institution:
             return []
         target_institution = _institution_key(src.institution)

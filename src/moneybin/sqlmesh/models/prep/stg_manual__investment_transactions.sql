@@ -21,7 +21,7 @@ SELECT
   t.price::DECIMAL(28, 10) AS price,
   t.amount::DECIMAL(18, 2) AS amount,
   t.fees::DECIMAL(18, 2) AS fees,
-  COALESCE(t.currency_code, 'USD') AS currency_code,
+  t.currency_code, /* Verbatim: NULL means the user named none, and core.fct_investment_transactions inherits the account's (multi-currency.md Requirement 3) */
   t.description,
   t.created_at,
   t.created_by,

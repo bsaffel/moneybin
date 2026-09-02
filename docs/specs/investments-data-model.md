@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_investment_transactions (
     price DECIMAL(28, 10),                     -- Per-unit price; NULL for non-priced events
     amount DECIMAL(18, 2),                     -- Cash effect; signed per Requirement 6
     fees DECIMAL(18, 2),                       -- Commissions/fees component; folded into cost basis
-    currency_code VARCHAR DEFAULT 'USD',       -- Denominating currency as supplied
+    currency_code VARCHAR,                     -- Denominating currency as supplied; NULL when the user named none (never fabricated) — core.fct_investment_transactions inherits the account's (multi-currency.md Requirement 3)
     description VARCHAR,                       -- Free-text description
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
     created_by VARCHAR NOT NULL,               -- 'cli' or 'mcp'; future-extensible for multi-user identity
@@ -697,7 +697,9 @@ moneybin investments add --account <id|name> --security <ticker|name> \
 - Records one event in `raw.manual_investment_transactions`; resolves
   `--security` via the resolution chain, prompting to create a catalog entry if
   unknown. `--event-group` links legs of one economic event (merger pair,
-  spin-off legs).
+  spin-off legs). Omitting `--currency` stores no currency and
+  `core.fct_investment_transactions` inherits the account's, never a blind
+  `'USD'` (multi-currency.md Requirement 3).
 - **Reinvest convenience:** `--type reinvest` records the acquisition leg AND
   atomically writes the paired income row (`dividend` by default;
   `--subtype interest|capital_gain` selects the income type), both sharing a
@@ -717,7 +719,8 @@ moneybin investments holdings [--account <id|name>] [--output json|table]
 ```
 - Current positions: quantity, cost basis, average cost, market value, unrealized
   gain, and the date and age of the close each value rests on. A position with no
-  usable price, or one whose share count is known wrong, renders `-` rather than a
+  usable price, or one whose share count is known wrong or whose lots disagree on
+  currency, renders `-` rather than a
   zero; its status column says which.
 
 ```
@@ -786,7 +789,7 @@ a3f19c02b8e1 qty=15.0000000000 cost_basis=2475.00 avg_cost=165.0000000000 market
 c81a5f6039db qty=0.5000000000 cost_basis=18000.00 avg_cost=36000.0000000000 market_value=- unrealized_gain=- USD status=unpriced
 portfolio market_value=27850.00 USD max_days_since_observed=3
 
-⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved) or 'withheld' (the share count is known wrong).
+⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved) or 'withheld' (a known-wrong share count, or lots that disagree on currency).
 ```
 
 The first column is `security_id` (a 12-hex catalog id), not a ticker. Each row

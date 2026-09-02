@@ -194,6 +194,31 @@ _REINVEST_INCOME_TYPE: dict[str, str] = {
 
 _VALID_CREATED_BY: frozenset[str] = frozenset({"cli", "mcp"})
 
+
+def _blank_to_none(currency_code: str | None) -> str | None:
+    """A blank currency means "not specified", so store nothing.
+
+    ``COALESCE`` only replaces NULL, so a stored ``''`` would be neither
+    inherited from the account nor the documented unknown state — it would
+    silently defeat both. An agent sending ``"currency": ""`` for "not
+    specified" is the realistic input this guards.
+    """
+    if currency_code is None or not currency_code.strip():
+        return None
+    return currency_code
+
+
+def _opt_currency(value: object, *, upper: bool = False) -> str | None:
+    """A currency column as text, preserving an unknown as ``None``.
+
+    ``str(None)`` is the token ``"None"`` — a fabricated currency on exactly the
+    surfaces this ledger exists to keep honest (multi-currency.md Requirement 8).
+    """
+    if value is None:
+        return None
+    return str(value).upper() if upper else str(value)
+
+
 # raw.manual_investment_transactions schema DEFAULTs feed the gold-key hash.
 _SOURCE_TYPE = "manual"
 _SOURCE_ORIGIN = "user"
@@ -255,7 +280,7 @@ class EventRow:
     price: Decimal | None
     amount: Decimal | None
     fees: Decimal | None
-    currency_code: str
+    currency_code: str | None
     description: str | None
 
 
@@ -295,7 +320,7 @@ class HoldingRow:
     quantity: Decimal
     cost_basis: Decimal
     average_cost: Decimal | None
-    currency_code: str
+    currency_code: str | None
     market_value: Decimal | None
     unrealized_gain: Decimal | None
     price_date: date | None
@@ -358,7 +383,7 @@ class LotRow:
     cost_basis_total: Decimal
     cost_basis_remaining: Decimal
     cost_basis_method: str
-    currency_code: str
+    currency_code: str | None
     is_open: bool
     basis_incomplete: bool
 
@@ -389,7 +414,7 @@ class RealizedGainRow:
     term: str
     cost_basis_method: str
     basis_incomplete: bool
-    currency_code: str
+    currency_code: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -837,7 +862,7 @@ class InvestmentService:
         acquired: date | None,
         basis: Decimal | None,
         event_group_id: str | None,
-        currency_code: str,
+        currency_code: str | None,
         description: str | None,
         actor: str,
         created_by: str,
@@ -850,6 +875,11 @@ class InvestmentService:
         pair sharing a minted ``event_group_id`` and returns both ids. All rows
         for one event land in a single DuckDB transaction under one
         ``raw.import_log`` batch, mirroring the manual-cash-transaction path.
+
+        A ``currency_code`` of ``None`` is stored as NULL, not fabricated:
+        ``core.fct_investment_transactions`` inherits the account's own currency
+        onto it, as ``core.fct_transactions`` does for the cash grain
+        (multi-currency.md Requirement 3).
         """
         if created_by not in _VALID_CREATED_BY:
             raise UserError(
@@ -869,6 +899,7 @@ class InvestmentService:
         from moneybin.services.account_service import AccountService
 
         account_id = AccountService(self._db).resolve_strict(account_ref)
+        currency_code = _blank_to_none(currency_code)
         security_id = (
             self.resolve_security(security_ref) if security_ref is not None else None
         )
@@ -966,7 +997,7 @@ class InvestmentService:
                 acquired=ev["acquired"],
                 basis=ev["basis"],
                 event_group_id=ev["event_group_id"],
-                currency_code=ev["currency_code"],
+                currency_code=_blank_to_none(ev["currency_code"]),
                 description=ev["description"],
                 created_by=created_by,
             )
@@ -1087,7 +1118,7 @@ class InvestmentService:
         acquired: date | None,
         basis: Decimal | None,
         event_group_id: str | None,
-        currency_code: str,
+        currency_code: str | None,
         description: str | None,
         created_by: str,
     ) -> list[dict[str, object]]:
@@ -1764,7 +1795,7 @@ class InvestmentService:
                     price=r[10],
                     amount=r[11],
                     fees=r[12],
-                    currency_code=str(r[13]),
+                    currency_code=_opt_currency(r[13]),
                     description=r[14],
                 )
                 for r in rows
@@ -1826,7 +1857,7 @@ class InvestmentService:
                 # code verbatim; 'usd' and 'USD' are one currency): keeps a row's own
                 # currency_code equal to the market_value_by_currency key a consumer
                 # would look it up under.
-                currency_code=str(r[5]).upper(),
+                currency_code=_opt_currency(r[5], upper=True),
                 market_value=r[6],
                 unrealized_gain=r[7],
                 price_date=r[8],
@@ -1844,7 +1875,7 @@ class InvestmentService:
             warnings.append(
                 f"{unvalued} position(s) report no market value — see each row's "
                 "valuation_status: 'unpriced' (no close resolved) or 'withheld' "
-                "(the share count is known wrong)."
+                "(a known-wrong share count, or lots that disagree on currency)."
             )
         # Scope the age to the rows carrying a figure: it discloses how old the
         # published numbers are, not how old an absent one would have been.
@@ -1855,7 +1886,12 @@ class InvestmentService:
         ]
         by_currency: dict[str, Decimal] = {}
         for row in holding_rows:
-            if row.market_value is None:
+            # An amount with no currency has no unit, so it can never join a
+            # bucket; bucketing it under a placeholder would publish a total in a
+            # currency nothing is denominated in (multi-currency.md Requirement 5).
+            # Unreachable while dim_holdings prices on a currency match, which a
+            # NULL never satisfies — the guard is what keeps that true.
+            if row.market_value is None or row.currency_code is None:
                 continue
             # Fold case before grouping: 'usd' and 'USD' name one currency, and
             # treating them as two would suppress a total that is safe to publish.
@@ -1947,6 +1983,12 @@ class InvestmentService:
         for row in rows:
             if row.market_value is None or row.price_date is None:
                 continue
+            if row.currency_code is None:
+                # A valued position with no currency has no unit to convert
+                # from. Withhold the whole total rather than skip the row:
+                # skipping would silently understate it, which is the failure
+                # every other branch here fails closed against.
+                return None, None, ()
             try:
                 priced, rate = currency.convert(
                     row.market_value, row.currency_code, target, row.price_date
@@ -2024,7 +2066,7 @@ class InvestmentService:
                 cost_basis_total=r[7],
                 cost_basis_remaining=r[8],
                 cost_basis_method=str(r[9]),
-                currency_code=str(r[10]),
+                currency_code=_opt_currency(r[10]),
                 is_open=bool(r[11]),
                 basis_incomplete=bool(r[12]),
             )
@@ -2107,7 +2149,7 @@ class InvestmentService:
                 term=str(r[11]),
                 cost_basis_method=str(r[12]),
                 basis_incomplete=bool(r[13]),
-                currency_code=str(r[14]),
+                currency_code=_opt_currency(r[14]),
             )
             for r in rows
         ]

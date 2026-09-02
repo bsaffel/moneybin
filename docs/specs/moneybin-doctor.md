@@ -164,13 +164,13 @@ while CoinGecko's is a 00:00 UTC close, so a volatile day separates two correct
 figures by more than a percent.
 
 **`investment_unmapped_price_source` detects a mapping failure without parsing
-the model's SQL.** `prep.stg_security_prices` resolves each `source_type` to a
-`ref_kind` through a CASE and INNER JOINs on the result, so an unmapped source
-makes the CASE return NULL, the comparison UNKNOWN, and the join drop the row —
-with no error and no counter. That drop is permanent rather than deferred:
+the model's SQL.** `prep.stg_security_prices` takes each `source_type`'s
+`ref_kind` from `seeds.price_source_map` and INNER JOINs on the result, so a
+source absent from that registry — or carrying no `ref_kind` — matches nothing
+and the join drops the row, with no error and no counter. That drop is permanent rather than deferred:
 unlike an unresolved binding, which waits in raw and reappears once its security
 binds, no number of later accepted bindings will ever surface it, because the
-failure is in the mapping rather than the binding.
+failure is in the registry rather than the binding.
 
 The check separates those two conditions with an accepted-binding join. A row it
 reports already has an accepted binding whose `source_type` and `ref_value`
@@ -181,11 +181,12 @@ resolver has minted a canonical security.
 
 This check exists because the failure it describes shipped: C.2 added a writer
 for `tiingo` and `coingecko` rows one commit ahead of the staging mapping, and
-every row written in between was discarded silently. A build-time guard in
-`tests/moneybin/test_services/test_price_service.py` now asserts every
-`source_type` `PriceService` writes appears in the CASE; this check is the
-run-time half, covering rows already written and sources no Python constant
-names.
+every row written in between was discarded silently. That particular split is
+now structural rather than guarded — `seeds.price_source_map` declares the
+source PriceService dispatches on and the `ref_kind` staging joins in one row,
+so declaring either declares both. This check remains the run-time half, and it
+is the only one that covers rows already written and a registry row someone
+deletes.
 
 ### Dropped invariant
 

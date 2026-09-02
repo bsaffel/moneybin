@@ -30,9 +30,9 @@ from moneybin.services.categorization._shared import (
     matches_pattern,
 )
 from moneybin.tables import (
+    BRIDGE_MERCHANT_ENTITIES,
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
-    INT_TRANSACTIONS_MERGED,
     MERCHANTS,
     TRANSACTION_CATEGORIES,
 )
@@ -237,7 +237,7 @@ class UncategorizedRow:
     """A row from :meth:`CategorizationMatcher.fetch_uncategorized_rows` / `fetch_rows_for_ids`.
 
     Single named projection over ``core.fct_transactions`` LEFT JOINed to
-    ``prep.int_transactions__merged`` for the ``merchant_entity_id`` carry.
+    ``core.bridge_merchant_entities`` for the ``merchant_entity_id`` carry.
     Replaces positional tuple-unpacking at every consumer so column order is
     no longer load-bearing outside this module. Field order mirrors the
     SELECT column order in both matcher query methods — keep them in sync.
@@ -329,15 +329,15 @@ class CategorizationMatcher:
         Entity-bearing rows (``merchant_entity_id IS NOT NULL``) are always
         included even when both description and memo are blank, so rung-0
         adoption and rung-4 minting run for them. This extra OR clause lives
-        only in the ``with_entity`` query (which has the prep join alias ``m``);
+        only in the ``with_entity`` query (which has the bridge join alias ``m``);
         the ``without_entity`` fallback retains the text-only filter.
 
         Returns :class:`UncategorizedRow` — the superset of columns either
         consumer needs. ``apply_rules`` uses only the leading five fields;
         ``apply_merchant_categories`` additionally consults the trailing four
         for rung-0 entity resolution (M1T). ``merchant_entity_id`` and
-        ``merchant_entity_source_type`` come from ``prep.int_transactions__merged``
-        (Task 5 stops them at prep), joined on the gold ``transaction_id``.
+        ``merchant_entity_source_type`` come from ``core.bridge_merchant_entities``,
+        joined on the gold ``transaction_id``.
         ``merchant_entity_source_type`` — the source_type of the merge member
         that issued the entity id — is the binding key, NOT the merge-winner
         ``source_type`` projected from ``core.fct_transactions``.
@@ -362,8 +362,8 @@ class CategorizationMatcher:
         # Entity-bearing rows are scanned regardless of text content: a blank-text
         # transaction with a merchant_entity_id must still reach apply_merchant_categories
         # so rung-0 adoption and rung-4 minting run for it. This clause references
-        # m.merchant_entity_id (the prep join alias) so it can only appear in the
-        # with_entity query — the without_entity fallback carries no prep join.
+        # m.merchant_entity_id (the bridge join alias) so it can only appear in the
+        # with_entity query — the without_entity fallback carries no bridge join.
         where_with_entity = f"""
                 WHERE {pending}
                     AND (
@@ -376,17 +376,17 @@ class CategorizationMatcher:
             f"LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c "
             "ON t.transaction_id = c.transaction_id"
         )
-        # Preferred: pull merchant_entity_id from prep.int_transactions__merged
-        # (Task 5 stops it at prep). Fallback drops the prep join with a NULL
-        # entity id so unit/pre-transform DBs — where core.fct_transactions
-        # exists without the prep layer — still categorize by name.
+        # Preferred: pull merchant_entity_id from core.bridge_merchant_entities.
+        # Fallback drops the bridge join with a NULL entity id so unit and
+        # pre-transform DBs — where core.fct_transactions exists without the
+        # bridge — still categorize by name.
         with_entity = f"""
                 SELECT t.transaction_id, t.description, t.amount, t.account_id,
                        t.memo, m.merchant_entity_id, t.source_type, t.merchant_name,
                        m.merchant_entity_source_type
                 FROM {FCT_TRANSACTIONS.full_name} t
                 {cat_join}
-                LEFT JOIN {INT_TRANSACTIONS_MERGED.full_name} m
+                LEFT JOIN {BRIDGE_MERCHANT_ENTITIES.full_name} m
                     ON t.transaction_id = m.transaction_id
                 {where_with_entity}
         """  # noqa: S608 — table names are compile-time TableRef constants
@@ -402,8 +402,8 @@ class CategorizationMatcher:
             try:
                 rows = self._db.execute(query).fetchall()
             except (duckdb.CatalogException, duckdb.BinderException):
-                # CatalogException: prep layer (or fct itself) absent.
-                # BinderException: prep view exists but lacks the entity columns
+                # CatalogException: the bridge (or fct itself) absent.
+                # BinderException: the bridge exists but lacks the entity columns
                 # (post-upgrade, pre-re-transform) — both fall back to the
                 # entity-less query.
                 continue
@@ -432,7 +432,7 @@ class CategorizationMatcher:
                        t.memo, m.merchant_entity_id, t.source_type, t.merchant_name,
                        m.merchant_entity_source_type
                 FROM {FCT_TRANSACTIONS.full_name} t
-                LEFT JOIN {INT_TRANSACTIONS_MERGED.full_name} m
+                LEFT JOIN {BRIDGE_MERCHANT_ENTITIES.full_name} m
                     ON t.transaction_id = m.transaction_id
                 WHERE t.transaction_id IN ({placeholders})
         """  # noqa: S608 — table names are compile-time TableRef constants; values parameterized

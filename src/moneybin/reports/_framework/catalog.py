@@ -34,11 +34,13 @@ from moneybin.privacy.payloads.reports import (
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     USER_NAMESPACE,
+    DefaultColumns,
     OutputColumn,
     ParamSpec,
     RecomputeDerived,
     ReportSemantics,
     ReportSpec,
+    validate_default_columns,
 )
 from moneybin.reports._framework.derive import json_scalar, typed_value
 from moneybin.reports._framework.execute import (
@@ -124,6 +126,8 @@ class ServiceReportSpec:
     validator: Callable[[Mapping[str, JsonValue]], None] | None = None
     on_converted: RecomputeDerived | None = None
     """Same contract as ``ReportSpec.on_converted`` — see the note there."""
+    default_columns: DefaultColumns | None = None
+    """Same contract as ``ReportSpec.default_columns`` — see the note there."""
 
     def __post_init__(self) -> None:
         if _REPORT_ID.fullmatch(self.report_id) is None:
@@ -134,6 +138,7 @@ class ServiceReportSpec:
                 "columns and classes must declare the same output fields "
                 "with identical privacy classes"
             )
+        validate_default_columns(self.default_columns, self.columns)
         object.__setattr__(self, "classes", MappingProxyType(dict(self.classes)))
 
 

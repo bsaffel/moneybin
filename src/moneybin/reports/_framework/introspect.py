@@ -15,6 +15,7 @@ from typing import cast
 
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    DefaultColumns,
     OutputColumn,
     ParamSpec,
     RecomputeDerived,
@@ -47,7 +48,7 @@ _ARG_ENTRY = re.compile(r"^(\w+)\s*(?:\([^)]*\))?\s*:\s*(.*)$")
 # A runner param colliding with one of these would raise a cryptic duplicate-
 # parameter error deep in Signature construction, crashing the whole reports
 # command group at build; reject it here with a clear message instead.
-_RESERVED_CLI_PARAMS = frozenset({"output", "quiet", "display_currency"})
+_RESERVED_CLI_PARAMS = frozenset({"output", "quiet", "display_currency", "wide"})
 
 
 def _section_tag(stripped: str) -> str | None:
@@ -72,6 +73,7 @@ def build_spec(
     domain: str | None = None,
     class_downgrades: Mapping[str, str] | None = None,
     on_converted: RecomputeDerived | None = None,
+    default_columns: DefaultColumns | None = None,
 ) -> ReportSpec:
     """Introspect ``fn`` into a :class:`ReportSpec`.
 
@@ -169,6 +171,7 @@ def build_spec(
         semantics=semantics,
         params=tuple(param_specs),
         examples=examples,
+        default_columns=default_columns,
         domain=domain,
         class_downgrades=downgrades,
         on_converted=on_converted,
