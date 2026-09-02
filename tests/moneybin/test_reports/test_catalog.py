@@ -1638,3 +1638,32 @@ def test_networth_separates_currency_totals_from_account_balances(
     assert {row["balance_date"] for row in records} == {date(2026, 7, 1)}
     # Totals lead, so a limit eats breakdown rows before it eats a position.
     assert records[0]["account_id"] is None
+
+    # Requirement 6, and the reason this report's default set spans both row
+    # shapes: every row has to render something. An account-only set turns the
+    # leading position row into a blank line, and a profile holding no accounts
+    # into a table of one empty row — the headline figure absent from the
+    # default text view of a report whose whole subject is that figure.
+    # Measured against each shape's *exclusive* columns, not against anything
+    # it populates: `currency_code` and `balance_date` are filled on both, so a
+    # set naming only those passes a weaker check while every totals row still
+    # renders as a label with no figure beside it.
+    declared_columns = NETWORTH_REPORT.default_columns
+    assert declared_columns is not None and not callable(declared_columns), (
+        "this report declares a static set"
+    )
+    declared = set(declared_columns)
+    totals_filled = {
+        name for row in totals for name, value in row.items() if value is not None
+    }
+    accounts_filled = {
+        name for row in accounts for name, value in row.items() if value is not None
+    }
+    assert declared & (totals_filled - accounts_filled), (
+        f"default columns {sorted(declared)} name nothing a totals row fills, "
+        "so every position renders as a blank line"
+    )
+    assert declared & (accounts_filled - totals_filled), (
+        f"default columns {sorted(declared)} name nothing an account row fills, "
+        "so every breakdown row renders as a blank line"
+    )

@@ -517,6 +517,22 @@ NETWORTH_REPORT = ServiceReportSpec(
     executor=_execute_networth,
     validator=_validate_networth_parameters,
     on_converted=_restate_networth_total,
+    # Requirement 6, for `reports run core:networth`. This projection is two
+    # row shapes in one table: `_totals_row` fills the headline figures and
+    # nulls the account ones, `_account_row` does the reverse. So the default
+    # set has to name a column from each side — an account-only set renders
+    # every totals row blank but for its date and currency, and a profile with
+    # no positions is a single empty row. `net_worth` is the headline of the
+    # four totals columns; the rest stay behind `--wide`. `balance_date` is
+    # what makes room for it — measured, the five-column set renders 81
+    # characters against requirement 9's 80 — and it is the right column to
+    # lose: every row of one snapshot repeats the same date.
+    default_columns=(
+        "currency_code",
+        "net_worth",
+        "account_name",
+        "account_balance",
+    ),
 )
 
 NETWORTH_HISTORY_REPORT = ServiceReportSpec(
@@ -564,6 +580,17 @@ NETWORTH_HISTORY_REPORT = ServiceReportSpec(
     ),
     executor=_execute_networth_history,
     validator=_validate_networth_history_parameters,
+    # Requirement 6: the whole projection, which already fits 80 characters.
+    # Declared rather than left to the extension fallback so a sixth column
+    # added later narrows the default and says so, instead of silently
+    # widening the table past the bar this spec sets.
+    default_columns=(
+        "period",
+        "currency_code",
+        "net_worth",
+        "change_abs",
+        "change_pct",
+    ),
 )
 
 SERVICE_REPORTS: tuple[ServiceReportSpec, ...] = (

@@ -92,6 +92,21 @@ from moneybin.tables import REPORTS_CASH_FLOW
         exclusions=("transfers", "archived accounts"),
         provenance=("reports.cash_flow",),
     ),
+    # Requirement 6, and a static tuple is enough for all three groupings. Each
+    # names a dimension the other modes do not return, and `visible_columns`
+    # drops a name the result does not carry — so `by="account"` renders four
+    # columns and `by="category"` the other four, from one declaration. `net`
+    # alone of the three amounts: it is the answer, `inflow` and `outflow` are
+    # its components, and the currency and both dimensions have to be here
+    # because they are the grain — two rows differing only in a hidden
+    # `currency_code` would read as one row duplicated.
+    default_columns=(
+        "year_month",
+        "account_name",
+        "category",
+        "currency_code",
+        "net",
+    ),
 )
 def cash_flow(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL

@@ -14,17 +14,25 @@ from __future__ import annotations
 
 import ast
 import io
+import re
 import sys
+import time
+from collections.abc import Iterator, Sequence
 from decimal import Decimal
+from itertools import product
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 import moneybin.cli
 from moneybin.cli.render import (
+    ELISION,
     MINUS,
     Money,
     Style,
+    _fit_columns,  # pyright: ignore[reportPrivateUsage]  # the fit is a property, not a rendering
+    _table_width,  # pyright: ignore[reportPrivateUsage]  # so the check agrees with it on "fits"
     color_enabled,
     format_money,
     render_note,
@@ -514,6 +522,293 @@ def test_render_rows_does_not_auto_highlight_a_bare_number(
     render_rows(["txn_count"], [(42,)])
 
     assert "\x1b[" not in capsys.readouterr().out
+
+
+# --- Result framing (requirement 10) ---
+
+
+def test_render_rows_names_the_columns_it_omitted(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 10: silent truncation is prohibited.
+
+    The line states the count and the flag that recovers the rest, so a reader
+    who wants the omitted columns learns both that there are some and how to
+    see them without consulting `--help`.
+    """
+    render_rows(["year_month"], [("2026-08",)], total_columns=9)
+
+    assert "1 of 9 columns shown — --wide for all" in capsys.readouterr().out
+
+
+def test_the_framing_line_shares_the_stream_carrying_the_table(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 10: the framing rides stdout, with the result it describes.
+
+    `moneybin reports spending > report.txt` must capture the disclosure along
+    with the table. Routing it to stderr would let the redirected file record a
+    truncated result with nothing in it saying so, which is the silent
+    truncation this requirement forbids arriving by another route.
+    """
+    render_rows(["year_month"], [("2026-08",)], total_columns=9)
+
+    captured = capsys.readouterr()
+    assert "columns shown" in captured.out
+    assert "columns shown" not in captured.err
+
+
+def test_no_framing_line_when_every_column_is_shown(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A complete result frames nothing — there is no omission to disclose."""
+    render_rows(["year_month", "net"], [("2026-08", 1)], total_columns=2)
+
+    assert "columns shown" not in capsys.readouterr().out
+
+
+_FIT_COLUMNS = [f"column_number_{i}" for i in range(1, 15)]
+_FIT_ROW = tuple(f"value{i}" for i in range(1, 15))
+
+
+def test_a_fitted_table_keeps_the_ends_and_marks_the_gap(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requirement 6, for a report that declared no columns of its own.
+
+    The ends are what identify a row and carry its answer, so a squeeze drops
+    the middle — the behaviour DuckDB's box renderer and pandas both have. The
+    gap is marked rather than spliced shut, because adjacent columns that were
+    never adjacent read as the whole projection.
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+
+    render_rows(_FIT_COLUMNS, [_FIT_ROW], fit=True)
+
+    out = capsys.readouterr().out
+    assert "column_number_1 " in out
+    assert "column_number_14" in out
+    assert "column_number_7" not in out
+    assert "…" in out
+
+
+def test_a_fitted_table_discloses_what_it_dropped(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requirement 10 reaches a narrowing the caller never asked for.
+
+    The renderer decided this one from the terminal width, so the caller passed
+    no `total_columns` and could not have framed it. Counting from what was
+    printed is what keeps the disclosure attached to the decision.
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+
+    render_rows(_FIT_COLUMNS, [_FIT_ROW], fit=True)
+
+    out = capsys.readouterr().out
+    # Counted off the rendered headers, not by substring: `column_number_1`
+    # occurs inside `column_number_14`, so a naive count agrees with a wrong
+    # framing line as readily as a right one.
+    shown = len(set(re.findall(r"column_number_\d+", out)))
+    assert f"{shown} of 14 columns shown — --wide for all" in out
+    assert shown < len(_FIT_COLUMNS)
+
+
+def test_a_wide_terminal_fits_more_of_the_same_result(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of fitting rather than capping: the window decides."""
+
+    def _shown(out: str) -> int:
+        found = re.search(r"(\d+) of 14 columns shown", out)
+        assert found is not None, out
+        return int(found.group(1))
+
+    monkeypatch.setenv("COLUMNS", "200")
+    render_rows(_FIT_COLUMNS, [_FIT_ROW], fit=True)
+    wide = _shown(capsys.readouterr().out)
+
+    monkeypatch.setenv("COLUMNS", "80")
+    render_rows(_FIT_COLUMNS, [_FIT_ROW], fit=True)
+    narrow = _shown(capsys.readouterr().out)
+
+    assert wide > narrow
+
+
+def test_a_result_that_already_fits_is_left_whole(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fitting is not a cap: nothing is dropped or disclosed when it all fits."""
+    monkeypatch.setenv("COLUMNS", "80")
+
+    render_rows(["year_month", "net"], [("2026-08", 1)], fit=True)
+
+    out = capsys.readouterr().out
+    assert "…" not in out
+    assert "columns shown" not in out
+
+
+def test_the_fit_measures_values_not_just_headers(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A column is as wide as its widest cell, which the headers do not say.
+
+    Deciding from header lengths alone is how a table of short names holding
+    long values overflows anyway — the failure the fixed count had.
+    """
+    # Headers alone measure 17 characters and would fit; the values make the
+    # real table 56, so only a value-aware fit narrows here.
+    monkeypatch.setenv("COLUMNS", "30")
+    columns = ["a", "b", "c", "d"]
+
+    render_rows(columns, [("x" * 40, "y", "z", "w")], fit=True)
+
+    assert "columns shown" in capsys.readouterr().out
+
+
+def test_one_unkeepable_column_does_not_end_the_fit(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A column too wide to keep costs only itself, not the ones behind it.
+
+    The walk alternates between the two ends, so abandoning it at the first
+    candidate that does not fit discards everything still unvisited on the
+    other side. Here `sprawling` can never be kept at any realistic terminal
+    size, while `third` and `fourth` are a handful of characters each and there
+    is room for both — stopping at `sprawling` would render a two-column table
+    in an eighty-column window.
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+    columns = ["first", "sprawling", "third", "fourth", "fifth"]
+
+    render_rows(columns, [("a", "w" * 100, "c", "d", "e")], fit=True)
+
+    out = capsys.readouterr().out
+    assert "4 of 5 columns shown — --wide for all" in out
+    assert "third" in out
+    assert "fourth" in out
+    # Not "wide": the framing line's own `--wide for all` contains it.
+    assert "sprawling" not in out
+
+
+def _widest_one_gap_fit(widths: Sequence[int], available: int) -> tuple[int, ...]:
+    """The most columns any single-gap projection can show in ``available``.
+
+    Derived from the invariant `_fit_columns` documents — everything it drops
+    is one contiguous run, so a projection is exactly a head length and a tail
+    length — and not from the walk that function performs. It measures each
+    candidate with the renderer's own width function so the two agree on what
+    "fits" and disagree on nothing else.
+    """
+    total = len(widths)
+    best: tuple[int, ...] = ()
+    for head in range(1, total):
+        for tail in range(1, total - head + 1):
+            if head + tail == total:
+                continue  # the whole projection, which has no gap to mark
+            kept = (*range(head), *range(total - tail, total))
+            shown = [*(widths[i] for i in kept), len(ELISION)]
+            if _table_width(shown) <= available and len(kept) > len(best):
+                best = kept
+    return best
+
+
+def test_the_fit_keeps_every_column_the_width_allows() -> None:
+    """Requirement 8: the fit buys the most columns, not the nearest ones.
+
+    Walking outside-in and closing a side at its first oversized column pays
+    for that column and drops every narrow one behind it, so an eighty-column
+    window renders four columns where six would fit. The candidates are few —
+    a head length and a tail length, at most n²/2 of them for a column count —
+    so this checks the whole space rather than sampling it.
+    """
+    for total in (4, 5, 6):
+        for widths in product((1, 5, 13, 27), repeat=total):
+            for available in (40, 55, 70, 85):
+                kept = _fit_columns(widths, available)
+                best = _widest_one_gap_fit(widths, available)
+                assert len(kept) >= len(best), (
+                    f"widths={list(widths)} available={available} keeps "
+                    f"{len(kept)} columns {kept}, but {best} keeps "
+                    f"{len(best)} and fits the same width"
+                )
+
+
+def test_the_fit_stays_cheap_on_a_projection_with_thousands_of_columns() -> None:
+    """The fit runs before Rich prints anything, so its cost is felt as a hang.
+
+    Nothing caps a report's output columns: a saved or extension report is
+    whatever `SELECT` its author wrote, and the fit path exists precisely for
+    the reports nobody declared columns for. Scoring each candidate by summing
+    its own head-and-tail list is cubic, which is 5 seconds at 800 columns and
+    unbounded past that — the CLI appears to hang on a legitimate query.
+
+    The budget is loose on purpose. A fit whose cost tracks the column count
+    finishes both of these in single-digit milliseconds, so a second leaves
+    room for a loaded CI worker while still failing anything super-linear.
+    """
+    for total in (800, 6400):
+        widths = [1] * total
+        start = time.perf_counter()
+        kept = _fit_columns(widths, 80)
+        elapsed = time.perf_counter() - start
+
+        assert elapsed < 1.0, (
+            f"fitting {total} columns took {elapsed:.2f}s, so the cost grows "
+            "faster than the projection does"
+        )
+        # Asserted alongside the timing so a fit that got fast by giving up on
+        # the columns cannot pass this.
+        assert len(kept) > 2
+
+
+def test_an_unfitted_table_streams_its_rows(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the fitted path may buffer, because only it has to measure.
+
+    `reports run` defaults to `CLI_MAX_ROWS` (1,000,000) rows, and Rich's
+    `Table` already retains every cell it is given. Holding a second copy of
+    the whole result alongside it is what turns a large-but-renderable report
+    into an out-of-memory failure, so a table that is not being fitted hands
+    each record straight to Rich and keeps none of its own.
+    """
+    from rich.table import Table
+
+    produced: list[int] = []
+    seen_when_added: list[int] = []
+    add_row = Table.add_row
+
+    def _spy(self: Table, *cells: Any, **kwargs: Any) -> None:
+        seen_when_added.append(len(produced))
+        add_row(self, *cells, **kwargs)
+
+    monkeypatch.setattr(Table, "add_row", _spy)
+
+    def _rows() -> Iterator[tuple[str]]:
+        for i in range(4):
+            produced.append(i)
+            yield (f"row{i}",)
+
+    render_rows(["value"], _rows())
+
+    # Streaming: each record reaches Rich before the next one is produced.
+    # Buffering first would make every entry 4.
+    assert seen_when_added == [1, 2, 3, 4]
+    assert "row3" in capsys.readouterr().out
+
+
+def test_an_undeclared_total_frames_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The commands with no column policy print no framing line.
+
+    `accounts list` and its siblings render every column they build, so there
+    is nothing for them to declare and nothing to disclose.
+    """
+    render_rows(["account"], [("Checking",)])
+
+    assert "columns shown" not in capsys.readouterr().out
 
 
 # --- render_summary (requirement 3) ---

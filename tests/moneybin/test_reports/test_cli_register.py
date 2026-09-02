@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import inspect
 import json
+from collections.abc import Mapping
 from dataclasses import replace
 from decimal import Decimal
+from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 import typer
 from click.testing import Result
 from typer.testing import CliRunner
@@ -21,8 +24,14 @@ from moneybin.reports._framework.cli_register import (
     build_cli_command,
     money_columns,
     register_report_cli,
+    visible_columns,
 )
-from moneybin.reports._framework.contract import OutputColumn, ReportQuery
+from moneybin.reports._framework.contract import (
+    ORIGINAL_CURRENCY_COLUMN,
+    DefaultColumns,
+    OutputColumn,
+    ReportQuery,
+)
 from moneybin.reports._framework.execute import ReportResult, inspection_hint
 from moneybin.reports._framework.introspect import (
     _RESERVED_CLI_PARAMS,  # pyright: ignore[reportPrivateUsage]  # the guard's subject
@@ -712,3 +721,330 @@ def test_quiet_does_not_suppress_the_truncation_warning() -> None:
     assert "more exist" in quiet.output
     # The rows are data and are never suppressed either (requirement 5).
     assert "−1,234.50" in quiet.output
+
+
+# --- Default columns and --wide (requirements 6-10) ---
+
+_WIDE_CLASSES = {
+    "year_month": DataClass.TXN_DATE,
+    "account_id": DataClass.RECORD_ID,
+    "account_name": DataClass.USER_NOTE,
+    "category": DataClass.CATEGORY,
+    "currency_code": DataClass.CURRENCY,
+    "net": DataClass.TXN_AMOUNT,
+    "txn_count": DataClass.AGGREGATE,
+}
+_WIDE_COLUMN_NAMES = tuple(_WIDE_CLASSES)
+
+
+def _wide_runner(db: Database, *, by: str = "account-and-category") -> ReportQuery:
+    """Grouped rollup.
+
+    Args:
+        db: Open read-only database connection.
+        by: Grouping dimension.
+    """
+    return ReportQuery("SELECT 1", [])
+
+
+def _wide_spec(  # noqa: ANN202 — test helper
+    default_columns: DefaultColumns | None = None,
+):
+    return build_spec(
+        _wide_runner,
+        report_id="test:wide",
+        name="wide",
+        view=_VIEW,
+        classes=_WIDE_CLASSES,
+        parameter_classes={"by": DataClass.TXN_TYPE},
+        columns=output_columns(_WIDE_CLASSES),
+        semantics=TEST_SEMANTICS,
+        default_columns=default_columns,
+    )
+
+
+def test_wide_renders_every_column_the_result_carries() -> None:
+    """Requirement 7: `--wide` is the escape hatch back to the full projection."""
+    visible = visible_columns(
+        _wide_spec(("year_month", "net")),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=True,
+    )
+
+    assert visible == _WIDE_COLUMN_NAMES
+
+
+def test_a_static_default_set_narrows_the_result_to_its_own_columns() -> None:
+    """Requirement 6: the report declares what a text reader sees first."""
+    visible = visible_columns(
+        _wide_spec(("year_month", "category", "net")),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+    )
+
+    assert visible == ("year_month", "category", "net")
+
+
+def test_a_callable_naming_one_column_twice_is_refused_when_it_resolves() -> None:
+    """The rule holds for a callable too, at the only moment it is knowable.
+
+    `validate_default_columns` catches a repeated name in a static tuple at
+    construction, but a callable's answer does not exist until its parameters
+    do. Left alone it renders that column twice and drops another without the
+    framing line noticing, so it is refused here instead — loudly, naming the
+    column, rather than quietly de-duplicated, which would render a table
+    nobody declared and leave the mistake in the report forever.
+    """
+
+    def _says_it_twice(parameters: Mapping[str, object]) -> tuple[str, ...]:
+        return ("year_month", "net", "year_month")
+
+    with pytest.raises(ValueError, match="year_month"):
+        visible_columns(
+            _wide_spec(_says_it_twice),
+            _WIDE_COLUMN_NAMES,
+            parameters={},
+            wide=False,
+        )
+
+
+def test_the_declared_order_wins_over_the_projections() -> None:
+    """The declaration is a display decision, so it orders the table.
+
+    An author putting the identifying column first must not have to reorder the
+    SQL projection — which `--wide`, `--output json`, and every MCP caller also
+    read — to do it.
+    """
+    visible = visible_columns(
+        _wide_spec(("net", "year_month")),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+    )
+
+    assert visible == ("net", "year_month")
+
+
+def test_a_parameter_aware_default_set_reads_the_effective_parameters() -> None:
+    """Requirement 6: `cash_flow` selects its columns from `by`.
+
+    Any single tuple would name a field one grouping does not return or drop a
+    dimension another one does, so the declaration is a callable of the
+    parameters the report was actually run with.
+    """
+
+    def _by_grouping(parameters: Mapping[str, Any]) -> tuple[str, ...]:
+        if parameters.get("by") == "account":
+            return ("year_month", "account_name")
+        return ("year_month", "category")
+
+    spec = _wide_spec(_by_grouping)
+
+    assert visible_columns(
+        spec, _WIDE_COLUMN_NAMES, parameters={"by": "account"}, wide=False
+    ) == ("year_month", "account_name")
+    assert visible_columns(
+        spec, _WIDE_COLUMN_NAMES, parameters={"by": "category"}, wide=False
+    ) == ("year_month", "category")
+
+
+def test_a_parameter_aware_default_survives_an_omitted_parameter() -> None:
+    """The callable takes the mapping, so an unpassed option is not a crash.
+
+    An MCP caller supplies only the parameters it wants; a callable taking
+    keyword arguments would raise `TypeError` on the rest and take down a
+    report that runs fine on every other surface.
+    """
+
+    def _by_grouping(parameters: Mapping[str, Any]) -> tuple[str, ...]:
+        if parameters.get("by") == "account":
+            return ("year_month",)
+        return ("category",)
+
+    spec = _wide_spec(_by_grouping)
+
+    assert visible_columns(spec, _WIDE_COLUMN_NAMES, parameters={}, wide=False) == (
+        "category",
+    )
+
+
+def test_a_default_column_absent_from_this_projection_is_dropped() -> None:
+    """A grouping that returns no `category` must not render an empty column.
+
+    The result's own columns are the authority on what exists; the declaration
+    only chooses among them.
+    """
+    visible = visible_columns(
+        _wide_spec(("year_month", "category", "net")),
+        ("year_month", "net", "txn_count"),
+        parameters={},
+        wide=False,
+    )
+
+    assert visible == ("year_month", "net")
+
+
+def test_an_undeclared_report_hands_its_whole_projection_to_the_renderer() -> None:
+    """Requirement 6: a report that declares nothing is fitted, not capped.
+
+    A fixed count here would be the wrong answer at both ends — under-filling a
+    wide terminal and still overflowing a narrow one — and it cannot know a
+    column's display width, which depends on the values. So the resolution
+    passes everything through and `render_rows(fit=True)` measures it against
+    the real terminal, as DuckDB and pandas do.
+    """
+    visible = visible_columns(
+        _wide_spec(), _WIDE_COLUMN_NAMES, parameters={}, wide=False
+    )
+
+    assert visible == _WIDE_COLUMN_NAMES
+
+
+def test_a_default_set_matching_nothing_renders_the_whole_result() -> None:
+    """Failing open beats rendering a table with no columns.
+
+    Requirement 6 makes an unresolvable default set a spec violation, caught by
+    the width contract test rather than at the user's terminal. If one reaches
+    a real run anyway, the whole result is the honest fallback — an empty table
+    under `0 of 7 columns shown` reads as a report that returned nothing.
+    """
+
+    def _unresolvable(parameters: Mapping[str, Any]) -> tuple[str, ...]:
+        return ("nonexistent",)
+
+    visible = visible_columns(
+        _wide_spec(_unresolvable),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+    )
+
+    assert visible == _WIDE_COLUMN_NAMES
+
+
+def test_a_converted_read_keeps_the_column_naming_what_it_was() -> None:
+    """Display conversion attaches `original_currency_code` at run time.
+
+    No declaration can name a column the projection does not have, so the
+    intersection would drop it — while conversion has relabelled every amount
+    into the target currency. The table would then state what each row is worth
+    and lose what it was. The only other disclosure, `echo_applied_rates`, goes
+    to stderr, which `moneybin reports cashflow … > out.txt` does not capture.
+    """
+    visible = visible_columns(
+        _wide_spec(("year_month", "net")),
+        (*_WIDE_COLUMN_NAMES, ORIGINAL_CURRENCY_COLUMN),
+        parameters={},
+        wide=False,
+    )
+
+    assert visible == ("year_month", "net", ORIGINAL_CURRENCY_COLUMN)
+
+
+def test_a_declaration_naming_that_column_itself_does_not_double_it() -> None:
+    """A callable is taken on trust at construction, so the guard belongs here.
+
+    `validate_default_columns` refuses a static tuple naming a column the
+    report does not declare, and `original_currency_code` is never declared —
+    conversion attaches it at run time. A callable's result is checked by
+    nothing, so an extension that copies `ORIGINAL_CURRENCY_COLUMN` into its
+    declaration would take the column through the intersection and then again
+    through the append below it, and render the same column twice.
+    """
+
+    def _names_it(parameters: Mapping[str, Any]) -> tuple[str, ...]:
+        return ("year_month", ORIGINAL_CURRENCY_COLUMN)
+
+    visible = visible_columns(
+        _wide_spec(_names_it),
+        (*_WIDE_COLUMN_NAMES, ORIGINAL_CURRENCY_COLUMN),
+        parameters={},
+        wide=False,
+    )
+
+    assert visible == ("year_month", ORIGINAL_CURRENCY_COLUMN)
+
+
+def test_an_unconverted_read_does_not_invent_that_column() -> None:
+    """It rides on the result carrying it, never on the declaration."""
+    visible = visible_columns(
+        _wide_spec(("year_month", "net")),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+    )
+
+    assert ORIGINAL_CURRENCY_COLUMN not in visible
+
+
+def _invoke_wide(*args: str) -> Result:
+    """Run a generated command whose default set is narrower than its result."""
+    app = typer.Typer()
+    register_report_cli(_wide_spec(("year_month", "net")), app)
+    app.command("noop")(lambda: None)
+    result = ReportResult(
+        records=[dict.fromkeys(_WIDE_COLUMN_NAMES, "x")],
+        columns=list(_WIDE_COLUMN_NAMES),
+        output_classes=dict(_WIDE_CLASSES),
+        tier=Tier.MEDIUM,
+        total_count=1,
+        truncated=False,
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = result
+        return _runner_cli.invoke(app, ["wide", *args], env={"COLUMNS": "200"})
+
+
+def test_the_generated_command_renders_only_its_default_columns() -> None:
+    """Requirement 6, end to end through the Typer command."""
+    result = _invoke_wide()
+
+    assert result.exit_code == 0, result.output
+    assert "year_month" in result.output
+    assert "txn_count" not in result.output
+
+
+def test_the_generated_command_frames_the_columns_it_omitted() -> None:
+    """Requirement 10: the omission is disclosed, never silent."""
+    result = _invoke_wide()
+
+    assert "2 of 7 columns shown — --wide for all" in result.output
+
+
+def test_wide_restores_the_full_projection_on_the_generated_command() -> None:
+    """Requirement 7, and the framing line has nothing left to disclose."""
+    result = _invoke_wide("--wide")
+
+    assert result.exit_code == 0, result.output
+    assert "txn_count" in result.output
+    assert "columns shown" not in result.output
+
+
+def test_json_output_is_unaffected_by_the_default_column_set() -> None:
+    """Requirement 8: the column policy is a text-rendering decision only.
+
+    An agent reading `--output json` gets the full projection whether or not a
+    human running the same report would see every column, because the two
+    surfaces answer different questions and `--json-fields` is the JSON
+    caller's own filter.
+    """
+    result = _invoke_wide("--output", "json")
+
+    assert result.exit_code == 0, result.output
+    assert "txn_count" in json.loads(result.output)["data"][0]
+
+
+def test_json_output_is_unaffected_by_wide() -> None:
+    """Requirement 8: `--wide` widens the table, and nothing else."""
+    result = _invoke_wide("--wide", "--output", "json")
+
+    assert result.exit_code == 0, result.output
+    assert "columns shown" not in result.output

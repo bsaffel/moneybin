@@ -142,38 +142,80 @@ Numbered, each independently testable.
 
 6. Every `reports` command declares its default column set, and `render_rows`
    renders only those. The declaration is **parameter-aware**: a static tuple
-   where the projection is fixed, and a callable of the report's own parameters
-   where it is not. `cash_flow` is the motivating case. It accepts **three**
-   groupings — `account | category | account-and-category`
-   (`src/moneybin/reports/definitions/_shared.py:34`), defaulting to
-   `account-and-category` (`cash_flow.py:82`) — and selects columns from that
-   parameter (`cash_flow.py:114-118`): `account` adds `account_id,
-   account_name` and no `category`, `category` adds `category` and no account
-   columns, and the default adds both. Any single tuple would name a field
-   absent in one mode or drop a grouping dimension in another. The default
-   mode is the one to check first: it is what an unparameterized invocation
-   renders, and it is the widest of the three. A report whose default set does not resolve for a legal parameter
-   combination is a spec violation, caught by the contract test in requirement 9.
+   where the columns that answer the report do not move, and a callable of the
+   report's own effective parameters where they do.
+
+   The resolver intersects the declaration with the columns the result actually
+   carries, in the declaration's order, and drops a name the result does not
+   have. That ordering is a display decision the declaration owns: an author
+   putting the identifying column first must not have to reorder the SQL
+   projection, which `--wide`, `--output json`, and every MCP caller also read.
+
+   **`cash_flow` needs only a static tuple, and the intersection is why.** It
+   accepts three groupings — `account | category | account-and-category`
+   (`src/moneybin/reports/definitions/_shared.py:34`) — and each selects a
+   different set of dimension columns (`cash_flow.py:132-139`): `account` adds
+   `account_id, account_name` and no `category`, `category` the reverse, and
+   the default both. One tuple naming `year_month, account_name, category,
+   currency_code, net` therefore renders five columns in the default mode and
+   four in each of the others, because the dimension the mode did not group by
+   is simply absent from the result. Naming a field one mode does not return is
+   the mechanism, not a violation.
+
+   **`spending`'s `compare` is the case a tuple cannot express.** Its
+   projection is fixed — the view returns all three comparisons regardless
+   (`spending_trend.py:171-174`) — so the parameter changes which columns are
+   *relevant* rather than which exist. `mom` wants `mom_pct`, `yoy` wants
+   `yoy_pct`, `trailing` wants `trailing_3mo_avg`, and all three together do
+   not fit requirement 9's bar. A static tuple would have to pick one and
+   ignore the parameter. This also gives `compare` its first observable effect:
+   before this it was documented as "caller-side intent only" and changed
+   nothing any caller could see.
+
+   A report whose default set resolves to nothing present in the result is a
+   spec violation, caught by the contract test in requirement 9. At run time
+   the resolver fails open to the whole projection rather than rendering an
+   empty table, because `0 of 9 columns shown` reads as a report that returned
+   nothing.
    **Extension reports** (`register_extension_reports`,
    `src/moneybin/reports/_framework/registry.py:53`) share the same `@report` /
    `ReportSpec` contract and the same `register_report_cli` path, so the field is
    **optional** on `ReportSpec`: an extension that declares nothing keeps working
-   unchanged. Its fallback is the **first six columns** of the declared
-   projection, with the remainder reachable via `--wide`. Six is a fixed count,
-   not a computed fit: `OutputColumn` carries only `name`, `description`, and
-   `data_class` (`src/moneybin/reports/_framework/contract.py:139-144`) — no
-   display width — so "the columns that fit 80" is not computable without
-   measuring runtime values, which would make an extension's column set vary with
-   its data. A fixed count is deterministic and needs no new metadata. The
-   consequence is stated rather than hidden: **requirement 9's 80-column
-   guarantee is contract-tested for in-tree reports and best-effort for
-   extensions** until one declares `DEFAULT_COLUMNS`. Requirement 10's framing
-   line discloses the omission either way, so a wide extension report is legible
-   as truncated rather than silently clipped.
+   unchanged. An undeclared report is **fitted to the terminal** rather than
+   capped: `render_rows(fit=True)` measures the rendered cells, keeps the first
+   and last columns, and drops from the middle outwards until the table fits the
+   real console width, marking the gap with a `…` column. This is what DuckDB's
+   box renderer and pandas both do, verified against both
+   (`14 columns (6 shown)`, `[1 rows x 14 columns]`), and it is strictly better
+   than the fixed count first specified here: a fixed six under-fills a 200-column
+   window and still overflows a 40-column one, and it cannot know a column's
+   display width, which depends on the values rather than on `OutputColumn`
+   (`src/moneybin/reports/_framework/contract.py:139-144`). Measuring at render
+   time is exactly where the values are.
+
+   The ends are kept because they are what identify a row and carry its answer —
+   a spending table reads as `month … total`, and dropping either end for two
+   middle dimensions keeps the qualifiers and loses the question. A column too
+   wide to keep costs only itself: the walk closes that side and keeps taking
+   from the other, so widths `1, 100, 1, 1, 1` render four columns rather than
+   the two an all-or-nothing stop would leave in an 80-column window. Requirement
+   10's framing line reports the fit from what was actually printed, so a
+   narrowing the caller never requested is disclosed by the same line as a
+   declared one. **Requirement 9's 80-column guarantee remains contract-tested
+   for in-tree reports only** — a declared set is a curated answer that the fit
+   must not re-decide, so a report that declares columns is never fitted.
    `docs/specs/extension-contracts.md` gains the optional field and its fallback
    in the same change.
 7. Every command with a `DEFAULT_COLUMNS` narrower than its full projection
-   accepts `--wide`, which renders all columns.
+   accepts `--wide`, which renders all columns. It is injected on every
+   generated report command, including one whose default set is its whole
+   projection: the flag is then a no-op, which is cheaper than a signature that
+   varies per report and a `--help` where the option comes and goes.
+   `reports run` carries it too, so a report renders the same columns whichever
+   command ran it. The two hand-written commands — `reports networth` and
+   `networth-history` — do not: they already choose their columns in code, and
+   networth's full projection mixes per-currency totals rows with per-account
+   rows that a single table cannot widen into coherently.
 8. `--output json` is unaffected by `DEFAULT_COLUMNS` and by `--wide`; it returns
    the full projection, filtered only by `--json-fields`.
 9. `DEFAULT_COLUMNS` for every report fits in **80 columns** with no elision of any
@@ -452,11 +494,33 @@ Numbered, each independently testable.
 
 **Quiet on success (F6)**
 
-20. `system doctor` prints per-invariant lines only for invariants that fail. On a
-    fully-passing run it prints its summary line and nothing else.
-21. `--verbose` restores the full per-invariant roll.
+20. `system doctor` prints per-invariant lines only for invariants that need
+    attention. On a fully-passing run it prints its summary line and nothing
+    else.
+
+    **The suppressed status is `pass`, not "everything but `fail`."** A `warn`
+    and a `skipped` are not passes: the summary counts them without naming
+    them, so hiding either would leave a reader knowing something is off and
+    unable to see what — the silent masking the rest of this spec exists to
+    prevent, arriving through the change meant to reduce noise. Four statuses
+    exist (`pass`, `fail`, `warn`, `skipped`) and exactly one is suppressed.
+21. `--verbose` restores the full per-invariant roll. It already meant "show
+    the affected transaction IDs"; it now also means "show every invariant that
+    ran", which is one flag for one question — what actually happened — rather
+    than two flags a reader has to choose between.
 22. The failure path is unchanged in content: a failing invariant prints its name
     and its detail.
+
+    **The summary survives `-q`.** Once requirement 20 stops narrating a
+    passing invariant, the summary is the only thing a clean run prints, and
+    the pre-existing `if not quiet` gate on it would make
+    `moneybin system doctor -q` succeed in total silence — a command whose
+    whole job is to report on the ledger saying nothing about it. The summary
+    is doctor's result, not a status line about producing one, and requirement
+    5 already forbids `-q` suppressing result data. What `-q` does silence is
+    the 💡 recovery-action hints, which is the line `echo_report_notes` already
+    draws for reports: quiet reaches next-step hints and nothing else. A
+    failing invariant still prints under `-q`.
 
 **Stats (F5)**
 

@@ -27,6 +27,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from itertools import accumulate
 from typing import TYPE_CHECKING
 
 import typer
@@ -177,11 +178,94 @@ def color_enabled(stream: object, env: Mapping[str, str]) -> bool:
     return bool(isatty and isatty())
 
 
+#: Stands in for the columns a width fit dropped, in the position it dropped
+#: them. DuckDB's box renderer and pandas both mark the gap this way rather
+#: than silently splicing the ends together, which would read as a projection
+#: that never had a middle.
+ELISION = "…"
+
+
+def _cell_width(cell: RenderableType) -> int:
+    from rich.cells import cell_len  # noqa: PLC0415 — defer heavy import
+    from rich.text import Text  # noqa: PLC0415 — defer heavy import
+
+    return cell_len(cell.plain if isinstance(cell, Text) else str(cell))
+
+
+def _table_width(widths: Sequence[int]) -> int:
+    """Rendered width of a default-box table whose columns hold ``widths``.
+
+    Measured against Rich rather than derived from its source: one padding
+    column either side of each cell plus one border between and around them
+    comes to ``3n + 1``, exact for every column count and content width tried.
+    """
+    return sum(widths) + 3 * len(widths) + 1
+
+
+def _fit_columns(widths: Sequence[int], available: int) -> tuple[int, ...]:
+    """Indices of the columns that fit ``available``, keeping first and last.
+
+    The ends are what identify a row and carry the answer — a spending table
+    reads as `month … total`, and dropping either end for two middle dimensions
+    loses the question and keeps the qualifiers. The rest of the budget buys
+    the most columns it can, split as evenly as it can between the two ends, so
+    what survives a hard squeeze is the widest possible frame rather than a
+    prefix. This is DuckDB's and pandas' behaviour, measured.
+
+    Returns every index when the whole projection fits, so a caller can tell an
+    elided table from a complete one by length alone.
+    """
+    total = len(widths)
+    if total == 0 or _table_width(widths) <= available:
+        return tuple(range(total))
+    if total == 1:
+        return (0,)
+    # Everything dropped is one contiguous run, so a candidate projection is
+    # exactly a head length and a tail length. Running sums price one in
+    # constant time, and the widest affordable tail only shrinks as the head
+    # grows — so one pass over the heads reaches every candidate that could
+    # win. Rebuilding and re-summing each pair instead is cubic, which is five
+    # seconds at 800 columns, and nothing caps a report's output width.
+    prefix = list(accumulate(widths, initial=0))
+    suffix = list(accumulate(reversed(widths), initial=0))
+
+    def fits(head: int, tail: int) -> bool:
+        # One column of ELISION stands between the two halves, so its width is
+        # reserved before anything competes for the remainder.
+        cells = prefix[head] + suffix[tail] + len(ELISION)
+        return cells + 3 * (head + tail + 1) + 1 <= available
+
+    # The ends are kept whether or not they fit: a table squeezed past its own
+    # frame still has to render something, and they are what identify the row.
+    best = (1, 1)
+    tail = total - 2
+    for head in range(1, total - 1):
+        tail = min(tail, total - head - 1)  # a dropped run needs somewhere to be
+        while tail >= 1 and not fits(head, tail):
+            tail -= 1
+        if tail < 1:
+            # A longer head costs strictly more, so no later head fits either.
+            break
+        # Most columns wins. Between two that show the same number, the more
+        # balanced split, then the head — so a squeeze keeps the widest frame
+        # rather than a prefix, and an odd count leans left.
+        if (head + tail, -abs(head - tail), head) > (
+            best[0] + best[1],
+            -abs(best[0] - best[1]),
+            best[0],
+        ):
+            best = (head, tail)
+    head, tail = best
+    return (*range(head), *range(total - tail, total))
+
+
 def render_rows(
     columns: Sequence[str],
     rows: Iterable[Sequence[object]],
     *,
     money: Mapping[str, Money] | None = None,
+    total_columns: int | None = None,
+    fit: bool = False,
 ) -> None:
     """Render ``rows`` as a table to stdout (requirement 2).
 
@@ -189,6 +273,11 @@ def render_rows(
     Declared columns are formatted by :func:`format_money`, right-aligned
     (requirement 13), and coloured from their kind (requirement 14). Every
     other column prints its value as-is.
+
+    ``total_columns`` is the width of the full projection when ``columns`` is a
+    narrowed view of it, and produces the result-framing line beneath the table
+    (requirement 10). A caller with no column policy leaves it ``None`` and
+    frames nothing.
 
     **One line per record, always** (requirement 35). This renderer never
     deduplicates, merges, or suppresses a row. `reports networth` currently
@@ -211,8 +300,37 @@ def render_rows(
         highlight=False,
         no_color=not color_enabled(sys.stdout, os.environ),
     )
+    cells_source: Iterable[list[RenderableType]] = (
+        _cells(columns, row, declared) for row in rows
+    )
+    kept = tuple(range(len(columns)))
+    if fit and columns:
+        # The one path that buffers the whole result, and it has no choice: a
+        # column is as wide as its widest value, so every record has to be
+        # rendered before the first column can be sized. Every other path
+        # streams. `reports run` defaults to `CLI_MAX_ROWS` (1,000,000) records
+        # and Rich already keeps its own copy of each cell, so a second copy of
+        # the result is what turns a large-but-renderable report into an
+        # out-of-memory failure.
+        cells_source = list(cells_source)
+        widths = [
+            max(
+                _cell_width(name),
+                max((_cell_width(cells[i]) for cells in cells_source), default=0),
+            )
+            for i, name in enumerate(columns)
+        ]
+        kept = _fit_columns(widths, console.width)
+    # The single gap in a prefix-plus-suffix selection, or None when nothing
+    # was dropped.
+    gap = next(
+        (at for at, i in enumerate(kept[:-1]) if kept[at + 1] != i + 1),
+        None,
+    )
+
     table = Table()
-    for name in columns:
+    for at, i in enumerate(kept):
+        name = columns[i]
         table.add_column(
             name,
             justify="right" if name in declared else "left",
@@ -224,9 +342,27 @@ def render_rows(
             # apart. A ragged row is the cheaper failure than a wrong one.
             overflow="fold",
         )
-    for row in rows:
-        table.add_row(*_cells(columns, row, declared))
+        if at == gap:
+            table.add_column(ELISION, justify="center", overflow="fold")
+    for cells in cells_source:
+        row_cells = [cells[i] for i in kept]
+        if gap is not None:
+            row_cells.insert(gap + 1, ELISION)
+        table.add_row(*row_cells)
+    # Rich holds every cell now, so let a buffered measurement copy go before
+    # rendering allocates its own.
+    del cells_source
     console.print(table)
+    # Counted from what was actually printed, so a caller's declared narrowing
+    # and the renderer's own width fit are disclosed by one line rather than
+    # two — and a fit the caller never asked about still cannot happen silently.
+    whole = total_columns if total_columns is not None else len(columns)
+    if whole > len(kept):
+        # stdout, and reachable under `-q` (this renderer takes no such
+        # parameter): both are load-bearing. `moneybin reports spending >
+        # report.txt` has to capture the disclosure with the table it describes,
+        # or the file records a truncated result that reads as a whole one.
+        typer.echo(f"{len(kept)} of {whole} columns shown — --wide for all")
 
 
 def render_summary(
