@@ -99,6 +99,11 @@ RAW_CONSTRUCTORS = frozenset({
 # envelope.
 DECLARED_FIELDS = frozenset({"sensitivity", "classes_returned"})
 
+# The same two fields, plus the section that carries one of them, as
+# assignment targets: overwriting a finished envelope declares just as
+# surely as passing a keyword, and passes no keyword while doing it.
+MUTABLE_DECLARATION_TARGETS = DECLARED_FIELDS | {"summary"}
+
 # Registered dynamic tools whose call tree builds an envelope outside the
 # classifier or sets a declared field by hand, and the mechanism each uses.
 BUILDS_OUTSIDE_THE_CLASSIFIER: dict[str, str] = {
@@ -226,8 +231,11 @@ class Declaration:
 
     def __str__(self) -> str:
         """Render the site the way the assertion message needs to name it."""
-        rendered = ", ".join(f"{field}=" for field in self.fields)
-        site = f"{self.module}:{self.function} calls {self.callee}({rendered})"
+        if self.callee.endswith(" ="):
+            site = f"{self.module}:{self.function} assigns {self.callee[:-2]}"
+        else:
+            rendered = ", ".join(f"{field}=" for field in self.fields)
+            site = f"{self.module}:{self.function} calls {self.callee}({rendered})"
         if not self.literal_fields:
             return site
         return f"{site} with {', '.join(self.literal_fields)} spelled out"
@@ -456,6 +464,27 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                 for target in child.targets:
                     if isinstance(target, ast.Name):
                         assignments.setdefault(target.id, []).append(child.value)
+                    elif (
+                        isinstance(target, ast.Attribute)
+                        and target.attr in MUTABLE_DECLARATION_TARGETS
+                    ):
+                        # `ResponseEnvelope` and `SummaryMeta` are not frozen,
+                        # so a tool can classify correctly and then overwrite
+                        # what the builder derived. No keyword appears at such
+                        # a site, which is why it needs its own arm.
+                        declarations.append(
+                            Declaration(
+                                module=current_path.name,
+                                function=current_name,
+                                callee=f"{ast.unparse(target)} =",
+                                fields=(target.attr,),
+                                literal_fields=(
+                                    (target.attr,)
+                                    if _is_literal(child.value, assignments)
+                                    else ()
+                                ),
+                            )
+                        )
 
         body_calls = [
             child
@@ -691,6 +720,22 @@ async def test_derived_declarations_are_not_quietly_replaced_by_literals() -> No
         "BUILDS_OUTSIDE_THE_CLASSIFIER credits the tool with, which downgrades "
         "what an agent reads before the payload without changing any list this "
         f"guard checks: {asserted}"
+    )
+
+    # Dropping a field is the same downgrade as hardcoding it: the omitted one
+    # takes the constructor's default, and a check that only reads the values
+    # present would never see it go.
+    partial = sorted(
+        str(declaration)
+        for name in MUST_DERIVE_ITS_DECLARATION
+        for declaration in mechanisms[name].declarations
+        if frozenset(declaration.fields) != DECLARED_FIELDS
+    )
+    assert not partial, (
+        "These declarations set one of the two fields and leave the other to "
+        "the constructor's default. A tool credited with deriving its "
+        "classification declares both or neither: "
+        f"{partial}"
     )
 
 
