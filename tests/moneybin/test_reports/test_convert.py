@@ -1090,6 +1090,61 @@ def test_a_converted_execution_declares_the_original_currency_column(
     assert len(converted.column_types) == len(converted.columns)
 
 
+def test_the_original_currency_column_sits_beside_the_currency_it_records(
+    saved_db: Database,
+) -> None:
+    """`column-ordering.md`: it is a `CURRENCY`, so it belongs in that block.
+
+    Appended instead, a converted read would be the one shape whose row ends on
+    provenance rather than on the report's headline measure — the projections
+    swept everywhere except where a caller actually asked for a conversion.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+
+    converted = convert_execution(
+        _execution(), to_currency="USD", service=CurrencyService(saved_db)
+    )
+
+    assert converted.columns == [
+        "txn_date",
+        "currency_code",
+        ORIGINAL_CURRENCY_COLUMN,
+        "amount",
+        "txn_count",
+    ]
+    # Paired, not just counted: the types are a separate list and inserting into
+    # one without the other hands every later column its neighbour's type.
+    assert list(zip(converted.columns, converted.column_types, strict=True)) == [
+        ("txn_date", "DATE"),
+        ("currency_code", "VARCHAR"),
+        (ORIGINAL_CURRENCY_COLUMN, "VARCHAR"),
+        ("amount", "DECIMAL(18,2)"),
+        ("txn_count", "BIGINT"),
+    ]
+
+
+def test_a_converted_row_serialises_in_the_declared_column_order(
+    saved_db: Database,
+) -> None:
+    """The rows carry the order too, not just the column list beside them.
+
+    ``convert_records`` writes the provenance key onto every row dict, and a
+    row's own insertion order is what ``to_json()`` emits — so repositioning
+    only ``columns`` ships a response whose JSON body contradicts the column
+    list it travels with. This is the assertion that catches that, because
+    every other conversion test reads columns rather than key order.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+
+    converted = convert_execution(
+        _execution(), to_currency="USD", service=CurrencyService(saved_db)
+    )
+
+    assert converted.records
+    for record in converted.records:
+        assert list(record) == converted.columns
+
+
 def test_an_unconverted_execution_declares_no_original_currency_column(
     saved_db: Database,
 ) -> None:

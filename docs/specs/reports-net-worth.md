@@ -241,16 +241,16 @@ rollups and a view-selected balance projection for per-account reads.
 **`reports(report_id="core:networth", parameters={...})`** — Current or
 historical net worth.
 - Params: `{"as_of": "YYYY-MM-DD", "account_ids": ["..."]}`; both are optional
-- Returns rows with `balance_date`, `currency_code`, `net_worth`,
-  `total_assets`, `total_liabilities`, `account_count`, `account_id`,
-  `account_name`, `account_balance`, and `observation_source`
+- Returns rows with `account_id`, `account_name`, `currency_code`,
+  `observation_source`, `balance_date`, `account_count`, `account_balance`,
+  `total_assets`, `total_liabilities`, and `net_worth`
 - **Two row kinds, distinguished by which half is null.** A consumer must
   branch on the kind rather than reading every row as a position:
 
   | Row kind | Populated | Null |
   |---|---|---|
-  | Totals — always first; one per currency held, or exactly one when the read is converted | `balance_date`, `currency_code`, `net_worth`, `total_assets`, `total_liabilities`, `account_count` | `account_id`, `account_name`, `account_balance`, `observation_source` |
-  | Account breakdown | `balance_date`, `currency_code`, `account_id`, `account_name`, `account_balance`, `observation_source` | `net_worth`, `total_assets`, `total_liabilities`, `account_count` |
+  | Totals — always first; one per currency held, or exactly one when the read is converted | `currency_code`, `balance_date`, `account_count`, `total_assets`, `total_liabilities`, `net_worth` | `account_id`, `account_name`, `observation_source`, `account_balance` |
+  | Account breakdown | `account_id`, `account_name`, `currency_code`, `observation_source`, `balance_date`, `account_balance` | `account_count`, `total_assets`, `total_liabilities`, `net_worth` |
 
   Headline fields do **not** repeat on account rows. They did before display
   conversion (M1K.2): conversion prices each row on its own and relabels its
@@ -291,7 +291,8 @@ historical net worth.
 **`reports(report_id="core:networth_history", parameters={...})`** — Net
 worth time series.
 - Params: `{"from_date": "YYYY-MM-DD", "to_date": "YYYY-MM-DD", "interval": "daily|weekly|monthly"}`
-- Returns rows with only `period`, `net_worth`, `change_abs`, and `change_pct`
+- Returns rows with only `currency_code`, `period`, `net_worth`, `change_abs`,
+  and `change_pct`
 - Each returned period uses its last resolved transaction-adjusted daily
   position; periods without a position are omitted.
 

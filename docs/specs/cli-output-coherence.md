@@ -189,13 +189,19 @@ Numbered, each independently testable.
    putting the identifying column first must not have to reorder the SQL
    projection, which `--wide`, `--output json`, and every MCP caller also read.
 
+   **What each of those two orderings must be** is settled by
+   [`column-ordering.md`](../../.claude/rules/column-ordering.md), not here:
+   the decoupling this requirement establishes says the declaration *need not*
+   mirror the projection, never that it is unruled. Both follow the same
+   grain-first rule independently, and the rule file carries what is guarded.
+
    **`cash_flow` needs only a static tuple, and the intersection is why.** It
    accepts three groupings — `account | category | account-and-category`
    (`src/moneybin/reports/definitions/_shared.py:34`) — and each selects a
-   different set of dimension columns (`cash_flow.py:132-139`): `account` adds
+   different set of dimension columns (`cash_flow.py:148-158`): `account` adds
    `account_id, account_name` and no `category`, `category` the reverse, and
-   the default both. One tuple naming `year_month, account_name, category,
-   currency_code, net` therefore renders five columns in the default mode and
+   the default both. One tuple naming `account_name, category, currency_code,
+   year_month, net` therefore renders five columns in the default mode and
    four in each of the others, because the dimension the mode did not group by
    is simply absent from the result. Naming a field one mode does not return is
    the mechanism, not a violation.

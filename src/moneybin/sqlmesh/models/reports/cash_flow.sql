@@ -6,15 +6,15 @@ MODEL (
 );
 
 SELECT
-  STRFTIME(DATE_TRUNC('MONTH', t.transaction_date), '%Y-%m') AS year_month, /* Calendar month as 'YYYY-MM' */
   t.account_id, /* Owning account (joinable to core.dim_accounts) */
   a.display_name AS account_name, /* Account display name (resolved from app.account_settings if overridden) */
   t.category, /* Spending category text from core.fct_transactions; NULL for uncategorized */
   t.currency_code, /* ISO 4217 currency this cell's sums are denominated in; NULL is the unknown-currency segment, never resolved to the home currency (multi-currency.md Requirement 5) */
+  STRFTIME(DATE_TRUNC('MONTH', t.transaction_date), '%Y-%m') AS year_month, /* Calendar month as 'YYYY-MM' */
+  COUNT(*) AS txn_count, /* Number of non-transfer transactions in this cell */
   SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS inflow, /* Sum of positive amounts in this cell */
   SUM(CASE WHEN t.amount < 0 THEN t.amount ELSE 0 END) AS outflow, /* Sum of negative amounts in this cell (kept negative) */
-  SUM(t.amount) AS net, /* inflow + outflow */
-  COUNT(*) AS txn_count /* Number of non-transfer transactions in this cell */
+  SUM(t.amount) AS net /* inflow + outflow */
 FROM core.fct_transactions AS t
 INNER JOIN core.dim_accounts AS a
   ON t.account_id = a.account_id
