@@ -110,6 +110,16 @@ answers the report's question is the final column. `core:cashflow` ends on
 `net`, not on `txn_count`. This is the other half of Rule B a guard cannot
 check — see Enforcement.
 
+**A per-unit price is not a measure, and must not be made one to satisfy this
+rule.** The guard ranks a column as a measure by `money_kind`, so an author who
+wants a price ranked will be tempted to declare one. Do not: `money_kind` routes
+a column through `format_money`, which rounds to two places, and the per-unit
+columns are `DECIMAL(28, 10)` — a sub-cent close renders `0.00`, destroying the
+value rather than abbreviating it. `.claude/rules/cli.md` carries the test: if
+the column answers *how much is this worth*, format it; if it answers *what does
+one unit cost*, do not. Such a column stays undeclared, is therefore unranked,
+and is placed by the same judgement as an `AGGREGATE`.
+
 Per NN/g's second sentence, a grain key at the front does not license replacing
 the human label with it. Both belong, key first; where a report cannot afford
 both columns, the label is the one that stays and the grain question is settled
