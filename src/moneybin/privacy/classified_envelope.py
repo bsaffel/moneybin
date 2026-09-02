@@ -20,6 +20,14 @@ hand. Classification uses the wider contract on purpose — an agent reads
 ``summary.sensitivity`` before it sees the payload, so the declaration has to
 cover every arm the tool could have returned.
 
+``actions[]`` is the one field the builder does not redact: the caller composes
+it and the builder passes it through untouched. A caller that reads a field's
+*value* out of ``data`` to compose a hint is therefore reading it pre-redaction,
+which is safe only where that field's class is ``MaskStrength.PASSTHROUGH`` --
+anything else reaches the wire unmasked. Pin that assumption with a test derived
+from the transform table rather than a comment, the way the gsheet drift hint
+does; a comment does not fail when someone changes the class.
+
 Lives under ``moneybin.privacy`` rather than ``moneybin.mcp``: both surfaces
 use it, and ``moneybin.mcp.privacy`` already imports from here, so the reverse
 edge would be a cycle.
