@@ -911,6 +911,27 @@ class TestHoldingsAndGains:
         assert "proceeds=" not in result.stdout
 
     @pytest.mark.unit
+    def test_holdings_help_does_not_promise_status_behind_wide(
+        self, runner: CliRunner
+    ) -> None:
+        """Help naming the wrong home for a column is worse than silence.
+
+        `status` moved into the default view when it stopped hiding behind
+        `--wide`, but the help still promised the flag would add it — so it
+        misdescribed both what prints by default and what the flag buys. This
+        is the third help string in this branch invalidated by curating a
+        column, so the false claim is pinned rather than just corrected.
+        """
+        result = runner.invoke(app, ["investments", "holdings", "--help"])
+
+        assert result.exit_code == 0, result.output
+        help_text = " ".join(result.stdout.split())
+        assert "adds the ``status``" not in help_text
+        assert "``status``" in help_text
+        for wide_column in ("cost basis", "average cost"):
+            assert wide_column in help_text
+
+    @pytest.mark.unit
     def test_gains_default_view_keeps_the_currency_beside_the_gain(
         self, runner: CliRunner, db: Database
     ) -> None:
@@ -1112,6 +1133,46 @@ class TestLotsList:
 
         assert narrow.exit_code == 0, narrow.output
         assert "currency" not in narrow.stdout
+
+    @pytest.mark.unit
+    def test_lots_list_all_says_which_lots_are_closed(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """`--all` asks for mixed history, so the row has to say which it is.
+
+        The state is strictly derivable — `core.fct_investment_lots` defines
+        `is_open` as `remaining_quantity > 0` — but that rule appears neither
+        on screen nor in `--help`, so without the column a reader infers a
+        lifecycle state from a numeric cell via a rule nothing shows them. The
+        column earns its slot exactly when the result can contain both kinds,
+        so `--open` (the default) does not pay for it.
+        """
+        db.conn.executemany(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES (?, 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
+                    10, ?, 1500.00, ?, 'fifo', 'USD', ?, false)
+            """,  # noqa: S608  # test fixture insert, static SQL
+            [
+                ["lot_still_open", Decimal("10"), Decimal("1500.00"), True],
+                ["lot_sold_off", Decimal("0"), Decimal("0.00"), False],
+            ],
+        )
+
+        every = runner.invoke(app, ["investments", "lots", "list", "--all"])
+
+        assert every.exit_code == 0, every.output
+        assert "state" in every.stdout
+        assert "closed" in every.stdout
+
+        open_only = runner.invoke(app, ["investments", "lots", "list"])
+
+        assert open_only.exit_code == 0, open_only.output
+        assert "state" not in open_only.stdout
 
     @pytest.mark.unit
     def test_lots_list_names_its_columns_instead_of_its_fields(

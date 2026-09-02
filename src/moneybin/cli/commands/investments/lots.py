@@ -48,24 +48,46 @@ _LOTS_DEFAULT = ("lot", "security", "acquired", "remaining", "basis", "note")
 """Which lot, of what, bought when, how much is left, at what basis — and
 whether that basis is known to be incomplete.
 
-Method, open/closed state and currency are the qualifiers a reader consults
-after the fact, so `--wide` carries them. `note` is not one of those: it says
-the `basis` cell beside it is a floor rather than a figure, which qualifies the
-answer rather than commenting on the run. Its only substitute was the warning
-line from `InvestmentService.lots`, and that goes through `render_note` — so
-`-q` dropped it and left a conservative basis reading as an authoritative one.
+Method and currency are the qualifiers a reader consults after the fact, so
+`--wide` carries them. `note` is not one of those: it says the `basis` cell
+beside it is a floor rather than a figure, which qualifies the answer rather
+than commenting on the run. Its only substitute was the warning line from
+`InvestmentService.lots`, and that goes through `render_note` — so `-q` dropped
+it and left a conservative basis reading as an authoritative one.
 
-`currency` is the one column here that is declared against its own argument.
+`currency` is the one column here declared against its own argument.
 `investments list`, `gains` and `holdings` all keep it in the default view,
 because none of the four takes a currency filter and `multi-currency.md` makes
 the row's own `currency_code` the canonical unit of its amount. This table is
-the one that cannot afford it: six columns already spend the 80-column budget,
-and a seventh needs 22 characters of chrome against 58 of content while the
-headers alone ask for 63. Measured rather than assumed — adding it folds
-`lot` and `security` across two lines each *and* breaks `⚠️ basis_incomplete`
-mid-word, so the seventh column costs both the lot handle and the trust marker
-to buy three characters. It is declared so `--wide` reaches it, which is the
-escape the default view cannot provide.
+the one that cannot afford it. Measured at 80 columns with production-width
+ids rather than argued from the header contract, which bounds only the header
+row: six columns already fold the lot id by a character and break
+`⚠️ basis_incomplete` across lines, and a seventh folds `security` too and
+takes the marker to three lines. Slots here are contested, so the one that goes
+to `state` below buys an answer nothing else supplies, while `currency` repeats
+down all but the rare mixed-denomination ledger and is reachable with `--wide`.
+"""
+
+_LOTS_ALL_DEFAULT = (
+    "lot",
+    "security",
+    "acquired",
+    "remaining",
+    "basis",
+    "state",
+    "note",
+)
+"""The `--all` view, which is the default set plus `state`.
+
+`--all` asks for the mixed open-and-closed history, and the curated view named
+neither. The state is strictly derivable — `core.fct_investment_lots` defines
+`is_open` as `remaining_quantity > 0` — but that rule lives in the model, not
+on screen and not in `--help`, so without this column a reader infers a lot's
+lifecycle from a numeric cell via a rule nothing shows them. Naming it is what
+a column is for. Under `--open` the answer is constant and the column would
+read `open` all the way down, so that view does not pay for it. This is the one
+table whose default set depends on the query, because it is the one command
+whose result changes kind rather than size.
 """
 
 
@@ -90,8 +112,8 @@ def investments_lots_list(
 
     Shows the lot, its security, when it was acquired, how much remains, the
     remaining basis, and a note marking any basis known to be incomplete.
-    ``--wide`` adds the currency, the cost-basis method, and whether the lot is
-    open or closed.
+    ``--all`` adds an open/closed column, since that view returns both.
+    ``--wide`` adds the currency and the cost-basis method.
     """
     with handle_cli_errors(
         cli_actor="investments_lots_list", payload_type=InvestmentLotsPayload
@@ -111,7 +133,12 @@ def investments_lots_list(
         )
         return
     if result.rows:
-        view = column_view(_LOTS_COLUMNS, result.rows, default=_LOTS_DEFAULT, wide=wide)
+        view = column_view(
+            _LOTS_COLUMNS,
+            result.rows,
+            default=_LOTS_DEFAULT if open_only else _LOTS_ALL_DEFAULT,
+            wide=wide,
+        )
         render_rows(
             view.names,
             view.rows,

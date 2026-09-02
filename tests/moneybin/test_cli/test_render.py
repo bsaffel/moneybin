@@ -1220,15 +1220,21 @@ def _declared_tables() -> list[tuple[str, Sequence[Any], Sequence[str]]]:
         _HOLDINGS_DEFAULT,  # pyright: ignore[reportPrivateUsage]
     )
     from moneybin.cli.commands.investments.lots import (  # noqa: PLC0415, PLC2701
+        _LOTS_ALL_DEFAULT,  # pyright: ignore[reportPrivateUsage]
         _LOTS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
         _LOTS_DEFAULT,  # pyright: ignore[reportPrivateUsage]
     )
 
+    # `investments lots list` declares two default sets, and both are shipped
+    # views: `--all` returns closed lots too, so it pays for a `state` column
+    # the `--open` view would render as a constant. A second set that skipped
+    # this list would skip both guards below with it.
     return [
         ("investments holdings", _HOLDINGS_COLUMNS, _HOLDINGS_DEFAULT),
         ("investments gains", _GAINS_COLUMNS, _GAINS_DEFAULT),
         ("investments list", _EVENTS_COLUMNS, _EVENTS_DEFAULT),
         ("investments lots list", _LOTS_COLUMNS, _LOTS_DEFAULT),
+        ("investments lots list --all", _LOTS_COLUMNS, _LOTS_ALL_DEFAULT),
         ("import history", _HISTORY_COLUMNS, _HISTORY_DEFAULT),
         ("import formats list --type=pdf", _PDF_FORMAT_COLUMNS, _PDF_FORMAT_DEFAULT),
     ]
@@ -1244,7 +1250,7 @@ def test_every_curated_default_names_a_column_that_exists() -> None:
     tables = _declared_tables()
     # Both checks in this section are over a comprehension, so an empty list
     # would pass them vacuously. Pin the population.
-    assert len(tables) == 6
+    assert len(tables) == 7
     undeclared = {
         command: sorted(set(default) - {name for name, _ in columns})
         for command, columns, default in tables
@@ -1261,7 +1267,7 @@ def test_every_curated_default_fits_eighty_columns_on_headers_alone() -> None:
     data, and that is worth catching at declaration time.
     """
     tables = _declared_tables()
-    assert len(tables) == 6
+    assert len(tables) == 7
     too_wide = {
         command: _table_width([len(name) for name in default])
         for command, _columns, default in tables

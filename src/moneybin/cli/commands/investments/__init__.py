@@ -333,9 +333,10 @@ def investments_holdings(
 
     Market value and unrealized gain come from the most recent close at or
     before today. A position with no usable price, or one whose share count is
-    known wrong, shows ``-`` rather than a zero; ``--wide`` adds the ``status``
-    column that says which, along with cost basis, average cost, and the date
-    the price was observed.
+    known wrong, shows ``-`` rather than a zero, and the ``status`` column
+    beside it says which — it prints by default, because the two cases have
+    different remedies. ``--wide`` adds the cost basis, the average cost, and
+    the date the price was observed.
 
     The closing portfolio line reports ``max_days_since_observed``: the age in
     days of the stalest close behind any figure above, or ``-`` when no

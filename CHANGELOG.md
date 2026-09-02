@@ -66,10 +66,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reading `1,500.00` are then not the same quantity. The first three keep
   `currency` in the default view; `gains` and `lots list` had not declared the
   column at all, so `--wide` could not reach it either. `lots list` is the one
-  table that cannot seat it by default — six columns already spend its
-  80-column budget, and a seventh folds the lot id and breaks the
-  incomplete-basis marker mid-word — so there it is declared and `--wide`
-  reaches it.
+  table that cannot seat it by default — at 80 columns its six columns already
+  fold a full-length lot id, and a seventh folds the security id with it — so
+  there it is declared and `--wide` reaches it.
+
+  `investments lots list --all` gains an open/closed `state` column instead.
+  That view deliberately returns both kinds and the table named neither. The
+  state is strictly derivable — a lot is open when its remaining quantity
+  exceeds zero — but that rule appears neither on screen nor in `--help`, so
+  the reader was left inferring a lifecycle state from a numeric cell. Under
+  the default `--open` the answer is constant, so that view does not pay for
+  the column.
 
   Commands whose tables already fit — `fx list`, `investments list`,
   `investments prices list`, `securities list`, `db ps` — show every column and
