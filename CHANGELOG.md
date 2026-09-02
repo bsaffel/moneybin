@@ -41,8 +41,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `moneybin sql query` returns `currency_code, balance_date, account_count,
   total_assets, total_liabilities, net_worth` rather than leading with the
   total. A display-currency conversion now places the `original_currency_code`
-  it attaches beside `currency_code` instead of after the amounts, so a
-  converted read ends on the headline measure like an unconverted one.
+  it attaches beside `currency_code` instead of after the amounts — in the rows
+  as well as the column list, so the JSON body and the column list it ships with
+  agree. `core:networth_history` follows the same base-before-comparison rule as
+  `core:spending`: it now returns `currency_code, period, net_worth, change_abs,
+  change_pct`, leading with the position the two changes are measured from.
 
 ### Fixed
 - **MCP tool calls now record `moneybin_mcp_tool_calls_total` and `moneybin_mcp_tool_duration_seconds`.** The observability spec described this instrumentation as automatic, but no code path ever recorded either metric — a dashboard built from them stayed at zero permanently. `ValidationErrorMiddleware.on_call_tool`, the single boundary every `tools/call` request passes through, now records both metrics on every call, whether it succeeds, is translated to a validation-error envelope, or raises something else. (#495)

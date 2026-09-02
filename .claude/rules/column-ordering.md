@@ -39,12 +39,15 @@ A service report in fact carries **three** parallel orderings, and reordering on
 means reordering all three:
 
 1. The `columns` tuple — sets `result.columns`, drives `--wide`.
-2. A positional `column_types` list in the same call, parallel **by index alone**.
-   Reorder one without the other and every column is handed the type of whichever
-   column now occupies its slot — a silent mis-typing with no test between it and
-   a caller. `networth_history`'s entries read `_decimal_column_type(rows,
-   "net_worth", …)`, naming their column in the argument while position is what
-   binds, so they look order-independent and are not.
+2. A `column_types` list. `core:networth`'s `_SNAPSHOT_COLUMN_TYPES` is parallel
+   **by index alone**: reorder one without the other and every column is handed
+   the type of whichever column now occupies its slot — a silent mis-typing whose
+   only guard is the tripwire under Enforcement. `core:networth_history` carried
+   the same hazard in a subtler form, its `_decimal_column_type(rows,
+   "net_worth", …)` entries naming their column in an argument while position was
+   what bound. It now keys the types by name and projects them through
+   `_HISTORY_COLUMNS`, which is the shape to copy: an ordering derived once beats
+   an ordering duplicated and checked.
 3. The **record dict literals** built in the row comprehensions. The envelope
    carries `data=records` and Python dicts preserve insertion order, so those
    keys — not the `columns` tuple — are what `--output json` and every MCP caller
@@ -200,7 +203,10 @@ to convert. `execute.py::_original_currency_position` places it for the
 machine-readable projection and `cli_register.py::visible_columns` for the
 narrow table; both anchor on `ReportSemantics.currency` rather than assuming the
 name, and both fall back to appending when the result carries no currency
-column.
+column. The **rows** carry the order too, for the reason item 3 above gives: the
+conversion writes the key onto every row dict, and a row's own insertion order
+is what serializes, so moving the column list alone ships a payload contradicting
+the column list beside it.
 
 This rule governs order only. Alignment, sign glyphs, and colour are settled by
 `money_kind` in `cli-output-coherence.md`, not here.
@@ -259,13 +265,13 @@ checked with no database. Three assertions:
    `account_count`) still pair with the column they name.
 
 Read the third one narrowly. It is a tripwire on `core:networth`, not a
-derivation: it does not check every column against its declared class, and it
-does not cover `core:networth_history` at all — whose `column_types` is the
-subtler instance of the same hazard, since its two leading `"VARCHAR"` literals
-name nothing a reader could check. A `_HISTORY_COLUMNS` reorder that leaves
-that list alone fails only `tests/moneybin/test_exports/test_report_snapshot.py`,
-incidentally, and would pass if that test were narrowed. Closing that is
-outstanding work, not a property this rule can claim.
+derivation: it does not check every column against its declared class. It is now
+also the last place the hazard lives — `core:networth_history` derives its
+`column_types` from `_HISTORY_COLUMNS` by name, so it has no second list to keep
+in step and needs no assertion. Giving `_SNAPSHOT_COLUMN_TYPES` the same
+treatment would retire this assertion entirely; it is a module constant read
+from more than one place, so that is a change to make deliberately rather than
+in passing.
 
 **The SQL-backed mirror is checked per report, not globally.** A runner builds
 its own `SELECT` over the view rather than inheriting the model's projection, so

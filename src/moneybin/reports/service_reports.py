@@ -145,6 +145,12 @@ _HISTORY_COLUMNS = (
         "period", "Start date of the selected period bucket.", DataClass.TXN_DATE
     ),
     OutputColumn(
+        "net_worth",
+        "Resolved transaction-adjusted period-end position in currency_code.",
+        DataClass.BALANCE,
+        money_kind="balance",
+    ),
+    OutputColumn(
         "change_abs",
         "Current period-end net worth minus the prior period-end position.",
         DataClass.BALANCE,
@@ -158,12 +164,6 @@ _HISTORY_COLUMNS = (
         "change_pct",
         "Absolute change divided by prior period-end net worth.",
         DataClass.AGGREGATE,
-    ),
-    OutputColumn(
-        "net_worth",
-        "Resolved transaction-adjusted period-end position in currency_code.",
-        DataClass.BALANCE,
-        money_kind="balance",
     ),
 )
 _HISTORY_CLASSES = {column.name: column.data_class for column in _HISTORY_COLUMNS}
@@ -370,23 +370,26 @@ def _execute_networth_history(
         {
             "currency_code": point.currency_code,
             "period": point.period,
+            "net_worth": point.net_worth,
             "change_abs": point.change_abs,
             "change_pct": point.change_pct,
-            "net_worth": point.net_worth,
         }
         for point in payload.points
     ]
-    # Parallel to _HISTORY_COLUMNS **by position**, not by the column each entry
-    # names: the `_decimal_column_type` calls below read like they bind to their
-    # argument and do not, so this list has to be reordered whenever that tuple
-    # is (`column-ordering.md`, the service-report exception).
-    column_types = [
-        "VARCHAR",
-        "VARCHAR",
-        _decimal_column_type(rows, "change_abs", fallback="DECIMAL(38,2)"),
-        _decimal_column_type(rows, "change_pct", fallback="DOUBLE"),
-        _decimal_column_type(rows, "net_worth", fallback="DECIMAL(38,2)"),
-    ]
+    # Keyed by column name and projected through _HISTORY_COLUMNS, so reordering
+    # that tuple carries the types with it. The positional form this replaced
+    # had to be reordered in lockstep by hand, and nothing checked it — unlike
+    # `_SNAPSHOT_COLUMN_TYPES`, whose parallel list a test does hold down.
+    types_by_name = {
+        "currency_code": "VARCHAR",
+        "period": "VARCHAR",
+        "net_worth": _decimal_column_type(rows, "net_worth", fallback="DECIMAL(38,2)"),
+        "change_abs": _decimal_column_type(
+            rows, "change_abs", fallback="DECIMAL(38,2)"
+        ),
+        "change_pct": _decimal_column_type(rows, "change_pct", fallback="DOUBLE"),
+    }
+    column_types = [types_by_name[column.name] for column in _HISTORY_COLUMNS]
     return build_catalog_execution(
         NETWORTH_HISTORY_REPORT,
         parameters=params,
@@ -597,9 +600,9 @@ NETWORTH_HISTORY_REPORT = ServiceReportSpec(
     default_columns=(
         "currency_code",
         "period",
+        "net_worth",
         "change_abs",
         "change_pct",
-        "net_worth",
     ),
 )
 
