@@ -268,6 +268,25 @@ When authoring or modifying a scenario:
 
 This rule applies to YAML scenario expectations, pytest assertions in `tests/scenarios/`, and any future bug-report-driven scenario. See [`docs/specs/testing-scenario-comprehensive.md`](../../docs/specs/testing-scenario-comprehensive.md) for the full taxonomy and contributor recipe.
 
+## Triaging Scenario Failures by Symptom
+
+`ScenarioResult` (`tests/scenarios/_runner/result.py`) reports four independent
+failure shapes. Use the symptom to find the owning code — fix code before
+touching a YAML expectation, per the derivation rule above.
+
+| Symptom | Likely cause | Where to look |
+|---|---|---|
+| `halted` non-null, no assertions ran | Pipeline step crashed (loader, transform, match, etc.) | `tests/scenarios/_runner/steps.py` and the called service |
+| Assertion failed with `error` | Assertion fn raised | `src/moneybin/validation/assertions/` |
+| Assertion failed with `details` | Pipeline output diverged from spec | The pipeline step that owns the data, **or** the scenario YAML if the expectation is wrong |
+| Expectation failed | Per-record claim doesn't match | The fixture YAML, the expectation engine, or the categorize/match step |
+| Evaluation below threshold | Score regressed | The pipeline + the threshold itself — was the threshold realistic? |
+
+The `Scenarios` CI workflow shards `pytest -m scenarios` four ways and uploads
+one `pytest-json-report` artifact per shard — `scenarios-results-<group>`
+containing `scenarios-<group>.json` (group `1`-`4`) — pull that instead of
+scraping logs.
+
 ## No Shortcuts: Exercise the Real Mechanism
 
 A test or scenario must reach its asserted state through the **same mechanism a
