@@ -72,7 +72,12 @@ from typing import Any
 from fastmcp.tools import FunctionTool
 
 from moneybin.privacy.classified_envelope import build_classified_envelope
-from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta, build_envelope
+from moneybin.protocol.envelope import (
+    ResponseEnvelope,
+    SummaryMeta,
+    build_envelope,
+    build_error_envelope,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MCP_ROOT = REPO_ROOT / "src" / "moneybin" / "mcp"
@@ -85,7 +90,7 @@ BUILDER = build_classified_envelope.__name__
 # classifier, whatever the branch does with the result afterwards.
 RAW_CONSTRUCTORS = frozenset({
     build_envelope.__name__,
-    "build_error_envelope",
+    build_error_envelope.__name__,
     ResponseEnvelope.__name__,
 })
 
@@ -244,9 +249,20 @@ def _call_name(node: ast.Call) -> str | None:
     return None
 
 
-def _resolve(node: ast.expr, assignments: dict[str, ast.expr]) -> ast.expr:
-    """Unwrap `await` / `cast(T, x)` and follow one local alias to its value."""
-    seen: set[str] = set()
+type _Assignments = dict[str, list[ast.expr]]
+
+
+def _resolve_all(
+    node: ast.expr, assignments: _Assignments, seen: set[str] | None = None
+) -> list[ast.expr]:
+    """Every value a returned expression can hold, after unwrapping aliases.
+
+    A name assigned on two branches has two reaching definitions, and keeping
+    only the first would let a classified assignment vouch for an unresolvable
+    sibling that merges into the same variable. So this fans out over all of
+    them and the callers fail closed across the set.
+    """
+    seen = set() if seen is None else seen
     while True:
         if isinstance(node, ast.Await):
             node = node.value
@@ -256,24 +272,20 @@ def _resolve(node: ast.expr, assignments: dict[str, ast.expr]) -> ast.expr:
             and len(node.args) == 2
         ):
             node = node.args[1]
-        elif (
-            isinstance(node, ast.Name)
-            and node.id in assignments
-            and node.id not in seen
-        ):
-            seen.add(node.id)
-            node = assignments[node.id]
         else:
-            return node
+            break
+    if isinstance(node, ast.Name) and node.id in assignments and node.id not in seen:
+        seen.add(node.id)
+        resolved = [
+            candidate
+            for value in assignments[node.id]
+            for candidate in _resolve_all(value, assignments, seen)
+        ]
+        return resolved or [node]
+    return [node]
 
 
-def _is_literal(node: ast.expr, assignments: dict[str, ast.expr]) -> bool:
-    """Whether an argument is spelled out rather than derived at runtime.
-
-    A local alias is followed to what it was assigned, so hiding a constant
-    behind one name does not read as a derivation.
-    """
-    node = _resolve(node, assignments)
+def _spelled_out(node: ast.expr) -> bool:
     if isinstance(node, ast.Constant):
         return True
     if isinstance(node, ast.List | ast.Tuple):
@@ -281,12 +293,21 @@ def _is_literal(node: ast.expr, assignments: dict[str, ast.expr]) -> bool:
     return False
 
 
+def _is_literal(node: ast.expr, assignments: _Assignments) -> bool:
+    """Whether an argument is spelled out rather than derived at runtime.
+
+    True when *any* value the expression can hold is spelled out: one branch
+    hardcoding the field is the defect, whatever the other branch does.
+    """
+    return any(_spelled_out(candidate) for candidate in _resolve_all(node, assignments))
+
+
 def _declaration(
     node: ast.Call,
     *,
     module: str,
     function: str,
-    assignments: dict[str, ast.expr],
+    assignments: _Assignments,
 ) -> Declaration | None:
     declared = [keyword for keyword in node.keywords if keyword.arg in DECLARED_FIELDS]
     if not declared:
@@ -390,14 +411,14 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
         if node is None:
             continue
 
-        assignments: dict[str, ast.expr] = {}
+        assignments: _Assignments = {}
         for statement in node.body:
             for child in ast.walk(statement):
                 if not isinstance(child, ast.Assign):
                     continue
                 for target in child.targets:
                     if isinstance(target, ast.Name):
-                        assignments.setdefault(target.id, child.value)
+                        assignments.setdefault(target.id, []).append(child.value)
 
         body_calls = [
             child
@@ -451,22 +472,25 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                 for child in ast.walk(statement):
                     if not isinstance(child, ast.Return) or child.value is None:
                         continue
-                    value = _resolve(child.value, assignments)
-                    named = isinstance(value, ast.Call) and _call_name(value) in (
+                    nameable = (
                         {BUILDER}
                         | RAW_CONSTRUCTORS
                         | set(current_functions)
                         | set(imports)
                     )
-                    if named:
-                        continue
-                    unverified.append(
-                        UnverifiedReturn(
-                            module=current_path.name,
-                            function=current_name,
-                            expression=ast.unparse(value).splitlines()[0][:60],
+                    for value in _resolve_all(child.value, assignments):
+                        if (
+                            isinstance(value, ast.Call)
+                            and _call_name(value) in nameable
+                        ):
+                            continue
+                        unverified.append(
+                            UnverifiedReturn(
+                                module=current_path.name,
+                                function=current_name,
+                                expression=ast.unparse(value).splitlines()[0][:60],
+                            )
                         )
-                    )
 
     return Mechanism(
         reaches_builder=reaches_builder,
@@ -632,6 +656,15 @@ def _probe_returning_through_an_unfollowable_call() -> ResponseEnvelope[Any]:
     return producer()
 
 
+def _probe_merging_two_branches_into_one_variable() -> ResponseEnvelope[Any]:
+    """Stand-in for two reaching definitions merged into one returned name."""
+    if _elsewhere():
+        response = build_classified_envelope({"probe": True})
+    else:
+        response = _elsewhere().make_envelope()
+    return response
+
+
 def _probe_hiding_a_literal_behind_an_alias() -> ResponseEnvelope[Any]:
     """Stand-in for a constant spelled into a local before the call."""
     hidden = "low"
@@ -699,3 +732,13 @@ def test_the_analysis_can_return_a_failing_verdict() -> None:
         Path(__file__), _probe_hiding_a_literal_behind_an_alias.__name__
     )
     assert [d.literal_fields for d in aliased.declarations] == [("sensitivity",)]
+
+    # The third round's finding: two reaching definitions merged into one
+    # returned name — the classified one must not vouch for its sibling.
+    merged = mechanism_of(
+        Path(__file__), _probe_merging_two_branches_into_one_variable.__name__
+    )
+    assert merged.reaches_builder
+    assert [site.expression for site in merged.unverified_returns] == [
+        "_elsewhere().make_envelope()"
+    ]
