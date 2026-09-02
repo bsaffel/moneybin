@@ -202,10 +202,11 @@ def investments_prices_pull(
     # diagnostic about a degraded run, not part of the refresh's result.
     for failure in result.failed_sources:
         typer.echo(f"⚠️  {failure.source_type}: {failure.message}", err=True)
-    render_rows(
-        ["unpriced security", "reason"],
-        [(entry.security_id, entry.reason) for entry in result.unpriced],
-    )
+    if result.unpriced:
+        render_rows(
+            ["unpriced security", "reason"],
+            [(entry.security_id, entry.reason) for entry in result.unpriced],
+        )
     _report_refresh_failure(payload.refresh_error)
 
 
@@ -437,19 +438,20 @@ def investments_prices_list(
     # and `format_money` rounds to two places, which renders a sub-cent crypto
     # price as 0.00. It declares no money column and prints as stored — the same
     # call `fx list` makes about a rate.
-    render_rows(
-        ["date", "close", "currency", "source", "basis"],
-        [
-            (
-                row.price_date,
-                row.close,
-                row.quote_currency,
-                row.source_type,
-                row.price_basis,
-            )
-            for row in result.rows
-        ],
-    )
+    if result.rows:
+        render_rows(
+            ["date", "close", "currency", "source", "basis"],
+            [
+                (
+                    row.price_date,
+                    row.close,
+                    row.quote_currency,
+                    row.source_type,
+                    row.price_basis,
+                )
+                for row in result.rows
+            ],
+        )
 
 
 @app.command("token")

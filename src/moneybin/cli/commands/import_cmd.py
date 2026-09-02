@@ -26,8 +26,9 @@ from moneybin.cli.output import (
     emit_json_error,
     output_option,
     quiet_option,
+    wide_option,
 )
-from moneybin.cli.render import render_rows, render_summary
+from moneybin.cli.render import column_view, render_rows, render_summary
 from moneybin.cli.utils import emit_json, warn_refresh_steps, warn_transfers_retired
 from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
@@ -38,7 +39,7 @@ from moneybin.services.refresh_outcome import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from moneybin.database import Database
     from moneybin.extractors.tabular.formats import TabularFormat
@@ -2269,6 +2270,31 @@ def import_confirm_command(
         logger.info("💡 Run 'moneybin transform apply' to rebuild derived tables.")
 
 
+_HISTORY_COLUMNS: tuple[
+    tuple[str, Callable[[dict[str, str | int | None]], object]], ...
+] = (
+    ("import", lambda rec: str(rec.get("import_id", ""))),
+    ("status", lambda rec: str(rec.get("status", ""))),
+    ("imported", lambda rec: rec.get("rows_imported") or 0),
+    ("rejected", lambda rec: rec.get("rows_rejected") or 0),
+    # The basename, not the path: the directory is not part of the import's
+    # identity and pushes the column past any width.
+    (
+        "source file",
+        lambda rec: (
+            Path(str(rec.get("source_file", ""))).name if rec.get("source_file") else ""
+        ),
+    ),
+)
+
+_HISTORY_DEFAULT = ("import", "status", "imported", "rejected")
+"""The id is what `import revert` takes, so it is never the column dropped.
+
+A full UUID is 36 characters on its own, which leaves room for the outcome and
+the two counts and no more; the source file follows under `--wide`.
+"""
+
+
 @app.command("history")
 def import_history(
     limit: int = typer.Option(20, "--limit", "-n", help="Max records to show"),
@@ -2277,6 +2303,7 @@ def import_history(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    wide: bool = wide_option,
 ) -> None:
     """List recent imports with batch details.
 
@@ -2309,23 +2336,8 @@ def import_history(
                 logger.warning("⚠️  No import history found")
         return
 
-    render_rows(
-        ["import", "status", "imported", "rejected", "source file"],
-        [
-            (
-                str(rec.get("import_id", "")),
-                str(rec.get("status", "")),
-                rec.get("rows_imported") or 0,
-                rec.get("rows_rejected") or 0,
-                # The basename, not the path: the directory is not part of the
-                # import's identity and pushes the column past any width.
-                Path(str(rec.get("source_file", ""))).name
-                if rec.get("source_file")
-                else "",
-            )
-            for rec in records
-        ],
-    )
+    view = column_view(_HISTORY_COLUMNS, records, default=_HISTORY_DEFAULT, wide=wide)
+    render_rows(view.names, view.rows, total_columns=view.total)
 
     if import_id and records:
         render_summary(
@@ -2694,10 +2706,34 @@ def import_preview(
         typer.echo()
 
 
+_PDF_FORMAT_COLUMNS: tuple[tuple[str, Callable[[PdfFormat], object]], ...] = (
+    ("name", lambda pf: pf.name),
+    ("institution", lambda pf: pf.institution_name),
+    ("routing", lambda pf: pf.routing),
+    ("front-end", lambda pf: pf.front_end),
+    ("version", lambda pf: pf.version),
+    ("used", lambda pf: pf.times_used),
+    (
+        "last used",
+        lambda pf: (
+            pf.last_used_at.date().isoformat()
+            if pf.last_used_at is not None
+            else "\u2014"
+        ),
+    ),
+)
+
+_PDF_FORMAT_DEFAULT = ("name", "institution", "routing", "last used")
+"""Which format, whose statements it reads, what it routes to, and whether it
+is still in use. The front end, version, and use count are provenance for a
+format that misbehaves, and follow under `--wide`."""
+
+
 @formats_app.command("list")
 def formats_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    wide: bool = wide_option,
     # _type shadows the builtin `type` — Typer CLI name remains --type (A001).
     _type: _FormatTypeFilter = typer.Option(  # noqa: A002
         _FormatTypeFilter.all,
@@ -2786,7 +2822,10 @@ def formats_list(
                         fmt.institution_name,
                         fmt.sign_convention,
                         fmt.date_format,
-                        "user" if fmt.name not in builtin else "built-in",
+                        # Same spelling as the `source` field in the JSON
+                        # branch above: one field, one value, whichever
+                        # surface a caller reads it from.
+                        "user" if fmt.name not in builtin else "builtin",
                     )
                     for fmt in sorted(all_formats.values(), key=lambda f: f.name)
                 ],
@@ -2802,31 +2841,13 @@ def formats_list(
             if show_tabular:
                 typer.echo("")
             typer.echo(f"PDF formats ({len(pdf_formats)})")
-            render_rows(
-                [
-                    "name",
-                    "institution",
-                    "routing",
-                    "front-end",
-                    "version",
-                    "used",
-                    "last used",
-                ],
-                [
-                    (
-                        pf.name,
-                        pf.institution_name,
-                        pf.routing,
-                        pf.front_end,
-                        pf.version,
-                        pf.times_used,
-                        pf.last_used_at.date().isoformat()
-                        if pf.last_used_at is not None
-                        else "—",
-                    )
-                    for pf in pdf_formats
-                ],
+            pdf_view = column_view(
+                _PDF_FORMAT_COLUMNS,
+                pdf_formats,
+                default=_PDF_FORMAT_DEFAULT,
+                wide=wide,
             )
+            render_rows(pdf_view.names, pdf_view.rows, total_columns=pdf_view.total)
 
     typer.echo("")
 

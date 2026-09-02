@@ -255,6 +255,29 @@ stored. Requirement 11 governs amounts: a transaction total, a balance, a
 gain. If the column answers "how much is this worth", format it; if it
 answers "what does one unit cost", do not.
 
+**Curate a wide table; do not let the renderer measure one.** A list command
+with more columns than an 80-column terminal holds declares its columns once as
+`(name, extractor)` pairs, a `_DEFAULT` subset, and takes `--wide` — the same
+shape `reports` uses, via `column_view` in `render.py`. Header and rows are then
+derived from one declaration, so a moved column cannot desynchronize them.
+
+Reach for `render_rows(fit=True)` only where no author judgement exists to
+encode: it keeps the first and last columns, which on `investments holdings`
+elides `market value` — the figure the command exists to report. The default
+set is curated rather than measured because width knows nothing about meaning.
+
+The reason either is needed: Rich folds an over-narrow cell, and a folded
+amount is *misread*, not merely ugly — `1,200.00` becomes `1,200.` above `00`.
+Do not reach for `no_wrap=True` to stop it. Under real width pressure that
+silently crops `1,234,567.89` to `1,234`: a complete, plausible, wrong number.
+Folding an identifier is the accepted degradation; folding a number is the bug.
+
+**Guard an empty result.** `render_rows([], ...)` draws a header box with no
+rows under it, so a command that renders unconditionally prints a table for a
+result that has nothing in it — where the `for` loop it replaced printed
+nothing at all. Wrap the call in `if rows:`, as `render_report_result` does
+with `if result.records:`. The guard looks removable and is not.
+
 Full contract: [`cli-output-coherence.md`](../../docs/specs/cli-output-coherence.md).
 
 ## Conventions

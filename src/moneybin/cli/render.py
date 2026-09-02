@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -38,9 +38,11 @@ if TYPE_CHECKING:
     from moneybin.reports._framework.contract import MoneyKind, Polarity
 
 __all__ = [
+    "ColumnView",
     "Money",
     "Style",
     "color_enabled",
+    "column_view",
     "format_money",
     "render_note",
     "render_rows",
@@ -257,6 +259,51 @@ def _fit_columns(widths: Sequence[int], available: int) -> tuple[int, ...]:
             best = (head, tail)
     head, tail = best
     return (*range(head), *range(total - tail, total))
+
+
+@dataclass(frozen=True)
+class ColumnView:
+    """What a command renders now, and how many columns it could have."""
+
+    names: list[str]
+    rows: Iterable[tuple[object, ...]]
+    total: int
+
+
+def column_view[T](
+    columns: Sequence[tuple[str, Callable[[T], object]]],
+    records: Iterable[T],
+    *,
+    default: Sequence[str],
+    wide: bool,
+) -> ColumnView:
+    """Project ``records`` onto the columns a narrow terminal should show.
+
+    The header list and every row come from one declaration, so they cannot
+    drift apart — a column moved in ``columns`` moves in both. Naming the
+    columns beside a separately-built positional row tuple is the same list
+    written twice, and the copy that goes wrong is the one no reader checks.
+
+    ``default`` is the curated answer to "what does this command report": the
+    columns that survive an 80-column terminal, chosen by the author rather
+    than by measuring widths, exactly as a report's ``default_columns`` is.
+    Width-based fitting is the fallback for a caller that has no such answer;
+    it cannot know that ``market value`` matters more than ``avg cost``.
+
+    Rows stay lazy so the non-fitting render path keeps streaming.
+    """
+    extract = dict(columns)
+    chosen = [name for name, _ in columns] if wide else list(default)
+    unknown = [name for name in chosen if name not in extract]
+    if unknown:
+        # Refused rather than skipped: a silently dropped column renders a view
+        # nobody declared and leaves the typo in place indefinitely.
+        raise ValueError(f"undeclared column(s) {unknown} for this table")
+    return ColumnView(
+        names=chosen,
+        rows=(tuple(extract[name](record) for name in chosen) for record in records),
+        total=len(columns),
+    )
 
 
 def render_rows(

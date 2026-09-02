@@ -479,7 +479,7 @@ class TestInvestmentsList:
                     10, -1500.00, 'USD')
             """  # noqa: S608  # test fixture insert, static SQL
         )
-        result = runner.invoke(app, ["investments", "list"])
+        result = runner.invoke(app, ["investments", "list", "--wide"])
         assert result.exit_code == 0, result.output
         assert "buy" in result.output
         # Requirement 1: the event row was `qty=… amt=…`, which repeats a field
@@ -534,7 +534,11 @@ class TestHoldingsAndGains:
     def test_holdings_text_renders_value_and_an_unpriced_dash(
         self, runner: CliRunner, db: Database, wide_terminal: None
     ) -> None:
-        """An unpriced position renders "-", never a blank that reads as zero."""
+        """An unpriced position renders "-", never a blank that reads as zero.
+
+        Asks for `--wide` because it asserts on every figure, including the
+        valuation status and observation date the default view leaves out.
+        """
         db.conn.execute(
             """
             CREATE OR REPLACE VIEW core.dim_holdings AS
@@ -555,7 +559,7 @@ class TestHoldingsAndGains:
                    'unpriced'
             """  # noqa: S608  # test fixture view, literal test data only
         )
-        result = runner.invoke(app, ["investments", "holdings"])
+        result = runner.invoke(app, ["investments", "holdings", "--wide"])
         assert result.exit_code == 0, result.output
         priced = next(li for li in result.output.splitlines() if "sec_1" in li)
         unpriced = next(li for li in result.output.splitlines() if "sec_2" in li)
@@ -571,6 +575,49 @@ class TestHoldingsAndGains:
         assert unpriced.count("-") == 2
         assert "1,200.00" not in unpriced
         assert "USD" in unpriced
+
+    @pytest.mark.unit
+    def test_holdings_default_view_keeps_money_whole_at_eighty_columns(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """The curated default fits 80 columns, so no amount folds mid-number.
+
+        Deliberately takes no `wide_terminal`: 80 columns is the contract, and
+        the fixture that widens the terminal is what let all nine columns look
+        fine in every other test while `1,200.00` rendered as `1,200.` above
+        `00` for anyone running a default-sized one.
+
+        A width-measuring fit cannot produce this view — it keeps the first and
+        last columns, so it drops `market value`, which is the figure the
+        command exists to report.
+        """
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   1200.00::DECIMAL(18,2) AS market_value,
+                   200.00::DECIMAL(18,2) AS unrealized_gain,
+                   DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
+                   0::INT AS days_since_observed, 'valued' AS valuation_status
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+
+        assert result.exit_code == 0, result.output
+        # Contiguous, on one line — a folded amount would split these.
+        assert "1,200.00" in result.output
+        assert "+200.00" in result.output
+        assert "market value" in result.output
+        # Every rendered line fits, borders included.
+        assert max(len(li) for li in result.output.splitlines()) <= 80
+        # The narrowing discloses itself, and names a flag this command has.
+        assert "5 of 9 columns shown" in result.output
+        assert "--wide" in result.output
+        assert "valuation_status" not in result.output
 
     @pytest.mark.unit
     def test_holdings_text_reports_the_stalest_close_as_a_number(
@@ -647,7 +694,7 @@ class TestHoldingsAndGains:
         )
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
-        assert "market_value=2000.00 USD" in result.output
+        assert "market_value=2,000.00 USD" in result.output
         assert "mixed currencies" not in result.output
 
     @pytest.mark.unit
@@ -680,10 +727,13 @@ class TestHoldingsAndGains:
             "market_value=- (mixed currencies, no home currency or no rate)"
             in result.output
         )
-        assert "USD=1200.00" in result.output
+        assert "USD=1,200.00" in result.output
         assert "EUR=900.00" in result.output
-        # The wrong sum must appear nowhere in the output.
+        # The wrong sum must appear nowhere in the output, in either spelling:
+        # the footer formats through `format_money` now, so checking only the
+        # bare form would let a formatted wrong sum through.
         assert "2100.00" not in result.output
+        assert "2,100.00" not in result.output
 
     @pytest.mark.unit
     def test_holdings_text_shows_the_originals_behind_a_converted_total(
@@ -723,8 +773,8 @@ class TestHoldingsAndGains:
         )
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
-        assert "market_value=2190.00 USD" in result.output
-        assert "(converted from USD=1200.00 EUR=900.00)" in result.output
+        assert "market_value=2,190.00 USD" in result.output
+        assert "(converted from USD=1,200.00 EUR=900.00)" in result.output
         # Requirement 10: the originals say what was converted, the rate says
         # what converted it. Asserted on the split streams because Click 8.2+
         # interleaves both into `result.output`, so `in result.output` cannot
@@ -777,7 +827,7 @@ class TestHoldingsAndGains:
             """  # noqa: S608  # test fixture insert, static SQL
         )
 
-        result = runner.invoke(app, ["investments", "gains"])
+        result = runner.invoke(app, ["investments", "gains", "--wide"])
 
         assert result.exit_code == 0, result.output
         assert "┃" in result.stdout
@@ -883,7 +933,7 @@ class TestLotsList:
                     'transfer_in', 10, 10, 0.00, 0.00, 'fifo', 'USD', true, true)
             """  # noqa: S608  # test fixture insert, static SQL
         )
-        result = runner.invoke(app, ["investments", "lots", "list"])
+        result = runner.invoke(app, ["investments", "lots", "list", "--wide"])
         assert result.exit_code == 0, result.output
         assert "basis_incomplete" in result.stdout
         assert "incomplete" in result.stderr
@@ -910,7 +960,7 @@ class TestLotsList:
             """  # noqa: S608  # test fixture insert, static SQL
         )
 
-        result = runner.invoke(app, ["investments", "lots", "list"])
+        result = runner.invoke(app, ["investments", "lots", "list", "--wide"])
 
         assert result.exit_code == 0, result.output
         assert "┃" in result.stdout

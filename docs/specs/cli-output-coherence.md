@@ -119,6 +119,21 @@ Numbered, each independently testable.
    stored. Requirement 11 governs *amounts* — what something is worth — not
    the per-unit prices an amount is computed from.
 
+   **A migrated table wider than 80 columns curates its default view.** Six of
+   the eight — `investments holdings`, `gains`, `list`, `lots list`,
+   `import history`, `import formats list --type=pdf` — declare their columns
+   once as `(name, extractor)` pairs plus a `_DEFAULT` subset, and take
+   `--wide`, extending requirement 9's mechanism from `reports` to the list
+   commands. The trigger is that Rich folds an over-narrow cell: a folded
+   amount reads as a smaller number rather than a wrapped one, which is a
+   correctness failure and not a cosmetic one. Width-based fitting
+   (`render_rows(fit=True)`) is the fallback where no author judgement exists
+   to encode — it keeps the first and last columns, so on `holdings` it drops
+   `market value`, the figure the command reports. `column_view` derives the
+   header and every row from the single declaration, so the two cannot drift;
+   a contract test pins each default set to names that exist and to a
+   header width within 80.
+
    The scan is the requirement's enforcement, not a one-off: two more guards
    confine Rich to `render.py` and forbid `typer.secho` / `typer.style`
    anywhere else, which is what makes "no second table idiom" and requirement

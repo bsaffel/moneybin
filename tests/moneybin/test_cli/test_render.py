@@ -1107,3 +1107,80 @@ def test_a_negative_balance_reaches_the_terminal_uncoloured_but_signed(
 
     assert f"{MINUS}50,000.00" in out
     assert "\x1b[31m" not in out, f"a balance carries no direction to colour: {out!r}"
+
+
+# ---------------------------------------------------------------------------
+# Curated default column sets (requirement 9's bar, applied to list commands)
+# ---------------------------------------------------------------------------
+
+
+def _declared_tables() -> list[tuple[str, Sequence[Any], Sequence[str]]]:
+    """Every command table that curates a default view, with its declaration.
+
+    Imported inside the function so this module keeps its cold-start hygiene:
+    the command modules pull in service code that `render.py` deliberately does
+    not.
+    """
+    from moneybin.cli.commands.import_cmd import (  # noqa: PLC0415, PLC2701
+        _HISTORY_COLUMNS,  # pyright: ignore[reportPrivateUsage]
+        _HISTORY_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+        _PDF_FORMAT_COLUMNS,  # pyright: ignore[reportPrivateUsage]
+        _PDF_FORMAT_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+    )
+    from moneybin.cli.commands.investments import (  # noqa: PLC0415, PLC2701
+        _EVENTS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
+        _EVENTS_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+        _GAINS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
+        _GAINS_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+        _HOLDINGS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
+        _HOLDINGS_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+    )
+    from moneybin.cli.commands.investments.lots import (  # noqa: PLC0415, PLC2701
+        _LOTS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
+        _LOTS_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    return [
+        ("investments holdings", _HOLDINGS_COLUMNS, _HOLDINGS_DEFAULT),
+        ("investments gains", _GAINS_COLUMNS, _GAINS_DEFAULT),
+        ("investments list", _EVENTS_COLUMNS, _EVENTS_DEFAULT),
+        ("investments lots list", _LOTS_COLUMNS, _LOTS_DEFAULT),
+        ("import history", _HISTORY_COLUMNS, _HISTORY_DEFAULT),
+        ("import formats list --type=pdf", _PDF_FORMAT_COLUMNS, _PDF_FORMAT_DEFAULT),
+    ]
+
+
+def test_every_curated_default_names_a_column_that_exists() -> None:
+    """A typo in a default set must fail here, not render a view nobody declared.
+
+    `column_view` refuses an undeclared name at runtime, but a command whose
+    default set is only exercised by a test that passes `--wide` would never
+    reach that refusal.
+    """
+    tables = _declared_tables()
+    # Both checks in this section are over a comprehension, so an empty list
+    # would pass them vacuously. Pin the population.
+    assert len(tables) == 6
+    undeclared = {
+        command: sorted(set(default) - {name for name, _ in columns})
+        for command, columns, default in tables
+        if set(default) - {name for name, _ in columns}
+    }
+    assert undeclared == {}
+
+
+def test_every_curated_default_fits_eighty_columns_on_headers_alone() -> None:
+    """Requirement 9's bar: the curated view is chosen to survive 80 columns.
+
+    Headers are the floor, not the whole story — a long value still widens a
+    column — but a default set whose headers alone overflow cannot fit any
+    data, and that is worth catching at declaration time.
+    """
+    tables = _declared_tables()
+    assert len(tables) == 6
+    too_wide = {
+        command: _table_width([len(name) for name in default])
+        for command, _columns, default in tables
+        if _table_width([len(name) for name in default]) > 80
+    }
+    assert too_wide == {}

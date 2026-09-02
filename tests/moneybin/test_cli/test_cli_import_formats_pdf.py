@@ -130,6 +130,29 @@ class TestFormatsListPdf:
         assert pdf_row["times_used"] == 3
         assert pdf_row["last_used"] == "2026-05-30"
 
+    def test_tabular_source_reads_the_same_on_both_surfaces(
+        self, runner: CliRunner, mocker: Any, wide_terminal: None
+    ) -> None:
+        """One field, one value, whichever surface a caller reads it from.
+
+        The text table's `source` column and the JSON `source` field name the
+        same fact, so an agent comparing the two must not have to know that one
+        spells it `built-in` and the other `builtin`.
+        """
+        _mock_get_database(mocker, [_make_pdf_format()])
+        as_json = runner.invoke(
+            import_app, ["formats", "list", "--type", "tabular", "--output", "json"]
+        )
+        assert as_json.exit_code == 0, as_json.output
+        sources = {f["source"] for f in json.loads(as_json.output)["formats"]}
+        assert "builtin" in sources
+
+        _mock_get_database(mocker, [_make_pdf_format()])
+        as_text = runner.invoke(import_app, ["formats", "list", "--type", "tabular"])
+        assert as_text.exit_code == 0, as_text.output
+        for source in sources:
+            assert source in as_text.output
+
     def test_filter_pdf_excludes_tabular(
         self, runner: CliRunner, mocker: Any, wide_terminal: None
     ) -> None:

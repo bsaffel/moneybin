@@ -427,7 +427,7 @@ def test_import_history_renders_a_table_not_a_padded_rule(
     long source path ran past it and a short one left it dangling.
     """
     with patch("moneybin.database.get_database", _fake_db_ctx), _patched_history():
-        result = runner.invoke(app, ["history"], catch_exceptions=False)
+        result = runner.invoke(app, ["history", "--wide"], catch_exceptions=False)
 
     assert result.exit_code == 0, result.output
     assert "┃" in result.stdout

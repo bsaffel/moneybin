@@ -143,10 +143,11 @@ def fx_list(
     # A rate is not an amount: `format_money` rounds to two places, which turns
     # 0.87138 into 0.87 and loses the precision the series exists to record. It
     # therefore declares no money column and renders each rate as stored.
-    render_rows(
-        ["date", "rate", "source"],
-        [(row.rate_date, row.rate, row.source) for row in payload.rows],
-    )
+    if payload.rows:
+        render_rows(
+            ["date", "rate", "source"],
+            [(row.rate_date, row.rate, row.source) for row in payload.rows],
+        )
 
 
 @app.command("set")

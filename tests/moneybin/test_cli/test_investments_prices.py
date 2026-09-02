@@ -612,3 +612,21 @@ class TestPricesRenderThroughTheSharedRenderer:
         assert "no_feed_key" in result.stdout
         assert "sec_2" in result.stdout
         assert "unpriced:" not in result.stdout
+
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_pull(_pull_result())
+    def test_pull_draws_no_unpriced_table_when_everything_priced(
+        self, _pull: MagicMock, _db: MagicMock
+    ) -> None:
+        """The common case prints no table at all, not an empty one.
+
+        `render_rows` draws headers and borders for zero rows, where the loop
+        it replaced printed nothing — so a fully successful pull would have
+        reported an empty "unpriced security" table on every run, and
+        `render_rows` takes no `quiet` for `-q` to suppress it with.
+        """
+        result = runner.invoke(app, ["pull"])
+
+        assert result.exit_code == 0, result.output
+        assert "┃" not in result.stdout
+        assert "unpriced security" not in result.stdout

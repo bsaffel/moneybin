@@ -61,13 +61,14 @@ def investments_securities_list(
             cli_actor="investments_securities_list",
         )
         return
-    render_rows(
-        ["security", "ticker", "name", "type"],
-        [
-            (row.security_id, row.ticker or "-", row.name, row.security_type)
-            for row in result.rows
-        ],
-    )
+    if result.rows:
+        render_rows(
+            ["security", "ticker", "name", "type"],
+            [
+                (row.security_id, row.ticker or "-", row.name, row.security_type)
+                for row in result.rows
+            ],
+        )
 
 
 @app.command("add")

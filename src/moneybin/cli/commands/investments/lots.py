@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import Decimal
 
 import typer
@@ -11,8 +12,9 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
     render_or_json,
+    wide_option,
 )
-from moneybin.cli.render import Money, render_note, render_rows
+from moneybin.cli.render import Money, column_view, render_note, render_rows
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
@@ -21,12 +23,32 @@ from moneybin.privacy.payloads.investments import (
     InvestmentLotsSelectPayload,
 )
 from moneybin.protocol.envelope import build_envelope
-from moneybin.services.investment_service import InvestmentService
+from moneybin.services.investment_service import InvestmentService, LotRow
 
 app = typer.Typer(
     help="Tax lots: list and specific-identification selection",
     no_args_is_help=True,
 )
+
+
+_LOTS_COLUMNS: tuple[tuple[str, Callable[[LotRow], object]], ...] = (
+    ("lot", lambda r: r.lot_id),
+    ("security", lambda r: r.security_id),
+    ("acquired", lambda r: r.acquisition_date),
+    ("remaining", lambda r: r.remaining_quantity),
+    ("basis", lambda r: r.cost_basis_remaining),
+    ("method", lambda r: r.cost_basis_method),
+    ("state", lambda r: "open" if r.is_open else "closed"),
+    ("note", lambda r: "\u26a0\ufe0f basis_incomplete" if r.basis_incomplete else ""),
+)
+
+_LOTS_DEFAULT = ("lot", "security", "acquired", "remaining", "basis")
+"""Which lot, of what, bought when, how much is left, and at what basis.
+
+The `note` column is safe to hold back because the incomplete-basis lots are
+already counted in a warning line beside the table (`InvestmentService.lots`);
+`--wide` says which lots they are.
+"""
 
 
 @app.command("list")
@@ -44,6 +66,7 @@ def investments_lots_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    wide: bool = wide_option,
 ) -> None:
     """List tax lots with remaining quantity and basis. Open lots only by default."""
     with handle_cli_errors(
@@ -63,35 +86,17 @@ def investments_lots_list(
             cli_actor="investments_lots_list",
         )
         return
-    render_rows(
-        [
-            "lot",
-            "security",
-            "acquired",
-            "remaining",
-            "basis",
-            "method",
-            "state",
-            "note",
-        ],
-        [
-            (
-                row.lot_id,
-                row.security_id,
-                row.acquisition_date,
-                row.remaining_quantity,
-                row.cost_basis_remaining,
-                row.cost_basis_method,
-                "open" if row.is_open else "closed",
-                "⚠️ basis_incomplete" if row.basis_incomplete else "",
-            )
-            for row in result.rows
-        ],
-        # A lot's remaining basis is a position rather than a movement, so it
-        # renders unsigned and uncoloured. The remaining quantity is a share
-        # count, not an amount, and is left as stored.
-        money={"basis": Money("balance")},
-    )
+    if result.rows:
+        view = column_view(_LOTS_COLUMNS, result.rows, default=_LOTS_DEFAULT, wide=wide)
+        render_rows(
+            view.names,
+            view.rows,
+            # A lot's remaining basis is a position rather than a movement, so it
+            # renders unsigned and uncoloured. The remaining quantity is a share
+            # count, not an amount, and is left as stored.
+            money={"basis": Money("balance")},
+            total_columns=view.total,
+        )
     for w in result.warnings:
         render_note(f"⚠️  {w}", quiet=quiet, warn=True)
 

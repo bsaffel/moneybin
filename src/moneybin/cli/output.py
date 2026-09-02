@@ -170,7 +170,7 @@ quiet_option: bool = typer.Option(
 wide_option: bool = typer.Option(
     False,
     "--wide",
-    help="Render every column, not just the report's default set.",
+    help="Render every column, not just the default set.",
 )
 
 display_currency_option: str | None = typer.Option(

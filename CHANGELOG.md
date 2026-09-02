@@ -42,6 +42,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rounding them to two would render a sub-cent price as `0.00`. Those columns
   print as stored.
 
+- **Wide list commands now show a curated set of columns and take `--wide` for
+  the rest.** `investments holdings`, `gains`, `list`, `lots list`,
+  `import history`, and `import formats list --type=pdf` each name the columns
+  that answer the question they exist to answer, and disclose the narrowing
+  (`5 of 9 columns shown — --wide for all`). Without this, nine columns in an
+  80-column terminal split an amount across two lines — `1,200.00` rendered as
+  `1,200.` above `00`, which reads as a smaller number rather than as a wrapped
+  one. The default sets are chosen by hand rather than measured: fitting by
+  width keeps the first and last columns, which on `holdings` drops
+  `market value`.
+
+  Commands whose tables already fit — `fx list`, `investments prices list`,
+  `securities list`, `db ps` — are unchanged and gain no flag.
+
 ### Fixed
 - **MCP tool calls now record `moneybin_mcp_tool_calls_total` and `moneybin_mcp_tool_duration_seconds`.** The observability spec described this instrumentation as automatic, but no code path ever recorded either metric — a dashboard built from them stayed at zero permanently. `ValidationErrorMiddleware.on_call_tool`, the single boundary every `tools/call` request passes through, now records both metrics on every call, whether it succeeds, is translated to a validation-error envelope, or raises something else. (#495)
 
