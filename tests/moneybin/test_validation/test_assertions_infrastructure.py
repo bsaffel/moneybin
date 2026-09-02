@@ -11,7 +11,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.migrations import MigrationRunner
-from moneybin.validation.assertions.infrastructure import (
+from tests.validation.assertions.infrastructure import (
     assert_migrations_at_head,
     assert_min_rows,
     assert_no_unencrypted_db_files,

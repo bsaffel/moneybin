@@ -12,8 +12,8 @@ from moneybin.tables import (
     INT_TRANSACTIONS_MATCHED,
     MATCH_DECISIONS,
 )
-from moneybin.validation.expectations._types import SourceTransactionRef
-from moneybin.validation.result import ExpectationResult
+from tests.validation.expectations._types import SourceTransactionRef
+from tests.validation.result import ExpectationResult
 
 
 def verify_match_decision(

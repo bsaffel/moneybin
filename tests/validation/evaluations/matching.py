@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.tables import FCT_TRANSACTIONS, GROUND_TRUTH, INT_TRANSACTIONS_MATCHED
-from moneybin.validation.evaluations._common import (
+from tests.validation.evaluations._common import (
     GroundTruthMissingError,
     has_ground_truth,
     safe_div,
 )
-from moneybin.validation.result import EvaluationResult
+from tests.validation.result import EvaluationResult
 
 
 def score_transfer_detection(db: Database, *, threshold: float) -> EvaluationResult:

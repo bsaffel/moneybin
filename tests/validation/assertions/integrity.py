@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from moneybin.database import Database
-from moneybin.validation.assertions._helpers import quote_ident
-from moneybin.validation.result import AssertionResult
+from tests.validation.assertions._helpers import quote_ident
+from tests.validation.result import AssertionResult
 
 
 def assert_valid_foreign_keys(

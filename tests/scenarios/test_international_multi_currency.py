@@ -30,9 +30,9 @@ from moneybin.database import Database
 from moneybin.services.networth_service import NetworthService
 from moneybin.synthetic.engine import GeneratorEngine
 from moneybin.synthetic.models import GenerationResult
-from moneybin.validation.result import AssertionResult
 from tests.scenarios._runner import load_shipped_scenario, run_scenario
 from tests.scenarios._tier1_backfill import tier1_backfill
+from tests.validation.result import AssertionResult
 
 # Position per currency: (net_worth, account_count). The key is nullable
 # because `reports.net_worth` pools every unknown-currency account into one

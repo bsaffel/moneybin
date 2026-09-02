@@ -7,16 +7,16 @@ from datetime import date
 import pytest
 
 from moneybin.database import Database
-from moneybin.validation.assertions import (
+from tests.scenarios._runner import load_shipped_scenario, run_scenario
+from tests.scenarios._tier1_backfill import FCT_TRANSACTIONS_SCHEMA
+from tests.validation.assertions import (
     assert_amount_precision,
     assert_date_bounds,
     assert_row_count_exact,
     assert_schema_snapshot,
     assert_source_system_populated,
 )
-from moneybin.validation.result import AssertionResult
-from tests.scenarios._runner import load_shipped_scenario, run_scenario
-from tests.scenarios._tier1_backfill import FCT_TRANSACTIONS_SCHEMA
+from tests.validation.result import AssertionResult
 
 
 @pytest.mark.scenarios
