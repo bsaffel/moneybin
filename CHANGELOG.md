@@ -22,7 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   direction, and it deliberately does not judge an amount's sign against its
   category label, which would report every refund and statement credit as a
   defect. A profile that was healthy before may surface a new failure on either
-  check; both name the offending transaction ids under `--verbose`.
+  check; both name the offending transaction ids under `--verbose`. (#504)
 
 ### Fixed
 - **"Uncategorized" now means one thing, and the number is smaller.**
