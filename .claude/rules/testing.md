@@ -277,10 +277,15 @@ touching a YAML expectation, per the derivation rule above.
 | Symptom | Likely cause | Where to look |
 |---|---|---|
 | `halted` non-null, no assertions ran | Pipeline step crashed (loader, transform, match, etc.) | `tests/scenarios/_runner/steps.py` and the called service |
-| Assertion failed with `error` | Assertion fn raised | `src/moneybin/validation/assertions/` |
-| Assertion failed with `details` | Pipeline output diverged from spec | The pipeline step that owns the data, **or** the scenario YAML if the expectation is wrong |
+| Assertion failed, `error` reads like a Python exception (`KeyError: ...`) | The assertion fn crashed; the runner also fills `details` with the resolved args | `src/moneybin/validation/assertions/` |
+| Assertion failed, `error` is author-written prose or only `details` is set | The assertion ran and the invariant is genuinely violated | The pipeline step that owns the data, **or** the scenario YAML if the expectation is wrong |
 | Expectation failed | Per-record claim doesn't match | The fixture YAML, the expectation engine, or the categorize/match step |
 | Evaluation below threshold | Score regressed | The pipeline + the threshold itself — was the threshold realistic? |
+
+Which field is populated does not by itself separate a crash from a violation:
+`_run_assertion` sets both `error` and `details` when it catches an exception,
+and an `extra_assertions` callback returns an ordinary failure as `error=`
+without ever raising. Read what `error` says.
 
 The `Scenarios` CI workflow shards `pytest -m scenarios` four ways and uploads
 one `pytest-json-report` artifact per shard — `scenarios-results-<group>`
