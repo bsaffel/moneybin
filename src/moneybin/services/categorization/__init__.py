@@ -756,7 +756,7 @@ class CategorizationService:
         return self._queries.list_categorization_history()
 
     def count_uncategorized(self) -> int:
-        """Return the number of transactions without a category assignment."""
+        """Return the size of the canonical ``core.uncategorized_queue``."""
         return self._queries.count_uncategorized()
 
     def categorization_stats(self) -> dict[str, int | float]:

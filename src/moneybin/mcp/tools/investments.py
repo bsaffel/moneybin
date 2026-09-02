@@ -32,7 +32,7 @@ surface-budget tests.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date as _date
 from decimal import Decimal
 from typing import Annotated, Any, Literal, cast
@@ -51,9 +51,9 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity
 from moneybin.price_sources import FEED_KEY_REF_KINDS
-from moneybin.privacy.introspection import extract_data_classes
+from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.investments import (
     InvestmentEventsPayload,
     InvestmentGainsPayload,
@@ -74,7 +74,6 @@ from moneybin.privacy.payloads.investments import (
     SecurityLinksPendingPayload,
     SecurityLinksSetPayload,
 )
-from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
     KeysetPosition,
@@ -1297,26 +1296,14 @@ def _investment_coarse_envelope(
     actions: list[str],
 ) -> ResponseEnvelope[InvestmentsCoarsePayload]:
     """Build a runtime-classified investment envelope."""
-    contract_type = type(data)
-    classes = extract_data_classes(contract_type)
-    tier = max(data_class.tier for data_class in classes)
-    redacted = cast(InvestmentsCoarsePayload, redact_typed(data, None))
-    envelope = cast(
-        ResponseEnvelope[InvestmentsCoarsePayload],
-        build_envelope(
-            data=redacted,
-            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
-            total_count=total_count,
-            returned_count=len(data.rows),
-            next_cursor=next_cursor,
-            period=period,
-            actions=actions,
-            classes_returned=sorted(data_class.value for data_class in classes),
-        ),
-    )
-    return replace(
-        envelope,
-        summary=replace(envelope.summary, has_more=next_cursor is not None),
+    return build_classified_envelope(
+        data,
+        total_count=total_count,
+        returned_count=len(data.rows),
+        next_cursor=next_cursor,
+        period=period,
+        actions=actions,
+        has_more=next_cursor is not None,
     )
 
 

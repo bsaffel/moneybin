@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 import pytest
 
@@ -158,3 +159,51 @@ def test_list_distinct_labels_returns_counts(db: Database) -> None:
     assert counts == {"budget-2026": 3, "tax:2026": 1, "loan": 1}
     # Ordering: highest count first.
     assert distinct[0][0] == "budget-2026"
+
+
+@pytest.mark.unit
+def test_raw_data_summary_counts_rows_with_no_date_range(db: Database) -> None:
+    """A non-transaction raw table reports its row count with no date range."""
+    db.conn.execute("CREATE TABLE raw.zzz_test_table (id INTEGER)")
+    db.conn.execute("INSERT INTO raw.zzz_test_table VALUES (1), (2), (3)")
+    stats = ImportService(db).raw_data_summary()
+    matching = [s for s in stats if s.table == "zzz_test_table"]
+    assert len(matching) == 1
+    stat = matching[0]
+    assert stat.schema == "raw"
+    assert stat.rows == 3
+    assert stat.date_min is None
+    assert stat.date_max is None
+
+
+@pytest.mark.unit
+def test_raw_data_summary_derives_date_range_from_transaction_date(
+    db: Database,
+) -> None:
+    """A non-OFX transaction table derives its date range from transaction_date."""
+    db.conn.execute("CREATE TABLE raw.aaa_test_transactions (transaction_date VARCHAR)")
+    db.conn.execute(
+        "INSERT INTO raw.aaa_test_transactions VALUES ('2026-01-05'), ('2026-02-10')"
+    )
+    stats = ImportService(db).raw_data_summary()
+    matching = [s for s in stats if s.table == "aaa_test_transactions"]
+    assert len(matching) == 1
+    stat = matching[0]
+    assert stat.rows == 2
+    assert stat.date_min == date(2026, 1, 5)
+    assert stat.date_max == date(2026, 2, 10)
+
+
+@pytest.mark.unit
+def test_raw_data_summary_uses_date_posted_for_ofx_tables(db: Database) -> None:
+    """An OFX-named transaction table derives its date range from date_posted."""
+    db.conn.execute("CREATE TABLE raw.ofx_test_transactions (date_posted VARCHAR)")
+    db.conn.execute(
+        "INSERT INTO raw.ofx_test_transactions VALUES ('2026-03-01'), ('2026-03-15')"
+    )
+    stats = ImportService(db).raw_data_summary()
+    matching = [s for s in stats if s.table == "ofx_test_transactions"]
+    assert len(matching) == 1
+    stat = matching[0]
+    assert stat.date_min == date(2026, 3, 1)
+    assert stat.date_max == date(2026, 3, 15)
