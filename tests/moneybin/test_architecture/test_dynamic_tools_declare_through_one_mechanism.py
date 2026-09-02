@@ -283,6 +283,30 @@ def _call_name(node: ast.Call) -> str | None:
     return None
 
 
+def _own_statements(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:
+    """Every node in the function's own body, stopping at a nested definition."""
+    found: list[ast.AST] = []
+    stack: list[ast.AST] = list(node.body)
+    while stack:
+        current = stack.pop()
+        if isinstance(current, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            continue
+        found.append(current)
+        stack.extend(ast.iter_child_nodes(current))
+    return found
+
+
+def _bound_names(target: ast.expr) -> list[str]:
+    """Every name a single assignment target binds, destructuring included."""
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, ast.Tuple | ast.List):
+        return [name for element in target.elts for name in _bound_names(element)]
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    return []
+
+
 def _own_returns(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]:
     """The function's own `return`s, not those of helpers nested inside it.
 
@@ -577,6 +601,17 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
         assignments: _Assignments = {}
         for statement in node.body:
             for child in ast.walk(statement):
+                if isinstance(child, ast.AnnAssign) and isinstance(
+                    child.target, ast.Name
+                ):
+                    # `name: Any = value` binds just as a plain assignment
+                    # does; skipping it left an annotated local shadow unseen.
+                    if child.value is not None:
+                        assignments.setdefault(child.target.id, []).append((
+                            child.lineno,
+                            child.value,
+                        ))
+                    continue
                 if isinstance(child, ast.AugAssign | ast.AnnAssign):
                     # `envelope.classes_returned += [...]` names no target the
                     # Assign arm sees and passes no keyword.
@@ -605,6 +640,15 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                             child.lineno,
                             child.value,
                         ))
+                    elif isinstance(target, ast.Tuple | ast.List | ast.Starred):
+                        # Destructuring binds every name in the pattern. Which
+                        # value each takes is not knowable here, and binding is
+                        # all that shadowing needs.
+                        for name in _bound_names(target):
+                            assignments.setdefault(name, []).append((
+                                child.lineno,
+                                target,
+                            ))
                     elif (
                         isinstance(target, ast.Attribute)
                         and target.attr in MUTABLE_DECLARATION_TARGETS
@@ -684,11 +728,20 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                 if isinstance(target, ast.Name):
                     shadowed.add(target.id)
 
+        # Two populations, and the direction decides which is used where.
+        # `body_calls` is the liberal one: a construction or a declaration
+        # inside a nested closure still counts, because failing closed there
+        # means recording more. `own_calls` excludes nested definitions, and
+        # is what may *credit* the builder or drive the traversal — a helper
+        # nobody calls must not vouch for the tool that merely contains it.
         body_calls = [
             child
             for statement in node.body
             for child in ast.walk(statement)
             if isinstance(child, ast.Call)
+        ]
+        own_calls = [
+            found for found in _own_statements(node) if isinstance(found, ast.Call)
         ]
         decorator_calls = [
             child
@@ -702,7 +755,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                 module=current_path.name,
                 function=current_name,
                 assignments=assignments,
-                casts_are_typing=casts_are_typing,
+                casts_are_typing=casts_are_typing and "cast" not in shadowed,
             )
             if declaration is not None:
                 declarations.append(declaration)
@@ -712,7 +765,9 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
             if callee is not None and callee in shadowed:
                 continue
             qualified = _call_name(call)
-            if callee is None and qualified in RAW_CONSTRUCTORS:
+            if (callee is None or callee in RAW_CONSTRUCTORS) and (
+                qualified in RAW_CONSTRUCTORS
+            ):
                 # Direction matters: crediting the builder must be strict, so
                 # a qualified call never counts as it. Flagging a raw build is
                 # the opposite — failing closed means recording more, not
@@ -729,6 +784,11 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                     )
                 )
                 continue
+
+        for call in own_calls:
+            callee = _bare_name(call)
+            if callee is None or callee in shadowed:
+                continue
             if callee == BUILDER:
                 # String equality is not identity: a module that defines its
                 # own `build_classified_envelope`, or spells the name without
@@ -739,19 +799,6 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                     reaches_builder = True
                 else:
                     continue
-            elif callee in RAW_CONSTRUCTORS:
-                constructions.append(
-                    Construction(
-                        module=current_path.name,
-                        function=current_name,
-                        constructor=callee,
-                        declares_fields=any(
-                            keyword.arg in DECLARED_FIELDS for keyword in call.keywords
-                        ),
-                    )
-                )
-            if callee is None:
-                continue
             if callee in current_functions:
                 pending.append((current_path, callee, False))
             elif callee in imports:
@@ -787,7 +834,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                     child.value,
                     assignments,
                     before=child.lineno,
-                    casts_are_typing=casts_are_typing,
+                    casts_are_typing=casts_are_typing and "cast" not in shadowed,
                 ):
                     callee = _bare_name(value) if isinstance(value, ast.Call) else None
                     if (
@@ -1117,6 +1164,28 @@ def _probe_building_through_a_qualified_constructor() -> ResponseEnvelope[Any]:
     return envelope_module.build_envelope(data={"probe": True})
 
 
+def _probe_rebinding_the_builder_with_an_annotation() -> ResponseEnvelope[Any]:
+    """Stand-in for an annotated local shadowing the builder."""
+    build_classified_envelope: Any = _elsewhere()
+    return build_classified_envelope({"probe": True})
+
+
+def _probe_rebinding_the_builder_by_destructuring() -> ResponseEnvelope[Any]:
+    """Stand-in for a destructured local shadowing the builder."""
+    build_classified_envelope, _other = _elsewhere()
+    return build_classified_envelope({"probe": True})
+
+
+def _probe_with_a_dead_nested_builder_call() -> ResponseEnvelope[Any]:
+    """Stand-in for a classifier call inside a helper nobody invokes."""
+
+    def _never_called() -> ResponseEnvelope[Any]:
+        return build_classified_envelope({"probe": True})
+
+    _ = _never_called
+    return _elsewhere().make_envelope()
+
+
 def _probe_hiding_a_literal_behind_an_alias() -> ResponseEnvelope[Any]:
     """Stand-in for a constant spelled into a local before the call."""
     hidden = "low"
@@ -1295,6 +1364,25 @@ def test_the_analysis_can_return_a_failing_verdict() -> None:
     )
     assert [site.constructor for site in qualified.constructions] == [
         build_envelope.__name__
+    ]
+
+    # An annotated or destructured local shadows the builder exactly as a
+    # parameter does; both were invisible while only plain assignments and
+    # parameters were recorded.
+    for probe in (
+        _probe_rebinding_the_builder_with_an_annotation,
+        _probe_rebinding_the_builder_by_destructuring,
+    ):
+        rebound = mechanism_of(Path(__file__), probe.__name__)
+        assert not rebound.reaches_builder, probe.__name__
+        assert rebound.unverified_returns, probe.__name__
+
+    # A classifier call inside a helper nobody invokes is not a path the tool
+    # takes, so it must not credit the tool that merely contains it.
+    dead = mechanism_of(Path(__file__), _probe_with_a_dead_nested_builder_call.__name__)
+    assert not dead.reaches_builder
+    assert [site.expression for site in dead.unverified_returns] == [
+        "_elsewhere().make_envelope()"
     ]
 
     # Omitting one field is the half-contract case the `partial` check reads.
