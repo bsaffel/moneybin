@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +18,8 @@ from moneybin.connectors.gsheet.adapters.base import (
 )
 from moneybin.connectors.gsheet.connection_service import ConnectResult
 from moneybin.connectors.gsheet.pull_service import PullResult
+from moneybin.privacy.classified_envelope import classify
+from moneybin.privacy.payloads.gsheet import GsheetConnectionsPayload
 
 runner = CliRunner()
 
@@ -128,7 +131,7 @@ def test_gsheet_auth_json_output(mock_build: MagicMock) -> None:
     mock_build.return_value = client
     result = runner.invoke(app, ["gsheet", "auth", "--output", "json"])
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
+    payload = json.loads(result.stdout)["data"]
     assert payload["status"] == "authorized"
 
 
@@ -192,7 +195,7 @@ def test_gsheet_connect_json_output(mock_build: MagicMock) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
+    payload = json.loads(result.stdout)["data"]
     assert payload["connection"]["connection_id"] == "conn_abc123"
     assert payload["initial_pull"]["rows_inserted"] == 3
 
@@ -401,8 +404,8 @@ def test_gsheet_pull_json_output(
         ["gsheet", "pull", "conn_abc123", "--output", "json", "--no-refresh"],
     )
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
-    # Envelope shape: {"pulls": [...], "refresh_error": str | None}
+    payload = json.loads(result.stdout)["data"]
+    # Payload shape: {"pulls": [...], "refresh_error": str | None}
     assert payload["refresh_error"] is None
     assert payload["pulls"][0]["connection_id"] == "conn_abc123"
     assert payload["pulls"][0]["status"] == "complete"
@@ -480,7 +483,7 @@ def test_gsheet_pull_json_carries_transfers_retired(
 
     result = runner.invoke(app, ["gsheet", "pull", "conn_abc123", "--output", "json"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["transfers_retired"] == 2
+    assert json.loads(result.stdout)["data"]["transfers_retired"] == 2
 
 
 @pytest.mark.unit
@@ -611,7 +614,7 @@ def test_gsheet_pull_json_carries_the_rate_backfill_outcome(
 
     result = runner.invoke(app, ["gsheet", "pull", "conn_abc123", "--output", "json"])
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
+    payload = json.loads(result.stdout)["data"]
     assert payload["rates_written"] == 7
     assert payload["rate_pairs_failed"] == ["EUR/USD"]
     assert payload["rate_pairs_discarded"] == ["GBP/USD"]
@@ -652,7 +655,7 @@ def test_gsheet_pull_json_says_null_when_the_rates_step_did_not_run(
         app, ["gsheet", "pull", "conn_abc123", "--no-refresh", "--output", "json"]
     )
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
+    payload = json.loads(result.stdout)["data"]
     assert payload["rates_written"] is None
     assert payload["rate_backfill_error"] is None
 
@@ -693,8 +696,8 @@ def test_gsheet_list_json_output(mock_build: MagicMock) -> None:
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["gsheet", "list", "--output", "json"])
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
-    assert payload[0]["connection_id"] == "conn_abc123"
+    rows = json.loads(result.stdout)["data"]["connections"]
+    assert rows[0]["connection_id"] == "conn_abc123"
 
 
 # ------------------------------------------------------------------ status ---
@@ -710,6 +713,43 @@ def test_gsheet_status_unknown_connection_exits_nonzero(
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["gsheet", "status", "conn_missing"])
     assert result.exit_code == 1
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_status_unknown_connection_audits_as_gsheet_status(
+    mock_build: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure row names the same command and payload the success row does.
+
+    `handle_cli_errors` defaults to `cli.unknown` at the conservative `high`
+    tier with no classes; the success path below it records `cli.gsheet_status`
+    off `GsheetConnectionsPayload`. Left unwired, one command wrote two
+    different provenances into `privacy.log.jsonl` depending only on whether
+    the id existed.
+    """
+    log_dir = tmp_path / "profile"
+    log_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir",
+        lambda: log_dir,
+    )
+    service = MagicMock()
+    service.get.return_value = None
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(
+        app, ["gsheet", "status", "conn_missing", "--output", "json"]
+    )
+
+    assert result.exit_code == 1
+    expected = classify(GsheetConnectionsPayload)
+    event = json.loads((log_dir / "privacy.log.jsonl").read_text().splitlines()[0])
+    assert event["actor"] == "cli.gsheet_status"
+    assert event["sensitivity"] == expected.sensitivity
+    assert event["classes_returned"] == expected.classes_returned
 
 
 @pytest.mark.unit
@@ -940,6 +980,6 @@ def test_gsheet_reconnect_json_output_carries_detection_notes(
     )
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
-    notes = " ".join(payload["detection"]["notes"])
+    payload = json.loads(result.stdout)["data"]
+    notes = " ".join(payload["detection"]["detection_notes"])
     assert "Amount_duplicated_0" in notes

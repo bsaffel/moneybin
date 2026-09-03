@@ -20,6 +20,10 @@ from moneybin.errors import (
     exception_origin,
 )
 from moneybin.mcp._registration import register
+from moneybin.mcp.adapters.matching_adapters import (
+    match_history_row,
+    match_pending_row,
+)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -85,7 +89,6 @@ from moneybin.privacy.payloads.reviews import (
     SecurityLinkPendingDetails,
     SecurityLinkReviewRow,
 )
-from moneybin.privacy.payloads.transactions import MatchHistoryRow, MatchPendingRow
 from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
@@ -430,6 +433,17 @@ def _auto_rule_history_rows(service: AutoRuleService) -> list[AutoRuleReviewRow]
     return rows
 
 
+def _match_summary(match_type: str, score: float | None) -> str:
+    """One-line match summary, saying "unscored" rather than "0.00 confidence".
+
+    An exact-id match records no score; printing 0.00 would tell the agent the
+    engine compared the pair and found nothing in common.
+    """
+    if score is None:
+        return f"{match_type} match, no confidence score recorded"
+    return f"{match_type} match at {score:.2f} confidence"
+
+
 def _pending_match_rows(service: MatchingService) -> list[MatchReviewRow]:
     """Project the complete pending match decision queue."""
     raw_rows = service.get_pending(limit=None)
@@ -442,27 +456,13 @@ def _pending_match_rows(service: MatchingService) -> list[MatchReviewRow]:
     )
     result: list[MatchReviewRow] = []
     for row in ordered:
-        match = MatchPendingRow(
-            match_id=str(row["match_id"]),
-            match_type=str(row.get("match_type") or "dedup"),
-            match_tier=cast(str | None, row.get("match_tier")),
-            confidence_score=float(row.get("confidence_score") or 0.0),
-            source_type_a=str(row["source_type_a"]),
-            source_transaction_id_a=str(row["source_transaction_id_a"]),
-            source_type_b=str(row["source_type_b"]),
-            source_transaction_id_b=str(row["source_transaction_id_b"]),
-            match_status=str(row["match_status"]),
-            component_key=str(row["component_key"]),
-        )
+        match = match_pending_row(row)
         result.append(
             MatchReviewRow(
                 decision_id=match.match_id,
                 status=match.match_status,
                 created_at=_text(row.get("decided_at")),
-                summary=(
-                    f"{match.match_type} match at "
-                    f"{match.confidence_score:.2f} confidence"
-                ),
+                summary=_match_summary(match.match_type, match.confidence_score),
                 details=MatchPendingDetails(match=match),
             )
         )
@@ -473,14 +473,7 @@ def _match_history_rows(service: MatchingService) -> list[MatchReviewRow]:
     """Project the actual match history path."""
     result: list[MatchReviewRow] = []
     for row in service.get_log(limit=None):
-        match = MatchHistoryRow(
-            match_id=str(row["match_id"]),
-            match_type=str(row.get("match_type") or "dedup"),
-            match_status=str(row["match_status"]),
-            confidence_score=float(row.get("confidence_score") or 0.0),
-            decided_by=str(row.get("decided_by") or "unknown"),
-            decided_at=_text(row.get("decided_at")),
-        )
+        match = match_history_row(row)
         result.append(
             MatchReviewRow(
                 decision_id=match.match_id,
@@ -748,7 +741,11 @@ def _review_ordering(
     if kind == "matches":
         return (
             (
-                float(row.details.match.confidence_score),
+                # 0.0 for an unscored (exact-id) match: the keyset contract
+                # above declares this key `float`, and a cursor key has to be a
+                # total order. It sorts, it is not reported — `data` carries the
+                # null.
+                float(row.details.match.confidence_score or 0.0),
                 str(row.decision_id),
             ),
             directions,

@@ -153,11 +153,20 @@ class SyncStatusPayload:
 
 @dataclass(frozen=True, slots=True)
 class SyncLinkPayload:
-    """Payload for ``sync_link`` — link URL + session ID."""
+    """Payload for ``sync_link`` — link URL + session ID.
+
+    ``link_type`` says which flow the URL opens, which decides what the caller
+    tells the user to do next: a widget completes in the browser, a token paste
+    comes back for the caller to hand over. The CLI reported it before this
+    payload existed; MCP had been dropping it.
+    """
 
     session_id: Annotated[str, DataClass.RECORD_ID]
     link_url: Annotated[str, DataClass.DESCRIPTION]
     expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    link_type: Annotated[Literal["widget_flow", "token_paste"], DataClass.TXN_TYPE] = (
+        "widget_flow"
+    )
 
 
 class SyncInstitutionLinkView(BaseModel):

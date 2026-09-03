@@ -3286,7 +3286,6 @@ async def test_import_status_coarse_preserves_legacy_section_data(
 
     assert imports.records == legacy_imports.data.records
     assert formats.formats == legacy_formats.data.formats
-    assert formats.pdf_formats == legacy_formats.data.pdf_formats
     assert inbox.would_process == legacy_inbox.data.would_process
     assert inbox.ignored == legacy_inbox.data.ignored
 

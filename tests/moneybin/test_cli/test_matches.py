@@ -23,6 +23,23 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
 
 
+def _pending_row(*, confidence: float | None) -> dict[str, object]:
+    """One pending dedup edge; `confidence=None` is the exact-id (unscored) case."""
+    return {
+        "match_id": "m_ab",
+        "match_type": "dedup",
+        "match_tier": "3",
+        "confidence_score": confidence,
+        "source_type_a": "csv",
+        "source_transaction_id_a": "t1",
+        "source_type_b": "ofx",
+        "source_transaction_id_b": "t2",
+        "match_status": "pending",
+        "component_key": "csv|t1",
+        "account_id": "acc1",
+    }
+
+
 class TestMatchesRun:
     """Tests for the matches run command."""
 
@@ -420,13 +437,24 @@ class TestMatchesPending:
         assert "m_ab" in result.output
         assert "m_bc" in result.output
 
+    @patch(
+        "moneybin.services.matching_service.MatchingService.count_pending_dedup_groups"
+    )
+    @patch("moneybin.services.matching_service.MatchingService.count_pending")
     @patch("moneybin.cli.commands.transactions.matches.get_database")
     @patch("moneybin.services.matching_service.MatchingService.get_pending")
     def test_pending_json_output_includes_component_key(
-        self, mock_pending: MagicMock, mock_get_db: MagicMock
+        self,
+        mock_pending: MagicMock,
+        mock_get_db: MagicMock,
+        mock_count: MagicMock,
+        mock_groups: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """--output json returns rows with component_key present."""
+        """--output json is the standard envelope, and component_key survives it."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_count.return_value = 3
+        mock_groups.return_value = 1
         mock_pending.return_value = [
             {
                 "match_id": "m_ab",
@@ -442,10 +470,168 @@ class TestMatchesPending:
                 "account_id": "acc1",
             }
         ]
+        captured: dict[str, object] = {}
+        monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+
         result = runner.invoke(app, ["pending", "--output", "json"])
+
         assert result.exit_code == 0
         data = json.loads(result.output)
-        assert data["matches"][0]["component_key"] == "csv|t1"
+        assert data["data"]["matches"][0]["component_key"] == "csv|t1"
+        assert data["data"]["n_dedup_groups"] == 1
+        # The queue is paginated, so the count beyond this page is the whole
+        # point of routing it through the envelope.
+        assert data["summary"]["total_count"] == 3
+        assert data["summary"]["has_more"] is True
+        assert captured["classes_returned"] == ["aggregate", "record_id", "txn_type"]
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.get_log")
+    def test_history_json_output_carries_every_column_the_table_renders(
+        self,
+        mock_log: MagicMock,
+        mock_get_db: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """cli.md: the JSON branch may carry more fields than the text table, never fewer.
+
+        `matches history` renders tier and both source types, so a payload
+        without them would be a narrower answer than the terminal's.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_log.return_value = [
+            {
+                "match_id": "m_ab",
+                "match_type": "dedup",
+                "match_status": "accepted",
+                "match_tier": "3",
+                "confidence_score": 0.95,
+                "decided_by": "user",
+                "decided_at": "2026-01-02T03:04:05",
+                "source_type_a": "csv",
+                "source_type_b": "ofx",
+            }
+        ]
+        captured: dict[str, object] = {}
+        monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+
+        result = runner.invoke(app, ["history", "--output", "json"])
+
+        assert result.exit_code == 0, result.output
+        row = json.loads(result.output)["data"]["matches"][0]
+        assert row["match_id"] == "m_ab"
+        assert row["match_tier"] == "3"
+        assert row["source_type_a"] == "csv"
+        assert row["source_type_b"] == "ofx"
+        assert captured["classes_returned"]
+
+    @patch(
+        "moneybin.services.matching_service.MatchingService.count_pending_dedup_groups"
+    )
+    @patch("moneybin.services.matching_service.MatchingService.count_pending")
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.get_pending")
+    def test_text_path_does_not_rescan_the_queue_for_counts_it_never_renders(
+        self,
+        mock_pending: MagicMock,
+        mock_get_db: MagicMock,
+        mock_count: MagicMock,
+        mock_groups: MagicMock,
+    ) -> None:
+        """Both counts exist for the envelope; the text table shows neither.
+
+        `count_pending_dedup_groups` reloads the entire pending queue and
+        rebuilds the component graph `get_pending` has already walked, so
+        computing it unconditionally doubled the work of every text-mode run.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_pending.return_value = [_pending_row(confidence=0.95)]
+
+        result = runner.invoke(app, ["pending"])
+
+        assert result.exit_code == 0
+        mock_count.assert_not_called()
+        mock_groups.assert_not_called()
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.get_pending")
+    def test_pending_text_prints_a_dash_for_an_unscored_match(
+        self, mock_pending: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """An exact-id match records no score, and the table has always said so."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_pending.return_value = [_pending_row(confidence=None)]
+
+        result = runner.invoke(app, ["pending"])
+
+        assert result.exit_code == 0
+        assert "0.00" not in result.output
+
+    @patch(
+        "moneybin.services.matching_service.MatchingService.count_pending_dedup_groups"
+    )
+    @patch("moneybin.services.matching_service.MatchingService.count_pending")
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.get_pending")
+    def test_pending_json_reports_an_unscored_match_as_null_not_zero(
+        self,
+        mock_pending: MagicMock,
+        mock_get_db: MagicMock,
+        mock_count: MagicMock,
+        mock_groups: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """0.0 would claim the engine compared the pair and found nothing in common.
+
+        The text table prints a dash for the same row, so a coerced zero here is
+        also a CLI/MCP divergence on one field.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_count.return_value = 1
+        mock_groups.return_value = 1
+        mock_pending.return_value = [_pending_row(confidence=None)]
+        captured: dict[str, object] = {}
+        monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+
+        result = runner.invoke(app, ["pending", "--output", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert (
+            json.loads(result.output)["data"]["matches"][0]["confidence_score"] is None
+        )
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.get_log")
+    def test_history_json_reports_an_unscored_decision_as_null_not_zero(
+        self,
+        mock_log: MagicMock,
+        mock_get_db: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The history adapter carried the same coercion as the pending one."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_log.return_value = [
+            {
+                "match_id": "m_ab",
+                "match_type": "dedup",
+                "match_status": "accepted",
+                "match_tier": None,
+                "confidence_score": None,
+                "decided_by": "user",
+                "decided_at": "2026-01-02T03:04:05",
+                "source_type_a": "csv",
+                "source_type_b": "ofx",
+            }
+        ]
+        captured: dict[str, object] = {}
+        monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+
+        result = runner.invoke(app, ["history", "--output", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert (
+            json.loads(result.output)["data"]["matches"][0]["confidence_score"] is None
+        )
 
 
 class TestMatchesSet:

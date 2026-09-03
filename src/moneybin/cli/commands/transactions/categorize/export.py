@@ -74,6 +74,14 @@ def categorize_export_uncategorized(
         },
     )
 
+    # Not `render_or_json`, and not because this misses stdout — it reaches
+    # stdout whenever `--output` names no file. This JSON is an interchange
+    # document: `moneybin transactions categorize commit-from-file` reads it
+    # back after an LLM fills in the categories, so an envelope around it would
+    # break the round trip. Its own privacy controls are already in place —
+    # every row is a `RedactedTransaction` (PII scrubbed at the service
+    # boundary, no amounts, dates, or account identifiers) and the `audit_log`
+    # call above records the read.
     payload = [row.to_dict() for row in rows]
     json_text = json.dumps(payload, indent=2)
 

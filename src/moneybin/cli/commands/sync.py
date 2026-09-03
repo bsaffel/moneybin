@@ -1,6 +1,5 @@
 """Data synchronization commands for MoneyBin CLI."""
 
-import json
 import logging
 import sys
 import webbrowser
@@ -8,7 +7,12 @@ from contextlib import contextmanager
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
 from moneybin.cli.utils import (
     handle_cli_errors,
     warn_refresh_steps,
@@ -16,7 +20,6 @@ from moneybin.cli.utils import (
 )
 from moneybin.connectors.sync_models import LinkInitiateResponse
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
-from moneybin.services.refresh_outcome import refresh_steps_fields
 
 from .stubs import _not_implemented
 
@@ -180,8 +183,23 @@ def sync_link(
                 # Event-driven: emit initiate response and exit. Agent verifies
                 # completion via `sync link-status` after the user finishes
                 # the Plaid Hosted Link flow out-of-band.
+                from moneybin.mcp.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
+                    sync_link_envelope,
+                )
+
                 initiate = service.initiate_link(institution=institution)
-                typer.echo(initiate.model_dump_json(indent=2))
+                render_or_json(
+                    sync_link_envelope(
+                        initiate,
+                        actions=[
+                            "Open link_url in a browser to complete the connection",
+                            "Then run 'moneybin sync link-status --session-id "
+                            "<session_id>' to verify",
+                        ],
+                    ),
+                    output,
+                    cli_actor="sync_link",
+                )
                 return
 
             def _on_initiate(init: LinkInitiateResponse) -> None:
@@ -240,7 +258,18 @@ def sync_link_status(
         result = client.get_link_status(session_id)
 
     if output == OutputFormat.JSON:
-        typer.echo(result.model_dump_json(indent=2))
+        from moneybin.mcp.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
+            sync_link_status_envelope,
+        )
+
+        render_or_json(
+            sync_link_status_envelope(
+                result,
+                actions=["Run 'moneybin sync pull' once the status is 'linked'"],
+            ),
+            output,
+            cli_actor="sync_link_status",
+        )
         return
     typer.echo(f"✅ {result.status}: {result.institution_name or '(no name)'}")
 
@@ -321,7 +350,18 @@ def sync_disconnect(
         with _build_sync_service() as service:
             service.disconnect(institution=institution)
     if output == OutputFormat.JSON:
-        typer.echo(json.dumps({"status": "disconnected", "institution": institution}))
+        from moneybin.mcp.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
+            sync_disconnect_envelope,
+        )
+
+        render_or_json(
+            sync_disconnect_envelope(
+                institution=institution,
+                actions=["Use 'moneybin sync link' to reconnect an institution"],
+            ),
+            output,
+            cli_actor="sync_disconnect",
+        )
     else:
         typer.echo(f"✅ Disconnected {institution}")
 
@@ -372,13 +412,20 @@ def sync_pull(
     warn_refresh_steps(result.refresh_steps)
 
     if output == OutputFormat.JSON:
-        # Flattened rather than dumped as the nested field it travels in, so
-        # these read exactly as `refresh_envelope` spells them on every other
-        # surface. The carrier is internal transport; the envelope is public.
-        body = result.model_dump(mode="json")
-        body.pop("refresh_steps", None)
-        body.update(refresh_steps_fields(result.refresh_steps))
-        typer.echo(json.dumps(body, indent=2))
+        from moneybin.mcp.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
+            sync_pull_envelope,
+        )
+
+        render_or_json(
+            sync_pull_envelope(
+                result,
+                actions=[
+                    "Run 'moneybin sync status' to see connection health going forward",
+                ],
+            ),
+            output,
+            cli_actor="sync_pull",
+        )
         # Fall through to the shared exit-code check so JSON-mode agents
         # gating on process status see the same signal as text-mode users.
     else:
@@ -498,11 +545,22 @@ def sync_status(
             connections = service.list_connections()
 
     if output == OutputFormat.JSON:
-        rows = [c.model_dump(mode="json") for c in connections]
-        if json_fields:
-            keep = {f.strip() for f in json_fields.split(",")}
-            rows = [{k: v for k, v in r.items() if k in keep} for r in rows]
-        typer.echo(json.dumps(rows, indent=2))
+        from moneybin.mcp.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
+            sync_status_envelope,
+        )
+
+        # The projection is `render_or_json`'s now, not this command's: it
+        # descends into the payload's single list field and applies the same
+        # filter, after the redaction walk rather than instead of it.
+        render_or_json(
+            sync_status_envelope(
+                connections,
+                actions=["Use 'moneybin sync pull' to fetch new transactions"],
+            ),
+            output,
+            json_fields=json_fields,
+            cli_actor="sync_status",
+        )
         return
 
     if not connections:

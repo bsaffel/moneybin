@@ -33,6 +33,10 @@ from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError, exception_origin
 from moneybin.mcp._registration import register
+from moneybin.mcp.adapters.matching_adapters import (
+    matches_history_envelope,
+    matches_pending_envelope,
+)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -43,8 +47,6 @@ from moneybin.mcp.write_contracts import AnnotationRequest
 from moneybin.privacy.payloads.transactions import (
     MatchesHistoryPayload,
     MatchesPendingPayload,
-    MatchHistoryRow,
-    MatchPendingRow,
     MatchRunPayload,
     MatchSetPayload,
     ReviewStatusPayload,
@@ -775,26 +777,10 @@ def transactions_matches_pending(
         # (a transfer-scoped call reports 0 dedup groups, not the whole queue).
         n_dedup_groups = svc.count_pending_dedup_groups(match_type=match_type)
 
-    return build_envelope(
-        data=MatchesPendingPayload(
-            n_dedup_groups=n_dedup_groups,
-            matches=[
-                MatchPendingRow(
-                    match_id=r["match_id"],
-                    match_type=r.get("match_type", "dedup"),
-                    match_tier=r.get("match_tier"),
-                    confidence_score=float(r.get("confidence_score") or 0.0),
-                    source_type_a=r["source_type_a"],
-                    source_transaction_id_a=r["source_transaction_id_a"],
-                    source_type_b=r["source_type_b"],
-                    source_transaction_id_b=r["source_transaction_id_b"],
-                    match_status=r["match_status"],
-                    component_key=r["component_key"],
-                )
-                for r in rows
-            ],
-        ),
+    return matches_pending_envelope(
+        rows,
         total_count=total,
+        n_dedup_groups=n_dedup_groups,
         actions=[
             "Use reviews_decide with kind='match' to accept or reject a match",
             "Group rows by component_key to review all edges of one N-way dedup "
@@ -817,20 +803,8 @@ def transactions_matches_history(
     """
     with get_database(read_only=True) as db:
         rows = MatchingService(db).get_log(limit=limit, match_type=match_type)
-    return build_envelope(
-        data=MatchesHistoryPayload(
-            matches=[
-                MatchHistoryRow(
-                    match_id=r["match_id"],
-                    match_type=r.get("match_type", "dedup"),
-                    match_status=r["match_status"],
-                    confidence_score=float(r.get("confidence_score") or 0.0),
-                    decided_by=r["decided_by"],
-                    decided_at=r.get("decided_at"),
-                )
-                for r in rows
-            ]
-        ),
+    return matches_history_envelope(
+        rows,
         actions=["Use reviews(kind='matches') for the active queue"],
     )
 

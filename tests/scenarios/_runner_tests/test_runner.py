@@ -8,6 +8,7 @@ the cost of a real scenario run.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
 
@@ -15,7 +16,7 @@ import pytest
 
 from tests.scenarios._runner import runner as runner_mod
 from tests.scenarios._runner.loader import Scenario, load_scenario_from_string
-from tests.validation.result import AssertionResult
+from tests.validation.result import AssertionResult, EvaluationResult
 
 _MINIMAL_YAML = """
 scenario: unit-test
@@ -98,3 +99,99 @@ def test_extra_assertions_crash_halts_scenario(stubbed_runner: None) -> None:  #
     # echo PII from local variables (logger module rule).
     assert "RuntimeError" in result.halted
     assert "explode" not in result.halted
+
+
+_CRASHING_YAML = """
+scenario: unit-test-crash
+description: "assertion and evaluation whose functions do not resolve"
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+pipeline: []
+assertions:
+  - name: broken_assertion
+    fn: no_such_module.no_such_fn
+evaluations:
+  - name: broken_evaluation
+    fn: no_such_module.no_such_fn
+    threshold:
+      metric: precision
+      min: 0.9
+"""
+
+
+def test_runner_marks_crashed_assertions_and_evaluations(stubbed_runner: None) -> None:  # noqa: ARG001 — fixture activation
+    """A caught crash is recorded as a crash, not as a verdict or a low score.
+
+    Without the flag both render identically to the one summary CI ever sees,
+    which is what sends triage at the scenario's data instead of its code.
+    """
+    result = runner_mod.run_scenario(load_scenario_from_string(_CRASHING_YAML))
+
+    assert not result.passed
+    crashed = {a.name for a in result.assertions if a.crashed}
+    assert crashed == {"broken_assertion"}
+    assert all(v.crashed for v in result.evaluations)
+
+    summary = result.failure_summary()
+    assert "assertion broken_assertion: crashed," in summary
+    assert "evaluation broken_evaluation: crashed," in summary
+    # The pre-flight assertion passed and is not a crash — the flag must not
+    # smear across every result in a failing run.
+    assert not any(a.crashed for a in result.assertions if a.name == "catalog")
+
+
+# Synthetic value; a real assertion's message would quote the rows it compared.
+_LEAKY_MESSAGE = "txn 4111111111111111 differed by 42.00"
+
+
+def test_assertion_crash_records_the_type_not_the_message(
+    stubbed_runner: None,  # noqa: ARG001 — fixture activation
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An assertion queries scenario rows, so its crash text cannot be echoed.
+
+    ``failure_summary()`` is the one output CI shows, so the message has to be
+    dropped where it is recorded, not where it is rendered.
+    """
+
+    def _explode(_db: object, **_kwargs: object) -> AssertionResult:
+        raise RuntimeError(_LEAKY_MESSAGE)
+
+    def _resolve(_fn: str) -> Callable[..., AssertionResult]:
+        return _explode
+
+    monkeypatch.setattr(runner_mod, "_resolve_assertion", _resolve)
+
+    result = runner_mod.run_scenario(load_scenario_from_string(_CRASHING_YAML))
+
+    crashed = next(a for a in result.assertions if a.name == "broken_assertion")
+    assert crashed.error == "RuntimeError"
+    summary = result.failure_summary()
+    assert "assertion broken_assertion: crashed, RuntimeError" in summary
+    assert "4111111111111111" not in summary
+
+
+def test_evaluation_crash_records_the_type_not_the_message(
+    stubbed_runner: None,  # noqa: ARG001 — fixture activation
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same contract on the evaluation branch, which records into breakdown."""
+
+    def _explode(_db: object, **_kwargs: object) -> EvaluationResult:
+        raise RuntimeError(_LEAKY_MESSAGE)
+
+    def _resolve(_fn: str) -> Callable[..., EvaluationResult]:
+        return _explode
+
+    monkeypatch.setattr(runner_mod, "resolve_evaluation", _resolve)
+
+    result = runner_mod.run_scenario(load_scenario_from_string(_CRASHING_YAML))
+
+    crashed = next(v for v in result.evaluations if v.name == "broken_evaluation")
+    assert crashed.breakdown == {"error": "RuntimeError"}
+    summary = result.failure_summary()
+    assert "evaluation broken_evaluation: crashed, RuntimeError" in summary
+    assert "4111111111111111" not in summary

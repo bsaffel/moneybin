@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app as import_app
+from moneybin.privacy.classified_envelope import classify
+from moneybin.privacy.payloads.imports import (
+    ImportPdfFormatDetail,
+    ImportRawSummaryPayload,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -113,8 +120,7 @@ class TestFormatsListPdf:
 
         result = runner.invoke(import_app, ["formats", "list", "--output", "json"])
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        formats = data["formats"]
+        formats = json.loads(result.output)["data"]["formats"]
         types = {f["type"] for f in formats}
         assert "tabular" in types, "Expected tabular rows in JSON output"
         assert "pdf" in types, "Expected pdf rows in JSON output"
@@ -124,11 +130,13 @@ class TestFormatsListPdf:
         assert len(pdf_rows) == 1
         pdf_row = pdf_rows[0]
         assert pdf_row["name"] == "chase_a1b2c3d4e5f6"
-        assert pdf_row["institution"] == "Chase"
+        assert pdf_row["institution_name"] == "Chase"
         assert pdf_row["routing"] == "transactions"
         assert pdf_row["version"] == 1
         assert pdf_row["times_used"] == 3
-        assert pdf_row["last_used"] == "2026-05-30"
+        # Full timestamp, not the date-only string the text table prints:
+        # `import_formats` over MCP has always emitted one.
+        assert pdf_row["last_used_at"] == "2026-05-30T10:00:00"
 
     def test_tabular_source_reads_the_same_on_both_surfaces(
         self, runner: CliRunner, mocker: Any, wide_terminal: None
@@ -144,7 +152,7 @@ class TestFormatsListPdf:
             import_app, ["formats", "list", "--type", "tabular", "--output", "json"]
         )
         assert as_json.exit_code == 0, as_json.output
-        sources = {f["source"] for f in json.loads(as_json.output)["formats"]}
+        sources = {f["source"] for f in json.loads(as_json.output)["data"]["formats"]}
         assert "builtin" in sources
 
         _mock_get_database(mocker, [_make_pdf_format()])
@@ -224,7 +232,7 @@ class TestFormatsListPdf:
         )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
-        for row in data["formats"]:
+        for row in data["data"]["formats"]:
             assert row["type"] == "pdf", f"Expected only pdf rows; got {row['type']!r}"
 
     def test_filter_tabular_excludes_pdf(self, runner: CliRunner, mocker: Any) -> None:
@@ -248,7 +256,7 @@ class TestFormatsListPdf:
         )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
-        for row in data["formats"]:
+        for row in data["data"]["formats"]:
             assert row["type"] == "tabular", (
                 f"Expected only tabular rows; got {row['type']!r}"
             )
@@ -287,8 +295,7 @@ class TestFormatsShowPdf:
             import_app, ["formats", "show", "chase_a1b2c3d4e5f6", "--output", "json"]
         )
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        fmt = data["format"]
+        fmt = json.loads(result.output)["data"]
         assert fmt["type"] == "pdf"
         assert fmt["name"] == "chase_a1b2c3d4e5f6"
         assert fmt["routing"] == "transactions"
@@ -323,3 +330,116 @@ class TestFormatsShowPdf:
         assert result.exit_code == 0, result.output
         assert "Tiller" in result.output
         assert "Field mapping" in result.output
+
+
+class TestFormatsShowCountsOneFormat:
+    """`formats show` returns one format, whatever its columns number.
+
+    `ImportFormatDetail.header_signature` is a list of column names, and with
+    `skip_trailing_patterns` unset it is the payload's only list — so the
+    envelope's sole-collection rule counted the signature's columns and every
+    shipped tabular format reported its column count as a row count, which the
+    privacy audit row then inherited.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("name", ["mint", "tiller", "ynab"])
+    def test_builtin_tabular_format_is_one_row(
+        self, runner: CliRunner, mocker: Any, name: str
+    ) -> None:
+        _mock_get_database(mocker, [])
+
+        result = runner.invoke(
+            import_app, ["formats", "show", name, "--output", "json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        envelope = json.loads(result.output)
+        summary = envelope["summary"]
+        assert summary["returned_count"] == 1
+        assert summary["total_count"] == 1
+        # The signature is still reported in full — it is just not a row count.
+        assert len(envelope["data"]["header_signature"]) > 1
+
+    @pytest.mark.unit
+    def test_pdf_format_is_one_row(self, runner: CliRunner, mocker: Any) -> None:
+        pdf_fmt = _make_pdf_format()
+        _mock_get_database(mocker, [pdf_fmt])
+
+        result = runner.invoke(
+            import_app,
+            ["formats", "show", "chase_a1b2c3d4e5f6", "--output", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["summary"]["returned_count"] == 1
+
+
+class TestErrorPathsAuditLikeTheirSuccessPaths:
+    """A failure row must not be classified more coarsely than the success row.
+
+    `handle_cli_errors` falls back to the conservative `high` tier with no
+    returned classes when no `payload_type` is supplied. Both of these commands
+    now raise into that handler instead of hand-writing a JSON error branch, so
+    without the payload the same command reports two different classifications
+    depending only on whether the format (or the database) exists.
+    """
+
+    @staticmethod
+    def _log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        log_dir = tmp_path / "profile"
+        log_dir.mkdir(mode=0o700)
+        monkeypatch.setattr(
+            "moneybin.privacy.log._resolve_privacy_log_dir",
+            lambda: log_dir,
+        )
+        return log_dir
+
+    @staticmethod
+    def _event(log_dir: Path) -> dict[str, Any]:
+        return json.loads((log_dir / "privacy.log.jsonl").read_text().splitlines()[0])
+
+    def test_formats_show_not_found_audits_from_a_detail_payload(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        log_dir = self._log_dir(tmp_path, monkeypatch)
+        _mock_get_database(mocker, [])
+
+        result = runner.invoke(
+            import_app, ["formats", "show", "no_such_format", "--output", "json"]
+        )
+
+        assert result.exit_code == 1
+        expected = classify(ImportPdfFormatDetail)
+        event = self._event(log_dir)
+        assert event["actor"] == "cli.import_formats_show"
+        assert event["sensitivity"] == expected.sensitivity
+        assert event["classes_returned"] == expected.classes_returned
+
+    def test_status_without_a_database_audits_from_the_summary_payload(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        log_dir = self._log_dir(tmp_path, monkeypatch)
+        missing = tmp_path / "absent" / "moneybin.duckdb"
+        settings = MagicMock()
+        settings.database.path = missing
+        monkeypatch.setattr(
+            "moneybin.config.get_settings",
+            lambda: settings,
+        )
+
+        result = runner.invoke(import_app, ["status", "--output", "json"])
+
+        assert result.exit_code == 1
+        expected = classify(ImportRawSummaryPayload)
+        event = self._event(log_dir)
+        assert event["actor"] == "cli.import_status"
+        assert event["sensitivity"] == expected.sensitivity
+        assert event["classes_returned"] == expected.classes_returned

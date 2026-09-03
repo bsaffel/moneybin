@@ -25,7 +25,6 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.render import render_rows
-from moneybin.cli.utils import emit_json as emit_json
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.accounts import (
