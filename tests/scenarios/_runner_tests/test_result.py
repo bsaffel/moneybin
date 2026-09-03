@@ -76,3 +76,36 @@ def test_failure_summary_lists_failed_expectations_and_evaluations() -> None:
     summary = r.failure_summary()
     assert "expectation e1" in summary
     assert "evaluation v1: precision=0.5 < threshold=0.9" in summary
+
+
+def test_failure_summary_marks_a_runner_caught_assertion_crash() -> None:
+    """A crash and a verdict both carry error text; only the crash says so."""
+    r = _result(
+        assertions=[
+            AssertionResult(name="crash", passed=False, error="boom", crashed=True),
+            AssertionResult(name="verdict", passed=False, error="boom"),
+        ]
+    )
+    summary = r.failure_summary()
+    assert "assertion crash: crashed, boom" in summary
+    assert "assertion verdict: boom" in summary
+
+
+def test_failure_summary_shows_evaluation_crash_instead_of_a_score() -> None:
+    """A crashed evaluator's 0.0 is a placeholder, not a measurement."""
+    r = _result(
+        evaluations=[
+            EvaluationResult(
+                name="v",
+                metric="precision",
+                value=0.0,
+                threshold=0.9,
+                passed=False,
+                breakdown={"error": "boom"},
+                crashed=True,
+            )
+        ]
+    )
+    summary = r.failure_summary()
+    assert "evaluation v: crashed, boom" in summary
+    assert "threshold=0.9" not in summary

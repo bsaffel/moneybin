@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-from tests.scenarios._runner._expectation_registry import verify_expectations
+import pytest
+
+from tests.scenarios._runner._expectation_registry import (
+    EXPECTATION_REGISTRY,
+    ExpectationCrashError,
+    verify_expectations,
+)
 from tests.scenarios._runner.loader import ExpectationSpec
 from tests.validation.result import ExpectationResult
 
@@ -243,3 +249,25 @@ def test_match_decision_fails_when_sources_resolve_to_different_records() -> Non
     })
     [r] = verify_expectations(db, [spec])
     assert not r.passed
+
+
+def test_raising_adapter_is_tagged_with_the_kind_that_threw() -> None:
+    """A crash aborts the whole list, so the kind is the only surviving name."""
+
+    def _explode(_db: object, _spec: object) -> ExpectationResult:
+        raise RuntimeError("account 4111111111111111 exploded")
+
+    spec = ExpectationSpec.model_validate({
+        "kind": "gold_record_count",
+        "expected_collapsed_count": 1,
+    })
+
+    with patch.dict(EXPECTATION_REGISTRY, {"gold_record_count": _explode}):
+        with pytest.raises(ExpectationCrashError) as caught:
+            verify_expectations(MagicMock(), [spec])
+
+    assert caught.value.kind == "gold_record_count"
+    assert str(caught.value) == "gold_record_count (RuntimeError)"
+    # The adapter's own message can quote the rows it was inspecting, so it
+    # must not ride along into the halted result or CI output.
+    assert "4111111111111111" not in str(caught.value)
