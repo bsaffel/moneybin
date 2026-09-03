@@ -118,6 +118,32 @@ def test_list_text_frames_the_page_against_the_whole_result() -> None:
 
 
 @pytest.mark.unit
+def test_list_text_offers_no_continuation_on_the_last_page_of_a_walk() -> None:
+    """Requirement 34's remedy follows `next_cursor`, not the remainder.
+
+    `total_count` is every row matching the filters and does not shrink as a
+    walk advances, so the last page of one still shows fewer rows than the
+    total. Reading the remainder alone would offer `--limit` against a page
+    that does not exist. The slice is still disclosed — the promise is not.
+    """
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService,
+                "get",
+                return_value=_mock_result(
+                    [_make_txn()], next_cursor=None, total_count=42
+                ),
+            ):
+                result = runner.invoke(
+                    app, ["transactions", "list", "--cursor", "Y3Vyc29y"]
+                )
+    assert result.exit_code == 0
+    assert "1 of 42 shown" in result.output
+    assert "--limit" not in result.output
+
+
+@pytest.mark.unit
 def test_list_text_never_prints_the_raw_cursor() -> None:
     """Requirement 34 deletes the line, it does not relocate it.
 

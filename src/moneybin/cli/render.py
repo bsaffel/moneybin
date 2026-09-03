@@ -196,6 +196,22 @@ ELISION = "…"
 UNCATEGORIZED_LABEL = "Uncategorized"
 
 
+@dataclass(frozen=True, slots=True)
+class Placeholder:
+    """The stand-in a caller substitutes for an unmapped value, and its column.
+
+    The column is half the declaration, not a convenience. The count beneath
+    the table names a taxonomy gap, so it has to read the one column that can
+    hold one — every other cell is data, and a bank description reading
+    ``Uncategorized`` is a value a person will meet, not a missing category.
+    Scanning the row would let that description inflate the single number whose
+    only worth is being exact.
+    """
+
+    column: str
+    value: str
+
+
 def _cell_width(cell: RenderableType) -> int:
     from rich.cells import cell_len  # noqa: PLC0415 — defer heavy import
     from rich.text import Text  # noqa: PLC0415 — defer heavy import
@@ -323,7 +339,8 @@ def render_rows(
     numeric: Sequence[str] | None = None,
     total_columns: int | None = None,
     total_rows: int | None = None,
-    placeholder: str | None = None,
+    has_more: bool = False,
+    placeholder: Placeholder | None = None,
     fit: bool = False,
 ) -> None:
     """Render ``rows`` as a table to stdout (requirement 2).
@@ -359,14 +376,22 @@ def render_rows(
     frames nothing.
 
     ``total_rows`` is the size of the whole result when ``rows`` is one page of
-    it, and frames the remainder (requirement 34). ``placeholder`` is the value
-    a caller substitutes for an unmapped one; rows carrying it in any rendered
-    column are counted on the same line (requirement 30). Both widen
-    requirement 10's trigger: framing is not only about omitted columns, so a
-    complete projection under ``--wide`` still discloses a taxonomy gap.
+    it, and frames the remainder (requirement 34). ``has_more`` says whether a
+    further page exists, and gates the continuation the frame offers: the
+    count and the remedy answer different questions. A filtered total holds
+    steady across a cursor walk, so on the last page of one it still exceeds
+    the page length — the table is honestly a slice of 2,046, and `--limit`
+    would still fetch nothing. It defaults to ``False`` so a caller that has
+    not thought about paging discloses the slice without promising more.
 
-    All three clauses share one line. Three lines beneath a two-row table would
-    cost more screen than the result they describe.
+    ``placeholder`` declares the value a caller substitutes for an unmapped
+    one and the column holding it; rows carrying it there are counted on the
+    same line (requirement 30). Both widen requirement 10's trigger: framing
+    is not only about omitted columns, so a complete projection under
+    ``--wide`` still discloses a taxonomy gap.
+
+    Every clause shares one line. Four lines beneath a two-row table would cost
+    more screen than the result they describe.
 
     **One line per record, always** (requirement 35). This renderer never
     deduplicates, merges, or suppresses a row. `reports networth` currently
@@ -456,6 +481,20 @@ def render_rows(
         )
         if at == gap:
             table.add_column(ELISION, justify="center", overflow="fold")
+    flag_at: int | None = None
+    flag_value = ""
+    if placeholder is not None:
+        if placeholder.column not in columns:
+            # Refused rather than skipped, for the reason `_column_view` gives:
+            # a disclosure that silently counts nothing reads exactly like a
+            # table with no gaps, and leaves the typo in place indefinitely.
+            raise ValueError(f"undeclared placeholder column {placeholder.column!r}")
+        at = columns.index(placeholder.column)
+        # Counted off the kept columns, not the caller's whole projection: the
+        # disclosure is about what this table shows, and a placeholder in a
+        # column the fit dropped is not on screen to be misread.
+        flag_at = at if at in kept else None
+        flag_value = placeholder.value
     rendered = 0
     flagged = 0
     for cells in cells_source:
@@ -464,10 +503,7 @@ def render_rows(
             row_cells.insert(gap + 1, ELISION)
         table.add_row(*row_cells)
         rendered += 1
-        # Counted off the kept columns, not the caller's whole projection: the
-        # disclosure is about what this table shows, and a placeholder in a
-        # column the fit dropped is not on screen to be misread.
-        if placeholder is not None and any(str(c) == placeholder for c in row_cells):
+        if flag_at is not None and str(cells[flag_at]) == flag_value:
             flagged += 1
     # Rich holds every cell now, so let a buffered measurement copy go before
     # rendering allocates its own.
@@ -479,15 +515,19 @@ def render_rows(
     whole = total_columns if total_columns is not None else len(columns)
     clauses: list[str] = []
     if total_rows is not None and total_rows > rendered:
+        # Grouped, because the count exists to answer "how much is there?" and
+        # 2046 answers it less well than 2,046 at a glance.
+        clauses.append(f"{rendered:,} of {total_rows:,} shown")
+    if has_more:
         # `--limit`, never `--cursor`: the cursor takes an opaque token text
         # output does not supply, so naming it sends the reader into a usage
-        # error. Grouped, because the count exists to answer "how much is
-        # there?" and 2046 answers it less well than 2,046 at a glance.
-        clauses.append(f"{rendered:,} of {total_rows:,} shown · raise --limit for more")
+        # error. Offered only against a page that exists, because a remedy
+        # that fetches nothing is worse than no remedy at all.
+        clauses.append("raise --limit for more")
     if whole > len(kept):
         clauses.append(f"{len(kept)} of {whole} columns shown — --wide for all")
     if placeholder is not None and flagged:
-        clauses.append(f"{flagged} {placeholder.lower()}")
+        clauses.append(f"{flagged} {placeholder.value.lower()}")
     if clauses:
         # stdout, and reachable under `-q` (this renderer takes no such
         # parameter): both are load-bearing. `moneybin reports spending >

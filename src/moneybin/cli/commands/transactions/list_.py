@@ -17,7 +17,12 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import UNCATEGORIZED_LABEL, Money, render_rows
+from moneybin.cli.render import (
+    UNCATEGORIZED_LABEL,
+    Money,
+    Placeholder,
+    render_rows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +244,13 @@ def transactions_list(
             # while `--cursor` itself remains in `--help` and in the JSON
             # envelope's actions for the caller that walks pages.
             total_rows=result.total_count,
-            placeholder=UNCATEGORIZED_LABEL,
+            # The same fact the JSON envelope carries as `summary.has_more`,
+            # and the only truthful gate on the continuation: `total_count` is
+            # every row matching the filters, so it still exceeds the page on
+            # the last page of a cursor walk, where nothing more is left to
+            # fetch.
+            has_more=result.next_cursor is not None,
+            placeholder=Placeholder("category", UNCATEGORIZED_LABEL),
         )
 
     render_or_json(

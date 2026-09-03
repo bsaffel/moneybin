@@ -30,6 +30,7 @@ from moneybin.cli.render import (
     ELISION,
     MINUS,
     Money,
+    Placeholder,
     Style,
     _fit_columns,  # pyright: ignore[reportPrivateUsage]  # the fit is a property, not a rendering
     _table_width,  # pyright: ignore[reportPrivateUsage]  # so the check agrees with it on "fits"
@@ -735,7 +736,7 @@ def test_the_row_framing_names_a_continuation_the_reader_can_type(
     this replaces exists to answer "how much is there?" and `2046` answers it
     less well than `2,046` at a glance.
     """
-    render_rows(["date"], [("2026-08-01",)], total_rows=2046)
+    render_rows(["date"], [("2026-08-01",)], total_rows=2046, has_more=True)
 
     out = capsys.readouterr().out
     assert "1 of 2,046 shown · raise --limit for more" in out
@@ -764,7 +765,7 @@ def test_render_rows_counts_the_unmapped_placeholder(
     render_rows(
         ["date", "category"],
         [("2026-08-01", "Food & Drink"), ("2026-08-02", "Uncategorized")],
-        placeholder="Uncategorized",
+        placeholder=Placeholder("category", "Uncategorized"),
     )
 
     assert "1 uncategorized" in capsys.readouterr().out
@@ -780,7 +781,10 @@ def test_the_placeholder_count_fires_with_every_column_shown(
     full projection already fits 80 columns. Neither omits a column.
     """
     render_rows(
-        ["category"], [("Uncategorized",)], total_columns=1, placeholder="Uncategorized"
+        ["category"],
+        [("Uncategorized",)],
+        total_columns=1,
+        placeholder=Placeholder("category", "Uncategorized"),
     )
 
     captured = capsys.readouterr().out
@@ -792,7 +796,11 @@ def test_no_placeholder_framing_when_every_value_mapped(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A fully-mapped column has no gap, so it says nothing about one."""
-    render_rows(["category"], [("Food & Drink",)], placeholder="Uncategorized")
+    render_rows(
+        ["category"],
+        [("Food & Drink",)],
+        placeholder=Placeholder("category", "Uncategorized"),
+    )
 
     assert "uncategorized" not in capsys.readouterr().out
 
@@ -810,7 +818,8 @@ def test_the_framing_clauses_share_one_line(
         [("Uncategorized",)],
         total_columns=4,
         total_rows=9,
-        placeholder="Uncategorized",
+        has_more=True,
+        placeholder=Placeholder("category", "Uncategorized"),
     )
 
     framing = [
@@ -822,6 +831,91 @@ def test_the_framing_clauses_share_one_line(
     assert "1 of 9 shown" in framing[0]
     assert "1 of 4 columns shown" in framing[0]
     assert "1 uncategorized" in framing[0]
+
+
+def test_no_continuation_offered_when_no_next_page_exists(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The remedy is gated on a next page, not on the remainder.
+
+    ``total_rows`` is every row matching the filters and holds steady across a
+    cursor walk, so on the last page of one it still exceeds the page length.
+    Offering `--limit` there names a remedy that fetches nothing: the reader
+    has already walked past those rows, and raising the limit on this call
+    returns the same tail. The count still prints — the table really is a
+    slice of 2,046 — but the sentence that promises more does not.
+    """
+    render_rows(["date"], [("2026-08-01",)], total_rows=2046, has_more=False)
+
+    out = capsys.readouterr().out
+    assert "1 of 2,046 shown" in out
+    assert "--limit" not in out
+
+
+def test_the_placeholder_count_reads_only_its_own_column(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 30's count means a taxonomy gap, so it counts one column.
+
+    Every cell here is user-authored text, and a bank description reading
+    `Uncategorized` is a value, not a gap. Scanning the whole row for the
+    string would count that description as a missing category and inflate the
+    one number whose only value is being exact.
+    """
+    render_rows(
+        ["description", "category"],
+        [("Uncategorized", "Food & Drink"), ("Coffee", "Uncategorized")],
+        placeholder=Placeholder("category", "Uncategorized"),
+    )
+
+    assert "1 uncategorized" in capsys.readouterr().out
+
+
+def test_a_placeholder_naming_no_column_of_this_table_is_refused() -> None:
+    """A typo in the declaration fails loudly, as an undeclared column does.
+
+    Counting nothing renders exactly like a table with no gaps, so a silent
+    skip would leave the mistake in place for as long as the column stayed
+    misspelled — and the disclosure it was meant to make missing that whole
+    time.
+    """
+    with pytest.raises(ValueError, match="undeclared placeholder column"):
+        render_rows(
+            ["date", "category"],
+            [("2026-08-01", "Uncategorized")],
+            placeholder=Placeholder("categroy", "Uncategorized"),
+        )
+
+
+def test_the_placeholder_count_ignores_a_column_the_fit_dropped(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A gap in a column that is not on screen is not a gap the reader can see.
+
+    The count describes this table. When the width fit drops the declared
+    column, the disclosure it carried goes with it rather than describing
+    cells nobody can read.
+    """
+    before = [f"leading_column_{i}" for i in range(1, 7)]
+    after = [f"trailing_column_{i}" for i in range(1, 7)]
+    render_rows(
+        # Mid-projection, because the fit keeps a prefix and a suffix: a
+        # declared column at either end survives and proves nothing.
+        [*before, "category", *after],
+        [
+            (
+                *(f"value{i}" for i in before),
+                "Uncategorized",
+                *(f"value{i}" for i in after),
+            )
+        ],
+        placeholder=Placeholder("category", "Uncategorized"),
+        fit=True,
+    )
+
+    out = capsys.readouterr().out
+    assert "columns shown" in out
+    assert "uncategorized" not in out
 
 
 _FIT_COLUMNS = [f"column_number_{i}" for i in range(1, 15)]

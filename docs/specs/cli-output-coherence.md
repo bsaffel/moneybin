@@ -658,11 +658,24 @@ Numbered, each independently testable.
     requirement 4 suppresses notes under `--quiet`, and a taxonomy gap the user
     cannot see is exactly what requirement 29 exists to prevent. This **widens
     requirement 10's trigger**: result framing is emitted when columns are
-    omitted *or* when any rendered column contains an unmapped placeholder.
-    Without that widening the disclosure would vanish in exactly the cases it
-    matters — under `--wide`, and for any report whose full projection already
-    fits 80 columns, neither of which omits a column. The framing clauses share
-    one line.
+    omitted *or* when the placeholder appears in the column declared to carry
+    it. Without that widening the disclosure would vanish in exactly the cases
+    it matters — under `--wide`, and for any report whose full projection
+    already fits 80 columns, neither of which omits a column. The framing
+    clauses share one line.
+
+    **The count reads one declared column, not the row (surfaced during
+    implementation).** The caller declares the column alongside the value, and
+    a row counts only when *that* cell matches. Every other cell in the row is
+    data a person or a bank authored, and `Uncategorized` is a description a
+    user will eventually meet — scanning the row would let it inflate the one
+    number whose entire worth is being exact, and the inflation would read as a
+    taxonomy gap that does not exist. A declared column absent from the table
+    is refused rather than skipped, for the reason `_column_view` already
+    gives: a disclosure that silently counts nothing renders exactly like a
+    table with no gaps. A declared column the *width fit* dropped is skipped,
+    which is the different case — the gap is real but not on screen to be
+    misread.
 
     `--output json` carries the underlying NULL untouched, so a caller can still
     tell an uncategorized row from one categorized as the literal string
@@ -756,6 +769,17 @@ Numbered, each independently testable.
     No service or payload change is required, so requirement 8's exclusion
     does not bite. This is the count F10 actually wanted: the finding was that
     a human asking "how much is there?" got a base64 cursor instead.
+
+    **The count and the continuation are gated separately (surfaced during
+    implementation).** `total_count` is every row matching the filters and does
+    not shrink as a walk advances, so the remainder it implies is not evidence
+    that a further page exists: on the last page of a `--cursor` walk the total
+    still exceeds the rows shown, and `--limit` there would fetch nothing. The
+    count follows the remainder; the continuation follows `next_cursor`, the
+    same fact the JSON envelope publishes as `summary.has_more`. A last page
+    therefore reads `6 of 2,046 shown` and offers nothing — the slice is still
+    disclosed, because requirement 34 exists so a partial result cannot read as
+    a whole one, and that is true of a walk's last page as much as its first.
 
     **The text branch must stop printing the cursor — a deletion, not an
     omission.** `list_.py:229` currently emits
@@ -1099,7 +1123,10 @@ today's code. Two need specific shapes:
   count exceeds its `--limit`. The second: **no text-branch output contains
   the cursor token**, asserted against stdout *and* stderr together, because
   the line being deleted (`list_.py:229`) writes to stderr — an assertion over
-  stdout alone passes against the unfixed code.
+  stdout alone passes against the unfixed code. A third followed from the gate
+  above: a result with `next_cursor=None` and a `total_count` above the page
+  length still frames the slice and offers no `--limit`, which no fixture
+  asserting only the common case can distinguish from the ungated line.
 - **F9 / req 36** — the behavioural partner to the source scan above: render a
   `magnitude`, a negative `flow`, and a negative `balance` with color forced
   on, and assert the emitted ANSI codes match the palette's declared values.

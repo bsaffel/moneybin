@@ -26,8 +26,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   JSON branch, which a terminal reader cannot reasonably retype and has no use
   for. The text branch now prints `20 of 2,046 shown · raise --limit for more`,
   on the same line as the column-narrowing disclosure and the count of unmapped
-  values. `--cursor` is unchanged and still documented for `--output json`.
-  (#515)
+  values. The count states the slice whenever there is one; the continuation is
+  offered only where a further page actually exists, so the last page of a
+  cursor walk discloses `6 of 2,046 shown` and promises nothing. `--cursor` is
+  unchanged and still documented for `--output json`. (#515)
 
 - **The last eight commands that drew their own columns now render like every
   other one.** `db ps`, `db kill`, `demo`, `fx list`, `import history`,
