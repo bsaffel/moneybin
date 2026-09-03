@@ -31,7 +31,7 @@ mechanism it uses instead. The list is asserted by set equality in both
 directions, so a seventh such tool fails until someone adds it deliberately, and
 an entry that stops applying fails until someone removes it.
 
-Four boundaries, stated rather than implied:
+Five boundaries, stated rather than implied:
 
 - Reachability follows calls by name through ``src/moneybin/mcp``. The sibling
   guard scans `cli` too; this one does not, because an MCP tool's envelope is
@@ -53,6 +53,12 @@ Four boundaries, stated rather than implied:
   pin each branch, but these files are refactored often enough that the churn
   would land on unrelated PRs; the tool is what an agent calls and what the
   registry names.
+- An unreadable ``**`` mapping is read as a declaration only where one
+  could be stamped — an envelope constructor, the builder, or a decorator
+  factory. ``**kwargs`` forwarding is ordinary plumbing in this tree and none
+  of its call sites builds an envelope, so flagging every one would bury the
+  shape this catches. A helper the traversal follows by name declares where it
+  declares, and is read there.
 - Where the construction sits does not excuse it. A raw envelope built inside a
   helper counts even where the tool later rebuilds through the classifier,
   because that arrangement is one refactor away from returning the helper's
@@ -65,6 +71,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -235,6 +242,16 @@ class Declaration:
     fields: tuple[str, ...]
     literal_fields: tuple[str, ...]
     verb: str = "calls"
+
+    @property
+    def replaces_the_summary(self) -> bool:
+        """Whether this rewrites the whole section rather than one field.
+
+        `summary` carries `sensitivity`, so overwriting it declares — but it
+        declares both derived fields at once, which is the opposite of the
+        half-contract the partial check describes.
+        """
+        return "summary" in self.fields
 
     def __str__(self) -> str:
         """Render the site the way the assertion message needs to name it."""
@@ -447,42 +464,108 @@ def _mutation_field(node: ast.Call) -> str | None:
     return None
 
 
-def _declaration(
+def _expanded_keywords(node: ast.Call) -> tuple[list[tuple[str, ast.expr]], bool]:
+    """Declared fields a ``**`` expansion carries, and whether one is unreadable.
+
+    ``ast.keyword.arg`` is ``None`` for ``**mapping``, so a filter that matches
+    on the keyword's name skips the argument entirely and reads a
+    hand-declaration as its absence — ``adapter(**{"sensitivity": …})`` sets
+    the field a keyword scan just cleared the call of. A literal mapping is
+    read as the keywords it stands for; anything else is a mapping this scan
+    cannot see into, and saying so is the fail-closed half of the answer.
+    """
+    resolved: list[tuple[str, ast.expr]] = []
+    unreadable = False
+    for keyword in node.keywords:
+        if keyword.arg is not None:
+            continue
+        mapping = keyword.value
+        if not isinstance(mapping, ast.Dict) or not all(
+            isinstance(key, ast.Constant) and isinstance(key.value, str)
+            for key in mapping.keys
+        ):
+            unreadable = True
+            continue
+        for key, value in zip(mapping.keys, mapping.values, strict=True):
+            assert isinstance(key, ast.Constant)  # narrowed by the check above
+            if key.value in DECLARED_FIELDS:
+                resolved.append((str(key.value), value))
+    return resolved, unreadable
+
+
+def _can_stamp_a_declaration(node: ast.Call, *, is_decorator: bool) -> bool:
+    """Whether an unreadable ``**`` mapping here could set a declared field.
+
+    Scoped rather than universal, and the scope is the boundary the module
+    docstring states: an envelope constructor, the builder, or a decorator
+    factory that rewrites the finished envelope. Every other ``**kwargs``
+    forward in this tree is helper plumbing the traversal follows by name, and
+    what such a helper declares is recorded where it declares it.
+    """
+    return is_decorator or _call_name(node) in RAW_CONSTRUCTORS | {BUILDER}
+
+
+def _declarations(
     node: ast.Call,
     *,
     module: str,
     function: str,
     assignments: _Assignments,
     casts_are_typing: bool,
-) -> Declaration | None:
+    is_decorator: bool = False,
+) -> list[Declaration]:
     mutated = _mutation_field(node)
     if mutated is not None:
-        return Declaration(
-            module=module,
-            function=function,
-            callee=f"{ast.unparse(node)[:60]}",
-            verb="mutates",
-            fields=(mutated,),
-            literal_fields=(mutated,),
-        )
-    declared = [keyword for keyword in node.keywords if keyword.arg in DECLARED_FIELDS]
-    if not declared:
-        return None
-    return Declaration(
-        module=module,
-        function=function,
-        callee=_call_name(node) or "<computed>",
-        fields=tuple(sorted(str(keyword.arg) for keyword in declared)),
-        literal_fields=tuple(
-            sorted(
-                str(keyword.arg)
-                for keyword in declared
-                if _is_literal(
-                    keyword.value, assignments, casts_are_typing=casts_are_typing
-                )
+        return [
+            Declaration(
+                module=module,
+                function=function,
+                callee=f"{ast.unparse(node)[:60]}",
+                verb="mutates",
+                fields=(mutated,),
+                literal_fields=(mutated,),
             )
-        ),
-    )
+        ]
+    expanded, unreadable = _expanded_keywords(node)
+    declared: list[tuple[str, ast.expr]] = [
+        (str(keyword.arg), keyword.value)
+        for keyword in node.keywords
+        if keyword.arg in DECLARED_FIELDS
+    ] + expanded
+    found: list[Declaration] = []
+    if declared:
+        found.append(
+            Declaration(
+                module=module,
+                function=function,
+                callee=_call_name(node) or "<computed>",
+                fields=tuple(sorted({field for field, _ in declared})),
+                literal_fields=tuple(
+                    sorted({
+                        field
+                        for field, value in declared
+                        if _is_literal(
+                            value, assignments, casts_are_typing=casts_are_typing
+                        )
+                    })
+                ),
+            )
+        )
+    if unreadable and _can_stamp_a_declaration(node, is_decorator=is_decorator):
+        found.append(
+            Declaration(
+                module=module,
+                function=function,
+                callee=_call_name(node) or "<computed>",
+                verb="expands an unread mapping into",
+                # Both fields, because the mapping can carry either and the
+                # scan cannot say which. Naming one would read to the partial
+                # check as a half-declaration, which is a different defect.
+                fields=tuple(sorted(DECLARED_FIELDS)),
+                literal_fields=(),
+            )
+        )
+    return found
 
 
 _ModuleIndex = tuple[
@@ -598,20 +681,46 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
         if node is None:
             continue
 
+        # Binding is scoped to the function's own statements. `ast.walk`
+        # descends into a nested `def`, whose locals bind in that helper and
+        # nowhere else, so pooling them let an unrelated closure's assignment
+        # resolve the enclosing tool's `return` — crediting a path this scan
+        # never read. `_own_returns` and `own_calls` already stop at a nested
+        # definition; these two maps were the ones that did not.
         assignments: _Assignments = {}
+        for child in _own_statements(node):
+            if isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                # `name: Any = value` binds just as a plain assignment does;
+                # skipping it left an annotated local shadow unseen.
+                if child.value is not None:
+                    assignments.setdefault(child.target.id, []).append((
+                        child.lineno,
+                        child.value,
+                    ))
+                continue
+            if not isinstance(child, ast.Assign):
+                continue
+            for target in child.targets:
+                if isinstance(target, ast.Name):
+                    assignments.setdefault(target.id, []).append((
+                        child.lineno,
+                        child.value,
+                    ))
+                elif isinstance(target, ast.Tuple | ast.List | ast.Starred):
+                    # Destructuring binds every name in the pattern. Which
+                    # value each takes is not knowable here, and binding is
+                    # all that shadowing needs.
+                    for name in _bound_names(target):
+                        assignments.setdefault(name, []).append((
+                            child.lineno,
+                            target,
+                        ))
+
+        # Declarations run the other way, on the same split `body_calls` and
+        # `own_calls` use below: an overwrite inside a nested closure still
+        # counts, because failing closed there means recording more.
         for statement in node.body:
             for child in ast.walk(statement):
-                if isinstance(child, ast.AnnAssign) and isinstance(
-                    child.target, ast.Name
-                ):
-                    # `name: Any = value` binds just as a plain assignment
-                    # does; skipping it left an annotated local shadow unseen.
-                    if child.value is not None:
-                        assignments.setdefault(child.target.id, []).append((
-                            child.lineno,
-                            child.value,
-                        ))
-                    continue
                 if isinstance(child, ast.AugAssign | ast.AnnAssign):
                     # `envelope.classes_returned += [...]` names no target the
                     # Assign arm sees and passes no keyword.
@@ -635,21 +744,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                 if not isinstance(child, ast.Assign):
                     continue
                 for target in child.targets:
-                    if isinstance(target, ast.Name):
-                        assignments.setdefault(target.id, []).append((
-                            child.lineno,
-                            child.value,
-                        ))
-                    elif isinstance(target, ast.Tuple | ast.List | ast.Starred):
-                        # Destructuring binds every name in the pattern. Which
-                        # value each takes is not knowable here, and binding is
-                        # all that shadowing needs.
-                        for name in _bound_names(target):
-                            assignments.setdefault(name, []).append((
-                                child.lineno,
-                                target,
-                            ))
-                    elif (
+                    if (
                         isinstance(target, ast.Attribute)
                         and target.attr in MUTABLE_DECLARATION_TARGETS
                     ):
@@ -679,10 +774,14 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
         # A name bound inside the function is not the module-level function it
         # spells. A parameter called `build_classified_envelope` impersonates
         # the builder perfectly under a spelling match, which is the receiver
-        # bug over again with the receiver omitted rather than discarded.
-        # Imports are deliberately absent: a local `from … import build_…` is
-        # the real thing, not a shadow.
+        # bug over again with the receiver omitted rather than discarded. A
+        # function-local import is the real thing only when it *names* the real
+        # thing: `from … import build_envelope as build_classified_envelope`
+        # binds a different function under the builder's name, so the resolved
+        # origin decides and the spelling does not. The non-aliased local
+        # import of the genuine builder stays credited.
         imports = dict(module_imports)
+        builder_name_rebound = False
         for statement in node.body:
             for child in ast.walk(statement):
                 if (
@@ -691,6 +790,11 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                     or child.module is None
                 ):
                     continue
+                builder_name_rebound = builder_name_rebound or any(
+                    (alias.asname or alias.name) == BUILDER
+                    and (child.module, alias.name) != (BUILDER_MODULE, BUILDER)
+                    for alias in child.names
+                )
                 source = _mcp_module_path(child.module)
                 if source is None:
                     continue
@@ -718,15 +822,18 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                 *([arguments.kwarg] if arguments.kwarg else []),
             )
         } | set(assignments)
-        for statement in node.body:
-            for child in ast.walk(statement):
-                target = None
-                if isinstance(child, ast.For | ast.AsyncFor | ast.comprehension):
-                    target = child.target
-                elif isinstance(child, ast.withitem):
-                    target = child.optional_vars
-                if isinstance(target, ast.Name):
-                    shadowed.add(target.id)
+        for child in _own_statements(node):
+            target = None
+            if isinstance(child, ast.For | ast.AsyncFor | ast.comprehension):
+                target = child.target
+            elif isinstance(child, ast.withitem):
+                target = child.optional_vars
+            if isinstance(target, ast.Name):
+                shadowed.add(target.id)
+        if builder_name_rebound:
+            # Same treatment as a parameter of that name: never credited,
+            # never traversed, and its returns fall to the unverified check.
+            shadowed.add(BUILDER)
 
         # Two populations, and the direction decides which is used where.
         # `body_calls` is the liberal one: a construction or a declaration
@@ -749,16 +856,18 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
             for child in ast.walk(decorator)
             if isinstance(child, ast.Call)
         ]
-        for call in body_calls + decorator_calls:
-            declaration = _declaration(
-                call,
-                module=current_path.name,
-                function=current_name,
-                assignments=assignments,
-                casts_are_typing=casts_are_typing and "cast" not in shadowed,
-            )
-            if declaration is not None:
-                declarations.append(declaration)
+        for calls, is_decorator in ((body_calls, False), (decorator_calls, True)):
+            for call in calls:
+                declarations.extend(
+                    _declarations(
+                        call,
+                        module=current_path.name,
+                        function=current_name,
+                        assignments=assignments,
+                        casts_are_typing=casts_are_typing and "cast" not in shadowed,
+                        is_decorator=is_decorator,
+                    )
+                )
 
         for call in body_calls:
             callee = _bare_name(call)
@@ -1038,11 +1147,28 @@ async def test_derived_declarations_are_not_quietly_replaced_by_literals() -> No
         f"declare neither field, leaving both on the default: {undeclared}"
     )
 
+    # `summary` carries `sensitivity`, so replacing the section wholesale
+    # declares both derived fields at once. Reporting that through the partial
+    # check below described it as setting "one of the two", which is the one
+    # thing it never does.
+    replaced = sorted(
+        str(declaration)
+        for name in MUST_DERIVE_ITS_DECLARATION
+        for declaration in mechanisms[name].declarations
+        if declaration.replaces_the_summary
+    )
+    assert not replaced, (
+        "These replace the whole summary section, so both declared fields "
+        "become whatever the new object carries rather than what the "
+        f"mechanism derived: {replaced}"
+    )
+
     partial = sorted(
         str(declaration)
         for name in MUST_DERIVE_ITS_DECLARATION
         for declaration in mechanisms[name].declarations
-        if frozenset(declaration.fields) != DECLARED_FIELDS
+        if not declaration.replaces_the_summary
+        and frozenset(declaration.fields) != DECLARED_FIELDS
     )
     assert not partial, (
         "These declarations set one of the two fields and leave the other to "
@@ -1192,6 +1318,63 @@ def _probe_hiding_a_literal_behind_an_alias() -> ResponseEnvelope[Any]:
     return build_envelope(data={"probe": True}, sensitivity=hidden)
 
 
+def _probe_importing_an_impostor_under_the_builders_name() -> ResponseEnvelope[Any]:
+    """Stand-in for a local import aliasing another function to the name."""
+    from moneybin.protocol.envelope import (
+        build_envelope as build_classified_envelope,
+    )
+
+    return build_classified_envelope(data={"probe": True})
+
+
+def _stamping_adapter(**declared: Any) -> Callable[[Any], Any]:
+    """Stand-in for a decorator factory that stamps the finished envelope."""
+    return lambda decorated: decorated
+
+
+@_stamping_adapter(**{"sensitivity": "low"})
+def _probe_declaring_through_an_expanded_decorator() -> ResponseEnvelope[Any]:
+    """Stand-in for a declaration that rides in as a mapping, not a keyword."""
+    return build_classified_envelope({"probe": True})
+
+
+def _probe_expanding_an_unread_declaration() -> ResponseEnvelope[Any]:
+    """Stand-in for a raw build whose keywords arrive through a mapping."""
+    options: Any = _elsewhere()
+    return build_envelope(data={"probe": True}, **options)
+
+
+def _probe_resolving_a_parameter_through_a_nested_helper(
+    response: Any,
+) -> ResponseEnvelope[Any]:
+    """Stand-in for a nested helper's local leaking into the enclosing scope."""
+
+    def _classify() -> ResponseEnvelope[Any]:
+        response = build_classified_envelope({"probe": True})
+        return response
+
+    _classify()
+    return response
+
+
+def _probe_binding_a_constructor_name_in_a_nested_helper() -> ResponseEnvelope[Any]:
+    """Stand-in for a nested loop target wearing a raw constructor's name."""
+
+    def _unused() -> None:
+        for build_envelope in _elsewhere():  # noqa: F402  # the shadow under test
+            _ = build_envelope
+
+    _unused()
+    return build_envelope(data={"probe": True})
+
+
+def _probe_replacing_the_whole_summary() -> ResponseEnvelope[Any]:
+    """Stand-in for overwriting the section that carries a declared field."""
+    envelope = build_classified_envelope({"probe": True})
+    envelope.summary = SummaryMeta(total_count=1, returned_count=1)
+    return envelope
+
+
 def _probe_declaring_one_field_by_hand() -> ResponseEnvelope[Any]:
     """Stand-in for a partial swap: one field derived, the other spelled out."""
     return build_envelope(
@@ -1243,6 +1426,17 @@ def test_the_builder_is_credited_by_origin_not_by_spelling(tmp_path: Path) -> No
         encoding="utf-8",
     )
     assert mechanism_of(genuine, "probe").reaches_builder
+
+    local = tmp_path / "local.py"
+    local.write_text(
+        "from typing import Any\n\n\n"
+        "def probe() -> Any:\n"
+        '    """Imports the real builder inside the function body."""\n'
+        f"    from {BUILDER_MODULE} import {BUILDER}\n\n"
+        f'    return {BUILDER}({{"probe": True}})\n',
+        encoding="utf-8",
+    )
+    assert mechanism_of(local, "probe").reaches_builder
 
 
 def test_the_analysis_can_return_a_failing_verdict() -> None:
@@ -1384,6 +1578,61 @@ def test_the_analysis_can_return_a_failing_verdict() -> None:
     assert [site.expression for site in dead.unverified_returns] == [
         "_elsewhere().make_envelope()"
     ]
+
+    # A local import is the sanctioned builder only when it names the
+    # sanctioned builder. Aliasing another function to that spelling is the
+    # parameter shadow with an import statement in front of it.
+    impostor_import = mechanism_of(
+        Path(__file__), _probe_importing_an_impostor_under_the_builders_name.__name__
+    )
+    assert not impostor_import.reaches_builder
+    assert [site.expression for site in impostor_import.unverified_returns] == [
+        "build_classified_envelope(data={'probe': True})"
+    ]
+
+    # `**mapping` carries no keyword name, so a filter matching on the name
+    # reads a hand-declaration as its absence. A literal mapping is read as
+    # the keywords it stands for; an unreadable one is recorded as unread.
+    stamped = mechanism_of(
+        Path(__file__), _probe_declaring_through_an_expanded_decorator.__name__
+    )
+    assert stamped.reaches_builder
+    assert [d.fields for d in stamped.declarations] == [("sensitivity",)]
+    assert [d.literal_fields for d in stamped.declarations] == [("sensitivity",)]
+
+    unread = mechanism_of(
+        Path(__file__), _probe_expanding_an_unread_declaration.__name__
+    )
+    assert [d.verb for d in unread.declarations] == ["expands an unread mapping into"]
+    assert [d.fields for d in unread.declarations] == [
+        ("classes_returned", "sensitivity")
+    ]
+
+    # A nested helper's locals bind in that helper. Pooling them let an
+    # unrelated assignment resolve the enclosing tool's return.
+    nested_local = mechanism_of(
+        Path(__file__), _probe_resolving_a_parameter_through_a_nested_helper.__name__
+    )
+    assert not nested_local.reaches_builder
+    assert [site.expression for site in nested_local.unverified_returns] == ["response"]
+
+    # A loop target inside a nested helper binds there, not here. Pooling it
+    # into `shadowed` suppressed an enclosing raw build — the same defect as
+    # the assignment map's, in the fail-open direction.
+    nested_binding = mechanism_of(
+        Path(__file__),
+        _probe_binding_a_constructor_name_in_a_nested_helper.__name__,
+    )
+    assert [site.constructor for site in nested_binding.constructions] == [
+        build_envelope.__name__
+    ]
+    assert nested_binding.unverified_returns == ()
+
+    # Replacing the section that carries `sensitivity` declares both fields at
+    # once, which is not the half-contract the partial check describes.
+    replaced = mechanism_of(Path(__file__), _probe_replacing_the_whole_summary.__name__)
+    assert [d.fields for d in replaced.declarations] == [("summary",)]
+    assert all(d.replaces_the_summary for d in replaced.declarations)
 
     # Omitting one field is the half-contract case the `partial` check reads.
     one_field = mechanism_of(Path(__file__), _probe_declaring_only_one_field.__name__)
