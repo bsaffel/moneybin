@@ -222,7 +222,11 @@ def transactions_list(
                 # Unformatted: `render_rows` stringifies it through
                 # `format_money`, which is the only place text output does so.
                 t.amount,
-                t.category or UNCATEGORIZED_LABEL,
+                # Passed through as stored, `None` included: `render_rows`
+                # substitutes the declared placeholder and counts what it
+                # substituted, so a category a person authored as
+                # `Uncategorized` is not counted as a missing one.
+                t.category,
                 t.account_id,
             ))
 

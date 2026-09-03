@@ -277,7 +277,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `-` for the same state, and neither said how many rows were in it. Both now
   draw on one placeholder, and the line beneath the table counts it
   (`… · 7 uncategorized`), so the label is disclosed as a stand-in rather than
-  read as a category a curator chose. (#515)
+  read as a category a curator chose. The count is of genuinely absent
+  categories: a category someone authored as the literal word `Uncategorized`
+  — which some tools export as their own placeholder — renders as itself and
+  is not counted, the same distinction `--output json` keeps by carrying the
+  underlying NULL through. (#515)
 
 - **An amount no longer folds across two lines.** Folding is the right failure
   for an identifier — an account id or a display name ending in a masked last

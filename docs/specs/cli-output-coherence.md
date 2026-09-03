@@ -664,18 +664,31 @@ Numbered, each independently testable.
     already fits 80 columns, neither of which omits a column. The framing
     clauses share one line.
 
-    **The count reads one declared column, not the row (surfaced during
-    implementation).** The caller declares the column alongside the value, and
-    a row counts only when *that* cell matches. Every other cell in the row is
-    data a person or a bank authored, and `Uncategorized` is a description a
-    user will eventually meet — scanning the row would let it inflate the one
-    number whose entire worth is being exact, and the inflation would read as a
-    taxonomy gap that does not exist. A declared column absent from the table
-    is refused rather than skipped, for the reason `_column_view` already
-    gives: a disclosure that silently counts nothing renders exactly like a
-    table with no gaps. A declared column the *width fit* dropped is skipped,
-    which is the different case — the gap is real but not on screen to be
-    misread.
+    **The renderer substitutes, and counts what it substituted (surfaced
+    during implementation).** The caller declares the column and the word, then
+    passes the stored value through — NULL included — rather than substituting
+    and letting the renderer match the string back. Two things fall out that
+    the string match got wrong. A description or a category a person *authored*
+    as `Uncategorized` is a value, not a gap: `tabular` and `manual` keep
+    whatever text was written, and plenty of tools export that exact word as
+    their own placeholder, so matching the rendered string would count an
+    authored value as a missing one — collapsing the very distinction the
+    paragraph below promises `--output json` preserves. And the count is
+    confined to one column, because a taxonomy gap lives in one column while
+    every other cell in the row is data.
+
+    Absent means NULL *or* blank. `stg_tabular__transactions` and
+    `stg_manual__transactions` pass the column through without a `NULLIF`, so a
+    blank category cell in an imported CSV arrives as `''` rather than NULL.
+    An empty cell under a `category` header is the state this placeholder
+    exists to replace, and which spelling of "blank" a source happened to use
+    is not a distinction the reader should have to know about.
+
+    A declared column absent from the table is refused rather than skipped, for
+    the reason `column_view` already gives: a disclosure that silently counts
+    nothing renders exactly like a table with no gaps. A declared column the
+    *width fit* dropped is skipped, which is the different case — the gap is
+    real but not on screen to be misread.
 
     `--output json` carries the underlying NULL untouched, so a caller can still
     tell an uncategorized row from one categorized as the literal string

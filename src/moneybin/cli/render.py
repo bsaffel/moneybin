@@ -38,8 +38,10 @@ if TYPE_CHECKING:
     from moneybin.reports._framework.contract import MoneyKind, Polarity
 
 __all__ = [
+    "UNCATEGORIZED_LABEL",
     "ColumnView",
     "Money",
+    "Placeholder",
     "Style",
     "color_enabled",
     "column_view",
@@ -198,14 +200,17 @@ UNCATEGORIZED_LABEL = "Uncategorized"
 
 @dataclass(frozen=True, slots=True)
 class Placeholder:
-    """The stand-in a caller substitutes for an unmapped value, and its column.
+    """What an absent value renders as in one declared column.
 
-    The column is half the declaration, not a convenience. The count beneath
-    the table names a taxonomy gap, so it has to read the one column that can
-    hold one — every other cell is data, and a bank description reading
-    ``Uncategorized`` is a value a person will meet, not a missing category.
-    Scanning the row would let that description inflate the single number whose
-    only worth is being exact.
+    The caller passes the stored value through — ``None`` and all — and the
+    renderer substitutes. Declaring it rather than substituting at the call
+    site is what makes the count beneath the table exact: absence is read off
+    the stored value, so neither a description nor a category a person
+    *authored* as ``Uncategorized`` can be mistaken for a missing one. That is
+    the same distinction ``--output json`` keeps by carrying the NULL through.
+
+    The column is the other half of the declaration. A taxonomy gap lives in
+    one column, and every other cell in the row is data.
     """
 
     column: str
@@ -384,11 +389,12 @@ def render_rows(
     would still fetch nothing. It defaults to ``False`` so a caller that has
     not thought about paging discloses the slice without promising more.
 
-    ``placeholder`` declares the value a caller substitutes for an unmapped
-    one and the column holding it; rows carrying it there are counted on the
-    same line (requirement 30). Both widen requirement 10's trigger: framing
-    is not only about omitted columns, so a complete projection under
-    ``--wide`` still discloses a taxonomy gap.
+    ``placeholder`` declares what an absent value renders as, and in which
+    column. The caller passes the stored value through; this renderer
+    substitutes and counts the substitutions on the same line (requirement
+    30). Both widen requirement 10's trigger: framing is not only about
+    omitted columns, so a complete projection under ``--wide`` still discloses
+    a taxonomy gap.
 
     Every clause shares one line. Four lines beneath a two-row table would cost
     more screen than the result they describe.
@@ -418,8 +424,24 @@ def render_rows(
         highlight=False,
         no_color=not color_enabled(sys.stdout, os.environ),
     )
-    cells_source: Iterable[list[RenderableType]] = (
-        _cells(columns, row, declared) for row in rows
+    absent_at: int | None = None
+    absent_as = ""
+    if placeholder is not None:
+        if placeholder.column not in columns:
+            # Refused rather than skipped, for the reason `column_view` gives:
+            # a disclosure that silently counts nothing reads exactly like a
+            # table with no gaps, and leaves the typo in place indefinitely.
+            raise ValueError(f"undeclared placeholder column {placeholder.column!r}")
+        if placeholder.column in declared:
+            # Same silent-zero failure, one column over: `_cells` formats a
+            # money cell through `format_money`, which spells a missing amount
+            # `-` itself, so a placeholder here would never substitute and the
+            # count would sit at zero forever.
+            raise ValueError(f"placeholder on money column {placeholder.column!r}")
+        absent_at = columns.index(placeholder.column)
+        absent_as = placeholder.value
+    cells_source: Iterable[tuple[list[RenderableType], bool]] = (
+        _cells(columns, row, declared, absent_at, absent_as) for row in rows
     )
     kept = tuple(range(len(columns)))
     if fit and columns:
@@ -434,7 +456,7 @@ def render_rows(
         widths = [
             max(
                 _cell_width(name),
-                max((_cell_width(cells[i]) for cells in cells_source), default=0),
+                max((_cell_width(cells[i]) for cells, _ in cells_source), default=0),
             )
             for i, name in enumerate(columns)
         ]
@@ -481,29 +503,19 @@ def render_rows(
         )
         if at == gap:
             table.add_column(ELISION, justify="center", overflow="fold")
-    flag_at: int | None = None
-    flag_value = ""
-    if placeholder is not None:
-        if placeholder.column not in columns:
-            # Refused rather than skipped, for the reason `_column_view` gives:
-            # a disclosure that silently counts nothing reads exactly like a
-            # table with no gaps, and leaves the typo in place indefinitely.
-            raise ValueError(f"undeclared placeholder column {placeholder.column!r}")
-        at = columns.index(placeholder.column)
-        # Counted off the kept columns, not the caller's whole projection: the
-        # disclosure is about what this table shows, and a placeholder in a
-        # column the fit dropped is not on screen to be misread.
-        flag_at = at if at in kept else None
-        flag_value = placeholder.value
+    # Counted off the kept columns, not the caller's whole projection: the
+    # disclosure is about what this table shows, and a placeholder in a column
+    # the fit dropped is not on screen to be misread.
+    count_absent = absent_at is not None and absent_at in kept
     rendered = 0
     flagged = 0
-    for cells in cells_source:
+    for cells, absent in cells_source:
         row_cells = [cells[i] for i in kept]
         if gap is not None:
             row_cells.insert(gap + 1, ELISION)
         table.add_row(*row_cells)
         rendered += 1
-        if flag_at is not None and str(cells[flag_at]) == flag_value:
+        if absent and count_absent:
             flagged += 1
     # Rich holds every cell now, so let a buffered measurement copy go before
     # rendering allocates its own.
@@ -580,12 +592,21 @@ def _cells(
     columns: Sequence[str],
     row: Sequence[object],
     declared: Mapping[str, Money],
-) -> list[RenderableType]:
-    """Render one record's cells, formatting the declared money columns.
+    absent_at: int | None = None,
+    absent_as: str = "",
+) -> tuple[list[RenderableType], bool]:
+    """Render one record's cells, and report whether the declared value was absent.
 
     A money cell becomes a ``Text`` carrying its own style, which is how a
     per-value colour survives ``markup=False`` — the alternative is embedding
     style tags in the string, which is the markup this renderer disables.
+
+    ``absent_at`` names the column a caller declared a placeholder for. A
+    ``None`` there renders as ``absent_as`` and is reported in the second
+    element. The substitution and the report come from the same test, on the
+    stored value, so the count cannot be confused by a *stored* string that
+    happens to equal the placeholder — which is the distinction ``--output
+    json`` preserves by carrying the NULL through untouched.
     """
     from rich.text import Text  # noqa: PLC0415 — defer heavy import
 
@@ -594,10 +615,21 @@ def _cells(
     # length mismatch is a programming error. Zipping leniently would drop the
     # trailing cell silently, which is the failure requirement 35 exists to
     # prevent — a wrong table that looks right.
-    for name, value in zip(columns, row, strict=True):
+    absent = False
+    for at, (name, value) in enumerate(zip(columns, row, strict=True)):
         column_money = declared.get(name)
         if column_money is None:
-            cells.append("" if value is None else str(value))
+            text = "" if value is None else str(value)
+            if at == absent_at and not text.strip():
+                # Blank counts as absent, not just NULL. `stg_tabular__` and
+                # `stg_manual__` pass a category straight through, so an empty
+                # cell in an imported CSV arrives as `''` — and an empty cell
+                # under a `category` header is the state this placeholder
+                # exists to replace, whichever way the source spelled it.
+                absent = True
+                cells.append(absent_as)
+            else:
+                cells.append(text)
             continue
         cells.append(
             Text(
@@ -605,7 +637,7 @@ def _cells(
                 style=str(column_money.style_for(value)),
             )
         )
-    return cells
+    return cells, absent
 
 
 def _as_decimal(value: object) -> Decimal | None:

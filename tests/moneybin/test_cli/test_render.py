@@ -764,7 +764,7 @@ def test_render_rows_counts_the_unmapped_placeholder(
     """
     render_rows(
         ["date", "category"],
-        [("2026-08-01", "Food & Drink"), ("2026-08-02", "Uncategorized")],
+        [("2026-08-01", "Food & Drink"), ("2026-08-02", None)],
         placeholder=Placeholder("category", "Uncategorized"),
     )
 
@@ -782,7 +782,7 @@ def test_the_placeholder_count_fires_with_every_column_shown(
     """
     render_rows(
         ["category"],
-        [("Uncategorized",)],
+        [(None,)],
         total_columns=1,
         placeholder=Placeholder("category", "Uncategorized"),
     )
@@ -815,7 +815,7 @@ def test_the_framing_clauses_share_one_line(
     """
     render_rows(
         ["category"],
-        [("Uncategorized",)],
+        [(None,)],
         total_columns=4,
         total_rows=9,
         has_more=True,
@@ -864,11 +864,56 @@ def test_the_placeholder_count_reads_only_its_own_column(
     """
     render_rows(
         ["description", "category"],
-        [("Uncategorized", "Food & Drink"), ("Coffee", "Uncategorized")],
+        [("Uncategorized", "Food & Drink"), ("Coffee", None)],
         placeholder=Placeholder("category", "Uncategorized"),
     )
 
     assert "1 uncategorized" in capsys.readouterr().out
+
+
+def test_a_category_authored_as_the_placeholder_word_is_not_a_gap(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Absence is read off the stored value, never off the rendered string.
+
+    The `tabular` and `manual` sources keep whatever category text a person
+    wrote, and plenty of tools export the literal word `Uncategorized` as their
+    own placeholder — importing one puts that string in the column as a real,
+    authored value. Substituting first and matching the string back would make
+    it indistinguishable from a NULL, and `--output json` promises the caller
+    those two are distinguishable. Only the NULL is a gap; the authored word
+    renders as itself and is not counted.
+    """
+    render_rows(
+        ["category"],
+        [("Uncategorized",), (None,)],
+        placeholder=Placeholder("category", "Uncategorized"),
+    )
+
+    out = capsys.readouterr().out
+    assert "1 uncategorized" in out
+    assert "2 uncategorized" not in out
+
+
+def test_a_blank_category_counts_as_absent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An empty cell under a `category` header is the state being replaced.
+
+    `stg_tabular__transactions` and `stg_manual__transactions` pass the column
+    through without a `NULLIF`, so a blank category cell in an imported CSV
+    reaches the CLI as `''` rather than NULL. Rendering that as an empty cell
+    would leave exactly the hole the placeholder exists to fill, and leave it
+    uncounted — the source's choice of spelling for "blank" is not a
+    distinction the reader should have to know about.
+    """
+    render_rows(
+        ["category"],
+        [(None,), ("",), ("   ",), ("Food & Drink",)],
+        placeholder=Placeholder("category", "Uncategorized"),
+    )
+
+    assert "3 uncategorized" in capsys.readouterr().out
 
 
 def test_a_placeholder_naming_no_column_of_this_table_is_refused() -> None:
@@ -882,8 +927,25 @@ def test_a_placeholder_naming_no_column_of_this_table_is_refused() -> None:
     with pytest.raises(ValueError, match="undeclared placeholder column"):
         render_rows(
             ["date", "category"],
-            [("2026-08-01", "Uncategorized")],
+            [("2026-08-01", None)],
             placeholder=Placeholder("categroy", "Uncategorized"),
+        )
+
+
+def test_a_placeholder_on_a_money_column_is_refused() -> None:
+    """The same silent-zero failure as an undeclared column, one column over.
+
+    `format_money` already spells a missing amount `-` and owns that cell, so a
+    placeholder declared there would never substitute and the count would read
+    zero forever — a disclosure that cannot fire is worse than none, because it
+    renders as a table with no gaps.
+    """
+    with pytest.raises(ValueError, match="placeholder on money column"):
+        render_rows(
+            ["amount"],
+            [(None,)],
+            money={"amount": Money("flow")},
+            placeholder=Placeholder("amount", "Unknown"),
         )
 
 
@@ -905,7 +967,7 @@ def test_the_placeholder_count_ignores_a_column_the_fit_dropped(
         [
             (
                 *(f"value{i}" for i in before),
-                "Uncategorized",
+                None,
                 *(f"value{i}" for i in after),
             )
         ],

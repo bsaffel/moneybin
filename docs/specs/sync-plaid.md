@@ -481,7 +481,9 @@ No other code path should ever flip the sign. If a test or query reads from raw,
 
 ## Plaid categories
 
-Plaid provides a `personal_finance_category.primary` value (e.g., `FOOD_AND_DRINK`, `TRANSFER`, `INCOME`). These are preserved in `raw.plaid_transactions.category` and flow through staging to core.
+Plaid provides a `personal_finance_category.primary` value (e.g., `FOOD_AND_DRINK`, `TRANSFER`, `INCOME`). These are preserved in `raw.plaid_transactions.category` and flow through staging to core **as `plaid_category`**, the column the categorizer reads.
+
+> **Corrected 2026-09-03 (PR #515).** This paragraph read "flow through staging to core" without naming the column, which was true of `raw` but had become false of the destination: the PFC code was also aliased into `category`, the column that carries a *MoneyBin* category. One rendered column then held two vocabularies, and `core.uncategorized_queue` — which selects `WHERE category IS NULL` — excluded every Plaid row from curation. The plaid branch of `prep.int_transactions__unioned` now contributes `NULL::TEXT AS category`; the code itself is unchanged and still reaches `core` as `plaid_category`. See [`categorization-source-model.md`](categorization-source-model.md) § "Old primary-as-text passthrough" for the full decision.
 
 In the categorization priority hierarchy (`categorization-overview.md`), Plaid categories sit at priority 5 — below user, rules, auto-rules, and ML, but above LLM batch categorization. They serve as a bootstrap signal: useful for new users before they've built up rules and ML training data, but overridable by every other categorization source.
 
