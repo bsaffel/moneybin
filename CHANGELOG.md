@@ -49,6 +49,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   public release and builds on its successor if that has reached 1.0 by then.
   (#516)
 
+- **`accounts list` and `transactions list` now name the account in a column
+  you can quote back.** `accounts list` had glued the id onto the display name
+  (`Checking (acct_a1b2)`) and `transactions list` headed its id column
+  `account`; both now render an `account_id` column, so the two tables visibly
+  join and `--output json` is unchanged. (#515)
+
+- **A truncated `transactions list` page says how much it left behind instead
+  of printing a cursor.** `Next page: --cursor <token>` is replaced by
+  `20 of 2,046 shown · raise --limit for more`, with the continuation offered
+  only where a further page exists; `--cursor` is unchanged for
+  `--output json`. (#515)
+
 - **The last eight commands that drew their own columns now render like every
   other one.** `db ps`, `db kill`, `demo`, `fx list`, `import history`,
   `import formats list`, and the four `investments` list commands each built a
@@ -270,6 +282,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **A Plaid transaction's `category` no longer holds Plaid's own category
+  code.** `prep.int_transactions__unioned` had aliased the raw
+  personal-finance-category code into `category`, so one column mixed
+  `FOOD_AND_DRINK` with `Food & Drink` depending only on the row's source; the
+  code now stays in `plaid_category`, where the categorizer already reads it,
+  and report grouping no longer splits one category's total in two. (#515)
+
+- **`core.uncategorized_queue` and every count drawn from it grow on a Plaid
+  profile.** The queue selects `WHERE category IS NULL`, so the aliased code
+  above had been hiding transactions the categorizer never resolved — this is
+  the inverse of the drop in #502, and for the same reason. (#515)
+
+- **An absent category renders `Uncategorized`, and the line beneath the table
+  counts it.** `transactions list` printed an empty cell and
+  `transactions splits` printed `-` for the same state; both now draw on one
+  placeholder and disclose the count (`… · 7 uncategorized`), counting only
+  genuinely absent categories so a category authored as the literal word
+  `Uncategorized` renders as itself. (#515)
+
 - **An amount no longer folds across two lines.** Folding is the right failure
   for an identifier — an account id or a display name ending in a masked last
   four wraps rather than losing the characters that tell two rows apart — but

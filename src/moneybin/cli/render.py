@@ -38,8 +38,10 @@ if TYPE_CHECKING:
     from moneybin.reports._framework.contract import MoneyKind, Polarity
 
 __all__ = [
+    "UNCATEGORIZED_LABEL",
     "ColumnView",
     "Money",
+    "Placeholder",
     "Style",
     "color_enabled",
     "column_view",
@@ -186,6 +188,34 @@ def color_enabled(stream: object, env: Mapping[str, str]) -> bool:
 #: that never had a middle.
 ELISION = "…"
 
+# The one word text output uses for a category it cannot name (requirement 30).
+# It lives beside the renderer that lowercases it for the framing clause rather
+# than in a domain module, because nothing below the CLI has an opinion about
+# it: `core.fct_transactions.category` is NULL for these rows and the JSON
+# branch passes that NULL through untouched. Text is the only surface that owes
+# the reader a word here, and one word is the point — a column carrying both
+# `Uncategorized` and a raw provider code is the defect, not a disclosure of it.
+UNCATEGORIZED_LABEL = "Uncategorized"
+
+
+@dataclass(frozen=True, slots=True)
+class Placeholder:
+    """What an absent value renders as in one declared column.
+
+    The caller passes the stored value through — ``None`` and all — and the
+    renderer substitutes. Declaring it rather than substituting at the call
+    site is what makes the count beneath the table exact: absence is read off
+    the stored value, so neither a description nor a category a person
+    *authored* as ``Uncategorized`` can be mistaken for a missing one. That is
+    the same distinction ``--output json`` keeps by carrying the NULL through.
+
+    The column is the other half of the declaration. A taxonomy gap lives in
+    one column, and every other cell in the row is data.
+    """
+
+    column: str
+    value: str
+
 
 def _cell_width(cell: RenderableType) -> int:
     from rich.cells import cell_len  # noqa: PLC0415 — defer heavy import
@@ -313,6 +343,9 @@ def render_rows(
     money: Mapping[str, Money] | None = None,
     numeric: Sequence[str] | None = None,
     total_columns: int | None = None,
+    total_rows: int | None = None,
+    has_more: bool = False,
+    placeholder: Placeholder | None = None,
     fit: bool = False,
 ) -> None:
     """Render ``rows`` as a table to stdout (requirement 2).
@@ -347,6 +380,25 @@ def render_rows(
     (requirement 10). A caller with no column policy leaves it ``None`` and
     frames nothing.
 
+    ``total_rows`` is the size of the whole result when ``rows`` is one page of
+    it, and frames the remainder (requirement 34). ``has_more`` says whether a
+    further page exists, and gates the continuation the frame offers: the
+    count and the remedy answer different questions. A filtered total holds
+    steady across a cursor walk, so on the last page of one it still exceeds
+    the page length — the table is honestly a slice of 2,046, and `--limit`
+    would still fetch nothing. It defaults to ``False`` so a caller that has
+    not thought about paging discloses the slice without promising more.
+
+    ``placeholder`` declares what an absent value renders as, and in which
+    column. The caller passes the stored value through; this renderer
+    substitutes and counts the substitutions on the same line (requirement
+    30). Both widen requirement 10's trigger: framing is not only about
+    omitted columns, so a complete projection under ``--wide`` still discloses
+    a taxonomy gap.
+
+    Every clause shares one line. Four lines beneath a two-row table would cost
+    more screen than the result they describe.
+
     **One line per record, always** (requirement 35). This renderer never
     deduplicates, merges, or suppresses a row. `reports networth` currently
     sums an account once per balance source, so a doubled account shows as
@@ -372,8 +424,24 @@ def render_rows(
         highlight=False,
         no_color=not color_enabled(sys.stdout, os.environ),
     )
-    cells_source: Iterable[list[RenderableType]] = (
-        _cells(columns, row, declared) for row in rows
+    absent_at: int | None = None
+    absent_as = ""
+    if placeholder is not None:
+        if placeholder.column not in columns:
+            # Refused rather than skipped, for the reason `column_view` gives:
+            # a disclosure that silently counts nothing reads exactly like a
+            # table with no gaps, and leaves the typo in place indefinitely.
+            raise ValueError(f"undeclared placeholder column {placeholder.column!r}")
+        if placeholder.column in declared:
+            # Same silent-zero failure, one column over: `_cells` formats a
+            # money cell through `format_money`, which spells a missing amount
+            # `-` itself, so a placeholder here would never substitute and the
+            # count would sit at zero forever.
+            raise ValueError(f"placeholder on money column {placeholder.column!r}")
+        absent_at = columns.index(placeholder.column)
+        absent_as = placeholder.value
+    cells_source: Iterable[tuple[list[RenderableType], bool]] = (
+        _cells(columns, row, declared, absent_at, absent_as) for row in rows
     )
     kept = tuple(range(len(columns)))
     if fit and columns:
@@ -388,7 +456,7 @@ def render_rows(
         widths = [
             max(
                 _cell_width(name),
-                max((_cell_width(cells[i]) for cells in cells_source), default=0),
+                max((_cell_width(cells[i]) for cells, _ in cells_source), default=0),
             )
             for i, name in enumerate(columns)
         ]
@@ -435,11 +503,20 @@ def render_rows(
         )
         if at == gap:
             table.add_column(ELISION, justify="center", overflow="fold")
-    for cells in cells_source:
+    # Counted off the kept columns, not the caller's whole projection: the
+    # disclosure is about what this table shows, and a placeholder in a column
+    # the fit dropped is not on screen to be misread.
+    count_absent = absent_at is not None and absent_at in kept
+    rendered = 0
+    flagged = 0
+    for cells, absent in cells_source:
         row_cells = [cells[i] for i in kept]
         if gap is not None:
             row_cells.insert(gap + 1, ELISION)
         table.add_row(*row_cells)
+        rendered += 1
+        if absent and count_absent:
+            flagged += 1
     # Rich holds every cell now, so let a buffered measurement copy go before
     # rendering allocates its own.
     del cells_source
@@ -448,12 +525,27 @@ def render_rows(
     # and the renderer's own width fit are disclosed by one line rather than
     # two — and a fit the caller never asked about still cannot happen silently.
     whole = total_columns if total_columns is not None else len(columns)
+    clauses: list[str] = []
+    if total_rows is not None and total_rows > rendered:
+        # Grouped, because the count exists to answer "how much is there?" and
+        # 2046 answers it less well than 2,046 at a glance.
+        clauses.append(f"{rendered:,} of {total_rows:,} shown")
+    if has_more:
+        # `--limit`, never `--cursor`: the cursor takes an opaque token text
+        # output does not supply, so naming it sends the reader into a usage
+        # error. Offered only against a page that exists, because a remedy
+        # that fetches nothing is worse than no remedy at all.
+        clauses.append("raise --limit for more")
     if whole > len(kept):
+        clauses.append(f"{len(kept)} of {whole} columns shown — --wide for all")
+    if placeholder is not None and flagged:
+        clauses.append(f"{flagged} {placeholder.value.lower()}")
+    if clauses:
         # stdout, and reachable under `-q` (this renderer takes no such
         # parameter): both are load-bearing. `moneybin reports spending >
         # report.txt` has to capture the disclosure with the table it describes,
         # or the file records a truncated result that reads as a whole one.
-        typer.echo(f"{len(kept)} of {whole} columns shown — --wide for all")
+        typer.echo(" · ".join(clauses))
 
 
 def render_summary(
@@ -500,12 +592,21 @@ def _cells(
     columns: Sequence[str],
     row: Sequence[object],
     declared: Mapping[str, Money],
-) -> list[RenderableType]:
-    """Render one record's cells, formatting the declared money columns.
+    absent_at: int | None = None,
+    absent_as: str = "",
+) -> tuple[list[RenderableType], bool]:
+    """Render one record's cells, and report whether the declared value was absent.
 
     A money cell becomes a ``Text`` carrying its own style, which is how a
     per-value colour survives ``markup=False`` — the alternative is embedding
     style tags in the string, which is the markup this renderer disables.
+
+    ``absent_at`` names the column a caller declared a placeholder for. A
+    ``None`` there renders as ``absent_as`` and is reported in the second
+    element. The substitution and the report come from the same test, on the
+    stored value, so the count cannot be confused by a *stored* string that
+    happens to equal the placeholder — which is the distinction ``--output
+    json`` preserves by carrying the NULL through untouched.
     """
     from rich.text import Text  # noqa: PLC0415 — defer heavy import
 
@@ -514,10 +615,22 @@ def _cells(
     # length mismatch is a programming error. Zipping leniently would drop the
     # trailing cell silently, which is the failure requirement 35 exists to
     # prevent — a wrong table that looks right.
-    for name, value in zip(columns, row, strict=True):
+    absent = False
+    for at, (name, value) in enumerate(zip(columns, row, strict=True)):
         column_money = declared.get(name)
         if column_money is None:
-            cells.append("" if value is None else str(value))
+            if value is None and at == absent_at:
+                # NULL only, deliberately. A whitespace-only category is
+                # reachable and is *not* treated as absent here, because
+                # `core.uncategorized_queue` selects `WHERE category IS NULL`
+                # and would not surface it: labelling it would advertise a row
+                # `transactions categorize run` cannot act on. Making the two
+                # agree means normalizing blanks in staging, which is a change
+                # to what the queue contains rather than to how it renders.
+                absent = True
+                cells.append(absent_as)
+            else:
+                cells.append("" if value is None else str(value))
             continue
         cells.append(
             Text(
@@ -525,7 +638,7 @@ def _cells(
                 style=str(column_money.style_for(value)),
             )
         )
-    return cells
+    return cells, absent
 
 
 def _as_decimal(value: object) -> Decimal | None:
