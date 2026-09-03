@@ -253,6 +253,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `NULLIF(TRIM(...), '')`, the convention `stg_plaid__accounts` documents and
   every other free-text column in staging already follows; a padded
   `'  Groceries  '` still arrives as `Groceries` rather than being discarded.
+  (#517)
 
 - **`transactions splits add --category "   "` is refused rather than
   stored.** The MCP write contracts already refuse a whitespace-only string,
@@ -261,6 +262,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not, so the CLI could write a blank that the staging models would have
   nulled out had it arrived from a file. Both now apply the same rule, which
   is what lets the renderer treat `NULL` as the one absence it has to spell.
+  (#517)
 
 - **A Plaid transaction's `category` no longer holds Plaid's own category
   code.** `prep.int_transactions__unioned` had aliased the raw
