@@ -280,7 +280,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   shipped actor falsifies past audit rows — and each now hands that same name
   to its failure path, since deriving one there would have disguised the split
   rather than closed it, a derived failure row reading as authoritative where
-  `cli.unknown` was visibly unattributed. `cli.unknown` survives only for a
+  `cli.unknown` was visibly unattributed. That covers the commands reached
+  through an alias or a shared helper too: `moneybin sync connect` runs
+  `sync link`'s body and `moneybin transactions review` shares its body with
+  `moneybin review`, so each was recording its successes under the name of the
+  command whose code it borrows. One command keeps two identities on purpose —
+  `transform plan --apply` delegates to the apply and audits as
+  `transform_apply`, which is the operation that actually ran. `cli.unknown` survives only for a
   call with no command behind it at all. The failure row's *tier* is unchanged
   and still defaults to the conservative `high` with no returned classes unless
   the command names its payload — that value is knowable only from the envelope

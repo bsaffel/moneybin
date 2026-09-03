@@ -20,9 +20,11 @@ renaming one would falsify history (see
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
 import json
 import textwrap
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
@@ -68,39 +70,82 @@ def _leaf_commands() -> Iterator[tuple[str, click.Command]]:
     yield from walk(root, ["moneybin"])
 
 
-def _audit_actors(command: click.Command) -> tuple[str | None, set[str], bool]:
-    """``(failure actor, success actors, guarded)`` declared in a command's body.
+_AUDIT_CALLS = frozenset({"render_or_json", "render_export_receipt"})
 
-    The failure actor is the literal passed to ``handle_cli_errors``, or None
-    when the call is bare and the derivation supplies it.
-    """
-    callback = command.callback
-    if callback is None:  # pragma: no cover - filtered by _leaf_commands
-        return None, set(), False
-    try:
-        source = textwrap.dedent(inspect.getsource(callback))
-    except (OSError, TypeError):  # pragma: no cover - source always available
-        return None, set(), False
-    failure: str | None = None
-    success: set[str] = set()
-    guarded = False
-    for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.Call):
+
+@cache
+def _module_functions(module_name: str) -> dict[str, ast.FunctionDef]:
+    """Every module-level ``def`` in ``module_name``, by name."""
+    module = importlib.import_module(module_name)
+    source = Path(str(module.__file__)).read_text()
+    return {
+        node.name: node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+
+def _literal_actor(node: ast.Call) -> str | None:
+    for keyword in node.keywords:
+        if keyword.arg != "cli_actor":
             continue
-        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-        keywords = {k.arg: k.value for k in node.keywords if k.arg}
-        literal = keywords.get("cli_actor")
-        value = (
-            literal.value
-            if isinstance(literal, ast.Constant) and isinstance(literal.value, str)
-            else None
-        )
-        if name == "handle_cli_errors":
-            guarded = True
-            failure = failure or value
-        elif name in {"render_or_json", "render_export_receipt"} and value:
-            success.add(value)
-    return failure, success, guarded
+        value = keyword.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+    return None
+
+
+def _audit_actors(command: click.Command, command_path: str) -> set[str]:
+    """Every actor string this command can write, from every audit site it reaches.
+
+    Follows calls into module-level helpers rather than reading the callback
+    alone. ``transactions/review.py`` puts both its guard and its render inside
+    a shared ``_print_status``, so a callback-only scan saw neither and left a
+    real split — ``moneybin transactions review`` auditing successes as
+    ``cli.review`` and failures as ``cli.transactions_review`` — outside every
+    check here.
+
+    A bare site contributes the derived actor, an annotated one its literal, and
+    a site whose ``cli_actor`` is a pass-through variable contributes nothing:
+    its value belongs to whichever caller supplied it.
+    """
+    if command.callback is None:  # pragma: no cover - filtered by _leaf_commands
+        return set()
+    callback = inspect.unwrap(command.callback)
+    module_name = callback.__module__
+    try:
+        functions = _module_functions(module_name)
+    except (OSError, TypeError, ValueError):  # pragma: no cover - source present
+        return set()
+    root = functions.get(callback.__name__)
+    if root is None:
+        return set()
+
+    derived = _expected_actor(command_path)
+    actors: set[str] = set()
+    seen: set[str] = {callback.__name__}
+    queue = [root]
+    while queue:
+        for node in ast.walk(queue.pop()):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name is None:
+                continue
+            if name == "handle_cli_errors":
+                actors.add(_literal_actor(node) or derived)
+            elif name in _AUDIT_CALLS:
+                literal = _literal_actor(node)
+                # A pass-through (``cli_actor=cli_actor``) is the caller's
+                # value, not this command's; only a bare call is derived.
+                if literal is not None:
+                    actors.add(literal)
+                elif not any(k.arg == "cli_actor" for k in node.keywords):
+                    actors.add(derived)
+            elif name in functions and name not in seen:
+                seen.add(name)
+                queue.append(functions[name])
+    return actors
 
 
 def _expected_actor(command_path: str) -> str:
@@ -173,6 +218,15 @@ _LEGACY_ACTOR_DIVERGENCES: frozenset[tuple[str, str]] = frozenset({
     ("moneybin transactions matches pending", "matches_pending"),
 })
 
+#: The one command that reaches two audit identities by design.
+#: ``transform plan --apply`` delegates to ``transform_apply``, so a plan
+#: audits as ``transform_plan`` and the apply it can delegate to audits as
+#: ``transform_apply`` — which is correct for each, and what the operator
+#: actually ran. Collapsing them would make a plain ``transform plan`` failure
+#: audit as an apply. Pinned by set equality, so a second delegating command
+#: fails here rather than joining a blanket exemption.
+_DELEGATING_COMMANDS: frozenset[str] = frozenset({"moneybin transform plan"})
+
 #: Floor on how many commands the equivalence check actually compares. Without
 #: it a scan that silently matched nothing would pass while asserting nothing.
 _MIN_EQUIVALENCE_SAMPLE = 100
@@ -213,25 +267,26 @@ def test_failure_and_success_audit_one_command_under_one_name() -> None:
     disguises it, because the derived failure row looks authoritative where
     `cli.unknown` was visibly unattributed. A command whose success path uses a
     name the derivation cannot produce must therefore pass that same name to
-    `handle_cli_errors`, and 22 of them do.
+    `handle_cli_errors` — including the ones that reach it through an alias
+    (`sync connect` running `sync_link`'s body) or a shared helper
+    (`transactions review`), which is why this walks helpers rather than
+    reading each callback alone.
     """
-    split: set[tuple[str, str, str]] = set()
+    split: set[tuple[str, str]] = set()
     compared = 0
     for command_path, command in _leaf_commands():
-        failure, success, guarded = _audit_actors(command)
-        if not guarded or not success:
+        actors = _audit_actors(command, command_path)
+        if not actors:
             continue
-        failure_actor = failure or _expected_actor(command_path)
-        for success_actor in success:
-            compared += 1
-            if success_actor != failure_actor:
-                split.add((command_path, failure_actor, success_actor))
+        compared += 1
+        if len(actors) > 1:
+            split.add((command_path, ", ".join(sorted(actors))))
 
     assert compared >= _MIN_EQUIVALENCE_SAMPLE, (
         f"only {compared} commands compared — the source scan found far fewer "
         "audited commands than the CLI has"
     )
-    assert split == set()
+    assert {command_path for command_path, _ in split} == _DELEGATING_COMMANDS
 
 
 def test_every_command_derives_a_usable_actor() -> None:
