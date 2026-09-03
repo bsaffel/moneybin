@@ -542,6 +542,25 @@ class TestAnnotationBatches:
         ).fetchone()
         assert row == ("FND",)
 
+    @pytest.mark.unit
+    def test_set_splits_refuses_a_blank_category(
+        self, transaction_db: Database
+    ) -> None:
+        """The granular arm takes untyped dicts, so Pydantic never sees them.
+
+        ``SplitsSet`` reaches ``_prepare_splits_set`` through ``SplitTarget``,
+        which already refuses a whitespace-only category. ``set_splits`` reaches
+        the same code from ``list[dict[str, Any]]`` and validated only
+        ``amount``, so the guard that existed on one arm was absent on the
+        other.
+        """
+        with pytest.raises(ValueError, match="category must be non-empty"):
+            TransactionService(transaction_db).set_splits(
+                "T1",
+                [{"amount": Decimal("-50"), "category": "   "}],
+                actor="cli",
+            )
+
 
 class TestNotes:
     """Tests for TransactionService note operations (multi-note shape)."""
@@ -961,6 +980,34 @@ class TestSplits:
         splits = txn_service.list_splits(sample_transaction_id)
         assert [s.split_id for s in splits] == [s1.split_id, s2.split_id, s3.split_id]
         assert [s.ord for s in splits] == [0, 1, 2]
+
+    @pytest.mark.unit
+    def test_add_split_refuses_a_blank_category(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        """A category of spaces is refused here as it already is over MCP.
+
+        ``write_contracts._reject_whitespace_only`` refuses one on the typed
+        path; ``add_split`` took it. Stored, it blocks the inheritance in
+        ``core.fct_transaction_lines`` (``COALESCE(s.category, t.category)``
+        reads ``'  '`` as present) and renders as a blank cell, so the split
+        counts under no category while claiming to have one.
+        """
+        with pytest.raises(ValueError, match="category must be non-empty"):
+            txn_service.add_split(
+                sample_transaction_id, Decimal("-30.00"), category="   ", actor="cli"
+            )
+
+    @pytest.mark.unit
+    def test_add_split_keeps_a_category_a_person_wrote(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        """The restraint half: only blank is refused."""
+        split = txn_service.add_split(
+            sample_transaction_id, Decimal("-30.00"), category="Gas", actor="cli"
+        )
+
+        assert split.category == "Gas"
 
     @pytest.mark.unit
     def test_add_split_emits_audit(

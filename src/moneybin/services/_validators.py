@@ -59,6 +59,24 @@ def validate_note_text(text: str) -> None:
         raise ValueError(f"note text exceeds {NOTE_MAX_LEN} chars")
 
 
+def validate_category_text(value: str) -> None:
+    """Enforce non-blank category text within ``CATEGORY_NAME_MAX_LEN`` chars.
+
+    A category of spaces is not a category. The MCP write contracts already
+    refuse one (``write_contracts._reject_whitespace_only``), so this is the
+    same rule for the two split paths that reach the service without passing
+    through a Pydantic model — ``add_split`` and the granular ``set_splits``.
+    Storing the blank instead would put a third answer beside the two the
+    pipeline already gives: ``core.uncategorized_queue`` selects
+    ``category IS NULL``, and the staging models NULL a blank out, so a blank
+    stored here counts under no category at all while claiming to have one.
+    """
+    if not value.strip():
+        raise ValueError("category must be non-empty")
+    if len(value) > CATEGORY_NAME_MAX_LEN:
+        raise ValueError(f"category exceeds {CATEGORY_NAME_MAX_LEN} chars")
+
+
 def validate_currency_code(value: str) -> None:
     """Enforce ISO 4217 shape: exactly 3 uppercase letters."""
     if not _CURRENCY_RE.fullmatch(value):

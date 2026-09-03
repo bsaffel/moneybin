@@ -3,6 +3,12 @@ MODEL (
   kind VIEW
 );
 
+/* category and subcategory are wrapped in NULLIF(TRIM(...), '') for the reason
+   stg_plaid__accounts states for its own free-text columns, and the reason
+   currency below already is: '' passes a NULL check while rendering as a
+   malformed label. Here the NULL check that matters is
+   core.uncategorized_queue's `category IS NULL` — a category of spaces hides a
+   transaction nobody ever categorized from the queue built to surface it. */
 WITH ranked AS (
   SELECT
     transaction_id,
@@ -14,8 +20,8 @@ WITH ranked AS (
     original_date_str,
     TRIM(description) AS description,
     TRIM(memo) AS memo,
-    category,
-    subcategory,
+    NULLIF(TRIM(category), '') AS category,
+    NULLIF(TRIM(subcategory), '') AS subcategory,
     transaction_type,
     status,
     check_number,

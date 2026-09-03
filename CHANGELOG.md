@@ -244,6 +244,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **A category of spaces no longer counts as a category.** `'   '` passes a
+  `NULL` check while rendering as an empty cell, and
+  `core.uncategorized_queue` selects `WHERE category IS NULL` — so a
+  whitespace-only category hid a transaction from the curation queue while
+  claiming to carry one. `prep.stg_tabular__transactions` and
+  `prep.stg_manual__transactions` now wrap `category` and `subcategory` in
+  `NULLIF(TRIM(...), '')`, the convention `stg_plaid__accounts` documents and
+  every other free-text column in staging already follows; a padded
+  `'  Groceries  '` still arrives as `Groceries` rather than being discarded.
+
+- **`transactions splits add --category "   "` is refused rather than
+  stored.** The MCP write contracts already refuse a whitespace-only string,
+  but the two split paths that reach `TransactionService` without passing
+  through a Pydantic model — `add_split` and the granular `set_splits` — did
+  not, so the CLI could write a blank that the staging models would have
+  nulled out had it arrived from a file. Both now apply the same rule, which
+  is what lets the renderer treat `NULL` as the one absence it has to spell.
+
 - **A Plaid transaction's `category` no longer holds Plaid's own category
   code.** `prep.int_transactions__unioned` had aliased the raw
   personal-finance-category code into `category`, so one column mixed

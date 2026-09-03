@@ -3,6 +3,11 @@ MODEL (
   kind VIEW
 );
 
+/* category and subcategory are wrapped in NULLIF(TRIM(...), '') for the reason
+   stg_plaid__accounts states for its own free-text columns: '' passes a NULL
+   check while rendering as a malformed label. Here the NULL check that matters
+   is core.uncategorized_queue's `category IS NULL` — a category of spaces hides
+   a transaction nobody ever categorized from the queue built to surface it. */
 SELECT
   COALESCE(links.account_id, t.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
   t.account_id AS source_account_key,
@@ -15,8 +20,8 @@ SELECT
   t.description,
   t.merchant_name,
   t.memo,
-  t.category,
-  t.subcategory,
+  NULLIF(TRIM(t.category), '') AS category,
+  NULLIF(TRIM(t.subcategory), '') AS subcategory,
   t.payment_channel,
   t.transaction_type,
   t.check_number,

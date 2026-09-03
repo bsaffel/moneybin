@@ -44,6 +44,7 @@ from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
 from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
 from moneybin.services._validators import (
+    validate_category_text,
     validate_currency_code,
     validate_note_text,
     validate_slug,
@@ -1682,6 +1683,10 @@ class TransactionService:
         next ``ord`` as ``MAX(ord)+1`` for the parent (or 0 when first).
         """
         split_id = uuid.uuid4().hex[:12]
+        if category is not None:
+            validate_category_text(category)
+        if subcategory is not None:
+            validate_category_text(subcategory)
         self._db.begin()
         try:
             ord_row = self._db.conn.execute(
@@ -1811,6 +1816,12 @@ class TransactionService:
         desired: list[_PreparedSplit] = []
         total = Decimal("0")
         for split in splits:
+            # The MCP arm reaches here already validated by SplitTarget; the
+            # granular `set_splits` arm takes untyped dicts and does not.
+            if split.category is not None:
+                validate_category_text(split.category)
+            if split.subcategory is not None:
+                validate_category_text(split.subcategory)
             category_id = resolve_category_id(
                 self._db,
                 split.category,

@@ -94,23 +94,29 @@ def test_splits_list_text_names_an_uncategorized_split(
     assert "Food" in result.output
 
 
-def test_splits_list_text_does_not_call_a_blank_category_absent(
-    runner: CliRunner, db: Database
-) -> None:
-    """Requirement 30: absent means NULL, and only NULL — on this surface too.
+def test_splits_add_refuses_a_blank_category(runner: CliRunner, db: Database) -> None:
+    """The blank the renderer was told to distrust can no longer be stored.
 
-    `add_split` applies no non-empty check, so `--category ""` is stored
-    verbatim. A falsy `or` renders that blank as `Uncategorized`, reporting a
-    gap the curator never left — the same defect the sibling `transactions
-    list` placeholder is restricted to NULL to avoid.
+    #515 restricted the placeholder to NULL because `add_split` took
+    `--category ""` verbatim, so calling a stored blank absent would have
+    reported a gap the curator never left. The blank is now refused at the
+    service, matching the MCP write contracts, and the renderer's NULL-only
+    rule holds without needing to defend against a value that cannot exist.
     """
-    svc = TransactionService(db)
-    svc.add_split("T1", Decimal("-75"), category="", actor="cli")
+    result = runner.invoke(
+        app,
+        ["transactions", "splits", "add", "--category", "   ", "--", "T1", "-75.00"],
+    )
 
-    result = runner.invoke(app, ["transactions", "splits", "list", "T1"])
-
-    assert result.exit_code == 0
-    assert "Uncategorized" not in result.output
+    assert result.exit_code == 1
+    # A refusal, not a crash. An uncaught ValueError exits 1 under CliRunner
+    # too, so exit code alone cannot tell the two apart; what distinguishes
+    # them is which exception reached the runner.
+    assert isinstance(result.exception, SystemExit)
+    rows = db.conn.execute(
+        "SELECT COUNT(*) FROM app.transaction_splits WHERE transaction_id = 'T1'"
+    ).fetchone()
+    assert rows is not None and rows[0] == 0
 
 
 def test_splits_remove_with_yes(runner: CliRunner, db: Database) -> None:
