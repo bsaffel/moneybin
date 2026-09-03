@@ -619,35 +619,98 @@ Numbered, testable. Tagged by phase.
 
 ### M1K.3 — Realized FX gain/loss
 
-19. **Conversion-pair identity.** A currency conversion event (e.g. a EUR debit paired
-    with a USD credit) is modeled as a first-class pair, not inferred from two
-    unrelated rows.
+19. **Conversion-pair identity.** A Currency conversion (e.g. a EUR debit paired
+    with a USD credit) is modeled as one first-class economic event, not inferred
+    from two unrelated rows. The accepted two-row shape reuses an accepted
+    `app.match_decisions` Transfer Decision as its trusted link; the Transfer
+    remains the movement between Accounts while `core.bridge_currency_conversions`
+    owns the executed cross-currency terms. A pending or rejected Transfer never
+    becomes a Currency conversion, and approximate date/amount proximity is never
+    sufficient evidence.
 
-    **Reserved import shape — single-row FX transfer.** Some source formats express
-    an FX transfer as one row carrying *both* legs (the sent amount/currency plus a
-    received amount and target currency), rather than two rows. Reserve a
-    received-leg column pair — `to_amount` + `to_currency` — on the raw import tables
-    (`raw.*`, e.g. `raw.tabular_transactions`) where a source row lands, so an
-    importer that meets this shape has somewhere to put the second leg instead of
-    dropping it or fabricating a paired row; the row's own `amount`/`currency_code`
-    is then the sent leg, and the conversion-pair model consumes either shape.
+    **Reserved import shape — single-row Currency conversion.** Some source formats
+    express a Currency conversion as one row carrying *both* legs (the sent
+    amount/currency plus a received amount and target currency), rather than two
+    rows. Reserve a
+    nullable received-leg column pair — `to_amount DECIMAL(18,2)` +
+    `to_currency VARCHAR` — on `raw.ofx_transactions`,
+    `raw.tabular_transactions`, `raw.plaid_transactions`, and
+    `raw.manual_transactions`, so a Provider that meets this shape has somewhere
+    to put the second leg instead of dropping it or fabricating a paired row. The
+    row's own `amount`/normalized `currency_code` is the sent leg, and the
+    conversion-pair model consumes either shape. M1K.3 reserves and propagates the
+    fields but adds no format mapping or Provider behavior.
+
     `to_amount`/`to_currency` follow the directional `from_currency`/`to_currency`
     prefix convention already used on `raw.exchange_rates` — reserving them now
-    (schema reservation, not yet built) keeps a later importer from coining an
+    keeps a later Provider from coining an
     ad-hoc, differently-ordered name and compounding the currency-column naming
     drift §Key Decisions already flags.
-20. **Currency-lot accounting.** Realized FX gain/loss on disposing a foreign-currency
-    holding is computed via the **investments cost-basis engine** (FIFO / average per
-    the elected method in `investments-data-model.md`), treating currency holdings as
-    lots. Realized FX gain/loss on a foreign-denominated *security* sale is the same
-    engine applied to the currency leg.
+
+    `conversion_id` is content-derived from the evidence identity, never the
+    mutable amounts or dates: an accepted two-row shape hashes its Transfer
+    Decision id; a single-row shape hashes its canonical Transaction id. Later
+    corrections therefore revise one event instead of minting a second identity.
+
+    `core.bridge_transfers` continues to represent the movement between Accounts.
+    Its exact numeric cancellation audit applies only when both legs share a
+    currency; for a cross-currency Transfer, integrity instead requires both legs
+    to exist and the derived Currency conversion to preserve their actual amounts
+    and currencies. This is a refinement of the existing audit, not a relaxation
+    for same-currency Transfers.
+20. **Currency-lot accounting.** Realized FX gain/loss on disposing a foreign
+    currency is computed by a currency-lot loader that calls the existing
+    `compute_lots_and_gains` engine unchanged. The loader uses a non-colliding
+    private key such as `currency:EUR` only at the engine interface; it neither
+    inserts a Security nor widens `app.securities.security_type`.
+
+    The holding Account's `app.account_settings.default_cost_basis_method` is the
+    election: NULL resolves to FIFO, `fifo` stays FIFO, and `average` uses the
+    engine's average-cost path. `hifo` and `specific` remain valid Security
+    elections but are unsupported for Currency lots in this phase and surface as
+    incomplete coverage rather than silently becoming FIFO.
+
+    A Home-to-foreign conversion opens a Currency lot whose basis is the actual
+    Home-currency amount sent. A foreign-to-Home conversion disposes the sent
+    foreign units for the actual Home-currency amount received. A foreign-to-
+    foreign conversion uses the actual two-leg amounts for its executed rate and
+    uses a stored M1K.2 rate or override only to value the received leg in Home
+    currency; the valuation source stays separate and auditable. Missing valuation
+    evidence leaves the event uncovered.
+
+    A foreign-denominated Security sale opens a Currency lot for the net foreign
+    proceeds, using its recorded fees and stored sale-date Home valuation as that
+    Currency lot's basis. The existing Security gain remains separate. Receiving
+    the foreign proceeds realizes no second gain; only their later disposal can
+    produce realized FX gain/loss.
 21. **Decimal throughout.** All amounts and rates are `DECIMAL`, never `FLOAT`
     (`DECIMAL(18,2)` amounts; `DECIMAL(18,8)` rates per the `database.md` precision
-    convention).
+    convention). `updated_at` is the maximum timestamp of the contributing inputs,
+    never the model execution time. The required conservation invariant is:
+
+    `sum(realized basis) + sum(open remaining basis) == sum(contributed basis)`.
+22. **Visible coverage.** An unaccepted pair produces no Currency conversion; if
+    it has a Proposal, that Proposal remains in the existing Review queue. A
+    candidate with accepted evidence but incomplete inputs remains inspectable
+    with `coverage_status='incomplete'` and one closed reason:
+    `incomplete_shape`, `missing_leg`, `unknown_currency`,
+    `missing_home_currency`, `missing_valuation_rate`, `negative_inventory`,
+    `incomplete_history`, or `unsupported_method`. Incomplete rows retain identity
+    and provenance but expose NULL basis and gain/loss; the engine's zero-basis
+    fallback is never published as a trustworthy FX result.
+23. **Foundation boundary and observability.** The first delivery slice produces
+    the Core conversion, Currency-lot, and realized-FX rows. It adds no CLI command,
+    MCP tool, report, Provider parsing, or mutable App table. A bounded
+    `moneybin_fx_accounting_rows` Gauge records current row counts by `grain` and
+    closed `coverage_reason`, using `complete` for covered rows; it contains no
+    financial values or identifiers.
+    M1K.3 and MB-111 remain open until the user-visible report and deliberate
+    EUR/USD statement tie-out also ship.
 
 ## Data Model
 
-Sketch; exact DDL settled per phase during implementation planning.
+Earlier phases retain their historical sketches; the M1K.3 public shape is fixed
+below.
 
 ### M1K.1
 
@@ -700,9 +763,92 @@ CREATE TABLE app.exchange_rate_overrides (
 
 ### M1K.3
 
-Conversion-pair + realized-FX model derived in SQLMesh (Invariant 8), reusing the
-`core.fct_investment_lots` / cost-basis derivation from `investments-data-model.md`.
-DDL fixed when M1K.3 is planned.
+All three outputs are SQLMesh-derived Core models (Invariant 8). The SQL below
+fixes their public shape; implementation may use SQL or a thin Python model as
+appropriate, but no caller learns the engine adapter.
+
+```sql
+CREATE TABLE core.bridge_currency_conversions (
+    conversion_id            VARCHAR,          -- content hash of the trusted evidence identity
+    source_shape             VARCHAR,          -- linked_two_row | single_row
+    transfer_pair_id         VARCHAR,          -- accepted Transfer Decision; NULL for single-row
+    from_transaction_id      VARCHAR,          -- canonical sent Transaction
+    to_transaction_id        VARCHAR,          -- canonical received Transaction; NULL for single-row
+    from_account_id          VARCHAR,
+    to_account_id            VARCHAR,          -- same as from_account_id for single-row
+    from_date                DATE,
+    to_date                  DATE,
+    from_amount              DECIMAL(18,2),     -- positive magnitude actually sent
+    from_currency            VARCHAR,
+    to_amount                DECIMAL(18,2),     -- positive magnitude actually received
+    to_currency              VARCHAR,
+    executed_rate            DECIMAL(18,8),     -- to_amount / from_amount; never a reference rate
+    home_currency            VARCHAR,
+    home_value               DECIMAL(18,2),     -- actual Home leg, else auditable valuation
+    valuation_rate           DECIMAL(18,8),
+    valuation_rate_date      DATE,
+    valuation_source_type    VARCHAR,          -- actual | override | provider; NULL when unavailable
+    from_source_type         VARCHAR,
+    from_source_origin       VARCHAR,
+    from_source_transaction_id VARCHAR,
+    to_source_type           VARCHAR,
+    to_source_origin         VARCHAR,
+    to_source_transaction_id VARCHAR,
+    coverage_status          VARCHAR,          -- complete | incomplete
+    coverage_reason          VARCHAR,          -- closed reason vocabulary; NULL when complete
+    updated_at               TIMESTAMP
+);
+
+CREATE TABLE core.fct_currency_lots (
+    currency_lot_id          VARCHAR,
+    account_id               VARCHAR,
+    currency_code            VARCHAR,
+    acquisition_date         DATE,
+    acquisition_type         VARCHAR,          -- conversion | security_sale
+    original_quantity        DECIMAL(18,2),
+    remaining_quantity       DECIMAL(18,2),
+    cost_basis_total         DECIMAL(18,2),
+    cost_basis_remaining     DECIMAL(18,2),
+    cost_basis_method        VARCHAR,          -- fifo | average
+    home_currency            VARCHAR,
+    source_conversion_id     VARCHAR,
+    source_investment_transaction_id VARCHAR,
+    basis_incomplete         BOOLEAN,
+    coverage_status          VARCHAR,
+    coverage_reason          VARCHAR,
+    updated_at               TIMESTAMP
+);
+
+CREATE TABLE core.fct_realized_fx_gains (
+    realized_fx_gain_id      VARCHAR,
+    account_id               VARCHAR,
+    conversion_id            VARCHAR,
+    currency_lot_id          VARCHAR,
+    currency_code            VARCHAR,
+    home_currency            VARCHAR,
+    acquisition_date         DATE,
+    disposal_date            DATE,
+    disposed_amount          DECIMAL(18,2),
+    proceeds                 DECIMAL(18,2),
+    cost_basis               DECIMAL(18,2),
+    gain_loss                DECIMAL(18,2),
+    fee_amount               DECIMAL(18,2),
+    cost_basis_method        VARCHAR,
+    valuation_rate           DECIMAL(18,8),
+    valuation_rate_date      DATE,
+    valuation_source_type    VARCHAR,
+    coverage_status          VARCHAR,
+    coverage_reason          VARCHAR,
+    updated_at               TIMESTAMP
+);
+```
+
+`moneybin.currency_lots.sqlmesh_loader` is the one module interface between
+these models and `moneybin.investments.cost_basis`. It loads trusted conversions
+and foreign-Security sale proceeds, resolves the supported Account election,
+translates them to `LedgerEvent`, calls `compute_lots_and_gains`, and maps its
+results back to the currency-specific tables. The engine remains unaware of
+Currencies and the models remain thin.
 
 ## Sequencing & Dependencies
 
@@ -792,6 +938,18 @@ flowchart LR
   investments lot-conservation tests).
 - **Offline/edge (M1K.2):** missing-rate-offline fails loud; weekend/holiday resolves
   to the recorded business day; an override survives a refresh.
+- **Deterministic M1K.3:** cover accepted two-row and source-provided single-row
+  shapes, identity stability, partial/full disposal, multiple acquisition rates,
+  FIFO/average, fee-inclusive and explicit-fee inputs, reversals, foreign-to-
+  foreign valuation provenance, and the foreign-Security currency leg. Pin every
+  incomplete coverage reason, including negative inventory; prove amount/date
+  proximity alone never creates a Currency conversion. Prove the Transfer audit
+  still rejects a non-zero same-currency pair while accepting a valid
+  cross-currency pair with both legs present.
+- **M1K.3 conservation:** property-test
+  `realized basis + open remaining basis == contributed basis` across arbitrary
+  acquisition/disposal sequences. Existing single-currency fixtures remain
+  byte-for-byte unchanged.
 
 ## Synthetic Data Requirements
 
@@ -866,6 +1024,21 @@ realized FX gain/loss on the conversion pairs.
    **Implemented as decided, 2026-07-17:** `dim_accounts.iso_currency_code` (and
    `app.account_settings.iso_currency_code`, the `accounts_set` MCP parameter, and every
    internal reference) renamed to `currency_code` end-to-end; no shim.
+6. **An accepted Transfer Decision is the trusted two-row link.** M1K.3 derives
+   the Currency conversion from that existing evidence instead of introducing a
+   second mutable link table. Creating a cross-currency Transfer Decision is a
+   later MB-111 slice; the first foundation slice consumes already accepted links.
+7. **Currency is not a Security.** A narrow currency-lot loader adapts Currency
+   conversions and foreign-Security proceeds to the unchanged investments
+   cost-basis engine. Its private `currency:<code>` key never enters a public table.
+8. **The Account election governs Currency lots.** FIFO and average reuse the
+   existing setting; HIFO and specific identification remain Security-only in
+   this phase and surface as incomplete coverage rather than silently changing
+   the user's election.
+9. **Executed terms and valuation evidence stay separate.** Actual sent and
+   received amounts determine the conversion rate. A stored reference rate or
+   override may supply Home-currency valuation only, and its provenance remains
+   visible.
 
 ## Out of Scope
 
