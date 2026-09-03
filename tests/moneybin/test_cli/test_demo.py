@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from moneybin.cli.main import app
 from moneybin.cli.output import UNKNOWN_CURRENCY
+from moneybin.cli.render import MINUS
 from moneybin.services.demo_service import DemoResult
 
 runner = CliRunner()
@@ -72,8 +73,25 @@ def test_demo_runs_and_prints_networth(mocker: Any) -> None:
     svc = _patch_service(mocker, _fake_result())
     result = runner.invoke(app, ["demo", "--yes"])
     assert result.exit_code == 0, result.output
-    assert "12345.67" in result.output
+    assert "12,345.67" in result.output
     svc.run.assert_called_once()
+
+
+@pytest.mark.unit
+def test_demo_formats_its_headline_the_way_networth_does(mocker: Any) -> None:
+    """Requirements 3 and 11: one labelled block, one money formatter.
+
+    This command's own comment said its bare-`Decimal` amounts matched
+    `reports networth` for coherence. That command moved onto `format_money`
+    and this one did not, so the two printed the same quantity two ways.
+    """
+    _patch_service(mocker, _multi_currency_result())
+
+    result = runner.invoke(app, ["demo", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "EUR: 29,668.74" in result.output
+    assert f"GBP: {MINUS}1,278.75" in result.output
 
 
 @pytest.mark.unit
@@ -99,9 +117,9 @@ def test_demo_prints_every_currency_when_there_is_no_single_total(
     result = runner.invoke(app, ["demo", "--yes"])
     assert result.exit_code == 0, result.output
     assert "EUR" in result.output
-    assert "29668.74" in result.output
+    assert "29,668.74" in result.output
     assert "GBP" in result.output
-    assert "-1278.75" in result.output
+    assert f"{MINUS}1,278.75" in result.output
     # The bare "Net worth: None" that a null scalar would otherwise render.
     assert "None" not in result.output
 
@@ -299,7 +317,7 @@ def test_demo_quiet_suppresses_status_but_not_the_answer(mocker: Any) -> None:
     result = runner.invoke(app, ["demo", "--yes", "--quiet"])
     assert result.exit_code == 0, result.output
     # The answer is the data — never suppressed.
-    assert "12345.67" in result.stdout
+    assert "12,345.67" in result.stdout
     # Status chatter is.
     assert "Demo profile" not in result.output
     assert "Try next" not in result.output

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,7 +26,7 @@ from moneybin import error_codes
 from moneybin.cli.commands.investments.prices import PriceSourceChoice, app
 from moneybin.errors import UserError
 from moneybin.price_sources import PRICE_SOURCES
-from moneybin.services.price_service import PullResult
+from moneybin.services.price_service import PullResult, UnpricedSecurity
 from moneybin.services.refresh import RefreshResult
 
 runner = CliRunner()
@@ -32,13 +34,18 @@ runner = CliRunner()
 _REFRESH_HINT = "moneybin refresh run"
 
 
-def _pull_result(*, rows_written: int = 12, securities_priced: int = 4) -> PullResult:
+def _pull_result(
+    *,
+    rows_written: int = 12,
+    securities_priced: int = 4,
+    unpriced: tuple[UnpricedSecurity, ...] = (),
+) -> PullResult:
     return PullResult(
         rows_written=rows_written,
         observations=rows_written,
         securities_priced=securities_priced,
         queued_for_review=0,
-        unpriced=(),
+        unpriced=unpriced,
     )
 
 
@@ -545,3 +552,81 @@ class TestPriceSourceFilter:
 
             assert result.exit_code == 0, choice.value
             assert service.list_prices.call_args.kwargs["source_type"] == choice.value
+
+
+class TestPricesRenderThroughTheSharedRenderer:
+    """Requirement 1: both price tables were hand-padded columns."""
+
+    @patch("moneybin.services.price_service.build_price_service")
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    def test_list_names_its_columns_and_keeps_the_stored_precision(
+        self, _db: MagicMock, build: MagicMock, wide_terminal: None
+    ) -> None:
+        """A close is a per-unit price, not an amount.
+
+        `close` is `DECIMAL(28, 10)`, so routing it through `format_money`
+        would round a sub-cent crypto price to `0.00`. It declares no money
+        column for that reason and renders as stored, the same call
+        `fx list` makes about a rate.
+        """
+        from decimal import Decimal
+
+        service = build.return_value
+        service.resolve_security.return_value = "s1"
+        service.list_prices.return_value.rows = [
+            SimpleNamespace(
+                price_date=date(2026, 7, 15),
+                close=Decimal("0.0000432100"),
+                quote_currency="USD",
+                source_type="tiingo",
+                price_basis="close",
+            )
+        ]
+
+        result = runner.invoke(app, ["list", "PRIVCO"])
+
+        assert result.exit_code == 0, result.output
+        assert "┃" in result.stdout
+        for header in ("date", "close", "currency", "source", "basis"):
+            assert header in result.stdout
+        assert "0.0000432100" in result.stdout
+
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_pull(
+        _pull_result(
+            unpriced=(
+                UnpricedSecurity(security_id="sec_1", reason="no_feed_key"),
+                UnpricedSecurity(security_id="sec_2", reason="price_feed_error"),
+            )
+        )
+    )
+    def test_pull_tables_the_securities_it_could_not_price(
+        self, _pull: MagicMock, _db: MagicMock, wide_terminal: None
+    ) -> None:
+        """One row per unpriced security, with the reason in its own column."""
+        result = runner.invoke(app, ["pull"])
+
+        assert result.exit_code == 0, result.output
+        assert "┃" in result.stdout
+        assert "sec_1" in result.stdout
+        assert "no_feed_key" in result.stdout
+        assert "sec_2" in result.stdout
+        assert "unpriced:" not in result.stdout
+
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_pull(_pull_result())
+    def test_pull_draws_no_unpriced_table_when_everything_priced(
+        self, _pull: MagicMock, _db: MagicMock
+    ) -> None:
+        """The common case prints no table at all, not an empty one.
+
+        `render_rows` draws headers and borders for zero rows, where the loop
+        it replaced printed nothing — so a fully successful pull would have
+        reported an empty "unpriced security" table on every run, and
+        `render_rows` takes no `quiet` for `-q` to suppress it with.
+        """
+        result = runner.invoke(app, ["pull"])
+
+        assert result.exit_code == 0, result.output
+        assert "┃" not in result.stdout
+        assert "unpriced security" not in result.stdout

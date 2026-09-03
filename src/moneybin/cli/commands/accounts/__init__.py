@@ -107,13 +107,14 @@ def accounts_list(
             return acct.display_name
         return f"{UNNAMED_ACCOUNT_LABEL} ({acct.account_id})"
 
-    render_rows(
-        ["account", "institution", "type"],
-        [
-            (_display(acct), acct.institution_name or "", acct.account_type or "")
-            for acct in result.rows
-        ],
-    )
+    if result.rows:
+        render_rows(
+            ["account", "institution", "type"],
+            [
+                (_display(acct), acct.institution_name or "", acct.account_type or "")
+                for acct in result.rows
+            ],
+        )
 
 
 @app.command("summary")

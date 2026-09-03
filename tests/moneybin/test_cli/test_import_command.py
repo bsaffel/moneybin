@@ -398,3 +398,88 @@ def test_import_file_no_sign_warning_when_not_suggested(csv_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "Sign convention" not in result.output
+
+
+_HISTORY_RECORDS = [
+    {
+        "import_id": "imp_0123456789ab",
+        "status": "completed",
+        "rows_imported": 1204,
+        "rows_rejected": 0,
+        "source_file": "/data/statements/january.csv",
+    },
+    {
+        "import_id": "imp_ba9876543210",
+        "status": "failed",
+        "rows_imported": 0,
+        "rows_rejected": 17,
+        "source_file": "/data/statements/february.csv",
+    },
+]
+
+
+def _patched_history() -> Any:
+    return patch(
+        "moneybin.extractors.tabular.TabularExtractor.get_import_history",
+        return_value=_HISTORY_RECORDS,
+    )
+
+
+def test_import_history_renders_a_table_not_a_padded_rule(
+    wide_terminal: None,
+) -> None:
+    """Requirement 1: the roll drew its own header and a 100-character rule.
+
+    The rule was a fixed width regardless of the terminal or the values, so a
+    long source path ran past it and a short one left it dangling.
+    """
+    with patch("moneybin.database.get_database", _fake_db_ctx), _patched_history():
+        result = runner.invoke(app, ["history", "--wide"], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert "┃" in result.stdout
+    assert "-" * 100 not in result.stdout
+    for header in ("import", "status", "imported", "rejected", "source file"):
+        assert header in result.stdout
+    # The whole path, which is what tells two same-named imports apart.
+    assert "/data/statements/january.csv" in result.stdout
+
+
+def test_import_history_distinguishes_same_named_files(wide_terminal: None) -> None:
+    """The same file name under two directories is two imports, not one.
+
+    `source_file` is part of `raw.tabular_transactions`' dedup key, so the same
+    content read from a different path is a different import. The column exists
+    to answer which one, and a basename cannot.
+    """
+    records = [
+        dict(_HISTORY_RECORDS[0], source_file="/checking/january.csv"),
+        dict(_HISTORY_RECORDS[1], source_file="/savings/january.csv"),
+    ]
+    with (
+        patch("moneybin.database.get_database", _fake_db_ctx),
+        patch(
+            "moneybin.extractors.tabular.TabularExtractor.get_import_history",
+            return_value=records,
+        ),
+    ):
+        result = runner.invoke(app, ["history", "--wide"], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert "/checking/january.csv" in result.stdout
+    assert "/savings/january.csv" in result.stdout
+
+
+def test_import_history_renders_one_row_per_import(wide_terminal: None) -> None:
+    """Requirement 35: two imports are two rows, whatever they have in common."""
+    with patch("moneybin.database.get_database", _fake_db_ctx), _patched_history():
+        result = runner.invoke(app, ["history"], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert "imp_0123456789ab" in result.stdout
+    assert "imp_ba9876543210" in result.stdout
+    # A row count is not an amount, so it renders unseparated. Accepting either
+    # spelling made this assertion inert; `1,204` would mean a count had been
+    # routed through `format_money`.
+    assert "1204" in result.stdout
+    assert "1,204" not in result.stdout

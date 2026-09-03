@@ -70,6 +70,26 @@ def test_empty_input_safe_passes_when_no_crash_and_tables_empty(
     assert r.details["row_counts"]["t"] == 0
 
 
+def test_empty_input_safe_records_the_type_not_the_crash_message(
+    db: Database,
+) -> None:
+    """The harness catches a real pipeline run, so its message can quote rows.
+
+    ``failure_summary()`` prints ``error`` verbatim into CI output, so the
+    message has to be dropped here rather than at render time.
+    """
+
+    def _explode() -> None:
+        raise RuntimeError("txn 4111111111111111 differed by 42.00")
+
+    db.execute("CREATE TABLE t (id INT)")
+    r = assert_empty_input_safe(db, run=_explode, tables=["t"])
+
+    assert not r.passed
+    assert r.error == "RuntimeError"
+    assert r.details["exception_type"] == "RuntimeError"
+
+
 def test_malformed_input_rejected_passes_on_expected_exception() -> None:
     def bad_run() -> None:
         raise ValueError("missing required column 'amount'")
