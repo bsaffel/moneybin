@@ -778,22 +778,39 @@ Numbered, each independently testable.
     receives the count because that is what they asked for. Neither surface
     gets the other's answer.
 
-    **The same defect is live in `reports networth`, from the other
-    direction.** `core:networth` declares three `actions`
-    (`src/moneybin/reports/service_reports.py:336-343`), each written as an MCP
-    call — a `reports` invocation carrying a report id and a date range, an
-    `accounts_balances` invocation carrying a view and an account reference,
-    and an `accounts` invocation carrying a closed-account flag. Read them at
-    that citation rather than here: quoting a tool call in a public doc binds
-    it to the live schema, and this is a note about the CLI's prose, not about
-    the MCP contract. `echo_report_notes` prints all three verbatim to a CLI
-    reader, who has no such commands to type. It is this requirement's rule
-    with the surfaces swapped:
-    there, a token the human cannot use; here, a call signature the human
-    cannot use. The fix is the same shape — the text branch renders the CLI
-    invocation or renders nothing — and it lands with this requirement rather
-    than as a separate cleanup, because one `actions` list serving two
-    vocabularies is the thing to remove.
+    **The same defect is live on the report surface, from the other
+    direction — and it is systemic, not confined to one report.** Five sites
+    declare `actions` written as MCP calls:
+    `service_reports.py:342` and `:400`, `balance_drift.py:295`,
+    `cash_flow.py:198`, and `spending_trend.py:271`. Read them at those
+    citations rather than here: quoting a tool call in a public doc binds it to
+    the live schema, and this is a note about the CLI's prose, not about the
+    MCP contract. `cli_register.py:155` prints every one of them verbatim to a
+    CLI reader who has no such commands to type, while
+    `mcp/tools/reports.py:97` sends the same list to MCP, where it is correct.
+    It is this requirement's rule with the surfaces swapped: there, a token the
+    human cannot use; here, a call signature the human cannot use.
+
+    **The framework already contains the answer, applied once.**
+    `inspection_hint` (`execute.py:512`) produces an action naming
+    `moneybin reports explain`, and its docstring states the reason: an action
+    must bind to an admitted surface, and the verify surface has no MCP
+    identity. One producer follows that; five do not. Two patterns for one job
+    is what the coherence rule in
+    [`design-principles.md`](../../.claude/rules/design-principles.md) forbids,
+    so the fix is to make the declaration carry both vocabularies rather than
+    to teach the CLI to translate MCP strings.
+
+    **Scope note (decided during implementation).** This half does *not* land
+    with requirement 34's first half. Rendering it correctly means adding a
+    declaration to the report contract — documented in `extension-contracts.md`
+    — so one declared action renders a CLI invocation on one surface and a tool
+    call on the other, across 5 definitions and 2 render paths. That is a
+    contract change on top of a rendering change, and larger than the rest of
+    requirement 34. It lands with the increment covering requirements 18 and
+    23–25, which already reaches below the CLI into `services/refresh.py` and
+    `metrics/registry.py`; grouping by the layer touched keeps each review to
+    one shape.
 
 **Non-interference with data correctness (F0)**
 
