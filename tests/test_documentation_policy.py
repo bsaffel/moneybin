@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import subprocess  # noqa: S404 -- the policy test queries local Git metadata
 from pathlib import Path
+
+import click
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -299,3 +302,235 @@ def test_project_tracking_locator_routes_to_canonical_private_declaration() -> N
         "delivery_repository": "bsaffel/moneybin",
         "canonical_repository": "bsaffel/moneybin-private",
     }
+
+
+# ---------------------------------------------------------------------------
+# CLI invocations in public docs resolve to registered commands
+# ---------------------------------------------------------------------------
+
+# The user-facing set only: specs and ADRs describe planned or superseded
+# commands by design, and CHANGELOG entries are historical.
+_USER_FACING_DOC_DIRS = ("guides", "reference", "architecture", "tech")
+_CLI_INVOCATION_MARKER = "cli-invocation-ok"
+_FENCE = re.compile(r"^(?P<fence>`{3,}|~{3,})\s*(?P<lang>[\w-]*)")
+# Fenced blocks in these languages show shell input; every other language
+# (mermaid, yaml, sql, python, …) mentions `moneybin` as data, not as a command.
+_SHELL_LANGS = {"", "bash", "sh", "shell", "zsh", "console", "shell-session", "text"}
+_INLINE_CODE = re.compile(r"`([^`\n]+)`")
+_INVOCATION_START = re.compile(r"(?<![\w./:@-])moneybin(?=\s+[A-Za-z<*{-])")
+_TERMINATORS = {"|", "||", "&&", ";", ">", ">>", "2>", "<"}
+_COMMAND_SUBSTITUTION = re.compile(r"\$\([^()]*\)")
+_ANGLE_PLACEHOLDER = re.compile(r"<[^<>]*>")
+_OPTIONAL_SEGMENT = re.compile(r"\[([^\[\]]*)\]")
+_TRAILING_COMMENT = re.compile(r"(^|\s)#.*$")
+_BRACE_ALTERNATIVES = re.compile(r"^\{([^{}]+)\}$")
+_PATH_LIKE = re.compile(r"^[~./]|\.\w+$")
+
+
+def _user_facing_documents() -> list[Path]:
+    documents = [
+        _REPO_ROOT / "README.md",
+        _REPO_ROOT / "CONTRIBUTING.md",
+        _REPO_ROOT / "CONTEXT.md",
+    ]
+    documents += sorted(_PUBLIC_DOC_ROOT.glob("*.md"))
+    for directory in _USER_FACING_DOC_DIRS:
+        documents += sorted((_PUBLIC_DOC_ROOT / directory).rglob("*.md"))
+    return [document for document in documents if document.exists()]
+
+
+def _code_lines(text: str) -> list[tuple[int, str]]:
+    """Return (line_number, code) for fenced-block lines and inline code spans."""
+    lines: list[tuple[int, str]] = []
+    fence: str | None = None
+    shell_block = False
+    for number, line in enumerate(text.splitlines(), start=1):
+        match = _FENCE.match(line.strip())
+        if match and (fence is None or line.strip().startswith(fence)):
+            if fence:
+                fence = None
+            else:
+                fence = match.group("fence")
+                shell_block = match.group("lang").lower() in _SHELL_LANGS
+            continue
+        if fence:
+            if shell_block:
+                lines.append((number, line))
+        else:
+            lines.extend((number, span) for span in _INLINE_CODE.findall(line))
+    return lines
+
+
+def _join_continuations(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    joined: list[tuple[int, str]] = []
+    for number, line in lines:
+        if joined and joined[-1][1].rstrip().endswith("\\"):
+            previous_number, previous = joined[-1]
+            joined[-1] = (previous_number, previous.rstrip()[:-1] + " " + line.strip())
+        else:
+            joined.append((number, line))
+    return joined
+
+
+def _invocations(code: str) -> list[list[str]]:
+    """Every `moneybin …` token list found in one line of code."""
+    code = _TRAILING_COMMENT.sub(r"\1", code)
+    code = _COMMAND_SUBSTITUTION.sub("SUBST", code)
+    code = _ANGLE_PLACEHOLDER.sub(lambda m: m.group(0).replace(" ", "_"), code)
+    code = _OPTIONAL_SEGMENT.sub(
+        lambda m: "" if m.group(1).startswith("-") else "<optional>", code
+    )
+    found: list[list[str]] = []
+    for match in _INVOCATION_START.finditer(code):
+        rest = code[match.end() :]
+        opener = code[match.start() - 1] if match.start() else ""
+        if opener in {"'", '"'} and opener in rest:
+            rest = rest[: rest.index(opener)]
+        elif opener == "(" and ")" in rest:
+            rest = rest[: rest.index(")")]
+        for quote in ('"', "'"):  # a multi-line string: stop where it opens
+            if rest.count(quote) % 2:
+                rest = rest[: rest.index(quote)]
+        try:
+            tokens = shlex.split(rest, posix=True)
+        except ValueError:
+            tokens = rest.replace("'", "").replace('"', "").split()
+        command: list[str] = []
+        for token in tokens:
+            if token in _TERMINATORS or token.startswith("#"):
+                break
+            command.append(token.rstrip(";,.)"))
+        found.append(command)
+    return found
+
+
+def _is_placeholder(token: str) -> bool:
+    return (
+        token.startswith(("<", "…", "...", "*"))
+        or token in {"ARGS", "COMMAND", "SUBCOMMAND", "SUBST"}
+        or (token.isupper() and len(token) > 1)
+    )
+
+
+def _names_a_command_slot(placeholder: str) -> bool:
+    return any(word in placeholder.lower() for word in ("command", "group", "verb"))
+
+
+def _expand_alternatives(token: str) -> list[str]:
+    brace = _BRACE_ALTERNATIVES.match(token)
+    if brace:
+        return [part.strip() for part in brace.group(1).split(",")]
+    if "|" in token:
+        return token.split("|")
+    if "/" in token and not _PATH_LIKE.search(token):
+        return token.split("/")
+    return [token]
+
+
+def _resolve_invocation(tokens: list[str], root: click.Command) -> str | None:
+    """Return why the invocation does not resolve, or None when it does."""
+    node = root
+    path = ["moneybin"]
+    parents: list[tuple[click.Command, list[str]]] = []
+    positionals = 0
+    options_done = False
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
+        if token in {"--help", "-h", ""}:  # noqa: S105  # CLI argument, not a secret
+            continue
+        if token == "--":  # noqa: S105  # end of options: the rest are positionals
+            options_done = True
+            continue
+        if token == "/":  # noqa: S105  # `db init / lock / unlock`: leaf siblings
+            if parents:
+                node, path = parents.pop()
+                positionals = 0
+            continue
+        if token in {"*", "…", "..."}:  # noqa: S105  # CLI argument, not a secret
+            return None  # a wildcard or elision: nothing checkable past it
+        if token.startswith("-") and len(token) > 1 and not options_done:
+            name, has_inline_value = token.split("=", 1)[0], "=" in token
+            option = next(
+                (
+                    param
+                    for param in node.params
+                    if isinstance(param, click.Option)
+                    and name in (*param.opts, *param.secondary_opts)
+                ),
+                None,
+            )
+            if option is None:
+                return f"`{' '.join(path)}` does not accept option `{name}`"
+            if not option.is_flag and not has_inline_value:
+                index += 1  # the option's value
+            continue
+        if _is_placeholder(token):
+            if isinstance(node, click.Group):
+                if node is root or _names_a_command_slot(token):
+                    return None  # `moneybin <command>`: nothing checkable
+                return f"`{' '.join(path)}` takes a subcommand, not `{token}`"
+            positionals += 1
+        elif isinstance(node, click.Group):
+            alternatives = _expand_alternatives(token)
+            registered = node.list_commands(None)  # type: ignore[arg-type]
+            unknown = [alt for alt in alternatives if alt not in registered]
+            if unknown:
+                return f"`{' '.join(path)}` has no subcommand `{unknown[0]}`"
+            if len(alternatives) > 1:
+                return None  # `{a,b}` at a command position: each exists
+            subcommand = node.get_command(None, token)  # type: ignore[arg-type]
+            assert subcommand is not None
+            parents.append((node, list(path)))
+            node = subcommand
+            path.append(token)
+            continue
+        else:
+            positionals += 1
+        arguments = [p for p in node.params if isinstance(p, click.Argument)]
+        capacity = sum(
+            float("inf") if argument.nargs < 0 else argument.nargs
+            for argument in arguments
+        )
+        if positionals > capacity:
+            return f"`{' '.join(path)}` takes no positional `{token}`"
+    return None
+
+
+def test_public_docs_cli_invocations_resolve() -> None:
+    """Every `moneybin …` in a user-facing doc names a registered command.
+
+    Registered means the group and subcommand exist and every option is one
+    the command declares; option values and placeholders are not checked. A
+    line that must show a wrong invocation on purpose (an error example)
+    carries ``<!-- cli-invocation-ok: <reason> -->``.
+    """
+    from typer.main import get_command
+
+    from moneybin.cli.main import app
+
+    root = get_command(app)
+    violations: list[str] = []
+    for document in _user_facing_documents():
+        text = document.read_text()
+        allowed_lines = {
+            number
+            for number, line in enumerate(text.splitlines(), start=1)
+            if _CLI_INVOCATION_MARKER in line
+        }
+        for number, code in _join_continuations(_code_lines(text)):
+            if number in allowed_lines:
+                continue
+            for tokens in _invocations(code):
+                problem = _resolve_invocation(tokens, root)
+                if problem:
+                    relative = document.relative_to(_REPO_ROOT)
+                    violations.append(f"{relative}:{number}: {problem}")
+
+    assert not violations, (
+        "Public docs cite CLI invocations that do not resolve against the "
+        "registered command tree (run `uv run moneybin <group> --help`). Fix the "
+        "doc, or mark a deliberate error example with "
+        "`<!-- cli-invocation-ok: reason -->`.\n" + "\n".join(violations)
+    )
