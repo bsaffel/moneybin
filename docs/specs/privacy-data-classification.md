@@ -297,8 +297,11 @@ The runtime mechanism that turns the registry into enforcement:
   fields carry `Annotated[..., DataClass.X]` markers. Bare-dict tools
   fail registration (privacy contract is import-time enforced).
 - **CLI `render_or_json` parity**: the same redactor + log writer run on
-  the CLI `--output json` path. `cli_actor="<command>"` parameter
-  records the originating command as `cli.<command>` in the event log.
+  the CLI `--output json` path. The event log records the originating
+  command as `cli.<command>`, derived from the click command path; the
+  `cli_actor="<command>"` parameter overrides that where a shipped actor
+  string predates the derivation. `handle_cli_errors` writes the same row
+  for a JSON-mode failure, under the same name.
   Text output bypasses both (caller's render function owns formatting
   and is expected to display only safe fields like `last_4`).
 - **Cross-layer drift test**

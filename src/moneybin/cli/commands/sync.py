@@ -141,7 +141,7 @@ def sync_link(
     Text mode blocks until the user finishes the Plaid flow in their
     browser and returns the auto-pull summary.
     """
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="sync_link"):
         with _build_sync_service() as service:
             if institution is None:
                 connections = service.list_connections()
@@ -253,7 +253,7 @@ def sync_link_status(
     the server holds for `session_id` (pending, connected, or failed). Does
     not poll; the caller decides when to check again.
     """
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="sync_link_status"):
         client = _build_sync_client()
         result = client.get_link_status(session_id)
 

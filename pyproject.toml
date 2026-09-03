@@ -75,6 +75,11 @@ dependencies = [
     # Floor is PYSEC-2026-3444 (unbounded gzip/deflate decompression), fixed in 0.32.0.
     "httplib2>=0.32.0",
     # Data validation and utilities
+    # Also a transitive dep of typer, but declared directly because cli/output.py
+    # and reports/user_reports.py import it to read the active command context —
+    # a future typer pin change must not silently break those importers. Upper
+    # bound lives in [tool.uv] constraint-dependencies with its own reason.
+    "click>=8.2.1",
     "pydantic>=2.11.7",
     "pydantic-settings>=2.14.2",  # GHSA-4xgf-cpjx-pc3j — fixed in 2.14.2
     "python-dateutil>=2.9.0.post0",
