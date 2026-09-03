@@ -16,8 +16,15 @@ runner = CliRunner()
 
 
 @contextmanager
-def _fake_db_ctx(read_only: bool = False) -> Generator[object, None, None]:
-    _ = read_only
+def _fake_db_ctx(*_args: object, **_kwargs: object) -> Generator[object, None, None]:
+    """Stands in for both ``handle_cli_errors`` and ``get_database``.
+
+    Accepts any argument because it replaces two functions with different
+    signatures — ``handle_cli_errors(cli_actor=...)`` and
+    ``get_database(read_only=...)``. Matches the doubles in
+    ``test_cli_import_inbox.py`` and ``test_transactions_list.py``, which had
+    already widened for the same reason.
+    """
     yield object()
 
 
