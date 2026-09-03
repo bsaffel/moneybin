@@ -510,6 +510,149 @@ def test_an_unbreakable_cell_wider_than_the_terminal_survives_too(
     assert printed.count("a") == 120
 
 
+def test_a_money_cell_never_folds_while_a_text_column_could_shrink_instead(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Folding is right for an identifier and wrong for an amount.
+
+    The two tests above establish that a long identifier wraps rather than
+    elides, because its characters are what tell two rows apart. An amount
+    inverts that: `1,200.00` folded after the decimal point renders `1,200.`
+    above `00`, and the first line reads as a complete, plausible, much smaller
+    number. `cli.md` calls a folded amount a correctness bug for exactly that
+    reason.
+
+    Nine ordinary columns at 80 is where it bites — the widths here are the
+    real `investments holdings --wide` projection with unremarkable values, not
+    a contrived overflow. Money columns are unwrappable, so Rich spends the
+    squeeze on the text columns first and every amount survives whole.
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+    render_rows(
+        [
+            "security",
+            "quantity",
+            "cost basis",
+            "avg cost",
+            "market value",
+            "unrealized",
+            "currency",
+            "status",
+            "as of",
+        ],
+        [
+            (
+                "VTSAX",
+                "120.5",
+                Decimal("1000.00"),
+                "8.2987654321",
+                Decimal("1200.00"),
+                Decimal("200.00"),
+                "USD",
+                "priced",
+                "2026-08-29 (3d)",
+            )
+        ],
+        money={
+            "cost basis": Money("balance"),
+            "market value": Money("balance"),
+            "unrealized": Money("delta", polarity="income"),
+        },
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    for amount in ("1,000.00", "1,200.00", "+200.00"):
+        assert any(amount in line for line in lines), (
+            f"{amount!r} was split across lines; a folded amount reads as a smaller one"
+        )
+
+
+def test_a_number_that_is_not_an_amount_never_folds_either(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guarantee above belongs to numbers, not to the `money` declaration.
+
+    Same projection and same values as the test above, which asserts only that
+    the three *amounts* survive. `quantity` and `avg cost` are numbers too, and
+    they are absent from `money=` for a reason that has nothing to do with
+    folding: `format_money` rounds to two places, which renders a
+    `DECIMAL(28,10)` per-unit price as `0.00`. That exclusion used to take the
+    no-fold guarantee with it, so `8.2987654321` folded to `8.29` above `8765`
+    — a complete, plausible, three-orders-of-magnitude-wrong price, which is
+    the same defect `cli.md` calls a correctness bug for amounts.
+
+    `numeric=` carries atomicity without formatting, which is why both survive
+    here. Drop it from the call and this test fails on `avg cost` first.
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+    render_rows(
+        [
+            "security",
+            "quantity",
+            "cost basis",
+            "avg cost",
+            "market value",
+            "unrealized",
+            "currency",
+            "status",
+            "as of",
+        ],
+        [
+            (
+                "VTSAX",
+                "120.5",
+                Decimal("1000.00"),
+                "8.2987654321",
+                Decimal("1200.00"),
+                Decimal("200.00"),
+                "USD",
+                "priced",
+                "2026-08-29 (3d)",
+            )
+        ],
+        money={
+            "cost basis": Money("balance"),
+            "market value": Money("balance"),
+            "unrealized": Money("delta", polarity="income"),
+        },
+        numeric=("quantity", "avg cost"),
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    for number in ("120.5", "8.2987654321"):
+        assert any(number in line for line in lines), (
+            f"{number!r} was split across lines; a folded per-unit price or share "
+            "count reads as a different, plausible number exactly as an amount does"
+        )
+
+
+def test_an_unfittable_money_cell_is_marked_truncated_rather_than_shortened(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When even the squeeze is not enough, say so in the cell.
+
+    Two money columns and nothing else to shrink is the case no layout can
+    satisfy. Cropping silently would print `1,234,56`, which is a complete and
+    entirely believable number that is off by a factor of a hundred. The
+    ellipsis costs one character and makes the cell unmistakably partial, so a
+    reader can tell "wider terminal needed" from "this is what you own".
+    """
+    monkeypatch.setenv("COLUMNS", "24")
+    render_rows(
+        ["market value", "unrealized"],
+        [(Decimal("1234567.89"), Decimal("9876543.21"))],
+        money={
+            "market value": Money("balance"),
+            "unrealized": Money("delta", polarity="income"),
+        },
+    )
+
+    printed = capsys.readouterr().out
+    assert "1,234,5…" in printed
+    # The bare prefix must not appear unmarked: that is the silent-crop failure.
+    assert "1,234,56 " not in printed
+
+
 def test_render_rows_does_not_auto_highlight_a_bare_number(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -982,64 +1125,23 @@ def test_only_the_render_module_imports_rich() -> None:
     )
 
 
-# DEPRECATED: hand-formatted-column — modules still building their own aligned
-# columns instead of calling `render_rows`. Requirement 1 forbids the pattern
-# outright; these are the sites the requirement's own file list did not name,
-# found by this guard rather than by the audit, and they migrate in M3K.3's
-# third pull request. The list only shrinks: it is asserted by set equality
-# below, so a module that migrates must be removed from it and a module that
-# acquires the pattern fails.
-#
-# Residual, stated rather than hidden: an already-listed module could grow a
-# *second* hand-formatted table without this guard noticing, because the pin is
-# per module rather than per call site. Pinning the format specs themselves
-# would catch that and would also churn on every unrelated width change; since
-# the whole list is scheduled to reach empty inside this milestone, the coarser
-# pin is the proportionate one. What it does catch is the regression that
-# matters — the pattern spreading to a module that had shed it.
-_AWAITING_RENDER_ROWS = frozenset({
-    "commands/db.py",
-    "commands/demo.py",
-    "commands/fx.py",
-    "commands/import_cmd.py",
-    "commands/investments/__init__.py",
-    "commands/investments/lots.py",
-    "commands/investments/prices.py",
-    "commands/investments/securities.py",
-})
-
-
 def test_no_command_hand_formats_an_aligned_column() -> None:
-    """Requirement 1: a padded f-string column is a table by another name."""
-    offenders = {
-        name
-        for module in _cli_modules()
-        if _alignment_specs(module)
-        and (name := str(module.relative_to(CLI_ROOT))) not in _AWAITING_RENDER_ROWS
-    }
-    assert offenders == set(), (
-        "these commands hand-format aligned columns instead of calling "
-        f"render_rows: {sorted(offenders)}"
-    )
+    """Requirement 1: a padded f-string column is a table by another name.
 
-
-def test_every_deferred_module_still_has_the_pattern_it_is_excused_for() -> None:
-    """The exemption list is set equality, so it cannot rot in either direction.
-
-    A stale entry is the failure mode that matters: a module that has since
-    been migrated would keep a standing excuse, and the next hand-formatted
-    table added to it would pass. Deriving the live set from the same scan the
-    guard above uses means the two can never disagree.
+    This guard carried an exemption set (`_AWAITING_RENDER_ROWS`) for the
+    eight modules the audit's own file list did not name, plus a second guard
+    asserting set equality so the list could only shrink. The set is now
+    empty, so both are gone: every CLI module is held to the rule
+    unconditionally, which is what the list existed to converge on.
     """
-    live = {
+    offenders = sorted(
         str(module.relative_to(CLI_ROOT))
         for module in _cli_modules()
         if _alignment_specs(module)
-    }
-    assert live & _AWAITING_RENDER_ROWS == _AWAITING_RENDER_ROWS, (
-        "these modules are excused from requirement 1 but no longer need to be; "
-        f"remove them from _AWAITING_RENDER_ROWS: "
-        f"{sorted(_AWAITING_RENDER_ROWS - live)}"
+    )
+    assert offenders == [], (
+        "these commands hand-format aligned columns instead of calling "
+        f"render_rows: {offenders}"
     )
 
 
@@ -1148,3 +1250,86 @@ def test_a_negative_balance_reaches_the_terminal_uncoloured_but_signed(
 
     assert f"{MINUS}50,000.00" in out
     assert "\x1b[31m" not in out, f"a balance carries no direction to colour: {out!r}"
+
+
+# ---------------------------------------------------------------------------
+# Curated default column sets (requirement 9's bar, applied to list commands)
+# ---------------------------------------------------------------------------
+
+
+def _declared_tables() -> list[tuple[str, Sequence[Any], Sequence[str]]]:
+    """Every command table that curates a default view, with its declaration.
+
+    Imported inside the function so this module keeps its cold-start hygiene:
+    the command modules pull in service code that `render.py` deliberately does
+    not.
+    """
+    from moneybin.cli.commands.import_cmd import (  # noqa: PLC0415, PLC2701
+        _HISTORY_COLUMNS,  # pyright: ignore[reportPrivateUsage]
+        _HISTORY_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+        _PDF_FORMAT_COLUMNS,  # pyright: ignore[reportPrivateUsage]
+        _PDF_FORMAT_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+    )
+    from moneybin.cli.commands.investments import (  # noqa: PLC0415, PLC2701
+        _EVENTS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
+        _EVENTS_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+        _GAINS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
+        _GAINS_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+        _HOLDINGS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
+        _HOLDINGS_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+    )
+    from moneybin.cli.commands.investments.lots import (  # noqa: PLC0415, PLC2701
+        _LOTS_ALL_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+        _LOTS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
+        _LOTS_DEFAULT,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    # `investments lots list` declares two default sets, and both are shipped
+    # views: `--all` returns closed lots too, so it pays for a `state` column
+    # the `--open` view would render as a constant. A second set that skipped
+    # this list would skip both guards below with it.
+    return [
+        ("investments holdings", _HOLDINGS_COLUMNS, _HOLDINGS_DEFAULT),
+        ("investments gains", _GAINS_COLUMNS, _GAINS_DEFAULT),
+        ("investments list", _EVENTS_COLUMNS, _EVENTS_DEFAULT),
+        ("investments lots list", _LOTS_COLUMNS, _LOTS_DEFAULT),
+        ("investments lots list --all", _LOTS_COLUMNS, _LOTS_ALL_DEFAULT),
+        ("import history", _HISTORY_COLUMNS, _HISTORY_DEFAULT),
+        ("import formats list --type=pdf", _PDF_FORMAT_COLUMNS, _PDF_FORMAT_DEFAULT),
+    ]
+
+
+def test_every_curated_default_names_a_column_that_exists() -> None:
+    """A typo in a default set must fail here, not render a view nobody declared.
+
+    `column_view` refuses an undeclared name at runtime, but a command whose
+    default set is only exercised by a test that passes `--wide` would never
+    reach that refusal.
+    """
+    tables = _declared_tables()
+    # Both checks in this section are over a comprehension, so an empty list
+    # would pass them vacuously. Pin the population.
+    assert len(tables) == 7
+    undeclared = {
+        command: sorted(set(default) - {name for name, _ in columns})
+        for command, columns, default in tables
+        if set(default) - {name for name, _ in columns}
+    }
+    assert undeclared == {}
+
+
+def test_every_curated_default_fits_eighty_columns_on_headers_alone() -> None:
+    """Requirement 9's bar: the curated view is chosen to survive 80 columns.
+
+    Headers are the floor, not the whole story — a long value still widens a
+    column — but a default set whose headers alone overflow cannot fit any
+    data, and that is worth catching at declaration time.
+    """
+    tables = _declared_tables()
+    assert len(tables) == 7
+    too_wide = {
+        command: _table_width([len(name) for name in default])
+        for command, _columns, default in tables
+        if _table_width([len(name) for name in default]) > 80
+    }
+    assert too_wide == {}

@@ -11,6 +11,107 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **The last eight commands that drew their own columns now render like every
+  other one.** `db ps`, `db kill`, `demo`, `fx list`, `import history`,
+  `import formats list`, and the four `investments` list commands each built a
+  table by padding an f-string — their own header row, their own fixed-width
+  rule, and their own idea of how wide a column should be. A 100-character rule
+  under a 130-character row, and a path that ran past both, were the visible
+  symptoms. All eight now call `render_rows`, so a value too wide for the
+  terminal folds inside its column instead of running past the frame.
+
+  Three of them printed `key=value` at the reader rather than a table at all —
+  `investments list`, `holdings`, and `gains` emitted lines like
+  `qty=10 cost_basis=1000.00 avg_cost=100.00 market_value=…`, repeating a field
+  name on every row. The names now sit in the header once.
+
+  This empties `_AWAITING_RENDER_ROWS`, the exemption set that carried these
+  eight modules, and retires the second guard that existed only to keep that
+  list from rotting. One guard now holds every CLI module unconditionally.
+
+- **`demo` and the investments commands format their amounts the way every
+  other command does.** `demo` printed `Net worth: 12345.67` while
+  `reports networth` printed `12,480.22` for the same kind of figure — its own
+  comment claimed the two matched. Amounts on these surfaces now carry
+  thousands separators, two decimal places, and the design system's `−` for a
+  negative, and a realized or unrealized gain carries its sign and its colour.
+  A missing amount renders `-` rather than `n/a`, matching every other table.
+
+  **Per-unit prices are deliberately exempt.** An exchange rate, a security's
+  close, and a holding's average cost are stored to ten decimal places, and
+  rounding them to two would render a sub-cent price as `0.00`. Those columns
+  print as stored.
+
+- **Wide list commands now show a curated set of columns and take `--wide` for
+  the rest.** `investments holdings`, `gains`, `lots list`, `import history`,
+  and `import formats list --type=pdf` each name the columns that answer the
+  question they exist to answer, and disclose the narrowing
+  (`6 of 9 columns shown — --wide for all`). Without this, nine columns in an
+  80-column terminal split an amount across two lines — `1,200.00` rendered as
+  `1,200.` above `00`, which reads as a smaller number rather than as a wrapped
+  one. The default sets are chosen by hand rather than measured: fitting by
+  width keeps the first and last columns, which on `holdings` drops
+  `market value`.
+
+  A column that says a figure beside it is *untrustworthy* stays in the default
+  view, because it qualifies the answer rather than commenting on the run:
+  `holdings` keeps `status`, which is the only thing separating an unpriced
+  position from one with a known-wrong share count when both render `-`, and
+  `lots list` keeps the marker that says a cost basis is a floor rather than a
+  figure. Each had one substitute — a warning line — and `-q` suppresses those.
+  `gains` meets the same requirement the other way, because it cannot seat the
+  column: at 80 columns a seventh entry folds the disposal date and the
+  security id and breaks `⚠️ basis_incomplete` itself across three lines. So
+  the marker is declared and reachable with `--wide`, and the line disclosing
+  that a realized gain was computed against an incomplete basis is no longer
+  silenced by `-q` — the figures on a 1099-B surface would otherwise read as
+  authoritative with nothing on screen to say they are conservative.
+
+  **`import history --wide` shows the whole source path.** The column had been
+  projecting the basename, so two imports of `january.csv` from a per-account
+  `checking/` and `savings/` folder rendered as indistinguishable rows —
+  and `source_file` is part of the dedup key on `raw.tabular_transactions`
+  precisely because the same content read from a different path is a different
+  import. The full path now reaches the renderer, which folds text rather than
+  discarding the half that tells the two apart.
+
+  An amount's denomination stays with it for the same reason. None of
+  `investments list`, `gains`, `lots list`, or `holdings` takes a currency
+  filter, so one call can span accounts denominated differently, and two rows
+  reading `1,500.00` are then not the same quantity. `investments list`,
+  `gains` and `holdings` keep `currency` in the default view. `gains` and
+  `lots list` had not declared the column at all, so `--wide` could not reach
+  it either; both declare it now. `lots list` is the sole table that cannot
+  seat it by default — at 80 columns its six columns already fold a full-length
+  lot id, and a seventh folds the security id with it — so there `--wide` is
+  the way to it.
+
+  `investments lots list --all` gains an open/closed `state` column instead.
+  That view deliberately returns both kinds and the table named neither. The
+  state is strictly derivable — a lot is open when its remaining quantity
+  exceeds zero — but that rule appears neither on screen nor in `--help`, so
+  the reader was left inferring a lifecycle state from a numeric cell. Under
+  the default `--open` the answer is constant, so that view does not pay for
+  the column.
+
+  Commands whose tables already fit — `fx list`, `investments list`,
+  `investments prices list`, `securities list`, `db ps` — show every column and
+  gain no flag.
+
+  **A number that is not an amount no longer folds either.** The renderer kept
+  amounts whole by declaring them in `money=`, because `1,200.00` folded after
+  the decimal point renders `1,200.` above `00` and the first line is a
+  complete, plausible number two orders of magnitude off. Columns holding a
+  per-unit price, a share count, an FX rate or a match score are deliberately
+  *not* amounts — rounding a `DECIMAL(28,10)` close to two places would print
+  `0.00` — and that exclusion silently took the no-fold guarantee with it, so
+  `8.2987654321` folded to `8.298` above `7654321`. `render_rows` now takes a
+  second declaration, `numeric=`, carrying atomicity without formatting, and
+  every column holding a bare number uses one of the two. Alignment is
+  unchanged: amounts stay right-aligned, these stay left. While a table fits
+  its terminal the output is identical; where one does not, the fold now lands
+  on the identifier beside the number rather than on the number.
+
 - **Report columns are now ordered grain-first, with each report's headline
   figure last.** Every report's projection reads
   `grain keys → labels → dimensions → dates → provenance → measures`, and
@@ -131,6 +232,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **An amount no longer folds across two lines.** Folding is the right failure
+  for an identifier — an account id or a display name ending in a masked last
+  four wraps rather than losing the characters that tell two rows apart — but
+  it is the wrong one for money: `1,200.00` folded after the decimal point
+  renders `1,200.` above `00`, and the first line reads as a complete number
+  two orders of magnitude smaller. Money columns are now unwrappable, so a
+  narrow terminal spends its squeeze on the text columns first; `investments
+  holdings --wide` fits nine columns into 80 with every amount intact, where
+  before it folded ordinary values like `1,000.00`. When even that is not
+  enough the cell is marked `1,234,5…` rather than cropped to a shorter number
+  that looks whole.
+
+- **A command with nothing to show no longer draws an empty table.** A header
+  row with a closing rule and no rows between them reads as a rendering
+  failure, and `-q` could not suppress it, because result output is never
+  quieted. `investments prices pull` printed one whenever every security
+  priced successfully — that is, on its most successful runs — and
+  `accounts list` and `reports networth-history` printed one whenever a filter
+  or a date range matched nothing. They now print nothing, which is what the
+  loops they replaced did.
+
 - **A failed `--output json` read is audited like the successful one beside
   it.** Three commands now raise their not-found and no-database errors into
   the shared handler rather than hand-writing a JSON error branch, which is

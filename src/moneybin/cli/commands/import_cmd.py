@@ -23,7 +23,9 @@ from moneybin.cli.output import (
     OutputFormat,
     output_option,
     quiet_option,
+    wide_option,
 )
+from moneybin.cli.render import column_view, render_rows, render_summary
 from moneybin.cli.utils import (
     handle_cli_errors,
     warn_refresh_steps,
@@ -38,7 +40,7 @@ from moneybin.services.refresh_outcome import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from moneybin.database import Database
     from moneybin.extractors.tabular.formats import TabularFormat
@@ -2262,6 +2264,28 @@ def import_confirm_command(
         logger.info("💡 Run 'moneybin transform apply' to rebuild derived tables.")
 
 
+_HISTORY_COLUMNS: tuple[
+    tuple[str, Callable[[dict[str, str | int | None]], object]], ...
+] = (
+    ("import", lambda rec: str(rec.get("import_id", ""))),
+    ("status", lambda rec: str(rec.get("status", ""))),
+    ("imported", lambda rec: rec.get("rows_imported") or 0),
+    ("rejected", lambda rec: rec.get("rows_rejected") or 0),
+    # The whole path, not the basename: `source_file` is part of the dedup key
+    # on `raw.tabular_transactions`, so the same name under two directories is
+    # two imports and the basename answers which one wrong. `render_rows` folds
+    # text rather than truncating it, so width is the renderer's problem here.
+    ("source file", lambda rec: str(rec.get("source_file") or "")),
+)
+
+_HISTORY_DEFAULT = ("import", "status", "imported", "rejected")
+"""The id is what `import revert` takes, so it is never the column dropped.
+
+A full UUID is 36 characters on its own, which leaves room for the outcome and
+the two counts and no more; the source file follows under `--wide`.
+"""
+
+
 @app.command("history")
 def import_history(
     limit: int = typer.Option(20, "--limit", "-n", help="Max records to show"),
@@ -2270,11 +2294,12 @@ def import_history(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    wide: bool = wide_option,
 ) -> None:
     """List recent imports with batch details.
 
-    Shows import ID, source file, status, row counts, and detection confidence
-    for each completed import batch.
+    Shows the import ID — what ``import revert`` takes — plus status and row
+    counts for each completed batch. ``--wide`` adds the source file.
 
     Examples:
         moneybin import history
@@ -2318,30 +2343,23 @@ def import_history(
                 logger.warning("⚠️  No import history found")
         return
 
-    typer.echo(
-        f"\n{'Import ID':<38} {'Status':<10} {'Imported':>8} {'Rejected':>8}  {'Source File'}"
+    view = column_view(_HISTORY_COLUMNS, records, default=_HISTORY_DEFAULT, wide=wide)
+    render_rows(
+        view.names,
+        view.rows,
+        numeric=("imported", "rejected"),
+        total_columns=view.total,
     )
-    typer.echo("-" * 100)
-    for rec in records:
-        imp_id = str(rec.get("import_id", ""))
-        status = str(rec.get("status", ""))
-        rows_imported = rec.get("rows_imported") or 0
-        rows_rejected = rec.get("rows_rejected") or 0
-        source_file = str(rec.get("source_file", ""))
-        # Truncate source file path for display
-        display_path = Path(source_file).name if source_file else ""
-        typer.echo(
-            f"{imp_id:<38} {status:<10} {rows_imported:>8} {rows_rejected:>8}  "
-            f"{display_path}"
-        )
 
     if import_id and records:
-        rec = records[0]
-        typer.echo("\nDetails:")
-        for key, value in rec.items():
-            if value is not None:
-                typer.echo(f"  {key}: {value}")
-    typer.echo()
+        render_summary(
+            [
+                (key, str(value))
+                for key, value in records[0].items()
+                if value is not None
+            ],
+            title="\nDetails:",
+        )
 
 
 @app.command("revert")
@@ -2700,10 +2718,34 @@ def import_preview(
         typer.echo()
 
 
+_PDF_FORMAT_COLUMNS: tuple[tuple[str, Callable[[PdfFormat], object]], ...] = (
+    ("name", lambda pf: pf.name),
+    ("institution", lambda pf: pf.institution_name),
+    ("routing", lambda pf: pf.routing),
+    ("front-end", lambda pf: pf.front_end),
+    ("version", lambda pf: pf.version),
+    ("used", lambda pf: pf.times_used),
+    (
+        "last used",
+        lambda pf: (
+            pf.last_used_at.date().isoformat()
+            if pf.last_used_at is not None
+            else "\u2014"
+        ),
+    ),
+)
+
+_PDF_FORMAT_DEFAULT = ("name", "institution", "routing", "last used")
+"""Which format, whose statements it reads, what it routes to, and whether it
+is still in use. The front end, version, and use count are provenance for a
+format that misbehaves, and follow under `--wide`."""
+
+
 @formats_app.command("list")
 def formats_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    wide: bool = wide_option,
     # _type shadows the builtin `type` — Typer CLI name remains --type (A001).
     _type: _FormatTypeFilter = typer.Option(  # noqa: A002
         _FormatTypeFilter.all,
@@ -2717,9 +2759,9 @@ def formats_list(
 ) -> None:
     """List all formats (built-in and user-saved).
 
-    Displays format name, institution, sign convention, and date format
-    for tabular formats, and name, institution, routing, front-end, version,
-    times-used, and last-used for PDF formats.
+    Displays format name, institution, sign convention, date format, and
+    source for tabular formats, and name, institution, routing, and last-used
+    for PDF formats. ``--wide`` adds the PDF front-end, version, and use count.
 
     Example:
         moneybin import formats list
@@ -2776,21 +2818,26 @@ def formats_list(
             if not quiet:
                 logger.warning("⚠️  No tabular formats found")
         else:
-            n_builtin = len(builtin)
-            n_user = len(all_formats) - len(builtin)
-            section_hdr = f"Tabular formats ({n_builtin} built-in, {n_user} user-saved)"
-            typer.echo(f"\n{section_hdr}")
-            typer.echo(
-                f"\n{'Name':<24} {'Institution':<28} {'Sign Convention':<24} "
-                f"{'Date Format'}"
+            # Count only, like the PDF header below: the per-format split now
+            # lives in the `source` column, and spelling it "built-in" here
+            # beside a cell reading `builtin` made one value look like two.
+            typer.echo(f"\nTabular formats ({len(all_formats)})")
+            render_rows(
+                ["name", "institution", "sign convention", "date format", "source"],
+                [
+                    (
+                        fmt.name,
+                        fmt.institution_name,
+                        fmt.sign_convention,
+                        fmt.date_format,
+                        # Same spelling as the `source` field in the JSON
+                        # branch above: one field, one value, whichever
+                        # surface a caller reads it from.
+                        "user" if fmt.name not in builtin else "builtin",
+                    )
+                    for fmt in sorted(all_formats.values(), key=lambda f: f.name)
+                ],
             )
-            typer.echo("-" * 100)
-            for fmt in sorted(all_formats.values(), key=lambda f: f.name):
-                source_tag = " (user)" if fmt.name not in builtin else ""
-                typer.echo(
-                    f"{fmt.name:<24} {fmt.institution_name:<28} "
-                    f"{fmt.sign_convention:<24} {fmt.date_format}{source_tag}"
-                )
 
     if show_pdf:
         if not pdf_formats:
@@ -2802,22 +2849,18 @@ def formats_list(
             if show_tabular:
                 typer.echo("")
             typer.echo(f"PDF formats ({len(pdf_formats)})")
-            typer.echo(
-                f"\n{'Name':<28} {'Institution':<20} {'Routing':<16} "
-                f"{'Front-end':<14} {'Ver':<5} {'Used':<6} {'Last used'}"
+            pdf_view = column_view(
+                _PDF_FORMAT_COLUMNS,
+                pdf_formats,
+                default=_PDF_FORMAT_DEFAULT,
+                wide=wide,
             )
-            typer.echo("-" * 104)
-            for pf in pdf_formats:
-                last_used = (
-                    pf.last_used_at.date().isoformat()
-                    if pf.last_used_at is not None
-                    else "—"
-                )
-                typer.echo(
-                    f"{pf.name:<28} {pf.institution_name:<20} {pf.routing:<16} "
-                    f"{pf.front_end:<14} {pf.version:<5} {pf.times_used:<6} "
-                    f"{last_used}"
-                )
+            render_rows(
+                pdf_view.names,
+                pdf_view.rows,
+                numeric=("version", "used"),
+                total_columns=pdf_view.total,
+            )
 
     typer.echo("")
 

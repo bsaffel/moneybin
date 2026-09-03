@@ -479,9 +479,51 @@ class TestInvestmentsList:
                     10, -1500.00, 'USD')
             """  # noqa: S608  # test fixture insert, static SQL
         )
+        # No `--wide`: all six columns are the default view, so the flag would
+        # promise columns nothing is holding back and the command does not
+        # offer one.
         result = runner.invoke(app, ["investments", "list"])
         assert result.exit_code == 0, result.output
         assert "buy" in result.output
+        # Requirement 1: the event row was `qty=… amt=…`, which repeats a field
+        # name per line and leaves nothing to align on.
+        assert "┃" in result.stdout
+        for header in ("date", "type", "security", "quantity", "amount", "currency"):
+            assert header in result.stdout
+        assert "qty=" not in result.stdout
+        assert "amt=" not in result.stdout
+        # Nothing was narrowed, so nothing claims it was.
+        assert "columns shown" not in result.stdout
+
+    @pytest.mark.unit
+    def test_list_default_view_keeps_the_currency_beside_the_amount(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """An amount without its denomination is not an amount.
+
+        This command has no currency filter, so one unfiltered call can render
+        events from accounts in different currencies; `multi-currency.md` makes
+        the row's own `currency_code` the canonical unit of its `amount`.
+        Holding the column back behind `--wide` leaves two rows reading
+        `1,500.00` that are not the same quantity, and nothing on screen says
+        so. `investments holdings` already keeps it, so dropping it here also
+        made two commands in one group disagree.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_transactions
+                (investment_transaction_id, account_id, security_id, trade_date,
+                 type, quantity, amount, currency_code)
+            VALUES ('evt_ccy', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
+                    10, -1500.00, 'USD')
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        result = runner.invoke(app, ["investments", "list"])
+
+        assert result.exit_code == 0, result.output
+        assert "currency" in result.stdout
+        assert "USD" in result.stdout
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -525,9 +567,13 @@ class TestHoldingsAndGains:
 
     @pytest.mark.unit
     def test_holdings_text_renders_value_and_an_unpriced_dash(
-        self, runner: CliRunner, db: Database
+        self, runner: CliRunner, db: Database, wide_terminal: None
     ) -> None:
-        """An unpriced position renders "-", never a blank that reads as zero."""
+        """An unpriced position renders "-", never a blank that reads as zero.
+
+        Asks for `--wide` because it asserts on every figure, including the
+        valuation status and observation date the default view leaves out.
+        """
         db.conn.execute(
             """
             CREATE OR REPLACE VIEW core.dim_holdings AS
@@ -548,12 +594,102 @@ class TestHoldingsAndGains:
                    'unpriced'
             """  # noqa: S608  # test fixture view, literal test data only
         )
-        result = runner.invoke(app, ["investments", "holdings"])
+        result = runner.invoke(app, ["investments", "holdings", "--wide"])
         assert result.exit_code == 0, result.output
-        assert "market_value=1200.00" in result.output
-        assert "unrealized_gain=200.00 USD" in result.output
-        assert "status=valued as_of=2026-07-15 (0d)" in result.output
-        assert "market_value=- unrealized_gain=- USD status=unpriced" in result.output
+        priced = next(li for li in result.output.splitlines() if "sec_1" in li)
+        unpriced = next(li for li in result.output.splitlines() if "sec_2" in li)
+        # The priced row states every figure; the unpriced one dashes the three
+        # it cannot know, rather than blanking them into an apparent zero.
+        assert "1,200.00" in priced
+        assert "+200.00" in priced
+        assert "valued" in priced
+        assert "2026-07-15 (0d)" in priced
+        assert "unpriced" in unpriced
+        # Market value and unrealized gain are the two figures a missing close
+        # withholds; the cost basis and average cost are known either way.
+        assert unpriced.count("-") == 2
+        assert "1,200.00" not in unpriced
+        assert "USD" in unpriced
+
+    @pytest.mark.unit
+    def test_holdings_default_view_keeps_money_whole_at_eighty_columns(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """The curated default fits 80 columns, so no amount folds mid-number.
+
+        Deliberately takes no `wide_terminal`: 80 columns is the contract, and
+        the fixture that widens the terminal is what let all nine columns look
+        fine in every other test while `1,200.00` rendered as `1,200.` above
+        `00` for anyone running a default-sized one.
+
+        A width-measuring fit cannot produce this view — it keeps the first and
+        last columns, so it drops `market value`, which is the figure the
+        command exists to report.
+        """
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   1200.00::DECIMAL(18,2) AS market_value,
+                   200.00::DECIMAL(18,2) AS unrealized_gain,
+                   DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
+                   0::INT AS days_since_observed, 'valued' AS valuation_status
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+
+        assert result.exit_code == 0, result.output
+        # Contiguous, on one line — a folded amount would split these.
+        assert "1,200.00" in result.output
+        assert "+200.00" in result.output
+        assert "market value" in result.output
+        # Every rendered line fits, borders included.
+        assert max(len(li) for li in result.output.splitlines()) <= 80
+        # The narrowing discloses itself, and names a flag this command has.
+        assert "6 of 9 columns shown" in result.output
+        assert "--wide" in result.output
+        assert "valuation_status" not in result.output
+
+    @pytest.mark.unit
+    def test_holdings_default_view_says_why_a_position_has_no_value(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """`-` is two different facts, and the column that separates them stays.
+
+        A position reads `-` either because no close resolved (`unpriced`) or
+        because its share count is known wrong (`withheld`) — and the remedies
+        differ: one wants a price refresh, the other wants the position fixed.
+        The service's own warning tells the reader to "see each row's
+        `valuation_status`", so holding that column back behind `--wide` made
+        the instruction name something not on screen; `-q` then drops the
+        warning too, leaving an unexplained dash and no way to ask why.
+        """
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_2' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   NULL::DECIMAL(18,2) AS market_value,
+                   NULL::DECIMAL(18,2) AS unrealized_gain,
+                   NULL::DATE AS price_date, NULL AS price_source,
+                   NULL::INT AS days_since_observed,
+                   'unpriced' AS valuation_status
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+
+        result = runner.invoke(app, ["investments", "holdings", "-q"])
+
+        assert result.exit_code == 0, result.output
+        assert "unpriced" in result.stdout
+        # The warning is the suppressed half; the row's own status is not.
+        assert "valuation_status" not in result.stderr
 
     @pytest.mark.unit
     def test_holdings_text_reports_the_stalest_close_as_a_number(
@@ -630,7 +766,7 @@ class TestHoldingsAndGains:
         )
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
-        assert "market_value=2000.00 USD" in result.output
+        assert "market_value=2,000.00 USD" in result.output
         assert "mixed currencies" not in result.output
 
     @pytest.mark.unit
@@ -663,10 +799,13 @@ class TestHoldingsAndGains:
             "market_value=- (mixed currencies, no home currency or no rate)"
             in result.output
         )
-        assert "USD=1200.00" in result.output
+        assert "USD=1,200.00" in result.output
         assert "EUR=900.00" in result.output
-        # The wrong sum must appear nowhere in the output.
+        # The wrong sum must appear nowhere in the output, in either spelling:
+        # the footer formats through `format_money` now, so checking only the
+        # bare form would let a formatted wrong sum through.
         assert "2100.00" not in result.output
+        assert "2,100.00" not in result.output
 
     @pytest.mark.unit
     def test_holdings_text_shows_the_originals_behind_a_converted_total(
@@ -706,8 +845,8 @@ class TestHoldingsAndGains:
         )
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
-        assert "market_value=2190.00 USD" in result.output
-        assert "(converted from USD=1200.00 EUR=900.00)" in result.output
+        assert "market_value=2,190.00 USD" in result.output
+        assert "(converted from USD=1,200.00 EUR=900.00)" in result.output
         # Requirement 10: the originals say what was converted, the rate says
         # what converted it. Asserted on the split streams because Click 8.2+
         # interleaves both into `result.output`, so `in result.output` cannot
@@ -736,6 +875,164 @@ class TestHoldingsAndGains:
         data = json.loads(result.stdout)
         assert len(data["data"]["rows"]) == 1
         assert data["data"]["warnings"]
+
+    @pytest.mark.unit
+    def test_gains_discloses_an_incomplete_basis_even_under_quiet(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """A conservative gain may not print as though it were the whole figure.
+
+        `gain` is computed against a basis the row itself knows is a floor, so
+        saying so qualifies the answer rather than commenting on the run. This
+        command raises no other warning, so the line is not gated on `-q` — the
+        1099-B figures would otherwise read as authoritative with nothing on
+        screen to say they are not.
+
+        `investments lots list` meets the same requirement with a per-row
+        marker in its default view. This table cannot: measured at 80 columns,
+        a seventh column folds the disposal date and the security id and breaks
+        the marker across three lines. So the marker is declared and reachable
+        with `--wide`, and the disclosure itself always prints. Both halves are
+        pinned here, because either alone leaves `-q` output silent about it.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id,
+                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                 cost_basis, gain_loss, term, cost_basis_method,
+                 basis_incomplete, currency_code)
+            VALUES ('gain_quiet', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a',
+                    5, '2024-01-01', '2024-06-12', 950.00, 0.00, 950.00,
+                    'long', 'fifo', true, 'USD')
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        quiet = runner.invoke(app, ["investments", "gains", "-q"])
+
+        assert quiet.exit_code == 0, quiet.output
+        assert "incomplete cost basis" in quiet.stderr
+        # The disclosure is a diagnostic, so it stays off the data stream.
+        assert "incomplete cost basis" not in quiet.stdout
+
+    @pytest.mark.unit
+    def test_gains_wide_names_which_rows_have_an_incomplete_basis(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """The warning counts the rows; only the column says which ones."""
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id,
+                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                 cost_basis, gain_loss, term, cost_basis_method,
+                 basis_incomplete, currency_code)
+            VALUES ('gain_floor', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a',
+                    5, '2024-01-01', '2024-06-12', 950.00, 0.00, 950.00,
+                    'long', 'fifo', true, 'USD'),
+                   ('gain_whole', 'acct_brokerage', 'sec_2', 'sell_2', 'lot_b',
+                    5, '2024-01-01', '2024-06-13', 950.00, 750.00, 200.00,
+                    'long', 'fifo', false, 'USD')
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        wide = runner.invoke(app, ["investments", "gains", "--wide"])
+
+        assert wide.exit_code == 0, wide.output
+        assert wide.stdout.count("basis_incomplete") == 1
+
+        narrow = runner.invoke(app, ["investments", "gains"])
+
+        assert narrow.exit_code == 0, narrow.output
+        assert "basis_incomplete" not in narrow.stdout
+
+    @pytest.mark.unit
+    def test_gains_text_names_its_columns_and_signs_the_gain(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """Requirements 1, 12, and 14: named columns, and one signed answer.
+
+        Proceeds and basis are positive by construction, so they render
+        unsigned; the gain is the figure whose direction is the point, so it
+        carries its sign.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id,
+                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                 cost_basis, gain_loss, term, cost_basis_method,
+                 basis_incomplete, currency_code)
+            VALUES ('gain_signed', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a',
+                    5, '2024-01-01', '2024-06-12', 1950.00, 1750.00, 200.00,
+                    'long', 'fifo', false, 'USD')
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        result = runner.invoke(app, ["investments", "gains", "--wide"])
+
+        assert result.exit_code == 0, result.output
+        assert "┃" in result.stdout
+        for header in ("disposed", "security", "proceeds", "basis", "gain", "term"):
+            assert header in result.stdout
+        assert "1,950.00" in result.stdout
+        assert "1,750.00" in result.stdout
+        assert "+200.00" in result.stdout
+        assert "proceeds=" not in result.stdout
+
+    @pytest.mark.unit
+    def test_holdings_help_does_not_promise_status_behind_wide(
+        self, runner: CliRunner
+    ) -> None:
+        """Help naming the wrong home for a column is worse than silence.
+
+        `status` moved into the default view when it stopped hiding behind
+        `--wide`, but the help still promised the flag would add it — so it
+        misdescribed both what prints by default and what the flag buys. This
+        is the third help string in this branch invalidated by curating a
+        column, so the false claim is pinned rather than just corrected.
+        """
+        result = runner.invoke(app, ["investments", "holdings", "--help"])
+
+        assert result.exit_code == 0, result.output
+        help_text = " ".join(result.stdout.split())
+        assert "adds the ``status``" not in help_text
+        assert "``status``" in help_text
+        for wide_column in ("cost basis", "average cost"):
+            assert wide_column in help_text
+
+    @pytest.mark.unit
+    def test_gains_default_view_keeps_the_currency_beside_the_gain(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """A gain without its denomination is not a gain.
+
+        Takes no ``wide_terminal`` on purpose: the column has to reach the
+        curated default view, not merely the full projection. This command has
+        no currency filter, so one unfiltered call can span accounts
+        denominated differently, and `multi-currency.md` makes the row's own
+        `currency_code` the canonical unit of its `proceeds`, `basis` and
+        `gain`. Two rows reading `+200.00` are then not the same quantity.
+        `investments list` and `investments holdings` already keep it.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id,
+                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                 cost_basis, gain_loss, term, cost_basis_method,
+                 basis_incomplete, currency_code)
+            VALUES ('gain_ccy', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a',
+                    5, '2024-01-01', '2024-06-12', 1950.00, 1750.00, 200.00,
+                    'long', 'fifo', false, 'USD')
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        result = runner.invoke(app, ["investments", "gains"])
+
+        assert result.exit_code == 0, result.output
+        assert "currency" in result.stdout
+        assert "USD" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -819,7 +1116,7 @@ class TestLotsList:
 
     @pytest.mark.unit
     def test_lots_list_text_flags_basis_incomplete_row(
-        self, runner: CliRunner, db: Database
+        self, runner: CliRunner, db: Database, wide_terminal: None
     ) -> None:
         db.conn.execute(
             """
@@ -832,10 +1129,195 @@ class TestLotsList:
                     'transfer_in', 10, 10, 0.00, 0.00, 'fifo', 'USD', true, true)
             """  # noqa: S608  # test fixture insert, static SQL
         )
-        result = runner.invoke(app, ["investments", "lots", "list"])
+        result = runner.invoke(app, ["investments", "lots", "list", "--wide"])
         assert result.exit_code == 0, result.output
         assert "basis_incomplete" in result.stdout
         assert "incomplete" in result.stderr
+
+    @pytest.mark.unit
+    def test_lots_list_default_view_marks_an_incomplete_basis_under_quiet(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """A basis known to be wrong may not print as though it were right.
+
+        The marker qualifies the `basis` cell rather than commenting on the
+        run, so it belongs to the answer. Behind `--wide` it had one substitute
+        — a warning line — and `render_note` puts that on stderr where `-q`
+        drops it, so `-q` output showed a conservative basis with nothing
+        saying it is a floor rather than a figure.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES ('lot_quiet', 'acct_brokerage', 'sec_1', '2024-01-15',
+                    'transfer_in', 10, 10, 0.00, 0.00, 'fifo', 'USD', true, true)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        result = runner.invoke(app, ["investments", "lots", "list", "-q"])
+
+        assert result.exit_code == 0, result.output
+        assert "basis_incomplete" in result.stdout
+        # The warning is the suppressed half — that is the point of `-q`.
+        assert "incomplete" not in result.stderr
+
+    @pytest.mark.unit
+    def test_lots_list_reaches_the_currency_through_wide(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """The one curated table whose default view cannot afford `currency`.
+
+        Its three siblings keep the column, since none of the four takes a
+        currency filter and `multi-currency.md` makes the row's own
+        `currency_code` the canonical unit of its amount. Six columns already
+        spend this table's 80-column budget, though: measured at 80 with
+        production-width ids, the default already folds the lot id by a
+        character and breaks `⚠️ basis_incomplete` across lines, and a seventh
+        column folds `security` too and takes the marker to three lines. So it
+        is declared rather than omitted, and `--wide` is the escape; both
+        halves are pinned here, because a column left undeclared has no escape
+        at all.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES ('lot_ccy', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
+                    10, 10, 1500.00, 1500.00, 'fifo', 'USD', true, false)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        wide = runner.invoke(app, ["investments", "lots", "list", "--wide"])
+
+        assert wide.exit_code == 0, wide.output
+        assert "currency" in wide.stdout
+        assert "USD" in wide.stdout
+
+        narrow = runner.invoke(app, ["investments", "lots", "list"])
+
+        assert narrow.exit_code == 0, narrow.output
+        assert "currency" not in narrow.stdout
+
+    @pytest.mark.unit
+    def test_lots_list_wide_shows_state_and_the_help_text_says_so(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """`--wide` is every declared column, not a second curated set.
+
+        `column_view` projects the whole declaration whenever `wide` is set and
+        ignores `default` entirely, so `--wide` without `--all` restores
+        `state` as well as the currency and the method — reading `open` on
+        every row, since `--open` is still in force. That is the honest
+        meaning of the flag and the disclosure line already implies it by
+        counting three hidden columns rather than two; what was wrong was the
+        `--help` text promising only two of them. The behaviour and the
+        sentence describing it are pinned together, because this branch has
+        now invalidated four help strings by curating a column and the
+        sentence is the half nothing else checks.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES ('lot_wide', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
+                    10, 10, 1500.00, 1500.00, 'fifo', 'USD', true, false)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        wide = runner.invoke(app, ["investments", "lots", "list", "--wide"])
+
+        assert wide.exit_code == 0, wide.output
+        assert "state" in wide.stdout
+        assert "open" in wide.stdout
+
+        help_text = runner.invoke(app, ["investments", "lots", "list", "--help"]).stdout
+        normalized = " ".join(help_text.split())
+        assert "adds the currency and the cost-basis method" not in normalized, (
+            "the help text promises two columns behind --wide while the flag "
+            "restores three; a curated view must describe itself correctly"
+        )
+
+    @pytest.mark.unit
+    def test_lots_list_all_says_which_lots_are_closed(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """`--all` asks for mixed history, so the row has to say which it is.
+
+        The state is strictly derivable — `core.fct_investment_lots` defines
+        `is_open` as `remaining_quantity > 0` — but that rule appears neither
+        on screen nor in `--help`, so without the column a reader infers a
+        lifecycle state from a numeric cell via a rule nothing shows them. The
+        column earns its slot exactly when the result can contain both kinds,
+        so `--open` (the default) does not pay for it.
+        """
+        db.conn.executemany(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES (?, 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
+                    10, ?, 1500.00, ?, 'fifo', 'USD', ?, false)
+            """,  # noqa: S608  # test fixture insert, static SQL
+            [
+                ["lot_still_open", Decimal("10"), Decimal("1500.00"), True],
+                ["lot_sold_off", Decimal("0"), Decimal("0.00"), False],
+            ],
+        )
+
+        every = runner.invoke(app, ["investments", "lots", "list", "--all"])
+
+        assert every.exit_code == 0, every.output
+        assert "state" in every.stdout
+        assert "closed" in every.stdout
+
+        open_only = runner.invoke(app, ["investments", "lots", "list"])
+
+        assert open_only.exit_code == 0, open_only.output
+        assert "state" not in open_only.stdout
+
+    @pytest.mark.unit
+    def test_lots_list_names_its_columns_instead_of_its_fields(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """Requirement 1: `key=value` at a reader is a table spelled badly.
+
+        The row read `acq=2024-01-15 remaining=10 basis_remaining=0.00
+        method=fifo`, which repeats a field name on every line and leaves the
+        values unalignable. The header carries each name once instead.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES ('lot_named', 'acct_brokerage', 'sec_1', '2024-01-15',
+                    'buy', 10, 10, 1234.50, 1234.50, 'fifo', 'USD', true, false)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        result = runner.invoke(app, ["investments", "lots", "list", "--wide"])
+
+        assert result.exit_code == 0, result.output
+        assert "┃" in result.stdout
+        for header in ("lot", "security", "acquired", "remaining", "method", "state"):
+            assert header in result.stdout
+        assert "remaining=" not in result.stdout
+        # Requirement 11: the basis is an amount, so it is separated.
+        assert "1,234.50" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -1047,6 +1529,22 @@ class TestSecuritiesListAndSet:
         rows = json.loads(result.stdout)["data"]["rows"]
         assert len(rows) == 1
         assert rows[0]["ticker"] == "AAPL"
+
+    @pytest.mark.unit
+    def test_list_text_names_its_columns(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """Requirement 1: four padded values are a table, so render one."""
+        _add_security(runner, name="Apple Inc.", type_="equity", ticker="AAPL")
+
+        result = runner.invoke(app, ["investments", "securities", "list"])
+
+        assert result.exit_code == 0, result.output
+        assert "┃" in result.stdout
+        for header in ("security", "ticker", "name", "type"):
+            assert header in result.stdout
+        assert "AAPL" in result.stdout
+        assert "Apple Inc." in result.stdout
 
     @pytest.mark.unit
     def test_set_method_preserves_other_fields(

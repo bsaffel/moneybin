@@ -242,13 +242,63 @@ Three guards in `tests/moneybin/test_cli/test_render.py` enforce this
 structurally: Rich may be imported only by `render.py`, no `typer.echo` outside
 it carries an alignment format spec, and nothing calls `typer.secho`/`typer.style`.
 
-**Eight modules are still exempt from the second guard**, named in
-`_AWAITING_RENDER_ROWS` in that file: `commands/db.py`, `demo.py`, `fx.py`,
-`import_cmd.py`, and four under `commands/investments/`. They hand-format
-columns today and migrate in the third pull request of M3K.3. The list is
-asserted by set equality in both directions, so it can only shrink — a module
-acquiring the pattern fails, and one that has shed it must be removed. Do not
-copy their approach into anything new, and do not add to the list.
+**No module is exempt.** The second guard carried an `_AWAITING_RENDER_ROWS`
+set for the eight modules the audit's file list did not name; all eight have
+migrated and the set is gone. Every CLI module is held to the rule
+unconditionally.
+
+**A per-unit price is not an amount.** `fx list`'s rate, `investments prices
+list`'s close, and `investments holdings`' average cost are stored to ten
+decimal places, and `format_money` rounds to two — routing a sub-cent price
+through it renders `0.00`. Those columns declare no `Money` and print as
+stored. Requirement 11 governs amounts: a transaction total, a balance, a
+gain. If the column answers "how much is this worth", format it; if it
+answers "what does one unit cost", do not.
+
+**Curate a wide table; do not let the renderer measure one.** A list command
+with more columns than an 80-column terminal holds declares its columns once as
+`(name, extractor)` pairs, a `_DEFAULT` subset, and takes `--wide` — the same
+shape `reports` uses, via `column_view` in `render.py`. Header and rows are then
+derived from one declaration, so a moved column cannot desynchronize them.
+
+Reach for `render_rows(fit=True)` only where no author judgement exists to
+encode: it keeps the first and last columns, which on `investments holdings`
+elides `market value` — the figure the command exists to report. The default
+set is curated rather than measured because width knows nothing about meaning.
+
+The reason either is needed: Rich folds an over-narrow cell, and a folded
+amount is *misread*, not merely ugly — `1,200.00` becomes `1,200.` above `00`.
+Folding an identifier is the accepted degradation; folding a number is the bug.
+
+`render_rows` already holds that line for you, and you get it by declaring the
+column rather than by touching Rich: a declared column is `no_wrap=True` with
+`overflow="ellipsis"`, so Rich spends a narrow terminal's squeeze on the *text*
+columns first and numbers survive whole.
+
+**Two declarations, because formatting and atomicity are different questions.**
+`money=` says how to render an amount — two places, a sign glyph, a colour.
+`numeric=` says only that the cell is a number and must not break across lines.
+A per-unit price, a share count, an FX rate and a match score all belong in
+`numeric=` precisely *because* they are excluded from `money=` — rounding a
+`DECIMAL(28,10)` close to two places would print `0.00` — and that exclusion
+used to take the no-fold guarantee with it. Every column holding a bare number
+declares one of the two; there is no third state. Do not copy
+`no_wrap=True` onto the text columns to make a table fit — applied to every
+column it leaves Rich nothing wrappable to give up, and it then crops
+`1,234,567.89` to `1,234`, which is the same misread by another route. The
+ellipsis is the floor under that: a cell too narrow even after the squeeze
+reads `1,234,5…`, which cannot pass for a whole number.
+
+Curation is still the answer for a table that is simply too wide. The renderer
+guarantees no amount is *wrong*; only the author can decide which columns are
+worth showing, and a nine-column projection squeezed into 80 is legible in the
+sense that nothing lies and unreadable in every other sense.
+
+**Guard an empty result.** `render_rows([], ...)` draws a header box with no
+rows under it, so a command that renders unconditionally prints a table for a
+result that has nothing in it — where the `for` loop it replaced printed
+nothing at all. Wrap the call in `if rows:`, as `render_report_result` does
+with `if result.records:`. The guard looks removable and is not.
 
 Full contract: [`cli-output-coherence.md`](../../docs/specs/cli-output-coherence.md).
 
