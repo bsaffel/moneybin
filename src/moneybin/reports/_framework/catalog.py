@@ -56,6 +56,7 @@ from moneybin.services.currency_service import (
     build_cache_only_currency_service,
     require_currency,
 )
+from moneybin.services.matching_service import PENDING_MATCHES_HINT, MatchingService
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,61 @@ def _merged_reason(*reasons: str | None) -> str | None:
     """Every stated reason a result is degraded, or ``None`` if it is not."""
     stated = [reason for reason in reasons if reason]
     return "; ".join(stated) if stated else None
+
+
+#: Leading token on ``degraded_reason`` when undecided duplicate-match proposals
+#: leave both rows of a pair in the ledger. Same discriminator shape the user
+#: tier's codes use (``dynamic.DEGRADED_STALE_CLASSIFICATION`` and its
+#: siblings): ``degraded`` carries several meanings, and a machine reader tells
+#: them apart by the token rather than by parsing the prose after it.
+DEGRADED_PENDING_DEDUP: Final = "pending_dedup_decisions"
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionalTotals:
+    """What a result owes its reader when an undecided duplicate pair inflates it."""
+
+    reason: str
+    next_step: str
+
+
+def pending_dedup_disclosure(db: Database) -> ProvisionalTotals | None:
+    """The warning and the next step owed to a total a pending pair overstates.
+
+    Cross-source dedup escalates a low-confidence duplicate to the review queue
+    instead of merging it silently, which is the right call — but both rows stay
+    in ``core.fct_transactions`` while the pair is undecided, so every total that
+    covers them counts the payment twice and nothing said so (issue #409).
+
+    The count is profile-wide rather than scoped to the rows on screen. A report
+    returns aggregates, so which transactions it summed is not recoverable from
+    its result, and there is no cheap join back from a match proposal to the
+    grain of an arbitrary report. Warning wider than the rows shown is the safe
+    direction of that imprecision: a disclosure that under-reported the exposure
+    would leave exactly the inflated total this exists to flag unmarked.
+    """
+    pending = MatchingService(db).count_pending(match_type="dedup")
+    if pending == 0:
+        return None
+    return ProvisionalTotals(
+        reason=(
+            f"{DEGRADED_PENDING_DEDUP}: {pending} duplicate-transaction "
+            f"{'match is' if pending == 1 else 'matches are'} still awaiting a "
+            "decision; both rows of each undecided pair remain in the ledger, so "
+            "totals covering them are provisional."
+        ),
+        # The CLI half is `PENDING_MATCHES_HINT` verbatim — the one constant the
+        # matcher, the backfill, and the refresh pipeline already print, and the
+        # one a test actually executes. Restating the invocation here is how
+        # those three drifted into an unrunnable command before it existed. The
+        # MCP half is named beside it because this disclosure reaches an agent
+        # that cannot run a shell command, and `reviews`/`reviews_decide` are the
+        # registered tools that clear the same queue.
+        next_step=(
+            f"{PENDING_MATCHES_HINT}; from MCP, reviews(kind='matches', "
+            "status='pending') lists them and reviews_decide decides them"
+        ),
+    )
 
 
 _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
@@ -278,8 +334,13 @@ class ReportCatalog:
         rates are not yet cached, and on every user-created report — which
         deliberately declares neither a currency nor a date column, so it can
         never convert. Callers resolve ``home_currency`` themselves (see
-        ``profile_home_currency``) rather than having it read here, which keeps
-        this method a pure function of its arguments.
+        ``profile_home_currency``) rather than having it read here, so a
+        *policy default* stays the caller's to choose.
+
+        A *disclosure* is the opposite case and is read here: the pending-duplicate
+        check below reads ``db`` on every execution, because a caveat each surface
+        has to remember to ask for is one a surface will forget — which is how the
+        inflated totals in issue #409 reached four surfaces unmarked.
         """
         target = _conversion_target(display_currency, home_currency)
         spec, execution = self.execute_raw(
@@ -305,20 +366,33 @@ class ReportCatalog:
         execution = truncate_execution(execution)
         result = redact_catalog_execution(spec, execution)
         status = self.status(spec.report_id)
-        if not status.degraded:
+        # The single point every report-reading surface passes through — see the
+        # docstring on why this one reads ``db`` where the currency default does
+        # not. Skipped on an empty result, whose totals nothing inflated.
+        provisional = pending_dedup_disclosure(db) if result.records else None
+        if provisional is None and not status.degraded:
             return result
         # R4's drift reason belongs on the response, not only on the intermediate
         # object the catalog built the spec from: masked rows with no stated cause
         # are the failure the whole degraded flag exists to prevent. A conversion
         # that also degraded keeps its reason beside it rather than losing to it:
         # they are independent, and a reader told only about drift would think
-        # the currency label was trustworthy.
+        # the currency label was trustworthy. The provisional-totals reason joins
+        # them on the same terms, and its next step rides ``actions`` — where the
+        # CLI renders a hint and the MCP envelope already carries one — because
+        # a warning naming no way to clear it leaves the reader where it found
+        # them.
         return replace(
             result,
             degraded=True,
             degraded_reason=_merged_reason(
-                status.degraded_reason, result.degraded_reason
+                status.degraded_reason if status.degraded else None,
+                result.degraded_reason,
+                provisional.reason if provisional else None,
             ),
+            actions=[*result.actions, provisional.next_step]
+            if provisional
+            else result.actions,
         )
 
     def execute_raw(

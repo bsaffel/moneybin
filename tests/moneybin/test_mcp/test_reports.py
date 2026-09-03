@@ -18,7 +18,11 @@ from pydantic import JsonValue
 from moneybin.database import Database, DatabaseNotInitializedError
 from moneybin.mcp.tools.reports import reports
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
-from moneybin.reports._framework.catalog import ReportCatalog, ServiceReportSpec
+from moneybin.reports._framework.catalog import (
+    DEGRADED_PENDING_DEDUP,
+    ReportCatalog,
+    ServiceReportSpec,
+)
 from moneybin.reports._framework.contract import (
     OutputColumn,
     ParamSpec,
@@ -264,6 +268,78 @@ async def test_reports_run_of_a_drifted_saved_report_says_so_in_the_envelope(
     assert response.summary.degraded_reason is not None
     assert response.summary.degraded_reason.startswith(DEGRADED_STALE_CLASSIFICATION)
     assert [row["account_id"] for row in response.data.rows] == ["*****"]
+
+
+@pytest.mark.unit
+async def test_reports_marks_a_total_provisional_while_a_duplicate_pair_is_undecided(
+    db: Database,
+) -> None:
+    """Issue #409: the agent reading the number is the one owed the caveat.
+
+    Dedup escalates a low-confidence duplicate to the review queue rather than
+    merging it, so both rows stay in ``core.fct_transactions`` and every total
+    covering them is overstated. The CLI prints the reason and the next step as
+    ``⚠️`` and ``💡``; ``summary.degraded_reason`` and ``actions`` are how the
+    agent learns the same thing, and an agent cannot run the CLI hint alone —
+    so the next step names the MCP tools that clear the queue too.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+    from moneybin.services.user_reports_service import UserReportsService
+
+    create_core_tables_raw(db.conn)
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions (transaction_id, account_id, amount)
+        VALUES ('dup_ofx', 'acct_11112222', -25.00),
+               ('dup_csv', 'acct_11112222', -25.00)
+        """
+    )
+    MatchDecisionsRepo(db).insert(
+        match_id="match00000001",
+        source_transaction_id_a="ofx-1",
+        source_type_a="ofx",
+        source_origin_a="test-bank",
+        source_transaction_id_b="csv-1",
+        source_type_b="tabular",
+        source_origin_b="test-export",
+        account_id="acct_11112222",
+        confidence_score=0.58,
+        match_signals={"date_distance": 0},
+        match_status="pending",
+        match_tier="3",
+        decided_by="auto",
+        actor="test",
+    )
+    UserReportsService(db).create(
+        name="my_total",
+        query_sql="SELECT SUM(amount) AS total FROM core.fct_transactions",
+        actor="cli",
+    )
+
+    with (
+        patch(
+            "moneybin.reports._framework.catalog.get_database",
+            return_value=_database_context(db),
+        ),
+        patch(
+            "moneybin.mcp.tools.reports.get_database",
+            return_value=_database_context(db),
+        ),
+        patch("moneybin.mcp.tools.reports.get_max_rows", return_value=50),
+        patch("moneybin.mcp.decorator.write_privacy_event"),
+    ):
+        response = await reports(report_id="my_total")
+
+    assert response.error is None
+    assert response.summary.degraded is True
+    assert response.summary.degraded_reason is not None
+    assert DEGRADED_PENDING_DEDUP in response.summary.degraded_reason
+    assert "1 duplicate-transaction match is" in response.summary.degraded_reason
+    assert [
+        action
+        for action in response.actions
+        if "moneybin review" in action and "reviews_decide" in action
+    ], response.actions
 
 
 @pytest.mark.unit

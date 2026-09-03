@@ -41,6 +41,7 @@ from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import PayloadEncoder
 from moneybin.reports._framework import registry
 from moneybin.reports._framework.catalog import (
+    DEGRADED_PENDING_DEDUP,
     ReportCatalog,
     ServiceReportSpec,
     catalog_classes_returned,
@@ -74,7 +75,9 @@ from moneybin.reports.service_reports import (
     NETWORTH_HISTORY_REPORT,
     NETWORTH_REPORT,
 )
-from moneybin.tables import TableRef
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+from moneybin.tables import MATCH_DECISIONS, TableRef
+from tests.database_mocks import without_a_profile
 
 _SEMANTICS = ReportSemantics(
     unit="count",
@@ -172,10 +175,30 @@ def _service_report(
     )
 
 
+def _assert_only_read_was_the_pending_duplicate_check(db: MagicMock) -> None:
+    """A service report's rows come from its executor, never from SQL here.
+
+    The framework does make one read of its own on every execution — the
+    pending-duplicate count behind `pending_dedup_disclosure` — so "no report
+    query ran" is now a statement about which table was read, not about whether
+    the connection was touched at all.
+    """
+    reads = [call.args[0] for call in db.execute.call_args_list if call.args]
+    assert len(reads) == 1 and MATCH_DECISIONS.full_name in reads[0], (
+        f"expected only the pending-duplicate check, got {reads}"
+    )
+
+
 def _db_with_rows(*rows: tuple[object, ...]) -> Database:
     cursor = MagicMock()
     cursor.description = [("value",)]
     cursor.fetchmany.return_value = list(rows)
+    # "No row" for the framework's pending-duplicate count (see
+    # `pending_dedup_disclosure`). A mock that answers a COUNT with a child mock
+    # coerces to 1, so every report run through this stand-in would report one
+    # undecided duplicate pair that does not exist — the same trap
+    # `database_mocks.without_a_profile` exists to close for the currency read.
+    cursor.fetchone.return_value = None
     db = MagicMock(spec=Database)
     db.execute.return_value = cursor
     return cast(Database, db)
@@ -478,7 +501,10 @@ def test_legacy_typing_optional_is_validated_like_pep604_union() -> None:
     )
 
     assert result.records == [{"value": None}]
-    cast(MagicMock, db.execute).assert_called_once_with(
+    # `assert_any_call`, not `assert_called_once_with`: the framework also reads
+    # the pending-duplicate count on every execution (`pending_dedup_disclosure`),
+    # so this asserts what the runner bound, not how many reads the call made.
+    cast(MagicMock, db.execute).assert_any_call(
         "SELECT ? AS value",
         [None],
     )
@@ -503,7 +529,9 @@ def test_sql_report_dispatch_returns_catalog_result_with_defaults() -> None:
     assert result.records == [{"value": 7}]
     assert result.columns == ["value"]
     assert result.period == "test period"
-    cast(MagicMock, db.execute).assert_called_once_with(
+    # See the note on the same assertion above: one read is the runner's, one is
+    # the framework's pending-duplicate check.
+    cast(MagicMock, db.execute).assert_any_call(
         "SELECT ? AS value",
         [7],
     )
@@ -615,7 +643,7 @@ def test_service_report_dispatch_uses_same_result_contract() -> None:
     )
     executor.return_value = execution
     catalog = ReportCatalog((service_report,))
-    db = MagicMock(spec=Database)
+    db = without_a_profile(MagicMock(spec=Database))
 
     result = catalog.execute(
         cast(Database, db),
@@ -631,7 +659,7 @@ def test_service_report_dispatch_uses_same_result_contract() -> None:
         {"year": 2026},
         25,
     )
-    db.execute.assert_not_called()
+    _assert_only_read_was_the_pending_duplicate_check(db)
 
 
 def test_catalog_resolve_request_validates_service_parameters_without_execution() -> (
@@ -826,7 +854,7 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
             ],
         ),
     )
-    db = MagicMock(spec=Database)
+    db = without_a_profile(MagicMock(spec=Database))
 
     result = ReportCatalog((NETWORTH_REPORT,)).execute(
         cast(Database, db),
@@ -872,7 +900,7 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
     assert result.total_count == 2
     envelope = result.to_envelope().to_dict()
     assert envelope["summary"]["display_currency"] == "USD"
-    db.execute.assert_not_called()
+    _assert_only_read_was_the_pending_duplicate_check(db)
 
 
 def test_networth_account_id_parameter_metadata_preserves_opaque_ids(
@@ -1667,3 +1695,89 @@ def test_networth_separates_currency_totals_from_account_balances(
         f"default columns {sorted(declared)} name nothing an account row fills, "
         "so every breakdown row renders as a blank line"
     )
+
+
+def _transaction_total_runner(db: Database) -> ReportQuery:  # noqa: ARG001  # framework passes the connection
+    """Total the very rows an undecided duplicate pair leaves doubled."""
+    return ReportQuery("SELECT SUM(amount) AS value FROM core.fct_transactions")
+
+
+def _transaction_total_report() -> ReportSpec:
+    return dataclasses.replace(
+        _sql_report(), runner=_transaction_total_runner, params=()
+    )
+
+
+def _seed_pending_dedup_pair(db: Database) -> None:
+    """Two same-amount rows from different sources, proposed and undecided.
+
+    The shape issue #409 reported: dedup escalated the pair instead of merging
+    it, so both rows stay in ``core.fct_transactions`` and every total that
+    covers them counts the payment twice.
+    """
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions (transaction_id, account_id, amount)
+        VALUES ('dup_ofx', 'acct_11112222', -25.00),
+               ('dup_csv', 'acct_11112222', -25.00)
+        """
+    )
+    MatchDecisionsRepo(db).insert(
+        match_id="match00000001",
+        source_transaction_id_a="ofx-1",
+        source_type_a="ofx",
+        source_origin_a="test-bank",
+        source_transaction_id_b="csv-1",
+        source_type_b="tabular",
+        source_origin_b="test-export",
+        account_id="acct_11112222",
+        confidence_score=0.58,
+        match_signals={"date_distance": 0},
+        match_status="pending",
+        match_tier="3",
+        decided_by="auto",
+        actor="test",
+    )
+
+
+def test_a_total_over_an_undecided_duplicate_pair_is_marked_provisional(
+    saved_db: Database,
+) -> None:
+    """Issue #409: both rows of a pending pair inflate the total, and it says so."""
+    _seed_pending_dedup_pair(saved_db)
+
+    result = ReportCatalog((_transaction_total_report(),)).execute(
+        saved_db,
+        report_id="core:summary",
+        parameters={},
+        limit=100,
+    )
+
+    assert result.degraded
+    assert result.degraded_reason is not None
+    assert result.degraded_reason.startswith(DEGRADED_PENDING_DEDUP)
+    assert "1 duplicate-transaction match is" in result.degraded_reason
+    remediation = [
+        action
+        for action in result.actions
+        if "moneybin review" in action and "reviews_decide" in action
+    ]
+    assert remediation, (
+        f"no action names the review surface that clears it: {result.actions}"
+    )
+
+
+def test_a_total_with_nothing_pending_carries_no_provisional_marking(
+    saved_db: Database,
+) -> None:
+    """The disclosure is evidence of a real queue, not decoration on every read."""
+    result = ReportCatalog((_transaction_total_report(),)).execute(
+        saved_db,
+        report_id="core:summary",
+        parameters={},
+        limit=100,
+    )
+
+    assert not result.degraded
+    assert result.degraded_reason is None
+    assert not [action for action in result.actions if DEGRADED_PENDING_DEDUP in action]
