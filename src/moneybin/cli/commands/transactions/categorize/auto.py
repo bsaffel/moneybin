@@ -43,7 +43,7 @@ def review(
     from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
     from moneybin.services.auto_rule_service import AutoRuleService
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="categorize_auto_review"):
         with get_database(read_only=True) as db:
             result = AutoRuleService(db).review(limit=limit)
 
@@ -161,7 +161,7 @@ def stats(
     """Show auto-rule health: active rules, pending proposals, transactions categorized."""
     from moneybin.services.auto_rule_service import AutoRuleService
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="categorize_auto_stats"):
         with get_database(read_only=True) as db:
             result = AutoRuleService(db).stats()
 
@@ -199,7 +199,7 @@ def rules(
     """List active auto-rules (rules with created_by='auto_rule')."""
     from moneybin.services.auto_rule_service import AutoRuleService
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="categorize_auto_rules"):
         with get_database(read_only=True) as db:
             svc = AutoRuleService(db)
             active_rules = svc.list_active_rules(limit=limit)
