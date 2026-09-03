@@ -5,7 +5,7 @@ in-progress
 
 > **Progress note (2026-05-17).** The "now" batch (Requirements 1–12, 15–18) shipped: README rewrite, `CHANGELOG.md`, `docs/guides/threat-model.md`, `docs/guides/database-security.md` polish, `CONTRIBUTING.md` strategy pointer, `pyproject.toml` metadata. Remaining work is the M0D and M3B close-out (Requirements 13–14 — `docs/architecture.md` distillation gated on `architecture-shared-primitives.md` reaching `implemented`, plus the brew-install Quick Start flip and demo asset). The spec moves to `implemented` when those land.
 
-> **Progress note (2026-09-02).** A repo-wide pass over every human-facing public doc started; its structure decisions are recorded in [Information architecture (2026-09)](#information-architecture-2026-09) below. Phase 0 (structure, broken commands, one privacy misstatement, the CLI-invocation guard) is on `docs/public-docs-structure`. The spec now moves to `implemented` when phase 3 of that pass lands.
+> **Progress note (2026-09-02).** A repo-wide pass over every human-facing public doc started; its structure decisions are recorded in [Information architecture (2026-09)](#information-architecture-2026-09) below. The structure, broken commands, one privacy misstatement, and the CLI-invocation guard shipped on `docs/public-docs-structure`. The spec now moves to `implemented` when the remaining scope listed there is delivered.
 
 ## Goal
 
@@ -178,10 +178,11 @@ another hand pass is not.
   material and the internal-mechanics pages; `docs/architecture/` and
   `docs/tech/` were collapsed into it.
 - `docs/reference/prompts/` was merged into `guides/mcp-server.md` → Prompts.
-- `docs/specs/` and `docs/decisions/` stay internal; reader paths do not link
-  into them except from the Contributing section of the index.
+- `docs/specs/` and `docs/decisions/` stay internal working records; the index
+  lists them under Project and process, and a guide or reference page links to
+  a spec or ADR only where it records the decision behind that page.
 
-**Generated references (phase 1).** Three files are generated from the code and
+**Generated references.** Three files are generated from the code and
 pinned by a regenerate-and-diff test: the CLI reference (from the Typer command
 tree), the MCP tool reference (from the MCP surface snapshot), and the
 configuration reference (from `MoneyBinSettings`). Hand-written prose links to
@@ -193,13 +194,13 @@ invocation in the public docs against the registered command tree. A line that
 deliberately shows a wrong or absent command carries
 `<!-- cli-invocation-ok: reason -->`.
 
-**Phases, one PR each.** Phase 0: the structure above, the broken commands, the
-`categorize assist` privacy statement, shipped-as-planned drift, the guard.
-Phase 1: the generated references, `account-identifiers.md` and
-`data-pipeline.md` rewrites, `system-overview.md` folded into
-`docs/architecture.md`. Phase 2: storefront and guide rewrites plus a
-`getting-started.md`; positioning edits are discussed one at a time before they
-land. Phase 3: reports, investments, and multi-currency guides.
+**Remaining scope.** The structure above, the broken commands, the
+`categorize assist` privacy statement, shipped-as-planned drift, and the guard
+shipped on `docs/public-docs-structure`. What's left: the generated
+references; `account-identifiers.md` and `data-pipeline.md` rewrites;
+`system-overview.md` folded into `docs/architecture.md`; storefront and guide
+rewrites plus a `getting-started.md`; and reports, investments, and
+multi-currency guides.
 
 **Site.** GitHub-only until the release trigger — see ADR-011's 2026-09-02
 amendment.

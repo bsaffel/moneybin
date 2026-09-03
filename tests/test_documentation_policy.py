@@ -325,7 +325,8 @@ _TERMINATORS = {"|", "||", "&&", ";", ">", ">>", "2>", "<"}
 _REDIRECTION = re.compile(r"^(\d*>|&>|&$)")
 _ELISIONS = {"...", "…"}
 _FLAG_SPAN = re.compile(r"-{1,2}[A-Za-z]")  # `-y, --yes`, not a lone `-` cell
-_COMMAND_SUBSTITUTION = re.compile(r"\$\([^()]*\)")
+_COMMAND_SUBSTITUTION = re.compile(r"\$\((?P<inner>[^()]*)\)")
+_SUBSTITUTED_INVOCATION = re.compile(r"^\s*moneybin(?:\s|$)")
 _ANGLE_PLACEHOLDER = re.compile(r"<[^<>]*>")
 _OPTIONAL_SEGMENT = re.compile(r"\[([^\[\]]*)\]")
 _TRAILING_COMMENT = re.compile(r"(^|\s)#.*$")
@@ -410,10 +411,22 @@ def _join_continuations(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
     return joined
 
 
+def _unmask_or_hide_substitution(match: re.Match[str]) -> str:
+    """Unwrap `$(moneybin …)` so its invocation is checked.
+
+    Any other substitution (`$(date +%F)`) stays an opaque `SUBST` so it
+    can't split an outer invocation's arguments apart.
+    """
+    inner = match.group("inner")
+    if _SUBSTITUTED_INVOCATION.match(inner):
+        return f" {inner.strip()} ; "
+    return "SUBST"
+
+
 def _invocations(code: str) -> list[list[str]]:
     """Every `moneybin …` token list found in one line of code."""
     code = _TRAILING_COMMENT.sub(r"\1", code)
-    code = _COMMAND_SUBSTITUTION.sub("SUBST", code)
+    code = _COMMAND_SUBSTITUTION.sub(_unmask_or_hide_substitution, code)
     code = _ANGLE_PLACEHOLDER.sub(lambda m: m.group(0).replace(" ", "_"), code)
     code = _OPTIONAL_SEGMENT.sub(
         lambda m: m.group(1) if m.group(1).startswith("-") else "<optional>", code
