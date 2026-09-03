@@ -288,6 +288,20 @@ DEDUP_MATCH_CONFIDENCE = Histogram(
     "Distribution of match confidence scores",
 )
 
+TRANSACTION_ID_ALIASES_WRITTEN_TOTAL = Counter(
+    "moneybin_transaction_id_aliases_written_total",
+    "Superseded transaction ids appended to the alias forwarding map",
+)
+
+# Separate from the alias count because they answer different questions: the
+# aliases say how often the canonical id moved, this says how much of the user's
+# own curation rode along. A re-key that silently stopped carrying curation shows
+# up only here.
+TRANSACTION_CURATION_FORWARDED_TOTAL = Counter(
+    "moneybin_transaction_curation_forwarded_total",
+    "Curation rows moved onto a transaction's new canonical id after a re-key",
+)
+
 # The only counter here that measures an *undo* of something the user decided,
 # which is why it exists separately from DEDUP_MATCHES_TOTAL: a regression that
 # starts retiring more often is invisible in the match counts and shows up only

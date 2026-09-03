@@ -187,3 +187,50 @@ class TransactionSplitsRepo(BaseRepo):
                 )
                 for split_id in split_ids
             ]
+
+    def repoint_transaction(
+        self,
+        *,
+        old_transaction_id: str,
+        new_transaction_id: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> tuple[AuditEvent, ...]:
+        """Move every split off a superseded ``transaction_id`` onto its successor.
+
+        Called when a dedup merge or a Plaid pending→posted transition re-keys the
+        canonical transaction (ADR-015). ``split_id`` is the primary key, so the
+        move never collides; if the destination already carried splits the parent
+        ends up with the union, which the CLI's existing unbalanced-sum warning
+        reports — deleting one side to keep the sum tidy would discard a curation
+        the user entered.
+        """
+        with self._transaction(in_outer_txn=in_outer_txn):
+            split_ids = [
+                str(row[0])
+                for row in self._db.execute(
+                    f"SELECT split_id FROM {TRANSACTION_SPLITS.full_name} "  # noqa: S608  # TableRef + parameterized value
+                    f"WHERE transaction_id = ? ORDER BY split_id",
+                    [old_transaction_id],
+                ).fetchall()
+            ]
+            events: list[AuditEvent] = []
+            for split_id in split_ids:
+                before = self._require(self._fetch_row(split_id), "split_id", split_id)
+                self._db.execute(
+                    f"UPDATE {TRANSACTION_SPLITS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                    f"SET transaction_id = ? WHERE split_id = ?",
+                    [new_transaction_id, split_id],
+                )
+                events.append(
+                    self._emit_audit(
+                        action="split.repoint_transaction",
+                        target=(*self._audit_target, split_id),
+                        before=self._serialize_for_audit(before),
+                        after=self._serialize_for_audit(self._fetch_row(split_id)),
+                        actor=actor,
+                        parent_audit_id=parent_audit_id,
+                    )
+                )
+            return tuple(events)

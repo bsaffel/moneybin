@@ -163,3 +163,63 @@ class TransactionTagsRepo(BaseRepo):
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
+
+    def repoint_transaction(
+        self,
+        *,
+        old_transaction_id: str,
+        new_transaction_id: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> tuple[AuditEvent, ...]:
+        """Move every tag off a superseded ``transaction_id`` onto its successor.
+
+        Called when a dedup merge or a Plaid pending→posted transition re-keys the
+        canonical transaction (ADR-015). ``transaction_id`` is half the composite
+        PK, so a tag the destination already carries would collide: that row is
+        deleted rather than moved. Nothing is lost — the surviving row is the same
+        (transaction, tag) pair — and the delete is audited on the *old* key so
+        undo restores it there.
+        """
+        with self._transaction(in_outer_txn=in_outer_txn):
+            tags = [
+                str(row[0])
+                for row in self._db.execute(
+                    f"SELECT tag FROM {TRANSACTION_TAGS.full_name} "  # noqa: S608  # TableRef + parameterized value
+                    f"WHERE transaction_id = ? ORDER BY tag",
+                    [old_transaction_id],
+                ).fetchall()
+            ]
+            events: list[AuditEvent] = []
+            for tag in tags:
+                before = self._fetch_tag(old_transaction_id, tag)
+                if before is None:  # pragma: no cover — read inside the same txn
+                    continue
+                if self._fetch_tag(new_transaction_id, tag) is None:
+                    self._db.execute(
+                        f"UPDATE {TRANSACTION_TAGS.full_name} SET transaction_id = ? "  # noqa: S608  # TableRef + parameterized values
+                        f"WHERE transaction_id = ? AND tag = ?",
+                        [new_transaction_id, old_transaction_id, tag],
+                    )
+                    after = self._fetch_tag(new_transaction_id, tag)
+                    target_id = f"{new_transaction_id}:{tag}"
+                else:
+                    self._db.execute(
+                        f"DELETE FROM {TRANSACTION_TAGS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                        f"WHERE transaction_id = ? AND tag = ?",
+                        [old_transaction_id, tag],
+                    )
+                    after = None
+                    target_id = f"{old_transaction_id}:{tag}"
+                events.append(
+                    self._emit_audit(
+                        action="tag.repoint_transaction",
+                        target=(*self._audit_target, target_id),
+                        before=self._serialize_for_audit(before),
+                        after=self._serialize_for_audit(after),
+                        actor=actor,
+                        parent_audit_id=parent_audit_id,
+                    )
+                )
+            return tuple(events)

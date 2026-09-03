@@ -18,6 +18,10 @@ from moneybin import error_codes
 from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
 from moneybin.errors import RecoveryAction, UserError
+from moneybin.matching.aliasing import (
+    forward_rekeyed_transaction_ids,
+    record_committed_alias_forwarding,
+)
 from moneybin.matching.application import (
     MatchDecisionApplication,
     MatchDecisionNotFoundError,
@@ -180,9 +184,17 @@ class MatchingService:
         ``"cli"``/``"mcp"``; defaults to ``"system"`` for automated callers).
         """
         seed_source_priority(self._db, self._settings)
-        return TransactionMatcher(self._db, self._settings, actor=actor).run(
+        result = TransactionMatcher(self._db, self._settings, actor=actor).run(
             auto_accept_transfers=auto_accept_transfers
         )
+        # The run's own auto-accepted merges re-key transactions, and so does a
+        # sync that landed a posted row for a pending one Plaid has removed —
+        # neither passes through `MatchDecisionApplication`, so the forwarding is
+        # invoked here. It commits on its own; a matcher run opens no transaction.
+        record_committed_alias_forwarding(
+            forward_rekeyed_transaction_ids(self._db, actor=actor)
+        )
+        return result
 
     def seed_priority(self) -> None:
         """Seed ``app.seed_source_priority`` from current MatchingSettings.

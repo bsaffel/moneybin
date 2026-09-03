@@ -232,6 +232,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **Curation no longer disappears when a transaction is re-keyed.** A
+  transaction's canonical id is derived from its dedup group's most stable
+  member, so it changes when a steadier source backfills the same transaction —
+  or when a pending Plaid transaction posts under a fresh id. The forwarding map
+  that exists to keep the old id resolvable was built but never written to, so a
+  category, note, tag or split attached before the change was left pointing at an
+  id that no longer existed. On one profile, two merges orphaned 33 rows this
+  way. Accepting a merge, and the matcher run that follows a sync, now record the
+  old → new pointer and move the curation onto the surviving transaction, so the
+  annotation stays with the transaction it describes and `moneybin doctor` stops
+  reporting the orphans. Successive re-keys chain rather than collide, and an
+  already-annotated survivor keeps whichever categorization was authored with
+  more authority — a manual edit is never displaced by an automatic one.
+
 - **An amount no longer folds across two lines.** Folding is the right failure
   for an identifier — an account id or a display name ending in a masked last
   four wraps rather than losing the characters that tell two rows apart — but
