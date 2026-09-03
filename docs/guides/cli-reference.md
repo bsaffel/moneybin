@@ -192,10 +192,10 @@ File imports and inbox drain. `import files` auto-detects type (CSV / OFX / QFX 
 |---|---|---|
 | `import files <paths>...` | Import one or more financial files. Per-file overrides available. | `--account-name`, `--institution`, `--format-name`, `--refresh/--no-refresh` |
 | `import preview <path>` | Inspect file structure without importing (dry run, no DB writes). | — |
-| `import history` | List recent import batches with counts and timestamps. | `--limit` |
+| `import history` | List recent import batches with counts and timestamps. Default view is the batch, its status, and the rows in and rejected; `--wide` adds the source file's full path, which is what tells two same-named imports apart. | `--limit`, `--wide` |
 | `import revert <batch-id>` | Undo an import batch (deletes rows from raw + downstream). | `-y, --yes` |
 | `import status` | Summary of all imported data by source. | — |
-| `import formats list` | List built-in and user-saved format definitions. | — |
+| `import formats list` | List built-in and user-saved format definitions. For `--type=pdf` the default view is name, institution, routing and last-used; `--wide` adds the front end, recipe version, and use count. | `--type`, `--wide` |
 | `import formats show <name>` | Show a saved format's column mapping. | — |
 | `import formats delete <name>` | Delete a user-saved format. | `-y, --yes` |
 | `import inbox` | Drain the watched inbox: import everything in `inbox/`, move successes to `processed/`, failures to `failed/` with sidecars. Default action when invoked bare. | — |
@@ -390,9 +390,9 @@ Investment ledger, positions, tax lots, realized gains, and the securities catal
 |---|---|---|
 | `investments add` | Record one ledger event. `--type reinvest` writes the acquisition + paired income row atomically. | `--account`, `--type`, `--date`, `--security`, `--quantity`, `--price`, `--amount`, `--fees`, `--subtype`, `--acquired`, `--basis`, `--event-group`, `--currency`, `--description` |
 | `investments list` | List ledger events from `core.fct_investment_transactions`. | `--account`, `--security`, `--type`, `--from`, `--to` |
-| `investments holdings` | Current positions: quantity, cost basis, average cost, market value, unrealized gain, and the date and age of the close used. A position with no usable price shows `-`, never a zero. | `--account` |
-| `investments gains` | Realized gain/loss (the 1099-B surface) from `core.fct_realized_gains`. | `--account`, `--security`, `--from`, `--to`, `--term {short,long}` |
-| `investments lots list` | Tax lots with remaining quantity and basis. Open lots only by default. | `--account`, `--security`, `--open/--all` |
+| `investments holdings` | Current positions: what you hold, what it is worth, and whether you are up. A position with no usable price — or a known-wrong share count — shows `-` rather than a zero, and the `status` column beside it says which, because the two have different remedies. `--wide` adds the cost basis, the average cost, and the date the close was observed. | `--account`, `--wide` |
+| `investments gains` | Realized gain/loss (the 1099-B surface) from `core.fct_realized_gains`. Default view is when it sold, what it was, what it fetched, what you made, in what currency and how it is taxed; `--wide` adds the quantity and cost basis behind the gain, plus a `note` column marking each row whose basis is incomplete. A run with any such row says so on stderr, and `-q` does not silence that. | `--account`, `--security`, `--from`, `--to`, `--term {short,long}`, `--wide` |
+| `investments lots list` | Tax lots with remaining quantity and basis. Open lots only by default; `--all` returns the open-and-closed history and adds a `state` column. `--wide` shows every column, including the currency and the cost-basis method. | `--account`, `--security`, `--open/--all`, `--wide` |
 | `investments lots select <disposal-txn-id>` | Set the full specific-identification lot selection for a disposal (declarative replace). Requires the security to resolve to `specific` cost basis; `--clear` reverts to FIFO and needs no election. | `--lot LOT_ID:QTY` (repeatable), `--clear` |
 | `investments securities list` | List the securities catalog. | `--type` |
 | `investments securities add` | Add one security to the catalog. | `--name`, `--type`, `--ticker`, `--exchange`, `--cusip`, `--isin`, `--figi`, `--coingecko-id`, `--cash-equivalent`, `--method`, `--currency` |

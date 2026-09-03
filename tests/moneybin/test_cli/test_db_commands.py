@@ -1155,3 +1155,79 @@ class TestDatabaseCommandsIntegration:
         # rejected) — never a crash with an unhandled exception
         assert result.exit_code == 1
         assert "Traceback" not in result.output
+
+
+class TestDbPsCommand:
+    """'moneybin db ps' — the process roll is a table, so it renders like one."""
+
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    @pytest.fixture
+    def two_processes(self, mocker: Any) -> MagicMock:
+        return mocker.patch(
+            "moneybin.cli.commands.db._find_db_processes",
+            return_value=[
+                {"pid": 101, "command": "duckdb", "cmdline": "duckdb moneybin.duckdb"},
+                {"pid": 202, "command": "python", "cmdline": "python -m etl"},
+            ],
+        )
+
+    def test_ps_renders_the_process_roll_through_the_shared_renderer(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        two_processes: MagicMock,
+        wide_terminal: None,
+    ) -> None:
+        """Requirement 1: the framed table is the observable difference.
+
+        The hand-padded columns this replaces emitted the same values in the
+        same order; the border is what says they now come from `render_rows`
+        rather than from a format spec at the call site.
+        """
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+
+        result = runner.invoke(app, ["ps", "--database", str(db_file)])
+
+        assert result.exit_code == 0
+        assert "┃" in result.output
+        assert "pid" in result.output
+
+    def test_ps_renders_one_row_per_process(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        two_processes: MagicMock,
+        wide_terminal: None,
+    ) -> None:
+        """Requirement 35: every process the scan found reaches the table."""
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+
+        result = runner.invoke(app, ["ps", "--database", str(db_file)])
+
+        for cell in ("101", "duckdb moneybin.duckdb", "202", "python -m etl"):
+            assert cell in result.output
+
+    def test_kill_lists_the_same_table_before_asking(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        two_processes: MagicMock,
+        wide_terminal: None,
+    ) -> None:
+        """`ps` and `kill`'s preamble printed the same table two ways.
+
+        Both now go through one renderer, so a column added to the roll cannot
+        reach one command and not the other.
+        """
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+
+        result = runner.invoke(app, ["kill", "--database", str(db_file)], input="n\n")
+
+        assert "┃" in result.output
+        assert "101" in result.output

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -38,9 +38,11 @@ if TYPE_CHECKING:
     from moneybin.reports._framework.contract import MoneyKind, Polarity
 
 __all__ = [
+    "ColumnView",
     "Money",
     "Style",
     "color_enabled",
+    "column_view",
     "format_money",
     "render_note",
     "render_rows",
@@ -259,11 +261,57 @@ def _fit_columns(widths: Sequence[int], available: int) -> tuple[int, ...]:
     return (*range(head), *range(total - tail, total))
 
 
+@dataclass(frozen=True)
+class ColumnView:
+    """What a command renders now, and how many columns it could have."""
+
+    names: list[str]
+    rows: Iterable[tuple[object, ...]]
+    total: int
+
+
+def column_view[T](
+    columns: Sequence[tuple[str, Callable[[T], object]]],
+    records: Iterable[T],
+    *,
+    default: Sequence[str],
+    wide: bool,
+) -> ColumnView:
+    """Project ``records`` onto the columns a narrow terminal should show.
+
+    The header list and every row come from one declaration, so they cannot
+    drift apart — a column moved in ``columns`` moves in both. Naming the
+    columns beside a separately-built positional row tuple is the same list
+    written twice, and the copy that goes wrong is the one no reader checks.
+
+    ``default`` is the curated answer to "what does this command report": the
+    columns that survive an 80-column terminal, chosen by the author rather
+    than by measuring widths, exactly as a report's ``default_columns`` is.
+    Width-based fitting is the fallback for a caller that has no such answer;
+    it cannot know that ``market value`` matters more than ``avg cost``.
+
+    Rows stay lazy so the non-fitting render path keeps streaming.
+    """
+    extract = dict(columns)
+    chosen = [name for name, _ in columns] if wide else list(default)
+    unknown = [name for name in chosen if name not in extract]
+    if unknown:
+        # Refused rather than skipped: a silently dropped column renders a view
+        # nobody declared and leaves the typo in place indefinitely.
+        raise ValueError(f"undeclared column(s) {unknown} for this table")
+    return ColumnView(
+        names=chosen,
+        rows=(tuple(extract[name](record) for name in chosen) for record in records),
+        total=len(columns),
+    )
+
+
 def render_rows(
     columns: Sequence[str],
     rows: Iterable[Sequence[object]],
     *,
     money: Mapping[str, Money] | None = None,
+    numeric: Sequence[str] | None = None,
     total_columns: int | None = None,
     fit: bool = False,
 ) -> None:
@@ -273,6 +321,26 @@ def render_rows(
     Declared columns are formatted by :func:`format_money`, right-aligned
     (requirement 13), and coloured from their kind (requirement 14). Every
     other column prints its value as-is.
+
+    ``numeric`` names the columns that hold a bare number that is not an
+    amount — a share count, a per-unit price, an FX rate, a match score. They
+    are printed as stored and stay left-aligned, because requirement 13 covers
+    amounts only. What they take from ``money`` is the one guarantee that has
+    nothing to do with being an amount: they do not fold.
+
+    Measured, not assumed. While a table fits its terminal nothing is squeezed
+    and this declaration changes no output at all. It decides only what gives
+    way when a table does not fit — and a curated default reaches that point
+    too, since a header-width contract bounds the header and a
+    ``DECIMAL(28,10)`` quantity or a ``carried_forward`` status is wider than
+    its name. There the declaration moves the fold off the number and onto the
+    text beside it, which is the trade this module already states as "nothing
+    lies": a folded id is ugly and a folded ``8.2987654321`` is a different,
+    plausible price. Past that, on a projection far too wide — nine columns at
+    80 — Rich pays for every unwrappable column out of the wrappable ones and
+    can leave a text column at zero width. An empty column announces itself
+    and a reader widens the terminal; a wrong number does not. Curation, not
+    this flag, is the answer for a table that does not fit.
 
     ``total_columns`` is the width of the full projection when ``columns`` is a
     narrowed view of it, and produces the result-framing line beneath the table
@@ -289,6 +357,10 @@ def render_rows(
     from rich.table import Table  # noqa: PLC0415 — defer heavy import
 
     declared = money or {}
+    # Formatting and atomicity are separate declarations. A per-unit price is
+    # deliberately absent from `money` so `format_money` cannot round it to
+    # `0.00`, and that exclusion silently took the no-fold guarantee with it.
+    unwrappable = set(declared) | set(numeric or ())
     # markup=False because every cell is data, much of it user-authored — a
     # merchant name, a report description. Rich reads `[...]` as a style tag, so
     # a default console drops "spend [excluding rent]" to "spend " and lets
@@ -331,16 +403,35 @@ def render_rows(
     table = Table()
     for at, i in enumerate(kept):
         name = columns[i]
+        is_money = name in declared
+        is_number = name in unwrappable
         table.add_column(
             name,
-            justify="right" if name in declared else "left",
-            # Fold rather than inherit Rich's default: wrapping only saves a
-            # value that has a space to break on, and the values most likely
-            # to overflow here have none — an account id, a checksum, a
-            # display name ending in a masked last four. The default elides
-            # those, which drops exactly the characters that tell two rows
-            # apart. A ragged row is the cheaper failure than a wrong one.
-            overflow="fold",
+            justify="right" if is_money else "left",
+            # Text folds; a number does not. Folding only saves a value that
+            # has a space to break on, and the text values most likely to
+            # overflow here have none — an account id, a checksum, a display
+            # name ending in a masked last four. Rich's default elides those,
+            # dropping exactly the characters that tell two rows apart, so a
+            # ragged row is the cheaper failure than a wrong one.
+            #
+            # A number inverts that trade. Folded after the decimal point,
+            # `1,200.00` renders `1,200.` above `00`, and the first line is a
+            # complete, plausible number two orders of magnitude off; `cli.md`
+            # calls that a correctness bug rather than a cosmetic one. Marking
+            # numbers unwrappable spends the squeeze on the text columns first,
+            # which is what makes nine ordinary columns fit 80 at all. When
+            # even that is not enough the ellipsis leaves the cell visibly
+            # partial, because a silently cropped `1,234,56` is the failure
+            # this whole branch exists to prevent.
+            #
+            # The test is `unwrappable`, not `declared`: the misread does not
+            # need an amount. `avg cost` is DECIMAL(28,10) and is kept out of
+            # `money` precisely so it is not rounded to two places, and folding
+            # `8.2987654321` into `8.298` above `7654321` is the same wrong
+            # number by the same mechanism. A share count folds identically.
+            overflow="ellipsis" if is_number else "fold",
+            no_wrap=is_number,
         )
         if at == gap:
             table.add_column(ELISION, justify="center", overflow="fold")

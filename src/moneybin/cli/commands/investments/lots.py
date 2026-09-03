@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import Decimal
 
 import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    currency_label,
     output_option,
     quiet_option,
     render_or_json,
+    wide_option,
 )
+from moneybin.cli.render import Money, column_view, render_note, render_rows
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
@@ -20,12 +24,73 @@ from moneybin.privacy.payloads.investments import (
     InvestmentLotsSelectPayload,
 )
 from moneybin.protocol.envelope import build_envelope
-from moneybin.services.investment_service import InvestmentService
+from moneybin.services.investment_service import InvestmentService, LotRow
 
 app = typer.Typer(
     help="Tax lots: list and specific-identification selection",
     no_args_is_help=True,
 )
+
+
+_LOTS_COLUMNS: tuple[tuple[str, Callable[[LotRow], object]], ...] = (
+    ("lot", lambda r: r.lot_id),
+    ("security", lambda r: r.security_id),
+    ("acquired", lambda r: r.acquisition_date),
+    ("remaining", lambda r: r.remaining_quantity),
+    ("basis", lambda r: r.cost_basis_remaining),
+    ("currency", lambda r: currency_label(r.currency_code)),
+    ("method", lambda r: r.cost_basis_method),
+    ("state", lambda r: "open" if r.is_open else "closed"),
+    ("note", lambda r: "\u26a0\ufe0f basis_incomplete" if r.basis_incomplete else ""),
+)
+
+_LOTS_DEFAULT = ("lot", "security", "acquired", "remaining", "basis", "note")
+"""Which lot, of what, bought when, how much is left, at what basis — and
+whether that basis is known to be incomplete.
+
+Method and currency are the qualifiers a reader consults after the fact, so
+`--wide` carries them. `note` is not one of those: it says the `basis` cell
+beside it is a floor rather than a figure, which qualifies the answer rather
+than commenting on the run. Its only substitute was the warning line from
+`InvestmentService.lots`, and that goes through `render_note` — so `-q` dropped
+it and left a conservative basis reading as an authoritative one.
+
+`currency` is the one column here declared against its own argument.
+`investments list`, `gains` and `holdings` all keep it in the default view,
+because none of the four takes a currency filter and `multi-currency.md` makes
+the row's own `currency_code` the canonical unit of its amount. This table is
+the one that cannot afford it. Measured at 80 columns with production-width
+ids rather than argued from the header contract, which bounds only the header
+row: six columns already fold the lot id by a character and break
+`⚠️ basis_incomplete` across lines, and a seventh folds `security` too and
+takes the marker to three lines. Slots here are contested, so the one that goes
+to `state` below buys an answer nothing else supplies, while `currency` repeats
+down all but the rare mixed-denomination ledger and is reachable with `--wide`.
+"""
+
+_LOTS_ALL_DEFAULT = (
+    "lot",
+    "security",
+    "acquired",
+    "remaining",
+    "basis",
+    "state",
+    "note",
+)
+"""The `--all` view, which is the default set plus `state`.
+
+`--all` asks for the mixed open-and-closed history, and the curated view named
+neither. The state is strictly derivable — `core.fct_investment_lots` defines
+`is_open` as `remaining_quantity > 0` — but that rule lives in the model, not
+on screen and not in `--help`, so without this column a reader infers a lot's
+lifecycle from a numeric cell via a rule nothing shows them. Naming it is what
+a column is for. Under `--open` the answer is constant and the column would
+read `open` all the way down, so that *default* view does not pay for it —
+`--wide` still shows it there, because `--wide` is every declared column and
+not a second curated set, and the command's own `--help` says so. This is the
+one table whose default set depends on the query, because it is the one command
+whose result changes kind rather than size.
+"""
 
 
 @app.command("list")
@@ -43,8 +108,17 @@ def investments_lots_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    wide: bool = wide_option,
 ) -> None:
-    """List tax lots with remaining quantity and basis. Open lots only by default."""
+    """List tax lots with remaining quantity and basis. Open lots only by default.
+
+    Shows the lot, its security, when it was acquired, how much remains, the
+    remaining basis, and a note marking any basis known to be incomplete.
+    ``--all`` adds an open/closed ``state`` column, since that view returns
+    both. ``--wide`` shows every declared column: the currency, the cost-basis
+    method, and ``state`` — which under the default ``--open`` reads ``open``
+    on every row.
+    """
     with handle_cli_errors(
         cli_actor="investments_lots_list", payload_type=InvestmentLotsPayload
     ):
@@ -62,18 +136,25 @@ def investments_lots_list(
             cli_actor="investments_lots_list",
         )
         return
-    for row in result.rows:
-        state = "open" if row.is_open else "closed"
-        flag = " ⚠️ basis_incomplete" if row.basis_incomplete else ""
-        typer.echo(
-            f"{row.lot_id:<10} {row.security_id:<8} acq={row.acquisition_date} "
-            f"remaining={row.remaining_quantity} "
-            f"basis_remaining={row.cost_basis_remaining} "
-            f"method={row.cost_basis_method} [{state}]{flag}"
+    if result.rows:
+        view = column_view(
+            _LOTS_COLUMNS,
+            result.rows,
+            default=_LOTS_DEFAULT if open_only else _LOTS_ALL_DEFAULT,
+            wide=wide,
         )
-    if not quiet:
-        for w in result.warnings:
-            typer.echo(f"⚠️  {w}", err=True)
+        render_rows(
+            view.names,
+            view.rows,
+            # A lot's remaining basis is a position rather than a movement, so it
+            # renders unsigned and uncoloured. The remaining quantity is a share
+            # count, not an amount, and is left as stored.
+            money={"basis": Money("balance")},
+            numeric=("remaining",),
+            total_columns=view.total,
+        )
+    for w in result.warnings:
+        render_note(f"⚠️  {w}", quiet=quiet, warn=True)
 
 
 def _parse_lot_selection(entry: str) -> tuple[str, Decimal]:

@@ -103,6 +103,7 @@ def links_pending(
                 )
                 for c in group.candidates
             ],
+            numeric=("conf",),
         )
 
 
@@ -249,4 +250,5 @@ def links_history(
             )
             for d in payload.decisions
         ],
+        numeric=("conf",),
     )

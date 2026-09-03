@@ -6,12 +6,12 @@ from decimal import Decimal
 import typer
 
 from moneybin.cli.output import (
-    UNKNOWN_CURRENCY,
     OutputFormat,
     currency_label,
     output_option,
     quiet_option,
 )
+from moneybin.cli.render import format_money, render_summary
 
 logger = logging.getLogger(__name__)
 
@@ -140,25 +140,32 @@ def demo_command(
                     f"{result.categorized_count} categorized).",
                     err=True,
                 )
-            # The one obvious answer (stdout). Bare Decimal matches the sibling
-            # `reports networth` command's convention (coherence). Holding more
-            # than one currency, there is no one answer to give — print each
-            # currency's own rather than a total that would mean nothing.
+            # The one obvious answer (stdout), through the same renderer and
+            # money formatter the sibling `reports networth` command uses
+            # (coherence). Holding more than one currency, there is no one
+            # answer to give — print each currency's own rather than a total
+            # that would mean nothing.
             if result.net_worth is not None:
-                typer.echo(f"Net worth: {result.net_worth}")
+                render_summary([
+                    ("Net worth", format_money(result.net_worth, "balance"))
+                ])
             else:
-                typer.echo("Net worth by currency:")
-                for segment in result.per_currency:
-                    # Both fields are nullable: reports.net_worth pools every
-                    # account whose currency is unknown into one NULL-coded
-                    # segment. Formatting that directly renders a bare "None"
-                    # (or raises, for a null total) at the demo's headline.
-                    # One token for both slots, the same one every other
-                    # currency-bearing command prints.
-                    amount = _opt_str(segment.net_worth) or UNKNOWN_CURRENCY
-                    typer.echo(
-                        f"  {currency_label(segment.currency_code)}  {amount:>14}"
-                    )
+                # Both fields are nullable: reports.net_worth pools every
+                # account whose currency is unknown into one NULL-coded
+                # segment. `currency_label` names that slot; `format_money`
+                # spells the absent amount `-`, which is the token this CLI
+                # already prints for a missing figure — `UNKNOWN_CURRENCY`
+                # belongs to the currency slot it is named for.
+                render_summary(
+                    [
+                        (
+                            currency_label(segment.currency_code),
+                            format_money(segment.net_worth, "balance"),
+                        )
+                        for segment in result.per_currency
+                    ],
+                    title="Net worth by currency:",
+                )
             if not quiet:
                 if result.doctor_failing == 0:
                     typer.echo("✅ system doctor clean", err=True)

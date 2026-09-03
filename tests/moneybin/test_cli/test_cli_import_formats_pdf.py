@@ -97,7 +97,7 @@ class TestFormatsListPdf:
     """formats list --type=pdf / --type=tabular / default (all)."""
 
     def test_default_includes_both_types_text(
-        self, runner: CliRunner, mocker: Any
+        self, runner: CliRunner, mocker: Any, wide_terminal: None
     ) -> None:
         """Default `formats list` shows tabular and PDF sections in text mode."""
         pdf_fmt = _make_pdf_format()
@@ -138,7 +138,32 @@ class TestFormatsListPdf:
         # `import_formats` over MCP has always emitted one.
         assert pdf_row["last_used_at"] == "2026-05-30T10:00:00"
 
-    def test_filter_pdf_excludes_tabular(self, runner: CliRunner, mocker: Any) -> None:
+    def test_tabular_source_reads_the_same_on_both_surfaces(
+        self, runner: CliRunner, mocker: Any, wide_terminal: None
+    ) -> None:
+        """One field, one value, whichever surface a caller reads it from.
+
+        The text table's `source` column and the JSON `source` field name the
+        same fact, so an agent comparing the two must not have to know that one
+        spells it `built-in` and the other `builtin`.
+        """
+        _mock_get_database(mocker, [_make_pdf_format()])
+        as_json = runner.invoke(
+            import_app, ["formats", "list", "--type", "tabular", "--output", "json"]
+        )
+        assert as_json.exit_code == 0, as_json.output
+        sources = {f["source"] for f in json.loads(as_json.output)["data"]["formats"]}
+        assert "builtin" in sources
+
+        _mock_get_database(mocker, [_make_pdf_format()])
+        as_text = runner.invoke(import_app, ["formats", "list", "--type", "tabular"])
+        assert as_text.exit_code == 0, as_text.output
+        for source in sources:
+            assert source in as_text.output
+
+    def test_filter_pdf_excludes_tabular(
+        self, runner: CliRunner, mocker: Any, wide_terminal: None
+    ) -> None:
         """--type=pdf shows only PDF rows; no tabular format names in output."""
         pdf_fmt = _make_pdf_format()
         _mock_get_database(mocker, [pdf_fmt])
@@ -148,6 +173,52 @@ class TestFormatsListPdf:
         assert "chase_a1b2c3d4e5f6" in result.output
         # tiller is a built-in tabular format that should be absent
         assert "tiller" not in result.output
+
+    def test_pdf_default_view_curates_columns_and_says_so(
+        self, runner: CliRunner, mocker: Any
+    ) -> None:
+        """The curated view holds provenance back and discloses that it did.
+
+        Deliberately takes no `wide_terminal`: 80 columns is the contract this
+        default set exists to meet, and the fixture that widens the terminal is
+        what let the full seven-column projection look fine everywhere else.
+        """
+        _mock_get_database(mocker, [_make_pdf_format()])
+
+        result = runner.invoke(import_app, ["formats", "list", "--type", "pdf"])
+
+        assert result.exit_code == 0, result.output
+        for shown in ("name", "institution", "routing", "last used"):
+            assert shown in result.output
+        # Provenance for a format that misbehaves, not part of the answer.
+        assert "front-end" not in result.output
+        assert "pdfplumber" not in result.output
+        assert "version" not in result.output
+        # The narrowing discloses itself and names the flag that undoes it.
+        assert "4 of 7 columns shown" in result.output
+        assert "--wide" in result.output
+        assert max(len(li) for li in result.output.splitlines()) <= 80
+
+    def test_pdf_wide_restores_the_provenance_columns(
+        self, runner: CliRunner, mocker: Any, wide_terminal: None
+    ) -> None:
+        """`--wide` is the other half of the contract: it must actually widen.
+
+        Without this, a default set could hide a column permanently and only
+        the hiding half would be tested.
+        """
+        _mock_get_database(mocker, [_make_pdf_format()])
+
+        result = runner.invoke(
+            import_app, ["formats", "list", "--type", "pdf", "--wide"]
+        )
+
+        assert result.exit_code == 0, result.output
+        for restored in ("front-end", "version", "used"):
+            assert restored in result.output
+        assert "pdfplumber" in result.output
+        # Nothing was held back, so nothing claims it was.
+        assert "columns shown" not in result.output
 
     def test_filter_pdf_excludes_tabular_json(
         self, runner: CliRunner, mocker: Any

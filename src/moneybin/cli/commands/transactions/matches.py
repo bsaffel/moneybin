@@ -130,6 +130,7 @@ def matches_pending(
                     )
                     for row in group_rows
                 ],
+                numeric=("score",),
             )
 
 
@@ -258,6 +259,7 @@ def matches_history(
                     )
                     for entry in entries
                 ],
+                numeric=("score",),
             )
 
 
