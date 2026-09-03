@@ -48,7 +48,7 @@ Every row in `core.fct_transactions` carries a `source_type` recording which loa
 | `source_type` | Loader / origin | Lands in (raw) |
 |---|---|---|
 | `manual` | `transactions create` | `raw.manual_transactions` |
-| `gsheet` | `gsheet pull` (Google Sheets) | `raw.gsheet_seeds` |
+| `gsheet` | `gsheet pull` (Google Sheets) | `raw.tabular_transactions` |
 | `plaid` | `sync pull` (Plaid `/transactions/sync`) | `raw.plaid_transactions` |
 | `csv` | `import files` (CSV) | `raw.tabular_transactions` |
 | `excel` | `import files` (`.xlsx`/`.xls`) | `raw.tabular_transactions` |
@@ -79,7 +79,7 @@ Owned by Python: every loader writes to a source-specific `raw` table via `Datab
 | `raw.ofx_transactions` | OFX/QFX/QBO transactions | `import files` |
 | `raw.ofx_balances` | OFX/QFX/QBO balance snapshots | `import files` |
 | `raw.tabular_accounts` | CSV/TSV/Excel/Parquet/Feather account columns | `import files` |
-| `raw.tabular_transactions` | CSV/TSV/Excel/Parquet/Feather transaction rows | `import files` |
+| `raw.tabular_transactions` | CSV/TSV/Excel/Parquet/Feather and Google Sheets transaction rows | `import files`, `gsheet pull` |
 | `raw.plaid_accounts` | Plaid `/accounts/get` | `sync pull` |
 | `raw.plaid_transactions` | Plaid `/transactions/sync` | `sync pull` |
 | `raw.plaid_balances` | Plaid balance snapshots | `sync pull` |

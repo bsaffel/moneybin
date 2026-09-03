@@ -1,6 +1,6 @@
 ---
 name: update-docs
-description: 'Update the public doc surface — README, CHANGELOG, CONTRIBUTING, docs/ (architecture, audience, comparison, features, roadmap, guides, reference, tech) — to reflect what an in-scope change means for users; persona-aware per docs/audience.md. Excludes specs and ADRs. Trigger: user-visible work ships, a PR adds capability, a milestone closes, or "update the docs". Suggest it unprompted.'
+description: 'Update the public doc surface — README, CHANGELOG, CONTRIBUTING, docs/ (architecture, audience, comparison, features, licensing, roadmap, guides, reference) — to reflect what an in-scope change means for users; persona-aware per docs/audience.md. Excludes specs and ADRs. Trigger: user-visible work ships, a PR adds capability, a milestone closes, or "update the docs". Suggest it unprompted.'
 ---
 
 # /update-docs
@@ -106,7 +106,7 @@ For "not yet for you" cases, point honestly to alternatives (`docs/audience.md` 
 
 | File | Primary persona | Tone | Length budget |
 |---|---|---|---|
-| `README.md` | Power-user migrant + AI-native dev | Storefront — what is it, why care, how to start | ~160–180 lines (measured 158–168 across 2026-05 → 2026-09; the earlier "220–260" figure was never measured) |
+| `README.md` | Power-user migrant + AI-native dev | Storefront — what is it, why care, how to start | ~160–180 lines (measured 158–171 across 2026-05 → 2026-09; the earlier "220–260" figure was never measured) |
 | `CHANGELOG.md` | All users | Factual, one bullet per user-visible change, cite PR | One section per release / Unreleased |
 | `CONTRIBUTING.md` | Self-hoster, OSS contributor | Concrete steps to land a change | As short as possible |
 | `docs/architecture.md` | AI-native dev, technical migrant | Guarantees → diagram → contract → negative space | One page |

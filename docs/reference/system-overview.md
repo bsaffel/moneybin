@@ -104,7 +104,7 @@ moneybin db init
 #    Beancount, PDF) and prompts for account assignment.
 moneybin import files my_export.csv
 
-# 4. Run the pipeline (gsheet → match → transform → categorize → identity).
+# 4. Run the pipeline (gsheet → match → transform → categorize → identity → rates).
 #    Most commands trigger refresh automatically; you rarely run it by hand.
 moneybin refresh
 

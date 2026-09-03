@@ -155,7 +155,7 @@ moneybin stats --output json | jq '.metrics[] | select(.type=="counter")'
 
 `stats` returns the most recent snapshot per `(metric_name, labels)` and reports counts as `N total`, gauges as `value`, and histograms as `N observations (sum=Ns)`. Cumulative counters are not summed across snapshots — that would double-count.
 
-`stats --output json` is the one read command that does not emit the standard response envelope. It emits `{"metrics": [...]}`, each entry carrying `name`, `type`, `labels`, `value`, `snapshots`, and `last_recorded` — so the jq path is `.metrics[]`, not `.data[]`, and there is no top-level `status` to match on.
+`stats --output json` is one of the operations-metadata reads that stay off the standard response envelope (`logs`, `migrate status`, `db info`, and `db ps` are the others; with the `db query` operator bypass, the CLI reference names all six). It emits `{"metrics": [...]}`, each entry carrying `name`, `type`, `labels`, `value`, `snapshots`, and `last_recorded` — so the jq path is `.metrics[]`, not `.data[]`, and there is no top-level `status` to match on.
 
 ---
 

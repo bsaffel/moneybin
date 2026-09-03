@@ -199,7 +199,7 @@ blocker.
 
 - **Structured logs** — `moneybin logs cli|mcp|sqlmesh` tails one stream, filtered by `--level`, `--since`, `--until`, and `--grep`; `moneybin logs --print-path` locates the log directory and `moneybin logs --prune --older-than 30d` deletes old files. PII and financial detail are stripped at the formatter layer; see [Threat model](guides/threat-model.md). -> [Observability guide](guides/observability.md)
 - **Prometheus-style metrics** — Per-operation counters and durations, persisted to DuckDB. `moneybin stats`. -> [Observability guide](guides/observability.md)
-- **`moneybin system doctor`** — Read-only pipeline integrity check (FK integrity, sign convention, transfer balance, staging coverage, categorization coverage, one account imported under two identities). Exits 0 on pass / warn, 1 on fail. `--verbose` for affected IDs, `--output json` for agents. MCP exposes the same outcome through `system_status(sections=["doctor"])`. -> [CLI reference](guides/cli-reference.md)
+- **`moneybin system doctor`** — Read-only pipeline integrity check: SQLMesh audits for FK integrity, sign convention, and transfer-pair balance; transform model presence; dedup reconciliation, one account imported under two identities, and cross-source duplicates without a merge proposal; categorization coverage; currency integrity; `app.*` audit coverage and orphaned app state; and 13 investment checks. Exits 0 on pass / warn, 1 on fail. `--verbose` for affected IDs, `--full` for a whole-table scan, `--output json` for agents. MCP exposes the same outcome through `system_status(sections=["doctor"])`. -> [CLI reference](guides/cli-reference.md)
 
 ## Extensibility
 

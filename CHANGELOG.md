@@ -16,10 +16,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   folded into `docs/reference/`; `docs/guides/README.md` and
   `docs/reference/prompts/README.md` are merged into `docs/README.md` and a
   new Prompts section of the MCP server guide. A documentation-policy test now
-  parses every `moneybin …` invocation in the public docs and resolves it
-  against the registered command tree. The 15 invocations it caught are
-  corrected — among them `db rotate-key`, `db shell -c`, `import file`,
-  `reports summary`, `mcp serve --profile`, and a bare `moneybin doctor`.
+  parses every `moneybin …` invocation in the public docs, including the
+  command column of the CLI reference tables, and resolves it against the
+  registered command tree; CI runs it on docs-only pull requests, which
+  skipped every test job before. The 28 invocations it caught are corrected —
+  among them `db rotate-key`, `db shell -c`, `import file`, `reports summary`,
+  `mcp serve --profile`, a bare `moneybin doctor`, and 13 reference rows that
+  showed a positional (`db restore <backup-path>`, `sync pull [<item-id>]`)
+  where the command takes an option (`--from`, `--institution`).
 
   One corrected claim was about privacy. The CLI reference said
   `transactions categorize assist` sends description and memo text redacted.

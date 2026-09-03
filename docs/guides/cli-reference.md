@@ -202,7 +202,7 @@ File imports and inbox drain. `import files` auto-detects type (CSV / OFX / QFX 
 | `import inbox path` | Print the active profile's inbox parent directory (use with `$(...)` substitution). | — |
 | `import labels add <batch-id> <labels>...` | Apply labels to an import batch. | — |
 | `import labels remove <batch-id> <labels>...` | Remove labels from an import batch. | — |
-| `import labels list [<batch-id>]` | List labels on a batch (or all batches). | — |
+| `import labels list` | List labels on one batch, or every distinct label with usage counts. | `--import-id <batch-id>` |
 
 ### `sync`
 
@@ -212,13 +212,13 @@ Pull transactions from external services through the moneybin-sync proxy. **`syn
 |---|---|---|
 | `sync login` | Authenticate with moneybin-sync via Device Authorization Flow. | `--no-browser` |
 | `sync logout` | Clear the stored JWT. | — |
-| `sync link [<institution>]` | Link a new institution via Plaid Hosted Link. Prints URL to stderr and (optionally) opens the browser. | `--no-browser` |
+| `sync link` | Link a new institution via Plaid Hosted Link, or re-authenticate a connected one. Prints URL to stderr and (optionally) opens the browser. | `--institution <name>`, `--no-pull`, `--no-browser`, `-y, --yes` |
 | `sync link-status` | Show pending link state (after `sync link` started). | — |
-| `sync disconnect <item-id>` | Disconnect a linked institution. | `-y, --yes` |
-| `sync pull [<item-id>]` | Pull new transactions (and, for brokerage/retirement accounts, securities, investment transactions, and holdings) and run the refresh pipeline. Use without an item-id to pull every connected institution. | `--refresh/--no-refresh`, `--since`, `--full` |
+| `sync disconnect --institution <name>` | Disconnect a linked institution. | `-y, --yes` |
+| `sync pull` | Pull new transactions (and, for brokerage/retirement accounts, securities, investment transactions, and holdings) and run the refresh pipeline. Use without `--institution` to pull every connected institution. | `--institution <name>`, `-f, --force` (reset the cursor and re-fetch full history), `--refresh/--no-refresh` |
 | `sync status` | Show last-sync timestamps and pending-cursor state per linked institution. | — |
 | `sync key rotate` 🚧 | Rotate the sync server's encryption key (stub). | — |
-| `sync schedule set <cron>` 🚧 | Configure a scheduled sync job (stub). | — |
+| `sync schedule set` 🚧 | Install a daily sync schedule (stub). | — |
 | `sync schedule show` 🚧 | Show the active sync schedule (stub). | — |
 | `sync schedule remove` 🚧 | Disable scheduled sync (stub). | — |
 
@@ -246,7 +246,7 @@ Direct access to the SQLMesh pipeline. Use these when debugging models or restat
 | `transform status` | Current model state. |
 | `transform validate` | Check that model SQL parses correctly. |
 | `transform audit` | Run data-quality audits. |
-| `transform restate <model> <start> <end>` | Force-recompute a model for a date range. |
+| `transform restate --model <model> --start <date>` | Force-recompute a model for a date range; `--end` defaults to today. |
 
 ## Curation: transactions
 
@@ -289,7 +289,7 @@ Allocate one transaction across multiple categories. Non-zero residual is a warn
 
 | Command | Purpose |
 |---|---|
-| `transactions splits add <transaction-id> <amount> <category>` | Add one split row. |
+| `transactions splits add <transaction-id> <amount> --category <category>` | Add one split row (`--subcategory`, `--note` optional). |
 | `transactions splits list <transaction-id>` | List splits on a transaction with residual. |
 | `transactions splits remove <split-id>` | Remove one split row. |
 | `transactions splits clear <transaction-id>` | Remove all splits on a transaction. |
@@ -322,7 +322,7 @@ Categorization workflow. Engines: deterministic rules + merchant mappings (local
 | `transactions categorize rules apply` | Apply only active rules to uncategorized transactions. | — |
 | `transactions categorize rules delete <rule-id>` | Delete a rule. | `--reapply` |
 | `transactions categorize auto review` | List pending auto-rule proposals with sample transactions. | `--limit` |
-| `transactions categorize auto accept <proposal-id>` | Accept one auto-rule proposal. | `--all` |
+| `transactions categorize auto accept` | Accept or reject auto-rule proposals by id, or every pending one at once. | `--accept <proposal-id>`, `--reject <proposal-id>`, `--accept-all`, `--reject-all`, `--allow-broad` |
 | `transactions categorize auto rules` | List rules created from auto-proposals. | — |
 | `transactions categorize auto stats` | Auto-rule activity summary. | — |
 | `transactions categorize ml status` / `train` / `apply` 🚧 | ML-assisted categorization (stub). | — |
@@ -363,12 +363,12 @@ Account entities (dim records) plus per-account workflows.
 | `accounts get <account-id>` | Show one account's full dim record + settings. | — |
 | `accounts set <account-id>` | Update structural and behavioral fields. At least one field flag required. | `--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--default-cost-basis-method`, `--display-name`, `--include/--exclude`, `--archive/--unarchive`, `--clear-FIELD`, `-y, --yes` |
 | `accounts resolve <query>` | Fuzzy-match a free-text reference (e.g., `"my Chase account"`) to ranked account-ID candidates. Use this before commands that need an account-id. | `-n, --limit` |
-| `accounts balance show <account-id>` | Current balance for one account. | `--as-of <date>` |
+| `accounts balance show` | Current or as-of balance per account. | `--account <account-id>`, `--as-of <date>` |
 | `accounts balance list` | Latest balance across all accounts. | — |
-| `accounts balance history <account-id>` | Balance history with daily carry-forward interpolation. | `--from`, `--to` |
+| `accounts balance history --account <account-id>` | Balance history with daily carry-forward interpolation. | `--from`, `--to` |
 | `accounts balance assert <account-id> <amount>` | Record a point-in-time balance assertion (reconciles via delta row). | `--as-of <date>` |
 | `accounts balance assertion-delete <assertion-id>` | Delete one balance assertion. | `-y, --yes` |
-| `accounts balance reconcile <account-id>` | Recompute reconciliation deltas for an account. | — |
+| `accounts balance reconcile` | Observed balance days whose reconciliation delta is non-zero. | `--account <account-id>`, `--threshold` |
 | `accounts links pending` | Provisional accounts and the merges proposed for them, with the ledger evidence behind each. | `-o/--output`, `-q` |
 | `accounts links set <decision-id>` | Merge the provisional into a candidate, or keep it standalone. | `--into <account-id>`, `--standalone`, `-y, --yes` |
 | `accounts links run [<id> <id>]` | With no ids, sweep every account for duplicates. With two, propose exactly that pair — the escape hatch for a duplicate no signal reaches. | `-o/--output` |
@@ -534,12 +534,12 @@ Lifecycle, exploration, and key management on the encrypted database.
 | `db lock` | Lock the database (purge the cached key). | — |
 | `db unlock` | Unlock the database (load the key from keychain). | — |
 | `db backup` | Create a timestamped encrypted backup. | `--dest <path>` |
-| `db restore <backup-path>` | Restore from a backup file. | `-y, --yes` |
+| `db restore` | Restore from a backup file. | `--from <backup-path>`, `--latest`, `-y, --yes` |
 | `db ps` | List processes currently holding the database file. | — |
 | `db kill` | Kill processes holding the database. | `-y, --yes` |
 | `db key show` | Print the encryption key to stderr (use with care). | — |
 | `db key rotate` | Re-encrypt with a new key. | `-y, --yes` |
-| `db key export <path>` 🚧 | Export the key to a file (encrypted) (stub). | — |
+| `db key export` 🚧 | Export the key to a file (encrypted) (stub). | `-o, --out <path>` |
 | `db key import <path>` 🚧 | Import a key from a file (stub). | — |
 | `db key verify` 🚧 | Verify the cached key matches the database (stub). | — |
 | `db migrate apply` | Apply pending schema migrations. | `--dry-run` |

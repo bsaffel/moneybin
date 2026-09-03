@@ -25,6 +25,7 @@ import re
 import shlex
 import shutil
 import subprocess  # noqa: S404 -- the policy test queries local Git metadata
+from collections.abc import Collection
 from pathlib import Path
 
 import click
@@ -316,9 +317,12 @@ _FENCE = re.compile(r"^(?P<fence>`{3,}|~{3,})\s*(?P<lang>[\w-]*)")
 # Fenced blocks in these languages show shell input; every other language
 # (mermaid, yaml, sql, python, …) mentions `moneybin` as data, not as a command.
 _SHELL_LANGS = {"", "bash", "sh", "shell", "zsh", "console", "shell-session", "text"}
-_INLINE_CODE = re.compile(r"`([^`\n]+)`")
+# A span may soft-wrap; a blank line ends the paragraph and with it the span.
+_INLINE_CODE = re.compile(r"`((?:[^`\n]|\n(?!\n))+)`")
 _INVOCATION_START = re.compile(r"(?<![\w./:@-])moneybin(?=\s+[A-Za-z<*{-])")
 _TERMINATORS = {"|", "||", "&&", ";", ">", ">>", "2>", "<"}
+_REDIRECTION = re.compile(r"^(\d*[<>]|&>|&$)")  # `2>&1`, `>/dev/null`, a trailing `&`
+_ELISIONS = {"...", "…"}
 _COMMAND_SUBSTITUTION = re.compile(r"\$\([^()]*\)")
 _ANGLE_PLACEHOLDER = re.compile(r"<[^<>]*>")
 _OPTIONAL_SEGMENT = re.compile(r"\[([^\[\]]*)\]")
@@ -339,14 +343,40 @@ def _user_facing_documents() -> list[Path]:
     return [document for document in documents if document.exists()]
 
 
-def _code_lines(text: str) -> list[tuple[int, str]]:
+def _inline_spans(
+    prose: list[tuple[int, str]], top_level: Collection[str]
+) -> list[tuple[int, str]]:
+    """Inline code spans in one run of prose, each on the line it opens.
+
+    A span in a table row whose first word is a top-level command is the CLI
+    reference's command column: read it as `moneybin …`.
+    """
+    if not prose:
+        return []
+    first, joined = prose[0][0], "\n".join(line for _, line in prose)
+    spans: list[tuple[int, str]] = []
+    for match in _INLINE_CODE.finditer(joined):
+        number = first + joined.count("\n", 0, match.start())
+        span = " ".join(match.group(1).split())
+        words = span.split(maxsplit=1)
+        in_table_row = prose[number - first][1].lstrip().startswith("|")
+        if in_table_row and words and words[0] in top_level:
+            span = f"moneybin {span}"
+        spans.append((number, span))
+    return spans
+
+
+def _code_lines(text: str, top_level: Collection[str] = ()) -> list[tuple[int, str]]:
     """Return (line_number, code) for fenced-block lines and inline code spans."""
     lines: list[tuple[int, str]] = []
+    prose: list[tuple[int, str]] = []
     fence: str | None = None
     shell_block = False
     for number, line in enumerate(text.splitlines(), start=1):
         match = _FENCE.match(line.strip())
         if match and (fence is None or line.strip().startswith(fence)):
+            lines += _inline_spans(prose, top_level)
+            prose = []
             if fence:
                 fence = None
             else:
@@ -357,8 +387,8 @@ def _code_lines(text: str) -> list[tuple[int, str]]:
             if shell_block:
                 lines.append((number, line))
         else:
-            lines.extend((number, span) for span in _INLINE_CODE.findall(line))
-    return lines
+            prose.append((number, line))
+    return lines + _inline_spans(prose, top_level)
 
 
 def _join_continuations(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
@@ -378,7 +408,7 @@ def _invocations(code: str) -> list[list[str]]:
     code = _COMMAND_SUBSTITUTION.sub("SUBST", code)
     code = _ANGLE_PLACEHOLDER.sub(lambda m: m.group(0).replace(" ", "_"), code)
     code = _OPTIONAL_SEGMENT.sub(
-        lambda m: "" if m.group(1).startswith("-") else "<optional>", code
+        lambda m: m.group(1) if m.group(1).startswith("-") else "<optional>", code
     )
     found: list[list[str]] = []
     for match in _INVOCATION_START.finditer(code):
@@ -397,9 +427,13 @@ def _invocations(code: str) -> list[list[str]]:
             tokens = rest.replace("'", "").replace('"', "").split()
         command: list[str] = []
         for token in tokens:
-            if token in _TERMINATORS or token.startswith("#"):
+            if (
+                token in _TERMINATORS
+                or token.startswith("#")
+                or _REDIRECTION.match(token)
+            ):
                 break
-            command.append(token.rstrip(";,.)"))
+            command.append(token if token in _ELISIONS else token.rstrip(";,.)"))
         found.append(command)
     return found
 
@@ -438,7 +472,7 @@ def _resolve_invocation(tokens: list[str], root: click.Command) -> str | None:
     while index < len(tokens):
         token = tokens[index]
         index += 1
-        if token in {"--help", "-h", ""}:  # noqa: S105  # CLI argument, not a secret
+        if token in {"--help", ""}:  # noqa: S105  # CLI argument, not a secret
             continue
         if token == "--":  # noqa: S105  # end of options: the rest are positionals
             options_done = True
@@ -474,16 +508,13 @@ def _resolve_invocation(tokens: list[str], root: click.Command) -> str | None:
             positionals += 1
         elif isinstance(node, click.Group):
             alternatives = _expand_alternatives(token)
-            registered = node.list_commands(None)  # type: ignore[arg-type]
-            unknown = [alt for alt in alternatives if alt not in registered]
+            unknown = [alt for alt in alternatives if alt not in node.commands]
             if unknown:
                 return f"`{' '.join(path)}` has no subcommand `{unknown[0]}`"
             if len(alternatives) > 1:
                 return None  # `{a,b}` at a command position: each exists
-            subcommand = node.get_command(None, token)  # type: ignore[arg-type]
-            assert subcommand is not None
             parents.append((node, list(path)))
-            node = subcommand
+            node = node.commands[token]
             path.append(token)
             continue
         else:
@@ -503,14 +534,17 @@ def test_public_docs_cli_invocations_resolve() -> None:
 
     Registered means the group and subcommand exist and every option is one
     the command declares; option values and placeholders are not checked. A
-    line that must show a wrong invocation on purpose (an error example)
-    carries ``<!-- cli-invocation-ok: <reason> -->``.
+    table row whose first code span starts with a top-level command (the CLI
+    reference's command column) is read as `moneybin …`. A line that must
+    show a wrong invocation on purpose (an error example) carries
+    ``<!-- cli-invocation-ok: <reason> -->``.
     """
     from typer.main import get_command
 
     from moneybin.cli.main import app
 
     root = get_command(app)
+    assert isinstance(root, click.Group)
     violations: list[str] = []
     for document in _user_facing_documents():
         text = document.read_text()
@@ -519,7 +553,7 @@ def test_public_docs_cli_invocations_resolve() -> None:
             for number, line in enumerate(text.splitlines(), start=1)
             if _CLI_INVOCATION_MARKER in line
         }
-        for number, code in _join_continuations(_code_lines(text)):
+        for number, code in _join_continuations(_code_lines(text, root.commands)):
             if number in allowed_lines:
                 continue
             for tokens in _invocations(code):

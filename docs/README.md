@@ -36,9 +36,10 @@ Getting data in and learning the command surface. Allow 30–60 minutes includin
 
 Working with data that is already loaded — categorizing it, understanding the pipeline that produced it, querying it directly.
 
-- **[Categorization](guides/categorization.md)** — Rule engine, merchant normalization, bulk edits, auto-rule learning, source precedence.
+- **[Categorization](guides/categorization.md)** — Rule engine, merchant normalization, bulk edits, auto-rule learning, source precedence, and [carrying curated categories across from another tool](guides/categorization.md#migrating-curated-categories).
 - **[Data pipeline](guides/data-pipeline.md)** — How files become canonical tables: the raw / prep / core / app / reports layers, and where consumers should read from.
 - **[Direct SQL access](guides/sql-access.md)** — Open the encrypted DuckDB file from the DuckDB CLI, a UI, or your own scripts.
+- **[Export](guides/cli-reference.md#export)** — Publish the 13-table canonical bundle as CSV, Parquet, or XLSX to a local file or a Google Sheet.
 - **[Data model](reference/data-model.md)** — Every table you can read — `core.*`, `reports.*`, `app.*`, `meta.*`, `seeds.*` — with grain, key columns, and meaning.
 - **[Data sources](reference/data-sources.md)** — Every supported import format and integration, what it preserves, where it lands.
 - **[Account matching](reference/account-matching.md)** — How records from different sources resolve to one canonical account: the identity signals used, where each comes from per format, and when MoneyBin asks you to confirm.
@@ -48,6 +49,11 @@ Working with data that is already loaded — categorizing it, understanding the 
 Running MoneyBin unattended — cron, containers, more than one machine.
 
 - **[Database and security](guides/database-security.md)** — AES-256-GCM encryption, Argon2id key derivation, key lifecycle, backup automation and restore verification, schema migrations, and env-var key injection for headless and cron runs.
+- **[Headless and cron](guides/database-security.md#headless-and-cron-deployments)** — Env-var key injection and unattended unlock.
+- **[Containers](guides/observability.md#headless-and-container-deployment)** — Logs, metrics, and health checks for a containerized MoneyBin.
+- **[Backup automation](guides/database-security.md#backup-automation)** — `db backup` scheduling and restore verification.
+- **[Multi-machine workflows](guides/profiles.md#multi-machine-workflows)** — Moving a profile between hosts.
+- **[Network posture](guides/threat-model.md#client-egress-profile)** — What the client talks to and when.
 - **[Server API contract](reference/server-api-contract.md)** — The HTTP surface the client expects from `moneybin-sync`, the Plaid broker you self-host.
 
 ## AI integration
