@@ -144,6 +144,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and classification their success path records, so one command no longer
   writes two provenances depending only on whether the thing it was asked for
   exists.
+- **Every command now names itself in the audit trail when it fails, not just
+  the three above.** `privacy.log.jsonl` recorded `actor="cli.unknown"` for any
+  `--output json` failure whose command did not hand the shared error handler a
+  name, which was 117 of its 164 call sites — so the trail could say which
+  command returned a result but not which one failed. 84 commands declared a
+  name on the success path and none on the failure path, writing two different
+  provenances for one command depending only on whether it succeeded. Both
+  paths now read the name off the command actually invoked
+  (`moneybin mcp list-tools` audits as `cli.mcp_list_tools`), so a failure and a
+  success from one command agree. No existing actor string changes: the 21
+  commands whose hand-written name predates this keep it, because renaming a
+  shipped actor falsifies past audit rows. `cli.unknown` survives only for a
+  call with no command behind it at all. The failure row's *tier* is unchanged
+  and still defaults to the conservative `high` with no returned classes unless
+  the command names its payload — that value is knowable only from the envelope
+  the command builds, which a failure never reached.
 - **"Uncategorized" now means one thing, and the number is smaller.**
   `moneybin review`, `system_status` and the import-drain hint counted every
   transaction with no row in `app.transaction_categories`, while the review

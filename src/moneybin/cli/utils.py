@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from moneybin.cli.output import OutputFormat, emit_json_error
+from moneybin.cli.output import OutputFormat, derive_cli_actor, emit_json_error
 from moneybin.config import set_current_profile
 from moneybin.errors import classify_user_error
 from moneybin.observability import setup_observability
@@ -73,10 +73,14 @@ def handle_cli_errors(
 
     On JSON-mode failure, writes a ``privacy.log.jsonl`` audit row mirroring
     the success-path entry render_or_json writes — keeps failed/blocked CLI
-    invocations in the same audit trail. ``cli_actor`` names the command
-    (e.g. ``"accounts_get"``) when known; defaults to ``"unknown"`` so call
-    sites can adopt incrementally without changing observed behavior on
-    text-mode paths. ``payload_type`` is the command's success-path payload
+    invocations in the same audit trail. The row's actor is the command the
+    user invoked, read off the click context by ``derive_cli_actor`` — so a
+    failure and a success from one command name themselves the same way.
+    ``cli_actor`` overrides that, and every remaining call site passing it
+    does so because its shipped actor string predates the derivation and
+    renaming it would falsify the audit trail. ``"unknown"`` survives for the
+    one case with nothing to name: a direct call with no click context, from a
+    unit test or library code. ``payload_type`` is the command's success-path payload
     type; when supplied the audit row's sensitivity + classes are derived
     from it, otherwise the row defaults to the conservative ``"high"`` tier so
     a CRITICAL command's failure is never under-reported (see
@@ -118,9 +122,10 @@ def handle_cli_errors(
                 sensitivity, classes_returned = _error_audit_classification(
                     payload_type
                 )
+                actor = cli_actor or derive_cli_actor() or "unknown"
                 write_privacy_event(
                     build_tool_call_event(
-                        actor=f"cli.{cli_actor or 'unknown'}",
+                        actor=f"cli.{actor}",
                         sensitivity=sensitivity,
                         classes_returned=classes_returned,
                         row_count=0,
