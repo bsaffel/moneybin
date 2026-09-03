@@ -252,25 +252,23 @@ def test_plaid_pfc_categorization_end_to_end(db: Database) -> None:
     assert row == (Decimal("0.70"),), "MEDIUM (0.70) sits exactly at the >= gate"
 
     # --- Negative: bridge-mapped but below the confidence gate ---
-    # categorized_by IS NULL is the precise "not categorized" signal here —
-    # core.fct_transactions.category falls back to the raw Plaid-provided
-    # category text (COALESCE(dc.category, c.category, t.category); see
-    # fct_transactions.sql's column comment) whenever no MoneyBin category
-    # has been assigned, so `category` legitimately shows "FOOD_AND_DRINK"
-    # (the raw PFC primary code) even though the PFC categorizer correctly
-    # declined to categorize this LOW-confidence row.
+    # An uncategorized Plaid row carries NO category. The raw PFC code is a
+    # provider vocabulary, not a MoneyBin one: letting it stand in for a
+    # category put `FOOD_AND_DRINK` in the same rendered column as
+    # `Food & Drink` (cli-output-coherence F8) and, because
+    # core.uncategorized_queue selects `WHERE category IS NULL`, hid this row
+    # from the curation queue that exists to surface it.
     row = db.execute(
         """
-        SELECT category, categorized_by
+        SELECT category, subcategory, categorized_by
         FROM core.fct_transactions
         WHERE transaction_id = ?
         """,
         [low_confidence_id],
     ).fetchone()
-    assert row is not None
-    assert row[0] == "FOOD_AND_DRINK", "raw Plaid category text still passes through"
-    assert row[1] is None, (
-        "LOW confidence must not categorize despite a valid bridge row"
+    assert row == (None, None, None), (
+        "LOW confidence must not categorize despite a valid bridge row, and "
+        "must not leave the raw PFC code standing in as the category"
     )
     assert (
         db.execute(
@@ -283,19 +281,32 @@ def test_plaid_pfc_categorization_end_to_end(db: Database) -> None:
     # --- Negative: no bridge row on either code, regardless of confidence ---
     row = db.execute(
         """
-        SELECT category, categorized_by
+        SELECT category, subcategory, categorized_by
         FROM core.fct_transactions
         WHERE transaction_id = ?
         """,
         [unmapped_id],
     ).fetchone()
-    assert row is not None
-    assert row[0] == "SOME_FUTURE_PRIMARY_CODE", (
-        "raw Plaid category text still passes through"
+    assert row == (None, None, None), (
+        "an unmapped PFC code must not categorize even at VERY_HIGH confidence, "
+        "and must not leave the raw PFC code standing in as the category"
     )
-    assert row[1] is None, (
-        "an unmapped PFC code must not categorize even at VERY_HIGH confidence"
+
+    # Both uncategorized rows must reach the curation queue. This is the
+    # behavioural half of the assertions above: `category IS NULL` is only
+    # worth asserting because core.uncategorized_queue keys off it, and a raw
+    # PFC code standing in as the category silently emptied that queue of
+    # exactly the rows a curator most needs to see.
+    queued = {
+        str(r[0])
+        for r in db.execute(
+            "SELECT transaction_id FROM core.uncategorized_queue"
+        ).fetchall()
+    }
+    assert {low_confidence_id, unmapped_id} <= queued, (
+        "uncategorized Plaid rows are missing from core.uncategorized_queue"
     )
+    assert detailed_id not in queued, "a categorized row must not be queued"
     assert (
         db.execute(
             "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
