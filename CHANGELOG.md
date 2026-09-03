@@ -232,6 +232,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **A stored account name that collides with the reserved placeholder is now
+  reported.** `moneybin accounts set --display-name` already refuses a name that
+  folds onto the reserved `Unnamed account` label (a case, padding, or Unicode
+  variant), but a row written before that guard shipped could still hold one,
+  and because name matching stays byte-exact such a row kept answering to the
+  label MoneyBin shows for an account it could not name. `system doctor` now
+  fails the new `app_account_settings_reserved_display_name` check with the
+  affected account ids and the rename that clears it; nothing is changed
+  automatically, because only the user knows the account's real name. (MB-146)
+
 - **An amount no longer folds across two lines.** Folding is the right failure
   for an identifier — an account id or a display name ending in a masked last
   four wraps rather than losing the characters that tell two rows apart — but
