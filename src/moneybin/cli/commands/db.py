@@ -431,6 +431,12 @@ def db_info(
     except SecretNotFoundError:
         payload["lock_state"] = "locked"
         if output == OutputFormat.JSON:
+            # Not `render_or_json`: this is operator-territory lifecycle
+            # metadata about the database FILE — its path, size, encryption
+            # state, table row counts — not ledger rows. Judged by disclosure
+            # rather than by column class (security.md), and it must keep
+            # answering while the database is locked, which is the one state
+            # the typed-payload path cannot read anything in.
             typer.echo(json.dumps(payload, indent=2, default=str))
             return
         _render_db_info_header(payload)
@@ -953,6 +959,8 @@ def db_ps(
     db_path = database or get_settings().database.path
 
     if output == OutputFormat.JSON:
+        # Same exemption as `db info` above: PIDs and a file path describe the
+        # operator's own machine, not their ledger.
         processes: list[dict[str, str | int]] = (
             _find_db_processes(db_path) if db_path.exists() else []
         )

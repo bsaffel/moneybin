@@ -53,12 +53,16 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
             "ISO 4217 currency this row is denominated in; null means unknown.",
             DataClass.CURRENCY,
         ),
+        OutputColumn("top_category", "Modal category.", DataClass.CATEGORY),
+        OutputColumn("first_seen", "Earliest transaction date.", DataClass.TXN_DATE),
+        OutputColumn("last_seen", "Latest transaction date.", DataClass.TXN_DATE),
+        OutputColumn("txn_count", "Transaction count.", DataClass.AGGREGATE),
         OutputColumn(
-            "total_spend",
-            "Lifetime absolute outflow.",
-            DataClass.TXN_AMOUNT,
-            money_kind="magnitude",
+            "active_months",
+            "Distinct active calendar-month count.",
+            DataClass.AGGREGATE,
         ),
+        OutputColumn("account_count", "Distinct account count.", DataClass.AGGREGATE),
         OutputColumn(
             "total_inflow",
             "Lifetime sum of positive amounts.",
@@ -69,12 +73,11 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
             "total_outflow",
             "Lifetime sum of negative amounts, kept negative.",
             DataClass.TXN_AMOUNT,
-            # Kept negative, unlike `total_spend` one row up, which is the same
-            # money as an absolute. Declaring them the same kind would render
-            # one of the two with a sign it does not carry.
+            # Kept negative, unlike `total_spend` at the end of the tuple, which
+            # is the same money as an absolute. Declaring them the same kind
+            # would render one of the two with a sign it does not carry.
             money_kind="flow",
         ),
-        OutputColumn("txn_count", "Transaction count.", DataClass.AGGREGATE),
         OutputColumn(
             "avg_amount",
             "Mean signed amount.",
@@ -87,15 +90,12 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
             DataClass.TXN_AMOUNT,
             money_kind="flow",
         ),
-        OutputColumn("first_seen", "Earliest transaction date.", DataClass.TXN_DATE),
-        OutputColumn("last_seen", "Latest transaction date.", DataClass.TXN_DATE),
         OutputColumn(
-            "active_months",
-            "Distinct active calendar-month count.",
-            DataClass.AGGREGATE,
+            "total_spend",
+            "Lifetime absolute outflow.",
+            DataClass.TXN_AMOUNT,
+            money_kind="magnitude",
         ),
-        OutputColumn("top_category", "Modal category.", DataClass.CATEGORY),
-        OutputColumn("account_count", "Distinct account count.", DataClass.AGGREGATE),
     ),
     semantics=ReportSemantics(
         unit="currency",
@@ -127,9 +127,9 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
     default_columns=(
         "merchant_normalized",
         "currency_code",
-        "total_spend",
-        "txn_count",
         "last_seen",
+        "txn_count",
+        "total_spend",
     ),
 )
 def merchant_activity(
@@ -165,15 +165,15 @@ def merchant_activity(
     if top < 1:
         raise ValueError(f"top must be >= 1, got {top!r}")
     sql = f"""
-        SELECT merchant_id, merchant_normalized, currency_code, total_spend, total_inflow,
-               total_outflow, txn_count, avg_amount, median_amount,
-               first_seen, last_seen, active_months, top_category,
-               account_count
+        SELECT merchant_id, merchant_normalized, currency_code, top_category,
+               first_seen, last_seen, txn_count, active_months, account_count,
+               total_inflow, total_outflow, avg_amount, median_amount,
+               total_spend
         FROM (
-            SELECT merchant_id, merchant_normalized, currency_code, total_spend,
-                   total_inflow, total_outflow, txn_count, avg_amount,
-                   median_amount, first_seen, last_seen, active_months,
-                   top_category, account_count,
+            SELECT merchant_id, merchant_normalized, currency_code, top_category,
+                   first_seen, last_seen, txn_count, active_months,
+                   account_count, total_inflow, total_outflow, avg_amount,
+                   median_amount, total_spend,
                    ROW_NUMBER() OVER (
                        PARTITION BY currency_code ORDER BY {MERCHANTS_SORTS[sort]}
                    ) AS rank_in_currency

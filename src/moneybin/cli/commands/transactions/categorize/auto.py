@@ -1,6 +1,5 @@
 """Auto-rule proposal workflow (review, confirm, stats, rules)."""
 
-import json
 import logging
 from typing import cast
 
@@ -10,9 +9,16 @@ from moneybin.cli.output import (
     OutputFormat,
     output_option,
     quiet_option,
+    render_or_json,
 )
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.categorize import (
+    AutoRuleRow,
+    AutoRulesPayload,
+    AutoStatsPayload,
+)
+from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +57,7 @@ def review(
                 "or reject proposals"
             ),
         )
-        typer.echo(json.dumps(envelope.to_dict(), indent=2))
+        render_or_json(envelope, output, cli_actor="categorize_auto_review")
         return
 
     if not proposals:
@@ -160,13 +166,16 @@ def stats(
             result = AutoRuleService(db).stats()
 
     if output == OutputFormat.JSON:
-        emit_json(
-            "stats",
-            {
-                "active_auto_rules": result.active_auto_rules,
-                "pending_proposals": result.pending_proposals,
-                "transactions_categorized": result.transactions_categorized,
-            },
+        render_or_json(
+            build_envelope(
+                data=AutoStatsPayload(
+                    active_auto_rules=result.active_auto_rules,
+                    pending_proposals=result.pending_proposals,
+                    transactions_categorized=result.transactions_categorized,
+                )
+            ),
+            output,
+            cli_actor="categorize_auto_stats",
         )
         return
 
@@ -197,7 +206,29 @@ def rules(
             total = svc.count_active_rules()
 
     if output == OutputFormat.JSON:
-        emit_json("rules", {"rules": active_rules, "total": total})
+        # `total` was a sibling key of `rules`; the envelope already has a slot
+        # for "how many exist beyond this page", so it rides there instead.
+        render_or_json(
+            build_envelope(
+                data=AutoRulesPayload(
+                    rules=[
+                        AutoRuleRow(
+                            rule_id=cast(str, r["rule_id"]),
+                            merchant_pattern=cast(str | None, r["merchant_pattern"]),
+                            match_type=cast(str | None, r["match_type"]),
+                            category=cast(str | None, r["category"]),
+                            subcategory=cast(str | None, r["subcategory"]),
+                            priority=cast(int | None, r["priority"]),
+                        )
+                        for r in active_rules
+                    ]
+                ),
+                total_count=total,
+                returned_count=len(active_rules),
+            ),
+            output,
+            cli_actor="categorize_auto_rules",
+        )
         return
 
     if not active_rules:

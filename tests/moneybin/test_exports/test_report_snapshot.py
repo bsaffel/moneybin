@@ -1006,17 +1006,22 @@ def test_networth_history_export_retains_native_values_with_truthful_types(
         interval="monthly",
     )
     table = snapshot.tables[0]
+    # Grain-first, and `net_worth` ahead of the two changes measured from it
+    # (`column-ordering.md` Rules B and C: a comparative's base leads its group
+    # even when it is also the headline). Each type is asserted beside its own
+    # column: the executor now keys them by name, and this is what would catch a
+    # regression back to a list bound by position.
     assert [(column.name, column.duckdb_type) for column in table.columns] == [
-        ("period", "VARCHAR"),
         ("currency_code", "VARCHAR"),
+        ("period", "VARCHAR"),
         ("net_worth", "DECIMAL(12,8)"),
         ("change_abs", "DECIMAL(11,8)"),
         ("change_pct", "DECIMAL(18,18)"),
     ]
     assert table.rows == (
         (
-            "2026-07-01",
             "USD",
+            "2026-07-01",
             Decimal("1000.12345678"),
             Decimal("100.75308643"),
             Decimal("0.100740651234567890"),

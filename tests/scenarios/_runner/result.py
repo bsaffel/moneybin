@@ -41,14 +41,21 @@ class ScenarioResult:
         for a in self.assertions:
             if not a.passed:
                 reason = a.error or (str(a.details) if a.details else "failed")
-                lines.append(f"  assertion {a.name}: {reason}")
+                prefix = "crashed, " if a.crashed else ""
+                lines.append(f"  assertion {a.name}: {prefix}{reason}")
         for e in self.expectations:
             if not e.passed:
                 lines.append(f"  expectation {e.name}")
         for v in self.evaluations:
             if not v.passed:
-                lines.append(
-                    f"  evaluation {v.name}: "
-                    f"{v.metric}={v.value} < threshold={v.threshold}"
-                )
+                if v.crashed:
+                    lines.append(
+                        f"  evaluation {v.name}: crashed, "
+                        f"{v.breakdown.get('error', 'no detail recorded')}"
+                    )
+                else:
+                    lines.append(
+                        f"  evaluation {v.name}: "
+                        f"{v.metric}={v.value} < threshold={v.threshold}"
+                    )
         return "\n".join(lines)

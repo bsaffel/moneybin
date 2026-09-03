@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from collections.abc import Generator
@@ -308,20 +307,6 @@ def confidence_cell(confidence: float | None) -> str:
     in common — evidence against the link, where in fact none was gathered.
     """
     return f"{confidence:.2f}" if confidence is not None else "-"
-
-
-def emit_json(key: str, payload: object) -> None:
-    """Emit a single-key JSON envelope to stdout.
-
-    Uses ``PayloadEncoder`` so typed dataclass / Pydantic payloads serialize
-    to dicts, not ``str(...)`` reprs. ``default=str`` would silently override
-    the encoder's dataclass handling — keep them mutually exclusive.
-    """
-    from moneybin.protocol.envelope import (  # noqa: PLC0415 — defer import
-        PayloadEncoder,
-    )
-
-    typer.echo(json.dumps({key: payload}, indent=2, cls=PayloadEncoder))
 
 
 @contextmanager

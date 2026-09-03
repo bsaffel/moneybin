@@ -106,16 +106,41 @@ def resolve_expectation(kind: str) -> ExpectationAdapter:
     return EXPECTATION_REGISTRY[kind]
 
 
+class ExpectationCrashError(Exception):
+    """Names the expectation adapter that raised, without quoting its message.
+
+    ``kind`` is an ``ExpectationSpec`` Literal and the cause contributes only
+    its type name, so this message is safe to surface in a halted result and
+    in CI output — unlike the raised exception's own text, which can carry
+    amounts or descriptions from the rows it was inspecting.
+    """
+
+    def __init__(self, kind: str, cause: BaseException) -> None:
+        super().__init__(f"{kind} ({type(cause).__name__})")
+        self.kind = kind
+
+
 def verify_expectations(
     db: Database, specs: list[ExpectationSpec]
 ) -> list[ExpectationResult]:
-    """Dispatch each spec through its registered adapter and return results."""
-    return [resolve_expectation(s.kind)(db, s) for s in specs]
+    """Dispatch each spec through its registered adapter and return results.
+
+    A raising adapter aborts the run, so the crash is re-raised tagged with the
+    kind that threw; without it the halted result names no expectation at all.
+    """
+    results: list[ExpectationResult] = []
+    for spec in specs:
+        try:
+            results.append(resolve_expectation(spec.kind)(db, spec))
+        except Exception as exc:
+            raise ExpectationCrashError(spec.kind, exc) from exc
+    return results
 
 
 __all__ = [
     "EXPECTATION_REGISTRY",
     "ExpectationAdapter",
+    "ExpectationCrashError",
     "resolve_expectation",
     "verify_expectations",
 ]

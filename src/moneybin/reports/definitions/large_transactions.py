@@ -98,24 +98,17 @@ def _blank_original_currency_analytics(
             "transaction_id", "Canonical transaction identifier.", DataClass.RECORD_ID
         ),
         OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
-        OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
-        OutputColumn("txn_date", "Transaction date.", DataClass.TXN_DATE),
-        OutputColumn(
-            "amount",
-            "Signed transaction amount.",
-            DataClass.TXN_AMOUNT,
-            money_kind="flow",
-        ),
-        OutputColumn(
-            "description", "Original transaction description.", DataClass.DESCRIPTION
-        ),
         OutputColumn(
             "merchant_id", "Canonical merchant identifier.", DataClass.RECORD_ID
         ),
+        OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
         OutputColumn(
             "merchant_normalized",
             "Normalized merchant label.",
             DataClass.MERCHANT_NAME,
+        ),
+        OutputColumn(
+            "description", "Original transaction description.", DataClass.DESCRIPTION
         ),
         OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
         OutputColumn(
@@ -123,6 +116,7 @@ def _blank_original_currency_analytics(
             "ISO 4217 currency this row is denominated in; null means unknown.",
             DataClass.CURRENCY,
         ),
+        OutputColumn("txn_date", "Transaction date.", DataClass.TXN_DATE),
         OutputColumn(
             "amount_zscore_account",
             "Modified absolute-amount z-score against the same-currency account "
@@ -144,6 +138,12 @@ def _blank_original_currency_analytics(
             "amount. Null on a row this read repriced: the ranking is over the "
             "original currency's population.",
             DataClass.AGGREGATE,
+        ),
+        OutputColumn(
+            "amount",
+            "Signed transaction amount.",
+            DataClass.TXN_AMOUNT,
+            money_kind="flow",
         ),
     ),
     semantics=ReportSemantics(
@@ -208,10 +208,10 @@ def _blank_original_currency_analytics(
     # `account_id` are deliberately out: an id is unbounded in width and would
     # crowd out the columns that identify the row to a human.
     default_columns=(
-        "txn_date",
         "account_name",
         "description",
         "currency_code",
+        "txn_date",
         "amount",
     ),
 )
@@ -266,15 +266,16 @@ def large_transactions(
     elif anomaly == "category":
         predicate = "amount_zscore_category > 2.5"
     sql = f"""
-        SELECT transaction_id, account_id, account_name, txn_date, amount,
-               description, merchant_id, merchant_normalized, category,
-               currency_code,
-               amount_zscore_account, amount_zscore_category, is_top_100
+        SELECT transaction_id, account_id, merchant_id, account_name,
+               merchant_normalized, description, category, currency_code,
+               txn_date,
+               amount_zscore_account, amount_zscore_category, is_top_100, amount
         FROM (
-            SELECT transaction_id, account_id, account_name, txn_date, amount,
-                   description, merchant_id, merchant_normalized, category,
-                   currency_code,
+            SELECT transaction_id, account_id, merchant_id, account_name,
+                   merchant_normalized, description, category, currency_code,
+                   txn_date,
                    amount_zscore_account, amount_zscore_category, is_top_100,
+                   amount,
                    ROW_NUMBER() OVER (
                        PARTITION BY currency_code ORDER BY ABS(amount) DESC
                    ) AS rank_in_currency

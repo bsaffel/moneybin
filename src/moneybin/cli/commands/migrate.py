@@ -125,6 +125,11 @@ def migrate_status(
                     "sqlmesh_state_drift": sqlmesh_drift,
                     "versions": versions,
                 }
+                # Not `render_or_json`: operations metadata — schema versions,
+                # migration filenames, and execution timings describing work
+                # the user ran on their own machine. Nothing here crosses a
+                # boundary carrying something the other side cannot already
+                # see (security.md).
                 typer.echo(json.dumps(payload, indent=2, default=str))
                 return
 

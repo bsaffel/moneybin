@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from dataclasses import dataclass
+from typing import Annotated, Any
 
 import pytest
 
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, emit_json_error, render_or_json
 from moneybin.errors import UserError
-from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
+from moneybin.privacy.payloads.gsheet import GsheetPullPayload, GsheetPullRow
+from moneybin.privacy.payloads.sync import SyncPullInstitutionRow, SyncPullPayload
+from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta, build_envelope
 
 
 def _make_envelope(
@@ -21,6 +25,38 @@ def _make_envelope(
         summary=SummaryMeta(total_count=len(data), returned_count=len(data)),
         data=data,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _AccountRow:
+    """A row whose account number carries an active masking transform."""
+
+    id: Annotated[str, DataClass.RECORD_ID]
+    account_number: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    label: Annotated[str, DataClass.USER_NOTE]
+
+
+@dataclass(frozen=True, slots=True)
+class _OneListPayload:
+    """The shape every migrated collection command uses: one list, plus counts."""
+
+    rows: list[_AccountRow]
+    total: Annotated[int, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class _TwoListPayload:
+    """Two collections in one payload — no single list to project into."""
+
+    rows: list[_AccountRow]
+    others: list[_AccountRow]
+
+
+@dataclass(frozen=True, slots=True)
+class _NoListPayload:
+    """A scalar-only payload."""
+
+    total: Annotated[int, DataClass.AGGREGATE]
 
 
 class TestRenderOrJson:
@@ -113,6 +149,234 @@ class TestRenderOrJson:
         )
         out = json.loads(capsys.readouterr().out)
         assert out["data"] == [{"id": "a1", "amount": "10.00"}]
+
+
+class TestJsonFieldsOnTypedPayloads:
+    """`--json-fields` reaches the rows inside a typed collection payload.
+
+    The filter used to require a bare `list` payload, so every command migrated
+    to a typed payload got a documented flag that silently did nothing — and
+    the one command that kept the projection working (`sync status`) did it by
+    hand, outside this path.
+    """
+
+    @staticmethod
+    def _rows() -> list[_AccountRow]:
+        return [_AccountRow(id="a1", account_number="123456789", label="Checking")]
+
+    @pytest.mark.unit
+    def test_projects_into_a_typed_payloads_single_list_field(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        render_or_json(
+            build_envelope(data=_OneListPayload(rows=self._rows(), total=1)),
+            OutputFormat.JSON,
+            json_fields="id,label",
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"]["rows"] == [{"id": "a1", "label": "Checking"}]
+        # The sibling scalar is untouched: the projection narrows the rows, not
+        # the payload around them.
+        assert out["data"]["total"] == 1
+
+    @pytest.mark.unit
+    def test_projection_cannot_surface_a_field_redaction_masked(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Asking for a CRITICAL field by name returns it masked, never raw.
+
+        The projection runs after `redact_typed`, and this is the assertion
+        that keeps it there: a filter applied to the pre-redaction payload
+        would hand back the account number the transform exists to hide.
+        """
+        render_or_json(
+            build_envelope(data=_OneListPayload(rows=self._rows(), total=1)),
+            OutputFormat.JSON,
+            json_fields="account_number",
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"]["rows"] == [{"account_number": "****6789"}]
+
+    @pytest.mark.unit
+    def test_no_ops_when_the_payload_carries_two_lists(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Half a projection is worse than none — the caller cannot see which half."""
+        render_or_json(
+            build_envelope(
+                data=_TwoListPayload(rows=self._rows(), others=self._rows())
+            ),
+            OutputFormat.JSON,
+            json_fields="id",
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert set(out["data"]["rows"][0]) == {"id", "account_number", "label"}
+        assert set(out["data"]["others"][0]) == {"id", "account_number", "label"}
+
+    @pytest.mark.unit
+    def test_no_ops_on_a_collection_of_scalars(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A list of bare values has no fields to name.
+
+        The old inline filter called `.items()` on every element, so this
+        raised an AttributeError out of the output path rather than ignoring
+        an inapplicable flag.
+        """
+        envelope: ResponseEnvelope[list[str]] = ResponseEnvelope(
+            summary=SummaryMeta(total_count=2, returned_count=2),
+            data=["a1", "a2"],
+        )
+        render_or_json(envelope, OutputFormat.JSON, json_fields="id")
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"] == ["a1", "a2"]
+
+    @pytest.mark.unit
+    def test_no_ops_when_the_payload_carries_no_list(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        render_or_json(
+            build_envelope(data=_NoListPayload(total=4)),
+            OutputFormat.JSON,
+            json_fields="total",
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"] == {"total": 4}
+
+
+class TestRefreshDiagnosticsAreNotRowCollections:
+    """A refresh's diagnostic lists must not be mistaken for the payload's rows.
+
+    `GsheetPullPayload` carries `pulls` — the per-connection outcomes this call
+    returned — beside the four best-effort refresh diagnostics
+    (`identity_errors`, `rate_pairs_failed`, `rate_pairs_unsupported`,
+    `rate_pairs_discarded`). Counting those as row collections gave the payload
+    five, and both helpers that ask for "the" collection answered "several, so
+    neither": `summary.returned_count` reported 1 for an N-connection pull, and
+    `--json-fields` silently no-opped — the exact "flag accepted, does nothing"
+    defect this path exists to eliminate.
+
+    Pinned on the real payload, not a stand-in: the bug was the auxiliary set
+    going stale against a shipped payload's fields, which a synthetic class
+    cannot reproduce.
+    """
+
+    @staticmethod
+    def _payload(n: int) -> GsheetPullPayload:
+        rows = [
+            GsheetPullRow(
+                connection_id=f"c{i}",
+                status="ok",
+                rows_inserted=i,
+                rows_upserted=0,
+                rows_soft_deleted=0,
+                drift_reason=None,
+                error_message=None,
+            )
+            for i in range(n)
+        ]
+        return GsheetPullPayload(
+            pulls=rows,
+            identity_errors=["identity_resolution_failed"],
+            rate_pairs_failed=["USD/EUR"],
+            rate_pairs_unsupported=["USD/XYZ"],
+            rate_pairs_discarded=["USD/GBP"],
+        )
+
+    @pytest.mark.unit
+    def test_counts_the_pulls_not_the_diagnostics(self) -> None:
+        envelope = build_envelope(data=self._payload(3))
+        assert envelope.summary.returned_count == 3
+        assert envelope.summary.total_count == 3
+
+    @pytest.mark.unit
+    def test_json_fields_still_finds_the_pull_rows(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        render_or_json(
+            build_envelope(data=self._payload(2)),
+            OutputFormat.JSON,
+            json_fields="connection_id,status",
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"]["pulls"] == [
+            {"connection_id": "c0", "status": "ok"},
+            {"connection_id": "c1", "status": "ok"},
+        ]
+        # The diagnostics ride through untouched — they are not rows to narrow.
+        assert out["data"]["rate_pairs_failed"] == ["USD/EUR"]
+
+
+class TestSyncPullCountsInstitutions:
+    """The overlap warning must not be mistaken for a second row collection.
+
+    `SyncPullPayload` carries `institutions` — the per-institution outcomes the
+    pull returned — beside `investment_source_overlap_accounts`, which names the
+    accounts holding both manual and Plaid investment history. That is a warning
+    about the rows, not another set of them, so counting it left the payload with
+    two collections and the "sole collection" rule answered "several, so
+    neither": `sync pull --output json`, `sync_pull` over MCP, and the CLI
+    privacy audit row all reported `returned_count=1` however many institutions
+    the pull covered.
+
+    Pinned on the shipped payload rather than a stand-in, for the same reason as
+    the class above: the defect is the auxiliary set going stale against a real
+    payload's fields.
+    """
+
+    @staticmethod
+    def _payload(n: int) -> SyncPullPayload:
+        return SyncPullPayload(
+            job_id="job_1",
+            transactions_loaded=0,
+            accounts_loaded=0,
+            balances_loaded=0,
+            transactions_removed=0,
+            institutions=[
+                SyncPullInstitutionRow(
+                    provider_item_id=f"item_{i}",
+                    institution_name=None,
+                    status="ok",
+                    transaction_count=i,
+                    error=None,
+                    error_code=None,
+                )
+                for i in range(n)
+            ],
+            transforms_applied=True,
+            transforms_duration_seconds=None,
+            transforms_error=None,
+            investment_source_overlap_accounts=["acct_a", "acct_b"],
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("count", [0, 1, 3])
+    def test_counts_the_institutions_not_the_overlap_warning(self, count: int) -> None:
+        payload = self._payload(count)
+        envelope = build_envelope(data=payload)
+        assert envelope.summary.returned_count == len(payload.institutions)
+        assert envelope.summary.returned_count == count
+        assert envelope.summary.total_count == count
+
+    @pytest.mark.unit
+    def test_json_fields_still_finds_the_institution_rows(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        render_or_json(
+            build_envelope(data=self._payload(2)),
+            OutputFormat.JSON,
+            json_fields="provider_item_id,status",
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"]["institutions"] == [
+            {"provider_item_id": "item_0", "status": "ok"},
+            {"provider_item_id": "item_1", "status": "ok"},
+        ]
+        # The warning rides through untouched — it is not a row set to narrow.
+        assert out["data"]["investment_source_overlap_accounts"] == [
+            "acct_a",
+            "acct_b",
+        ]
 
 
 class TestEmitJsonError:

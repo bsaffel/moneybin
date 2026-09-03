@@ -482,6 +482,39 @@ class ImportStatusPayload:
 
 
 # ---------------------------------------------------------------------------
+# moneybin import status — per-table row counts and date spans
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ImportRawTableRow:
+    """One ``raw.*`` table's row count and transaction date span."""
+
+    schema: Annotated[str, DataClass.TXN_TYPE]
+    table: Annotated[str, DataClass.TXN_TYPE]
+    rows: Annotated[int, DataClass.AGGREGATE]
+    # The span of a table's transactions, not one transaction's date: it names
+    # no record and is the same fact the row count is. TXN_DATE would mask the
+    # only two values this view exists to show.
+    date_min: Annotated[str | None, DataClass.AGGREGATE]
+    date_max: Annotated[str | None, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class ImportRawSummaryPayload:
+    """Payload for ``moneybin import status`` — what has been ingested so far.
+
+    Distinct from ``ImportStatusPayload`` despite the near-collision in the
+    command names: that one lists import *batches* (`moneybin import history`,
+    MCP ``import_status``); this one counts *rows per raw table*.
+    """
+
+    database: Annotated[str, DataClass.RECORD_ID]
+    tables: list[ImportRawTableRow]
+    exists: Annotated[bool, DataClass.TXN_TYPE]
+
+
+# ---------------------------------------------------------------------------
 # import_revert — top-level payload
 # ---------------------------------------------------------------------------
 
@@ -511,7 +544,7 @@ class ImportSavedFormatDeletePayload:
 
 @dataclass(frozen=True, slots=True)
 class ImportFormatRow:
-    """One format entry in ImportFormatsPayload.formats."""
+    """One tabular format entry in ``ImportFormatsPayload.formats``."""
 
     name: Annotated[str, DataClass.RECORD_ID]
     institution_name: Annotated[str | None, DataClass.INSTITUTION]
@@ -521,11 +554,13 @@ class ImportFormatRow:
     number_format: Annotated[str | None, DataClass.TXN_TYPE]
     multi_account: Annotated[bool, DataClass.TXN_TYPE]
     header_signature: Annotated[list[str] | None, DataClass.DESCRIPTION]
+    source: Annotated[Literal["builtin", "user"], DataClass.TXN_TYPE] = "builtin"
+    type: Annotated[Literal["tabular"], DataClass.TXN_TYPE] = "tabular"
 
 
 @dataclass(frozen=True, slots=True)
 class ImportPdfFormatRow:
-    """One PDF format entry in ImportFormatsPayload.pdf_formats (Phase 2a)."""
+    """One PDF format entry in ``ImportFormatsPayload.formats`` (Phase 2a)."""
 
     name: Annotated[str, DataClass.RECORD_ID]
     institution_name: Annotated[str, DataClass.INSTITUTION]
@@ -535,14 +570,77 @@ class ImportPdfFormatRow:
     version: Annotated[int, DataClass.AGGREGATE]
     times_used: Annotated[int, DataClass.AGGREGATE]
     last_used_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    type: Annotated[Literal["pdf"], DataClass.TXN_TYPE] = "pdf"
+
+
+ImportFormatEntry = ImportFormatRow | ImportPdfFormatRow
+"""Either kind of format, told apart by its ``type`` field."""
 
 
 @dataclass(frozen=True, slots=True)
 class ImportFormatsPayload:
-    """Payload for ``import_formats`` — list of available tabular + PDF formats."""
+    """Payload for ``import_formats`` — every available format, tabular and PDF.
 
-    formats: list[ImportFormatRow]
-    pdf_formats: list[ImportPdfFormatRow] = field(default_factory=list)
+    One list with a ``type`` discriminator rather than a list per kind: the
+    caller filtering for PDFs writes ``jq '.data.formats | map(select(.type ==
+    "pdf"))'`` and the caller wanting all of them writes nothing, where two
+    sibling keys make both of those a special case. The `--type` CLI filter
+    narrows the same list rather than selecting between keys.
+    """
+
+    formats: list[ImportFormatEntry]
+
+
+# ---------------------------------------------------------------------------
+# moneybin import formats show — the detail projection of one format
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ImportFormatDetail:
+    """Everything stored about one tabular format.
+
+    The list projection above is deliberately not this: a detail view carries
+    the full column mapping and the trailing-row patterns, which are noise in a
+    catalogue listing.
+    """
+
+    name: Annotated[str, DataClass.RECORD_ID]
+    institution_name: Annotated[str | None, DataClass.INSTITUTION]
+    file_type: Annotated[str, DataClass.TXN_TYPE]
+    delimiter: Annotated[str | None, DataClass.TXN_TYPE]
+    encoding: Annotated[str | None, DataClass.TXN_TYPE]
+    skip_rows: Annotated[int | None, DataClass.AGGREGATE]
+    sheet: Annotated[str | None, DataClass.TXN_TYPE]
+    sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
+    date_format: Annotated[str | None, DataClass.TXN_TYPE]
+    number_format: Annotated[str | None, DataClass.TXN_TYPE]
+    multi_account: Annotated[bool, DataClass.TXN_TYPE]
+    header_signature: Annotated[list[str] | None, DataClass.DESCRIPTION]
+    field_mapping: Annotated[dict[str, str], DataClass.DESCRIPTION]
+    skip_trailing_patterns: Annotated[list[str] | None, DataClass.DESCRIPTION]
+    type: Annotated[Literal["tabular"], DataClass.TXN_TYPE] = "tabular"
+
+
+@dataclass(frozen=True, slots=True)
+class ImportPdfFormatDetail:
+    """Everything stored about one PDF format, including its extraction recipe."""
+
+    name: Annotated[str, DataClass.RECORD_ID]
+    institution_name: Annotated[str, DataClass.INSTITUTION]
+    document_kind: Annotated[str, DataClass.TXN_TYPE]
+    routing: Annotated[str, DataClass.TXN_TYPE]
+    front_end: Annotated[str, DataClass.TXN_TYPE]
+    sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
+    date_format: Annotated[str | None, DataClass.TXN_TYPE]
+    number_format: Annotated[str | None, DataClass.TXN_TYPE]
+    version: Annotated[int, DataClass.AGGREGATE]
+    times_used: Annotated[int, DataClass.AGGREGATE]
+    last_used_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    source: Annotated[str | None, DataClass.TXN_TYPE]
+    # The derived layout program — column anchors and row rules, no cell values.
+    extraction_recipe: Annotated[dict[str, Any] | None, DataClass.DESCRIPTION]
+    type: Annotated[Literal["pdf"], DataClass.TXN_TYPE] = "pdf"
 
 
 # ---------------------------------------------------------------------------
@@ -680,8 +778,8 @@ class ImportStatusFormatsSection(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     kind: Annotated[Literal["formats"], DataClass.TXN_TYPE] = "formats"
-    formats: list[ImportFormatRow]
-    pdf_formats: list[ImportPdfFormatRow] = Field(default_factory=list)
+    # One list with a `type` discriminator, matching ``ImportFormatsPayload``.
+    formats: list[ImportFormatEntry] = Field(default_factory=list)
 
 
 class ImportStatusInboxSection(BaseModel):

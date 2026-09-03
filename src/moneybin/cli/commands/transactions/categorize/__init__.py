@@ -458,34 +458,36 @@ def stats(
     quiet: bool = quiet_option,  # noqa: ARG001 — summary has no informational chatter; only data
 ) -> None:
     """Show categorization coverage summary."""
-    from moneybin.cli.utils import emit_json
+    from moneybin.cli.output import render_or_json
+    from moneybin.protocol.envelope import build_envelope
     from moneybin.services.categorization import CategorizationService
 
     with handle_cli_errors():
         with get_database(read_only=True) as db:
-            coverage = CategorizationService(db).categorization_stats()
+            # `stats()` rather than `categorization_stats()`: the typed result
+            # already knows how to become the payload the MCP tool returns for
+            # the same numbers, so both surfaces report one shape.
+            coverage = CategorizationService(db).stats()
 
     if output == OutputFormat.JSON:
-        emit_json("summary", coverage)
+        render_or_json(
+            build_envelope(data=coverage.to_payload()),
+            output,
+            cli_actor="categorize_stats",
+        )
         return
 
-    total = coverage["total"]
-    categorized = coverage["categorized"]
-    uncategorized = coverage["uncategorized"]
-    pct = coverage["pct_categorized"]
-
     logger.info("Categorization coverage:")
-    logger.info(f"  Total transactions:   {total}")
-    logger.info(f"  Categorized:          {categorized} ({pct:.1f}%)")
-    logger.info(f"  Uncategorized:        {uncategorized}")
+    logger.info(f"  Total transactions:   {coverage.total}")
+    logger.info(
+        f"  Categorized:          {coverage.categorized} "
+        f"({coverage.percent_categorized:.1f}%)"
+    )
+    logger.info(f"  Uncategorized:        {coverage.uncategorized}")
 
     # Show breakdown by source
-    for key, value in coverage.items():
-        if key.startswith("by_"):
-            source = key[3:]
-            logger.info(f"  By {source}:  {value}")
+    for source, value in coverage.by_source.items():
+        logger.info(f"  By {source}:  {value}")
 
-    if "plaid_unmapped" in coverage:
-        logger.info(
-            f"  Plaid unmapped (no bridge mapping): {coverage['plaid_unmapped']}"
-        )
+    if coverage.plaid_unmapped is not None:
+        logger.info(f"  Plaid unmapped (no bridge mapping): {coverage.plaid_unmapped}")

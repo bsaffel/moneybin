@@ -15,7 +15,13 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin import error_codes
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
 from moneybin.cli.utils import (
     handle_cli_errors,
     warn_refresh_steps,
@@ -30,13 +36,51 @@ from moneybin.connectors.gsheet.service_factory import (
 from moneybin.connectors.gsheet.service_factory import (
     build_pull_service_with_db as _build_pull_service,
 )
+from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import SignConventionType
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
+from moneybin.mcp.adapters.gsheet_adapters import (
+    gsheet_connect_payload,
+    gsheet_connection_row,
+    gsheet_pull_rows,
+)
+from moneybin.privacy.payloads.gsheet import (
+    GsheetAuthPayload,
+    GsheetConnectionsPayload,
+    GsheetDisconnectPayload,
+    GsheetPullPayload,
+)
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from moneybin.connectors.gsheet.adapters.base import GSheetConnection
     from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 logger = logging.getLogger(__name__)
+
+
+def _connections_envelope(
+    connections: Sequence[GSheetConnection],
+) -> ResponseEnvelope[GsheetConnectionsPayload]:
+    """Wrap a connection list, with a reconnect hint per drifted binding.
+
+    `gsheet list` and `gsheet status` answer the same question at different
+    scopes, so they build one payload — the difference is which connections the
+    caller asked for, not what a connection looks like.
+    """
+    rows = [gsheet_connection_row(c) for c in connections]
+    return build_envelope(
+        data=GsheetConnectionsPayload(connections=rows),
+        actions=[
+            f"Run 'moneybin gsheet reconnect {row.connection_id}' to re-detect "
+            "this sheet's structure"
+            for row in rows
+            if row.status == "drift_detected"
+        ],
+    )
+
 
 app = typer.Typer(
     help="Connect Google Sheets workbooks as transaction sources or raw seed data",
@@ -123,7 +167,11 @@ def gsheet_auth(
             client.authorize()
             status = "authorized"
     if output == OutputFormat.JSON:
-        typer.echo(json.dumps({"status": status}))
+        render_or_json(
+            build_envelope(data=GsheetAuthPayload(status=status)),
+            output,
+            cli_actor="gsheet_auth",
+        )
     elif status == "already_authorized":
         typer.echo("✅ Already authorized. Pass --force to re-authenticate.")
     else:
@@ -223,36 +271,16 @@ def gsheet_connect(
             result = service.connect(req, actor="cli")
 
     if output == OutputFormat.JSON:
-        payload = {
-            "connection": result.connection.to_dict(),
-            "detection": {
-                "confidence": result.detection.confidence,
-                "column_mapping": result.detection.column_mapping,
-                "notes": result.detection.notes,
-            },
-            # Mirror the MCP shape: a failed/empty pull still reports its
-            # status + error so scripts distinguish "pull ran and failed"
-            # from "pull skipped by --no-initial-pull" (both else-None
-            # otherwise).
-            "initial_pull": (
-                {
-                    "status": result.initial_pull_status,
-                    "rows_inserted": result.initial_pull.rows_inserted,
-                    "rows_upserted": result.initial_pull.rows_upserted,
-                    "rows_soft_deleted": result.initial_pull.rows_soft_deleted,
-                }
-                if result.initial_pull
-                else (
-                    {
-                        "status": result.initial_pull_status,
-                        "error": result.initial_pull_error,
-                    }
-                    if result.initial_pull_status is not None
-                    else None
-                )
+        render_or_json(
+            build_envelope(
+                data=gsheet_connect_payload(result),
+                actions=[
+                    "Run 'moneybin gsheet pull' to refresh this connection",
+                ],
             ),
-        }
-        typer.echo(json.dumps(payload, indent=2))
+            output,
+            cli_actor="gsheet_connect",
+        )
         return
 
     conn = result.connection
@@ -355,33 +383,17 @@ def gsheet_pull(
     warn_refresh_steps(steps_outcome)
 
     if output == OutputFormat.JSON:
-        typer.echo(
-            json.dumps(
-                {
-                    "pulls": [
-                        {
-                            "connection_id": r.connection_id,
-                            "status": r.status,
-                            "rows_inserted": (
-                                r.load_result.rows_inserted if r.load_result else 0
-                            ),
-                            "rows_upserted": (
-                                r.load_result.rows_upserted if r.load_result else 0
-                            ),
-                            "rows_soft_deleted": (
-                                r.load_result.rows_soft_deleted if r.load_result else 0
-                            ),
-                            "drift_reason": r.drift_reason,
-                            "error_message": r.error_message,
-                        }
-                        for r in results
-                    ],
-                    "refresh_error": refresh_error,
-                    "transfers_retired": transfers_retired,
+        render_or_json(
+            build_envelope(
+                data=GsheetPullPayload(
+                    pulls=gsheet_pull_rows(results),
+                    refresh_error=refresh_error,
+                    transfers_retired=transfers_retired,
                     **refresh_steps_fields(steps_outcome),
-                },
-                indent=2,
-            )
+                )
+            ),
+            output,
+            cli_actor="gsheet_pull",
         )
         if refresh_error is not None or pull_failed:
             raise typer.Exit(1)
@@ -422,7 +434,11 @@ def gsheet_list(
             connections = service.list_connections()
 
     if output == OutputFormat.JSON:
-        typer.echo(json.dumps([c.to_dict() for c in connections], indent=2))
+        render_or_json(
+            _connections_envelope(connections),
+            output,
+            cli_actor="gsheet_list",
+        )
         return
 
     if not connections:
@@ -448,22 +464,31 @@ def gsheet_status(
     output: OutputFormat = output_option,
 ) -> None:
     """Show status for one connection, or a summary of all of them."""
-    with handle_cli_errors():
+    with handle_cli_errors(
+        cli_actor="gsheet_status", payload_type=GsheetConnectionsPayload
+    ):
         with _build_connection_service() as service:
             if connection_id is None:
                 connections = service.list_connections()
             else:
                 conn = service.get(connection_id)
                 if conn is None:
-                    if output == OutputFormat.JSON:
-                        typer.echo(json.dumps({"error": "not_found"}))
-                    else:
-                        typer.echo(f"❌ Unknown connection: {connection_id}", err=True)
-                    raise typer.Exit(1)
+                    # Raised, not echoed: `handle_cli_errors` owns both the
+                    # JSON error envelope and the text ❌, so the branches
+                    # cannot drift and the failure gets its audit row.
+                    raise UserError(
+                        f"Unknown connection: {connection_id}",
+                        code=error_codes.INFRA_NOT_FOUND,
+                        hint="Run 'moneybin gsheet list' to see every connection.",
+                    )
                 connections = [conn]
 
     if output == OutputFormat.JSON:
-        typer.echo(json.dumps([c.to_dict() for c in connections], indent=2))
+        render_or_json(
+            _connections_envelope(connections),
+            output,
+            cli_actor="gsheet_status",
+        )
         return
 
     if not connections:
@@ -510,27 +535,13 @@ def gsheet_reconnect(
             result = service.reconnect(connection_id, yes=yes, sign=sign, actor="cli")
 
     if output == OutputFormat.JSON:
-        typer.echo(
-            json.dumps(
-                {
-                    "connection": result.connection.to_dict(),
-                    "detection": {
-                        "confidence": result.detection.confidence,
-                        "column_mapping": result.detection.column_mapping,
-                        "notes": result.detection.notes,
-                    },
-                    "initial_pull": (
-                        {
-                            "rows_inserted": result.initial_pull.rows_inserted,
-                            "rows_upserted": result.initial_pull.rows_upserted,
-                            "rows_soft_deleted": result.initial_pull.rows_soft_deleted,
-                        }
-                        if result.initial_pull
-                        else None
-                    ),
-                },
-                indent=2,
-            )
+        render_or_json(
+            build_envelope(
+                data=gsheet_connect_payload(result),
+                actions=["Run 'moneybin gsheet pull' to refresh this connection"],
+            ),
+            output,
+            cli_actor="gsheet_reconnect",
         )
         return
 
@@ -584,11 +595,16 @@ def gsheet_disconnect(
             service.disconnect(connection_id, purge=purge, actor="cli")
 
     if output == OutputFormat.JSON:
-        typer.echo(
-            json.dumps({
-                "status": "purged" if purge else "disconnected",
-                "connection_id": connection_id,
-            })
+        render_or_json(
+            build_envelope(
+                data=GsheetDisconnectPayload(
+                    connection_id=connection_id,
+                    status="purged" if purge else "disconnected",
+                    purged=purge,
+                )
+            ),
+            output,
+            cli_actor="gsheet_disconnect",
         )
     else:
         verb = "Purged" if purge else "Disconnected"

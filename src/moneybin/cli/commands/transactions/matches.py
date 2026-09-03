@@ -6,11 +6,15 @@ from typing import Any
 import duckdb as duckdb_mod
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
 from moneybin.cli.render import render_rows
 from moneybin.cli.utils import (
     confidence_cell,
-    emit_json,
     handle_cli_errors,
     warn_match_decisions_committed,
     warn_transfers_retired,
@@ -63,11 +67,41 @@ def matches_pending(
 
     with handle_cli_errors():
         with get_database(read_only=True) as db:
-            rows = MatchingService(db).get_pending(match_type=match_type, limit=limit)
+            service = MatchingService(db)
+            rows = service.get_pending(match_type=match_type, limit=limit)
 
-        if output == OutputFormat.JSON:
-            emit_json("matches", rows)
-            return
+            if output == OutputFormat.JSON:
+                from moneybin.mcp.adapters.matching_adapters import (  # noqa: PLC0415 — defer import
+                    matches_pending_envelope,
+                )
+
+                # Both counts span the whole queue, not this page: an agent
+                # that sees `has_more` needs to know how much is behind it,
+                # and a page-local group count would understate the review
+                # still to do. Computed inside the JSON branch because the
+                # text branch below renders neither, and
+                # `count_pending_dedup_groups` reloads the entire pending
+                # queue and rebuilds the component graph `get_pending` just
+                # walked.
+                render_or_json(
+                    matches_pending_envelope(
+                        rows,
+                        total_count=service.count_pending(match_type=match_type),
+                        n_dedup_groups=service.count_pending_dedup_groups(
+                            match_type=match_type
+                        ),
+                        actions=[
+                            "Use 'moneybin transactions matches set <id> --status "
+                            "accepted|rejected' to decide one match",
+                            "Rows sharing a component_key are copies of one "
+                            "transaction — decide the whole cluster together with "
+                            "'moneybin transactions matches set'",
+                        ],
+                    ),
+                    output,
+                    cli_actor="matches_pending",
+                )
+                return
 
         if not rows:
             if not quiet:
@@ -176,7 +210,23 @@ def matches_history(
             entries = MatchingService(db).get_log(limit=limit, match_type=match_type)
 
             if output == OutputFormat.JSON:
-                emit_json("matches", entries)
+                from moneybin.mcp.adapters.matching_adapters import (  # noqa: PLC0415 — defer import
+                    matches_history_envelope,
+                )
+
+                render_or_json(
+                    matches_history_envelope(
+                        entries,
+                        actions=[
+                            "Use 'moneybin transactions matches pending' for "
+                            "the active queue",
+                            "Use 'moneybin transactions matches undo <id>' to "
+                            "reverse an accepted decision",
+                        ],
+                    ),
+                    output,
+                    cli_actor="matches_history",
+                )
                 return
 
             if not entries:

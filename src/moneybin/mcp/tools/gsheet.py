@@ -28,7 +28,6 @@ from pydantic import JsonValue, StrictBool
 
 from moneybin import error_codes
 from moneybin.config import get_settings
-from moneybin.connectors.gsheet.adapters.base import GSheetConnection
 from moneybin.connectors.gsheet.errors import GSheetSignConfirmationRequiredError
 from moneybin.connectors.gsheet.service_factory import (
     build_connection_service as _build_connection_service,
@@ -42,6 +41,11 @@ from moneybin.connectors.gsheet.service_factory import (
 from moneybin.error_codes import INFRA_NOT_FOUND
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.adapters.gsheet_adapters import (
+    gsheet_connection_row,
+    gsheet_initial_pull,
+    gsheet_pull_rows,
+)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -63,9 +67,7 @@ from moneybin.privacy.payloads.gsheet import (
     GsheetDetection,
     GsheetDisconnectCoarsePayload,
     GsheetDisconnectPayload,
-    GsheetInitialPull,
     GsheetPullPayload,
-    GsheetPullRow,
     GsheetStatusView,
 )
 from moneybin.protocol.envelope import (
@@ -83,48 +85,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _initial_pull(result: ConnectResult) -> GsheetInitialPull | None:
-    """Build the typed initial-pull sub-object from a connect/reconnect result.
-
-    Populated rows on success; status+error on a failed pull; None when no
-    pull ran (``no_initial_pull``).
-    """
-    if result.initial_pull is not None:
-        return GsheetInitialPull(
-            status=result.initial_pull_status,
-            rows_inserted=result.initial_pull.rows_inserted,
-            rows_upserted=result.initial_pull.rows_upserted,
-            rows_soft_deleted=result.initial_pull.rows_soft_deleted,
-        )
-    # Pull ran but produced no rows (e.g. drift_detected, auth_expired) —
-    # surface the failure status + reason so agents distinguish this from
-    # --no-initial-pull (which leaves initial_pull None entirely).
-    if result.initial_pull_status is not None:
-        return GsheetInitialPull(
-            status=result.initial_pull_status,
-            error=result.initial_pull_error,
-        )
-    return None
-
-
-def _connection_row(conn: GSheetConnection) -> GsheetConnectionRow:
-    """Build the typed connection row from a GSheetConnection (mirrors to_dict())."""
-    return GsheetConnectionRow(
-        connection_id=conn.connection_id,
-        spreadsheet_id=conn.spreadsheet_id,
-        sheet_gid=conn.sheet_gid,
-        sheet_name=conn.sheet_name,
-        workbook_name=conn.workbook_name,
-        adapter=conn.adapter,
-        alias=conn.alias,
-        account_id=conn.account_id,
-        account_name=conn.account_name,
-        status=conn.status,
-        last_pull_at=conn.last_pull_at,
-        last_success_at=conn.last_success_at,
-        last_status_reason=conn.last_status_reason,
-        consecutive_failure_count=conn.consecutive_failure_count,
-    )
+_initial_pull = gsheet_initial_pull
+_connection_row = gsheet_connection_row
 
 
 def _reconnect_hint(connection_id: str) -> str:
@@ -368,18 +330,7 @@ def gsheet_pull(
         else:
             results = [service.pull_connection(connection_id)]
 
-    pulls = [
-        GsheetPullRow(
-            connection_id=r.connection_id,
-            status=r.status,
-            rows_inserted=r.load_result.rows_inserted if r.load_result else 0,
-            rows_upserted=r.load_result.rows_upserted if r.load_result else 0,
-            rows_soft_deleted=r.load_result.rows_soft_deleted if r.load_result else 0,
-            drift_reason=r.drift_reason,
-            error_message=r.error_message,
-        )
-        for r in results
-    ]
+    pulls = gsheet_pull_rows(results)
     actions: list[str] = []
     for r in results:
         if r.status == "drift_detected":

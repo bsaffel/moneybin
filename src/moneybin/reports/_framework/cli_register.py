@@ -229,7 +229,20 @@ def visible_columns(
         ORIGINAL_CURRENCY_COLUMN in available
         and ORIGINAL_CURRENCY_COLUMN not in visible
     ):
-        visible = (*visible, ORIGINAL_CURRENCY_COLUMN)
+        # Placed beside the currency it records, for the reason
+        # `execute.py::_original_currency_position` gives about the projection:
+        # both columns are `DataClass.CURRENCY`, so appending would end the
+        # table on provenance rather than on the headline measure. `visible` is
+        # already intersected against the result, so the currency column can be
+        # absent from it even when the result carries one — that falls back to
+        # the append this replaced.
+        currency = spec.semantics.currency
+        at = (
+            visible.index(currency) + 1
+            if currency is not None and currency in visible
+            else len(visible)
+        )
+        visible = (*visible[:at], ORIGINAL_CURRENCY_COLUMN, *visible[at:])
     return visible
 
 

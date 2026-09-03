@@ -42,9 +42,11 @@ EXEMPT: dict[tuple[str, str], str] = {
         "route through."
     ),
     ("cli/output.py", "redact_typed"): (
-        "`render_or_json` redacts an envelope a CLI command already built. "
-        "MB-45 routes CLI JSON output through this path; until then the "
-        "redaction has to happen on the finished envelope."
+        "`render_or_json` redacts an envelope a CLI command already built — it "
+        "is the CLI's equivalent of the builder, performing the same classify / "
+        "redact / declare steps on the finished envelope, and every CLI JSON "
+        "path now routes through it. Calling the builder here instead would "
+        "redact a second time over values the first pass already masked."
     ),
     ("cli/commands/import_inbox.py", "redact_typed"): (
         "Masks one pending entry through its declared type before it becomes "
