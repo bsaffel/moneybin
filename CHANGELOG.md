@@ -47,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from `pyproject.toml`, and ADR-011 records why: Material for MkDocs entered
   maintenance mode in November 2025, so the docs site is deferred to the first
   public release and builds on its successor if that has reached 1.0 by then.
+  (#516)
 
 - **The last eight commands that drew their own columns now render like every
   other one.** `db ps`, `db kill`, `demo`, `fx list`, `import history`,
