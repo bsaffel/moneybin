@@ -19,6 +19,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.render import UNCATEGORIZED_LABEL
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.transactions import (
@@ -130,7 +131,7 @@ def transactions_splits_list(
             logger.info(f"No splits on {transaction_id}")
         return
     for s in splits:
-        cat = s.category or "-"
+        cat = s.category or UNCATEGORIZED_LABEL
         typer.echo(f"  [{s.split_id}] {s.amount} {cat}")
 
 

@@ -17,7 +17,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import Money, render_rows
+from moneybin.cli.render import UNCATEGORIZED_LABEL, Money, render_rows
 
 logger = logging.getLogger(__name__)
 
@@ -217,20 +217,30 @@ def transactions_list(
                 # Unformatted: `render_rows` stringifies it through
                 # `format_money`, which is the only place text output does so.
                 t.amount,
-                t.category or "",
+                t.category or UNCATEGORIZED_LABEL,
                 t.account_id,
             ))
 
         render_rows(
-            ["date", "description", "amount", "category", "account"],
+            # `account_id`, not `account`: the column holds an id, and naming
+            # it what it is makes the join with `accounts list` visible rather
+            # than merely possible (requirement 28). The account's display name
+            # is deliberately absent — `TransactionRow` carries no account name,
+            # and adding one would change the payload requirement 8 keeps
+            # untouched.
+            ["date", "description", "amount", "category", "account_id"],
             rows,
             # A transaction amount is signed under the AGENTS.md convention —
             # negative is an expense, positive is income — which is `flow`.
             money={"amount": Money("flow")},
+            # Requirement 34. This replaces a `Next page: --cursor <base64>`
+            # line: the cursor is an opaque keyset token that told the reader
+            # nothing about the result and could not be typed back reliably,
+            # while `--cursor` itself remains in `--help` and in the JSON
+            # envelope's actions for the caller that walks pages.
+            total_rows=result.total_count,
+            placeholder=UNCATEGORIZED_LABEL,
         )
-
-        if result.next_cursor and not quiet:
-            typer.echo(f"Next page: --cursor {result.next_cursor}", err=True)
 
     render_or_json(
         envelope, output, render_fn=_render_text, cli_actor="transactions_list"

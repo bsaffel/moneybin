@@ -710,6 +710,120 @@ def test_no_framing_line_when_every_column_is_shown(
     assert "columns shown" not in capsys.readouterr().out
 
 
+def test_render_rows_frames_the_rows_it_did_not_show(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 34: a partial page discloses that it is one.
+
+    The count `transactions list` already has is the whole disclosure. It
+    replaces a `Next page: --cursor <base64>` line that spent a row of screen
+    on an opaque token the reader can neither read nor act on.
+    """
+    render_rows(["date"], [("2026-08-01",)], total_rows=50)
+
+    assert "1 of 50 shown" in capsys.readouterr().out
+
+
+def test_the_row_framing_names_a_continuation_the_reader_can_type(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 34: the continuation is `--limit`, and never `--cursor`.
+
+    `--cursor` takes a base64 token the text branch deliberately no longer
+    supplies, so naming it would send the reader into a usage error. `--limit`
+    is a number they can raise unaided. The total is grouped, because the count
+    this replaces exists to answer "how much is there?" and `2046` answers it
+    less well than `2,046` at a glance.
+    """
+    render_rows(["date"], [("2026-08-01",)], total_rows=2046)
+
+    out = capsys.readouterr().out
+    assert "1 of 2,046 shown · raise --limit for more" in out
+    assert "--cursor" not in out
+
+
+def test_no_row_framing_when_the_page_is_the_whole_result(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A complete result frames nothing — there is no remainder to disclose."""
+    render_rows(["date"], [("2026-08-01",)], total_rows=1)
+
+    assert "shown" not in capsys.readouterr().out
+
+
+def test_render_rows_counts_the_unmapped_placeholder(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 30: a taxonomy gap is disclosed, not silently absorbed.
+
+    Collapsing every unmapped value to one placeholder is what keeps a single
+    column from mixing two vocabularies, but it also makes the gap invisible —
+    the reader cannot tell a genuinely uncategorized row from one whose
+    provider code MoneyBin has no mapping for. The count is the disclosure.
+    """
+    render_rows(
+        ["date", "category"],
+        [("2026-08-01", "Food & Drink"), ("2026-08-02", "Uncategorized")],
+        placeholder="Uncategorized",
+    )
+
+    assert "1 uncategorized" in capsys.readouterr().out
+
+
+def test_the_placeholder_count_fires_with_every_column_shown(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 30 widens requirement 10's trigger, and this is why.
+
+    Framing that fired only on an omitted column would vanish in exactly the
+    cases the disclosure matters — under `--wide`, and for any result whose
+    full projection already fits 80 columns. Neither omits a column.
+    """
+    render_rows(
+        ["category"], [("Uncategorized",)], total_columns=1, placeholder="Uncategorized"
+    )
+
+    captured = capsys.readouterr().out
+    assert "columns shown" not in captured
+    assert "1 uncategorized" in captured
+
+
+def test_no_placeholder_framing_when_every_value_mapped(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A fully-mapped column has no gap, so it says nothing about one."""
+    render_rows(["category"], [("Food & Drink",)], placeholder="Uncategorized")
+
+    assert "uncategorized" not in capsys.readouterr().out
+
+
+def test_the_framing_clauses_share_one_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 30: the two framing clauses may share one line.
+
+    Three separate lines beneath a two-row table would cost more screen than
+    the result, which is the opposite of what curation is for.
+    """
+    render_rows(
+        ["category"],
+        [("Uncategorized",)],
+        total_columns=4,
+        total_rows=9,
+        placeholder="Uncategorized",
+    )
+
+    framing = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if "shown" in line or "uncategorized" in line
+    ]
+    assert len(framing) == 1, framing
+    assert "1 of 9 shown" in framing[0]
+    assert "1 of 4 columns shown" in framing[0]
+    assert "1 uncategorized" in framing[0]
+
+
 _FIT_COLUMNS = [f"column_number_{i}" for i in range(1, 15)]
 _FIT_ROW = tuple(f"value{i}" for i in range(1, 15))
 

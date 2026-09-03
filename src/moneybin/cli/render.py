@@ -186,6 +186,15 @@ def color_enabled(stream: object, env: Mapping[str, str]) -> bool:
 #: that never had a middle.
 ELISION = "…"
 
+# The one word text output uses for a category it cannot name (requirement 30).
+# It lives beside the renderer that lowercases it for the framing clause rather
+# than in a domain module, because nothing below the CLI has an opinion about
+# it: `core.fct_transactions.category` is NULL for these rows and the JSON
+# branch passes that NULL through untouched. Text is the only surface that owes
+# the reader a word here, and one word is the point — a column carrying both
+# `Uncategorized` and a raw provider code is the defect, not a disclosure of it.
+UNCATEGORIZED_LABEL = "Uncategorized"
+
 
 def _cell_width(cell: RenderableType) -> int:
     from rich.cells import cell_len  # noqa: PLC0415 — defer heavy import
@@ -313,6 +322,8 @@ def render_rows(
     money: Mapping[str, Money] | None = None,
     numeric: Sequence[str] | None = None,
     total_columns: int | None = None,
+    total_rows: int | None = None,
+    placeholder: str | None = None,
     fit: bool = False,
 ) -> None:
     """Render ``rows`` as a table to stdout (requirement 2).
@@ -346,6 +357,16 @@ def render_rows(
     narrowed view of it, and produces the result-framing line beneath the table
     (requirement 10). A caller with no column policy leaves it ``None`` and
     frames nothing.
+
+    ``total_rows`` is the size of the whole result when ``rows`` is one page of
+    it, and frames the remainder (requirement 34). ``placeholder`` is the value
+    a caller substitutes for an unmapped one; rows carrying it in any rendered
+    column are counted on the same line (requirement 30). Both widen
+    requirement 10's trigger: framing is not only about omitted columns, so a
+    complete projection under ``--wide`` still discloses a taxonomy gap.
+
+    All three clauses share one line. Three lines beneath a two-row table would
+    cost more screen than the result they describe.
 
     **One line per record, always** (requirement 35). This renderer never
     deduplicates, merges, or suppresses a row. `reports networth` currently
@@ -435,11 +456,19 @@ def render_rows(
         )
         if at == gap:
             table.add_column(ELISION, justify="center", overflow="fold")
+    rendered = 0
+    flagged = 0
     for cells in cells_source:
         row_cells = [cells[i] for i in kept]
         if gap is not None:
             row_cells.insert(gap + 1, ELISION)
         table.add_row(*row_cells)
+        rendered += 1
+        # Counted off the kept columns, not the caller's whole projection: the
+        # disclosure is about what this table shows, and a placeholder in a
+        # column the fit dropped is not on screen to be misread.
+        if placeholder is not None and any(str(c) == placeholder for c in row_cells):
+            flagged += 1
     # Rich holds every cell now, so let a buffered measurement copy go before
     # rendering allocates its own.
     del cells_source
@@ -448,12 +477,23 @@ def render_rows(
     # and the renderer's own width fit are disclosed by one line rather than
     # two — and a fit the caller never asked about still cannot happen silently.
     whole = total_columns if total_columns is not None else len(columns)
+    clauses: list[str] = []
+    if total_rows is not None and total_rows > rendered:
+        # `--limit`, never `--cursor`: the cursor takes an opaque token text
+        # output does not supply, so naming it sends the reader into a usage
+        # error. Grouped, because the count exists to answer "how much is
+        # there?" and 2046 answers it less well than 2,046 at a glance.
+        clauses.append(f"{rendered:,} of {total_rows:,} shown · raise --limit for more")
     if whole > len(kept):
+        clauses.append(f"{len(kept)} of {whole} columns shown — --wide for all")
+    if placeholder is not None and flagged:
+        clauses.append(f"{flagged} {placeholder.lower()}")
+    if clauses:
         # stdout, and reachable under `-q` (this renderer takes no such
         # parameter): both are load-bearing. `moneybin reports spending >
         # report.txt` has to capture the disclosure with the table it describes,
         # or the file records a truncated result that reads as a whole one.
-        typer.echo(f"{len(kept)} of {whole} columns shown — --wide for all")
+        typer.echo(" · ".join(clauses))
 
 
 def render_summary(
