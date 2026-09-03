@@ -1,6 +1,6 @@
 # Categorization Source Model & Plaid PFC Categorizer
 
-> Last updated: 2026-07-09
+> Last updated: 2026-09-03
 > Status: implemented
 > Address: M1U (Ingestion Core)
 > Type: Feature
@@ -313,10 +313,28 @@ onto historical rows — guard-respecting, so it never touches anything at prior
 > ([`category-taxonomy-audit.md`](category-taxonomy-audit.md), M1W, PR
 > #298) without it.
 
-**Old primary-as-text passthrough.** The existing `plaid_category → category`
-fallback text in `prep.int_transactions__unioned` is **kept** as a display
-fallback for skipped-`LOW` rows; flagged as low-priority cleanup once
-provider-native coverage is proven. Minor.
+**Old primary-as-text passthrough.** The `plaid_category → category` fallback
+text in `prep.int_transactions__unioned` was originally **kept** as a display
+fallback for skipped-`LOW` rows, flagged as low-priority cleanup once
+provider-native coverage is proven.
+
+> **Removed 2026-09-03 (PR #515), ahead of that trigger and for a stronger
+> reason.** The passthrough was not only cosmetic. `core.uncategorized_queue`
+> selects `WHERE t.category IS NULL`, so a non-NULL PFC code sitting in
+> `category` excluded every skipped-`LOW` Plaid row from the curation queue —
+> the rows most in need of curation were the ones it hid, and the queue read
+> near-empty on a Plaid-sourced profile. It also put two vocabularies in one
+> rendered column (`FOOD_AND_DRINK` beside `Food & Drink`) and split a
+> category's total across two grouping keys in reports. The plaid branch now
+> contributes `NULL::TEXT AS category`.
+>
+> **The categorizer's read path is unchanged.** `plaid_category` and
+> `category_detailed` still flow `int_transactions__unioned` →
+> `__matched` → `__merged`, which is where `apply_plaid_categories` reads them
+> (the ship-blocking correction above), and where `moneybin sql query` can
+> still inspect them. Only the alias into `category` is gone. The `tabular`
+> and `manual` branches keep their fallback, because those columns hold
+> category text a person authored rather than a provider taxonomy.
 
 ## Decision 5 — Per-source lineage as a derived `core` view, not mutable state
 

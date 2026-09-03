@@ -173,7 +173,7 @@ def _review_matches_noninteractive(
         logger.error("❌ --confirm and --reject cannot target the same match_id")
         raise typer.Exit(2)
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="review"):
         with get_database(read_only=False) as db:
             svc = MatchingService(db)
             if confirm_all:
@@ -243,7 +243,7 @@ def _print_status(type_: str, output: OutputFormat) -> None:
     from moneybin.services.review_service import ReviewService
     from moneybin.services.security_links_service import SecurityLinksService
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="review"):
         with get_database(read_only=True) as db:
             review_svc = ReviewService(
                 match_service=MatchingService(db, get_settings().matching),
