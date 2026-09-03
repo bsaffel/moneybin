@@ -20,6 +20,8 @@ from moneybin.metrics.registry import (
     PROFILE_CURRENCIES,
     UNKNOWN_CURRENCY_ROWS,
 )
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
+from moneybin.services.entity_reference import normalize_reference
 from moneybin.sqlmesh_registry import model_presence
 from moneybin.staleness import (
     SECURITY_TYPE_STALENESS_DAYS,
@@ -499,6 +501,7 @@ class DoctorService:
             self._run_proposed_rules_rule_fk(),
             self._run_transaction_categories_fk(),
             self._run_account_settings_account_fk(),
+            self._run_account_settings_reserved_display_name(),
             self._run_balance_assertions_account_fk(),
             self._run_budgets_category_fk(),
             self._run_match_decisions_account_fk(),
@@ -1798,6 +1801,61 @@ class DoctorService:
                 detail=(
                     f"{len(affected)} account_settings row(s) reference an "
                     "account_id absent from core.dim_accounts"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_account_settings_reserved_display_name(self) -> InvariantResult:
+        """Flag ``account_settings.display_name`` rows folding onto the reserved label.
+
+        ``AccountService.settings_update`` refuses a ``display_name`` that
+        ``normalize_reference`` folds onto ``UNNAMED_ACCOUNT_LABEL`` (a case
+        variant, padding, a doubled space, an NFKC-equivalent), because
+        ``core.dim_accounts`` shows that exact label for an account it could
+        not name and every resolver reads it that way. That guard is
+        write-path only: a row stored before it shipped can still hold a
+        near-match, and ``is_a_name`` stays byte-exact by design (normalizing
+        it would silently drop a real user-set name that happens to equal the
+        label) — so such a row keeps reading as a name and can resolve a
+        request for the reserved label to it. Not auto-fixable: MoneyBin
+        cannot guess the account's real name, only tell the user to pick one.
+        """
+        name = "app_account_settings_reserved_display_name"
+        reserved = normalize_reference(UNNAMED_ACCOUNT_LABEL)
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT account_id, display_name
+                FROM {ACCOUNT_SETTINGS.full_name}
+                WHERE display_name IS NOT NULL
+                ORDER BY account_id
+                """  # noqa: S608  # TableRef constant, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"reserved-label check unavailable: {e}",
+                affected_ids=[],
+            )
+        affected = [
+            str(account_id)
+            for account_id, display_name in rows
+            if normalize_reference(display_name) == reserved
+        ]
+        if affected:
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} account(s) carry a display_name that folds "
+                    f"onto the reserved {UNNAMED_ACCOUNT_LABEL!r} label — stored "
+                    "before the write-path guard rejected it. MoneyBin shows that "
+                    "label for an account it could not name, so a name-based "
+                    "lookup can resolve to this row instead of the account you "
+                    "mean; rename it with `moneybin accounts set <account> "
+                    "--display-name <new name>`."
                 ),
                 affected_ids=affected,
             )

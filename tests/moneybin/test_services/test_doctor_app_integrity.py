@@ -36,6 +36,7 @@ from moneybin.repositories.transaction_categories_repo import (
 )
 from moneybin.repositories.user_categories_repo import UserCategoriesRepo
 from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.doctor_service import (
     _BALANCE_ASSERTIONS_PK_EXPR,
     _SECURITY_PRICE_OVERRIDES_PK_EXPR,
@@ -550,6 +551,7 @@ def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
     assert "app_audit_coverage_match_decisions" in names
     assert "app_audit_coverage_imports" in names
     assert "app_account_settings_account_fk" in names
+    assert "app_account_settings_reserved_display_name" in names
     assert "app_balance_assertions_account_fk" in names
     assert "app_budgets_category_fk" in names
     assert "app_match_decisions_account_fk" in names
@@ -699,6 +701,32 @@ def test_account_settings_account_fk_passes_when_resolved(db: Database) -> None:
     _upsert_settings(AccountSettingsRepo(db), "real_acct")
     result = DoctorService(db)._run_account_settings_account_fk()
     assert result.status == "pass"
+
+
+def test_account_settings_reserved_display_name_flags_normalized_fold(
+    db: Database,
+) -> None:
+    # Padding, doubled internal space, and mixed case all fold onto the
+    # reserved label via normalize_reference, even though none is
+    # byte-identical to UNNAMED_ACCOUNT_LABEL — the write-path guard added in
+    # MB-146 rejects exactly this fold; this row predates that guard.
+    db.execute(
+        "INSERT INTO app.account_settings (account_id, display_name) "  # noqa: S608  # test input, not executing user SQL
+        "VALUES ('acct_stale', '  unnamed  ACCOUNT ')"
+    )
+    result = DoctorService(db)._run_account_settings_reserved_display_name()
+    assert result.status == "fail"
+    assert result.affected_ids == ["acct_stale"]
+    assert UNNAMED_ACCOUNT_LABEL in (result.detail or "")
+
+
+def test_account_settings_reserved_display_name_passes_for_a_real_name(
+    db: Database,
+) -> None:
+    _upsert_settings(AccountSettingsRepo(db), "acct_named")
+    result = DoctorService(db)._run_account_settings_reserved_display_name()
+    assert result.status == "pass"
+    assert result.affected_ids == []
 
 
 def test_balance_assertions_account_fk_flags_orphan(db: Database) -> None:
