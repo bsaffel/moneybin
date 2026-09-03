@@ -44,7 +44,7 @@ def rules_list(
     """Display all active categorization rules."""
     from moneybin.services.categorization import CategorizationService
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="rules_list"):
         with get_database(read_only=True) as db:
             rows = [
                 row
@@ -217,7 +217,7 @@ def rules_create(
             }
         ]
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="rules_create"):
         validated, parse_errors = validate_rule_items(rules)
         with get_database(read_only=False) as db:
             result = CategorizationService(db).create_rules(
@@ -272,7 +272,7 @@ def rules_delete(
         CategorizationService,
     )
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="rules_delete"):
         with get_database(read_only=False) as db:
             deactivated = CategorizationService(db).deactivate_rule(
                 rule_id, reapply=reapply, actor="cli"

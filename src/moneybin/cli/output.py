@@ -17,12 +17,10 @@ Usage::
         json_fields: str | None = json_fields_option,
     ) -> None:
         ...
-        # Always pass cli_actor — it gates the privacy.log audit event
-        # (the logging branch is `if cli_actor is not None`). Omitting it
-        # silently drops the audit row for this command's JSON output.
-        render_or_json(
-            envelope, output, json_fields=json_fields, cli_actor="entity_list"
-        )
+        # cli_actor is optional: the privacy.log audit event names the
+        # command it was invoked as (`derive_cli_actor`). Pass it only to
+        # keep an actor string that predates that rule.
+        render_or_json(envelope, output, json_fields=json_fields)
 """
 
 from __future__ import annotations
@@ -34,6 +32,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
+import click
 import typer
 
 from moneybin.cli.render import render_note
@@ -263,6 +262,38 @@ class ExportDestinationSetOutput:
     operation_id: Annotated[str, DataClass.RECORD_ID]
 
 
+def derive_cli_actor() -> str | None:
+    """The running command's audit actor, read off its click command path.
+
+    ``moneybin transactions matches pending`` becomes
+    ``transactions_matches_pending``; hyphens in a command name normalize to
+    underscores so ``mcp list-tools`` audits as ``mcp_list_tools`` — the
+    spelling the hand-written actors and the report framework's
+    ``f"reports_{spec.name}"`` both already use.
+
+    Walks the context chain instead of splitting ``Context.command_path`` so
+    the program name is dropped by position: click builds the root context's
+    ``info_name`` from ``sys.argv[0]``, which is not guaranteed to be one word.
+
+    ``None`` when there is no command to name — a direct call from a unit test
+    or from library code, where click has no active context. Callers decide
+    what that means for them; neither audit path may raise on it.
+    """
+    try:
+        ctx = click.get_current_context()
+    except RuntimeError:
+        return None
+    names: list[str] = []
+    # Stops at the root context, whose info_name is the program name.
+    while ctx.parent is not None:
+        if ctx.info_name:
+            names.append(ctx.info_name)
+        ctx = ctx.parent
+    if not names:
+        return None
+    return "_".join(reversed(names)).replace("-", "_")
+
+
 def render_or_json(
     envelope: ResponseEnvelope[Any],
     output: OutputFormat,
@@ -280,8 +311,16 @@ def render_or_json(
     JSON path:
     - Applies ``redact_typed`` to mask CRITICAL fields (e.g. ACCOUNT_IDENTIFIER)
       before serialising, mirroring the ``@mcp_tool`` decorator's behaviour.
-    - When ``cli_actor`` is provided, writes a ``privacy.log.jsonl`` event with
-      ``actor="cli.<cli_actor>"`` and ``action="tool_call"``.
+    - Writes a ``privacy.log.jsonl`` event with ``actor="cli.<actor>"`` and
+      ``action="tool_call"``. ``actor`` is ``cli_actor`` when given and the
+      derived command path otherwise, so a command cannot lose its audit row
+      by forgetting a keyword. A call with no click context writes nothing
+      rather than falling back to ``"unknown"`` the way the error path does:
+      that path only ever runs under a CLI invocation, while this one is also
+      called directly by unit tests and library code, where a row would name
+      an invocation that never happened. The context is a ``ContextVar``, so
+      render on the thread handling the command — a render dispatched to a
+      worker thread inherits no context and would audit nothing.
     - ``json_fields`` field-filter (``--json-fields`` flag) runs post-redaction,
       on a bare ``list`` payload or on the single list-valued field of a typed
       payload. See ``_project_fields`` for why exactly one is the condition.
@@ -352,7 +391,8 @@ def render_or_json(
         if projected is not None:
             envelope = dataclasses.replace(envelope, data=projected)  # pyright: ignore[reportUnknownArgumentType]
 
-    if cli_actor is not None:
+    actor = cli_actor or derive_cli_actor()
+    if actor is not None:
         # Dynamic-classification commands (sql query) resolve classes via SQL
         # lineage, not the static payload type, and pass them explicitly — a
         # bare list[dict] payload carries no Annotated metadata to derive from.
@@ -366,7 +406,7 @@ def render_or_json(
         # payloads — either way it's the authoritative tier for the audit log.
         write_privacy_event(
             build_tool_call_event(
-                actor=f"cli.{cli_actor}",
+                actor=f"cli.{actor}",
                 sensitivity=envelope.summary.sensitivity,
                 classes_returned=event_classes,
                 row_count=envelope.summary.returned_count,

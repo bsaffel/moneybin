@@ -89,7 +89,7 @@ def categorize_pending(
         typer.echo("❌ --sort must be 'date' or 'impact'.", err=True)
         raise typer.Exit(2)
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="categorize_pending"):
         with get_database(read_only=True) as db:
             account_id: str | None = None
             if account is not None:
@@ -216,7 +216,7 @@ def categorize_commit(
         raise typer.Exit(1) from e
 
     if items:
-        with handle_cli_errors():
+        with handle_cli_errors(cli_actor="categorize_commit"):
             with get_database(read_only=False) as db:
                 result = CategorizationService(db).categorize_items(items)
     else:
@@ -304,7 +304,7 @@ def categorize_run(
         )
         raise typer.Exit(2)
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="categorize_run"):
         with get_database(read_only=False) as db:
             data = CategorizationService(db).categorize_run(methods=typed_methods)
 
@@ -343,7 +343,7 @@ def categorize_improve_ai(output: OutputFormat = output_option) -> None:
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.categorization import CategorizationService
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="categorize_improve_ai"):
         with get_database(read_only=False) as db:
             count = CategorizationService(db).improve_ai_categories()
 
@@ -410,7 +410,7 @@ def categorize_assist(
             raise typer.Exit(2)
         date_tuple = (parts[0], parts[1])
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="categorize_assist"):
         with get_database(read_only=True) as db:
             redacted = CategorizationService(db).categorize_assist(
                 limit=limit,
@@ -462,7 +462,7 @@ def stats(
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.categorization import CategorizationService
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="categorize_stats"):
         with get_database(read_only=True) as db:
             # `stats()` rather than `categorization_stats()`: the typed result
             # already knows how to become the payload the MCP tool returns for

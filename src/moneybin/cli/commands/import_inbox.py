@@ -171,7 +171,7 @@ def inbox_default(
     from moneybin.config import get_settings  # noqa: PLC0415
     from moneybin.database import get_database  # noqa: PLC0415
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="inbox_default"):
         with get_database(read_only=False) as db:
             result = InboxService(db=db, settings=get_settings()).sync()
 
@@ -261,7 +261,7 @@ def inbox_list(
     """Show what a sync would do, without moving anything."""
     from moneybin.cli.utils import handle_cli_errors
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="inbox_list"):
         result = InboxService.for_active_profile_no_db().enumerate()
 
     if output == OutputFormat.JSON:
@@ -291,7 +291,7 @@ def inbox_path(
     """Print the active profile's inbox parent directory."""
     from moneybin.cli.utils import handle_cli_errors
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="inbox_path"):
         service = InboxService.for_active_profile_no_db()
         # Materialize the layout so users can immediately copy files into
         # `$(moneybin import inbox path)/inbox/...` on a fresh profile.
