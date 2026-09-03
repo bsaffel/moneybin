@@ -3154,10 +3154,12 @@ def test_final_review_refresh_surface_semantics_match_runtime() -> None:
     assert "`dedup_reconciliation` emits `refresh_run()`" in recovery
 
     assert (
-        "MCP default: `gsheet → match → transform → categorize → identity`" in pipeline
+        "MCP default: `gsheet → match → transform → categorize → identity → rates`"
+        in pipeline
     )
     assert (
-        "CLI selectable steps: `match → transform → categorize → identity`" in pipeline
+        "CLI selectable steps: `match → transform → categorize → identity → rates`"
+        in pipeline
     )
     for field in (
         "`data.error`",

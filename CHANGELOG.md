@@ -11,6 +11,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **The public docs have one index, one reference directory, and a test that
+  every command they cite exists.** `docs/architecture/` and `docs/tech/` are
+  folded into `docs/reference/`; `docs/guides/README.md` and
+  `docs/reference/prompts/README.md` are merged into `docs/README.md` and a
+  new Prompts section of the MCP server guide. A documentation-policy test now
+  parses every `moneybin …` invocation in the public docs and resolves it
+  against the registered command tree. The 15 invocations it caught are
+  corrected — among them `db rotate-key`, `db shell -c`, `import file`,
+  `reports summary`, `mcp serve --profile`, and a bare `moneybin doctor`.
+
+  One corrected claim was about privacy. The CLI reference said
+  `transactions categorize assist` sends description and memo text redacted.
+  It sends that text in full, masking only embedded identifiers such as
+  account numbers, and omits amount, date, and account id; the wording now
+  matches the command's own help.
+
+  Stale mechanics are brought up to date across the guides and references:
+  the refresh cascade has six steps (`rates` is the sixth); cross-source
+  merges rank `manual, gsheet, ofx, plaid` ahead of the tabular formats;
+  `dim_accounts` merges per field rather than keeping one winning row; five
+  price sources are registered; multi-currency display conversion has
+  shipped; metrics flush once at session end with no interval setting;
+  `stats --output json` emits `{"metrics": [...]}` rather than the envelope;
+  the `system doctor` check list matches the implementation; and the
+  `reports networth` JSON sample is real output — a list with one totals row
+  per currency followed by one row per account.
+
+  The unused `docs` dependency group (MkDocs Material and friends) is dropped
+  from `pyproject.toml`, and ADR-011 records why: Material for MkDocs entered
+  maintenance mode in November 2025, so the docs site is deferred to the first
+  public release and builds on its successor if that has reached 1.0 by then.
+
 - **The last eight commands that drew their own columns now render like every
   other one.** `db ps`, `db kill`, `demo`, `fx list`, `import history`,
   `import formats list`, and the four `investments` list commands each built a
@@ -1999,7 +2031,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   regenerated is not imported twice, and pinning a statement already bound to
   another account now errors. If a file was imported under the old scheme,
   delete its previous import batch before re-importing it or it will be counted
-  twice ([`account-identifiers.md`](docs/architecture/account-identifiers.md),
+  twice ([`account-identifiers.md`](docs/reference/account-identifiers.md),
   #438, #418).
 
 - **Account-merge prompts and the decision log now name the accounts instead of

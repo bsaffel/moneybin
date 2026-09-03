@@ -35,9 +35,8 @@ not as the starting point.
 - `CONTEXT.md`
 - `docs/*.md` — top-level: `architecture.md`, `audience.md`, `comparison.md`, `features.md`, `licensing.md`, `roadmap.md`
 - `docs/guides/`
-- `docs/reference/`
-- `docs/architecture/`
-- `docs/tech/`
+- `docs/reference/` — lookup material and internal-mechanics deep-dives
+  (the former `docs/architecture/` and `docs/tech/` live here since 2026-09)
 
 **OUT of scope:**
 
@@ -107,7 +106,7 @@ For "not yet for you" cases, point honestly to alternatives (`docs/audience.md` 
 
 | File | Primary persona | Tone | Length budget |
 |---|---|---|---|
-| `README.md` | Power-user migrant + AI-native dev | Storefront — what is it, why care, how to start | ~220–260 lines (per stored feedback) |
+| `README.md` | Power-user migrant + AI-native dev | Storefront — what is it, why care, how to start | ~160–180 lines (measured 158–168 across 2026-05 → 2026-09; the earlier "220–260" figure was never measured) |
 | `CHANGELOG.md` | All users | Factual, one bullet per user-visible change, cite PR | One section per release / Unreleased |
 | `CONTRIBUTING.md` | Self-hoster, OSS contributor | Concrete steps to land a change | As short as possible |
 | `docs/architecture.md` | AI-native dev, technical migrant | Guarantees → diagram → contract → negative space | One page |
@@ -116,9 +115,7 @@ For "not yet for you" cases, point honestly to alternatives (`docs/audience.md` 
 | `docs/features.md` | Anyone evaluating | Capability snapshot, link out to guides | Bullets |
 | `docs/roadmap.md` | Anyone evaluating | Milestone tables (📐 designed / 🗓️ planned / ✅ shipped) | One page |
 | `docs/guides/` | Power-user migrant | How-to, one task per guide, CLI examples | One screen per concept |
-| `docs/reference/` | AI-native dev | Complete and dense — table-shaped | As long as needed |
-| `docs/architecture/` | AI-native dev | Deep technical context; **Mermaid over ASCII** for diagrams | As long as needed |
-| `docs/tech/` | AI-native dev | Implementation-specific notes | As long as needed |
+| `docs/reference/` | AI-native dev | Complete and dense — table-shaped for lookup pages; deep technical context for the mechanics pages (`account-identifiers`, `auto-rule-pipeline`, `cli-startup-flow`); **Mermaid over ASCII** for diagrams | As long as needed |
 
 ## Stored anti-patterns (do not reintroduce)
 
@@ -228,9 +225,8 @@ adjacent persona** to surface unstated assumptions. Example weightings:
 | `docs/comparison.md` | Power-user migrant + Self-hoster |
 | `docs/features.md` | Power-user migrant + AI-native dev |
 | `docs/guides/*` | Power-user migrant + AI-native dev |
-| `docs/reference/*` | AI-native dev + Power-user migrant |
-| `docs/architecture/*` | AI-native dev + AI-native dev (different framing: "new to project" + "deep in the stack") |
-| `docs/tech/*` | AI-native dev + Self-hoster |
+| `docs/reference/*` (lookup pages) | AI-native dev + Power-user migrant |
+| `docs/reference/*` (mechanics pages) | AI-native dev + AI-native dev (different framing: "new to project" + "deep in the stack") |
 
 Each persona-review subagent receives:
 

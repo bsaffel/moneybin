@@ -310,7 +310,7 @@ def test_project_tracking_locator_routes_to_canonical_private_declaration() -> N
 
 # The user-facing set only: specs and ADRs describe planned or superseded
 # commands by design, and CHANGELOG entries are historical.
-_USER_FACING_DOC_DIRS = ("guides", "reference", "architecture", "tech")
+_USER_FACING_DOC_DIRS = ("guides", "reference")
 _CLI_INVOCATION_MARKER = "cli-invocation-ok"
 _FENCE = re.compile(r"^(?P<fence>`{3,}|~{3,})\s*(?P<lang>[\w-]*)")
 # Fenced blocks in these languages show shell input; every other language
