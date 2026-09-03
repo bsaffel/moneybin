@@ -14,11 +14,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Every row in `accounts list` and `transactions list` now names its account
   in a column you can quote back.** `accounts list` had glued the account id
   onto the display name — `Checking (acct_a1b2)` — so selecting the id meant
-  editing a substring out of a rendered cell. `transactions list` named no
-  account at all, so two rows from different accounts on the same date for the
-  same amount were indistinguishable. Both now render `account_id` as its own
-  column and leave the display column to the display name. Neither payload
-  changed: `--output json` carried the id on both surfaces already. (#515)
+  editing a substring out of a rendered cell; it now renders `account_id` as
+  its own column and leaves the display column to the display name.
+  `transactions list` already showed the id but headed the column `account`,
+  which reads as a name and does not match the key `accounts list` publishes;
+  the header is now `account_id` on both, so the join between the two tables is
+  visible rather than merely possible. Neither payload changed: `--output json`
+  carried the id on both surfaces already. (#515)
 
 - **A truncated page states how much it left behind instead of printing a
   cursor.** `transactions list` ended a capped page with

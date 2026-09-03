@@ -677,12 +677,16 @@ Numbered, each independently testable.
     confined to one column, because a taxonomy gap lives in one column while
     every other cell in the row is data.
 
-    Absent means NULL *or* blank. `stg_tabular__transactions` and
-    `stg_manual__transactions` pass the column through without a `NULLIF`, so a
-    blank category cell in an imported CSV arrives as `''` rather than NULL.
-    An empty cell under a `category` header is the state this placeholder
-    exists to replace, and which spelling of "blank" a source happened to use
-    is not a distinction the reader should have to know about.
+    Absent means NULL, and only NULL. A whitespace-only category is reachable —
+    Polars reads an empty CSV cell as NULL but keeps a cell holding spaces —
+    and treating it as a gap is the tempting mistake. `core.uncategorized_queue`
+    selects `WHERE category IS NULL`, so such a row is not in the queue, and
+    counting it would advertise a gap `transactions categorize run` cannot act
+    on: the same class of lie as the provider code requirement 29 removes from
+    this column. Making the two agree means normalizing blanks in staging
+    (`NULLIF(TRIM(category), '')` in `stg_tabular__` and `stg_manual__`), which
+    changes what the queue *contains* rather than how it renders, and is
+    therefore not this requirement's to make.
 
     A declared column absent from the table is refused rather than skipped, for
     the reason `column_view` already gives: a disclosure that silently counts

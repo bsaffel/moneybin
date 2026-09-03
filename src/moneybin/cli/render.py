@@ -619,17 +619,18 @@ def _cells(
     for at, (name, value) in enumerate(zip(columns, row, strict=True)):
         column_money = declared.get(name)
         if column_money is None:
-            text = "" if value is None else str(value)
-            if at == absent_at and not text.strip():
-                # Blank counts as absent, not just NULL. `stg_tabular__` and
-                # `stg_manual__` pass a category straight through, so an empty
-                # cell in an imported CSV arrives as `''` — and an empty cell
-                # under a `category` header is the state this placeholder
-                # exists to replace, whichever way the source spelled it.
+            if value is None and at == absent_at:
+                # NULL only, deliberately. A whitespace-only category is
+                # reachable and is *not* treated as absent here, because
+                # `core.uncategorized_queue` selects `WHERE category IS NULL`
+                # and would not surface it: labelling it would advertise a row
+                # `transactions categorize run` cannot act on. Making the two
+                # agree means normalizing blanks in staging, which is a change
+                # to what the queue contains rather than to how it renders.
                 absent = True
                 cells.append(absent_as)
             else:
-                cells.append(text)
+                cells.append("" if value is None else str(value))
             continue
         cells.append(
             Text(

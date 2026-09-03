@@ -895,25 +895,29 @@ def test_a_category_authored_as_the_placeholder_word_is_not_a_gap(
     assert "2 uncategorized" not in out
 
 
-def test_a_blank_category_counts_as_absent(
+def test_a_blank_category_is_not_counted_as_absent(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """An empty cell under a `category` header is the state being replaced.
+    """Only NULL is absent, and the restraint is deliberate.
 
-    `stg_tabular__transactions` and `stg_manual__transactions` pass the column
-    through without a `NULLIF`, so a blank category cell in an imported CSV
-    reaches the CLI as `''` rather than NULL. Rendering that as an empty cell
-    would leave exactly the hole the placeholder exists to fill, and leave it
-    uncounted — the source's choice of spelling for "blank" is not a
-    distinction the reader should have to know about.
+    A whitespace-only category is reachable — Polars reads an empty CSV cell as
+    NULL, but a cell holding spaces keeps them — and it is tempting to treat it
+    as a gap. `core.uncategorized_queue` selects `WHERE category IS NULL`, so
+    such a row is not in the queue: counting it would advertise a gap
+    `transactions categorize run` cannot act on, which is the same class of lie
+    as the provider code this milestone removed from the column. Making the two
+    agree is a staging change — `NULLIF(TRIM(category), '')` — not a rendering
+    one, so this renderer follows the queue rather than getting ahead of it.
     """
     render_rows(
         ["category"],
-        [(None,), ("",), ("   ",), ("Food & Drink",)],
+        [(None,), ("   ",), ("Food & Drink",)],
         placeholder=Placeholder("category", "Uncategorized"),
     )
 
-    assert "3 uncategorized" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "1 uncategorized" in out
+    assert "2 uncategorized" not in out
 
 
 def test_a_placeholder_naming_no_column_of_this_table_is_refused() -> None:
