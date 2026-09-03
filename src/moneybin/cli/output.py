@@ -314,8 +314,13 @@ def render_or_json(
     - Writes a ``privacy.log.jsonl`` event with ``actor="cli.<actor>"`` and
       ``action="tool_call"``. ``actor`` is ``cli_actor`` when given and the
       derived command path otherwise, so a command cannot lose its audit row
-      by forgetting a keyword. Only a call with no click context at all —
-      a unit test invoking this directly — writes nothing.
+      by forgetting a keyword. A call with no click context writes nothing
+      rather than falling back to ``"unknown"`` the way the error path does:
+      that path only ever runs under a CLI invocation, while this one is also
+      called directly by unit tests and library code, where a row would name
+      an invocation that never happened. The context is a ``ContextVar``, so
+      render on the thread handling the command — a render dispatched to a
+      worker thread inherits no context and would audit nothing.
     - ``json_fields`` field-filter (``--json-fields`` flag) runs post-redaction,
       on a bare ``list`` payload or on the single list-valued field of a typed
       payload. See ``_project_fields`` for why exactly one is the condition.

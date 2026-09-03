@@ -65,7 +65,7 @@ def matches_pending(
         logger.error("❌ --type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="matches_pending"):
         with get_database(read_only=True) as db:
             service = MatchingService(db)
             rows = service.get_pending(match_type=match_type, limit=limit)
@@ -205,7 +205,7 @@ def matches_history(
         logger.error("❌ --type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="matches_history"):
         with get_database(read_only=True) as db:
             entries = MatchingService(db).get_log(limit=limit, match_type=match_type)
 

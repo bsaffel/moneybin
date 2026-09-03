@@ -471,7 +471,7 @@ def import_files_command(
     # reading from `data`, and the most common invocation is the one it drops.
     refresh_steps: RefreshStepOutcome | None = None
     try:
-        with handle_cli_errors():
+        with handle_cli_errors(cli_actor="import_files_command"):
             # Single-file invocations keep fast-fail on missing paths (typo
             # detection), before the database is opened. Multi-file batches
             # defer to ImportService.import_files(), which records a per-file
@@ -1940,7 +1940,7 @@ def import_confirm_command(
     # files` and `import preview` preflights: `Path.exists()` raises under a
     # macOS TCC denial instead of returning False, so an unwrapped check
     # tracebacks rather than classifying.
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="import_confirm_command"):
         if not file_path.exists():
             logger.error(f"❌ File not found: {file_path}")
             raise typer.Exit(1)
@@ -1981,7 +1981,7 @@ def import_confirm_command(
     )
 
     try:
-        with handle_cli_errors():
+        with handle_cli_errors(cli_actor="import_confirm_command"):
             with get_database(read_only=False) as db:
                 service = ImportService(db)
                 if bridge_response_data is not None:

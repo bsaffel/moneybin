@@ -55,7 +55,7 @@ def doctor_command(
     recent protected app.* mutation has a paired audit row. Exits 0 when all
     invariants pass or warn; exits 1 when any fail.
     """
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="doctor_command"):
         # read_only=False matches the MCP system_doctor tool: DoctorService
         # initializes a SQLMesh Context which may write internal state tables
         # on first init; a read-only connection silently marks SQLMesh audits

@@ -49,17 +49,58 @@ runner = CliRunner()
 
 
 def _leaf_commands() -> Iterator[tuple[str, click.Command]]:
-    """Every leaf command in the real CLI, keyed by its full command path."""
+    """Every command in the real CLI that has a body, keyed by its command path.
+
+    Groups are yielded too when they carry a callback of their own: an
+    ``invoke_without_command=True`` group (``moneybin import inbox``) is a
+    command that audits like any other, and a walk that recursed past it left
+    one real divergence outside every check here.
+    """
     root = typer.main.get_command(app)
 
     def walk(cmd: click.Command, path: list[str]) -> Iterator[tuple[str, Any]]:
+        if cmd.callback is not None and path != ["moneybin"]:
+            yield " ".join(path), cmd
         if isinstance(cmd, click.Group):
             for name in sorted(cmd.commands):
                 yield from walk(cmd.commands[name], [*path, name])
-        else:
-            yield " ".join(path), cmd
 
     yield from walk(root, ["moneybin"])
+
+
+def _audit_actors(command: click.Command) -> tuple[str | None, set[str], bool]:
+    """``(failure actor, success actors, guarded)`` declared in a command's body.
+
+    The failure actor is the literal passed to ``handle_cli_errors``, or None
+    when the call is bare and the derivation supplies it.
+    """
+    callback = command.callback
+    if callback is None:  # pragma: no cover - filtered by _leaf_commands
+        return None, set(), False
+    try:
+        source = textwrap.dedent(inspect.getsource(callback))
+    except (OSError, TypeError):  # pragma: no cover - source always available
+        return None, set(), False
+    failure: str | None = None
+    success: set[str] = set()
+    guarded = False
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        keywords = {k.arg: k.value for k in node.keywords if k.arg}
+        literal = keywords.get("cli_actor")
+        value = (
+            literal.value
+            if isinstance(literal, ast.Constant) and isinstance(literal.value, str)
+            else None
+        )
+        if name == "handle_cli_errors":
+            guarded = True
+            failure = failure or value
+        elif name in {"render_or_json", "render_export_receipt"} and value:
+            success.add(value)
+    return failure, success, guarded
 
 
 def _expected_actor(command_path: str) -> str:
@@ -107,6 +148,7 @@ def _declared_actors(command: click.Command) -> set[str]:
 _LEGACY_ACTOR_DIVERGENCES: frozenset[tuple[str, str]] = frozenset({
     ("moneybin import confirm", "import_confirm_command"),
     ("moneybin import files", "import_files_command"),
+    ("moneybin import inbox", "inbox_default"),
     ("moneybin import inbox list", "inbox_list"),
     ("moneybin import inbox path", "inbox_path"),
     ("moneybin refresh", "refresh_command"),
@@ -160,6 +202,36 @@ def test_derived_actor_matches_every_hand_written_actor() -> None:
         "what it claims to check"
     )
     assert diverging == _LEGACY_ACTOR_DIVERGENCES
+
+
+def test_failure_and_success_audit_one_command_under_one_name() -> None:
+    """No command may report one actor when it succeeds and another when it fails.
+
+    This is the invariant the derivation exists to establish, and it is not the
+    same as the equivalence check above. Deriving the failure actor while the
+    success path keeps a hand-written name does not close the split — it
+    disguises it, because the derived failure row looks authoritative where
+    `cli.unknown` was visibly unattributed. A command whose success path uses a
+    name the derivation cannot produce must therefore pass that same name to
+    `handle_cli_errors`, and 22 of them do.
+    """
+    split: set[tuple[str, str, str]] = set()
+    compared = 0
+    for command_path, command in _leaf_commands():
+        failure, success, guarded = _audit_actors(command)
+        if not guarded or not success:
+            continue
+        failure_actor = failure or _expected_actor(command_path)
+        for success_actor in success:
+            compared += 1
+            if success_actor != failure_actor:
+                split.add((command_path, failure_actor, success_actor))
+
+    assert compared >= _MIN_EQUIVALENCE_SAMPLE, (
+        f"only {compared} commands compared — the source scan found far fewer "
+        "audited commands than the CLI has"
+    )
+    assert split == set()
 
 
 def test_every_command_derives_a_usable_actor() -> None:

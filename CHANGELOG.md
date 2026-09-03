@@ -153,9 +153,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   provenances for one command depending only on whether it succeeded. Both
   paths now read the name off the command actually invoked
   (`moneybin mcp list-tools` audits as `cli.mcp_list_tools`), so a failure and a
-  success from one command agree. No existing actor string changes: the 21
+  success from one command agree. No existing actor string changes: the 22
   commands whose hand-written name predates this keep it, because renaming a
-  shipped actor falsifies past audit rows. `cli.unknown` survives only for a
+  shipped actor falsifies past audit rows — and each now hands that same name
+  to its failure path, since deriving one there would have disguised the split
+  rather than closed it, a derived failure row reading as authoritative where
+  `cli.unknown` was visibly unattributed. `cli.unknown` survives only for a
   call with no command behind it at all. The failure row's *tier* is unchanged
   and still defaults to the conservative `high` with no returned classes unless
   the command names its payload — that value is knowable only from the envelope
