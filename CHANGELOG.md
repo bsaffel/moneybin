@@ -11,6 +11,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Every row in `accounts list` and `transactions list` now names its account
+  in a column you can quote back.** `accounts list` had glued the account id
+  onto the display name — `Checking (acct_a1b2)` — so selecting the id meant
+  editing a substring out of a rendered cell. `transactions list` named no
+  account at all, so two rows from different accounts on the same date for the
+  same amount were indistinguishable. Both now render `account_id` as its own
+  column and leave the display column to the display name. Neither payload
+  changed: `--output json` carried the id on both surfaces already. (#515)
+
+- **A truncated page states how much it left behind instead of printing a
+  cursor.** `transactions list` ended a capped page with
+  `Next page: --cursor <token>` — an opaque continuation token belonging to the
+  JSON branch, which a terminal reader cannot reasonably retype and has no use
+  for. The text branch now prints `20 of 2,046 shown · raise --limit for more`,
+  on the same line as the column-narrowing disclosure and the count of unmapped
+  values. `--cursor` is unchanged and still documented for `--output json`.
+  (#515)
+
 - **The last eight commands that drew their own columns now render like every
   other one.** `db ps`, `db kill`, `demo`, `fx list`, `import history`,
   `import formats list`, and the four `investments` list commands each built a
@@ -232,6 +250,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **A Plaid transaction's category column no longer holds Plaid's own category
+  code.** `prep.int_transactions__unioned` aliased the raw
+  personal-finance-category code into `category`, so one rendered column mixed
+  two vocabularies — `FOOD_AND_DRINK` from a Plaid row beside `Food & Drink`
+  from a categorized one — depending only on which source the row came from.
+  The plaid branch now contributes nothing to `category`; the code stays in
+  `plaid_category`, where the categorizer already reads it and where
+  `moneybin sql query` can still reach it. The `tabular` and `manual` branches
+  are unchanged, because those columns hold category text a person wrote.
+
+  Two consequences went with it. **`core.uncategorized_queue` was near-empty on
+  a Plaid profile** — it selects `WHERE category IS NULL`, and every Plaid row
+  had a code sitting there, so transactions the categorizer had never resolved
+  were silently excluded from the curation queue. The queue and every count
+  drawn from it **grow** after this change, the inverse of the drop in #502 and
+  for the same reason: the definition now matches the word. And **report
+  grouping no longer splits a category's total**, which had counted the same
+  spend once under the provider code and once under the MoneyBin category.
+  (#515)
+
+- **An absent category renders `Uncategorized` rather than an empty cell or a
+  dash.** `transactions list` printed nothing and `transactions splits` printed
+  `-` for the same state, and neither said how many rows were in it. Both now
+  draw on one placeholder, and the line beneath the table counts it
+  (`… · 7 uncategorized`), so the label is disclosed as a stand-in rather than
+  read as a category a curator chose. (#515)
+
 - **An amount no longer folds across two lines.** Folding is the right failure
   for an identifier — an account id or a display name ending in a masked last
   four wraps rather than losing the characters that tell two rows apart — but
