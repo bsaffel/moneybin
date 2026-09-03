@@ -877,6 +877,76 @@ class TestHoldingsAndGains:
         assert data["data"]["warnings"]
 
     @pytest.mark.unit
+    def test_gains_discloses_an_incomplete_basis_even_under_quiet(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """A conservative gain may not print as though it were the whole figure.
+
+        `gain` is computed against a basis the row itself knows is a floor, so
+        saying so qualifies the answer rather than commenting on the run. This
+        command raises no other warning, so the line is not gated on `-q` — the
+        1099-B figures would otherwise read as authoritative with nothing on
+        screen to say they are not.
+
+        `investments lots list` meets the same requirement with a per-row
+        marker in its default view. This table cannot: measured at 80 columns,
+        a seventh column folds the disposal date and the security id and breaks
+        the marker across three lines. So the marker is declared and reachable
+        with `--wide`, and the disclosure itself always prints. Both halves are
+        pinned here, because either alone leaves `-q` output silent about it.
+        """
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id,
+                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                 cost_basis, gain_loss, term, cost_basis_method,
+                 basis_incomplete, currency_code)
+            VALUES ('gain_quiet', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a',
+                    5, '2024-01-01', '2024-06-12', 950.00, 0.00, 950.00,
+                    'long', 'fifo', true, 'USD')
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        quiet = runner.invoke(app, ["investments", "gains", "-q"])
+
+        assert quiet.exit_code == 0, quiet.output
+        assert "incomplete cost basis" in quiet.stderr
+        # The disclosure is a diagnostic, so it stays off the data stream.
+        assert "incomplete cost basis" not in quiet.stdout
+
+    @pytest.mark.unit
+    def test_gains_wide_names_which_rows_have_an_incomplete_basis(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """The warning counts the rows; only the column says which ones."""
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id,
+                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                 cost_basis, gain_loss, term, cost_basis_method,
+                 basis_incomplete, currency_code)
+            VALUES ('gain_floor', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a',
+                    5, '2024-01-01', '2024-06-12', 950.00, 0.00, 950.00,
+                    'long', 'fifo', true, 'USD'),
+                   ('gain_whole', 'acct_brokerage', 'sec_2', 'sell_2', 'lot_b',
+                    5, '2024-01-01', '2024-06-13', 950.00, 750.00, 200.00,
+                    'long', 'fifo', false, 'USD')
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        wide = runner.invoke(app, ["investments", "gains", "--wide"])
+
+        assert wide.exit_code == 0, wide.output
+        assert wide.stdout.count("basis_incomplete") == 1
+
+        narrow = runner.invoke(app, ["investments", "gains"])
+
+        assert narrow.exit_code == 0, narrow.output
+        assert "basis_incomplete" not in narrow.stdout
+
+    @pytest.mark.unit
     def test_gains_text_names_its_columns_and_signs_the_gain(
         self, runner: CliRunner, db: Database, wide_terminal: None
     ) -> None:

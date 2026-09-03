@@ -438,6 +438,7 @@ _GAINS_COLUMNS: tuple[tuple[str, Callable[[RealizedGainRow], object]], ...] = (
     ("gain", lambda r: r.gain_loss),
     ("currency", lambda r: currency_label(r.currency_code)),
     ("term", lambda r: r.term),
+    ("note", lambda r: "\u26a0\ufe0f basis_incomplete" if r.basis_incomplete else ""),
 )
 
 _GAINS_DEFAULT = ("disposed", "security", "proceeds", "gain", "currency", "term")
@@ -445,10 +446,17 @@ _GAINS_DEFAULT = ("disposed", "security", "proceeds", "gain", "currency", "term"
 and how it is taxed.
 
 Quantity and cost basis are the arithmetic behind the gain rather than the
-answer, so `--wide` carries them.
+answer, so `--wide` carries them, and `note` goes with them for a width reason
+rather than a relevance one. `investments lots list` keeps its identical marker
+in the default view because six columns fit there; measured at 80 with a
+production-width security id, a seventh column here folds the disposal date and
+the security id and breaks `⚠️ basis_incomplete` itself across three lines. The
+requirement both tables answer is that an incomplete basis must survive `-q` —
+the marker is how `lots list` meets it, and the ungated warning below is how
+this one does.
 
-`currency` is not one of those. This command takes no currency filter, so one
-unfiltered call can span accounts denominated differently, and
+`currency` is not `--wide` material either. This command takes no currency
+filter, so one unfiltered call can span accounts denominated differently, and
 `multi-currency.md` makes the row's own `currency_code` the canonical unit of
 its `proceeds`, `basis` and `gain`. Two rows reading `+200.00` are then not the
 same quantity, with nothing on screen to say so — the same reason
@@ -474,7 +482,7 @@ def investments_gains(
         None, "--term", help="Filter by holding term: short or long"
     ),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — the one note here is a disclosure
     wide: bool = wide_option,
 ) -> None:
     """Realized gain/loss (the 1099-B surface) from the realized-gains fact table.
@@ -482,7 +490,13 @@ def investments_gains(
     Shows when each position was disposed, what it was, what it fetched, the
     gain or loss, the currency those figures are denominated in, and whether
     the holding term was short or long. ``--wide`` adds the quantity and cost
-    basis the gain was computed from.
+    basis the gain was computed from, and a ``note`` column marking each row
+    whose basis is known to be incomplete.
+
+    When any row's basis is incomplete the command says so on stderr, and
+    ``-q`` does not silence it: the gain shown for such a row is a conservative
+    figure rather than the whole one, which qualifies the answer rather than
+    commenting on the run.
     """
     with handle_cli_errors(
         cli_actor="investments_gains", payload_type=InvestmentGainsPayload
@@ -523,7 +537,14 @@ def investments_gains(
             total_columns=view.total,
         )
     for w in result.warnings:
-        render_note(f"⚠️  {w}", quiet=quiet, warn=True)
+        # Not gated on `quiet`. `gains` raises exactly one warning — that some
+        # row's cost basis is incomplete — and that is a disclosure about the
+        # figures rather than a status line about the run: `-q` output would
+        # otherwise show a conservative gain as an authoritative one. The
+        # `note` column names which rows, but only under `--wide`, because a
+        # seventh column does not fit 80 columns. `investments lots list` meets
+        # the same requirement with its marker in the default view instead.
+        render_note(f"⚠️  {w}", warn=True)
 
 
 app.add_typer(lots.app, name="lots")

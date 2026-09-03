@@ -820,8 +820,16 @@ $ moneybin investments gains --account fidelity_brokerage --from 2024-01-01
 │ 2024-06-12 │ a3f19c02b8e1 │   950.00 │ +200.00 │ USD      │ long  │
 │ 2024-09-03 │ c81a5f6039db │ 9,500.00 │ +500.00 │ USD      │ short │
 └────────────┴──────────────┴──────────┴─────────┴──────────┴───────┘
-6 of 8 columns shown — --wide for all
+6 of 9 columns shown — --wide for all
 ```
+
+`--wide` adds the quantity and the cost basis the gain was computed from, plus
+a `note` column marking each row whose basis is known to be incomplete. That
+marker sits in `investments lots list`'s default view but not this one: a
+seventh column here folds the disposal date and the security id and breaks the
+marker itself across three lines at 80 columns. The requirement it exists for —
+that an incomplete basis is never invisible — is met on this command by the
+warning instead, which is the one note `-q` does not silence.
 
 ## MCP Interface
 

@@ -2271,14 +2271,11 @@ _HISTORY_COLUMNS: tuple[
     ("status", lambda rec: str(rec.get("status", ""))),
     ("imported", lambda rec: rec.get("rows_imported") or 0),
     ("rejected", lambda rec: rec.get("rows_rejected") or 0),
-    # The basename, not the path: the directory is not part of the import's
-    # identity and pushes the column past any width.
-    (
-        "source file",
-        lambda rec: (
-            Path(str(rec.get("source_file", ""))).name if rec.get("source_file") else ""
-        ),
-    ),
+    # The whole path, not the basename: `source_file` is part of the dedup key
+    # on `raw.tabular_transactions`, so the same name under two directories is
+    # two imports and the basename answers which one wrong. `render_rows` folds
+    # text rather than truncating it, so width is the renderer's problem here.
+    ("source file", lambda rec: str(rec.get("source_file") or "")),
 )
 
 _HISTORY_DEFAULT = ("import", "status", "imported", "rejected")

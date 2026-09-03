@@ -434,9 +434,33 @@ def test_import_history_renders_a_table_not_a_padded_rule(
     assert "-" * 100 not in result.stdout
     for header in ("import", "status", "imported", "rejected", "source file"):
         assert header in result.stdout
-    # The basename is what the roll shows; the directory is not the identity.
-    assert "january.csv" in result.stdout
-    assert "/data/statements" not in result.stdout
+    # The whole path, which is what tells two same-named imports apart.
+    assert "/data/statements/january.csv" in result.stdout
+
+
+def test_import_history_distinguishes_same_named_files(wide_terminal: None) -> None:
+    """The same file name under two directories is two imports, not one.
+
+    `source_file` is part of `raw.tabular_transactions`' dedup key, so the same
+    content read from a different path is a different import. The column exists
+    to answer which one, and a basename cannot.
+    """
+    records = [
+        dict(_HISTORY_RECORDS[0], source_file="/checking/january.csv"),
+        dict(_HISTORY_RECORDS[1], source_file="/savings/january.csv"),
+    ]
+    with (
+        patch("moneybin.database.get_database", _fake_db_ctx),
+        patch(
+            "moneybin.extractors.tabular.TabularExtractor.get_import_history",
+            return_value=records,
+        ),
+    ):
+        result = runner.invoke(app, ["history", "--wide"], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert "/checking/january.csv" in result.stdout
+    assert "/savings/january.csv" in result.stdout
 
 
 def test_import_history_renders_one_row_per_import(wide_terminal: None) -> None:

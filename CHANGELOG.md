@@ -59,6 +59,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   position from one with a known-wrong share count when both render `-`, and
   `lots list` keeps the marker that says a cost basis is a floor rather than a
   figure. Each had one substitute — a warning line — and `-q` suppresses those.
+  `gains` meets the same requirement the other way, because it cannot seat the
+  column: at 80 columns a seventh entry folds the disposal date and the
+  security id and breaks `⚠️ basis_incomplete` itself across three lines. So
+  the marker is declared and reachable with `--wide`, and the line disclosing
+  that a realized gain was computed against an incomplete basis is no longer
+  silenced by `-q` — the figures on a 1099-B surface would otherwise read as
+  authoritative with nothing on screen to say they are conservative.
+
+  **`import history --wide` shows the whole source path.** The column had been
+  projecting the basename, so two imports of `january.csv` from a per-account
+  `checking/` and `savings/` folder rendered as indistinguishable rows —
+  and `source_file` is part of the dedup key on `raw.tabular_transactions`
+  precisely because the same content read from a different path is a different
+  import. The full path now reaches the renderer, which folds text rather than
+  discarding the half that tells the two apart.
 
   An amount's denomination stays with it for the same reason. None of
   `investments list`, `gains`, `lots list`, or `holdings` takes a currency
