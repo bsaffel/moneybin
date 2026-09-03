@@ -89,7 +89,7 @@ def refresh_command(
     steps: list[str] | None = [s.value for s in step] if step else None
 
     with (
-        handle_cli_errors(),
+        handle_cli_errors(cli_actor="refresh_command"),
         get_database(read_only=False, operation_type="transform_apply") as db,
     ):
         result = refresh(db, steps=steps)
