@@ -246,6 +246,12 @@ class TestAccountsList:
         assert result.exit_code == 0, result.stderr
         assert "Chase Checking" in result.stdout
         assert "acct_a" in result.stdout
+        # Requirement 28 is about the header, not only the value: the two
+        # tables join visibly because both spell the column `account_id`, and
+        # every other assertion here passes just as well if this one is
+        # renamed back to `id`. `transactions list` is pinned the same way by
+        # `test_list_text_names_the_account_column_for_the_key_it_holds`.
+        assert "account_id" in result.stdout
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
