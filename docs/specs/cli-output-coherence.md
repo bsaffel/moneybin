@@ -1117,7 +1117,7 @@ today's code. Two need specific shapes:
   result framing — not a `render_note`, which requirement 4 suppresses under `-q`
   — and that `--output json` still carries the NULL. A fully-mapped fixture
   passes trivially.
-- **F10** — two assertions, because requirement 34 both adds and deletes.
+- **F10** — three assertions, because requirement 34 adds, deletes, and gates.
   The first: a paged text run renders `N of M shown` with `M` equal to
   `total_count`, not to the page length, which requires a fixture whose match
   count exceeds its `--limit`. The second: **no text-branch output contains
