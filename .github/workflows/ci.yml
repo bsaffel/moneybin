@@ -84,11 +84,12 @@ jobs:
       - name: Type check
         run: uv run pyright
 
-  # Docs-only PRs skip every code job above, which is exactly when the
-  # documentation-policy tests (CLI invocations resolve, links, MCP surface
-  # prose) need to run. Pushes to main and code PRs cover them in test-unit.
-  docs-policy:
-    name: Documentation policy
+  # Docs-only PRs skip every code job above. The unit suite is what reads
+  # the docs (the policy guards, the MCP-surface prose checks, the
+  # spec-status tests), so run it once, unsharded, on exactly those PRs.
+  # Pushes to main and code PRs cover it through the sharded test-unit job.
+  test-unit-docs-only:
+    name: Unit tests (docs-only PR)
     needs: [changes]
     if: needs.changes.outputs.code == 'false' && github.event_name == 'pull_request' && !inputs.record_durations
     runs-on: ubuntu-latest
@@ -109,7 +110,7 @@ jobs:
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       - name: Test
-        run: uv run pytest tests/test_documentation_policy.py tests/moneybin/test_docs -n logical
+        run: uv run pytest tests/ -m unit -n logical
 
   # Test jobs select by marker across the whole tests/ tree, not by
   # directory. Every test ends up with exactly one of

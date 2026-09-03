@@ -321,8 +321,10 @@ _SHELL_LANGS = {"", "bash", "sh", "shell", "zsh", "console", "shell-session", "t
 _INLINE_CODE = re.compile(r"`((?:[^`\n]|\n(?!\n))+)`")
 _INVOCATION_START = re.compile(r"(?<![\w./:@-])moneybin(?=\s+[A-Za-z<*{-])")
 _TERMINATORS = {"|", "||", "&&", ";", ">", ">>", "2>", "<"}
-_REDIRECTION = re.compile(r"^(\d*[<>]|&>|&$)")  # `2>&1`, `>/dev/null`, a trailing `&`
+# `2>&1`, `>/dev/null`, a trailing `&`. Not `<`: that opens a placeholder.
+_REDIRECTION = re.compile(r"^(\d*>|&>|&$)")
 _ELISIONS = {"...", "…"}
+_FLAG_SPAN = re.compile(r"-{1,2}[A-Za-z]")  # `-y, --yes`, not a lone `-` cell
 _COMMAND_SUBSTITUTION = re.compile(r"\$\([^()]*\)")
 _ANGLE_PLACEHOLDER = re.compile(r"<[^<>]*>")
 _OPTIONAL_SEGMENT = re.compile(r"\[([^\[\]]*)\]")
@@ -348,8 +350,9 @@ def _inline_spans(
 ) -> list[tuple[int, str]]:
     """Inline code spans in one run of prose, each on the line it opens.
 
-    A span in a table row whose first word is a top-level command is the CLI
-    reference's command column: read it as `moneybin …`.
+    With ``top_level`` (the CLI reference), a table row whose first span starts
+    with a top-level command is read as `moneybin …`, and the row's flag spans
+    (`-y, --yes`) are appended so the flags column is checked as well.
     """
     if not prose:
         return []
@@ -358,10 +361,15 @@ def _inline_spans(
     for match in _INLINE_CODE.finditer(joined):
         number = first + joined.count("\n", 0, match.start())
         span = " ".join(match.group(1).split())
+        line = prose[number - first][1]
+        line_start = joined.rfind("\n", 0, match.start()) + 1
+        first_in_row = "`" not in joined[line_start : match.start()]
         words = span.split(maxsplit=1)
-        in_table_row = prose[number - first][1].lstrip().startswith("|")
-        if in_table_row and words and words[0] in top_level:
-            span = f"moneybin {span}"
+        if top_level and line.lstrip().startswith("|") and first_in_row:
+            if words and words[0] in top_level:
+                row_spans = [" ".join(s.split()) for s in _INLINE_CODE.findall(line)]
+                flags = [s for s in row_spans[1:] if _FLAG_SPAN.match(s)]
+                span = " ".join(["moneybin", span, *flags])
         spans.append((number, span))
     return spans
 
@@ -434,6 +442,8 @@ def _invocations(code: str) -> list[list[str]]:
             ):
                 break
             command.append(token if token in _ELISIONS else token.rstrip(";,.)"))
+            if token.endswith(";"):  # `db lock; moneybin db unlock`
+                break
         found.append(command)
     return found
 
@@ -484,20 +494,34 @@ def _resolve_invocation(tokens: list[str], root: click.Command) -> str | None:
             continue
         if token in {"*", "…", "..."}:  # noqa: S105  # CLI argument, not a secret
             return None  # a wildcard or elision: nothing checkable past it
-        if token.startswith("-") and len(token) > 1 and not options_done:
+        if (
+            token.startswith("-")
+            and len(token) > 1
+            and not token[1].isdigit()  # `-12.50` is a value, not an option
+            and not options_done
+        ):
             name, has_inline_value = token.split("=", 1)[0], "=" in token
+            aliases = name.split("/")  # `--refresh/--no-refresh`: each must exist
+            if any("<" in alias for alias in aliases):
+                continue  # `--clear-<field>`: a placeholder for an option family
+            options = [p for p in node.params if isinstance(p, click.Option)]
+            declared = {
+                alias for p in options for alias in (*p.opts, *p.secondary_opts)
+            }
+            unknown = [alias for alias in aliases if alias not in declared]
+            if unknown:
+                return f"`{' '.join(path)}` does not accept option `{unknown[0]}`"
             option = next(
-                (
-                    param
-                    for param in node.params
-                    if isinstance(param, click.Option)
-                    and name in (*param.opts, *param.secondary_opts)
-                ),
-                None,
+                p for p in options if aliases[0] in (*p.opts, *p.secondary_opts)
             )
-            if option is None:
-                return f"`{' '.join(path)}` does not accept option `{name}`"
-            if not option.is_flag and not has_inline_value:
+            following = tokens[index] if index < len(tokens) else ""
+            # A bare value-taking option in a flags column (`--pattern`,
+            # `--match-type {exact,contains,regex}`) must not swallow the next
+            # flag; a negative number (`--amount -12.50`) is still a value.
+            looks_like_option = (
+                following.startswith("-") and not following[1:2].isdigit()
+            )
+            if not option.is_flag and not has_inline_value and not looks_like_option:
                 index += 1  # the option's value
             continue
         if _is_placeholder(token):
@@ -534,9 +558,10 @@ def test_public_docs_cli_invocations_resolve() -> None:
 
     Registered means the group and subcommand exist and every option is one
     the command declares; option values and placeholders are not checked. A
-    table row whose first code span starts with a top-level command (the CLI
-    reference's command column) is read as `moneybin …`. A line that must
-    show a wrong invocation on purpose (an error example) carries
+    row of the CLI reference tables whose first code span starts with a
+    top-level command is read as `moneybin …` with the row's flag spans
+    appended, so the flags column is checked too. A line that must show a
+    wrong invocation on purpose (an error example) carries
     ``<!-- cli-invocation-ok: <reason> -->``.
     """
     from typer.main import get_command
@@ -553,7 +578,8 @@ def test_public_docs_cli_invocations_resolve() -> None:
             for number, line in enumerate(text.splitlines(), start=1)
             if _CLI_INVOCATION_MARKER in line
         }
-        for number, code in _join_continuations(_code_lines(text, root.commands)):
+        top_level = root.commands if document.name == "cli-reference.md" else ()
+        for number, code in _join_continuations(_code_lines(text, top_level)):
             if number in allowed_lines:
                 continue
             for tokens in _invocations(code):
@@ -567,4 +593,41 @@ def test_public_docs_cli_invocations_resolve() -> None:
         "registered command tree (run `uv run moneybin <group> --help`). Fix the "
         "doc, or mark a deliberate error example with "
         "`<!-- cli-invocation-ok: reason -->`.\n" + "\n".join(violations)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Refresh-cascade spellings in public docs match the runtime order
+# ---------------------------------------------------------------------------
+
+
+def test_public_docs_refresh_cascades_match_runtime() -> None:
+    """Every `a → b → c` chain of refresh steps in a user-facing doc is canonical.
+
+    A chain must list steps in the runtime's order; one that starts at the
+    first step, or spans four or more, must run to the last step. A chain of a
+    few middle steps stays free to describe a partial run. The derived literals
+    in test_mcp_surface_docs.py pin the pipeline guide's own summary; this scans
+    every other spelling, so a step appended to the cascade cannot leave a guide
+    stale and green.
+    """
+    from moneybin.services.refresh import CANONICAL_STEPS
+
+    step = "|".join(CANONICAL_STEPS)
+    chain = re.compile(rf"\b(?:{step})(?: → (?:{step}))+\b")
+    violations: list[str] = []
+    for document in _user_facing_documents():
+        for number, line in enumerate(document.read_text().splitlines(), start=1):
+            for found in chain.findall(line):
+                names = found.split(" → ")
+                order = [CANONICAL_STEPS.index(name) for name in names]
+                in_order = order == sorted(set(order))
+                must_finish = names[0] == CANONICAL_STEPS[0] or len(names) >= 4
+                finished = names[-1] == CANONICAL_STEPS[-1]
+                if not in_order or (must_finish and not finished):
+                    relative = document.relative_to(_REPO_ROOT)
+                    violations.append(f"{relative}:{number}: `{found}`")
+    assert not violations, (
+        "Public docs spell a refresh cascade that does not match "
+        f"`{' → '.join(CANONICAL_STEPS)}`:\n" + "\n".join(violations)
     )

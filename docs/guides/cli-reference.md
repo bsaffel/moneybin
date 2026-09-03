@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-03 -->
 # CLI Reference
 
 MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
@@ -257,7 +257,7 @@ Browsing transactions and per-transaction state (notes, tags, splits, manual ent
 | Command | Purpose | Key flags |
 |---|---|---|
 | `transactions list` | List transactions with filters. `--cursor` takes the `next_cursor` from a previous `--output json` response; treat it as opaque and restart from page one if it is rejected. | `--account`, `--from`, `--to`, `--limit`, `--category`, `--uncategorized`, `--cursor` |
-| `transactions create` | Create a manual transaction (no upstream source). | `--account-id`, `--date`, `--amount`, `--description`, `--category` |
+| `transactions create <amount> <description>` | Create a manual transaction (no upstream source). | `--account`, `--date`, `--category`, `--merchant`, `--memo`, `--currency`, `-y, --yes` |
 | `transactions audit <transaction-id>` | Show the audit chain for one transaction. | — |
 | `transactions review` | Deprecated alias for the top-level `review`; removed after one minor release. | Same flags as `review` |
 
@@ -361,13 +361,13 @@ Account entities (dim records) plus per-account workflows.
 |---|---|---|
 | `accounts list` | List accounts. Hides archived by default. | `--include-archived`, `--type <subtype>` |
 | `accounts get <account-id>` | Show one account's full dim record + settings. | — |
-| `accounts set <account-id>` | Update structural and behavioral fields. At least one field flag required. | `--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--default-cost-basis-method`, `--display-name`, `--include/--exclude`, `--archive/--unarchive`, `--clear-FIELD`, `-y, --yes` |
+| `accounts set <account-id>` | Update structural and behavioral fields. At least one field flag required. | `--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--default-cost-basis-method`, `--display-name`, `--include/--exclude`, `--archive/--unarchive`, `--clear-<field>`, `-y, --yes` |
 | `accounts resolve <query>` | Fuzzy-match a free-text reference (e.g., `"my Chase account"`) to ranked account-ID candidates. Use this before commands that need an account-id. | `-n, --limit` |
 | `accounts balance show` | Current or as-of balance per account. | `--account <account-id>`, `--as-of <date>` |
 | `accounts balance list` | Latest balance across all accounts. | — |
 | `accounts balance history --account <account-id>` | Balance history with daily carry-forward interpolation. | `--from`, `--to` |
-| `accounts balance assert <account-id> <amount>` | Record a point-in-time balance assertion (reconciles via delta row). | `--as-of <date>` |
-| `accounts balance assertion-delete <assertion-id>` | Delete one balance assertion. | `-y, --yes` |
+| `accounts balance assert <account-id> <date> <amount>` | Record a point-in-time balance assertion (reconciles via delta row). | `--notes`, `-y, --yes` |
+| `accounts balance assertion-delete <account-id> <date>` | Delete one balance assertion. | `-y, --yes` |
 | `accounts balance reconcile` | Observed balance days whose reconciliation delta is non-zero. | `--account <account-id>`, `--threshold` |
 | `accounts links pending` | Provisional accounts and the merges proposed for them, with the ledger evidence behind each. | `-o/--output`, `-q` |
 | `accounts links set <decision-id>` | Merge the provisional into a candidate, or keep it standalone. | `--into <account-id>`, `--standalone`, `-y, --yes` |
@@ -526,14 +526,14 @@ Lifecycle, exploration, and key management on the encrypted database.
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `db init` | Create a new encrypted database for the active profile. | `--force` |
+| `db init` | Create a new encrypted database for the active profile. | `--passphrase`, `-y, --yes` |
 | `db info` | Database metadata: size, table list, encryption status, SQLMesh and migration versions. | — |
 | `db shell` | Interactive DuckDB SQL shell against the active profile's database. | — |
 | `db ui` | Open the DuckDB web UI in a browser. | — |
-| `db query <sql>` | Run one SQL query. Output formats: `text`, `json`, `csv`, `markdown`, `box`. JSON here is raw rows, not the envelope. | `-o, --output`, `--params` |
+| `db query <sql>` | Run one SQL query. Output formats: `text`, `json`, `csv`, `markdown`, `box`. JSON here is raw rows, not the envelope. | `-o, --output`, `-q, --quiet` |
 | `db lock` | Lock the database (purge the cached key). | — |
 | `db unlock` | Unlock the database (load the key from keychain). | — |
-| `db backup` | Create a timestamped encrypted backup. | `--dest <path>` |
+| `db backup` | Create a timestamped encrypted backup. | `-o, --output <path>` |
 | `db restore` | Restore from a backup file. | `--from <backup-path>`, `--latest`, `-y, --yes` |
 | `db ps` | List processes currently holding the database file. | — |
 | `db kill` | Kill processes holding the database. | `-y, --yes` |

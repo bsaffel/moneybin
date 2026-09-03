@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-03 -->
 # Observability
 
 What MoneyBin records about itself, how to read it, and what's intentionally NOT recorded. Three surfaces: structured logs (per-profile log files + stderr), persisted metrics (in the `app.metrics` table), and the `system doctor` integrity sweep. The privacy threat model lives in [`threat-model.md`](threat-model.md); this guide is operational.

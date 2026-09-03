@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-03 -->
 # MoneyBin
 
 Personal financial data platform: it ingests a person's financial records from

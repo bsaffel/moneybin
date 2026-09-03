@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-20 -->
+<!-- Last reviewed: 2026-09-03 -->
 # System Overview
 
 MoneyBin is a local-first, AI-native personal finance platform. This page is the orientation map — what each major piece does, how they fit together, and what runs when. For the architectural depth (primitives, contracts, layers, internal invariants), see [`docs/architecture.md`](../architecture.md). For column-level schema, see [`data-model.md`](data-model.md). For the full reference, see [`docs/specs/architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md).

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-03 -->
 # MoneyBin Documentation
 
 Every page, ordered by what you are trying to do. Guides are how-tos, reference pages are lookup material, [`specs/`](specs/) holds design records, and [`decisions/`](decisions/) holds ADRs.

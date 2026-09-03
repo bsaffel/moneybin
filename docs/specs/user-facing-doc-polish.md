@@ -159,9 +159,11 @@ decisions outlive the session that made them.
 
 **Findings that drove the pass.** Drift ran one direction: docs described
 shipped features as planned (multi-currency conversion, export, account merge,
-price feeds, the PyPI publish workflow). Eleven CLI invocations across the
-guides and top-level pages named commands or options that do not exist, and
-one guide misdescribed what `categorize assist` sends to the model.
+price feeds, the PyPI publish workflow). The audit found eleven CLI
+invocations across the guides and top-level pages that named commands or
+options that do not exist; the guard that followed, reading the CLI reference
+tables too, found 34. One guide misdescribed what `categorize assist` sends
+to the model.
 Hand-maintained inventories (command trees, tool lists, client counts) rotted
 within six weeks of being written. Generation plus a guard is the durable fix;
 another hand pass is not.
