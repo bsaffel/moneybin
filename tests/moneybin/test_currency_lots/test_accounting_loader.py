@@ -537,6 +537,46 @@ def test_missing_conversion_valuation_preserves_both_quantity_movements() -> Non
     assert result.gains[0].coverage_reason == "missing_valuation_rate"
 
 
+def test_average_missing_rate_marks_every_open_currency_lot_incomplete() -> None:
+    missing = _conversion(
+        conversion_id="fxc_missing",
+        to_account_id="acct-eur",
+        to_amount=D("50.00"),
+        to_currency="EUR",
+        home_value=None,
+        valuation_rate=None,
+        valuation_rate_date=None,
+        valuation_source_type=None,
+        coverage_status="incomplete",
+        coverage_reason="missing_valuation_rate",
+    )
+    valued = _conversion(
+        conversion_id="fxc_valued",
+        from_transaction_id="usd-out-2",
+        to_transaction_id="eur-in-2",
+        to_account_id="acct-eur",
+        to_amount=D("50.00"),
+        to_currency="EUR",
+        home_value=D("100.00"),
+        updated_at=T2,
+    )
+
+    result = _derive(
+        missing,
+        valued,
+        methods={"acct-eur": "average"},
+    )
+
+    assert len(result.lots) == 2
+    by_source = {lot.source_conversion_id: lot for lot in result.lots}
+    assert by_source["fxc_missing"].coverage_reason == "missing_valuation_rate"
+    assert by_source["fxc_valued"].coverage_reason == "incomplete_history"
+    for lot in result.lots:
+        assert lot.basis_incomplete is True
+        assert lot.cost_basis_total is None
+        assert lot.cost_basis_remaining is None
+
+
 def test_unvalued_security_sale_quantity_is_consumed_by_later_disposal() -> None:
     """An unvalued sale lot remains real inventory rather than a placeholder."""
     disposal = _conversion(

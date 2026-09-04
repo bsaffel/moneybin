@@ -322,9 +322,15 @@ class CurrencyService:
             # audit before/after image, so one oversized string is stored
             # repeatedly rather than once.
             validate_note_text(note)
-        return ExchangeRateOverridesRepo(self._db).set(
+        event = ExchangeRateOverridesRepo(self._db).set(
             base, quote, on, rate=rate, note=note, actor=self._actor
         )
+        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+            restate_fx_accounting,
+        )
+
+        restate_fx_accounting(self._db)
+        return event
 
     def delete_override(self, from_currency: str, to_currency: str, on: date) -> bool:
         """Remove one override, returning ``True`` if a row was actually deleted.
@@ -339,7 +345,14 @@ class CurrencyService:
             on,
             actor=self._actor,
         )
-        return event is not None
+        if event is None:
+            return False
+        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+            restate_fx_accounting,
+        )
+
+        restate_fx_accounting(self._db)
+        return True
 
     # -------------------------------- storage --------------------------------
 

@@ -633,6 +633,9 @@ def _reconcile_average_lots(lots: list[Lot], pool: _Pool) -> None:
             lot.cost_basis_remaining = _ZERO_MONEY
     if not open_lots:
         return
+    if pool.basis_incomplete:
+        for lot in open_lots:
+            lot.basis_incomplete = True
     # pool.units == sum of the open lots' remaining quantities, so this is
     # exactly the remaining pooled average and the residual below is <= a cent.
     avg = pool.cost / pool.units

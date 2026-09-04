@@ -695,12 +695,20 @@ def test_set_override_refuses_a_malformed_currency_code(
     assert caught.value.code == error_codes.FX_CURRENCY_INVALID
 
 
-def test_a_lowercase_override_is_found_by_an_uppercase_lookup(db: Database) -> None:
+def test_a_lowercase_override_is_found_by_an_uppercase_lookup(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """One canonical spelling, or a correction is unreachable from the read path."""
+    restated: list[Database] = []
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        restated.append,
+    )
     service = CurrencyService(db, adapter=_StubAdapter(None), actor="test")
     service.set_override(" usd ", "eur", _MON, Decimal("0.95"), note=None)
 
     assert service.resolve_rate("USD", "EUR", _MON).rate == Decimal("0.95")
+    assert len(restated) == 1
 
 
 def test_delete_override_returns_the_date_to_the_provider_rate(db: Database) -> None:
@@ -716,12 +724,42 @@ def test_delete_override_returns_the_date_to_the_provider_rate(db: Database) -> 
 
 
 def test_delete_override_reports_that_there_was_nothing_to_delete(
-    db: Database,
+    db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A silent success reads as 'the override is gone' when there never was one."""
+    restated: list[Database] = []
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        restated.append,
+    )
     service = CurrencyService(db, adapter=_StubAdapter(None), actor="test")
 
     assert service.delete_override("USD", "EUR", _MON) is False
+    assert restated == []
+
+
+def test_override_remains_saved_when_fx_restatement_fails(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failure = UserError(
+        "The setting was saved, but derived FX accounting could not be rebuilt.",
+        code=error_codes.REFRESH_MODEL_FAILED,
+    )
+
+    def fail_restatement(_db: Database) -> None:
+        raise failure
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        fail_restatement,
+    )
+    service = CurrencyService(db, adapter=_StubAdapter(None), actor="test")
+
+    with pytest.raises(UserError) as caught:
+        service.set_override("USD", "EUR", _MON, Decimal("0.95"), note=None)
+
+    assert caught.value.code == error_codes.REFRESH_MODEL_FAILED
+    assert service.resolve_rate("USD", "EUR", _MON).rate == Decimal("0.95000000")
 
 
 def test_list_rates_shows_the_override_that_won_each_date(db: Database) -> None:

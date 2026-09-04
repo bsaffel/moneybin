@@ -1729,6 +1729,31 @@ def test_average_pool_dilution_by_incomplete_transfer_in_flags_every_slice() -> 
         assert lot.remaining_quantity == D("0")
 
 
+def test_average_contaminated_pool_marks_every_open_lot_incomplete() -> None:
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "ti",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=None,
+        ),
+    ]
+
+    lots, gains = _run(events, method_for=_average)
+
+    assert gains == []
+    assert [lot.basis_incomplete for lot in lots] == [True, True]
+    assert sum((lot.cost_basis_remaining for lot in lots), D("0")) == D("100.00")
+
+
 def test_average_pool_incompleteness_clears_after_full_drain() -> None:
     # Pool contaminated then fully drained by a sell; a fresh buy afterward
     # starts a clean pool, so a later sell of ONLY the fresh buy must not

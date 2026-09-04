@@ -709,7 +709,11 @@ Numbered, testable. Tagged by phase.
     **Implemented foundation, 2026-09-04.** Accepted Transfer Decisions and the
     reserved single-row shape now feed `core.bridge_currency_conversions`, with
     canonical Transaction currency inherited from its Account when the source row
-    omits it. A cache-only loader adapts completed conversions and eligible
+    omits it. Relevant committed changes to the Home currency, an Account's
+    Currency or cost-basis method, and exchange-rate overrides — including undoing
+    those changes — trigger a targeted restatement of this bridge and its downstream
+    FX-accounting models before the mutation surface reports success. A cache-only
+    loader adapts completed conversions and eligible
     foreign-Security sale proceeds to the unchanged investments cost-basis engine,
     producing `core.fct_currency_lots` and `core.fct_realized_fx_gains`; unsupported
     or incomplete evidence remains visibly uncovered. The bounded row-count Gauge

@@ -9,7 +9,9 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.metrics import registry as metrics_registry
+from moneybin.services.currency_service import CurrencyService
 from moneybin.services.transform_service import TransformService
+from moneybin.services.undo_service import UndoService
 
 pytestmark = pytest.mark.integration
 
@@ -667,3 +669,57 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
     assert _metric("conversion", "complete") == 6
     assert _metric("currency_lot", "complete") == 5
     assert _metric("realized_fx_gain", "complete") == 3
+
+    override_event = CurrencyService(db, actor="test").set_override(
+        "EUR",
+        "USD",
+        date(2026, 3, 1),
+        Decimal("2.00000000"),
+        note="fixture correction",
+    )
+    corrected = db.execute(
+        """
+        SELECT home_value, valuation_rate, valuation_source_type
+        FROM core.bridge_currency_conversions
+        WHERE conversion_id = 'fxc_9498dd3eb745369b'
+        """
+    ).fetchone()
+    assert corrected == (Decimal("100.00"), Decimal("2.00000000"), "override")
+    corrected_gain = db.execute(
+        """
+        SELECT proceeds, cost_basis, gain_loss
+        FROM core.fct_realized_fx_gains
+        WHERE conversion_id = 'fxc_9498dd3eb745369b'
+        """
+    ).fetchone()
+    assert corrected_gain == (
+        Decimal("100.00"),
+        Decimal("60.00"),
+        Decimal("40.00"),
+    )
+
+    UndoService(db).undo(override_event.operation_id, actor="test")
+    restored = db.execute(
+        """
+        SELECT home_value, valuation_rate, valuation_source_type
+        FROM core.bridge_currency_conversions
+        WHERE conversion_id = 'fxc_9498dd3eb745369b'
+        """
+    ).fetchone()
+    assert restored == (
+        Decimal("75.00"),
+        Decimal("1.50000000"),
+        "frankfurter",
+    )
+    restored_gain = db.execute(
+        """
+        SELECT proceeds, cost_basis, gain_loss
+        FROM core.fct_realized_fx_gains
+        WHERE conversion_id = 'fxc_9498dd3eb745369b'
+        """
+    ).fetchone()
+    assert restored_gain == (
+        Decimal("75.00"),
+        Decimal("60.00"),
+        Decimal("15.00"),
+    )

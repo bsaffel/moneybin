@@ -9,6 +9,8 @@ real repos (no mocks). Operations are built by wrapping repo calls in
 from __future__ import annotations
 
 import json
+from datetime import date
+from decimal import Decimal
 
 import pytest
 
@@ -18,7 +20,9 @@ from moneybin.errors import UserError
 from moneybin.metrics.registry import ACCOUNT_LINK_REVIEW_PENDING
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.repositories.base import BaseRepo
+from moneybin.repositories.exchange_rate_repo import ExchangeRateOverridesRepo
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
 from moneybin.services.account_links_service import AccountLinksService
@@ -136,6 +140,53 @@ class TestUndo:
         notes = db.execute("SELECT COUNT(*) FROM app.transaction_notes").fetchone()
         tags = db.execute("SELECT COUNT(*) FROM app.transaction_tags").fetchone()
         assert notes == (1,) and tags == (1,)
+
+    def test_fx_input_undo_triggers_one_post_commit_restatement(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        create_core_tables(db)
+        _insert_dim_account(db, "acct-fx", "FX Account")
+        restated: list[tuple[Database, bool, bool]] = []
+
+        def record_restatement(
+            target_db: Database,
+            *,
+            account_currency_changed: bool = False,
+            undo_committed: bool = False,
+        ) -> None:
+            restated.append((target_db, account_currency_changed, undo_committed))
+
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            record_restatement,
+        )
+        with operation() as op:
+            AccountSettingsRepo(db).set(
+                account_id="acct-fx",
+                display_name=None,
+                official_name=None,
+                last_four=None,
+                account_subtype=None,
+                holder_category=None,
+                currency_code="EUR",
+                credit_limit=None,
+                archived=False,
+                include_in_net_worth=True,
+                default_cost_basis_method="average",
+                actor="test",
+            )
+            ExchangeRateOverridesRepo(db).set(
+                "EUR",
+                "USD",
+                date(2026, 3, 1),
+                rate=Decimal("1.50000000"),
+                note=None,
+                actor="test",
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        assert restated == [(db, True, True)]
 
     def test_not_found_raises(self, db: Database) -> None:
         with pytest.raises(UserError) as exc:

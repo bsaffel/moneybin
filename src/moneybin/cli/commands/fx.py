@@ -189,10 +189,8 @@ def fx_set(
                 from_currency, to_currency, parsed_date, parsed_rate, note=note
             )
 
-    # No --refresh, unlike `investments prices set`. A price mark reaches its
-    # consumers through a SQLMesh model; CurrencyService reads
-    # app.exchange_rate_overrides directly, so this correction is in force the
-    # moment it is written.
+    # No --refresh, unlike `investments prices set`: CurrencyService performs
+    # the narrow FX-accounting restatement before this command reports success.
     payload = FxOverridePayload(
         from_currency=canonical_currency(from_currency),
         to_currency=canonical_currency(to_currency),

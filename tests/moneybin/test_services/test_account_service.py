@@ -483,8 +483,19 @@ class TestAccountServiceMutators:
 
     @pytest.mark.unit
     def test_settings_update_default_cost_basis_method_persists(
-        self, test_db: Database
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        restated: list[tuple[Database, bool]] = []
+
+        def record_restatement(
+            db: Database, *, account_currency_changed: bool = False
+        ) -> None:
+            restated.append((db, account_currency_changed))
+
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            record_restatement,
+        )
         svc = AccountService(test_db)
         updated, warnings = svc.settings_update(
             "acct_a", actor="cli", default_cost_basis_method="hifo"
@@ -494,6 +505,45 @@ class TestAccountServiceMutators:
         loaded = svc._load_settings("acct_a")
         assert loaded is not None
         assert loaded.default_cost_basis_method == "hifo"
+        assert restated == [(test_db, False)]
+
+    @pytest.mark.unit
+    def test_currency_update_restates_from_the_account_dimension(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        restated: list[tuple[Database, bool]] = []
+
+        def record_restatement(
+            db: Database, *, account_currency_changed: bool = False
+        ) -> None:
+            restated.append((db, account_currency_changed))
+
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            record_restatement,
+        )
+
+        AccountService(test_db).settings_update(
+            "acct_a", actor="cli", currency_code="EUR"
+        )
+
+        assert restated == [(test_db, True)]
+
+    @pytest.mark.unit
+    def test_unrelated_account_setting_does_not_restate_fx_accounting(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        restated: list[Database] = []
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            restated.append,
+        )
+
+        AccountService(test_db).settings_update(
+            "acct_a", actor="cli", display_name="Everyday"
+        )
+
+        assert restated == []
 
     @pytest.mark.unit
     def test_settings_update_default_cost_basis_method_clear_sentinel(

@@ -498,6 +498,40 @@ def test_apply_returns_apply_result_shape(
     fake_ctx.apply.assert_called_once_with(fake_ctx.plan.return_value)
 
 
+def test_restate_models_targets_named_models_and_downstream(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import contextmanager
+
+    fake_ctx = MagicMock()
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database):  # type: ignore[no-untyped-def]
+        yield fake_ctx
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context",
+        fake_sqlmesh_context,
+    )
+
+    def fake_refresh(_db: Database) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.refresh_views",
+        fake_refresh,
+    )
+
+    result = TransformService(db).restate_models(["core.bridge_currency_conversions"])
+
+    assert result.applied is True
+    fake_ctx.plan.assert_called_once_with(
+        restate_models=["core.bridge_currency_conversions"],
+        auto_apply=True,
+        no_prompts=True,
+    )
+
+
 def test_a_failing_duration_metric_does_not_abort_a_completed_apply(
     db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
