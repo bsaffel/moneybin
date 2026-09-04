@@ -250,12 +250,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   whitespace-only category hid a transaction from the curation queue while
   claiming to carry one. `prep.stg_tabular__transactions` and
   `prep.stg_manual__transactions` now wrap `category` and `subcategory` in
-  `NULLIF(TRIM(...), '')` over the full whitespace set (space, tab, newline,
-  CR — not just the ASCII space DuckDB's default `TRIM` strips, so a stray
-  tab in a malformed TSV cell hides no differently than a space), the
+  `NULLIF(TRIM(...), '')` — nulling a blank out rather than storing it is the
   convention `stg_plaid__accounts` documents and every other free-text column
-  in staging already follows; a padded `'  Groceries  '` still arrives as
-  `Groceries` rather than being discarded. (#517)
+  in staging already follows. These two columns widen the trim to the full
+  whitespace set (space, tab, newline, CR) where their siblings strip only the
+  ASCII space DuckDB's bare `TRIM` handles, so a stray tab in a malformed TSV
+  cell hides no differently than a space; they are the only staging columns
+  with a Python-side counterpart — `validate_category_text`, which calls
+  `str.strip()` — that they have to agree with. A padded `'  Groceries  '`
+  still arrives as `Groceries` rather than being discarded. (#517)
 
 - **`transactions splits add --category "   "` is refused rather than
   stored.** The MCP write contracts already refuse a whitespace-only string,
