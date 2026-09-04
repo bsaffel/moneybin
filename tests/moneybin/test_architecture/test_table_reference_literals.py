@@ -6,49 +6,97 @@ never a hardcoded ``"core.fct_transactions"``-shaped string. #519 swept 95
 pre-existing literals to ``TableRef`` constants; nothing stopped the next PR
 from reintroducing one. This test closes that gap.
 
+## Threat model
+
+This guard defends against **accidental** reintroduction of a hardcoded
+schema-qualified table reference — a contributor who copy-pasted a query,
+wrote a quick fix without reaching for the existing TableRef constant, or
+didn't notice a sibling literal already existed. It does **not** defend
+against deliberate evasion: a string assembled via concatenation or
+``.join()``, dynamic dispatch onto an execute-shaped method (``getattr(db,
+name)(sql)``), a literal split across an encoding, or a reference assembled
+across module boundaries a per-file AST scan can't see. Those are
+undecidable in general for a bounded, file-local heuristic (point 1 below),
+and an adversarial reviewer motivated to keep finding them never runs out —
+a near-identical guard added in #512 absorbed sixteen review rounds before
+its residual ticket (MB-160) named this limit explicitly. **A finding is in
+scope only if it describes a plausible accidental shape** — a bypass a
+contributor could trigger by ordinary refactoring, not one requiring them to
+choose evasion. Round 3 findings (quoted identifiers, ``COPY``/``DESCRIBE``,
+name-to-name assignment — see below) all clear that bar; a fourth round
+proposing runtime string construction or similar would not, and should be
+declined rather than patched.
+
 Why not a plain regex over the source text? A regex for
 ``\\b(schema)\\.[a-z][a-z0-9_]+`` matches ~1900 times across ``src/**/*.py`` —
 almost all of it Python attribute access (``app.config``, ``core.foo``) and
 prose, not SQL. That noise floor makes a bare regex either deafening (flag
-everything) or vacuous (exempt everything). Two design choices bring the
+everything) or vacuous (exempt everything). Three design choices bring the
 signal back:
 
 1. **AST first, not text first.** Only ``ast.Constant``/``ast.JoinedStr``
    string literals that *reach* a ``.execute()`` / ``.executemany()`` /
    ``.sql()`` call are candidates — not every string in the tree. "Reaches" means: passed
    directly as an argument, OR bound to a local name — via ``=``, an
-   annotated ``x: str = ...``, an augmented ``x += ...``, or a walrus
-   ``(x := ...)`` (``ast.Assign``/``ast.AnnAssign``/``ast.AugAssign``/
-   ``ast.NamedExpr``) — that is later passed as an argument (including
-   transitively, through an f-string interpolation inside another candidate
-   literal — see ``_NEWEST_HOLDINGS_SNAPSHOT_CTE`` in ``doctor_service.py``
-   for the shape this exists to catch: a module-level query fragment
-   assigned once, then spliced into other queries via ``f"...{_CTE}..."``).
-   The full enumeration of name-binding AST nodes considered, and why the
-   other binding forms (loop targets, ``with``/``except`` targets, function
+   annotated ``x: str = ...``, an augmented ``x += ...``, a walrus
+   ``(x := ...)``, or a plain name-to-name alias (``sql = query``) —
+   (``ast.Assign``/``ast.AnnAssign``/``ast.AugAssign``/``ast.NamedExpr``) —
+   that is later passed as an argument (including transitively, through an
+   f-string interpolation inside another candidate literal, OR through a
+   chain of aliases of any length — see ``_NEWEST_HOLDINGS_SNAPSHOT_CTE`` in
+   ``doctor_service.py`` for the interpolation shape this exists to catch: a
+   module-level query fragment assigned once, then spliced into other
+   queries via ``f"...{_CTE}..."``). Name-to-name aliasing closes a gap
+   found in round 3 of this guard's review: ``query = "SELECT * FROM
+   core.x"; sql = query; db.execute(sql)`` is ordinary refactoring, not
+   evasion, and a scan that only recorded literal RHS values missed it. The
+   full enumeration of name-binding AST nodes considered, and why the other
+   binding forms (loop targets, ``with``/``except`` targets, function
    parameters, tuple/list-destructured assignment) are excluded, lives as a
    comment above the binding-collection loop in ``_scan_file``. This is a
    bounded, file-local heuristic, not a full dataflow analysis — deciding
    "does this string reach a DB call" is undecidable in general (a query
    built via ``.join()``, string concatenation across branches, or a helper
-   function's return value can evade it). The tradeoff is deliberate: false
-   negatives here are a coverage gap to close by hand if discovered; false
-   positives are a source of guard fatigue that erodes trust in the whole
-   check.
+   function's return value can evade it — see Threat model above). The
+   tradeoff is deliberate: false negatives here are a coverage gap to close
+   by hand if discovered; false positives are a source of guard fatigue that
+   erodes trust in the whole check.
 
-2. **A SQL-keyword gate on the schema.table match itself.** Even restricted to
-   candidate literals, a bare schema-prefix regex still false-positives on a
-   query that aliases a source table AS its own schema name — e.g.
-   ``FROM raw.tabular_accounts AS raw`` makes every later ``raw.account_id``
-   a column reference through the alias, not a table name (see
-   ``account_resolver.py``), and a ``-- core.fct_transactions is expensive``
-   SQL comment reads identically to a real reference. Requiring the match to
-   be immediately preceded by a clause keyword that only precedes a genuine
-   table/view target (``FROM``, ``JOIN``, ``INTO``, ``UPDATE``, ``TABLE``,
-   ``VIEW``, ``EXISTS``, ``REFERENCES``, ``TRUNCATE``) eliminates both false-
-   positive classes: an alias reference is preceded by an operator, a
-   function call, or a comma, never by one of these keywords, and a
-   sentence fragment inside a SQL comment essentially never is either.
+2. **sqlglot parses the candidate; the parse tree, not a keyword list, decides
+   what counts as a table reference.** A round-3 review found two gaps in an
+   earlier regex-and-keyword-list version of this check: a quoted identifier
+   (``FROM "core"."fct_transactions"``) doesn't match a bare-identifier
+   regex, and a clause word missing from the hand-maintained keyword list
+   (``COPY``, ``DESCRIBE``) let a real reference through uncaught — the
+   generator of an endless "you missed one" series, not a one-off miss.
+   Parsing with ``sqlglot.parse(text, dialect="duckdb",
+   error_level=ErrorLevel.IGNORE)`` and walking ``find_all(exp.Table)``
+   removes the keyword list entirely: quoting, and every clause that can
+   introduce a table (``FROM``, ``JOIN``, ``COPY``, ``DESCRIBE``, ``DROP``,
+   ``TRUNCATE TABLE``, ``UPDATE``, ``INSERT INTO``, ...), are handled by
+   DuckDB's grammar, not by an enumeration this file has to keep current.
+   The alias false-positive (``FROM raw.tabular_accounts AS raw`` making a
+   later ``raw.account_id`` look like a table) disappears structurally too:
+   sqlglot parses ``raw.account_id`` to a ``Column`` node, never a
+   ``Table``, so there is no keyword gate left to get wrong. Measured
+   before choosing this: a strict ``parse_one`` over every one of the 654
+   candidate literals in this tree (2026-09) succeeds only 21% of the time —
+   most candidate literals are f-string SQL whose ``TABLE.full_name``
+   interpolation was stripped by ``_literal_text`` above, leaving a hole
+   exactly where a table name would sit (``CREATE OR REPLACE VIEW  AS
+   ...``), which a strict parser rejects. The tolerant ``ErrorLevel.IGNORE``
+   parse used here recovers all but ~4% of those, and — the number that
+   actually matters — every literal that contains a genuine schema-qualified
+   reference in this tree parses successfully and resolves to the same
+   ``(file, table)`` violation set the old regex found, with the keyword
+   list deleted. ``exp.Table`` nodes with an **empty name** are excluded
+   (``if not table.db or not table.name``) rather than the regex's implicit
+   floor of ``[a-z][a-z0-9_]+`` after a schema: an interpolation hole (``DROP
+   VIEW IF EXISTS raw.;``) and DuckDB's own ``CREATE SCHEMA IF NOT EXISTS
+   seeds`` (which sqlglot represents as a ``Table`` with the schema name in
+   ``db`` and an empty ``name``) both produce that shape, and neither is a
+   table reference — filtered by the general rule, not by naming either
+   literal in an allowlist.
 
 3. **Function-scoped name binding, with module-level fallback.** A candidate
    name is resolved within the module or function/method body that binds it
@@ -64,11 +112,13 @@ signal back:
    consistent with this being a bounded, file-local heuristic. See the
    scoping comment above ``_scan_file``'s per-scope loop.
 
-Known residual false-positive shape (none currently in the tree, so no
-allowlist entry exists for it): prose that literally reads "the table
-core.foo" or "the view app.bar" inside a SQL comment. If that ever fires,
-add an occurrence to ``TABLE_LITERAL_ALLOWLIST`` with a ``# why`` explaining
-it is prose, not a reference.
+A SQL comment mentioning a table by name (``-- core.fct_transactions is
+expensive``) is not a residual false-positive risk under the sqlglot design:
+a comment is not tokenized as SQL content, so it can never produce an
+``exp.Table`` node — see ``test_keyword_gate_excludes_sql_comment_prose``
+below, which is the old regex-era name kept because the *behavior* it pins
+(comment text is not a violation) is unchanged even though the mechanism
+that guarantees it changed.
 
 Exemptions:
 
@@ -89,10 +139,12 @@ Exemptions:
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 
 import pytest
+import sqlglot
+from sqlglot import exp
+from sqlglot.errors import ErrorLevel
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SRC_ROOT = REPO_ROOT / "src" / "moneybin"
@@ -114,38 +166,20 @@ _SCHEMA_NAMES = (
     "seeds",
     "synthetic",
 )
-_TABLE_KEYWORDS = (
-    "FROM",
-    "JOIN",
-    "INTO",
-    "UPDATE",
-    "TABLE",
-    "VIEW",
-    "EXISTS",
-    "REFERENCES",
-    "TRUNCATE",
-)
-# A schema-qualified name only counts as a table *reference* when it directly
-# follows a clause keyword that introduces one — see module docstring point 2.
-# The keyword itself is captured (group 1) so the allowlist can key on it —
-# see TABLE_LITERAL_ALLOWLIST below.
-SCHEMA_TABLE_PATTERN = re.compile(
-    r"\b(" + "|".join(_TABLE_KEYWORDS) + r")\s+"
-    r"(" + "|".join(_SCHEMA_NAMES) + r")\.([a-z][a-z0-9_]+)\b",
-    re.IGNORECASE,
-)
 
-# Allowlist entries are (file_relpath, clause_keyword, "schema.table",
+# Allowlist entries are (file_relpath, clause_type, "schema.table",
 # occurrence) 4-tuples. `file_relpath` is relative to src/moneybin/ for
-# stability across moves. `clause_keyword` is the matched SQL clause word
-# (FROM/JOIN/VIEW/EXISTS/...) — keying on it, not just the table name,
-# separates a `DROP VIEW ... app.merchants` from an unrelated
-# `FROM app.merchants` naming the same table for a different reason.
+# stability across moves. `clause_type` is the upper-cased sqlglot node type
+# that directly parents the `exp.Table` — `FROM`/`JOIN`/`DROP`/`COPY`/
+# `DESCRIBE`/`UPDATE`/`INSERT`/... (see `_tables_in_text`, module docstring
+# point 2) — keying on it, not just the table name, separates a
+# `DROP VIEW ... app.merchants` from an unrelated `FROM app.merchants`
+# naming the same table for a different reason.
 # `occurrence` is a 0-based count of prior matches of that same
-# (clause_keyword, table) pair *within the file*, assigned in source order
+# (clause_type, table) pair *within the file*, assigned in source order
 # (`_scan_file` sorts by lineno before counting) — this, not a line number,
 # disambiguates two genuinely distinct occurrences that share both the same
-# clause keyword and the same table (e.g. two separate `FROM app.merchants`
+# clause type and the same table (e.g. two separate `FROM app.merchants`
 # reads in the same file). It is deliberately NOT the line number: a line
 # number shifts on any unrelated edit above it, turning every such edit into
 # a guard failure. The occurrence count only changes when an occurrence of
@@ -155,7 +189,7 @@ SCHEMA_TABLE_PATTERN = re.compile(
 # index regardless of which physical occurrence holds it).
 #
 # Collision behavior: two occurrences collide (compute to the same key) only
-# if they share file, clause keyword, table, AND relative order — which,
+# if they share file, clause type, table, AND relative order — which,
 # given the sort-by-lineno step, requires two distinct occurrences to start
 # on the exact same source line. No such case exists in the tree today; if
 # one arises, this scheme cannot order them and the fix is to additionally
@@ -172,9 +206,11 @@ TABLE_LITERAL_ALLOWLIST: frozenset[tuple[str, str, str, int]] = frozenset({
     # no current TableRef *by design*: tables.py is a registry of live,
     # current names, and the whole point of these two statements is to strip
     # away a name that no longer exists in that registry. Giving them a
-    # TableRef would misrepresent them as live tables.
-    ("seeds.py", "EXISTS", "app.categories", 0),
-    ("seeds.py", "EXISTS", "app.merchants", 0),
+    # TableRef would misrepresent them as live tables. Clause type is `DROP`
+    # (both are `DROP VIEW IF EXISTS ...`) — sqlglot represents `IF EXISTS`
+    # as a modifier on the `Drop` node, not a distinct clause.
+    ("seeds.py", "DROP", "app.categories", 0),
+    ("seeds.py", "DROP", "app.merchants", 0),
     # NOT a retired-view drop — `app.merchants` here is read live, inside the
     # pre-V006 backward-compat passthrough that wraps the legacy TABLE (still
     # a BASE TABLE, not yet migrated to `app.user_merchants`) so
@@ -233,7 +269,33 @@ def _record_literal_binding(
         var_literals.setdefault(name, []).append((lineno, text, _embedded_names(value)))
 
 
+def _record_binding(
+    var_literals: dict[str, list[tuple[int, str, set[str]]]],
+    var_aliases: dict[str, list[str]],
+    name: str,
+    value: ast.expr,
+    lineno: int,
+) -> None:
+    """Record `name`'s literal text, or its alias target, as reaching execute().
+
+    Extends `_record_literal_binding` with one more RHS shape: a bare
+    `ast.Name` — `sql = query` — which makes `name` an ALIAS of `value.id`
+    rather than a literal itself. `_resolve_worklist` follows an alias chain
+    of any length the same way it already follows an f-string's embedded
+    name (module docstring point 1) — this is what closes the round-3
+    finding on `query = "..."; sql = query; db.execute(sql)`. Not used for
+    `ast.AugAssign` (`x += y`): that produces a NEW value (the concatenation
+    of the old `x` and `y`), not an alias of `y`, so it stays on the
+    literal-only recorder.
+    """
+    if _literal_text(value) is not None:
+        _record_literal_binding(var_literals, name, value, lineno)
+    elif isinstance(value, ast.Name):
+        var_aliases.setdefault(name, []).append(value.id)
+
+
 _ScopeLiterals = dict[str, list[tuple[int, str, set[str]]]]
+_ScopeAliases = dict[str, list[str]]
 
 
 def _direct_scope_nodes(root: ast.AST) -> list[ast.AST]:
@@ -261,26 +323,34 @@ def _direct_scope_nodes(root: ast.AST) -> list[ast.AST]:
 
 def _collect_scope(
     nodes: list[ast.AST],
-) -> tuple[_ScopeLiterals, set[str], list[tuple[int, str]]]:
-    """Collect literal bindings, execute()-seed names, and direct literal args.
+) -> tuple[_ScopeLiterals, _ScopeAliases, set[str], list[tuple[int, str]]]:
+    """Collect literal bindings, name aliases, execute()-seed names, and direct literal args.
 
     `nodes` is one lexical scope's node list from `_direct_scope_nodes` — the
     module body, or one function/method body. Enumeration of AST nodes that
     bind a name to a value, and whether each can carry a hardcoded string
-    literal into an execute() call:
+    literal (or a reference to a tracked name) into an execute() call:
 
     HANDLED — the value is written inline at the binding site, so a
-    literal there is a real candidate:
-      - ast.Assign        x = "..."
-      - ast.AnnAssign     x: str = "..."   (skipped when .value is None,
-                                             i.e. a bare annotation)
+    literal there is a real candidate, and a bare-name RHS makes the
+    target an alias `_resolve_worklist` follows transitively:
+      - ast.Assign        x = "..."        or  x = y
+      - ast.AnnAssign     x: str = "..."   or  x: str = y   (skipped when
+                                             .value is None, i.e. a bare
+                                             annotation)
       - ast.AugAssign     x += "..."       (records the added text; does
-                                             not track prior concatenation
-                                             — same file-local-heuristic
-                                             limit as module docstring
-                                             point 1)
-      - ast.NamedExpr     (x := "...")     (walrus; target is always a
-                                             plain Name per grammar)
+                                             NOT alias `x` to a Name RHS —
+                                             `x += y` produces the
+                                             concatenation of the prior `x`
+                                             and `y`, not `y`'s value, so
+                                             treating it as an alias would
+                                             be wrong, not just imprecise —
+                                             and does not track prior
+                                             concatenation either, same
+                                             file-local-heuristic limit as
+                                             module docstring point 1)
+      - ast.NamedExpr     (x := "...")     or  (x := y)   (walrus; target is
+                                             always a plain Name per grammar)
 
     CONSCIOUSLY EXCLUDED — no realistic or in-scope path to a hardcoded
     literal:
@@ -308,6 +378,7 @@ def _collect_scope(
         on the existing Assign handler, not a new node type to enumerate.
     """
     var_literals: _ScopeLiterals = {}
+    var_aliases: _ScopeAliases = {}
     seed_names: set[str] = set()
     scanned: list[tuple[int, str]] = []  # (lineno, text) reaching execute()
 
@@ -315,13 +386,17 @@ def _collect_scope(
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name):
-                    _record_literal_binding(
-                        var_literals, target.id, node.value, node.lineno
+                    _record_binding(
+                        var_literals, var_aliases, target.id, node.value, node.lineno
                     )
         elif isinstance(node, ast.AnnAssign):
             if isinstance(node.target, ast.Name) and node.value is not None:
-                _record_literal_binding(
-                    var_literals, node.target.id, node.value, node.lineno
+                _record_binding(
+                    var_literals,
+                    var_aliases,
+                    node.target.id,
+                    node.value,
+                    node.lineno,
                 )
         elif isinstance(node, ast.AugAssign):
             if isinstance(node.target, ast.Name):
@@ -331,8 +406,8 @@ def _collect_scope(
         elif isinstance(node, ast.NamedExpr):
             # node.target is always ast.Name per the walrus grammar — no
             # isinstance check needed (and pyright flags one as redundant).
-            _record_literal_binding(
-                var_literals, node.target.id, node.value, node.lineno
+            _record_binding(
+                var_literals, var_aliases, node.target.id, node.value, node.lineno
             )
         if isinstance(node, ast.Call):
             func = node.func
@@ -354,21 +429,28 @@ def _collect_scope(
                     scanned.append((arg.lineno, text))
                     seed_names |= _embedded_names(arg)
 
-    return var_literals, seed_names, scanned
+    return var_literals, var_aliases, seed_names, scanned
 
 
 def _resolve_worklist(
     seed_names: set[str],
     local_literals: _ScopeLiterals,
+    local_aliases: _ScopeAliases,
     fallback_literals: _ScopeLiterals,
+    fallback_aliases: _ScopeAliases,
 ) -> list[tuple[int, str]]:
     """Fixed-point worklist: resolve seed names to their literal text.
 
-    Checks `local_literals` (this scope) first; a name with no local binding
-    falls back to `fallback_literals` (the module scope) — module docstring
-    point 3. A name "reaches" execute() directly, or transitively through an
-    f-string interpolation inside another reaching literal (docstring
-    point 1).
+    Checks `local_literals`/`local_aliases` (this scope) first; a name with
+    NEITHER a local literal NOR a local alias falls back to
+    `fallback_literals`/`fallback_aliases` (the module scope) — module
+    docstring point 3; this is one "local binding shadows the module scope"
+    decision covering both dicts, not two independent ones, so a name bound
+    locally only as an alias still doesn't see a same-named module literal.
+    A name "reaches" execute() directly, transitively through an f-string
+    interpolation inside another reaching literal (docstring point 1), or
+    transitively through a chain of plain-name aliases of any length
+    (`sql = query` — the round-3 finding this closes).
     """
     worklist = list(seed_names)
     visited: set[str] = set()
@@ -378,15 +460,65 @@ def _resolve_worklist(
         if name in visited:
             continue
         visited.add(name)
-        entries = local_literals.get(name) or fallback_literals.get(name, [])
-        for lineno, text, embedded in entries:
+        is_local = name in local_literals or name in local_aliases
+        literal_entries = (
+            local_literals.get(name, [])
+            if is_local
+            else fallback_literals.get(name, [])
+        )
+        alias_entries = (
+            local_aliases.get(name, []) if is_local else fallback_aliases.get(name, [])
+        )
+        for lineno, text, embedded in literal_entries:
             scanned.append((lineno, text))
             worklist.extend(embedded - visited)
+        worklist.extend(set(alias_entries) - visited)
     return scanned
 
 
+def _tables_in_text(text: str) -> list[tuple[str, str]]:
+    """Every schema-qualified table reference sqlglot finds in `text`.
+
+    Returns (clause_type, "schema.table") pairs. Parses with
+    ``error_level=ErrorLevel.IGNORE`` because most candidate literals in this
+    tree are incomplete SQL fragments by construction — an f-string whose
+    ``{TABLE.full_name}`` interpolation ``_literal_text`` stripped leaves a
+    hole exactly where a table name would sit (``CREATE OR REPLACE VIEW  AS
+    ...``), which a strict parser rejects outright. Measured over every
+    candidate literal in this tree (module docstring point 2): a strict
+    ``parse_one`` succeeds only 21% of the time, almost entirely on that
+    interpolation-hole shape; the tolerant parse used here recovers the
+    rest, and every literal containing a genuine hardcoded reference parses
+    successfully either way.
+
+    A table needs a non-empty `db` AND a non-empty `name` to count — see
+    module docstring point 2 for the two shapes (an interpolation hole; a
+    bare ``CREATE SCHEMA`` statement) that produce a schema-only `exp.Table`
+    with no real table name, which is not a table reference.
+    """
+    try:
+        statements = sqlglot.parse(
+            text, dialect="duckdb", error_level=ErrorLevel.IGNORE
+        )
+    except Exception:  # noqa: BLE001  # tolerant parse over arbitrary fragments is best-effort
+        return []
+
+    found: list[tuple[str, str]] = []
+    for statement in statements:
+        if statement is None:
+            continue
+        for table in statement.find_all(exp.Table):
+            schema = table.db.lower()
+            name = table.name.lower()
+            if not schema or not name or schema not in _SCHEMA_NAMES:
+                continue
+            clause_node = table.parent if table.parent is not None else statement
+            found.append((type(clause_node).__name__.upper(), f"{schema}.{name}"))
+    return found
+
+
 def _scan_file(path: Path) -> list[tuple[int, str, str]]:
-    """Return (lineno, clause_keyword, "schema.table") violations for one file.
+    """Return (lineno, clause_type, "schema.table") violations for one file.
 
     Scans the module scope and every function/method body as independent
     scopes (module docstring point 3), each falling back to the module scope
@@ -399,33 +531,44 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
     except SyntaxError:
         return []
 
-    module_literals, module_seeds, all_scanned = _collect_scope(
+    module_literals, module_aliases, module_seeds, all_scanned = _collect_scope(
         _direct_scope_nodes(tree)
     )
     all_scanned = list(all_scanned)
-    all_scanned.extend(_resolve_worklist(module_seeds, module_literals, {}))
+    all_scanned.extend(
+        _resolve_worklist(module_seeds, module_literals, module_aliases, {}, {})
+    )
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            local_literals, local_seeds, local_scanned = _collect_scope(
+            local_literals, local_aliases, local_seeds, local_scanned = _collect_scope(
                 _direct_scope_nodes(node)
             )
             all_scanned.extend(local_scanned)
             all_scanned.extend(
-                _resolve_worklist(local_seeds, local_literals, module_literals)
+                _resolve_worklist(
+                    local_seeds,
+                    local_literals,
+                    local_aliases,
+                    module_literals,
+                    module_aliases,
+                )
             )
 
     violations: list[tuple[int, str, str]] = []
     for lineno, text in all_scanned:
-        for match in SCHEMA_TABLE_PATTERN.finditer(text):
-            clause = match.group(1).upper()
-            table = f"{match.group(2)}.{match.group(3)}"
+        for clause, table in _tables_in_text(text):
             violations.append((lineno, clause, table))
     # Sort by lineno so occurrence indices (assigned by the caller) reflect
     # top-to-bottom source order rather than scan-order — see
-    # TABLE_LITERAL_ALLOWLIST's key-shape comment. Stable sort preserves
-    # finditer()'s left-to-right order for multiple matches sharing one
-    # literal's (single) lineno.
+    # TABLE_LITERAL_ALLOWLIST's key-shape comment. `find_all` walks
+    # breadth-first (see .claude/references/sqlglot-behavior.md), so two
+    # DIFFERENT (clause, table) pairs sharing one literal's lineno may sort
+    # arbitrarily relative to each other here — harmless, since occurrence
+    # counting (in `_scan_source_tree`) is keyed per (clause, table) pair and
+    # unaffected by the order of unrelated pairs. Two matches of the SAME
+    # pair on one lineno are interchangeable by construction regardless of
+    # order (see TABLE_LITERAL_ALLOWLIST's collision-behavior comment).
     violations.sort(key=lambda item: item[0])
     return violations
 
@@ -438,9 +581,9 @@ def _is_exempt_migration(path: Path) -> bool:
 def _scan_source_tree() -> list[tuple[str, int, str, str, int]]:
     """Walk src/moneybin/**/*.py, collecting every occurrence.
 
-    Returns (relpath, lineno, clause_keyword, table, occurrence) 5-tuples.
+    Returns (relpath, lineno, clause_type, table, occurrence) 5-tuples.
     `occurrence` is a 0-based count of prior matches of the same
-    (clause_keyword, table) pair within this file, assigned in the source
+    (clause_type, table) pair within this file, assigned in the source
     order `_scan_file` returns (see TABLE_LITERAL_ALLOWLIST's key-shape
     comment for why this — not the line number — is the stable identity).
     """
@@ -480,7 +623,7 @@ def test_no_hardcoded_table_literals_reach_execute() -> None:
         pytest.fail(
             "Hardcoded schema-qualified table literal(s) reach a SQL execute "
             "call. Import the TableRef constant from moneybin.tables instead, "
-            'or add (file, clause_keyword, "schema.table", occurrence) to '
+            'or add (file, clause_type, "schema.table", occurrence) to '
             f"TABLE_LITERAL_ALLOWLIST with a `# why` comment.\n\n"
             f"Violations:\n{formatted}"
         )
@@ -524,11 +667,12 @@ def test_migrations_runner_is_not_exempt() -> None:
 # --- Synthetic-fixture scanner unit tests -----------------------------------
 #
 # The tests above assert against whatever src/moneybin currently contains —
-# real coverage of the scanner's own core logic (keyword gate, alias
-# exclusion, CTE-splice tracing, function-scope boundary) is incidental to
-# that, not guaranteed. These exercise `_scan_file` directly against small
-# synthetic snippets written to `tmp_path`, so each mechanism is pinned
-# independently of what the live tree happens to contain.
+# real coverage of the scanner's own core logic (sqlglot table parsing,
+# alias exclusion, CTE-splice tracing, function-scope boundary, name-to-name
+# aliasing) is incidental to that, not guaranteed. These exercise
+# `_scan_file` directly against small synthetic snippets written to
+# `tmp_path`, so each mechanism is pinned independently of what the live
+# tree happens to contain.
 
 
 def _scan_source(tmp_path: Path, source: str) -> list[tuple[int, str, str]]:
@@ -538,21 +682,72 @@ def _scan_source(tmp_path: Path, source: str) -> list[tuple[int, str, str]]:
     return _scan_file(module)
 
 
-def test_keyword_gate_flags_a_genuine_table_reference(tmp_path: Path) -> None:
-    """A schema.table immediately after FROM is a violation."""
+def test_genuine_table_reference_is_flagged(tmp_path: Path) -> None:
+    """A schema.table used as a real FROM target is a violation."""
     source = 'db.execute("SELECT * FROM core.fct_transactions")\n'
     assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
 
 
-def test_keyword_gate_excludes_column_reference_through_alias(tmp_path: Path) -> None:
+def test_column_reference_through_alias_is_not_flagged(tmp_path: Path) -> None:
     """A table aliased to its own schema name is not a false positive on its column refs.
 
-    ``raw.account_id`` is a column reference through the ``AS raw`` alias —
-    only the genuine ``FROM raw.tabular_accounts`` table target is flagged
-    (module docstring point 2).
+    ``raw.account_id`` parses to an ``exp.Column`` (table=``raw``, this=
+    ``account_id``) through the ``AS raw`` alias, never an ``exp.Table`` — so
+    only the genuine ``FROM raw.tabular_accounts`` target is flagged (module
+    docstring point 2). A regex-based matcher needed an explicit keyword
+    gate to exclude this case; the AST distinguishes Column from Table by
+    grammar position, so there is nothing to gate here.
     """
     source = 'db.execute("SELECT raw.account_id FROM raw.tabular_accounts AS raw")\n'
     assert _scan_source(tmp_path, source) == [(1, "FROM", "raw.tabular_accounts")]
+
+
+def test_quoted_schema_and_table_are_flagged(tmp_path: Path) -> None:
+    """A fully double-quoted schema.table is still a genuine reference (round-3 finding 1).
+
+    A bare-identifier regex does not match ``"core"."fct_transactions"`` —
+    sqlglot strips quoting when exposing ``exp.Table.db``/``.name``, so
+    quoting has no effect on detection.
+    """
+    source = 'db.execute(\'SELECT * FROM "core"."fct_transactions"\')\n'
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
+
+
+def test_partially_quoted_table_is_flagged(tmp_path: Path) -> None:
+    """Only the table half quoted (`core."fct_transactions"`) is still flagged (finding 1)."""
+    source = "db.execute('SELECT * FROM core.\"fct_transactions\"')\n"
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
+
+
+def test_copy_statement_is_flagged(tmp_path: Path) -> None:
+    """`COPY schema.table TO ...` is a violation (round-3 finding 2).
+
+    `COPY` was missing from the old regex's hand-maintained clause-keyword
+    list. sqlglot parses it to an `exp.Copy` node with the source table
+    directly reachable via `find_all(exp.Table)` — no keyword list to keep
+    current.
+    """
+    source = "db.execute(\"COPY core.fct_transactions TO 'export.csv'\")\n"
+    assert _scan_source(tmp_path, source) == [(1, "COPY", "core.fct_transactions")]
+
+
+def test_describe_statement_is_flagged(tmp_path: Path) -> None:
+    """`DESCRIBE schema.table` is a violation (round-3 finding 2, second keyword)."""
+    source = 'db.execute("DESCRIBE core.fct_transactions")\n'
+    assert _scan_source(tmp_path, source) == [(1, "DESCRIBE", "core.fct_transactions")]
+
+
+def test_create_schema_statement_is_not_a_false_positive(tmp_path: Path) -> None:
+    """`CREATE SCHEMA IF NOT EXISTS x` must not be flagged as a table reference.
+
+    sqlglot represents a `CREATE SCHEMA` statement's target as an
+    `exp.Table` carrying the schema name in `db` and an EMPTY `name` — the
+    same shape an interpolation hole produces (module docstring point 2).
+    Neither is a real table reference; both are excluded by requiring a
+    non-empty `name`, not by naming this literal in the allowlist.
+    """
+    source = 'db.execute("CREATE SCHEMA IF NOT EXISTS seeds")\n'
+    assert _scan_source(tmp_path, source) == []
 
 
 def test_keyword_gate_excludes_sql_comment_prose(tmp_path: Path) -> None:
@@ -610,5 +805,52 @@ def test_function_scope_does_not_leak_a_same_named_local_across_functions(
         "\n\n"
         "def g(db, query):\n"
         "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == []
+
+
+def test_name_to_name_alias_reaches_execute(tmp_path: Path) -> None:
+    """A bare-name reassignment (`sql = query`) still taints the literal (round-3 finding 3).
+
+    Ordinary local refactoring — introducing a second name for the same
+    value — must not hide a hardcoded literal from the scan. Before this
+    fix, only a literal or f-string RHS seeded a name's binding, so `sql`
+    had no recorded literal of its own and the chain broke at `sql = query`.
+    """
+    source = (
+        "def f(db):\n"
+        '    query = "SELECT * FROM core.fct_transactions"\n'
+        "    sql = query\n"
+        "    db.execute(sql)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(2, "FROM", "core.fct_transactions")]
+
+
+def test_name_to_name_alias_chain_of_two_reaches_execute(tmp_path: Path) -> None:
+    """A two-hop alias chain (`b = a; c = b`) still resolves transitively."""
+    source = (
+        "def f(db):\n"
+        '    a = "SELECT * FROM core.fct_transactions"\n'
+        "    b = a\n"
+        "    c = b\n"
+        "    db.execute(c)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(2, "FROM", "core.fct_transactions")]
+
+
+def test_augassign_does_not_alias_its_rhs_name(tmp_path: Path) -> None:
+    """`x += y` is concatenation, not aliasing — `y`'s own literal must not leak onto `x`.
+
+    Confirms `_record_binding` is not used for `ast.AugAssign`: `x`'s
+    resulting value is the OLD `x` plus `y`, never `y` alone, so treating
+    `x` as an alias of `y` here would misattribute `y`'s literal to a
+    different (concatenated, in this case unresolvable) value.
+    """
+    source = (
+        "def f(db):\n"
+        '    y = "SELECT * FROM core.fct_transactions"\n'
+        '    x = "SELECT 1"\n'
+        "    x += y\n"
+        "    db.execute(x)\n"
     )
     assert _scan_source(tmp_path, source) == []
