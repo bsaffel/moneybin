@@ -1301,6 +1301,38 @@ class TransactionService:
             except ValueError as e:
                 raise ValueError(f"entries[{idx}].{e}") from e
 
+        # The same pair rules a split takes. This pair reaches
+        # `set_category_in_active_txn`, which resolves it against the same dim
+        # and writes `subcategory` through verbatim without validating, so an
+        # unusable pair became a stored row rather than a refusal. Refusing
+        # here rather than at the write keeps the batch all-or-nothing: this
+        # runs over every entry before the first insert.
+        category = entry.get("category")
+        subcategory = entry.get("subcategory")
+        for name, value in (("category", category), ("subcategory", subcategory)):
+            if value is not None and not isinstance(value, str):
+                raise UserError(
+                    f"entries[{idx}].{name} must be str, got {type(value).__name__}",
+                    code=error_codes.TRANSACTION_INVALID_INPUT,
+                )
+        try:
+            if subcategory is not None:
+                validate_category_text(subcategory, "subcategory")
+            # A blank category counts as absent, which is what the
+            # `cat_entries` filter below has always done with one. The pair
+            # rule then applies to what is left, so a subcategory hanging off
+            # a blank category is refused for the same reason one hanging off
+            # a missing category is: nothing resolves it, and the filter would
+            # drop it without saying so. A blank category on its own stays a
+            # skip — the row lands uncategorized, which is the right end state.
+            effective_category = category if (category or "").strip() else None
+            validate_category_hierarchy(effective_category, subcategory, "subcategory")
+        except ValueError as e:
+            raise UserError(
+                f"entries[{idx}].{e}",
+                code=error_codes.TRANSACTION_INVALID_INPUT,
+            ) from e
+
         return {
             "account_id": account_id,
             "amount": amount,

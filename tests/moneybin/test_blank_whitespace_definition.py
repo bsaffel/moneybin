@@ -17,6 +17,15 @@ fail here instead of in review.
 
 Each site is read from its own source text rather than imported, so the three
 are checked the same way and a copy that drifts is named by the failure.
+
+These tests open a bare in-memory ``duckdb.connect()`` instead of going through
+``Database``, which AGENTS.md otherwise requires. What is under test is DuckDB's
+own regex character class against Python's ``str.strip()``: no MoneyBin table,
+schema, or row is involved, and the connection holds no data to protect.
+``Database`` adds encryption and the crypto extension and disables extension
+autoloading, none of which reaches RE2's handling of the core ``REGEXP_*``
+built-ins, so routing through it would mean a keyed database per test without
+changing a single answer.
 """
 
 from __future__ import annotations

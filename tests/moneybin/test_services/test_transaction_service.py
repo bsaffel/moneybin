@@ -1720,6 +1720,51 @@ class TestManualEntry:
         assert log_count[0] == 0
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("category", "subcategory", "field"),
+        [
+            (None, "Coffee", "subcategory"),
+            ("   ", "Coffee", "subcategory"),
+            ("Food", "   ", "subcategory"),
+        ],
+    )
+    def test_create_manual_batch_refuses_an_unusable_category_pair(
+        self,
+        transaction_db: Database,
+        category: str | None,
+        subcategory: str | None,
+        field: str,
+    ) -> None:
+        """`transactions create` takes the same pair rules as a split.
+
+        Each of these reached a write and reported success. The first two put
+        a subcategory on a transaction with no category to hang it off: the
+        ``cat_entries`` filter gates on ``category`` alone, so the entry was
+        dropped whole and the subcategory vanished without a word. The third
+        passed that filter and reached ``set_category_in_active_txn``, which
+        validates nothing, storing the blank against a NULL ``category_id``.
+
+        A blank category with no subcategory is deliberately *not* here. It
+        stores nothing wrong — the row simply lands uncategorized, which is
+        the correct end state — so it stays the skip it has always been, and
+        ``test_create_manual_batch_skips_blank_category_string`` still pins it.
+        """
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        with pytest.raises(UserError, match=rf"entries\[0\]\.{field}") as exc:
+            service.create_manual_batch(
+                [self._entry(category=category, subcategory=subcategory)],
+                actor="cli",
+            )
+        assert exc.value.code == error_codes.TRANSACTION_INVALID_INPUT
+        # Validation runs before any insert, so the batch leaves no trace.
+        raw_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM raw.manual_transactions"
+        ).fetchone()
+        assert raw_count is not None
+        assert raw_count[0] == 0
+
+    @pytest.mark.unit
     def test_create_manual_batch_rejects_size_zero(
         self, transaction_db: Database
     ) -> None:

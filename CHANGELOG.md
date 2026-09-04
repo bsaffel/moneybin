@@ -312,10 +312,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A subcategory with no category is refused everywhere, not just on MCP.**
   A subcategory is a child of a category here, so a lone one never resolves to
   a `category_id` and renders under the parent transaction's category instead
-  — `splits add`, `splits set`, and merchant creation now refuse it the way
-  MCP's split contract always has. The import path stops producing one too: a
-  category blanked on the way in takes its subcategory with it, while a blank
-  subcategory under a real category still nulls only itself. (#517)
+  — `splits add`, `splits set`, `transactions create`, and merchant creation
+  now refuse it the way MCP's split contract always has. Manual entry was the
+  quietest of them: a lone subcategory was dropped from the batch without a
+  word and the call still reported success, and a blank subcategory beside a
+  real category was stored against a `NULL` category_id. The import path stops
+  producing one too: a category blanked on the way in takes its subcategory
+  with it, while a blank subcategory under a real category still nulls only
+  itself. (#517)
 
 - **`merchants create --default-category "   "` is refused rather than
   stored.** A merchant's stored default is copied verbatim into a
