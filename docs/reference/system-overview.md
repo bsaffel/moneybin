@@ -61,9 +61,8 @@ flowchart TD
   cli --> orch
   tool --> mw --> svc
   tool --> mw --> orch
-  orch --> svc
+  orch -->|refresh composes| svc
   svc --> db
-  orch -->|refresh| sm
   svc -->|transform| sm
   sm --> db
   svc -->|sync.* only| sync

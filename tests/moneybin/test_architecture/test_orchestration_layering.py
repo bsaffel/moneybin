@@ -8,10 +8,13 @@ composition of the service layer, not a peer of it.
 
     CLI / MCP  →  moneybin.orchestration  →  moneybin.services  →  DuckDB
 
-Two tests hold that shape, and they answer different questions. The source scan
-below says *nothing new* reaches upward. The behavioural test says the
+Two guards hold that shape, and they answer different questions. The source
+scan says *nothing new* reaches upward. The behavioural test says the
 orchestrator's own deferred imports are still deferred — a fact no source scan
 can establish, because a hoisted import looks perfectly ordinary in the diff.
+
+Two further tests guard the guards, because a scan can be weakened into
+silence: one pins what the scan looks at, the other pins what it detects.
 """
 
 from __future__ import annotations
@@ -27,11 +30,38 @@ SRC = REPO_ROOT / "src" / "moneybin"
 
 # Everything under src/moneybin is guarded except the layers at or above
 # orchestration. Named as an exemption list rather than an inventory of guarded
-# packages: `src/moneybin/` holds 24 packages plus top-level modules, an
-# enumeration of them goes stale the first time one is added, and a package
-# missing from that enumeration is silently unguarded — which is the failure
-# mode this test exists to prevent.
+# packages: `src/moneybin/` holds two dozen packages plus top-level modules, an
+# enumeration of those goes stale the first time one is added, and a package
+# missing from that enumeration is silently unguarded — the failure mode this
+# file exists to prevent.
 LAYERS_AT_OR_ABOVE_ORCHESTRATION = frozenset({"cli", "mcp", "orchestration"})
+
+# The below-orchestration packages that exist today, pinned so that widening
+# the exemption list above cannot quietly shrink the scan. Subset-checked, not
+# equality-checked, so adding a package does not fail this file — the point is
+# that no package silently *leaves*.
+GUARDED_PACKAGES: frozenset[str] = frozenset({
+    "audits",
+    "connectors",
+    "db_lock",
+    "exports",
+    "extractors",
+    "investments",
+    "loaders",
+    "logging",
+    "matching",
+    "metrics",
+    "packages",
+    "privacy",
+    "protocol",
+    "reports",
+    "repositories",
+    "services",
+    "sql",
+    "sqlmesh",
+    "synthetic",
+    "utils",
+})
 
 # Module-level imports of `moneybin.orchestration` from below the layer, as
 # paths relative to src/moneybin/. Each entry is a known inversion, not a
@@ -69,28 +99,38 @@ def _is_type_checking_test(test: ast.expr) -> bool:
 
 
 def _nested_blocks(stmt: ast.stmt) -> Iterator[list[ast.stmt]]:
-    """Every statement list a compound statement can execute."""
+    """Every statement list a compound statement can execute.
+
+    ``match`` needs its own line: its bodies hang off ``cases[*].body`` through
+    ``ast.match_case``, which is not an ``ast.stmt`` and carries none of the
+    three block fields, so the generic sweep below cannot reach it.
+    """
     for field in ("body", "orelse", "finalbody"):
         block = getattr(stmt, field, None)
         if isinstance(block, list):
             yield block
     for handler in getattr(stmt, "handlers", []):
         yield handler.body
+    for case in getattr(stmt, "cases", []):
+        yield case.body
 
 
 def _runtime_imports(body: Sequence[ast.stmt]) -> Iterator[ast.Import | ast.ImportFrom]:
     """Imports that execute when the module is imported.
 
     Recurses through every compound statement — ``if``/``else``, ``try``'s
-    handlers, ``else`` and ``finally``, ``with``, ``for``, ``while``, class
-    bodies — because each of those runs at import time and a hand-rolled pass
-    over `tree.body` alone would let `try: ... except ImportError: <import>`
+    handlers, ``else`` and ``finally``, ``match`` cases, ``with``, ``for``,
+    ``while``, class bodies — because each runs at import time and a pass over
+    ``tree.body`` alone would let ``try: ... except ImportError: <import>``
     through.
 
     Two things are excluded, both because they do not run: function and method
     bodies, where deferring is the sanctioned way to call upward, and the body
     of an ``if TYPE_CHECKING:`` block. That block's ``else`` branch is *not*
     excluded.
+
+    A dynamic ``importlib.import_module(...)`` is invisible here, as it is to
+    any AST import scan. That is a known floor, not an oversight.
     """
     for stmt in body:
         if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -158,31 +198,54 @@ def test_services_do_not_import_orchestration_at_module_level() -> None:
     )
 
 
-def test_scan_covers_every_layer_below_orchestration() -> None:
-    """The exemption list is the only thing the scan skips.
+def test_scan_still_looks_at_every_package_below_orchestration() -> None:
+    """Pin what the scan reads, so narrowing it cannot pass as a clean run.
 
-    Without this, shrinking the scan is indistinguishable from fixing an
-    inversion: both turn the assertion above green.
+    Without this, widening `LAYERS_AT_OR_ABOVE_ORCHESTRATION` and fixing an
+    inversion are indistinguishable: both turn the assertion above green. The
+    checks are deliberately against a pinned snapshot rather than against a set
+    derived from the exemption list — a derived set makes the assertion
+    `exemptions ⊆ packages`, which is true however many packages the exemption
+    list swallows.
     """
-    scanned = {p.relative_to(SRC).parts[0] for p in _guarded_files()}
-    all_packages = {
-        p.relative_to(SRC).parts[0]
-        for p in SRC.rglob("*.py")
-        if "__pycache__" not in p.relative_to(SRC).parts
+    guarded = set(_guarded_files())
+    scanned_packages = {p.relative_to(SRC).parts[0] for p in guarded}
+
+    assert GUARDED_PACKAGES <= scanned_packages, (
+        "Packages below orchestration dropped out of the layering scan: "
+        f"{sorted(GUARDED_PACKAGES - scanned_packages)}. A package moves out "
+        "of this set only by moving to or above the orchestration layer."
+    )
+
+    # File-level narrowing, which a package-name comparison alone cannot see.
+    expected_files = {
+        path
+        for path in SRC.rglob("*.py")
+        if path.relative_to(SRC).parts[0] in GUARDED_PACKAGES
+        and "__pycache__" not in path.relative_to(SRC).parts
     }
-    assert all_packages - scanned == LAYERS_AT_OR_ABOVE_ORCHESTRATION, (
-        "The set of directories skipped by the layering scan drifted from the "
-        "declared exemption list."
+    assert expected_files <= guarded, (
+        "Files inside guarded packages are being skipped: "
+        f"{sorted(str(p.relative_to(SRC)) for p in expected_files - guarded)}"
+    )
+
+    all_packages = {
+        path.relative_to(SRC).parts[0]
+        for path in SRC.rglob("*.py")
+        if "__pycache__" not in path.relative_to(SRC).parts
+    }
+    assert LAYERS_AT_OR_ABOVE_ORCHESTRATION <= all_packages, (
+        "The exemption list names a directory that no longer exists: "
+        f"{sorted(LAYERS_AT_OR_ABOVE_ORCHESTRATION - all_packages)}"
     )
 
 
 def test_runtime_import_detection_sees_every_executing_block() -> None:
-    """`_runtime_imports` finds imports in each block that runs at import time.
+    """Pin what the scan detects, by shape.
 
-    The scan's value is entirely in what it detects, and the shapes below are
-    the ones a hand-rolled pass over `tree.body` misses. `if not
-    TYPE_CHECKING:` is the sharp case: it executes, so a name search over the
-    test expression would exempt the one block that must be caught.
+    These are the forms a pass over `tree.body` alone misses. `if not
+    TYPE_CHECKING:` is the sharp one: it executes, so a name search over the
+    test expression would exempt the very block that must be caught.
     """
     executing = {
         "plain": "import moneybin.orchestration.refresh",
@@ -191,6 +254,10 @@ def test_runtime_import_detection_sees_every_executing_block() -> None:
         ),
         "try-except": (
             "try:\n    pass\nexcept ImportError:\n"
+            "    import moneybin.orchestration.refresh"
+        ),
+        "try-star": (
+            "try:\n    pass\nexcept* ValueError:\n"
             "    import moneybin.orchestration.refresh"
         ),
         "try-else": (
@@ -207,11 +274,20 @@ def test_runtime_import_detection_sees_every_executing_block() -> None:
             "if TYPE_CHECKING:\n    pass\nelse:\n"
             "    import moneybin.orchestration.refresh"
         ),
-        "nested-if": (
-            "if A:\n    if B:\n        import moneybin.orchestration.refresh"
+        "nested-if": "if A:\n    if B:\n        import moneybin.orchestration.refresh",
+        "match-case": (
+            "match value:\n    case 1:\n        import moneybin.orchestration.refresh"
+        ),
+        "match-wildcard": (
+            "match value:\n    case _:\n        import moneybin.orchestration.refresh"
+        ),
+        "while-else": (
+            "while cond:\n    pass\nelse:\n    import moneybin.orchestration.refresh"
         ),
         "with": "with ctx():\n    import moneybin.orchestration.refresh",
+        "for": "for x in xs:\n    import moneybin.orchestration.refresh",
         "class-body": "class C:\n    import moneybin.orchestration.refresh",
+        "from-moneybin": "from moneybin import orchestration",
     }
     for label, source in executing.items():
         found = list(_runtime_imports(ast.parse(source).body))
@@ -226,12 +302,16 @@ def test_runtime_import_detection_sees_every_executing_block() -> None:
         "typing-qualified": (
             "if typing.TYPE_CHECKING:\n    import moneybin.orchestration.refresh"
         ),
-        "function-body": ("def f():\n    import moneybin.orchestration.refresh"),
+        "function-body": "def f():\n    import moneybin.orchestration.refresh",
         "method-body": (
             "class C:\n    def f(self):\n        import moneybin.orchestration.refresh"
         ),
         "async-function-body": (
             "async def f():\n    import moneybin.orchestration.refresh"
+        ),
+        "nested-function-in-class-in-if": (
+            "if A:\n    class C:\n        def f(self):\n"
+            "            import moneybin.orchestration.refresh"
         ),
     }
     for label, source in inert.items():
