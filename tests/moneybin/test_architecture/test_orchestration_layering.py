@@ -9,9 +9,12 @@ composition of the service layer, not a peer of it.
     CLI / MCP  →  moneybin.orchestration  →  moneybin.services  →  DuckDB
 
 Two guards hold that shape, and they answer different questions. The source
-scan says *nothing new* reaches upward. The behavioural test says the
-orchestrator's own deferred imports are still deferred — a fact no source scan
-can establish, because a hoisted import looks perfectly ordinary in the diff.
+scan says *nothing new* reaches upward — from a module top or from inside a
+method body, because both execute and a call deferred to call time is a
+dependency all the same. Deferral buys import-time cost, not layering
+absolution. The behavioural test says the orchestrator's own deferred imports
+are still deferred — a fact no source scan can establish, because a hoisted
+import looks perfectly ordinary in the diff.
 
 Two further tests guard the guards, because a scan can be weakened into
 silence: one pins what the scan looks at, the other pins what it detects.
@@ -63,23 +66,46 @@ GUARDED_PACKAGES: frozenset[str] = frozenset({
     "utils",
 })
 
-# Module-level imports of `moneybin.orchestration` from below the layer, as
-# paths relative to src/moneybin/. Each entry is a known inversion, not a
-# pattern to copy: the service calls the orchestrator at the end of its own
-# write, so the dependency points the wrong way and the import has to be
-# module-level for `unittest.mock.patch` targets that predate this package.
+# Every executing import of `moneybin.orchestration` from below the layer, as
+# paths relative to src/moneybin/ — module top and method body alike. Each
+# entry is a known inversion, not a pattern to copy: the service calls the
+# orchestrator at the end of its own write, so the dependency points the wrong
+# way whichever line it is written on.
+#
+# Keyed by file, so a file holding two upward imports is one entry.
 #
 # Draining this list means moving the closing refresh out of the service and
 # into the surfaces that call it — a contract change for both CLI and MCP, so
 # it is deliberately not part of the relocation that created this file.
 KNOWN_INVERSIONS: frozenset[str] = frozenset({
     # why: ImportService.import_files() closes a batch by running the full
-    # refresh pipeline (`smart-import-transform.md` Req 3). Inverting it would
-    # change the import contract on both surfaces.
+    # refresh pipeline (`smart-import-transform.md` Req 3). Module-level
+    # because `unittest.mock.patch` targets that predate this package bind the
+    # rebound names on this module. Inverting it would change the import
+    # contract on both surfaces.
     "services/import_service.py",
     # why: SyncService.pull() runs refresh once after a sync that changed raw
-    # state (`sync-plaid.md` Req 10). Same inversion, same reason.
+    # state (`sync-plaid.md` Req 10). Same inversion, module-level for the same
+    # patch targets.
     "services/sync_service.py",
+    # why: AccountLinksService.rematch_after_merge() re-runs the match and
+    # transform steps once an account merge has committed, so the ledger the
+    # user reads reflects the merged identity. Deferred into the method
+    # because the orchestrator's identity step imports this service back: the
+    # two modules name each other, so at least one of the pair has to stay off
+    # its module top.
+    "services/account_links_service.py",
+    # why: DemoService.run() drives generate → load → refresh → answer, and
+    # refresh is one step of it. Deferred with every other import in that
+    # method: `moneybin demo` is one command, and its collaborators
+    # (`synthetic.engine` reaches polars) must not load for the rest.
+    "services/demo_service.py",
+    # why: InboxService.sync() imports `refresh` and `step_outcome` to run the
+    # pipeline once at end-of-batch instead of once per file. Deferred as
+    # forward cover, not as a saving today: `import_service` already pulls the
+    # orchestrator onto the cold-start path at module level, so this deferral
+    # only starts paying once that entry above is drained.
+    "services/inbox_service.py",
 })
 
 HEAVY_PREFIXES: tuple[str, ...] = ("fastmcp", "sqlmesh", "polars")
@@ -116,25 +142,24 @@ def _nested_blocks(stmt: ast.stmt) -> Iterator[list[ast.stmt]]:
 
 
 def _runtime_imports(body: Sequence[ast.stmt]) -> Iterator[ast.Import | ast.ImportFrom]:
-    """Imports that execute when the module is imported.
+    """Imports that execute at some point when the program runs.
 
     Recurses through every compound statement — ``if``/``else``, ``try``'s
     handlers, ``else`` and ``finally``, ``match`` cases, ``with``, ``for``,
-    ``while``, class bodies — because each runs at import time and a pass over
-    ``tree.body`` alone would let ``try: ... except ImportError: <import>``
-    through.
+    ``while``, class bodies — and through function and method bodies, because
+    a pass over ``tree.body`` alone would let both ``try: ... except
+    ImportError: <import>`` and the far commoner ``def f(): import …``
+    through. A deferred import still runs; deferring it changes *when* the
+    dependency is paid, never whether it exists.
 
-    Two things are excluded, both because they do not run: function and method
-    bodies, where deferring is the sanctioned way to call upward, and the body
-    of an ``if TYPE_CHECKING:`` block. That block's ``else`` branch is *not*
+    One thing is excluded, because it genuinely never runs: the body of an
+    ``if TYPE_CHECKING:`` block. That block's ``else`` branch is *not*
     excluded.
 
     A dynamic ``importlib.import_module(...)`` is invisible here, as it is to
     any AST import scan. That is a known floor, not an oversight.
     """
     for stmt in body:
-        if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
         if isinstance(stmt, ast.Import | ast.ImportFrom):
             yield stmt
             continue
@@ -145,17 +170,52 @@ def _runtime_imports(body: Sequence[ast.stmt]) -> Iterator[ast.Import | ast.Impo
             yield from _runtime_imports(block)
 
 
-def _imports_orchestration(node: ast.Import | ast.ImportFrom) -> bool:
+def _package_of(path: Path) -> str:
+    """Dotted package a file under ``src/moneybin`` belongs to.
+
+    ``services/foo.py`` and ``services/__init__.py`` both answer
+    ``moneybin.services``: Python measures a relative import in a package's
+    ``__init__`` from that package, not from its parent.
+    """
+    return ".".join(("moneybin", *path.relative_to(SRC).parts[:-1]))
+
+
+def _resolved_module(node: ast.ImportFrom, package: str) -> str:
+    """Absolute dotted module an ``ImportFrom`` names, relative or not.
+
+    Without this a relative import is invisible to the scan: ``from
+    ..orchestration import refresh`` parks ``"orchestration"`` in
+    ``node.module`` and ``from .. import orchestration`` parks ``None``, and
+    neither string matches anything the caller compares against. Relative
+    imports are already an active pattern here (``cli/commands/**/__init__``,
+    ``cli/main``), just not yet inside a guarded package.
+
+    An over-relative import — more leading dots than the package has parts —
+    resolves to ``""``. It cannot be a live bypass: Python raises
+    ``ImportError`` on it before any of its names bind.
+    """
+    if not node.level:
+        return node.module or ""
+    parts = package.split(".")
+    base = ".".join(parts[: len(parts) - node.level + 1])
+    if not base:
+        return ""
+    return f"{base}.{node.module}" if node.module else base
+
+
+def _imports_orchestration(node: ast.Import | ast.ImportFrom, package: str) -> bool:
     if isinstance(node, ast.ImportFrom):
-        module = node.module or ""
+        module = _resolved_module(node, package)
         if module == "moneybin.orchestration" or module.startswith(
             "moneybin.orchestration."
         ):
             return True
-        # `from moneybin import orchestration` lands here.
+        # `from moneybin import orchestration` and its relative twin
+        # `from .. import orchestration` both land here.
         return module == "moneybin" and any(
             alias.name == "orchestration" for alias in node.names
         )
+    # `ast.Import` is never relative, so `package` does not apply.
     return any(
         alias.name == "moneybin.orchestration"
         or alias.name.startswith("moneybin.orchestration.")
@@ -177,24 +237,26 @@ def _scan() -> set[str]:
     offenders: set[str] = set()
     for path in _guarded_files():
         tree = ast.parse(path.read_text(), filename=str(path))
-        if any(_imports_orchestration(n) for n in _runtime_imports(tree.body)):
+        package = _package_of(path)
+        if any(_imports_orchestration(n, package) for n in _runtime_imports(tree.body)):
             offenders.add(path.relative_to(SRC).as_posix())
     return offenders
 
 
-def test_services_do_not_import_orchestration_at_module_level() -> None:
-    """No new upward import; the two known inversions are the whole exception set.
+def test_services_do_not_import_orchestration_at_runtime() -> None:
+    """No new upward import; KNOWN_INVERSIONS is the whole exception set.
 
     Asserted as set equality rather than a subset so the list cannot rot in
     either direction: a new inversion fails, and so does an entry left behind
     after its inversion is fixed.
     """
     assert _scan() == KNOWN_INVERSIONS, (
-        "moneybin.orchestration is imported at module level from below the "
-        "layer. Defer the import into the method that needs it, or invert the "
-        "call so the orchestrator drives the service. Only add a "
-        "KNOWN_INVERSIONS entry (with a `# why`) for a dependency that cannot "
-        "be inverted without a contract change."
+        "moneybin.orchestration is imported from below the layer. Invert the "
+        "call so the orchestrator drives the service. Deferring the import "
+        "into a method body does not answer this — the method runs, so the "
+        "dependency is real either way. Only add a KNOWN_INVERSIONS entry "
+        "(with a `# why`) for a dependency that cannot be inverted without a "
+        "contract change."
     )
 
 
@@ -239,14 +301,47 @@ def test_scan_still_looks_at_every_package_below_orchestration() -> None:
         f"{sorted(LAYERS_AT_OR_ABOVE_ORCHESTRATION - all_packages)}"
     )
 
+    # The scan also reads each file's *package*, because a relative import is
+    # measured from it. Pinned on four shapes — a top-level module, a package
+    # `__init__`, a module inside a package, and a module one level deeper —
+    # since a package resolved one level off silently sends `from
+    # ..orchestration import refresh` to some other module and the scan then
+    # reports nothing at all.
+    expected_packages = {
+        "observability.py": "moneybin",
+        "services/__init__.py": "moneybin.services",
+        "services/import_service.py": "moneybin.services",
+        "services/categorization/applier.py": "moneybin.services.categorization",
+    }
+    scanned = {path.relative_to(SRC).as_posix() for path in guarded}
+    assert set(expected_packages) <= scanned, (
+        "The files this pins are no longer scanned, so the packages asserted "
+        "below prove nothing: "
+        f"{sorted(set(expected_packages) - scanned)}"
+    )
+    resolved_packages = {
+        relative: _package_of(SRC / relative) for relative in expected_packages
+    }
+    assert resolved_packages == expected_packages, (
+        "A file is being read as the wrong package, which silently breaks "
+        f"relative-import resolution: {resolved_packages}"
+    )
+
 
 def test_runtime_import_detection_sees_every_executing_block() -> None:
     """Pin what the scan detects, by shape.
 
     These are the forms a pass over `tree.body` alone misses. `if not
     TYPE_CHECKING:` is the sharp one: it executes, so a name search over the
-    test expression would exempt the very block that must be caught.
+    test expression would exempt the very block that must be caught. The
+    function and method bodies are the commonest: an upward import written
+    inside a method runs every time the method does, and reading only module
+    tops leaves that dependency unenumerated.
+
+    Sources here are parsed as if they sat in `moneybin.services`, so the
+    relative forms below resolve the way they would in a guarded package.
     """
+    package = "moneybin.services"
     executing = {
         "plain": "import moneybin.orchestration.refresh",
         "if-else": (
@@ -288,20 +383,8 @@ def test_runtime_import_detection_sees_every_executing_block() -> None:
         "for": "for x in xs:\n    import moneybin.orchestration.refresh",
         "class-body": "class C:\n    import moneybin.orchestration.refresh",
         "from-moneybin": "from moneybin import orchestration",
-    }
-    for label, source in executing.items():
-        found = list(_runtime_imports(ast.parse(source).body))
-        assert any(_imports_orchestration(n) for n in found), (
-            f"{label}: an import that runs at import time went undetected"
-        )
-
-    inert = {
-        "type-checking-body": (
-            "if TYPE_CHECKING:\n    import moneybin.orchestration.refresh"
-        ),
-        "typing-qualified": (
-            "if typing.TYPE_CHECKING:\n    import moneybin.orchestration.refresh"
-        ),
+        # Deferred into a callable: runs when the callable does, so it is a
+        # dependency the enumeration has to carry.
         "function-body": "def f():\n    import moneybin.orchestration.refresh",
         "method-body": (
             "class C:\n    def f(self):\n        import moneybin.orchestration.refresh"
@@ -313,12 +396,62 @@ def test_runtime_import_detection_sees_every_executing_block() -> None:
             "if A:\n    class C:\n        def f(self):\n"
             "            import moneybin.orchestration.refresh"
         ),
+        "function-body-from-import": (
+            "def f():\n    from moneybin.orchestration.refresh import refresh"
+        ),
+        # Relative forms. `node.module` holds "orchestration" for the first
+        # and None for the second, so an unresolved comparison sees neither.
+        "relative-parent": "from ..orchestration import refresh",
+        "relative-parent-bare": "from .. import orchestration",
+        "relative-parent-submodule": "from ..orchestration.refresh import refresh",
+        "relative-in-function": ("def f():\n    from ..orchestration import refresh"),
+    }
+    for label, source in executing.items():
+        found = list(_runtime_imports(ast.parse(source).body))
+        assert any(_imports_orchestration(n, package) for n in found), (
+            f"{label}: an import that runs went undetected"
+        )
+
+    inert = {
+        "type-checking-body": (
+            "if TYPE_CHECKING:\n    import moneybin.orchestration.refresh"
+        ),
+        "typing-qualified": (
+            "if typing.TYPE_CHECKING:\n    import moneybin.orchestration.refresh"
+        ),
+        # A type-only import stays type-only wherever it is written.
+        "type-checking-inside-function": (
+            "def f():\n    if TYPE_CHECKING:\n"
+            "        import moneybin.orchestration.refresh"
+        ),
+        "type-checking-relative": (
+            "if TYPE_CHECKING:\n    from ..orchestration import refresh"
+        ),
+        # One dot from `moneybin.services` is `moneybin.services.orchestration`
+        # — a different module that happens to share a name. Resolution has to
+        # place the dots, not match the trailing text.
+        "relative-sibling-package": "from . import orchestration",
+        "relative-sibling-module": "from .orchestration import refresh",
+        "relative-other-package": "from ..matching import engine",
     }
     for label, source in inert.items():
         found = list(_runtime_imports(ast.parse(source).body))
-        assert not any(_imports_orchestration(n) for n in found), (
-            f"{label}: an import that never runs was reported as an inversion"
+        assert not any(_imports_orchestration(n, package) for n in found), (
+            f"{label}: an import that never reaches the orchestration layer "
+            "was reported as an inversion"
         )
+
+    # Depth is measured from the file's own package, not assumed. The same
+    # source is an inversion from one package and not from another.
+    deeper = "moneybin.services.categorization"
+    assert any(
+        _imports_orchestration(n, deeper)
+        for n in _runtime_imports(ast.parse("from ...orchestration import x").body)
+    ), "three dots from a second-level package should reach the layer"
+    assert not any(
+        _imports_orchestration(n, package)
+        for n in _runtime_imports(ast.parse("from ...orchestration import x").body)
+    ), "three dots from a first-level package resolve above moneybin, not to it"
 
 
 def test_orchestrator_import_stays_light() -> None:

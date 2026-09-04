@@ -952,9 +952,11 @@ class AccountLinksService:
         it is added here. One counter because the user is owed one fact — a
         transfer they accepted is gone — and one way back for both.
         """
-        # Upward call: the orchestrator's identity step composes this
-        # service, so importing it back at module level would point the layer
-        # the wrong way. Deferred, per test_orchestration_layering.
+        # Upward call: the orchestrator's identity step composes this service,
+        # so this names it back and the two modules would import each other at
+        # their tops. Deferring keeps that out of a cycle; it does not make the
+        # dependency go away, and test_orchestration_layering enumerates it as
+        # an inversion either way.
         from moneybin.orchestration.refresh import refresh  # noqa: PLC0415
 
         collapsed = self._transfers_retired_by_collapse
