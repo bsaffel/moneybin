@@ -11,6 +11,8 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
+from moneybin.database import Database
+
 pytestmark = pytest.mark.unit
 
 _CANDIDATE_COLUMNS = (
@@ -49,6 +51,19 @@ class _FakeContext:
     def fetchdf(self, sql: str) -> pd.DataFrame:
         self.queries.append(sql)
         return self._frames.pop(0)
+
+
+class _DatabaseContext:
+    """ExecutionContext subset that runs loader SQL against the test database."""
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    def resolve_table(self, name: str) -> str:
+        return name
+
+    def fetchdf(self, sql: str) -> pd.DataFrame:
+        return self.db.execute(sql).fetchdf()
 
 
 def _frame(*rows: Mapping[str, object]) -> pd.DataFrame:
@@ -184,6 +199,121 @@ def _context(
 def _load(context: _FakeContext) -> list[t.Any]:
     module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
     return module.load_conversion_rows(t.cast(t.Any, context))
+
+
+def test_sent_currency_comes_from_canonical_transactions_for_both_shapes(
+    db: Database,
+) -> None:
+    """Merged terms stay authoritative while canonical sent Currency completes rows."""
+    db.execute(
+        """
+        CREATE OR REPLACE TABLE core.bridge_transfers (
+            transfer_id VARCHAR,
+            debit_transaction_id VARCHAR,
+            credit_transaction_id VARCHAR
+        )
+        """
+    )
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        """
+        CREATE OR REPLACE TABLE prep.int_transactions__merged (
+            transaction_id VARCHAR,
+            account_id VARCHAR,
+            transaction_date DATE,
+            amount DECIMAL(18, 2),
+            currency_code VARCHAR,
+            to_amount DECIMAL(18, 2),
+            to_currency VARCHAR,
+            conversion_source_type VARCHAR,
+            conversion_source_origin VARCHAR,
+            conversion_source_transaction_id VARCHAR,
+            loaded_at TIMESTAMP
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE OR REPLACE TABLE core.fct_transactions (
+            transaction_id VARCHAR,
+            currency_code VARCHAR,
+            updated_at TIMESTAMP
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO core.bridge_transfers VALUES
+            ('decision-linked', 'txn-linked-out', 'txn-linked-in')
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, account_id_b, match_type, match_status, decided_by,
+            decided_at
+        ) VALUES (
+            'decision-linked', 'native-linked-out', 'manual', 'user',
+            'native-linked-in', 'manual', 'user', 'acct-usd', 'acct-eur',
+            'transfer', 'accepted', 'user',
+            '2026-03-16 13:00:00'::TIMESTAMP
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO prep.int_transactions__merged VALUES
+            ('txn-linked-out', 'acct-usd', '2026-03-16'::DATE, -100.00,
+             NULL, NULL, NULL, NULL, NULL, NULL,
+             '2026-03-16 10:00:00'::TIMESTAMP),
+            ('txn-linked-in', 'acct-eur', '2026-03-16'::DATE, 90.00,
+             NULL, NULL, NULL, NULL, NULL, NULL,
+             '2026-03-16 11:00:00'::TIMESTAMP),
+            ('txn-single', 'acct-eur', '2026-03-17'::DATE, -80.00,
+             NULL, 100.00, 'USD', 'manual', 'user', 'native-single',
+             '2026-03-17 12:00:00'::TIMESTAMP)
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions VALUES
+            ('txn-linked-out', 'USD', '2026-03-18 09:00:00'::TIMESTAMP),
+            ('txn-linked-in', 'EUR', '2026-03-18 10:00:00'::TIMESTAMP),
+            ('txn-single', 'EUR', '2026-03-19 09:00:00'::TIMESTAMP)
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO app.profile_settings (home_currency, updated_at)
+        VALUES ('USD', '2026-03-01 09:00:00'::TIMESTAMP)
+        """
+    )
+
+    module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
+    rows = module.load_conversion_rows(t.cast(t.Any, _DatabaseContext(db)))
+    by_shape = {row.source_shape: row for row in rows}
+
+    linked = by_shape["linked_two_row"]
+    assert (linked.from_currency, linked.to_currency) == ("USD", "EUR")
+    assert (linked.from_amount, linked.to_amount) == (
+        Decimal("100.00"),
+        Decimal("90.00"),
+    )
+    assert linked.from_source_transaction_id == "native-linked-out"
+    assert linked.coverage_status == "complete"
+    assert str(linked.updated_at) == "2026-03-18 10:00:00"
+
+    single = by_shape["single_row"]
+    assert (single.from_currency, single.to_currency) == ("EUR", "USD")
+    assert (single.from_amount, single.to_amount) == (
+        Decimal("80.00"),
+        Decimal("100.00"),
+    )
+    assert single.from_source_transaction_id == "native-single"
+    assert single.coverage_status == "complete"
+    assert str(single.updated_at) == "2026-03-19 09:00:00"
 
 
 @pytest.mark.parametrize(

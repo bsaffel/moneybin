@@ -19,7 +19,11 @@ import pandas as pd
 
 from moneybin.investments.cost_basis import LedgerEvent, compute_lots_and_gains
 from moneybin.services.currency_service import last_publication_day
-from moneybin.tables import BRIDGE_CURRENCY_CONVERSIONS, FCT_INVESTMENT_TRANSACTIONS
+from moneybin.tables import (
+    BRIDGE_CURRENCY_CONVERSIONS,
+    FCT_INVESTMENT_TRANSACTIONS,
+    FCT_TRANSACTIONS,
+)
 
 if t.TYPE_CHECKING:
     from sqlmesh import ExecutionContext  # type: ignore[import-untyped]
@@ -411,6 +415,7 @@ def _derive_conversion(
 def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
     bridge = context.resolve_table("core.bridge_transfers")
     merged = context.resolve_table("prep.int_transactions__merged")
+    transactions = context.resolve_table(FCT_TRANSACTIONS.full_name)
     linked = context.fetchdf(
         f"""
         SELECT
@@ -423,17 +428,30 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
           debit.transaction_date::VARCHAR AS from_date,
           credit.transaction_date::VARCHAR AS to_date,
           debit.amount::VARCHAR AS from_amount,
-          debit.currency_code AS from_currency,
+          canonical_debit.currency_code AS from_currency,
           credit.amount::VARCHAR AS to_amount,
-          credit.currency_code AS to_currency,
+          canonical_credit.currency_code AS to_currency,
           md.source_type_a AS from_source_type,
           md.source_origin_a AS from_source_origin,
           md.source_transaction_id_a AS from_source_transaction_id,
           md.source_type_b AS to_source_type,
           md.source_origin_b AS to_source_origin,
           md.source_transaction_id_b AS to_source_transaction_id,
-          GREATEST(debit.loaded_at, credit.loaded_at, md.decided_at)::VARCHAR
-            AS candidate_updated_at
+          GREATEST(
+            debit.loaded_at,
+            credit.loaded_at,
+            md.decided_at,
+            CASE
+              WHEN NOT canonical_debit.currency_code IS NULL
+              THEN COALESCE(canonical_debit.updated_at, debit.loaded_at)
+              ELSE debit.loaded_at
+            END,
+            CASE
+              WHEN NOT canonical_credit.currency_code IS NULL
+              THEN COALESCE(canonical_credit.updated_at, credit.loaded_at)
+              ELSE credit.loaded_at
+            END
+          )::VARCHAR AS candidate_updated_at
         FROM {bridge} AS bt
         JOIN app.match_decisions AS md
           ON bt.transfer_id = md.match_id
@@ -441,6 +459,10 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
           ON bt.debit_transaction_id = debit.transaction_id
         LEFT JOIN {merged} AS credit
           ON bt.credit_transaction_id = credit.transaction_id
+        LEFT JOIN {transactions} AS canonical_debit
+          ON debit.transaction_id = canonical_debit.transaction_id
+        LEFT JOIN {transactions} AS canonical_credit
+          ON credit.transaction_id = canonical_credit.transaction_id
         WHERE md.match_type = 'transfer'
           AND md.match_status = 'accepted'
           AND md.reversed_at IS NULL
@@ -482,25 +504,34 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
         SELECT
           'single_row' AS source_shape,
           NULL::VARCHAR AS transfer_pair_id,
-          transaction_id AS from_transaction_id,
+          single_row.transaction_id AS from_transaction_id,
           NULL::VARCHAR AS to_transaction_id,
-          account_id AS from_account_id,
-          account_id AS to_account_id,
-          transaction_date::VARCHAR AS from_date,
-          transaction_date::VARCHAR AS to_date,
-          amount::VARCHAR AS from_amount,
-          currency_code AS from_currency,
-          to_amount::VARCHAR AS to_amount,
-          to_currency,
-          conversion_source_type AS from_source_type,
-          conversion_source_origin AS from_source_origin,
-          conversion_source_transaction_id AS from_source_transaction_id,
-          conversion_source_type AS to_source_type,
-          conversion_source_origin AS to_source_origin,
-          conversion_source_transaction_id AS to_source_transaction_id,
-          loaded_at::VARCHAR AS candidate_updated_at
-        FROM {merged}
-        WHERE NOT to_amount IS NULL OR NOT to_currency IS NULL
+          single_row.account_id AS from_account_id,
+          single_row.account_id AS to_account_id,
+          single_row.transaction_date::VARCHAR AS from_date,
+          single_row.transaction_date::VARCHAR AS to_date,
+          single_row.amount::VARCHAR AS from_amount,
+          canonical_sent.currency_code AS from_currency,
+          single_row.to_amount::VARCHAR AS to_amount,
+          single_row.to_currency,
+          single_row.conversion_source_type AS from_source_type,
+          single_row.conversion_source_origin AS from_source_origin,
+          single_row.conversion_source_transaction_id AS from_source_transaction_id,
+          single_row.conversion_source_type AS to_source_type,
+          single_row.conversion_source_origin AS to_source_origin,
+          single_row.conversion_source_transaction_id AS to_source_transaction_id,
+          GREATEST(
+            single_row.loaded_at,
+            CASE
+              WHEN NOT canonical_sent.currency_code IS NULL
+              THEN COALESCE(canonical_sent.updated_at, single_row.loaded_at)
+              ELSE single_row.loaded_at
+            END
+          )::VARCHAR AS candidate_updated_at
+        FROM {merged} AS single_row
+        LEFT JOIN {transactions} AS canonical_sent
+          ON single_row.transaction_id = canonical_sent.transaction_id
+        WHERE NOT single_row.to_amount IS NULL OR NOT single_row.to_currency IS NULL
         """  # noqa: S608  # table name resolved by SQLMesh, not user input
     )
     return [

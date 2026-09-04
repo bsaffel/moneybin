@@ -21,7 +21,11 @@ from moneybin.metrics.registry import set_fx_accounting_rows
 @model(
     "core.bridge_currency_conversions",
     kind="FULL",
-    depends_on={"core.bridge_transfers", "prep.int_transactions__merged"},
+    depends_on={
+        "core.bridge_transfers",
+        "core.fct_transactions",
+        "prep.int_transactions__merged",
+    },
     columns={
         "conversion_id": "VARCHAR",
         "source_shape": "VARCHAR",

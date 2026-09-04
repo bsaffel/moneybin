@@ -19,6 +19,24 @@ def test_transform_materializes_exact_single_row_currency_conversion(
 ) -> None:
     db.execute(
         """
+        INSERT INTO raw.ofx_accounts (
+            account_id, account_type, source_file, extracted_at, loaded_at,
+            source_type, source_origin
+        ) VALUES (
+            'acct-eur', 'CHECKING', 'currency-fixture.ofx',
+            '2026-03-15 09:00:00'::TIMESTAMP,
+            '2026-03-15 10:00:00'::TIMESTAMP, 'ofx', 'fixture-bank'
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO app.account_settings (account_id, currency_code, updated_at)
+        VALUES ('acct-eur', 'EUR', '2026-03-15 11:00:00'::TIMESTAMP)
+        """
+    )
+    db.execute(
+        """
         INSERT INTO app.profile_settings (home_currency, updated_at)
         VALUES ('USD', '2026-03-01 09:00:00'::TIMESTAMP)
         """
@@ -32,7 +50,7 @@ def test_transform_materializes_exact_single_row_currency_conversion(
         ) VALUES (
             'manual_conversion_1', 'import_conversion_1', 'acct-eur',
             '2026-03-16'::DATE, -80.00, 100.00, 'Currency conversion',
-            'EUR', 'USD', '2026-03-16 14:00:00'::TIMESTAMP, 'cli'
+            NULL, 'USD', '2026-03-16 14:00:00'::TIMESTAMP, 'cli'
         )
         """
     )
