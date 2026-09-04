@@ -394,19 +394,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **`system doctor` now reports an account name that collides with the reserved
   `Unnamed account` placeholder.** MoneyBin shows that exact label for an
-  account nothing could name, and every name lookup reads it that way, so a
-  second account wearing a fold of it — a case, padding, or Unicode variant —
-  answers to a label that belongs to no account in particular. Two new checks
-  find one: `app_account_settings_reserved_display_name` covers a name you
-  stored, and `dim_accounts_reserved_display_name` covers one a source
-  supplied, which is an ordinary route since an export publishes the label and
-  can be re-imported. Both report the affected account ids and the rename that
-  clears them. Nothing is changed automatically — only you know the account's
-  real name.
-
-  `moneybin accounts set --display-name` already refused such a name;
-  `moneybin import --account-metadata display_name=…` did not, and now does, so
-  a rename is no longer undone by re-importing the same file. (#533)
+  account nothing could name, so a second account wearing a fold of it — a
+  case, padding, or Unicode variant — hijacks every lookup for that label:
+  `app_account_settings_reserved_display_name` finds one you stored and
+  `dim_accounts_reserved_display_name` one a source supplied, each reporting
+  the affected account ids and the rename that clears them. `moneybin import
+  --account-metadata display_name=…` now refuses such a name as `moneybin
+  accounts set --display-name` already did, so a rename survives re-importing
+  the same file. (#533)
 - **Three references are generated from the code and pinned by a test.**
   `make generate-docs` renders `docs/reference/cli/` (one page per top-level
   command plus an index) from the Typer command tree,
