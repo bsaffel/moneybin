@@ -11,8 +11,7 @@ future third surface inherits the same guarantees by calling this primitive.
 
 The read-only validation (``validate_read_only_query`` and its safety regexes)
 lives here too — it is a SQL-safety primitive alongside ``sql_lineage`` and
-``redaction``, not an MCP concern. ``mcp.privacy`` re-exports it for callers
-that still import it from there.
+``redaction``, not an MCP concern.
 """
 
 from __future__ import annotations

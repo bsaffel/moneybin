@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-21 -->
+<!-- Last reviewed: 2026-09-03 -->
 # CLI Reference
 
 MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
@@ -72,23 +72,22 @@ Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipe
 }
 ```
 
-**Snapshot response — `reports networth`** (single-record payload):
+**Report response — `reports networth`** (list payload, not a single record — a totals row per currency, then one row per account; captured against a synthetic profile):
 
 ```json
 {
   "status": "ok",
-  "summary": {"total_count": 1, "returned_count": 1, "has_more": false, "sensitivity": "low", "display_currency": "USD"},
-  "data": {
-    "balance_date": "2026-05-17",
-    "net_worth": 124530.42,
-    "total_assets": 198200.00,
-    "total_liabilities": 73669.58,
-    "account_count": 7,
-    "per_account": [{"display_name": "Chase Checking", "balance": 4210.18, "observation_source": "assertion"}]
-  },
-  "actions": []
+  "summary": {"total_count": 3, "returned_count": 3, "has_more": false, "sensitivity": "high", "display_currency": "USD"},
+  "data": [
+    {"account_id": null, "account_name": null, "currency_code": "USD", "observation_source": null, "balance_date": "2025-12-31", "account_count": 2, "account_balance": null, "total_assets": 69788.0, "total_liabilities": 0.0, "net_worth": 69788.0},
+    {"account_id": "SYN00010001", "account_name": "Chase Bank checking …0001", "currency_code": "USD", "observation_source": null, "balance_date": "2025-12-31", "account_count": null, "account_balance": 69696.79, "total_assets": null, "total_liabilities": null, "net_worth": null},
+    {"account_id": "SYN00010002", "account_name": "Capital One credit card", "currency_code": "USD", "observation_source": "tabular", "balance_date": "2025-12-31", "account_count": null, "account_balance": 91.21, "total_assets": null, "total_liabilities": null, "net_worth": null}
+  ],
+  "actions": ["Run reports(report_id='core:networth_history', parameters={'from_date': 'YYYY-MM-DD', 'to_date': 'YYYY-MM-DD'}) for the time series"]
 }
 ```
+
+The totals row carries `account_id: null` and fills the four headline columns (`account_count`, `total_assets`, `total_liabilities`, `net_worth`); each account row carries only its own `account_balance` and leaves the totals columns null. One totals row per currency the profile holds.
 
 **Mutating response — `transactions categorize commit`** (write summary):
 
@@ -127,7 +126,7 @@ The CLI has a few task-shaped overlaps; this section disambiguates the common on
 
 **"Refresh / transform / categorize run — which?"**
 
-- **`moneybin refresh`** — the right answer 99% of the time. Runs gsheet → match → transform → categorize → identity in order; idempotent.
+- **`moneybin refresh`** — the right answer 99% of the time. Runs gsheet → match → transform → categorize → identity → rates in order; idempotent.
 - **`transform <verb>`** — drop here only for SQLMesh-only operator work (debugging a model, restating a date range, validating SQL).
 - **`transactions categorize run`** — drop here only when you want to re-run categorization engines without touching transforms (e.g., after editing rules).
 
@@ -190,7 +189,7 @@ File imports and inbox drain. `import files` auto-detects type (CSV / OFX / QFX 
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `import files <paths>...` | Import one or more financial files. Per-file overrides available. | `--account-name`, `--institution`, `--format-name`, `--refresh/--no-refresh` |
+| `import files <paths>...` | Import one or more financial files. Per-file overrides available. | `--account-name`, `--institution`, `--format`, `--refresh/--no-refresh` |
 | `import preview <path>` | Inspect file structure without importing (dry run, no DB writes). | — |
 | `import history` | List recent import batches with counts and timestamps. Default view is the batch, its status, and the rows in and rejected; `--wide` adds the source file's full path, which is what tells two same-named imports apart. | `--limit`, `--wide` |
 | `import revert <batch-id>` | Undo an import batch (deletes rows from raw + downstream). | `-y, --yes` |
@@ -203,7 +202,7 @@ File imports and inbox drain. `import files` auto-detects type (CSV / OFX / QFX 
 | `import inbox path` | Print the active profile's inbox parent directory (use with `$(...)` substitution). | — |
 | `import labels add <batch-id> <labels>...` | Apply labels to an import batch. | — |
 | `import labels remove <batch-id> <labels>...` | Remove labels from an import batch. | — |
-| `import labels list [<batch-id>]` | List labels on a batch (or all batches). | — |
+| `import labels list` | List labels on one batch, or every distinct label with usage counts. | `--import-id <batch-id>` |
 
 ### `sync`
 
@@ -213,13 +212,13 @@ Pull transactions from external services through the moneybin-sync proxy. **`syn
 |---|---|---|
 | `sync login` | Authenticate with moneybin-sync via Device Authorization Flow. | `--no-browser` |
 | `sync logout` | Clear the stored JWT. | — |
-| `sync link [<institution>]` | Link a new institution via Plaid Hosted Link. Prints URL to stderr and (optionally) opens the browser. | `--no-browser` |
+| `sync link` | Link a new institution via Plaid Hosted Link, or re-authenticate a connected one. Prints URL to stderr and (optionally) opens the browser. | `--institution <name>`, `--no-pull`, `--no-browser`, `-y, --yes` |
 | `sync link-status` | Show pending link state (after `sync link` started). | — |
-| `sync disconnect <item-id>` | Disconnect a linked institution. | `-y, --yes` |
-| `sync pull [<item-id>]` | Pull new transactions (and, for brokerage/retirement accounts, securities, investment transactions, and holdings) and run the refresh pipeline. Use without an item-id to pull every connected institution. | `--refresh/--no-refresh`, `--since`, `--full` |
+| `sync disconnect --institution <name>` | Disconnect a linked institution. | `-y, --yes` |
+| `sync pull` | Pull new transactions (and, for brokerage/retirement accounts, securities, investment transactions, and holdings) and run the refresh pipeline. Use without `--institution` to pull every connected institution. | `--institution <name>`, `-f, --force` (reset the cursor and re-fetch full history), `--refresh/--no-refresh` |
 | `sync status` | Show last-sync timestamps and pending-cursor state per linked institution. | — |
 | `sync key rotate` 🚧 | Rotate the sync server's encryption key (stub). | — |
-| `sync schedule set <cron>` 🚧 | Configure a scheduled sync job (stub). | — |
+| `sync schedule set` 🚧 | Install a daily sync schedule (stub). | — |
 | `sync schedule show` 🚧 | Show the active sync schedule (stub). | — |
 | `sync schedule remove` 🚧 | Disable scheduled sync (stub). | — |
 
@@ -227,11 +226,11 @@ Pull transactions from external services through the moneybin-sync proxy. **`syn
 
 ## Refresh pipeline
 
-`refresh` is the always-visible umbrella entry point for the post-load pipeline: gsheet → match → transform → categorize → identity. CLI peer of the `refresh_run` MCP tool.
+`refresh` is the always-visible umbrella entry point for the post-load pipeline: gsheet → match → transform → categorize → identity → rates. CLI peer of the `refresh_run` MCP tool.
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `refresh` | Run the full cascade. Idempotent — safe to retry. Matching, categorization, and identity are best-effort; only SQLMesh apply errors fail the command. | `--step {match,transform,categorize,identity}` (repeatable; default = full cascade; gsheet runs in the unscoped default) |
+| `refresh` | Run the full cascade. Idempotent — safe to retry. Matching, categorization, identity, and rates are best-effort; only SQLMesh apply errors fail the command. | `--step {match,transform,categorize,identity,rates}` (repeatable; default = full cascade; gsheet runs in the unscoped default) |
 
 The `transform` group below is the lower-level operator path. Reach for `refresh` first.
 
@@ -247,7 +246,7 @@ Direct access to the SQLMesh pipeline. Use these when debugging models or restat
 | `transform status` | Current model state. |
 | `transform validate` | Check that model SQL parses correctly. |
 | `transform audit` | Run data-quality audits. |
-| `transform restate <model> <start> <end>` | Force-recompute a model for a date range. |
+| `transform restate --model <model> --start <date>` | Force-recompute a model for a date range; `--end` defaults to today. |
 
 ## Curation: transactions
 
@@ -258,7 +257,7 @@ Browsing transactions and per-transaction state (notes, tags, splits, manual ent
 | Command | Purpose | Key flags |
 |---|---|---|
 | `transactions list` | List transactions with filters. `--cursor` takes the `next_cursor` from a previous `--output json` response; treat it as opaque and restart from page one if it is rejected. | `--account`, `--from`, `--to`, `--limit`, `--category`, `--uncategorized`, `--cursor` |
-| `transactions create` | Create a manual transaction (no upstream source). | `--account-id`, `--date`, `--amount`, `--description`, `--category` |
+| `transactions create <amount> <description>` | Create a manual transaction (no upstream source). | `--account`, `--date`, `--category`, `--merchant`, `--memo`, `--currency`, `-y, --yes` |
 | `transactions audit <transaction-id>` | Show the audit chain for one transaction. | — |
 | `transactions review` | Deprecated alias for the top-level `review`; removed after one minor release. | Same flags as `review` |
 
@@ -290,7 +289,7 @@ Allocate one transaction across multiple categories. Non-zero residual is a warn
 
 | Command | Purpose |
 |---|---|
-| `transactions splits add <transaction-id> <amount> <category>` | Add one split row. |
+| `transactions splits add <transaction-id> <amount> --category <category>` | Add one split row (`--subcategory`, `--note` optional). |
 | `transactions splits list <transaction-id>` | List splits on a transaction with residual. |
 | `transactions splits remove <split-id>` | Remove one split row. |
 | `transactions splits clear <transaction-id>` | Remove all splits on a transaction. |
@@ -313,7 +312,7 @@ Categorization workflow. Engines: deterministic rules + merchant mappings (local
 | Command | Purpose | Key flags |
 |---|---|---|
 | `transactions categorize run` | Run the engine cascade over uncategorized rows. Engines run in order; a rule write blocks a merchant write at the same priority. | `--methods rules,merchants` |
-| `transactions categorize assist` | Return uncategorized rows as redacted records for LLM categorization (description/memo redacted; no amount, date, or account). Same shape as the `transactions_categorize_assist` MCP tool. | `--limit`, `--account-filter`, `--date-range` |
+| `transactions categorize assist` | Return uncategorized rows as PII-scrubbed records for LLM categorization — merchant text (description/memo) is kept as the categorization signal, scrubbed of embedded PII (card and account numbers, phone numbers, emails, dates, city/state); no amount, date, or account ID. Same shape as the `transactions_categorize_assist` MCP tool. | `--limit`, `--account-filter`, `--date-range` |
 | `transactions categorize commit` | Commit externally-decided categorizations from a JSON array. | `--input <path>` or `-` (stdin) |
 | `transactions categorize commit-from-file <path>` | Convenience wrapper around `commit --input <path>`. | — |
 | `transactions categorize export-uncategorized` | Export uncategorized rows for offline review. | `--limit`, `--output` |
@@ -323,7 +322,7 @@ Categorization workflow. Engines: deterministic rules + merchant mappings (local
 | `transactions categorize rules apply` | Apply only active rules to uncategorized transactions. | — |
 | `transactions categorize rules delete <rule-id>` | Delete a rule. | `--reapply` |
 | `transactions categorize auto review` | List pending auto-rule proposals with sample transactions. | `--limit` |
-| `transactions categorize auto accept <proposal-id>` | Accept one auto-rule proposal. | `--all` |
+| `transactions categorize auto accept` | Accept or reject auto-rule proposals by id, or every pending one at once. | `--accept <proposal-id>`, `--reject <proposal-id>`, `--accept-all`, `--reject-all`, `--allow-broad` |
 | `transactions categorize auto rules` | List rules created from auto-proposals. | — |
 | `transactions categorize auto stats` | Auto-rule activity summary. | — |
 | `transactions categorize ml status` / `train` / `apply` 🚧 | ML-assisted categorization (stub). | — |
@@ -338,9 +337,9 @@ Category taxonomy. Default (seeded) categories cannot be deleted — disable the
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `categories list` 🚧 | List all categories (stub). | — |
-| `categories create <name>` 🚧 | Create a category (stub). | `--parent <name>` |
-| `categories set <category-id>` 🚧 | Update settings (today: `--active/--inactive` only) (stub). | `--active/--inactive` |
+| `categories list` | List all categories. | — |
+| `categories create <name>` | Create a category. | `--parent <name>` |
+| `categories set <category-id>` | Update settings (today: `--active/--inactive` only). | `--active/--inactive` |
 | `categories delete <category-id>` | Hard-delete a user-created category. Refuses if referenced unless `--force`. | `--force` |
 
 ### `merchants`
@@ -349,8 +348,8 @@ Merchant name mappings.
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `merchants list` 🚧 | List merchant mappings (stub). | — |
-| `merchants create <pattern> <canonical>` 🚧 | Create a mapping (stub). | `--default-category` |
+| `merchants list` | List merchant mappings. | — |
+| `merchants create <pattern> <canonical>` | Create a mapping. | `--default-category` |
 
 ## Accounts and balances
 
@@ -362,14 +361,14 @@ Account entities (dim records) plus per-account workflows.
 |---|---|---|
 | `accounts list` | List accounts. Hides archived by default. | `--include-archived`, `--type <subtype>` |
 | `accounts get <account-id>` | Show one account's full dim record + settings. | — |
-| `accounts set <account-id>` | Update structural and behavioral fields. At least one field flag required. | `--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--default-cost-basis-method`, `--display-name`, `--include/--exclude`, `--archive/--unarchive`, `--clear-FIELD`, `-y, --yes` |
+| `accounts set <account-id>` | Update structural and behavioral fields. At least one field flag required. | `--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--default-cost-basis-method`, `--display-name`, `--include/--exclude`, `--archive/--unarchive`, `--clear-<field>`, `-y, --yes` |
 | `accounts resolve <query>` | Fuzzy-match a free-text reference (e.g., `"my Chase account"`) to ranked account-ID candidates. Use this before commands that need an account-id. | `-n, --limit` |
-| `accounts balance show <account-id>` | Current balance for one account. | `--as-of <date>` |
+| `accounts balance show` | Current or as-of balance per account. | `--account <account-id>`, `--as-of <date>` |
 | `accounts balance list` | Latest balance across all accounts. | — |
-| `accounts balance history <account-id>` | Balance history with daily carry-forward interpolation. | `--from`, `--to` |
-| `accounts balance assert <account-id> <amount>` | Record a point-in-time balance assertion (reconciles via delta row). | `--as-of <date>` |
-| `accounts balance assertion-delete <assertion-id>` | Delete one balance assertion. | `-y, --yes` |
-| `accounts balance reconcile <account-id>` | Recompute reconciliation deltas for an account. | — |
+| `accounts balance history --account <account-id>` | Balance history with daily carry-forward interpolation. | `--from`, `--to` |
+| `accounts balance assert <account-id> <date> <amount>` | Record a point-in-time balance assertion (reconciles via delta row). | `--notes`, `-y, --yes` |
+| `accounts balance assertion-delete <account-id> <date>` | Delete one balance assertion. | `-y, --yes` |
+| `accounts balance reconcile` | Observed balance days whose reconciliation delta is non-zero. | `--account <account-id>`, `--threshold` |
 | `accounts links pending` | Provisional accounts and the merges proposed for them, with the ledger evidence behind each. | `-o/--output`, `-q` |
 | `accounts links set <decision-id>` | Merge the provisional into a candidate, or keep it standalone. | `--into <account-id>`, `--standalone`, `-y, --yes` |
 | `accounts links run [<id> <id>]` | With no ids, sweep every account for duplicates. With two, propose exactly that pair — the escape hatch for a duplicate no signal reaches. | `-o/--output` |
@@ -527,20 +526,20 @@ Lifecycle, exploration, and key management on the encrypted database.
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `db init` | Create a new encrypted database for the active profile. | `--force` |
+| `db init` | Create a new encrypted database for the active profile. | `--passphrase`, `-y, --yes` |
 | `db info` | Database metadata: size, table list, encryption status, SQLMesh and migration versions. | — |
 | `db shell` | Interactive DuckDB SQL shell against the active profile's database. | — |
 | `db ui` | Open the DuckDB web UI in a browser. | — |
-| `db query <sql>` | Run one SQL query. Output formats: `text`, `json`, `csv`, `markdown`, `box`. JSON here is raw rows, not the envelope. | `-o, --output`, `--params` |
+| `db query <sql>` | Run one SQL query. Output formats: `text`, `json`, `csv`, `markdown`, `box`. JSON here is raw rows, not the envelope. | `-o, --output`, `-q, --quiet` |
 | `db lock` | Lock the database (purge the cached key). | — |
 | `db unlock` | Unlock the database (load the key from keychain). | — |
-| `db backup` | Create a timestamped encrypted backup. | `--dest <path>` |
-| `db restore <backup-path>` | Restore from a backup file. | `-y, --yes` |
+| `db backup` | Create a timestamped encrypted backup. | `-o, --output <path>` |
+| `db restore` | Restore from a backup file. | `--from <backup-path>`, `--latest`, `-y, --yes` |
 | `db ps` | List processes currently holding the database file. | — |
 | `db kill` | Kill processes holding the database. | `-y, --yes` |
 | `db key show` | Print the encryption key to stderr (use with care). | — |
 | `db key rotate` | Re-encrypt with a new key. | `-y, --yes` |
-| `db key export <path>` 🚧 | Export the key to a file (encrypted) (stub). | — |
+| `db key export` 🚧 | Export the key to a file (encrypted) (stub). | `-o, --out <path>` |
 | `db key import <path>` 🚧 | Import a key from a file (stub). | — |
 | `db key verify` 🚧 | Verify the cached key matches the database (stub). | — |
 | `db migrate apply` | Apply pending schema migrations. | `--dry-run` |
@@ -620,7 +619,7 @@ Generate and manage synthetic financial data for testing and demos. Each profile
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `synthetic generate` | Generate synthetic data into a fresh profile. | `--persona`, `--months`, `--seed` |
+| `synthetic generate` | Generate synthetic data into a fresh profile. | `--persona`, `--years`, `--seed` |
 | `synthetic reset` | Wipe and regenerate from scratch. | `--persona`, `-y, --yes` |
 
 Whole-pipeline scenarios live under `tests/scenarios/` and are driven via `make test-scenarios` rather than a CLI command.
@@ -660,7 +659,7 @@ moneybin reports merchants --top 20 --sort spend
 moneybin reports spending --from-month 2026-01-01 --to-month 2026-12-01 --compare yoy
 ```
 
-The `tax` group is reserved for future automated form-data extraction; for now, the reports above plus a `db query` against `core.fct_transactions` cover most tax-prep needs.
+There is no dedicated `tax` command group. The reports above, `investments gains` (the 1099-B surface), and a `db query` against `core.fct_transactions` cover most tax-prep needs today.
 
 ### Drain the watched inbox
 
@@ -673,7 +672,7 @@ moneybin import inbox list       # preview without moving
 ### Categorize with an LLM, agent-driven
 
 ```bash
-# 1. Pull redacted records out for the LLM.
+# 1. Pull PII-scrubbed records out for the LLM (merchant text preserved, embedded PII stripped).
 moneybin transactions categorize assist --limit 50 --output json > to_categorize.json
 
 # 2. Run your LLM workflow against to_categorize.json; produce decisions.json.

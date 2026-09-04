@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Contributing to MoneyBin
 
 Thanks for helping out. This file gets you to a landed change without a reading
@@ -40,8 +40,10 @@ under `src/moneybin/`; SQL transformations under `src/moneybin/sqlmesh/`; tests 
 - [`CONTEXT.md`](CONTEXT.md) — the glossary: the canonical word for each concept.
 - [`docs/architecture.md`](docs/architecture.md) — system shape and data layers.
 - [`docs/specs/INDEX.md`](docs/specs/INDEX.md) — every feature spec and its status.
-- [`.claude/rules/`](.claude/rules/) — per-domain rules (security, database,
-  MCP, CLI, testing, data-extraction, identifiers).
+- [`.claude/rules/`](.claude/rules/) — 16 per-domain rule files: security,
+  database, MCP, CLI, testing, data-extraction, identifiers, documentation,
+  reports, shipping, surface-design, column-ordering, design-principles,
+  branching, sandboxing, agent-experience.
 
 ## Workflow
 
@@ -118,7 +120,7 @@ domain and match it.
 1. **Pick a command group.** `src/moneybin/cli/commands/<group>/`. Match the
    naming convention in [`.claude/rules/cli.md`](.claude/rules/cli.md) —
    subgroup commands are `<group>_<verb>`.
-2. **Use the standard flags and exit codes.** `--output {table,json}` for any
+2. **Use the standard flags and exit codes.** `--output [text|json]` for any
    command that returns data; the JSON envelope contract is the same one
    MCP tools use.
 3. **Tests:** unit test argument parsing and exit codes; E2E subprocess test

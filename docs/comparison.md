@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Where MoneyBin Fits
 
 Choosing a personal-finance platform is a high-switching-cost decision — your data, your categorization history, the habits you build around it. This page is the honest version: what MoneyBin is, and who should use something else.
@@ -25,8 +25,8 @@ Honest mismatches matter more than feature checklists. If any of these describe 
 - **You share a budget with a partner or household.** Use [Tiller](https://www.tiller.com/), [YNAB](https://www.ynab.com/), or [Monarch](https://www.monarchmoney.com/). MoneyBin is single-user.
 - **You want pure envelope budgeting, no AI in the loop.** Use [YNAB](https://www.ynab.com/) or [Actual Budget](https://actualbudget.org/).
 - **You want plain-text, double-entry, git-diffable books.** Use [Beancount](https://beancount.github.io/) + [Fava](https://github.com/beancount/fava) or [hledger](https://hledger.org/). MoneyBin's encrypted DuckDB file is deliberately not a plain-text ledger.
-- **You want market-priced holdings or a proven real-broker tie-out.** Use [Wealthfolio](https://wealthfolio.app/), [Beancount](https://beancount.github.io/), or [Portfolio Performance](https://www.portfolio-performance.info/) for those. MoneyBin supports Plaid investment ingestion, a manual-entry investment ledger, and market value from the close a connected broker already sends — but a security no connected broker prices stays unvalued until external feeds land, and a real-broker tie-out is still ahead.
-- **You need multi-currency today.** Use [Firefly III](https://www.firefly-iii.org/) or [Beancount](https://beancount.github.io/).
+- **You want a proven real-broker 1099-B tie-out.** Use [Wealthfolio](https://wealthfolio.app/), [Beancount](https://beancount.github.io/), or [Portfolio Performance](https://www.portfolio-performance.info/) if that trail matters today. MoneyBin prices holdings from a connected broker's close, a Tiingo or CoinGecko feed, or a price you set by hand, and computes cost basis under four methods (FIFO, HIFO, specific-ID, average) — checked against a hand-labeled fixture, not yet against a real broker's 1099-B.
+- **You need realized FX gain/loss on currency conversions today.** Use [Firefly III](https://www.firefly-iii.org/) or [Beancount](https://beancount.github.io/). MoneyBin preserves each transaction's original currency and converts net worth, balance drift, and large-transactions reports to one display currency; a deliberate conversion's realized gain/loss isn't computed yet.
 - **You want a battle-tested self-host stack you can deploy this afternoon.** Use [Firefly III](https://www.firefly-iii.org/) or [Sure](https://github.com/we-promise/sure) — MoneyBin's container story is on the roadmap, not in the box.
 
 ## A note on maturity

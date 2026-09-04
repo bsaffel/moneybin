@@ -1657,7 +1657,7 @@ async def test_links_set_accept_reports_what_the_rematch_found(
     number leaves the agent unable to tell the user what just happened.
     """
     from moneybin.mcp.tools import accounts as accounts_module
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
 
     def _accepted(*_args: object, **_kw: object) -> RefreshResult:
         return RefreshResult(
@@ -1699,7 +1699,7 @@ async def test_links_set_accept_reports_a_retired_transfer_in_data(
     be a field, and the action string has to name the way back.
     """
     from moneybin.mcp.tools import accounts as accounts_module
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
 
     def _accepted(*_args: object, **_kw: object) -> RefreshResult:
         return RefreshResult(applied=True, duration_seconds=0.0, transfers_retired=3)
@@ -1756,7 +1756,7 @@ async def test_links_set_accept_flags_a_failed_rebuild(
     tells the agent the merge landed while the user can still see two accounts.
     """
     from moneybin.mcp.tools import accounts as accounts_module
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
 
     def _accepted(*_args: object, **_kw: object) -> RefreshResult:
         return RefreshResult(
@@ -1802,7 +1802,7 @@ async def test_links_set_accept_flags_a_match_pass_that_never_ran(
     the MCP surface.
     """
     from moneybin.mcp.tools import accounts as accounts_module
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
 
     def _accepted(*_args: object, **_kw: object) -> RefreshResult:
         return RefreshResult(

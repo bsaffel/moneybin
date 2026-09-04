@@ -18,7 +18,7 @@ from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity, get_max_rows, tier_to_sensitivity
+from moneybin.privacy.sensitivity import Sensitivity, get_max_rows, tier_to_sensitivity
 from moneybin.privacy.sql_query import execute_sql_query
 from moneybin.protocol.envelope import (
     ResponseEnvelope,

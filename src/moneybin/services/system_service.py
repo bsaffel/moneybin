@@ -11,7 +11,7 @@ from moneybin.services.categorization import CategorizationService
 from moneybin.services.matching_service import MatchingService
 from moneybin.services.review_service import ReviewService
 from moneybin.services.transform_service import TransformService
-from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS, IMPORT_LOG
+from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS, IMPORT_LOG, MODEL_FRESHNESS
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +149,7 @@ class SystemService:
         try:
             row = self._db.execute(
                 "SELECT last_changed_at, last_applied_at, last_executed_at, model_kind "
-                "FROM meta.model_freshness "
+                f"FROM {MODEL_FRESHNESS.full_name} "  # noqa: S608  # MODEL_FRESHNESS is a TableRef constant
                 "WHERE model_name = ?",
                 [model_name],
             ).fetchone()

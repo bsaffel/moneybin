@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from moneybin.services._validators import (
+from moneybin.limits import (
     NOTE_MAX_LEN,
     SLUG_MAX_LEN,
+)
+from moneybin.services._validators import (
     InvalidSlugError,
     validate_currency_code,
     validate_note_text,

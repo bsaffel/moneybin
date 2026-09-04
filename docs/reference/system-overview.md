@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-20 -->
+<!-- Last reviewed: 2026-09-03 -->
 # System Overview
 
 MoneyBin is a local-first, AI-native personal finance platform. This page is the orientation map — what each major piece does, how they fit together, and what runs when. For the architectural depth (primitives, contracts, layers, internal invariants), see [`docs/architecture.md`](../architecture.md). For column-level schema, see [`data-model.md`](data-model.md). For the full reference, see [`docs/specs/architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md).
@@ -39,7 +39,7 @@ flowchart LR
   store --> sql
 ```
 
-The client is the only writer to the local store. Agents reach the data through MCP tools the client exposes; external SQL clients read the file directly (with the encryption key from `moneybin db key`). There is no ambient egress or telemetry. Explicit `sync_*` calls reach opaque `moneybin-sync` APIs, and explicit `gsheet_*` calls reach Google OAuth/Sheets APIs.
+The client is the only writer to the local store. Agents reach the data through MCP tools the client exposes; external SQL clients read the file directly (with the encryption key from `moneybin db key show`). There is no ambient egress or telemetry. Explicit `sync_*` calls reach opaque `moneybin-sync` APIs, and explicit `gsheet_*` calls reach Google OAuth/Sheets APIs.
 
 ## How components fit together
 
@@ -50,6 +50,7 @@ flowchart TD
   cli["CLI command<br/>(Typer entrypoint)"]
   tool["MCP tool<br/>(@mcp_tool decorator)"]
   mw["Privacy middleware<br/>(sensitivity, timeout,<br/>envelope, validation)"]
+  orch["Orchestration layer<br/>src/moneybin/orchestration/*"]
   svc["Service layer<br/>src/moneybin/services/*"]
   db["Database<br/>(encrypted DuckDB)"]
   sm["SQLMesh pipeline"]
@@ -57,9 +58,12 @@ flowchart TD
   srv["moneybin-sync"]
 
   cli --> svc
+  cli --> orch
   tool --> mw --> svc
+  tool --> mw --> orch
+  orch -->|refresh composes| svc
   svc --> db
-  svc -->|refresh / transform| sm
+  svc -->|transform| sm
   sm --> db
   svc -->|sync.* only| sync
   sync --> srv
@@ -69,7 +73,8 @@ Concretely:
 
 - **CLI and MCP both call the service layer.** Neither invokes the other. CLI commands import services directly (e.g., `from moneybin.services.transaction_service import TransactionService`); MCP tool bodies do the same. Same redaction, same audit log, same response envelope.
 - **The privacy middleware sits in front of every MCP call.** The `@mcp_tool` decorator wraps each tool body with sensitivity tagging, a wall-clock timeout, error classification, and envelope assembly; FastMCP's `ValidationErrorMiddleware` translates argument-validation failures into friendly error envelopes before the body runs. CLI commands skip the decorator (they reach the service layer directly) but emit the same audit primitives.
-- **The SQLMesh pipeline is invoked from the service layer**, never from CLI/MCP code directly. `services/refresh.py` and `services/transform_service.py` open a `sqlmesh_context(db)` from `moneybin.database` and apply plans against the open DuckDB connection.
+- **The SQLMesh pipeline is invoked below the adapters**, never from CLI/MCP code directly. `services/transform_service.py` owns the `sqlmesh_context(db)` and applies plans against the open DuckDB connection; `orchestration/refresh.py` reaches it by composing that service alongside the matcher, the categorizer and the identity link services.
+- **Orchestration sits one layer above services.** `src/moneybin/orchestration/` holds pipelines that compose several services into one operation — today, the `refresh` cascade. An orchestrator imports services; a service does not import an orchestrator. `tests/moneybin/test_architecture/test_orchestration_layering.py` enforces that direction and enumerates every upward import that predates the package, whether written at a module top or deferred into a method body.
 - **`moneybin-sync` is reached only via the sync client** (`src/moneybin/connectors/sync_client.py`) when `moneybin sync *` commands or `sync_*` MCP tools fire. File-based imports (OFX, CSV, PDF) and inbox watch never touch the network.
 - **The categorization service** runs from three callers: the orchestrator during `refresh` (best-effort, after SQLMesh apply), the `transactions categorize *` CLI commands, and the `transactions_categorize_*` MCP tools.
 - **The migration runner** runs at process startup (inside `Database.__init__`, gated by `no_auto_upgrade`) and as a manual command (`db migrate apply`). Every process that opens the database checks the migration log first.
@@ -104,7 +109,7 @@ moneybin db init
 #    Beancount, PDF) and prompts for account assignment.
 moneybin import files my_export.csv
 
-# 4. Run the pipeline (gsheet → match → transform → categorize → identity).
+# 4. Run the pipeline (gsheet → match → transform → categorize → identity → rates).
 #    Most commands trigger refresh automatically; you rarely run it by hand.
 moneybin refresh
 
@@ -138,7 +143,7 @@ under a declared maximum. → [`mcp-server.md`](../guides/mcp-server.md)
 
 ### SQL
 
-Read-only DuckDB query. `moneybin db shell` and any DuckDB-compatible client given the profile's encryption key reach every schema; the `sql_query` MCP tool and `moneybin sql query` admit five — `core`, `app`, `reports`, `raw`, and `prep` — refuse `meta` and `seeds`, and mask `raw`/`prep` through 34 hand-written CRITICAL declarations plus a value-shape scan over the string and integer values in every other column — a `DECIMAL` or `FLOAT` is not scanned. External clients (DBeaver, Datasette, the plain `duckdb` CLI, Python/R notebooks) need that key — `moneybin db key` prints it for the current profile. → [`sql-access.md`](../guides/sql-access.md)
+Read-only DuckDB query. `moneybin db shell` and any DuckDB-compatible client given the profile's encryption key reach every schema; the `sql_query` MCP tool and `moneybin sql query` admit five — `core`, `app`, `reports`, `raw`, and `prep` — refuse `meta` and `seeds`, and mask `raw`/`prep` through 34 hand-written CRITICAL declarations plus a value-shape scan over the string and integer values in every other column — a `DECIMAL` or `FLOAT` is not scanned. External clients (DBeaver, Datasette, the plain `duckdb` CLI, Python/R notebooks) need that key — `moneybin db key show` prints it for the current profile. → [`sql-access.md`](../guides/sql-access.md)
 
 ## Lifecycle of an MCP tool call
 
@@ -151,7 +156,7 @@ A single tool invocation, end-to-end:
 5. **Envelope wrap-up.** The decorator checks the return is a `ResponseEnvelope`, attaches sensitivity metadata, and lets the body's action hints (suggested next tools) ride along. Classified domain exceptions become error envelopes; timeouts become a `timed_out` envelope; anything unclassified propagates to FastMCP.
 6. **Audit + return.** The audit primitive logs `tool=<name> sensitivity=<tier> metadata=<...>`. FastMCP serializes the envelope and returns it to the client.
 
-Source: `src/moneybin/mcp/decorator.py`, `src/moneybin/mcp/middleware.py`, `src/moneybin/mcp/privacy.py`.
+Source: `src/moneybin/mcp/decorator.py`, `src/moneybin/mcp/middleware.py`, `src/moneybin/privacy/sensitivity.py`.
 
 ## Storage
 

@@ -26,12 +26,12 @@ from moneybin.cli.commands.accounts.links import (
     app,
 )
 from moneybin.errors import UserError
-from moneybin.mcp.write_contracts import AccountLinkDecisionRequest
+from moneybin.orchestration.refresh import RefreshResult
+from moneybin.protocol.write_contracts import AccountLinkDecisionRequest
 from moneybin.services.account_links_service import AccountLinkAcceptImpact
 from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.identity_confirmation import identity_confirm_message
 from moneybin.services.ledger_overlap import LedgerOverlap
-from moneybin.services.refresh import RefreshResult
 from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
@@ -467,7 +467,7 @@ class TestLinksSet:
         confirm gate exists to prevent — so the counts belong on the terminal,
         not only in the log file.
         """
-        from moneybin.services.refresh import RefreshResult
+        from moneybin.orchestration.refresh import RefreshResult
 
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_set.return_value = RefreshResult(
@@ -500,7 +500,7 @@ class TestLinksSet:
         those zeros as a clean pass would tell the user their merge exposed no
         duplicates when the rows were never looked at.
         """
-        from moneybin.services.refresh import RefreshResult
+        from moneybin.orchestration.refresh import RefreshResult
 
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_set.return_value = RefreshResult(
@@ -530,7 +530,7 @@ class TestLinksSet:
         new duplicates found" over a merge that just queued transfers for
         review — the counters are the only place the user learns of them.
         """
-        from moneybin.services.refresh import RefreshResult
+        from moneybin.orchestration.refresh import RefreshResult
 
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_set.return_value = RefreshResult(
@@ -580,7 +580,7 @@ class TestLinksSet:
         both accounts, so reporting "2 auto-merged" and stopping describes a
         collapse the user cannot see anywhere in their ledger.
         """
-        from moneybin.services.refresh import RefreshResult
+        from moneybin.orchestration.refresh import RefreshResult
 
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_set.return_value = RefreshResult(
@@ -622,7 +622,7 @@ class TestLinksSet:
         ordinary "re-matched" line would bury it, so it warns and names the
         route back.
         """
-        from moneybin.services.refresh import RefreshResult
+        from moneybin.orchestration.refresh import RefreshResult
 
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_set.return_value = RefreshResult(
@@ -658,7 +658,7 @@ class TestLinksSet:
         different things: nothing was proposed, *and* the merge itself is not
         visible yet. Reporting only the first leaves the second silent.
         """
-        from moneybin.services.refresh import RefreshResult
+        from moneybin.orchestration.refresh import RefreshResult
 
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_set.return_value = RefreshResult(

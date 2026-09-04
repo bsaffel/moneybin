@@ -23,11 +23,12 @@ from typing import TYPE_CHECKING
 
 from moneybin import error_codes
 from moneybin.errors import UserError
+from moneybin.tables import OFX_TRANSACTIONS, TABULAR_TRANSACTIONS
 
 if TYPE_CHECKING:
     from moneybin.database import Database
+    from moneybin.orchestration.refresh import RefreshResult
     from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
-    from moneybin.services.refresh import RefreshResult
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +134,8 @@ def _check_refresh(result: RefreshResult) -> None:
 def _count_transactions(db: Database) -> int:
     try:
         row = db.execute(
-            "SELECT (SELECT COUNT(*) FROM raw.ofx_transactions) "
-            "+ (SELECT COUNT(*) FROM raw.tabular_transactions)"
+            f"SELECT (SELECT COUNT(*) FROM {OFX_TRANSACTIONS.full_name}) "
+            f"+ (SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name})"  # noqa: S608  # TableRef constants
         ).fetchone()
         return int(row[0]) if row else 0
     except Exception:  # noqa: BLE001,S110 — tables may not exist in a fresh DB
@@ -271,10 +272,10 @@ class DemoService:
         from moneybin.config import set_current_profile
         from moneybin.database import get_database
         from moneybin.metrics.registry import DEMO_RUN_TOTAL
+        from moneybin.orchestration.refresh import refresh
         from moneybin.services.doctor_service import DoctorService
         from moneybin.services.networth_service import NetworthService
         from moneybin.services.profile_service import ProfileService
-        from moneybin.services.refresh import refresh
         from moneybin.synthetic.engine import GeneratorEngine
         from moneybin.synthetic.merchant_seed import seed_merchant_catalog
         from moneybin.synthetic.writer import SyntheticWriter

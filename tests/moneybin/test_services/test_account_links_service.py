@@ -20,13 +20,13 @@ from pytest_mock import MockerFixture
 
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.orchestration.refresh import RefreshResult
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
     AccountLinksService,
 )
-from moneybin.services.refresh import RefreshResult
 from tests.moneybin.db_helpers import create_core_tables
 
 # ---------------------------------------------------------------------------
@@ -182,7 +182,7 @@ def rematch(mocker: MockerFixture) -> MagicMock:
     test instead.
     """
     return mocker.patch(
-        "moneybin.services.refresh.refresh",
+        "moneybin.orchestration.refresh.refresh",
         return_value=RefreshResult(applied=True, duration_seconds=0.0),
     )
 

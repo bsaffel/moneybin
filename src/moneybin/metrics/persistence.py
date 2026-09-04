@@ -19,6 +19,8 @@ from typing import Any, Protocol, cast
 from prometheus_client import CollectorRegistry
 from prometheus_client.metrics import MetricWrapperBase
 
+from moneybin.tables import METRICS
+
 
 class _DBExecutor(Protocol):
     """Minimal interface for database access in metrics persistence."""
@@ -121,12 +123,12 @@ def flush_to_duckdb(
     try:
         db.begin()
         db.executemany(
-            """
-            INSERT INTO app.metrics
+            f"""
+            INSERT INTO {METRICS.full_name}
                 (metric_name, metric_type, labels, value,
                  bucket_bounds, bucket_counts, recorded_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
+            """,  # noqa: S608  # METRICS is a TableRef constant, values parameterized
             rows,
         )
         db.commit()
@@ -164,15 +166,15 @@ def load_from_duckdb(
         raw_rows = cast(
             list[tuple[Any, ...]],
             db.execute(
-                """
+                f"""
                 SELECT metric_name, metric_type, labels, value
-                FROM app.metrics
+                FROM {METRICS.full_name}
                 WHERE (metric_name, labels, recorded_at) IN (
                     SELECT metric_name, labels, MAX(recorded_at)
-                    FROM app.metrics
+                    FROM {METRICS.full_name}
                     GROUP BY metric_name, labels
                 )
-                """
+                """  # noqa: S608  # METRICS is a TableRef constant, no user input
             ).fetchall(),
         )
     except Exception:  # noqa: BLE001  # table may not exist yet; silently skip

@@ -15,7 +15,6 @@ from typing import Annotated, Any
 
 import pytest
 
-from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.classified_envelope import (
     build_classified_envelope,
     classify,
@@ -26,6 +25,7 @@ from moneybin.privacy.introspection import (
     extract_data_classes,
 )
 from moneybin.privacy.redaction import redact_typed
+from moneybin.privacy.sensitivity import tier_to_sensitivity
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
@@ -121,7 +121,7 @@ def test_classes_returned_is_sorted_data_class_values() -> None:
 def test_sensitivity_agrees_with_the_mcp_tier_mapping() -> None:
     """The builder derives the sensitivity string without importing mcp.
 
-    ``moneybin.privacy`` cannot import ``moneybin.mcp.privacy`` (that is the
+    ``moneybin.privacy`` cannot import ``moneybin.privacy.sensitivity`` (that is the
     dependency direction MB-49 removes), so the builder spells the mapping
     itself. This pins the two spellings together.
     """

@@ -94,6 +94,7 @@ GSHEET_CONNECTIONS = TableRef("app", "gsheet_connections")
 EXPORT_DESTINATIONS = TableRef("app", "export_destinations")
 AI_CONSENT_GRANTS = TableRef("app", "ai_consent_grants")
 USER_REPORTS = TableRef("app", "user_reports", audience="interface")
+METRICS = TableRef("app", "metrics")
 
 # -- App tabular tables --
 TABULAR_FORMATS = TableRef("app", "tabular_formats")
@@ -157,9 +158,11 @@ INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")
 INT_TRANSACTIONS_MATCHED = TableRef("prep", "int_transactions__matched")
 INT_TRANSACTIONS_MERGED = TableRef("prep", "int_transactions__merged")
 STG_PLAID_TRANSACTIONS = TableRef("prep", "stg_plaid__transactions")
+STG_SECURITY_PRICES = TableRef("prep", "stg_security_prices")
 
 # -- Meta schema (cross-source provenance + lineage) --
 FCT_TRANSACTION_PROVENANCE = TableRef("meta", "fct_transaction_provenance")
+MODEL_FRESHNESS = TableRef("meta", "model_freshness")
 
 # -- Synthetic tables (created on demand by the generator) --
 GROUND_TRUTH = TableRef("synthetic", "ground_truth")

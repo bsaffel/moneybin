@@ -882,7 +882,7 @@ def _apply_public_match_decisions(
             None,
         )
 
-    from moneybin.mcp.write_contracts import MatchDecisionRequest
+    from moneybin.protocol.write_contracts import MatchDecisionRequest
     from moneybin.services.review_decisions_service import ReviewDecisionsService
 
     outcome = ReviewDecisionsService(db, actor="matrix").apply_ordinary([

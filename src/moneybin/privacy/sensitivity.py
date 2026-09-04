@@ -1,22 +1,28 @@
-"""MCP privacy helpers and the shared read-only query validator."""
+"""Sensitivity tiers, tool-call audit stubs, and the shared response-row cap.
+
+Every classified surface — MCP tools, CLI ``--output json``, the reports
+framework — declares a tier here, records the call, and caps how many rows
+it may return. Homed beside the rest of ``moneybin.privacy`` rather than
+under a transport package so no surface has to import another one to
+classify its own output.
+"""
 
 import logging
 from enum import StrEnum
 
 from moneybin.config import get_settings
-from moneybin.privacy.sql_query import (
-    validate_read_only_query as validate_read_only_query,  # re-export
-)
 from moneybin.privacy.taxonomy import Tier
 
 logger = logging.getLogger(__name__)
 
 
 class Sensitivity(StrEnum):
-    """Data sensitivity tier for MCP tools.
+    """Data sensitivity tier a classified response declares.
 
-    Every tool declares its maximum data sensitivity. The privacy
-    middleware uses this to enforce consent gates and response filtering.
+    Every MCP tool declares its maximum, and the privacy middleware uses it
+    to enforce consent gates and response filtering. The same four values
+    reach the CLI and the reports framework, which read them off
+    ``summary.sensitivity`` on the shared envelope.
 
     See ``mcp-architecture.md`` section 5 for tier definitions.
     """

@@ -50,6 +50,8 @@ from moneybin.metrics.registry import (
     TABULAR_DETECTION_CONFIDENCE,
     TABULAR_FORMAT_MATCHES,
 )
+from moneybin.orchestration.refresh import refresh as _refresh
+from moneybin.orchestration.refresh import step_outcome as _step_outcome
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
@@ -78,9 +80,15 @@ from moneybin.services.ledger_overlap import (
     IncomingTransaction,
     probe_incoming_ledger_overlap,
 )
-from moneybin.services.refresh import refresh as _refresh
-from moneybin.services.refresh import step_outcome as _step_outcome
 from moneybin.services.refresh_outcome import RefreshStepOutcome
+from moneybin.tables import (
+    IMPORTS,
+    OFX_ACCOUNTS,
+    OFX_BALANCES,
+    OFX_INSTITUTIONS,
+    OFX_TRANSACTIONS,
+    TABULAR_TRANSACTIONS,
+)
 from moneybin.utils.file import source_sha256
 
 logger = logging.getLogger(__name__)
@@ -2318,10 +2326,10 @@ class ImportService:
         rows_loaded: dict[str, int] = {}
         try:
             for table_key, qualified in (
-                ("institutions", "raw.ofx_institutions"),
-                ("accounts", "raw.ofx_accounts"),
-                ("transactions", "raw.ofx_transactions"),
-                ("balances", "raw.ofx_balances"),
+                ("institutions", OFX_INSTITUTIONS.full_name),
+                ("accounts", OFX_ACCOUNTS.full_name),
+                ("transactions", OFX_TRANSACTIONS.full_name),
+                ("balances", OFX_BALANCES.full_name),
             ):
                 df = data[table_key]
                 if len(df) > 0:
@@ -2402,7 +2410,7 @@ class ImportService:
 
         if transactions_imported > 0:
             result.date_range = self._query_date_range(
-                "raw.ofx_transactions", "CAST(date_posted AS DATE)", canonical_path
+                OFX_TRANSACTIONS.full_name, "CAST(date_posted AS DATE)", canonical_path
             )
 
         return result
@@ -3988,7 +3996,7 @@ class ImportService:
 
         if rows_imported > 0:
             result.date_range = self._query_date_range(
-                "raw.tabular_transactions", "transaction_date", file_path
+                TABULAR_TRANSACTIONS.full_name, "transaction_date", file_path
             )
 
         # Auto-save detected format for future imports.
@@ -6104,7 +6112,7 @@ class ImportService:
         """Extract + load one file. Does NOT run the refresh pipeline.
 
         Refresh (matching, SQLMesh apply, categorization) is the caller's
-        responsibility — see :func:`moneybin.services.refresh.refresh` and
+        responsibility — see :func:`moneybin.orchestration.refresh.refresh` and
         ``import_files``.
         """
         path = Path(file_path)
@@ -6572,7 +6580,7 @@ class ImportService:
     def list_labels(self, import_id: str) -> list[str]:
         """Return the labels currently attached to ``import_id`` (or empty)."""
         row = self._db.conn.execute(
-            "SELECT labels FROM app.imports WHERE import_id = ?",
+            f"SELECT labels FROM {IMPORTS.full_name} WHERE import_id = ?",  # noqa: S608  # TableRef constant
             [import_id],
         ).fetchone()
         if row is None or row[0] is None:
@@ -6582,13 +6590,13 @@ class ImportService:
     def list_distinct_labels(self) -> list[tuple[str, int]]:
         """Return ``(label, usage_count)`` across all import rows, sorted desc."""
         rows = self._db.conn.execute(
-            """
+            f"""
             SELECT label, COUNT(*) AS n
-              FROM (SELECT UNNEST(labels) AS label FROM app.imports)
+              FROM (SELECT UNNEST(labels) AS label FROM {IMPORTS.full_name})
              WHERE label IS NOT NULL
              GROUP BY label
              ORDER BY n DESC, label ASC
-            """
+            """  # noqa: S608  # IMPORTS is a TableRef constant
         ).fetchall()
         return [(str(r[0]), int(r[1])) for r in rows]
 

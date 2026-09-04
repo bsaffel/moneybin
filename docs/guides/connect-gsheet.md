@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-08-30 -->
+<!-- Last reviewed: 2026-09-03 -->
 # Google Sheets
 
 Connect a Google Sheet as a live data source. MoneyBin authenticates once via direct OAuth, then every `moneybin refresh` re-pulls the sheet's current state — additions, edits, and deletions all flow through. Tiller-style ledger sheets participate in the full matching and categorization pipeline; any other sheet lands as queryable JSON with an auto-generated typed view.
@@ -133,7 +133,7 @@ Best for: anything else. Asset valuations, a subscription tracker, a budget tab,
 moneybin gsheet connect "https://docs.google.com/spreadsheets/d/.../edit#gid=42" \
   --adapter=seed --alias=subscriptions
 # Now queryable:
-moneybin db shell -c "SELECT * FROM raw.gsheet_subscriptions"
+moneybin db query "SELECT * FROM raw.gsheet_subscriptions"
 ```
 
 ### When `seed` is the right choice
@@ -156,14 +156,15 @@ flowchart LR
     C --> D[Insert new rows]
     C --> E[Update changed rows]
     C --> F[Soft-delete missing rows<br/>deleted_from_source_at = now]
-    D --> G[Continue refresh<br/>match → transform → categorize → identity]
+    D --> G[Continue refresh<br/>match → transform → categorize → identity → rates]
     E --> G
     F --> G
 ```
 
-The full `moneybin refresh` path continues through identity backfill. A
-dedicated `moneybin gsheet pull` runs the narrower live match → transform →
-categorize post-pull subset. Three things to know:
+A dedicated `moneybin gsheet pull` runs that four-step post-pull subset —
+`rates` is included because a sheet can carry foreign-currency rows. The full
+`moneybin refresh` path adds identity backfill, running all five steps in the
+order match → transform → categorize → identity → rates. Three things to know:
 
 1. **Edits in the sheet update the matching MoneyBin row.** A stable-key heuristic identifies "this is the same row" across pulls — edits don't create duplicate rows.
 2. **Deletions soft-delete.** A row removed from the sheet gets `deleted_from_source_at = NOW()` in `raw.tabular_transactions`. It disappears from reports by default but survives in the raw layer for audit.
@@ -218,7 +219,7 @@ Soft disconnect is reversible (the rows stay in `raw.tabular_transactions` and `
 | `moneybin gsheet auth` | One-time OAuth (interactive browser flow). |
 | `moneybin gsheet connect <url>` | Connect a sheet; runs detection + initial pull. |
 | `moneybin gsheet pull [<id>]` | Pull one connection or all healthy connections. |
-| `moneybin gsheet` | List all connections with status. |
+| `moneybin gsheet list` | List all connections with status. |
 | `moneybin gsheet status [<id>]` | Detailed status — pinned mapping, drift detail, recent pulls. |
 | `moneybin gsheet reconnect <id>` | Re-detect after drift; update the pinned mapping. |
 | `moneybin gsheet disconnect <id>` | Soft disconnect by default; `--purge` for hard delete. |
@@ -241,7 +242,7 @@ Drift responses populate `actions[]` with a `gsheet_connect(connection_id=...)` 
 ## Limitations
 
 - **Read-only OAuth scope.** MoneyBin requests `https://www.googleapis.com/auth/spreadsheets.readonly` only. We never write back to your sheet. Write-scope is deferred to a future version (stable-ID write-back design).
-- **Google API quotas.** Google's default Sheets API quota is 60 read requests per minute per user. MoneyBin issues two requests per pull per connection (workbook metadata, then sheet values), so practical-use quotas are still hard to hit — but if you're connecting tens of large sheets, stagger pulls.
+- **Google API quotas.** Google allows 60 read requests per minute per user per Cloud project, under a 300-per-minute project ceiling. MoneyBin issues two requests per pull per connection (workbook metadata, then sheet values), so a single pull of 30 connections reaches the per-user cap. Stagger pulls past that. MoneyBin does not throttle client-side; a `429` from Google is retried, for 3 attempts total with backoff, then the connection is left in `rate_limited` state and the next pull picks it up.
 - **Single Google identity per profile** in v1. Multi-identity support is deferred.
 - **Soft-deleted rows are hidden by default.** Rows removed from your sheet disappear from reports but survive in `raw.tabular_transactions` with `deleted_from_source_at` set. To inspect them:
 

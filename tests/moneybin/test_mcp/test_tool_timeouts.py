@@ -13,7 +13,7 @@ import pytest
 
 from moneybin import error_codes
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
 
 
