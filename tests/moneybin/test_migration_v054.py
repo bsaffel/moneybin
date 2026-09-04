@@ -23,6 +23,7 @@ BLANK_SUBCATEGORY_SPLIT = "spl-blanksub01"
 NORMAL_SPLIT = "spl-normal0001"
 PADDED_SPLIT = "spl-padded0001"
 NULL_SPLIT = "spl-nullboth01"
+UNICODE_BLANK_SPLIT = "spl-nbspcat001"
 
 _SPLIT_COLUMNS = (
     "split_id",
@@ -48,6 +49,18 @@ def v054_db(db: Database) -> Database:
             (NORMAL_SPLIT, "txn-parent0003", "30.00", "Food & Drink", "Coffee", "cli"),
             (PADDED_SPLIT, "txn-parent0004", "40.00", "  Gas  ", None, "cli"),
             (NULL_SPLIT, "txn-parent0005", "50.00", None, None, "cli"),
+            # A non-breaking space is what a spreadsheet paste produces, and an
+            # ideographic space is ordinary in CJK input. Python's `str.strip()`
+            # calls both blank, so the backfill has to agree or the two halves
+            # of this rule part company on the most likely real input.
+            (
+                UNICODE_BLANK_SPLIT,
+                "txn-parent0006",
+                "60.00",
+                "\xa0\xa0",
+                "　",
+                "cli",
+            ),
         ],
     )
     return db
@@ -85,6 +98,18 @@ class TestV054BackfillBlankSplitCategories:
     def test_already_null_row_is_untouched(self, v054_db: Database) -> None:
         run_migration(v054_db, migrate)
         assert _category_pair(v054_db, NULL_SPLIT) == (None, None)
+
+    def test_unicode_whitespace_only_becomes_null(self, v054_db: Database) -> None:
+        """Blank means what `str.strip()` means, not what ASCII space means.
+
+        A character-list `TRIM` has to enumerate every character it strips, so
+        it silently keeps whichever ones nobody thought of — a non-breaking
+        space from a spreadsheet, an ideographic space from CJK input. Those
+        rows would stay non-NULL here while the service refuses the identical
+        value on write.
+        """
+        run_migration(v054_db, migrate)
+        assert _category_pair(v054_db, UNICODE_BLANK_SPLIT) == (None, None)
 
     def test_idempotent(self, v054_db: Database) -> None:
         """Re-running the migration on an already-migrated DB is harmless."""

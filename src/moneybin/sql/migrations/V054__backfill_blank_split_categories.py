@@ -8,12 +8,13 @@ category: ``core.fct_transaction_lines`` computes
 non-NULL, so the child's blank wins over the parent's real value instead of
 falling through.
 
-Backfill rule: a category/subcategory that is entirely whitespace (space,
-tab, newline, CR — the same set the prep-layer staging models now trim on
-write) becomes NULL. A merely *padded* value (``'  Gas  '``) is left as-is —
-this PR deliberately does not trim padding anywhere, on the write path or
-here, to avoid a second normalization pattern; only the blank case this PR
-exists to close is backfilled.
+Backfill rule: a category/subcategory that is entirely whitespace becomes
+NULL. "Whitespace" here is whatever Python's ``str.strip()`` calls blank —
+the service validator's definition — rather than a hand-written character
+list, so the two cannot drift apart. A merely *padded* value (``'  Gas  '``)
+is left as-is: this PR deliberately does not trim padding anywhere, on the
+write path or here, to avoid a second normalization pattern; only the blank
+case this PR exists to close is backfilled.
 
 Idempotent: the ``UPDATE`` only touches rows that are non-NULL and entirely
 whitespace, so replay is a no-op.
@@ -25,6 +26,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+#: Entirely-whitespace test matching Python ``str.strip()``. RE2's ``\p{Z}``
+#: is every Unicode space separator, which is what catches the two characters
+#: a character-list ``TRIM`` misses in practice: a non-breaking space (what a
+#: spreadsheet paste produces) and an ideographic space (ordinary CJK input).
+#: ``\s`` adds tab/newline/CR/form-feed and ``\x0B`` the vertical tab, which
+#: RE2 excludes from ``\s``. Bare ``TRIM`` is not a substitute: it strips the
+#: space separators but no C0 control character, so it leaves a tab behind.
+_BLANK = r"[\p{Z}\s\x0B]*"
+
 
 def migrate(conn: object) -> None:
     """Null out whitespace-only category/subcategory in app.transaction_splits."""
@@ -32,25 +42,21 @@ def migrate(conn: object) -> None:
         "V054: backfill whitespace-only app.transaction_splits.category/subcategory to NULL"
     )
     conn.execute(  # type: ignore[union-attr]
-        """
+        f"""
         UPDATE app.transaction_splits
         SET
             category = CASE
-                WHEN category IS NOT NULL
-                    AND TRIM(category, ' ' || CHR(9) || CHR(10) || CHR(13)) = ''
+                WHEN REGEXP_FULL_MATCH(category, '{_BLANK}')
                 THEN NULL
                 ELSE category
             END,
             subcategory = CASE
-                WHEN subcategory IS NOT NULL
-                    AND TRIM(subcategory, ' ' || CHR(9) || CHR(10) || CHR(13)) = ''
+                WHEN REGEXP_FULL_MATCH(subcategory, '{_BLANK}')
                 THEN NULL
                 ELSE subcategory
             END
         WHERE
-            (category IS NOT NULL
-                AND TRIM(category, ' ' || CHR(9) || CHR(10) || CHR(13)) = '')
-            OR (subcategory IS NOT NULL
-                AND TRIM(subcategory, ' ' || CHR(9) || CHR(10) || CHR(13)) = '')
-        """
+            REGEXP_FULL_MATCH(category, '{_BLANK}')
+            OR REGEXP_FULL_MATCH(subcategory, '{_BLANK}')
+        """  # noqa: S608  # module constant, not caller input
     )

@@ -3,11 +3,16 @@ MODEL (
   kind VIEW
 );
 
-/* category and subcategory are wrapped in NULLIF(TRIM(...), '') for the reason
+/* category and subcategory are nulled out when blank for the reason
    stg_plaid__accounts states for its own free-text columns: '' passes a NULL
    check while rendering as a malformed label. Here the NULL check that matters
    is core.uncategorized_queue's `category IS NULL` — a category of spaces hides
-   a transaction nobody ever categorized from the queue built to surface it. */
+   a transaction nobody ever categorized from the queue built to surface it.
+
+   The regex matches stg_tabular__transactions, which carries the full note on
+   why these two columns do not use the bare TRIM their siblings do: they are
+   the only staging columns that have to agree with a Python-side
+   str.strip() (services._validators.validate_category_text). */
 SELECT
   COALESCE(links.account_id, t.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
   t.account_id AS source_account_key,
@@ -20,8 +25,8 @@ SELECT
   t.description,
   t.merchant_name,
   t.memo,
-  NULLIF(TRIM(t.category, ' ' || CHR(9) || CHR(10) || CHR(13)), '') AS category,
-  NULLIF(TRIM(t.subcategory, ' ' || CHR(9) || CHR(10) || CHR(13)), '') AS subcategory,
+  NULLIF(REGEXP_REPLACE(t.category, '^[\p{Z}\s\x0B]+|[\p{Z}\s\x0B]+$', '', 'g'), '') AS category,
+  NULLIF(REGEXP_REPLACE(t.subcategory, '^[\p{Z}\s\x0B]+|[\p{Z}\s\x0B]+$', '', 'g'), '') AS subcategory,
   t.payment_channel,
   t.transaction_type,
   t.check_number,

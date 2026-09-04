@@ -250,15 +250,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   whitespace-only category hid a transaction from the curation queue while
   claiming to carry one. `prep.stg_tabular__transactions` and
   `prep.stg_manual__transactions` now wrap `category` and `subcategory` in
-  `NULLIF(TRIM(...), '')` — nulling a blank out rather than storing it is the
-  convention `stg_plaid__accounts` documents and every other free-text column
-  in staging already follows. These two columns widen the trim to the full
-  whitespace set (space, tab, newline, CR) where their siblings strip only the
-  ASCII space DuckDB's bare `TRIM` handles, so a stray tab in a malformed TSV
-  cell hides no differently than a space; they are the only staging columns
-  with a Python-side counterpart — `validate_category_text`, which calls
-  `str.strip()` — that they have to agree with. A padded `'  Groceries  '`
-  still arrives as `Groceries` rather than being discarded. (#517)
+  `NULLIF(...)` — nulling a blank out rather than storing it is the convention
+  `stg_plaid__accounts` documents and every other free-text column in staging
+  already follows. These two columns reach it through a regex rather than the
+  bare `TRIM` their siblings use, because they are the only staging columns
+  that must agree with a Python-side counterpart: `validate_category_text`
+  refuses on `str.strip()`. Bare `TRIM` cannot express that — it strips the
+  Unicode space separators but no control character, so it drops a
+  non-breaking space and keeps a tab. Matching `str.strip()` exactly is what
+  makes a category blank in the same cases on both sides, including the two a
+  hand-written character list reliably omits: the non-breaking space a
+  spreadsheet paste produces, and the ideographic space ordinary in CJK input.
+  A padded `'  Groceries  '` still arrives as `Groceries` rather than being
+  discarded. (#517)
 
 - **`transactions splits add --category "   "` is refused rather than
   stored.** The MCP write contracts already refuse a whitespace-only string,

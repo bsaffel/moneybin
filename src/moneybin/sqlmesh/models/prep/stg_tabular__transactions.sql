@@ -3,12 +3,21 @@ MODEL (
   kind VIEW
 );
 
-/* category and subcategory are wrapped in NULLIF(TRIM(...), '') for the reason
+/* category and subcategory are nulled out when blank for the reason
    stg_plaid__accounts states for its own free-text columns, and the reason
    currency below already is: '' passes a NULL check while rendering as a
    malformed label. Here the NULL check that matters is
    core.uncategorized_queue's `category IS NULL` — a category of spaces hides a
-   transaction nobody ever categorized from the queue built to surface it. */
+   transaction nobody ever categorized from the queue built to surface it.
+
+   These two use a regex rather than the bare TRIM their siblings use, because
+   they are the only staging columns with a Python-side counterpart that has to
+   agree with them: services._validators.validate_category_text refuses on
+   str.strip(). RE2's \p{Z} is every Unicode space separator — a non-breaking
+   space from a spreadsheet paste, an ideographic space from CJK input — and \s
+   plus \x0B add the C0 control whitespace that \p{Z} excludes. Bare TRIM is not
+   a substitute in either direction: it strips the space separators but leaves
+   every control character, so a tab survives it. */
 WITH ranked AS (
   SELECT
     transaction_id,
@@ -20,8 +29,8 @@ WITH ranked AS (
     original_date_str,
     TRIM(description) AS description,
     TRIM(memo) AS memo,
-    NULLIF(TRIM(category, ' ' || CHR(9) || CHR(10) || CHR(13)), '') AS category,
-    NULLIF(TRIM(subcategory, ' ' || CHR(9) || CHR(10) || CHR(13)), '') AS subcategory,
+    NULLIF(REGEXP_REPLACE(category, '^[\p{Z}\s\x0B]+|[\p{Z}\s\x0B]+$', '', 'g'), '') AS category,
+    NULLIF(REGEXP_REPLACE(subcategory, '^[\p{Z}\s\x0B]+|[\p{Z}\s\x0B]+$', '', 'g'), '') AS subcategory,
     transaction_type,
     status,
     check_number,

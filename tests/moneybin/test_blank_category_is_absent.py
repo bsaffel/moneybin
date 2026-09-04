@@ -95,6 +95,28 @@ def test_a_whitespace_category_from_a_manual_entry_is_absent_in_the_fact(
 
 
 @pytest.mark.slow
+def test_a_non_breaking_space_category_is_absent_in_the_fact(
+    db: Database,
+) -> None:
+    """Blank means what the service means by it, not what ASCII space means.
+
+    A non-breaking space is what copying a cell out of a spreadsheet produces,
+    and an ideographic space is ordinary CJK input. Both render as an empty
+    cell and both are refused on the write path, so a character-list trim that
+    happened to omit them would leave the import path disagreeing with the
+    validator on the likeliest real input.
+    """
+    _insert_tabular_transaction(db, txn_id="csv_nbsp", category="\xa0　")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = _fact_category(db, "Test Payee")
+    assert row is not None
+    assert row[0] is None
+
+
+@pytest.mark.slow
 def test_a_category_a_person_wrote_survives_the_trim(db: Database) -> None:
     """The restraint half: only blank becomes absent, and padding is stripped.
 
