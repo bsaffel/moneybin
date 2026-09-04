@@ -235,7 +235,13 @@ def test_received_leg_and_provenance_reach_each_prep_layer_unchanged(
         row[1]
         for row in db.execute("PRAGMA table_info('core.fct_transactions')").fetchall()
     }
-    assert {"to_amount", "to_currency"}.isdisjoint(core_columns)
+    assert {
+        "to_amount",
+        "to_currency",
+        "conversion_source_type",
+        "conversion_source_origin",
+        "conversion_source_transaction_id",
+    }.isdisjoint(core_columns)
 
 
 @pytest.mark.slow
