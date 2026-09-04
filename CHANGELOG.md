@@ -326,7 +326,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transaction's category by the auto-categorization sweep, which skipped only
   a missing value, so whitespace reached `core.fct_transactions` through the
   one write path the earlier sweep left open. It now takes the same blank-text
-  and hierarchy rules a split takes. (#517)
+  and hierarchy rules a split takes, and a merchant already holding a blank
+  default is backfilled to `NULL` on the next migration — along with the blank
+  categories it already copied, so those transactions return to the
+  uncategorized queue instead of staying hidden. (#517)
 
 - **A rejected category reports a write error, not an infrastructure one.**
   `transactions splits add`, `splits set` and merchant creation classified a

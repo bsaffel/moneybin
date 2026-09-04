@@ -1,8 +1,9 @@
 """The SQL blank test means exactly what Python's ``str.strip()`` means.
 
-Three sites carry the same character class: the two staging models that null
-a blank category out on import, and V054, which backfills the same rule onto
-``app.transaction_splits``. They exist because ``validate_category_text``
+Four sites carry the same character class: the two staging models that null
+a blank category out on import, and V054 and V055, which backfill the same
+rule onto stored splits, merchant defaults, and the categorizations a blank
+merchant default produced. They exist because ``validate_category_text``
 refuses a blank on the write path using ``str.strip()`` — if the SQL class and
 ``str.strip()`` disagree on any character, a value the validator calls blank
 survives import as a non-NULL category and stays hidden from
@@ -15,7 +16,7 @@ because a list can only ever be patched by the character that just leaked.
 Enumerating every codepoint Python calls whitespace makes the next omission
 fail here instead of in review.
 
-Each site is read from its own source text rather than imported, so the three
+Each site is read from its own source text rather than imported, so all four
 are checked the same way and a copy that drifts is named by the failure.
 
 These tests open a bare in-memory ``duckdb.connect()`` instead of going through
@@ -41,10 +42,13 @@ _SITES = (
     _REPO_ROOT / "src/moneybin/sqlmesh/models/prep/stg_tabular__transactions.sql",
     _REPO_ROOT / "src/moneybin/sqlmesh/models/prep/stg_manual__transactions.sql",
     _REPO_ROOT / "src/moneybin/sql/migrations/V054__backfill_blank_split_categories.py",
+    _REPO_ROOT
+    / "src/moneybin/sql/migrations/V055__backfill_blank_merchant_categories.py",
 )
 
 #: The character class each site uses to decide "entirely whitespace". Matches
-#: the staging models' REGEXP_REPLACE anchor and V054's _BLANK constant alike.
+#: the staging models' REGEXP_REPLACE anchor and the migrations' _BLANK
+#: constant alike.
 _CLASS_IN_SOURCE = re.compile(r"(\[\\p\{Z\}[^\]]*\])")
 
 
