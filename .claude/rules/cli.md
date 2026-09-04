@@ -36,25 +36,43 @@ When designing a new command, ask: "Could an agent drive this end-to-end without
 
 ```python
 @app.command("command-name")
-def command_function(source_path: Path = typer.Option(..., help="Description")) -> None:
+def command_function(
+    output: OutputFormat = output_option,
+    source_path: Path = typer.Option(..., help="Description"),
+) -> None:
     """Clear command description."""
-    setup_logging(cli_mode=True)
-    try:
-        config = ConfigClass(source_path=source_path)
-        processor = BusinessClass(config)
-        results = processor.main_operation()
-        logger.info(f"Processed {len(results)} records")
-    except FileNotFoundError as e:
-        logger.error(f"{e}")
-        raise typer.Exit(1) from e
+    with handle_cli_errors(cli_actor="command_name", payload_type=CommandPayload):
+        with get_database(read_only=True) as db:
+            result = BusinessClass(db).main_operation(source_path)
+    render_or_json(build_envelope(data=result), output, cli_actor="command_name")
 ```
 
 ## Error Handling
 
-- Catch specific exceptions (FileNotFoundError, PermissionError, etc.)
-- Any command that calls `get_database()` must also catch `DatabaseKeyError` with a "run `moneybin db unlock`" message.
-- Use `raise typer.Exit(code) from e` for error chaining
-- Exit codes: 0 = success, 1 = general error, 2+ = command-specific
+`handle_cli_errors` is the single error boundary. It runs every exception
+through `classify_user_error` (`src/moneybin/errors.py`), exits 1 with the
+classified message — or a structured error envelope under `--output json` — and
+re-raises whatever the classifier does not recognize, so a programmer error
+still surfaces as a failure. `typer.Exit` passes through untouched.
+
+- **Do not re-implement it per command.** `DatabaseKeyError`,
+  `DatabaseNotInitializedError`, `DatabaseLockError`, `SchemaDriftError`, the
+  `moneybin.secrets` families, `FileNotFoundError`, `PermissionError`, and bare
+  `ValueError` / `LookupError` are already classified, with hints and recovery
+  actions attached centrally.
+- **Catch a specific exception only to do something the classifier cannot** —
+  recover, fall back, or add context only the failure site holds. Then raise
+  `UserError(...)` with the right `error_codes` constant rather than logging a
+  bare message: a write site that means "invalid" or "not found" names a
+  `MUTATION_*` code the classifier is not positioned to infer (see the note in
+  `error_codes.py`).
+- **A new exception family needs a `classify_user_error` branch**, or it reaches
+  the user as a traceback and an agent as `infra_unclassified_error`.
+  `tests/moneybin/test_errors/test_exception_family_coverage.py` enumerates the
+  families off their modules and fails when one drifts out of coverage.
+- Use `raise typer.Exit(code) from e` for early exits the classifier should not
+  see (mutually exclusive flags, a declined prompt).
+- Exit codes: 0 = success, 1 = general error, 2+ = command-specific.
 
 ## Secrets in Error Output
 

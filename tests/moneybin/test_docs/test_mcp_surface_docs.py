@@ -3156,7 +3156,7 @@ def test_final_review_refresh_surface_semantics_match_runtime() -> None:
     # Derived, not spelled, like the sibling test above: a literal here pins
     # whatever the docs happen to say.
     from moneybin.cli.commands.refresh import RefreshStepChoice
-    from moneybin.services.refresh import CANONICAL_STEPS
+    from moneybin.orchestration.refresh import CANONICAL_STEPS
 
     mcp_default = " → ".join(CANONICAL_STEPS)
     selectable = {choice.value for choice in RefreshStepChoice}
