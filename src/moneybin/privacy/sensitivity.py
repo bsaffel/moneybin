@@ -17,10 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 class Sensitivity(StrEnum):
-    """Data sensitivity tier for MCP tools.
+    """Data sensitivity tier a classified response declares.
 
-    Every tool declares its maximum data sensitivity. The privacy
-    middleware uses this to enforce consent gates and response filtering.
+    Every MCP tool declares its maximum, and the privacy middleware uses it
+    to enforce consent gates and response filtering. The same four values
+    reach the CLI and the reports framework, which read them off
+    ``summary.sensitivity`` on the shared envelope.
 
     See ``mcp-architecture.md`` section 5 for tier definitions.
     """
