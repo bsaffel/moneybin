@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-20 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Architecture
 
 This is the one-page distillation. The full reference — invariants, layer mechanics, the writer-coordination contract — lives in [`docs/specs/architecture-shared-primitives.md`](specs/architecture-shared-primitives.md). Read that when you need depth; read this when you need the shape.
@@ -105,13 +105,13 @@ Parity is functional, not nominal — same outcomes reachable on both surfaces, 
 
 ### Transport and auth
 
-MCP runs over **stdio today** — Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex, and the ChatGPT desktop app (which hosts Codex and shares its config) all attach this way. **ChatGPT on the web and mobile do not**: they reach MCP only through remote connectors over HTTPS, so they cannot see a local MoneyBin. A Streamable HTTP transport with authentication — tracked as M3D on the [roadmap](roadmap.md) — is what unlocks those.
+MCP runs over **stdio today** — Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex, and the ChatGPT desktop app (which hosts Codex and shares its config) all attach this way. **ChatGPT on the web and mobile do not**: they reach MCP only through remote connectors over HTTPS, so they cannot see a local MoneyBin. A Streamable HTTP transport with authentication — tracked on the [roadmap](roadmap.md) — is what unlocks those.
 
 Each profile is encrypted with a key held in the OS keychain (auto-key mode) or derived from a passphrase you supply (passphrase mode). `moneybin db unlock` opens the database once per session; subsequent CLI commands and MCP sessions share that unlocked state via short-lived in-process connections.
 
 ### External SQL clients
 
-The DuckDB file is encrypted, so external clients (DBeaver, Datasette, plain `duckdb` CLI, Python/R notebooks) need the key. `moneybin db key` prints the active encryption key for the current profile; pass it as the `encryption_key` config option when opening the file. See [`docs/guides/sql-access.md`](guides/sql-access.md).
+The DuckDB file is encrypted, so external clients (DBeaver, Datasette, plain `duckdb` CLI, Python/R notebooks) need the key. `moneybin db key show` prints the active encryption key for the current profile; pass it as the `encryption_key` config option when opening the file. See [`docs/guides/sql-access.md`](guides/sql-access.md).
 
 ### Multi-device, multi-writer
 
@@ -119,7 +119,7 @@ Single-writer per profile. The encrypted DuckDB file is the unit of sync — Git
 
 ### Data portability
 
-The DuckDB file is the durable artifact — open it with any DuckDB client and you have your data. A first-class `moneybin export` (CSV / Beancount / SQL dump) is planned; today the working path is the read-only SQL surface plus a DuckDB `COPY ... TO`. MoneyBin is AGPL-licensed, so the code that wrote your data will always be available to read it. See [`docs/licensing.md`](licensing.md).
+The DuckDB file is the durable artifact — open it with any DuckDB client and you have your data. `moneybin export bundle` writes the 13-table canonical bundle (accounts, transactions, balances, categories, merchants, securities, investment activity) as CSV, Parquet, or XLSX, to a local file or Google Sheets; `moneybin export report` does the same for one catalog report. Beancount and arbitrary SQL-dump formats aren't offered — the read-only SQL surface plus a DuckDB `COPY ... TO` covers that gap today. MoneyBin is AGPL-licensed, so the code that wrote your data will always be available to read it. See [`docs/licensing.md`](licensing.md).
 
 ## Primitives you'll touch
 

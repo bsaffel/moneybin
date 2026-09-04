@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-08-26 -->
+<!-- Last reviewed: 2026-09-03 -->
 # MoneyBin
 
 Personal financial data platform: it ingests a person's financial records from
@@ -272,8 +272,11 @@ ambiguities.
 _Avoid_: symmetry, feature parity, mirroring, equivalence
 
 **Response envelope**:
-The one response shape MCP tool results and JSON CLI results take, which a few
-CLI commands have yet to adopt. Always qualified; bare "envelope" is not a term.
+The one response shape MCP tool results and CLI `--output json` take, routed
+through `render_or_json`. Six operator and operations-metadata commands
+(`db query`, `db info`, `db ps`, `stats`, `logs`, `migrate status`) keep their
+own JSON shapes by design; the CLI reference names them. Always qualified; bare
+"envelope" is not a term.
 _Avoid_: envelope, payload, wrapper, result object
 
 **Report**:
@@ -384,8 +387,9 @@ _Avoid_: tier, level, grade, rating
 - A **Profile** owns exactly one database and everything in it
 - A **Data class** is declared for each **Core** and **App state** column,
   fixing its **Sensitivity tier** and how **Redaction** treats it
-- The MCP server and most of the CLI's JSON output return the same **Response
-  envelope**; direct SQL returns rows
+- The MCP server and CLI `--output json` return the same **Response
+  envelope**, apart from six operator and operations-metadata commands the
+  CLI reference names; direct SQL returns rows
 - A **Split** divides one **Transaction**; an unsplit **Transaction** is still
   one **Transaction line**
 - An ingestion **Scenario** judges what the pipeline produced against its

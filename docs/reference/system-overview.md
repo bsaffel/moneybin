@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-20 -->
+<!-- Last reviewed: 2026-09-03 -->
 # System Overview
 
 MoneyBin is a local-first, AI-native personal finance platform. This page is the orientation map — what each major piece does, how they fit together, and what runs when. For the architectural depth (primitives, contracts, layers, internal invariants), see [`docs/architecture.md`](../architecture.md). For column-level schema, see [`data-model.md`](data-model.md). For the full reference, see [`docs/specs/architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md).
@@ -39,7 +39,7 @@ flowchart LR
   store --> sql
 ```
 
-The client is the only writer to the local store. Agents reach the data through MCP tools the client exposes; external SQL clients read the file directly (with the encryption key from `moneybin db key`). There is no ambient egress or telemetry. Explicit `sync_*` calls reach opaque `moneybin-sync` APIs, and explicit `gsheet_*` calls reach Google OAuth/Sheets APIs.
+The client is the only writer to the local store. Agents reach the data through MCP tools the client exposes; external SQL clients read the file directly (with the encryption key from `moneybin db key show`). There is no ambient egress or telemetry. Explicit `sync_*` calls reach opaque `moneybin-sync` APIs, and explicit `gsheet_*` calls reach Google OAuth/Sheets APIs.
 
 ## How components fit together
 
@@ -104,7 +104,7 @@ moneybin db init
 #    Beancount, PDF) and prompts for account assignment.
 moneybin import files my_export.csv
 
-# 4. Run the pipeline (gsheet → match → transform → categorize → identity).
+# 4. Run the pipeline (gsheet → match → transform → categorize → identity → rates).
 #    Most commands trigger refresh automatically; you rarely run it by hand.
 moneybin refresh
 
@@ -138,7 +138,7 @@ under a declared maximum. → [`mcp-server.md`](../guides/mcp-server.md)
 
 ### SQL
 
-Read-only DuckDB query. `moneybin db shell` and any DuckDB-compatible client given the profile's encryption key reach every schema; the `sql_query` MCP tool and `moneybin sql query` admit five — `core`, `app`, `reports`, `raw`, and `prep` — refuse `meta` and `seeds`, and mask `raw`/`prep` through 34 hand-written CRITICAL declarations plus a value-shape scan over the string and integer values in every other column — a `DECIMAL` or `FLOAT` is not scanned. External clients (DBeaver, Datasette, the plain `duckdb` CLI, Python/R notebooks) need that key — `moneybin db key` prints it for the current profile. → [`sql-access.md`](../guides/sql-access.md)
+Read-only DuckDB query. `moneybin db shell` and any DuckDB-compatible client given the profile's encryption key reach every schema; the `sql_query` MCP tool and `moneybin sql query` admit five — `core`, `app`, `reports`, `raw`, and `prep` — refuse `meta` and `seeds`, and mask `raw`/`prep` through 34 hand-written CRITICAL declarations plus a value-shape scan over the string and integer values in every other column — a `DECIMAL` or `FLOAT` is not scanned. External clients (DBeaver, Datasette, the plain `duckdb` CLI, Python/R notebooks) need that key — `moneybin db key show` prints it for the current profile. → [`sql-access.md`](../guides/sql-access.md)
 
 ## Lifecycle of an MCP tool call
 
