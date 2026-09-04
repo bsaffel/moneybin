@@ -411,10 +411,27 @@ def test_runtime_import_detection_sees_every_executing_block() -> None:
         "relative-parent-submodule": "from ..orchestration.refresh import refresh",
         "relative-in-function": ("def f():\n    from ..orchestration import refresh"),
     }
+    # Every label whose import sits inside a function/method body — the shapes
+    # `kind` must tag "deferred". Everything else in `executing` is "module".
+    # Named explicitly, not inferred from the label string, so this list is a
+    # second, independent assertion of intent rather than a restatement of the
+    # source above.
+    deferred_labels = frozenset({
+        "function-body",
+        "method-body",
+        "async-function-body",
+        "nested-function-in-class-in-if",
+        "function-body-from-import",
+        "relative-in-function",
+    })
     for label, source in executing.items():
         found = list(_runtime_imports(ast.parse(source).body))
-        assert any(_imports_orchestration(n, package) for n, _kind in found), (
-            f"{label}: an import that runs went undetected"
+        matches = [(n, kind) for n, kind in found if _imports_orchestration(n, package)]
+        assert matches, f"{label}: an import that runs went undetected"
+        expected_kind: ImportKind = "deferred" if label in deferred_labels else "module"
+        assert all(kind == expected_kind for _n, kind in matches), (
+            f"{label}: expected kind {expected_kind!r}, got "
+            f"{sorted({kind for _n, kind in matches})}"
         )
 
     inert = {
