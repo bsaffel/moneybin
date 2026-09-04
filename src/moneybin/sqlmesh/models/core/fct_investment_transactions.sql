@@ -117,13 +117,7 @@ SELECT
   u.description, /* Free-text description */
   GREATEST(
     u.created_at,
-    COALESCE(
-      CASE
-        WHEN u.currency_code IS NULL AND NOT a.currency_code IS NULL
-        THEN a.updated_at
-      END,
-      u.created_at
-    )
+    COALESCE(CASE WHEN u.currency_code IS NULL THEN a.updated_at END, u.created_at)
   ) AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. Advances on an Account Currency edit only when this event inherits that Currency; an event's own Currency keeps its own freshness. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
 FROM unioned AS u
 LEFT JOIN core.dim_accounts AS a

@@ -86,8 +86,8 @@ class ForeignSecuritySale:
     trade_date: date
     net_proceeds: Decimal
     fees: Decimal | None
-    currency_code: str
-    home_currency: str
+    currency_code: str | None
+    home_currency: str | None
     home_value: Decimal | None
     valuation_rate: Decimal | None
     valuation_rate_date: date | None
@@ -103,7 +103,7 @@ class CurrencyLotRow:
     account_id: str
     source_conversion_id: str | None
     source_investment_transaction_id: str | None
-    currency_code: str
+    currency_code: str | None
     acquisition_type: str
     cost_basis_method: str
     home_currency: str | None
@@ -126,7 +126,7 @@ class RealizedFXGainRow:
     account_id: str
     conversion_id: str
     currency_lot_id: str | None
-    currency_code: str
+    currency_code: str | None
     home_currency: str | None
     cost_basis_method: str
     valuation_source_type: str | None
@@ -155,7 +155,7 @@ class CurrencyAccountingResult:
 @dataclass(frozen=True)
 class _EventMetadata:
     account_id: str
-    currency_code: str
+    currency_code: str | None
     home_currency: str | None
     source_conversion_id: str | None
     source_investment_transaction_id: str | None
@@ -290,7 +290,7 @@ def _quantize_money(value: Decimal) -> Decimal:
     return value.quantize(_MONEY_QUANTUM, rounding=ROUND_HALF_UP)
 
 
-def _valid_currency(value: str | None) -> bool:
+def _valid_currency(value: str | None) -> t.TypeGuard[str]:
     return value is not None and _CURRENCY_RE.fullmatch(value) is not None
 
 
@@ -761,7 +761,7 @@ def _load_materialized_conversions(
     ]
 
 
-def _public_lot_id(account_id: str, currency: str, source_event_id: str) -> str:
+def _public_lot_id(account_id: str, currency: str | None, source_event_id: str) -> str:
     raw = f"{account_id}|{currency}|{source_event_id}"
     return "clot_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
 
@@ -780,7 +780,7 @@ def _event(
     event_id: str,
     *,
     account_id: str,
-    currency: str,
+    currency: str | None,
     home_currency: str | None,
     trade_date: date,
     event_type: str,
@@ -1049,7 +1049,7 @@ def _derive_currency_accounting(
         else:
             event_rows.append((event, metadata))
 
-    group_updated_at: dict[tuple[str, str], datetime] = {}
+    group_updated_at: dict[tuple[str, str | None], datetime] = {}
     for _event_row, metadata in event_rows:
         key = (metadata.account_id, metadata.currency_code)
         updated_at = _latest(
@@ -1220,8 +1220,8 @@ def _load_security_sales(
         net_proceeds = _opt_decimal(record["net_proceeds"])
         if account_id is None or trade_date is None or net_proceeds is None:
             continue
-        currency = _opt_str(record["currency_code"]) or ""
-        resolved_home = home_currency or ""
+        currency = _opt_str(record["currency_code"])
+        resolved_home = home_currency
         if (
             _valid_currency(currency)
             and _valid_currency(resolved_home)

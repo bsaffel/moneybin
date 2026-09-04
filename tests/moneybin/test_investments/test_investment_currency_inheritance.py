@@ -192,6 +192,26 @@ class TestInvestmentEventCurrencyInheritance:
             datetime(2026, 5, 13, 10),
         )
 
+    def test_cleared_inherited_currency_uses_account_freshness(
+        self, db: Database
+    ) -> None:
+        """Clearing inherited Currency is a fresh NULL, not stale source data."""
+        _install_ledger_chain(
+            db,
+            account_currency=None,
+            account_updated_at="2026-05-13 10:00:00",
+        )
+        _record_event(
+            db,
+            currency_code=None,
+            created_at="2026-05-12 09:00:00",
+        )
+
+        assert _ledger_currency_and_updated_at(db) == (
+            None,
+            datetime(2026, 5, 13, 10),
+        )
+
     def test_own_currency_ignores_newer_account_freshness(self, db: Database) -> None:
         """An Account edit cannot refresh a row whose own Currency wins."""
         _install_ledger_chain(

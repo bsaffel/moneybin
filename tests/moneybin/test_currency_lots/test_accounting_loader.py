@@ -735,15 +735,54 @@ def test_missing_home_currency_retains_both_quantity_movements() -> None:
 
 @pytest.mark.parametrize(
     ("currency", "home", "reason"),
-    [("", "USD", "unknown_currency"), ("EUR", "", "missing_home_currency")],
+    [
+        (None, "USD", "unknown_currency"),
+        ("EUR", None, "missing_home_currency"),
+    ],
 )
 def test_incomplete_security_sale_currency_context_is_visible(
-    currency: str, home: str, reason: str
+    currency: str | None, home: str | None, reason: str
 ) -> None:
     result = _derive(sales=(_sale(currency_code=currency, home_currency=home),))
 
     assert result.lots[0].coverage_reason == reason
     assert result.lots[0].cost_basis_total is None
+    assert result.lots[0].currency_code is currency
+    assert result.lots[0].home_currency is home
+
+
+@pytest.mark.parametrize(
+    ("currency", "home"),
+    [(None, "USD"), ("EUR", None)],
+)
+def test_security_sale_loader_preserves_missing_currencies_as_null(
+    currency: str | None, home: str | None
+) -> None:
+    context = _FakeContext(
+        pd.DataFrame({
+            "investment_transaction_id": ["security-sale-1"],
+            "account_id": ["acct-eur"],
+            "trade_date": ["2026-02-02"],
+            "net_proceeds": ["40.00"],
+            "fees": ["2.00"],
+            "currency_code": [currency],
+            "event_updated_at": [str(T5)],
+        })
+    )
+
+    def unexpected_rate_lookup(_base: str, _quote: str, _day: date) -> t.Any:
+        raise AssertionError("a missing Currency cannot be priced")
+
+    sales = sqlmesh_loader._load_security_sales(  # pyright: ignore[reportPrivateUsage]
+        t.cast(t.Any, context),
+        home_currency=home,
+        home_updated_at=T1,
+        stored_rate=unexpected_rate_lookup,
+    )
+
+    assert len(sales) == 1
+    assert sales[0].currency_code is currency
+    assert sales[0].home_currency is home
 
 
 class _FakeContext:
