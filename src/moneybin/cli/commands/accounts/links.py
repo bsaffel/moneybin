@@ -167,9 +167,9 @@ def links_set(
     it is.
 
     Examples:
-      accounts links set dec001 --into ACC002
-      accounts links set dec001 --into ACC002 --yes
-      accounts links set dec001 --standalone
+      moneybin accounts links set dec001 --into ACC002
+      moneybin accounts links set dec001 --into ACC002 --yes
+      moneybin accounts links set dec001 --standalone
     """
     if into is not None and standalone:
         logger.error("❌ --into and --standalone are mutually exclusive")

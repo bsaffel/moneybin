@@ -1733,7 +1733,7 @@ def register_accounts_coarse_writes(mcp: FastMCP) -> None:
         "app.balance_assertions; absent forbids amount, requires exact "
         "payload-bound confirmation, and hard-deletes the assertion. Repeat an "
         "unchanged target state returns mutation_nothing_to_do. Reverse a "
-        "mutation with system_audit_undo(operation_id). Amounts are positions "
+        "mutation with system_audit_undo(operation_id=...). Amounts are positions "
         "in the currency named by summary.display_currency.",
         privacy_actor="accounts_balance_assert",
         input_schema_extra={

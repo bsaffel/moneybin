@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-03 -->
+<!-- Last reviewed: 2026-09-04 -->
 # What Works Today
 
 What MoneyBin can do today. Each capability links to its guide; the [roadmap](roadmap.md) covers what's planned and the [CHANGELOG](../CHANGELOG.md) carries the dated record.
@@ -166,7 +166,7 @@ blocker.
 
 ## MCP server
 
-- **Bounded tool registry** — One 50-tool standard registry spans 13 user-facing domain groups across 17 literal tool-name prefixes. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots; 50 tools is the hard limit, and the registry now sits at it — admitting another tool means retiring one. Full per-domain inventory: [MCP registry](specs/moneybin-mcp.md).
+- **Bounded tool registry** — One 50-tool standard registry spans 13 user-facing domain groups across 17 literal tool-name prefixes. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots; 50 tools is the hard limit, and the registry now sits at it — admitting another tool means retiring one. Full per-domain inventory: [MCP registry](specs/moneybin-mcp.md); every tool's client-visible definition, generated from the code: [MCP tool reference](reference/mcp-tools.md).
 - **Transport** — stdio today. Streamable HTTP transport ships with the web UI milestone (see [roadmap](roadmap.md)).
 - **Auth and session model** — Each MCP session inherits the profile unlocked by `moneybin db unlock`. `moneybin db lock` clears the stored key so no new session can open the profile; sessions already running keep their in-memory key until they exit (`moneybin db kill` is the confirmation-gated command that terminates them).
 - **Concurrency** — Reads coexist freely; writes are serialized per profile (single-writer rule). Two agents can read concurrently; only one can mutate at a time.
