@@ -49,3 +49,39 @@ def test_v054_adds_nullable_received_leg_without_rewriting_rows(
     assert pre_v054_db.execute(
         f"SELECT source_transaction_id, amount, to_amount, to_currency FROM {table}"  # noqa: S608  # closed internal table set
     ).fetchall() == [("txn-before-v054", Decimal("125.50"), None, None)]
+
+
+@pytest.mark.fresh_db
+@pytest.mark.parametrize("table", _TABLES)
+def test_v054_upgrade_column_order_matches_fresh_schema(
+    db: Database, table: str
+) -> None:
+    """An upgraded table has the same ordered schema as a fresh install."""
+    fresh_schema = [
+        (row[1], row[2])
+        for row in db.execute(
+            f"PRAGMA table_info('{table}')"  # noqa: S608  # closed internal table set
+        ).fetchall()
+    ]
+    schema, table_name = table.split(".")
+    pre_v054_table = f"{schema}._pre_v054_{table_name}"
+    db.execute(
+        f"CREATE TABLE {pre_v054_table} AS "  # noqa: S608  # closed internal table set
+        f"SELECT * EXCLUDE (to_amount, to_currency) FROM {table} LIMIT 0"
+    )
+    db.execute(
+        f"DROP TABLE {table} CASCADE"  # noqa: S608  # isolated test database
+    )
+    db.execute(
+        f"ALTER TABLE {pre_v054_table} RENAME TO {table_name}"  # noqa: S608  # closed internal table set
+    )
+
+    run_migration(db, migrate)
+
+    upgraded_schema = [
+        (row[1], row[2])
+        for row in db.execute(
+            f"PRAGMA table_info('{table}')"  # noqa: S608  # closed internal table set
+        ).fetchall()
+    ]
+    assert upgraded_schema == fresh_schema

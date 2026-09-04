@@ -20,9 +20,16 @@ import pandas as pd
 from moneybin.investments.cost_basis import LedgerEvent, compute_lots_and_gains
 from moneybin.services.currency_service import last_publication_day
 from moneybin.tables import (
+    ACCOUNT_SETTINGS,
     BRIDGE_CURRENCY_CONVERSIONS,
+    BRIDGE_TRANSFERS,
+    EXCHANGE_RATE_OVERRIDES,
+    EXCHANGE_RATES,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
+    INT_TRANSACTIONS_MERGED,
+    MATCH_DECISIONS,
+    PROFILE_SETTINGS,
 )
 
 if t.TYPE_CHECKING:
@@ -413,8 +420,9 @@ def _derive_conversion(
 
 
 def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
-    bridge = context.resolve_table("core.bridge_transfers")
-    merged = context.resolve_table("prep.int_transactions__merged")
+    bridge = context.resolve_table(BRIDGE_TRANSFERS.full_name)
+    merged = context.resolve_table(INT_TRANSACTIONS_MERGED.full_name)
+    match_decisions = MATCH_DECISIONS.full_name
     transactions = context.resolve_table(FCT_TRANSACTIONS.full_name)
     linked = context.fetchdf(
         f"""
@@ -453,7 +461,7 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
             END
           )::VARCHAR AS candidate_updated_at
         FROM {bridge} AS bt
-        JOIN app.match_decisions AS md
+        JOIN {match_decisions} AS md
           ON bt.transfer_id = md.match_id
         LEFT JOIN {merged} AS debit
           ON bt.debit_transaction_id = debit.transaction_id
@@ -466,7 +474,7 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
         WHERE md.match_type = 'transfer'
           AND md.match_status = 'accepted'
           AND md.reversed_at IS NULL
-        """  # noqa: S608  # table names resolved by SQLMesh, not user input
+        """  # noqa: S608  # registered/resolved table names, not user input
     )
     missing = context.fetchdf(
         f"""
@@ -490,14 +498,14 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
           md.source_origin_b AS to_source_origin,
           md.source_transaction_id_b AS to_source_transaction_id,
           md.decided_at::VARCHAR AS candidate_updated_at
-        FROM app.match_decisions AS md
+        FROM {match_decisions} AS md
         LEFT JOIN {bridge} AS bt
           ON md.match_id = bt.transfer_id
         WHERE md.match_type = 'transfer'
           AND md.match_status = 'accepted'
           AND md.reversed_at IS NULL
           AND bt.transfer_id IS NULL
-        """  # noqa: S608  # table name resolved by SQLMesh, not user input
+        """  # noqa: S608  # registered/resolved table names, not user input
     )
     single = context.fetchdf(
         f"""
@@ -544,13 +552,14 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
 def _load_home_currency(
     context: ExecutionContext,
 ) -> tuple[str | None, datetime | None]:
+    profile_settings = PROFILE_SETTINGS.full_name
     frame = context.fetchdf(
-        """
+        f"""
         SELECT home_currency, updated_at::VARCHAR AS profile_updated_at
-        FROM app.profile_settings
+        FROM {profile_settings}
         ORDER BY scope
         LIMIT 1
-        """
+        """  # noqa: S608  # registered physical table name, not user input
     )
     records = _records(frame)
     if not records:
@@ -564,20 +573,22 @@ def _load_home_currency(
 def _load_stored_rates(
     context: ExecutionContext,
 ) -> t.Callable[[str, str, date], _StoredRate | None]:
+    override_table = EXCHANGE_RATE_OVERRIDES.full_name
+    rates_table = EXCHANGE_RATES.full_name
     override_frame = context.fetchdf(
-        """
+        f"""
         SELECT from_currency, to_currency, rate_date::VARCHAR AS rate_date,
                rate::VARCHAR AS rate, updated_at::VARCHAR AS rate_updated_at
-        FROM app.exchange_rate_overrides
-        """
+        FROM {override_table}
+        """  # noqa: S608  # registered physical table name, not user input
     )
     provider_frame = context.fetchdf(
-        """
+        f"""
         SELECT from_currency, to_currency, rate_date::VARCHAR AS rate_date,
                rate::VARCHAR AS rate, source_type,
                loaded_at::VARCHAR AS loaded_at
-        FROM raw.exchange_rates
-        """
+        FROM {rates_table}
+        """  # noqa: S608  # registered physical table name, not user input
     )
 
     overrides: dict[tuple[str, str, date], _StoredRate] = {}
@@ -1203,12 +1214,13 @@ def _load_security_sales(
 def _load_account_methods(
     context: ExecutionContext,
 ) -> tuple[dict[str, str | None], dict[str, datetime]]:
+    account_settings = ACCOUNT_SETTINGS.full_name
     frame = context.fetchdf(
-        """
+        f"""
         SELECT account_id, default_cost_basis_method,
                updated_at::VARCHAR AS method_updated_at
-        FROM app.account_settings
-        """
+        FROM {account_settings}
+        """  # noqa: S608  # registered physical table name, not user input
     )
     methods = {
         str(record["account_id"]): _opt_str(record["default_cost_basis_method"])

@@ -4,13 +4,11 @@ CREATE TABLE IF NOT EXISTS raw.plaid_transactions (
     account_id VARCHAR NOT NULL,        -- Plaid account_id; foreign key to raw.plaid_accounts
     transaction_date DATE NOT NULL,     -- Date the transaction posted; from Plaid date field
     amount DECIMAL(18, 2) NOT NULL,     -- CAUTION: Plaid convention is positive = expense; sign flip is in stg_plaid__transactions
-    to_amount DECIMAL(18, 2),           -- Received-leg amount for a source-provided single-row currency conversion; NULL when absent
     description VARCHAR,                -- Plaid name field
     merchant_name VARCHAR,              -- Plaid merchant_name; NULL when Plaid cannot identify
     category VARCHAR,                   -- Plaid personal_finance_category.primary
     original_description VARCHAR,       -- Plaid original_description; raw bank text, distinct from description=name; NULL for non-Plaid
     iso_currency_code VARCHAR,          -- Plaid iso_currency_code (ISO 4217)
-    to_currency VARCHAR,                -- Received-leg currency for a source-provided single-row currency conversion; NULL when absent
     authorized_date DATE,               -- Plaid authorized_date
     pending_transaction_id VARCHAR,     -- Plaid pending_transaction_id; links pending -> posted
     payment_channel VARCHAR,            -- Plaid payment_channel: online, in store, other
@@ -31,5 +29,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_transactions (
     source_origin VARCHAR NOT NULL,     -- provider_item_id; scopes dedup to the institution connection
     extracted_at TIMESTAMP,
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    to_amount DECIMAL(18, 2),           -- Received-leg amount for a source-provided single-row currency conversion; NULL when absent
+    to_currency VARCHAR,                -- Received-leg currency for a source-provided single-row currency conversion; NULL when absent
     PRIMARY KEY (transaction_id, source_origin)
 );

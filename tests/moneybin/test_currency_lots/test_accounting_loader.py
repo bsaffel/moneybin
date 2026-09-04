@@ -628,6 +628,59 @@ def _empty_conversion_frame() -> pd.DataFrame:
     )
 
 
+def test_all_currency_loader_queries_follow_registered_table_refs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Registry names reach SQL while only SQLMesh models are resolved."""
+    refs = {
+        name: TableRef("alternate", table)
+        for name, table in (
+            ("BRIDGE_TRANSFERS", "trusted_transfers"),
+            ("INT_TRANSACTIONS_MERGED", "merged_transactions"),
+            ("MATCH_DECISIONS", "trusted_decisions"),
+            ("PROFILE_SETTINGS", "profile_config"),
+            ("EXCHANGE_RATE_OVERRIDES", "rate_overrides"),
+            ("EXCHANGE_RATES", "stored_rates"),
+            ("ACCOUNT_SETTINGS", "account_config"),
+        )
+    }
+    for name, ref in refs.items():
+        monkeypatch.setattr(sqlmesh_loader, name, ref, raising=False)
+
+    conversion_context = _FakeContext(
+        _empty_conversion_frame(),
+        _empty_conversion_frame(),
+        _empty_conversion_frame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+    )
+    accounting_context = _FakeContext(*(pd.DataFrame() for _ in range(6)))
+
+    assert sqlmesh_loader.load_conversion_rows(t.cast(t.Any, conversion_context)) == []
+    assert sqlmesh_loader.load_currency_accounting(
+        t.cast(t.Any, accounting_context)
+    ) == sqlmesh_loader.CurrencyAccountingResult(lots=(), gains=())
+
+    resolved = {
+        *conversion_context.resolved_tables,
+        *accounting_context.resolved_tables,
+    }
+    queries = "\n".join([
+        *conversion_context.queries,
+        *accounting_context.queries,
+    ])
+    expected = {ref.full_name for ref in refs.values()}
+    model_refs = {
+        refs["BRIDGE_TRANSFERS"].full_name,
+        refs["INT_TRANSACTIONS_MERGED"].full_name,
+    }
+    physical_refs = expected - model_refs
+    assert model_refs <= resolved
+    assert physical_refs.isdisjoint(resolved)
+    assert all(table in queries for table in expected)
+
+
 def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -> None:
     context = _FakeContext(
         pd.DataFrame(),

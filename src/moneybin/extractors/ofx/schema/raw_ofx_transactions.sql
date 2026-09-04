@@ -5,7 +5,6 @@ CREATE TABLE IF NOT EXISTS raw.ofx_transactions (
     transaction_type VARCHAR, -- OFX TRNTYPE element, e.g. DEBIT, CREDIT, CHECK, INT, DIV
     date_posted TIMESTAMP, -- OFX DTPOSTED element; mapped to transaction_date in core
     amount DECIMAL(18, 2), -- OFX TRNAMT element; negative = expense, positive = income
-    to_amount DECIMAL(18, 2), -- Received-leg amount for a source-provided single-row currency conversion; NULL when absent
     payee VARCHAR, -- OFX NAME element (payee/merchant); mapped to description in core
     memo VARCHAR, -- OFX MEMO element; supplemental transaction notes from the institution
     check_number VARCHAR, -- OFX CHECKNUM element; check number for paper checks; NULL for electronic transactions
@@ -16,7 +15,8 @@ CREATE TABLE IF NOT EXISTS raw.ofx_transactions (
     source_type VARCHAR DEFAULT 'ofx', -- Format taxonomy marker; always 'ofx' for OFX/QFX/QBO files
     source_origin VARCHAR, -- Institution slug derived from <FI><ORG> or filename heuristic; NULL for legacy rows
     currency_code VARCHAR, -- OFX CURDEF, verbatim (e.g. USD); NULL if the source statement lacked one
-    to_currency VARCHAR, -- Received-leg currency for a source-provided single-row currency conversion; NULL when absent
     fitid_repaired BOOLEAN DEFAULT FALSE, -- TRUE when the extractor rewrote source_transaction_id to break a FITID collision; the only proof staging may use to retire the id this row superseded
+    to_amount DECIMAL(18, 2), -- Received-leg amount for a source-provided single-row currency conversion; NULL when absent
+    to_currency VARCHAR, -- Received-leg currency for a source-provided single-row currency conversion; NULL when absent
     PRIMARY KEY (source_transaction_id, account_id, source_file)
 );
