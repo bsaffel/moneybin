@@ -382,10 +382,40 @@ def _json_code(value: object) -> str:
     return _code(value if isinstance(value, str) else json.dumps(value))
 
 
+def _oneof_variant_name(variant: Mapping[str, object], index: int) -> str:
+    """Name a discriminated-union variant: its discriminator's const, else its title."""
+    for prop_schema in typing.cast(
+        Mapping[str, Mapping[str, object]], variant.get("properties", {})
+    ).values():
+        if "const" in prop_schema:
+            return str(prop_schema["const"])
+    title = variant.get("title")
+    return str(title) if title else f"variant {index + 1}"
+
+
+def _oneof_variants(schema: Mapping[str, object]) -> list[Mapping[str, object]] | None:
+    """The ``oneOf`` variants on this schema, or on an array schema's items."""
+    if "oneOf" in schema:
+        return typing.cast(list[Mapping[str, object]], schema["oneOf"])
+    if schema.get("type") == "array":
+        items = typing.cast(Mapping[str, object], schema.get("items", {}))
+        if "oneOf" in items:
+            return typing.cast(list[Mapping[str, object]], items["oneOf"])
+    return None
+
+
 def _schema_type(schema: Mapping[str, object]) -> str:
+    if "const" in schema:
+        return _json_code(schema["const"])
     if "enum" in schema:
         values = typing.cast(list[object], schema["enum"])
         return "one of " + ", ".join(_json_code(value) for value in values)
+    if "oneOf" in schema:
+        options = typing.cast(list[Mapping[str, object]], schema["oneOf"])
+        names = [
+            _oneof_variant_name(option, index) for index, option in enumerate(options)
+        ]
+        return "one of " + ", ".join(_code(name) for name in names)
     if "anyOf" in schema:
         options = typing.cast(list[Mapping[str, object]], schema["anyOf"])
         parts = [
@@ -456,6 +486,29 @@ def _property_rows(
         ]
         for name, schema in properties.items()
     ]
+
+
+def _variant_sections(
+    param_name: str, variants: list[Mapping[str, object]]
+) -> list[str]:
+    """A ``Variants of `param_name`` block: one field table per discriminated variant."""
+    lines = [f"#### Variants of {_code(param_name)}", ""]
+    for index, variant in enumerate(variants):
+        lines += [f"##### {_code(_oneof_variant_name(variant, index))}", ""]
+        description = variant.get("description")
+        if description:
+            lines += [_escape_angles(str(description).strip()), ""]
+        properties = typing.cast(
+            Mapping[str, Mapping[str, object]], variant.get("properties", {})
+        )
+        required = set(typing.cast(list[str], variant.get("required", [])))
+        if properties:
+            lines += _table(
+                ["Field", "Type", "Default", "Notes"],
+                _property_rows(properties, required),
+            )
+        lines.append("")
+    return lines[:-1]
 
 
 def _access(annotations: Mapping[str, object]) -> str:
@@ -541,6 +594,11 @@ def render_mcp_tools(
                 ["Parameter", "Type", "Default", "Notes"],
                 _property_rows(properties, required),
             )
+            for prop_name, prop_schema in properties.items():
+                variants = _oneof_variants(prop_schema)
+                if variants:
+                    lines.append("")
+                    lines += _variant_sections(prop_name, variants)
         else:
             lines.append("No parameters.")
         lines.append("")

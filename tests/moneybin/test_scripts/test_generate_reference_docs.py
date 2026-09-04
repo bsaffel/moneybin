@@ -215,6 +215,59 @@ SURFACE: dict[str, Any] = {
                             "anyOf": [{"type": "string"}, {"type": "null"}],
                             "default": None,
                         },
+                        "target": {
+                            "oneOf": [
+                                {
+                                    "description": "A widget target.",
+                                    "properties": {
+                                        "kind": {"const": "widget", "type": "string"},
+                                        "widget_id": {"type": "string"},
+                                    },
+                                    "required": ["kind", "widget_id"],
+                                    "type": "object",
+                                },
+                                {
+                                    "description": "A gadget target.",
+                                    "properties": {
+                                        "kind": {"const": "gadget", "type": "string"},
+                                        "gadget_id": {"type": "string"},
+                                    },
+                                    "required": ["kind", "gadget_id"],
+                                    "type": "object",
+                                },
+                            ]
+                        },
+                        "requests": {
+                            "items": {
+                                "oneOf": [
+                                    {
+                                        "description": "Add a thing.",
+                                        "properties": {
+                                            "kind": {
+                                                "const": "thing_add",
+                                                "type": "string",
+                                            },
+                                            "name": {"type": "string"},
+                                        },
+                                        "required": ["kind", "name"],
+                                        "type": "object",
+                                    },
+                                    {
+                                        "description": "Remove a thing.",
+                                        "properties": {
+                                            "kind": {
+                                                "const": "thing_remove",
+                                                "type": "string",
+                                            },
+                                            "name": {"type": "string"},
+                                        },
+                                        "required": ["kind", "name"],
+                                        "type": "object",
+                                    },
+                                ]
+                            },
+                            "type": "array",
+                        },
                     },
                     "required": ["view"],
                     "type": "object",
@@ -237,6 +290,32 @@ def test_mcp_page_sorts_tools_and_renders_schema_rows() -> None:
     assert "| `view` | one of `list`, `detail` | `list` | required |" in page
     assert "| `query` | string |  |  |" in page
     assert "No parameters." in page
+
+
+def test_mcp_page_renders_oneof_variants_by_discriminator() -> None:
+    """A ``oneOf`` parameter names each variant and lists its fields below."""
+    page = render_mcp_tools(SURFACE, {"accounts": "critical", "zeta": "low"})
+    assert "| `target` | one of `widget`, `gadget` |  |  |" in page
+    assert "| `requests` | array of one of `thing_add`, `thing_remove` |  |  |" in page
+    assert "#### Variants of `target`" in page
+    assert "##### `widget`" in page
+    assert "A widget target." in page
+    assert "| `widget_id` | string |  | required |" in page
+    assert "##### `gadget`" in page
+    assert "A gadget target." in page
+    assert "| `gadget_id` | string |  | required |" in page
+    assert "#### Variants of `requests`" in page
+    assert "##### `thing_add`" in page
+    assert "Add a thing." in page
+    assert "##### `thing_remove`" in page
+    assert "Remove a thing." in page
+    assert (
+        page.index("### accounts")
+        < page.index("| `target` |")
+        < page.index("#### Variants of `target`")
+        < page.index("#### Variants of `requests`")
+        < page.index("### zeta")
+    )
 
 
 def test_mcp_page_refuses_a_tool_without_a_registered_sensitivity() -> None:
