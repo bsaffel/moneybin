@@ -157,7 +157,8 @@ def gsheet_auth(
     calls reuse the persisted refresh token automatically.
 
     Short-circuits when a refresh token is already on file unless
-    ``--force`` is passed — mirrors the ``gsheet_auth`` MCP tool.
+    ``--force`` is passed — mirrors ``force_reauth`` on the ``gsheet_connect``
+    MCP tool.
     """
     with handle_cli_errors():
         client = _build_oauth_client()
