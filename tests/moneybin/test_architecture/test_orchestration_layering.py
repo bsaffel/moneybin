@@ -96,9 +96,10 @@ KNOWN_INVERSIONS: frozenset[str] = frozenset({
     # its module top.
     "services/account_links_service.py",
     # why: DemoService.run() drives generate → load → refresh → answer, and
-    # refresh is one step of it. Deferred with every other import in that
-    # method: `moneybin demo` is one command, and its collaborators
-    # (`synthetic.engine` reaches polars) must not load for the rest.
+    # refresh is one step of it. Deferred with the rest of that method's
+    # import block, which defers as a unit: hoisting the block costs +311
+    # modules over a bare `import demo_service` and pulls polars in through
+    # `synthetic.writer`.
     "services/demo_service.py",
     # why: InboxService.sync() imports `refresh` and `step_outcome` to run the
     # pipeline once at end-of-batch instead of once per file. Deferred as
