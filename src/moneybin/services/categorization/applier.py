@@ -1100,6 +1100,18 @@ class MatchApplier:
                 ``core.dim_categories`` (either as a seeded default or a
                 prior user-created row).
         """
+        # The taxonomy is the one surface that stores a category rather than a
+        # reference to one, so the rule the writers take has to hold here
+        # first: a blank row reaches core.dim_categories, renders as an empty
+        # name in `categories list`, and gives resolve_category_id a row
+        # nothing can usefully match. Runs before the duplicate scan so an
+        # unusable name is refused on its own terms rather than as a collision.
+        try:
+            validate_category_text(category, "category")
+            if subcategory is not None:
+                validate_category_text(subcategory, "subcategory")
+        except ValueError as exc:
+            raise UserError(str(exc), code=error_codes.MUTATION_INVALID_INPUT) from exc
         existing = self._db.execute(
             f"""
             SELECT 1 FROM {CATEGORIES.full_name}

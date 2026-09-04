@@ -331,6 +331,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   categories it already copied, so those transactions return to the
   uncategorized queue instead of staying hidden. (#517)
 
+- **`categories create "   "` and `budgets set --category "   "` are refused
+  rather than stored.** The taxonomy is the one surface that stores a category
+  instead of a reference to one, so a blank name reached `categories list` and
+  gave category resolution a row nothing can usefully match; a blank budget
+  category stored a target reporting against nothing. Both now take the same
+  blank-text and length rules every other category write takes. (#517)
+
 - **A rejected category reports a write error, not an infrastructure one.**
   `transactions splits add`, `splits set` and merchant creation classified a
   blank, over-long, or wrong-typed category as `infra_invalid_input`, so a

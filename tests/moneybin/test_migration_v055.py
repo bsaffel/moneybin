@@ -170,6 +170,46 @@ class TestV055BackfillBlankMerchantCategories:
         run_migration(v055_db, migrate)
         assert _category_row(v055_db, PADDED_TXN) == ("  Gas  ", None)
 
+    def test_touched_merchant_gets_a_fresh_updated_at(self, v055_db: Database) -> None:
+        """``core.dim_merchants`` reads this column straight through.
+
+        The convention is that an ``app`` table exposing ``updated_at`` has it
+        refreshed on every UPDATE. This migration is a service-external write
+        that changes row content, so without the bump the dim reports a stale
+        timestamp for precisely the rows whose category just changed.
+        """
+        before = v055_db.execute(
+            "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
+            [BLANK_CATEGORY_MERCHANT],
+        ).fetchone()
+        assert before is not None
+
+        run_migration(v055_db, migrate)
+
+        after = v055_db.execute(
+            "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
+            [BLANK_CATEGORY_MERCHANT],
+        ).fetchone()
+        assert after is not None
+        assert after[0] > before[0]
+
+    def test_untouched_merchant_keeps_its_updated_at(self, v055_db: Database) -> None:
+        """The bump rides the same ``WHERE``, so a normal row is not restamped."""
+        before = v055_db.execute(
+            "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
+            [NORMAL_MERCHANT],
+        ).fetchone()
+        assert before is not None
+
+        run_migration(v055_db, migrate)
+
+        after = v055_db.execute(
+            "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
+            [NORMAL_MERCHANT],
+        ).fetchone()
+        assert after is not None
+        assert after[0] == before[0]
+
     def test_idempotent(self, v055_db: Database) -> None:
         """Re-running the migration on an already-migrated DB is harmless."""
         run_migration(v055_db, migrate)

@@ -1064,6 +1064,41 @@ class TestCreateMerchantDualWrite:
         assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("category", "subcategory", "message"),
+        [
+            ("   ", None, "category must be non-empty"),
+            ("x" * 101, None, "category exceeds 100 chars"),
+            ("Food", "   ", "subcategory must be non-empty"),
+            ("Food", "x" * 101, "subcategory exceeds 100 chars"),
+        ],
+    )
+    def test_create_category_refuses_unusable_category_text(
+        self,
+        db: Database,
+        category: str,
+        subcategory: str | None,
+        message: str,
+    ) -> None:
+        """The taxonomy itself is the surface this rule most has to hold on.
+
+        Every other guarded write stores a category *reference*; this one
+        stores the category. A blank row reaches ``core.dim_categories``, so
+        ``categories list`` renders an empty name and
+        ``resolve_category_id`` gains a row nothing can usefully match. The
+        CLI turns ``--parent`` into the category and the argument into the
+        subcategory, so ``categories create Coffee --parent '   '`` is the
+        blank-parent shape and lands here as a blank ``category``.
+        """
+        svc = CategorizationService(db)
+        with pytest.raises(UserError, match=message) as exc:
+            svc.create_category(category, subcategory=subcategory, actor="cli")
+        assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
+        remaining = db.execute("SELECT COUNT(*) FROM app.user_categories").fetchone()
+        assert remaining is not None
+        assert remaining[0] == 0
+
+    @pytest.mark.unit
     def test_create_merchant_with_unresolved_text_leaves_fk_null(
         self, db: Database
     ) -> None:

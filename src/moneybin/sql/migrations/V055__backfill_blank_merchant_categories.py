@@ -75,7 +75,12 @@ def migrate(conn: object) -> None:
                   OR category IS NULL
                 THEN NULL
                 ELSE subcategory
-            END
+            END,
+            -- core.dim_merchants reads this column straight through, so a
+            -- service-external write that changes row content has to refresh
+            -- it or the dim reports stale for exactly the rows just fixed. It
+            -- rides the same WHERE, so an untouched row is not restamped.
+            updated_at = CURRENT_TIMESTAMP
         WHERE
             REGEXP_FULL_MATCH(category, ?)
             OR REGEXP_FULL_MATCH(subcategory, ?)
