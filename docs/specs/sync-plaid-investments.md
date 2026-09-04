@@ -144,6 +144,29 @@ reach the ledger, everything downstream is existing machinery.
     Plaid sale realizes an oversold zero-basis phantom gain. See
     [Opening-lot bootstrap](#opening-lot-bootstrap).
 
+### M1J.7 raw-observation amendment
+
+Requirement 2 describes the implemented ingestion contract. M1J.7 supersedes
+only the `raw.plaid_investment_transactions` current-row behavior when
+investment event matching begins; the holdings and holding-lot tables remain
+immutable point-in-time snapshots under their existing keys.
+
+M1J.7 slice 1 migrates each existing investment transaction row into its first
+append-only observation revision. The Raw grain becomes
+`(investment_transaction_id, source_origin, observation_version)`, where
+`observation_version` is a full SHA-256 digest over every captured transaction
+value that can affect matching or Golden projection. Job id, `source_file`,
+extraction time, and load time are lineage rather than version inputs. An
+identical overlapping-window delivery reuses the existing revision; a changed
+date, description, quantity, amount, price, fee, currency, type, or subtype
+appends a new revision instead of replacing reviewed evidence.
+
+Staging selects the latest revision for new matching plans. Accepted Golden
+membership and field provenance bind the exact historical revision reviewed by
+the person, so a later aggregator correction makes the Match stale without
+silently changing its fields. The full lifecycle and atomic replacement
+contract live in [`investment-event-matching.md`](investment-event-matching.md).
+
 ---
 
 ## Server contract
@@ -1113,6 +1136,7 @@ data still loads.
 | Test area | What's tested |
 |---|---|
 | `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Re-load dedup: same payload twice AND the same provider row re-delivered under a **different** `job_id` both replace, never duplicate (PK scoped by `source_origin`). |
+| M1J.7 transaction revision migration | Future matching slice 1: existing rows become first revisions; identical delivery is idempotent; changing any matching or Golden-projected value appends a revision; lineage-only changes do not. |
 | `PlaidInvestmentsLoader.load()` — multi-item scoping | A **two-item** golden payload: (1) each item's own `transactions_window_start` (from its per-institution `metadata` result) is stamped onto **that item's** holdings rows, matched by `source_origin` — never one item's window flattened onto another's; (2) two items that share a provider-local `(account_id, security_id)` produce **distinct, non-colliding** `raw.plaid_investment_holdings` and `raw.plaid_investment_holding_lots` rows (PK includes `source_origin`), so neither newest-snapshot reconciliation nor the opening-lot bootstrap conflates them. |
 | `SecurityResolver` | Each ladder rung: adopt existing binding; CUSIP/ISIN exact → auto-bind (exchange irrelevant); ticker match with MIC normalization (`"NASDAQ"`↔`"XNAS"` normalize equal → bind; both-absent → bind on unique ticker; unnormalizable free-text exchange → treated as absent, binds not reviews; both-present-different-MIC → rung 3); **identifier tie** (one CUSIP/ISIN/ticker matching **more than one** catalog entry — exercised at two and at three) → provisional mint + one pending merge decision **per tied candidate** (`identifier_tie`), never auto-pick; **stripped-ticker hit** (`VOD.L`→`VOD`, share-class `HEI.A`→`HEI`, preferred `BAC-PL`→`BAC`) never auto-binds — provisional mint + `ticker_suffix_strip` decision per stem candidate, and a batch carrying both stem and share class mints **two** securities regardless of `security_id` order; fuzzy → provisional mint + bind + pending **merge** decision **per** equally-named catalog entry (a duplicate name never collapses to one); an in-batch provisional mint is an auto-bind target but is **never offered as a merge candidate** to a later row; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
 | Taxonomy mapping | Parametrized over the full mapping table — every Plaid (type, subtype) pair → expected (`type`, `subtype`), including every excluded-at-staging row. |
@@ -1272,11 +1296,14 @@ contract above is its specification.
   account-identity mint-now/merge-later precedent. (Surfaced by external
   review on this spec's PR; the original propose-without-mint shape was a
   correctness bug.)
-- **Raw keys scoped by `source_origin`, not `source_file`.** Matches the
-  shipped cash tables (the `sync-plaid.md` doc had drifted from the
-  implementation — corrected alongside this spec): overlapping date-range
-  pulls re-deliver the same provider rows, and origin-scoped keys make
-  re-delivery a replace instead of a duplicate that would double-count lots.
+- **Raw keys scoped by `source_origin`, not `source_file`.** The implemented
+  loader matches the shipped cash tables (the `sync-plaid.md` doc had drifted
+  from the implementation — corrected alongside this spec): overlapping
+  date-range pulls re-deliver the same provider rows, and origin-scoped keys
+  currently make re-delivery a replace instead of a duplicate that would
+  double-count lots. M1J.7 supersedes the investment-transaction table with an
+  observation-version key: identical content remains idempotent, while changed
+  source values append reviewed evidence rather than overwrite it.
 
 ## Open questions
 
