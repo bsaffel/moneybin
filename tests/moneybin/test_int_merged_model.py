@@ -18,7 +18,9 @@ class TestIntTransactionsMergedModel:
         assert "transaction_id" in content
         assert "canonical_source_type" in content
         assert "source_count" in content
-        assert "conversion_shape_ranked" in content
+        assert "FIRST(" in content
+        assert "{'to_amount': m.to_amount" in content
+        assert content.count("prep.int_transactions__matched") == 1
         assert "conversion_source_type" in content
         assert "conversion_source_origin" in content
         assert "conversion_source_transaction_id" in content

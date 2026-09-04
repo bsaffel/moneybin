@@ -7,19 +7,6 @@ MODEL (
    source-priority merge rules. For each field, the value from the
    highest-priority source with a non-NULL value wins. Exception:
    transaction_date takes the earliest non-NULL value. */
-WITH conversion_shape_ranked AS (
-  SELECT
-    m.*,
-    ROW_NUMBER() OVER (
-      PARTITION BY m.transaction_id, m.account_id
-      ORDER BY CASE WHEN NOT m.to_amount IS NULL AND NOT m.to_currency IS NULL THEN 0 ELSE 1 END, COALESCE(sp.priority, 2147483647), m.loaded_at DESC, m.source_type, m.source_origin, m.source_transaction_id
-    ) AS conversion_shape_rank
-  FROM prep.int_transactions__matched AS m
-  LEFT JOIN app.seed_source_priority AS sp
-    ON m.source_type = sp.source_type
-  WHERE
-    NOT m.to_amount IS NULL OR NOT m.to_currency IS NULL
-)
 SELECT
   m.transaction_id,
   m.account_id,
@@ -224,11 +211,12 @@ SELECT
     END
   ) AS location_longitude,
   ARG_MIN(m.currency_code, COALESCE(sp.priority, 2147483647)) AS currency_code,
-  csr.to_amount,
-  csr.to_currency,
-  csr.source_type AS conversion_source_type,
-  csr.source_origin AS conversion_source_origin,
-  csr.source_transaction_id AS conversion_source_transaction_id,
+  UNNEST(
+    FIRST(
+      {'to_amount': m.to_amount, 'to_currency': m.to_currency, 'conversion_source_type': m.source_type, 'conversion_source_origin': m.source_origin, 'conversion_source_transaction_id': m.source_transaction_id} ORDER BY CASE WHEN NOT m.to_amount IS NULL AND NOT m.to_currency IS NULL THEN 0 ELSE 1 END, COALESCE(sp.priority, 2147483647), m.loaded_at DESC, m.source_type, m.source_origin, m.source_transaction_id
+    ) FILTER(WHERE
+      NOT m.to_amount IS NULL OR NOT m.to_currency IS NULL)
+  ),
   ARG_MIN(m.source_type, COALESCE(sp.priority, 2147483647)) AS canonical_source_type,
   COUNT(*) AS source_count,
   MIN(m.match_confidence) AS match_confidence, /* Weakest-link: every member of a group already carries the same group-level
@@ -239,15 +227,6 @@ SELECT
 FROM prep.int_transactions__matched AS m
 LEFT JOIN app.seed_source_priority AS sp
   ON m.source_type = sp.source_type
-LEFT JOIN conversion_shape_ranked AS csr
-  ON m.transaction_id = csr.transaction_id
-  AND m.account_id = csr.account_id
-  AND csr.conversion_shape_rank = 1
 GROUP BY
   m.transaction_id,
-  m.account_id,
-  csr.to_amount,
-  csr.to_currency,
-  csr.source_type,
-  csr.source_origin,
-  csr.source_transaction_id
+  m.account_id
