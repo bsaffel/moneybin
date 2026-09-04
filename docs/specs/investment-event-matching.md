@@ -1,7 +1,7 @@
 # Investment Event Matching
 
 > Last updated: 2026-09-04
-> Status: in-progress
+> Status: ready
 > Address: M1J.7 (Investments — cross-source event matching)
 > Type: Feature
 > Owns: provider-neutral matching of whole investment events, review decisions,
