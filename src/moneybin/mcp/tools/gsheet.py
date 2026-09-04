@@ -27,6 +27,11 @@ from fastmcp import FastMCP
 from pydantic import JsonValue, StrictBool
 
 from moneybin import error_codes
+from moneybin.adapters.gsheet_adapters import (
+    gsheet_connection_row,
+    gsheet_initial_pull,
+    gsheet_pull_rows,
+)
 from moneybin.config import get_settings
 from moneybin.connectors.gsheet.errors import GSheetSignConfirmationRequiredError
 from moneybin.connectors.gsheet.service_factory import (
@@ -41,18 +46,12 @@ from moneybin.connectors.gsheet.service_factory import (
 from moneybin.error_codes import INFRA_NOT_FOUND
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
-from moneybin.mcp.adapters.gsheet_adapters import (
-    gsheet_connection_row,
-    gsheet_initial_pull,
-    gsheet_pull_rows,
-)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import internal_envelope_adapter, mcp_tool
-from moneybin.mcp.privacy import Sensitivity
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.gsheet import (
     GsheetAuthPayload,
@@ -70,6 +69,7 @@ from moneybin.privacy.payloads.gsheet import (
     GsheetPullPayload,
     GsheetStatusView,
 )
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,

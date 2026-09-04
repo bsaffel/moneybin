@@ -17,7 +17,7 @@ from moneybin.mcp.tools.transactions import (
     transactions_matches_run,
     transactions_review,
 )
-from moneybin.mcp.write_contracts import (
+from moneybin.protocol.write_contracts import (
     NoteAdd,
     NoteDelete,
     NoteEdit,

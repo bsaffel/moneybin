@@ -26,8 +26,8 @@ from moneybin.cli.commands.accounts.links import (
     app,
 )
 from moneybin.errors import UserError
-from moneybin.mcp.write_contracts import AccountLinkDecisionRequest
 from moneybin.orchestration.refresh import RefreshResult
+from moneybin.protocol.write_contracts import AccountLinkDecisionRequest
 from moneybin.services.account_links_service import AccountLinkAcceptImpact
 from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.identity_confirmation import identity_confirm_message

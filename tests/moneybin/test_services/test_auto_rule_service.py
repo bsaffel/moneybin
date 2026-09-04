@@ -14,9 +14,9 @@ import pytest
 
 from moneybin import config as config_module
 from moneybin import error_codes
+from moneybin.adapters.categorize_adapters import auto_review_envelope
 from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
-from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
 from moneybin.metrics.registry import (
     AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL,
     AUTO_RULE_BROAD_PENDING,
@@ -645,7 +645,7 @@ def test_auto_rule_results_are_pure_data_carriers(cls_name: str) -> None:
 
     cls = getattr(service_module, cls_name)
     assert not hasattr(cls, "to_envelope"), (
-        f"{cls_name}.to_envelope must live in mcp/adapters/, not on the service dataclass"
+        f"{cls_name}.to_envelope must live in adapters/, not on the service dataclass"
     )
 
 

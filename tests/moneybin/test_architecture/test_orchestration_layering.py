@@ -28,6 +28,8 @@ import sys
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
+from tests.moneybin.test_architecture._import_graph import package_of, resolved_module
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SRC = REPO_ROOT / "src" / "moneybin"
 
@@ -37,7 +39,17 @@ SRC = REPO_ROOT / "src" / "moneybin"
 # enumeration of those goes stale the first time one is added, and a package
 # missing from that enumeration is silently unguarded — the failure mode this
 # file exists to prevent.
-LAYERS_AT_OR_ABOVE_ORCHESTRATION = frozenset({"cli", "mcp", "orchestration"})
+# `adapters` is here because an adapter reads what the pipeline produced — a
+# `RefreshResult`, a connector model — and renders it as the response a surface
+# returns. That is the orchestrator's consumer, not its peer's dependency, and
+# it is shared by both transports rather than owned by either. The package
+# holds no writes and no orchestration of its own.
+LAYERS_AT_OR_ABOVE_ORCHESTRATION = frozenset({
+    "adapters",
+    "cli",
+    "mcp",
+    "orchestration",
+})
 
 # The below-orchestration packages that exist today, pinned so that widening
 # the exemption list above cannot quietly shrink the scan. Subset-checked, not
@@ -171,45 +183,9 @@ def _runtime_imports(body: Sequence[ast.stmt]) -> Iterator[ast.Import | ast.Impo
             yield from _runtime_imports(block)
 
 
-def _package_of(path: Path) -> str:
-    """Dotted package a file under ``src/moneybin`` belongs to.
-
-    ``services/foo.py`` and ``services/__init__.py`` both answer
-    ``moneybin.services``: Python measures a relative import in a package's
-    ``__init__`` from that package, not from its parent.
-    """
-    return ".".join(("moneybin", *path.relative_to(SRC).parts[:-1]))
-
-
-def _resolved_module(node: ast.ImportFrom, package: str) -> str:
-    """Absolute dotted module an ``ImportFrom`` names, relative or not.
-
-    Without this a relative import is invisible to the scan: ``from
-    ..orchestration import refresh`` parks ``"orchestration"`` in
-    ``node.module`` and ``from .. import orchestration`` parks ``None``, and
-    neither string matches anything the caller compares against. Relative
-    imports are already an active pattern here (``cli/commands/**/__init__``,
-    ``cli/main``), just not yet inside a guarded package.
-
-    An over-relative import — more leading dots than the package has parts —
-    resolves to ``""`` at every depth. It cannot be a live bypass either way:
-    Python raises ``ImportError`` on that shape before any of its names bind.
-    The depth is tested rather than the slice result, because two dots too
-    many drives the slice index negative and ``parts[:-1]`` hands back a
-    plausible-looking base that would invent an inversion out of nothing.
-    """
-    if not node.level:
-        return node.module or ""
-    parts = package.split(".")
-    if node.level > len(parts):
-        return ""
-    base = ".".join(parts[: len(parts) - node.level + 1])
-    return f"{base}.{node.module}" if node.module else base
-
-
 def _imports_orchestration(node: ast.Import | ast.ImportFrom, package: str) -> bool:
     if isinstance(node, ast.ImportFrom):
-        module = _resolved_module(node, package)
+        module = resolved_module(node, package)
         if module == "moneybin.orchestration" or module.startswith(
             "moneybin.orchestration."
         ):
@@ -241,7 +217,7 @@ def _scan() -> set[str]:
     offenders: set[str] = set()
     for path in _guarded_files():
         tree = ast.parse(path.read_text(), filename=str(path))
-        package = _package_of(path)
+        package = package_of(path)
         if any(_imports_orchestration(n, package) for n in _runtime_imports(tree.body)):
             offenders.add(path.relative_to(SRC).as_posix())
     return offenders
@@ -324,7 +300,7 @@ def test_scan_still_looks_at_every_package_below_orchestration() -> None:
         f"{sorted(set(expected_packages) - scanned)}"
     )
     resolved_packages = {
-        relative: _package_of(SRC / relative) for relative in expected_packages
+        relative: package_of(SRC / relative) for relative in expected_packages
     }
     assert resolved_packages == expected_packages, (
         "A file is being read as the wrong package, which silently breaks "

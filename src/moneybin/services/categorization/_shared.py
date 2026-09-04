@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from moneybin.config import get_settings
 from moneybin.database import Database
-from moneybin.services._validators import (
+from moneybin.limits import (
     CATEGORY_NAME_MAX_LEN,
     IDENTIFIER_MAX_LEN,
     MERCHANT_NAME_MAX_LEN,

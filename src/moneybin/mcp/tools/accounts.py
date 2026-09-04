@@ -39,6 +39,7 @@ from fastmcp import FastMCP
 from pydantic import Field, StrictBool
 
 from moneybin import error_codes
+from moneybin.adapters.rematch_report import rematch_actions
 from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError
@@ -49,9 +50,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
-from moneybin.mcp.rematch_report import rematch_actions
-from moneybin.mcp.write_contracts import FiniteDecimal
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.accounts import (
@@ -82,6 +80,7 @@ from moneybin.privacy.payloads.balances import (
     BalanceAssertionPayload,
     BalanceObservationListPayload,
 )
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import (
     UNSET,
     ResponseEnvelope,
@@ -99,6 +98,7 @@ from moneybin.protocol.pagination import (
     validate_keyset_position,
     validate_keyset_shape,
 )
+from moneybin.protocol.write_contracts import FiniteDecimal
 from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
     AccountLinksService,

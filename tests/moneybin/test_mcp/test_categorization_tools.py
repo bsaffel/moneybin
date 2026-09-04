@@ -37,13 +37,13 @@ from moneybin.mcp.tools.transactions_categorize import (
 from moneybin.mcp.tools.transactions_categorize_assist import (
     register_transactions_categorize_assist_tools,
 )
-from moneybin.mcp.write_contracts import (
-    CategorizationRuleMatch,
-    CategorizationRuleTarget,
-)
 from moneybin.privacy.introspection import derive_tier
 from moneybin.privacy.payloads.categorize import CategorizationRulesCoarsePayload
 from moneybin.privacy.taxonomy import Tier
+from moneybin.protocol.write_contracts import (
+    CategorizationRuleMatch,
+    CategorizationRuleTarget,
+)
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
 from moneybin.services.auto_rule_service import AutoConfirmResult
 from moneybin.services.categorization import CategorizationRuleInput
@@ -852,7 +852,7 @@ def test_the_auto_review_accept_hint_is_built_per_surface() -> None:
     and the MCP-side name it used to carry, `transactions_categorize_auto_accept`,
     is not registered at all (#344 retired it; the live path is `reviews_decide`).
     """
-    from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
+    from moneybin.adapters.categorize_adapters import auto_review_envelope
     from moneybin.services.auto_rule_service import AutoReviewResult
 
     empty = AutoReviewResult(proposals=[], total_count=0)

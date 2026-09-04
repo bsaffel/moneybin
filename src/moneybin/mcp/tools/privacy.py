@@ -29,7 +29,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.consent import ConsentMode
 from moneybin.privacy.log import (
@@ -48,6 +47,7 @@ from moneybin.privacy.payloads.consent import (
     PrivacyStatusPayload,
     PrivacyStatusView,
 )
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
     KeysetPosition,

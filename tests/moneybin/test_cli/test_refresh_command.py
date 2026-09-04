@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 from click.testing import Result
 from typer.testing import CliRunner
 
+from moneybin.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
 from moneybin.cli.main import app
-from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services.rate_backfill import RateBackfillResult
 

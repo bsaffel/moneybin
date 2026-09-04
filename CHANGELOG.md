@@ -282,6 +282,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **A missing or locked keychain entry no longer prints a stack trace.**
+  `moneybin db info`, `db unlock` and the DuckDB init-script builder read the
+  encryption key directly, and the secret-store exceptions had no branch in the
+  error classifier — so the CLI showed a raw traceback and MCP returned
+  `infra_unclassified_error`. They now classify: a keychain that denies the
+  read reports `infra_permission_denied` with an unlock hint, and a missing
+  secret or absent keyring backend reports `infra_setup_required` naming the
+  command that stores it. (#522)
+
 - **A Plaid transaction's `category` no longer holds Plaid's own category
   code.** `prep.int_transactions__unioned` had aliased the raw
   personal-finance-category code into `category`, so one column mixed
