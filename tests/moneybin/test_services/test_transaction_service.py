@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.protocol.write_contracts import (
@@ -554,9 +555,7 @@ class TestAnnotationBatches:
         ``amount``, so the guard that existed on one arm was absent on the
         other.
         """
-        with pytest.raises(
-            ValueError, match=r"splits\[0\]\.category must be non-empty"
-        ):
+        with pytest.raises(UserError, match=r"splits\[0\]\.category must be non-empty"):
             TransactionService(transaction_db).set_splits(
                 "T1",
                 [{"amount": Decimal("-50"), "category": "   "}],
@@ -575,7 +574,7 @@ class TestAnnotationBatches:
         caller told the wrong field name looks at the wrong flag.
         """
         with pytest.raises(
-            ValueError, match=r"splits\[0\]\.subcategory must be non-empty"
+            UserError, match=r"splits\[0\]\.subcategory must be non-empty"
         ):
             TransactionService(transaction_db).set_splits(
                 "T1",
@@ -596,12 +595,15 @@ class TestAnnotationBatches:
         on. The message names the offending index the way the sibling `amount`
         check does, so a caller with several splits knows which one to fix.
         """
-        with pytest.raises(ValueError, match=r"splits\[0\]\.category must be str"):
+        with pytest.raises(
+            UserError, match=r"splits\[0\]\.category must be str"
+        ) as exc:
             TransactionService(transaction_db).set_splits(
                 "T1",
                 [{"amount": Decimal("-50"), "category": 123}],
                 actor="cli",
             )
+        assert exc.value.code == error_codes.TRANSACTION_INVALID_INPUT
 
     @pytest.mark.unit
     def test_set_splits_refuses_an_over_long_category(
@@ -615,7 +617,7 @@ class TestAnnotationBatches:
         mis-compared this branch would have passed the suite.
         """
         with pytest.raises(
-            ValueError,
+            UserError,
             match=rf"splits\[0\]\.category exceeds {CATEGORY_NAME_MAX_LEN} chars",
         ):
             TransactionService(transaction_db).set_splits(
@@ -640,7 +642,7 @@ class TestAnnotationBatches:
         granular arm was the one place the pair could still be written.
         """
         with pytest.raises(
-            ValueError, match=r"splits\[0\]\.subcategory requires a category"
+            UserError, match=r"splits\[0\]\.subcategory requires a category"
         ):
             TransactionService(transaction_db).set_splits(
                 "T1",
@@ -1095,10 +1097,11 @@ class TestSplits:
         reads ``'  '`` as present) and renders as a blank cell, so the split
         counts under no category while claiming to have one.
         """
-        with pytest.raises(ValueError, match="category must be non-empty"):
+        with pytest.raises(UserError, match="category must be non-empty") as exc:
             txn_service.add_split(
                 sample_transaction_id, Decimal("-30.00"), category="   ", actor="cli"
             )
+        assert exc.value.code == error_codes.TRANSACTION_INVALID_INPUT
 
     @pytest.mark.unit
     def test_add_split_refuses_a_blank_subcategory(
@@ -1109,7 +1112,7 @@ class TestSplits:
         Named `subcategory`, since `--subcategory "   "` refused as "category"
         points the caller at the flag they got right.
         """
-        with pytest.raises(ValueError, match="subcategory must be non-empty"):
+        with pytest.raises(UserError, match="subcategory must be non-empty"):
             txn_service.add_split(
                 sample_transaction_id,
                 Decimal("-30.00"),
@@ -1124,7 +1127,7 @@ class TestSplits:
     ) -> None:
         """`add_split` had no length check at all before this PR."""
         with pytest.raises(
-            ValueError, match=f"category exceeds {CATEGORY_NAME_MAX_LEN} chars"
+            UserError, match=f"category exceeds {CATEGORY_NAME_MAX_LEN} chars"
         ):
             txn_service.add_split(
                 sample_transaction_id,
@@ -1138,7 +1141,7 @@ class TestSplits:
         self, txn_service: TransactionService, sample_transaction_id: str
     ) -> None:
         """The same hierarchy rule MCP's `SplitTarget` already enforces."""
-        with pytest.raises(ValueError, match="subcategory requires a category"):
+        with pytest.raises(UserError, match="subcategory requires a category"):
             txn_service.add_split(
                 sample_transaction_id,
                 Decimal("-30.00"),
@@ -1329,7 +1332,7 @@ class TestSplits:
         txn_service.add_split(
             sample_transaction_id, Decimal("-10.00"), category="Keep", actor="cli"
         )
-        with pytest.raises(ValueError):
+        with pytest.raises(UserError):
             txn_service.set_splits(
                 sample_transaction_id,
                 [

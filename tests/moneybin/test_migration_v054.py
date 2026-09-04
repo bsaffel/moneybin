@@ -24,6 +24,7 @@ NORMAL_SPLIT = "spl-normal0001"
 PADDED_SPLIT = "spl-padded0001"
 NULL_SPLIT = "spl-nullboth01"
 UNICODE_BLANK_SPLIT = "spl-nbspcat001"
+ORPHAN_SUBCATEGORY_SPLIT = "spl-orphansub1"
 
 _SPLIT_COLUMNS = (
     "split_id",
@@ -61,6 +62,18 @@ def v054_db(db: Database) -> Database:
                 "　",
                 "cli",
             ),
+            # Never blank, and so invisible to a predicate written only around
+            # blankness: the old permissive `set_splits({"subcategory": ...})`
+            # accepted this shape outright, and a row carrying it is the same
+            # orphan the blank-category cascade exists to prevent.
+            (
+                ORPHAN_SUBCATEGORY_SPLIT,
+                "txn-parent0007",
+                "70.00",
+                None,
+                "Coffee",
+                "cli",
+            ),
         ],
     )
     return db
@@ -92,6 +105,22 @@ class TestV054BackfillBlankSplitCategories:
         """
         run_migration(v054_db, migrate)
         assert _category_pair(v054_db, BLANK_CATEGORY_SPLIT) == (None, None)
+
+    def test_orphaned_subcategory_under_a_null_category_becomes_null(
+        self, v054_db: Database
+    ) -> None:
+        """The orphan the blank predicate cannot see, on three-valued logic.
+
+        `REGEXP_FULL_MATCH(NULL, pattern)` is `NULL`, and `NULL OR FALSE` is
+        `NULL` rather than `TRUE`, so a row that was *born* `(NULL, 'Coffee')`
+        — the shape the old permissive `set_splits` accepted — is excluded by
+        a `WHERE` written only around blankness. The migration's postcondition
+        is the write path's invariant, so it has to be stated as "no split has
+        a subcategory without a category", not "no split has a blank
+        category".
+        """
+        run_migration(v054_db, migrate)
+        assert _category_pair(v054_db, ORPHAN_SUBCATEGORY_SPLIT) == (None, None)
 
     def test_whitespace_only_subcategory_becomes_null(self, v054_db: Database) -> None:
         run_migration(v054_db, migrate)

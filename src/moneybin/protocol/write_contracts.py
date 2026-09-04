@@ -452,6 +452,23 @@ class MerchantStateRequest(_StrictRequest):
                     "subcategory",
                 ),
             ),
+            # The same conditional SplitTarget advertises, on the same pair.
+            # `_conditional_schema_branch` keys its `if` on one field equalling
+            # a constant, and this one keys on a field being present and
+            # non-null, so it is spelled out the way SplitTarget spells it.
+            {
+                "if": {
+                    "properties": {
+                        "state": {"const": "present"},
+                        "subcategory": {"not": {"type": "null"}},
+                    },
+                    "required": ["state", "subcategory"],
+                },
+                "then": {
+                    "properties": {"category": {"not": {"type": "null"}}},
+                    "required": ["category"],
+                },
+            },
         )
     )
 

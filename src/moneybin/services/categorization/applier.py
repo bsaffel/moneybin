@@ -58,7 +58,10 @@ from moneybin.repositories.user_categories_repo import (
     UserCategoriesRepo,
 )
 from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
-from moneybin.services._validators import validate_category_hierarchy
+from moneybin.services._validators import (
+    validate_category_hierarchy,
+    validate_category_text,
+)
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import (
     SOURCE_PRIORITY,
@@ -490,7 +493,20 @@ class MatchApplier:
                 ``"system"`` default.
             in_outer_txn: Join the caller's active transaction when true.
         """
-        validate_category_hierarchy(category, subcategory, "subcategory")
+        # The same two rules a split's (category, subcategory) takes, because
+        # this pair is resolved against the same dim and then copied verbatim
+        # into app.transaction_categories by the categorize_pending sweep,
+        # which skips only on None. Blank text would survive that copy into
+        # core.fct_transactions.category and render as an empty cell that
+        # core.uncategorized_queue's `category IS NULL` filter cannot see.
+        try:
+            if category is not None:
+                validate_category_text(category, "category")
+            if subcategory is not None:
+                validate_category_text(subcategory, "subcategory")
+            validate_category_hierarchy(category, subcategory, "subcategory")
+        except ValueError as exc:
+            raise UserError(str(exc), code=error_codes.MUTATION_INVALID_INPUT) from exc
         # Resolve the FK alongside the text snapshot (read; stays in the
         # service per Req 2). The repo owns the INSERT + audit.
         category_id = resolve_category_id(self._db, category, subcategory)

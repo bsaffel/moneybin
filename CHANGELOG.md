@@ -317,6 +317,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   category blanked on the way in takes its subcategory with it, while a blank
   subcategory under a real category still nulls only itself. (#517)
 
+- **`merchants create --default-category "   "` is refused rather than
+  stored.** A merchant's stored default is copied verbatim into a
+  transaction's category by the auto-categorization sweep, which skipped only
+  a missing value, so whitespace reached `core.fct_transactions` through the
+  one write path the earlier sweep left open. It now takes the same blank-text
+  and hierarchy rules a split takes. (#517)
+
+- **A rejected category reports a write error, not an infrastructure one.**
+  `transactions splits add`, `splits set` and merchant creation classified a
+  blank, over-long, or wrong-typed category as `infra_invalid_input`, so a
+  script or agent branching on the error family read bad user input as a
+  broken system. Splits now report `transaction_invalid_input` and merchant
+  writes `mutation_invalid_input`. (#517)
+
 - **A Plaid transaction's `category` no longer holds Plaid's own category
   code.** `prep.int_transactions__unioned` had aliased the raw
   personal-finance-category code into `category`, so one column mixed

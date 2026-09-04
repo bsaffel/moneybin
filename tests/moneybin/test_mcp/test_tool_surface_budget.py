@@ -159,9 +159,10 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # tools never owed: accepting a match can reverse a transfer the user
     # accepted, and an agent that cannot read that from the description
     # reports the reversal as a clean accept. Registry-wide the consolidation
-    # still stands at -34.3% — 59,577 bytes against the baseline's 90,734, both
+    # still stands at -33.9% — 59,983 bytes against the baseline's 90,734, both
     # readable as `total_bytes` in the two fixtures this test loads. (The figure
-    # has drifted twice before — recorded as -38.0%, then -37.0% — because
+    # has drifted three times before — recorded as -38.0%, then -37.0%, then
+    # -34.3% against a 59,577 the fixture had already left behind — because
     # nothing fails when a comment goes stale. Recompute it from the fixtures
     # rather than trusting this line.)
     "reviews_decide": (2_727, 2_566),
@@ -176,7 +177,13 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # would have the agent retry a merge with a token, read the refusal as a
     # bug, and route around the confirmation this exists to enforce.
     "identity_links_decide": (3_481, 5_762),
-    "taxonomy_set": (3_480, 3_223),
+    # Grew 208 bytes advertising the rule its model validator already enforced:
+    # a merchant subcategory requires a category. `SplitTarget` has carried the
+    # same conditional in its JSON schema all along, so a client that validates
+    # before calling saw the constraint for splits and not for merchants, and
+    # could build a payload the schema promised was valid and the server then
+    # refused.
+    "taxonomy_set": (3_688, 3_223),
     "privacy_consent_set": (1_217, 2_188),
 }
 

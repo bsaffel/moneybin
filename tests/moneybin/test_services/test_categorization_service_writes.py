@@ -1023,7 +1023,7 @@ class TestCreateMerchantDualWrite:
         unreachable by the code meant to find it.
         """
         svc = CategorizationService(db)
-        with pytest.raises(ValueError, match="subcategory requires a category"):
+        with pytest.raises(UserError, match="subcategory requires a category") as exc:
             svc.create_merchant(
                 raw_pattern="ORPHAN PATTERN",
                 canonical_name="Orphan Merchant",
@@ -1031,6 +1031,37 @@ class TestCreateMerchantDualWrite:
                 subcategory="Coffee",
                 created_by="user",
             )
+        assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("field", ["category", "subcategory"])
+    def test_create_merchant_refuses_blank_category_text(
+        self, db: Database, field: str
+    ) -> None:
+        """The blank-text rule reaches the merchant default, not just splits.
+
+        A merchant's stored default is copied verbatim into
+        ``app.transaction_categories`` by the ``categorize_pending`` sweep,
+        which skips only on ``None`` — so whitespace text survives into
+        ``core.fct_transactions.category``, where it renders as an empty cell
+        that ``core.uncategorized_queue``'s ``category IS NULL`` filter cannot
+        see. That is the defect this PR closes elsewhere, and
+        ``merchants create --default-category '   '`` reaches it unstripped.
+        """
+        svc = CategorizationService(db)
+        kwargs: dict[str, Any] = (
+            {"category": "Coffee"} if field == "subcategory" else {}
+        )
+        kwargs[field] = "   "
+        with pytest.raises(UserError, match=f"{field} must be non-empty") as exc:
+            svc.create_merchant(
+                raw_pattern="BLANK PATTERN",
+                canonical_name="Blank Merchant",
+                match_type="contains",
+                created_by="user",
+                **kwargs,
+            )
+        assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
 
     @pytest.mark.unit
     def test_create_merchant_with_unresolved_text_leaves_fk_null(

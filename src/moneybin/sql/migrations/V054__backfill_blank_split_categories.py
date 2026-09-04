@@ -25,8 +25,21 @@ leaving the orphan would render the parent's category beside this split's
 subcategory: a pair nobody chose. The reverse does not hold — a blank
 subcategory under a real category just nulls the subcategory.
 
-Idempotent: the ``UPDATE`` only touches rows that are non-NULL and entirely
-whitespace, so replay is a no-op.
+That makes the postcondition "no split carries a subcategory without a
+category", which is wider than blankness and is why the predicate names the
+already-NULL category explicitly. A row can reach ``(NULL, 'Coffee')``
+without any blank text ever being involved: the granular ``set_splits`` arm
+accepted a bare ``subcategory`` outright until this PR, and the test that
+used to pin that behavior spelled the shape out. Such a row is invisible to a
+``WHERE`` written only around blankness, because
+``REGEXP_FULL_MATCH(NULL, pattern)`` is ``NULL`` and ``NULL OR FALSE`` is
+``NULL`` rather than ``TRUE`` — SQL three-valued logic excludes the row
+instead of matching it. Stating the invariant rather than the symptom covers
+both routes to the same orphan.
+
+Idempotent: every ``CASE`` maps its matched rows to ``NULL``, and a ``NULL``
+category with a ``NULL`` subcategory matches no branch of the ``WHERE``, so
+replay is a no-op.
 
 Deliberately NOT re-resolved: ``category_id``. It is the canonical FK
 (``category``/``subcategory`` are V014's deprecated display snapshot), and
@@ -96,12 +109,14 @@ def migrate(conn: object) -> None:
             subcategory = CASE
                 WHEN REGEXP_FULL_MATCH(subcategory, ?)
                   OR REGEXP_FULL_MATCH(category, ?)
+                  OR category IS NULL
                 THEN NULL
                 ELSE subcategory
             END
         WHERE
             REGEXP_FULL_MATCH(category, ?)
             OR REGEXP_FULL_MATCH(subcategory, ?)
+            OR (category IS NULL AND subcategory IS NOT NULL)
         """,
         [_BLANK] * 5,
     )
