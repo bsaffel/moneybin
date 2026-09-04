@@ -32,7 +32,7 @@ def test_transform_materializes_exact_single_row_currency_conversion(
     db.execute(
         """
         INSERT INTO app.account_settings (account_id, currency_code, updated_at)
-        VALUES ('acct-eur', 'EUR', '2026-03-15 11:00:00'::TIMESTAMP)
+        VALUES ('acct-eur', 'EUR', '2026-03-17 15:00:00'::TIMESTAMP)
         """
     )
     db.execute(
@@ -54,9 +54,47 @@ def test_transform_materializes_exact_single_row_currency_conversion(
         )
         """
     )
+    db.execute(
+        """
+        INSERT INTO raw.manual_transactions (
+            source_transaction_id, import_id, account_id, transaction_date,
+            amount, description, currency_code, created_at, created_by
+        ) VALUES (
+            'manual_own_currency_1', 'import_conversion_1', 'acct-eur',
+            '2026-03-16'::DATE, -10.00, 'Own currency transaction',
+            'GBP', '2026-03-16 13:00:00'::TIMESTAMP, 'cli'
+        )
+        """
+    )
 
     result = TransformService(db).apply()
     assert result.applied, f"transform apply failed: {result.error}"
+
+    transaction_row = db.execute(
+        """
+        SELECT currency_code, updated_at
+        FROM core.fct_transactions
+        WHERE transaction_id = '649f6d8958fb4c49'
+        """
+    ).fetchone()
+
+    assert transaction_row == (
+        "EUR",
+        datetime(2026, 3, 17, 15, 0, 0),
+    )
+
+    own_currency_row = db.execute(
+        """
+        SELECT currency_code, updated_at
+        FROM core.fct_transactions
+        WHERE amount = -10.00
+        """
+    ).fetchone()
+
+    assert own_currency_row == (
+        "GBP",
+        datetime(2026, 3, 16, 13, 0, 0),
+    )
 
     rows = db.execute(
         """
@@ -100,6 +138,6 @@ def test_transform_materializes_exact_single_row_currency_conversion(
             "manual_conversion_1",
             "complete",
             None,
-            datetime(2026, 3, 16, 14, 0, 0),
+            datetime(2026, 3, 17, 15, 0, 0),
         )
     ]
