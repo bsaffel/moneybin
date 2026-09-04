@@ -111,7 +111,7 @@ both failure modes while preserving original-currency facts.
 |---|---|---|---|
 | **M1K.1** | Currency capture & integrity (no conversion) | nothing | Independent of investments; **may be pulled into the first public release** (see [`roadmap.md`](../roadmap.md) §"The first public release"). Closes the live silent-blend bug. Requirements 1, 2, 3, 8 (capture, schema, account-currency inheritance) implemented 2026-07-17; Requirements 4–7 (home currency, no-silent-blend guard, doctor check, report guard) implemented 2026-07-25, and Requirement 3's account-grain `'USD'` fallback removed 2026-07-26 — **M1K.1 closed**, except the first-run-wizard locale default explicitly descoped under Requirement 4. |
 | **M1K.2** | Display conversion (auditable rates) | M1K.1 + **investments (M1J)** | The unifying conversion layer over both cash and investment grains. Sequenced after investments so it converts *everything* in one coherent pass. |
-| **M1K.3** | Realized FX gain/loss | M1K.2 + investments cost-basis engine | Core conversion, Currency-lot, and realized-FX foundation implemented 2026-09-04 by reusing the unchanged investments cost-basis engine. The report and deliberate EUR/USD statement tie-out remain open. |
+| **M1K.3** | Realized FX gain/loss | M1K.2 + investments cost-basis engine | Initial Core conversion, Currency-lot, and realized-FX foundation implemented 2026-09-04. Before that foundation is merge-ready, the approved completion extends the engine with optional paired Transfers so same-currency movement preserves basis. The report and deliberate EUR/USD statement tie-out remain open. |
 
 **Sequencing rule:** investments (M1J) lands before M1K.2/M1K.3. The dependency runs
 one direction only — realized FX gain/loss is currency-lot accounting, i.e. the same
@@ -660,9 +660,11 @@ Numbered, testable. Tagged by phase.
     for same-currency Transfers.
 20. **Currency-lot accounting.** Realized FX gain/loss on disposing a foreign
     currency is computed by a currency-lot loader that calls the existing
-    `compute_lots_and_gains` engine unchanged. The loader uses a non-colliding
-    private key such as `currency:EUR` only at the engine interface; it neither
-    inserts a Security nor widens `app.securities.security_type`.
+    `compute_lots_and_gains` engine through one optional, currency-agnostic paired-
+    transfer input. Callers that provide no pairs retain the existing interface
+    and behavior. The loader uses a non-colliding private key such as
+    `currency:EUR` only at the engine interface; it neither inserts a Security nor
+    widens `app.securities.security_type`.
 
     The holding Account's `app.account_settings.default_cost_basis_method` is the
     election: NULL resolves to FIFO, `fifo` stays FIFO, and `average` uses the
@@ -684,6 +686,28 @@ Numbered, testable. Tagged by phase.
     Currency lot's basis. The existing Security gain remains separate. Receiving
     the foreign proceeds realizes no second gain; only their later disposal can
     produce realized FX gain/loss.
+
+    An accepted same-currency Transfer between Accounts moves foreign-Currency lot
+    slices without realizing gain. It is not a Currency conversion and never enters
+    `core.bridge_currency_conversions`. The engine consumes the source Account's
+    lots under that Account's FIFO or average election, then opens destination lots
+    with the same historical basis, acquisition date, Home currency, and opening
+    conversion or Security-sale provenance. The destination Account's election
+    governs later disposal. `source_transfer_id` records the accepted Transfer that
+    placed the lot in its current Account; a later Transfer replaces this immediate
+    movement id while preserving the original acquisition provenance.
+
+    A paired Transfer is atomic on the later of its two posting dates. Same-day
+    acquisitions precede it and same-day ordinary disposals follow it; multiple
+    Transfers at the same time sort by Transfer id. When the source has less
+    attributable inventory than the amount received, known slices still move and
+    the unmatched destination remainder is a `transfer` acquisition with
+    `coverage_reason='incomplete_history'` and NULL basis. No basis is invented and
+    no gain is emitted. For quantity movement under an unsupported election, HIFO
+    uses the engine's HIFO ordering and specific identification uses its existing
+    deterministic FIFO fallback when no Currency-lot selections exist; affected
+    source and destination slices expose NULL basis with `unsupported_method`.
+    Home-currency Transfers remain outside Currency-lot accounting.
 21. **Decimal throughout.** All amounts and rates are `DECIMAL`, never `FLOAT`
     (`DECIMAL(18,2)` amounts; `DECIMAL(18,8)` rates per the `database.md` precision
     convention). `updated_at` is the maximum timestamp of the contributing inputs,
@@ -698,7 +722,9 @@ Numbered, testable. Tagged by phase.
     `missing_home_currency`, `missing_valuation_rate`, `negative_inventory`,
     `incomplete_history`, or `unsupported_method`. Incomplete rows retain identity
     and provenance but expose NULL basis and gain/loss; the engine's zero-basis
-    fallback is never published as a trustworthy FX result.
+    fallback is never published as a trustworthy FX result. The same rule applies
+    to unmatched or unsupported same-currency Transfer quantity: it remains visible
+    as an incomplete Currency lot, never a zero-basis acquisition.
 23. **Foundation boundary and observability.** The first delivery slice produces
     the Core conversion, Currency-lot, and realized-FX rows. It adds no CLI command,
     MCP tool, report, Provider parsing, or mutable App table. A bounded
@@ -719,11 +745,13 @@ Numbered, testable. Tagged by phase.
     or restores Home-currency and cost-basis settings or restores or re-keys an
     accepted Transfer Decision. Account timestamps cover inherited Currency clears
     on canonical cash transactions, both conversion legs, and Security sales. A
-    cache-only loader adapts completed conversions and eligible
-    foreign-Security sale proceeds to the unchanged investments cost-basis engine,
-    producing `core.fct_currency_lots` and `core.fct_realized_fx_gains`; unsupported
-    methods and missing Home currency still preserve known quantities while basis
-    and gain remain visibly uncovered. Inherited Account Currency changes, including
+    implemented slice's cache-only loader adapts completed conversions and eligible
+    foreign-Security sale proceeds to the then-unchanged investments cost-basis
+    engine, producing `core.fct_currency_lots` and
+    `core.fct_realized_fx_gains`; unsupported methods and missing Home currency still
+    preserve known quantities while basis and gain remain visibly uncovered. The
+    approved completion design adds the optional paired-transfer input above before
+    this foundation is merge-ready. Inherited Account Currency changes, including
     clearing the value, advance conversion freshness. Rate backfill includes the
     received leg of materialized conversions,
     so a single-row conversion can obtain a Home valuation when that Currency appears
@@ -832,8 +860,9 @@ CREATE TABLE core.fct_currency_lots (
     account_id               VARCHAR,
     source_conversion_id     VARCHAR,
     source_investment_transaction_id VARCHAR,
+    source_transfer_id       VARCHAR,
     currency_code            VARCHAR,
-    acquisition_type         VARCHAR,          -- conversion | security_sale
+    acquisition_type         VARCHAR,          -- conversion | security_sale | transfer
     cost_basis_method        VARCHAR,          -- fifo | average
     home_currency            VARCHAR,
     coverage_status          VARCHAR,
@@ -873,10 +902,14 @@ CREATE TABLE core.fct_realized_fx_gains (
 
 `moneybin.currency_lots.sqlmesh_loader` is the one module interface between
 these models and `moneybin.investments.cost_basis`. It loads trusted conversions
-and foreign-Security sale proceeds, resolves the supported Account election,
-translates them to `LedgerEvent`, calls `compute_lots_and_gains`, and maps its
-results back to the currency-specific tables. The engine remains unaware of
-Currencies and the models remain thin.
+and foreign-Security sale proceeds plus accepted same-currency Transfers, resolves
+the supported Account election, translates acquisitions and disposals to
+`LedgerEvent` and movements to the engine's optional paired-transfer input, calls
+`compute_lots_and_gains`, and maps its results back to the currency-specific tables.
+The engine remains unaware of Currencies and the models remain thin. Internally, a
+paired Transfer consumes source slices with the existing allocation rules and
+opens destination slices carrying their historical basis; no-transfer callers keep
+their existing output byte-for-byte.
 
 ## Sequencing & Dependencies
 
@@ -973,7 +1006,12 @@ flowchart LR
   incomplete coverage reason, including negative inventory; prove amount/date
   proximity alone never creates a Currency conversion. Prove the Transfer audit
   still rejects a non-zero same-currency pair while accepting a valid
-  cross-currency pair with both legs present.
+  cross-currency pair with both legs present. Prove a reviewed linked pair wins
+  when one of its Transactions also carries single-row conversion terms. Cover
+  partial, full, chained, underfunded, average-cost, and same-day same-currency
+  Transfers; each movement realizes zero gain, preserves known historical basis,
+  and makes any unknown remainder visibly incomplete. Account-merge undo must
+  rebuild from the Account root when an active Transfer's endpoint changes.
 - **M1K.3 conservation:** property-test
   `realized basis + open remaining basis == contributed basis` across arbitrary
   acquisition/disposal sequences. Existing single-currency fixtures remain
@@ -1057,8 +1095,10 @@ realized FX gain/loss on the conversion pairs.
    second mutable link table. Creating a cross-currency Transfer Decision is a
    later MB-111 slice; the first foundation slice consumes already accepted links.
 7. **Currency is not a Security.** A narrow currency-lot loader adapts Currency
-   conversions and foreign-Security proceeds to the unchanged investments
-   cost-basis engine. Its private `currency:<code>` key never enters a public table.
+   conversions, foreign-Security proceeds, and accepted same-currency Transfers to
+   the investments cost-basis engine. One optional currency-agnostic paired-transfer
+   input deepens that engine without changing no-pair callers. Its private
+   `currency:<code>` key never enters a public table.
 8. **The Account election governs Currency lots.** FIFO and average reuse the
    existing setting; HIFO and specific identification remain Security-only in
    this phase and surface as incomplete coverage rather than silently changing
@@ -1067,6 +1107,15 @@ realized FX gain/loss on the conversion pairs.
    received amounts determine the conversion rate. A stored reference rate or
    override may supply Home-currency valuation only, and its provenance remains
    visible.
+10. **Same-currency Transfers carry basis, not gain.** A foreign-Currency lot moves
+    between Accounts with its historical acquisition and basis intact. Known slices
+    move even when the full quantity is not attributable; the remainder is visibly
+    incomplete. The later posting date is the movement's deterministic effective
+    date.
+11. **Reviewed linked evidence wins overlap.** If one canonical Transaction carries
+    reserved single-row conversion terms and also participates in an accepted
+    Transfer Decision, the accepted linked shape is authoritative. The single-row
+    scan excludes both linked legs so one economic event cannot be counted twice.
 
 ## Out of Scope
 
