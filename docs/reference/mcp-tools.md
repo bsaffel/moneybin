@@ -212,7 +212,7 @@ Present or absent target state for one named local destination.
 | `kind` | `local` |  | required |
 | `state` | one of `present`, `absent` |  | required |
 | `name` | string |  | required; min length 1 |
-| `local_path` | string |  | min length 1; required when `state` is `present`; forbidden otherwise |
+| `local_path` | string |  | min length 1; required when `state` is `present`; forbidden unless `state` is `present` |
 
 ##### `sheets`
 
@@ -223,8 +223,8 @@ Present or absent target state for one named Sheets destination.
 | `kind` | `sheets` |  | required |
 | `state` | one of `present`, `absent` |  | required |
 | `name` | string |  | required; min length 1 |
-| `spreadsheet_id` | string |  | min length 1; required when `state` is `present`; forbidden otherwise |
-| `managed_tab_prefix` | string |  | min length 1; forbidden otherwise |
+| `spreadsheet_id` | string |  | min length 1; required when `state` is `present`; forbidden unless `state` is `present` |
+| `managed_tab_prefix` | string |  | min length 1; forbidden unless `state` is `present` |
 
 ### gsheet
 

@@ -515,7 +515,7 @@ def test_mcp_page_renders_conditional_required_and_else_forbidden() -> None:
     page = render_mcp_tools(surface, {"widget_target_set": "low"})
     assert (
         "| `local_path` | string |  | min length 1; required when `state` is "
-        "`present`; forbidden otherwise |" in page
+        "`present`; forbidden unless `state` is `present` |" in page
     )
 
 

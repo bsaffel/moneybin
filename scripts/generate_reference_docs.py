@@ -511,9 +511,8 @@ def _property_rows(
 
 
 # One conditional clause: (verdict, discriminator field, discriminator values it
-# fires on, the fixed value for a "must be" verdict). The discriminator field is
-# ``None`` for an ``else`` "forbidden otherwise" clause, which fires unconditionally.
-_Clause = tuple[str, str | None, list[object], object]
+# fires on, the fixed value for a "must be" verdict).
+_Clause = tuple[str, str, list[object], object]
 
 
 def _condition_field_value(
@@ -616,21 +615,28 @@ def _then_clauses(
 
 
 def _else_clauses(
-    param_name: str, variant_name: str, else_: object
+    param_name: str,
+    variant_name: str,
+    else_: object,
+    condition_field: str,
+    condition_value: object,
 ) -> dict[str, list[_Clause]]:
-    """The per-field ``forbidden otherwise`` clauses one branch's ``else`` contributes."""
+    """The per-field ``forbidden unless`` clauses one branch's ``else`` contributes."""
     if not isinstance(else_, Mapping) or set(else_) != {"not"}:
         raise ValueError(
             f"{param_name!r} variant {variant_name!r}: unrecognized else clause {else_!r}"
         )
     names = _forbidden_fields(param_name, variant_name, else_["not"])
-    return {name: [("forbidden_otherwise", None, [], None)] for name in names}
+    return {
+        name: [("forbidden_unless", condition_field, [condition_value], None)]
+        for name in names
+    }
 
 
 def _merge_clauses(clauses: list[_Clause]) -> list[_Clause]:
     """Combine clauses sharing a verdict, condition field, and (for `must be`) value."""
     merged: list[_Clause] = []
-    index: dict[tuple[str, str | None, object], int] = {}
+    index: dict[tuple[str, str, object], int] = {}
     for verdict, condition_field, values, must_be in clauses:
         key = (verdict, condition_field, must_be)
         if key in index:
@@ -643,14 +649,16 @@ def _merge_clauses(clauses: list[_Clause]) -> list[_Clause]:
 
 def _render_clause(clause: _Clause) -> str:
     verdict, condition_field, values, must_be = clause
-    if verdict == "forbidden_otherwise":
-        return "forbidden otherwise"
-    condition = " or ".join(_code(value) for value in values)
+    condition = f"{_code(condition_field)} is " + " or ".join(
+        _code(value) for value in values
+    )
     if verdict == "required":
-        return f"required when {_code(condition_field)} is {condition}"
+        return f"required when {condition}"
     if verdict == "must_be":
-        return f"must be {_json_code(must_be)} when {_code(condition_field)} is {condition}"
-    return f"forbidden when {_code(condition_field)} is {condition}"
+        return f"must be {_json_code(must_be)} when {condition}"
+    if verdict == "forbidden_unless":
+        return f"forbidden unless {condition}"
+    return f"forbidden when {condition}"
 
 
 def _variant_conditionals(
@@ -678,7 +686,11 @@ def _variant_conditionals(
             by_field.setdefault(name, []).extend(clauses)
         if "else" in branch:
             for name, clauses in _else_clauses(
-                param_name, variant_name, branch["else"]
+                param_name,
+                variant_name,
+                branch["else"],
+                condition_field,
+                condition_value,
             ).items():
                 by_field.setdefault(name, []).extend(clauses)
         extra = set(branch) - {"if", "then", "else"}
