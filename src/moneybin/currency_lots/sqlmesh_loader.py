@@ -433,6 +433,7 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
     bridge = context.resolve_table(BRIDGE_TRANSFERS.full_name)
     merged = context.resolve_table(INT_TRANSACTIONS_MERGED.full_name)
     match_decisions = MATCH_DECISIONS.full_name
+    audit_log = AUDIT_LOG.full_name
     accounts = context.resolve_table(DIM_ACCOUNTS.full_name)
     transactions = context.resolve_table(FCT_TRANSACTIONS.full_name)
     linked = context.fetchdf(
@@ -459,13 +460,21 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
           GREATEST(
             debit.loaded_at,
             credit.loaded_at,
-            md.decided_at,
+            COALESCE(decision_audit.mutation_updated_at, md.decided_at),
             COALESCE(canonical_debit.updated_at, debit.loaded_at),
             COALESCE(canonical_credit.updated_at, credit.loaded_at)
           )::VARCHAR AS candidate_updated_at
         FROM {bridge} AS bt
         JOIN {match_decisions} AS md
           ON bt.transfer_id = md.match_id
+        LEFT JOIN (
+          SELECT target_id, MAX(occurred_at) AS mutation_updated_at
+          FROM {audit_log}
+          WHERE target_schema = 'app'
+            AND target_table = 'match_decisions'
+          GROUP BY target_id
+        ) AS decision_audit
+          ON decision_audit.target_id = md.match_id
         LEFT JOIN {merged} AS debit
           ON bt.debit_transaction_id = debit.transaction_id
         LEFT JOIN {merged} AS credit
@@ -500,10 +509,21 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
           md.source_type_b AS to_source_type,
           md.source_origin_b AS to_source_origin,
           md.source_transaction_id_b AS to_source_transaction_id,
-          md.decided_at::VARCHAR AS candidate_updated_at
+          COALESCE(
+            decision_audit.mutation_updated_at,
+            md.decided_at
+          )::VARCHAR AS candidate_updated_at
         FROM {match_decisions} AS md
         LEFT JOIN {bridge} AS bt
           ON md.match_id = bt.transfer_id
+        LEFT JOIN (
+          SELECT target_id, MAX(occurred_at) AS mutation_updated_at
+          FROM {audit_log}
+          WHERE target_schema = 'app'
+            AND target_table = 'match_decisions'
+          GROUP BY target_id
+        ) AS decision_audit
+          ON decision_audit.target_id = md.match_id
         WHERE md.match_type = 'transfer'
           AND md.match_status = 'accepted'
           AND md.reversed_at IS NULL

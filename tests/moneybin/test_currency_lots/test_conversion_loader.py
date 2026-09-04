@@ -378,6 +378,61 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     assert cleared_linked.coverage_reason == "unknown_currency"
     assert str(cleared_linked.updated_at) == "2026-03-21 09:00:00"
 
+    db.execute(
+        """
+        INSERT INTO app.audit_log (
+            audit_id, occurred_at, actor, action, target_schema, target_table,
+            target_id, operation_id
+        ) VALUES (
+            'audit-decision-linked', '2026-03-22 09:00:00'::TIMESTAMP,
+            'system', 'match.restore', 'app', 'match_decisions',
+            'decision-linked', 'op-decision-linked'
+        )
+        """
+    )
+
+    restored_linked = {
+        row.source_shape: row
+        for row in module.load_conversion_rows(t.cast(t.Any, _DatabaseContext(db)))
+    }["linked_two_row"]
+    assert str(restored_linked.updated_at) == "2026-03-22 09:00:00"
+
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, account_id_b, match_type, match_status, decided_by,
+            decided_at
+        ) VALUES (
+            'decision-missing', 'native-missing-out', 'manual', 'user',
+            'native-missing-in', 'manual', 'user', 'acct-usd', 'acct-eur',
+            'transfer', 'accepted', 'user',
+            '2026-03-16 14:00:00'::TIMESTAMP
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO app.audit_log (
+            audit_id, occurred_at, actor, action, target_schema, target_table,
+            target_id, operation_id
+        ) VALUES (
+            'audit-decision-missing', '2026-03-23 09:00:00'::TIMESTAMP,
+            'system', 'match.restore', 'app', 'match_decisions',
+            'decision-missing', 'op-decision-missing'
+        )
+        """
+    )
+
+    missing = next(
+        row
+        for row in module.load_conversion_rows(t.cast(t.Any, _DatabaseContext(db)))
+        if row.transfer_pair_id == "decision-missing"
+    )
+    assert missing.coverage_reason == "missing_leg"
+    assert str(missing.updated_at) == "2026-03-23 09:00:00"
+
 
 def test_missing_home_currency_uses_profile_audit_freshness() -> None:
     module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")

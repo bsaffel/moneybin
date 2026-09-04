@@ -72,10 +72,7 @@ WITH notes_agg AS (
     t.location_latitude,
     t.location_longitude,
     COALESCE(t.currency_code, a.currency_code) AS currency_code,
-    CASE
-      WHEN t.currency_code IS NULL AND NOT a.currency_code IS NULL
-      THEN a.updated_at
-    END AS inherited_currency_latest,
+    CASE WHEN t.currency_code IS NULL THEN a.updated_at END AS inherited_currency_latest,
     t.canonical_source_type AS source_type,
     t.source_count,
     t.match_confidence,

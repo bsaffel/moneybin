@@ -716,8 +716,9 @@ Numbered, testable. Tagged by phase.
     reports success. Removing an exchange-rate override also advances affected row
     freshness through its audit event, even when valuation falls back to an older
     provider rate. The same audit watermark preserves freshness when undo deletes
-    or restores Home-currency and cost-basis settings, and Account timestamps cover
-    inherited Currency clears on both conversion legs and Security sales. A
+    or restores Home-currency and cost-basis settings or restores or re-keys an
+    accepted Transfer Decision. Account timestamps cover inherited Currency clears
+    on canonical cash transactions, both conversion legs, and Security sales. A
     cache-only loader adapts completed conversions and eligible
     foreign-Security sale proceeds to the unchanged investments cost-basis engine,
     producing `core.fct_currency_lots` and `core.fct_realized_fx_gains`; unsupported
