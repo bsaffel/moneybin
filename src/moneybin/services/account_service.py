@@ -30,9 +30,9 @@ from moneybin.services._validators import validate_currency_code
 from moneybin.services.account_resolution_types import (
     UNNAMED_ACCOUNT_LABEL,
     is_a_name,
+    is_reserved_account_name,
 )
 from moneybin.services.audit_service import AuditService
-from moneybin.services.entity_reference import normalize_reference
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     DIM_ACCOUNTS,
@@ -781,19 +781,10 @@ class AccountService:
         # Reserved vocabulary: core shows this exact label for an account it
         # could not name, and `is_a_name` reads it that way everywhere. Taking
         # it as a user's name would drop that account out of fuzzy resolution,
-        # `resolve_strict` and merge-name matching with nothing said.
-        #
-        # Folded with the resolver's own `normalize_reference`, not a weaker
-        # comparison. Its third rung matches on that fold, so anything it
-        # collapses onto the label -- a case variant, padding, a doubled space,
-        # an NFKC-equivalent character -- would otherwise be accepted here and
-        # then answer a request for the label another account displays: with
-        # generated placeholders filtered out of the candidate-name slot, such
-        # a row is the unique hit. Reserving on a narrower fold than the
-        # matcher uses leaves exactly that difference as a hole.
-        name = diff.get("display_name")
-        reserved_name = normalize_reference(UNNAMED_ACCOUNT_LABEL)
-        if isinstance(name, str) and normalize_reference(name) == reserved_name:
+        # `resolve_strict` and merge-name matching with nothing said. The fold
+        # this rejects on lives in `is_reserved_account_name`, shared with the
+        # import metadata path and `system doctor`.
+        if is_reserved_account_name(diff.get("display_name")):
             raise UserError(
                 f"{UNNAMED_ACCOUNT_LABEL!r} is reserved: MoneyBin shows it for "
                 "an account it could not name, so it cannot also be one.",

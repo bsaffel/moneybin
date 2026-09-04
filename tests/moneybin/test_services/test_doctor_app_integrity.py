@@ -568,10 +568,12 @@ def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _upsert_settings(repo: AccountSettingsRepo, account_id: str) -> None:
+def _upsert_settings(
+    repo: AccountSettingsRepo, account_id: str, display_name: str = "Checking"
+) -> None:
     repo.set(
         account_id=account_id,
-        display_name="Checking",
+        display_name=display_name,
         official_name=None,
         last_four="1234",
         account_subtype="checking",
@@ -703,17 +705,29 @@ def test_account_settings_account_fk_passes_when_resolved(db: Database) -> None:
     assert result.status == "pass"
 
 
-def test_account_settings_reserved_display_name_flags_normalized_fold(
-    db: Database,
+@pytest.mark.parametrize(
+    "stored",
+    [
+        UNNAMED_ACCOUNT_LABEL,
+        "  unnamed  ACCOUNT ",
+        "Ｕｎｎａｍｅｄ ａｃｃｏｕｎｔ",
+    ],
+    ids=["byte-exact", "padded-doubled-cased", "nfkc-fullwidth"],
+)
+def test_account_settings_reserved_display_name_flags_every_fold(
+    db: Database, stored: str
 ) -> None:
-    # Padding, doubled internal space, and mixed case all fold onto the
-    # reserved label via normalize_reference, even though none is
-    # byte-identical to UNNAMED_ACCOUNT_LABEL — the write-path guard added in
-    # MB-146 rejects exactly this fold; this row predates that guard.
-    db.execute(
-        "INSERT INTO app.account_settings (account_id, display_name) "  # noqa: S608  # test input, not executing user SQL
-        "VALUES ('acct_stale', '  unnamed  ACCOUNT ')"
-    )
+    """Each fixture must isolate one limb of the fold the matcher applies.
+
+    ``normalize_reference`` NFKC-normalizes, casefolds, and collapses
+    whitespace. The whitespace/case fixture alone leaves a ``.lower().split()``
+    spelling of the check green, and neither variant proves the byte-exact
+    label is caught -- the case a re-imported export actually produces.
+    """
+    # Seeded through the repo, not a raw INSERT: `AccountSettingsRepo.set` is
+    # the write this row came from, and it validates lengths and shapes but no
+    # vocabulary, which is exactly why such a row can exist.
+    _upsert_settings(AccountSettingsRepo(db), "acct_stale", display_name=stored)
     result = DoctorService(db)._run_account_settings_reserved_display_name()
     assert result.status == "fail"
     assert result.affected_ids == ["acct_stale"]
@@ -727,6 +741,70 @@ def test_account_settings_reserved_display_name_passes_for_a_real_name(
     result = DoctorService(db)._run_account_settings_reserved_display_name()
     assert result.status == "pass"
     assert result.affected_ids == []
+
+
+def test_dim_accounts_reserved_display_name_flags_a_source_label(
+    db: Database,
+) -> None:
+    """A source label folding onto the label reaches the dim with no app row.
+
+    `dim_accounts.sql` filters its two account_label arms with a byte-exact
+    `<> 'Unnamed account'`, so a sheet's Account column reading `unnamed
+    account` is promoted as a human-authored name. Nothing is written to
+    `app.*` on that path, so the sibling check above cannot see it.
+    """
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, display_name, display_name_is_user_set) "
+        "VALUES ('acct_src', 'unnamed account', TRUE)"
+    )
+    result = DoctorService(db)._run_dim_accounts_reserved_display_name()
+    assert result.status == "fail"
+    assert result.affected_ids == ["acct_src"]
+    assert UNNAMED_ACCOUNT_LABEL in (result.detail or "")
+
+
+def test_dim_accounts_reserved_display_name_ignores_the_generated_terminal(
+    db: Database,
+) -> None:
+    """The ladder's own terminal arm is the sentinel, not a defect.
+
+    An account nothing could name carries the byte-exact label with
+    `display_name_is_user_set = FALSE`. Reporting it would fail the check on
+    every profile holding one bare import.
+    """
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, display_name, display_name_is_user_set) "
+        f"VALUES ('acct_terminal', '{UNNAMED_ACCOUNT_LABEL}', FALSE)"
+    )
+    result = DoctorService(db)._run_dim_accounts_reserved_display_name()
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+def test_dim_accounts_reserved_display_name_leaves_the_override_to_its_sibling(
+    db: Database,
+) -> None:
+    """One account, one report: an app override is the sibling check's finding.
+
+    Both checks would otherwise name the same account with the same remedy,
+    which reads as two defects.
+    """
+    create_core_tables(db)
+    _upsert_settings(
+        AccountSettingsRepo(db), "acct_both", display_name=UNNAMED_ACCOUNT_LABEL
+    )
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, display_name, display_name_is_user_set) "
+        f"VALUES ('acct_both', '{UNNAMED_ACCOUNT_LABEL}', TRUE)"
+    )
+    assert DoctorService(db)._run_dim_accounts_reserved_display_name().status == "pass"
+    settings_result = DoctorService(db)._run_account_settings_reserved_display_name()
+    assert settings_result.affected_ids == ["acct_both"]
 
 
 def test_balance_assertions_account_fk_flags_orphan(db: Database) -> None:

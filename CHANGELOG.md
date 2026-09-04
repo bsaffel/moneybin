@@ -232,16 +232,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
-- **A stored account name that collides with the reserved placeholder is now
-  reported.** `moneybin accounts set --display-name` already refuses a name that
-  folds onto the reserved `Unnamed account` label (a case, padding, or Unicode
-  variant), but a row written before that guard shipped could still hold one,
-  and because name matching stays byte-exact such a row kept answering to the
-  label MoneyBin shows for an account it could not name. `system doctor` now
-  fails the new `app_account_settings_reserved_display_name` check with the
-  affected account ids and the rename that clears it; nothing is changed
-  automatically, because only the user knows the account's real name. (MB-146)
-
 - **An amount no longer folds across two lines.** Folding is the right failure
   for an identifier — an account id or a display name ending in a masked last
   four wraps rather than losing the characters that tell two rows apart — but
@@ -324,6 +314,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 
 ### Added
+- **`system doctor` now reports an account name that collides with the reserved
+  `Unnamed account` placeholder.** MoneyBin shows that exact label for an
+  account nothing could name, and every name lookup reads it that way, so a
+  second account wearing a fold of it — a case, padding, or Unicode variant —
+  answers to a label that belongs to no account in particular. Two new checks
+  find one: `app_account_settings_reserved_display_name` covers a name you
+  stored, and `dim_accounts_reserved_display_name` covers one a source
+  supplied, which is an ordinary route since an export publishes the label and
+  can be re-imported. Both report the affected account ids and the rename that
+  clears them. Nothing is changed automatically — only you know the account's
+  real name.
+
+  `moneybin accounts set --display-name` already refused such a name;
+  `moneybin import --account-metadata display_name=…` did not, and now does, so
+  a rename is no longer undone by re-importing the same file.
 - **`core.bridge_merchant_entities`** — a new queryable core view mapping each
   transaction to the merchant identifier its source system assigned, alongside
   the source that issued it and the merchant name that source stated. Available

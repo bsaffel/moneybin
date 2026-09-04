@@ -750,7 +750,7 @@ def test_run_all_returns_expected_invariants(
     monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
-    # 3 sqlmesh audits + dedup_reconciliation + categorization + 30 app.* integrity
+    # 3 sqlmesh audits + dedup_reconciliation + categorization + 31 app.* integrity
     # checks (audit coverage for user_categories / category_overrides /
     # gsheet_connections / user_merchants / categorization_rules / proposed_rules /
     # transaction_categories / account_settings / balance_assertions / budgets /
@@ -760,7 +760,7 @@ def test_run_all_returns_expected_invariants(
     # lot_selections + user_categories uniqueness + user_merchants orphans +
     # proposed_rules->rule FK + transaction_categories->fct FK +
     # account_settings->dim_accounts FK + account_settings reserved-label fold
-    # (MB-146: a stored display_name that normalizes onto UNNAMED_ACCOUNT_LABEL) +
+    # (a stored display_name that normalizes onto UNNAMED_ACCOUNT_LABEL) +
     # balance_assertions->dim_accounts FK +
     # budgets->dim_categories FK + match_decisions->dim_accounts FK +
     # pdf_formats recipe-validity / bounds / fingerprint-shape) +
@@ -779,8 +779,10 @@ def test_run_all_returns_expected_invariants(
     # under two identities — invisible to the matcher, which blocks candidate
     # pairs on account_id) + unproposed_cross_source_duplicates (the same two
     # sources *after* the link is accepted, which is where the overlap check
-    # stops applying and dedup_reconciliation never applied).
-    assert len(report.invariants) == 59
+    # stops applying and dedup_reconciliation never applied)
+    # + dim_accounts_reserved_label (the same fold reached through a source's
+    # own account_label, which never touches app.*).
+    assert len(report.invariants) == 60
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -807,6 +809,7 @@ def test_run_all_returns_expected_invariants(
     assert "app_user_categories_uniqueness" in names
     assert "app_account_settings_account_fk" in names
     assert "app_account_settings_reserved_display_name" in names
+    assert "dim_accounts_reserved_display_name" in names
     assert "app_balance_assertions_account_fk" in names
     assert "app_budgets_category_fk" in names
     assert "app_match_decisions_account_fk" in names
