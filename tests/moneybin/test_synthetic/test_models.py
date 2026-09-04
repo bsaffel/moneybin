@@ -497,10 +497,9 @@ class TestYAMLDataLoading:
     def test_every_spending_account_is_funded(self) -> None:
         """An account that only spends drifts to a large negative balance.
 
-        The generator does no conversion, so a multi-currency persona cannot
-        fund a foreign account by transfer — each one needs income in its own
-        currency or the demo's headline shows a checking account thousands
-        below zero.
+        Explicit cross-currency transfers can fund their target account, but an
+        account with neither income nor an inbound transfer can still drift
+        thousands below zero and make the demo position unrealistic.
         """
         for persona_name in self.PERSONAS:
             persona = load_persona(persona_name)
