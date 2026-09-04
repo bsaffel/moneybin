@@ -14,8 +14,8 @@ everything) or vacuous (exempt everything). Two design choices bring the
 signal back:
 
 1. **AST first, not text first.** Only ``ast.Constant``/``ast.JoinedStr``
-   string literals that *reach* a ``.execute()`` / ``.executemany()`` call are
-   candidates — not every string in the tree. "Reaches" means: passed
+   string literals that *reach* a ``.execute()`` / ``.executemany()`` /
+   ``.sql()`` call are candidates — not every string in the tree. "Reaches" means: passed
    directly as an argument, OR bound to a local name — via ``=``, an
    annotated ``x: str = ...``, an augmented ``x += ...``, or a walrus
    ``(x := ...)`` (``ast.Assign``/``ast.AnnAssign``/``ast.AugAssign``/
@@ -50,6 +50,20 @@ signal back:
    function call, or a comma, never by one of these keywords, and a
    sentence fragment inside a SQL comment essentially never is either.
 
+3. **Function-scoped name binding, with module-level fallback.** A candidate
+   name is resolved within the module or function/method body that binds it
+   — NOT across the whole file. Two unrelated functions in the same module
+   reusing a conventional local name (``query``, ``sql``) no longer
+   contaminate each other: a literal assigned to ``query`` in function ``f``
+   is invisible when a *different* ``query`` (e.g. a parameter) reaches
+   ``execute()`` in function ``g``. A name with no local binding falls back
+   to the module-level scope — this is what lets a module-level constant
+   like ``_NEWEST_HOLDINGS_SNAPSHOT_CTE`` (point 1) still resolve from
+   inside a method. This is Local + Global, not full Python LEGB: a name
+   bound only in an *enclosing function* (a closure) is not resolved,
+   consistent with this being a bounded, file-local heuristic. See the
+   scoping comment above ``_scan_file``'s per-scope loop.
+
 Known residual false-positive shape (none currently in the tree, so no
 allowlist entry exists for it): prose that literally reads "the table
 core.foo" or "the view app.bar" inside a SQL comment. If that ever fires,
@@ -68,8 +82,8 @@ Exemptions:
 - Everything else is an individual ``TABLE_LITERAL_ALLOWLIST`` entry with a
   ``# why`` comment. Prose, docstrings, comments, and the
   ``schema_catalog.py`` ``EXAMPLES``/hint-text strings from the #519 sweep
-  needed no entries here: none of them are arguments to an ``execute()``
-  call, so the AST-first design excludes them by construction.
+  needed no entries here: none of them are arguments to a recognized SQL
+  sink call, so the AST-first design excludes them by construction.
 """
 
 from __future__ import annotations
@@ -84,7 +98,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SRC_ROOT = REPO_ROOT / "src" / "moneybin"
 MIGRATIONS_DIR = SRC_ROOT / "sql" / "migrations"
 
-EXECUTE_METHOD_NAMES = frozenset({"execute", "executemany"})
+# Method names treated as SQL-execution sinks. `sql` covers
+# `Database.sql()` (`database.py`) — a real, parameter-free execution path
+# (e.g. `db.sql("SELECT version()")` in `cli/commands/db.py`) distinct from
+# `.execute()`/`.executemany()` but reaching the same DuckDB connection.
+EXECUTE_METHOD_NAMES = frozenset({"execute", "executemany", "sql"})
 
 _SCHEMA_NAMES = (
     "raw",
@@ -215,63 +233,85 @@ def _record_literal_binding(
         var_literals.setdefault(name, []).append((lineno, text, _embedded_names(value)))
 
 
-def _scan_file(path: Path) -> list[tuple[int, str, str]]:
-    """Return (lineno, clause_keyword, "schema.table") violations for one file.
+_ScopeLiterals = dict[str, list[tuple[int, str, set[str]]]]
 
-    Returned in source order (sorted by lineno) so a caller can assign
-    stable per-(clause, table) occurrence indices — see
-    TABLE_LITERAL_ALLOWLIST's key-shape comment.
+
+def _direct_scope_nodes(root: ast.AST) -> list[ast.AST]:
+    """All descendant nodes of `root`, not descending into a nested function.
+
+    A nested ``ast.FunctionDef``/``ast.AsyncFunctionDef`` is itself included
+    (so a decorator or default-argument literal is still visible to this
+    scope) but its own body is NOT descended into here — that subtree is a
+    separate scope, walked independently by ``_scan_file``. Everything else
+    (``if``/``for``/``with``/``try``/class bodies, comprehensions) is not a
+    distinct variable scope in this heuristic and is walked through, mirroring
+    Python's actual scoping rule that only ``def``/``lambda`` introduce a new
+    local namespace.
     """
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except SyntaxError:
-        return []
+    nodes: list[ast.AST] = []
+    stack = list(ast.iter_child_nodes(root))
+    while stack:
+        node = stack.pop()
+        nodes.append(node)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return nodes
 
-    var_literals: dict[str, list[tuple[int, str, set[str]]]] = {}
+
+def _collect_scope(
+    nodes: list[ast.AST],
+) -> tuple[_ScopeLiterals, set[str], list[tuple[int, str]]]:
+    """Collect literal bindings, execute()-seed names, and direct literal args.
+
+    `nodes` is one lexical scope's node list from `_direct_scope_nodes` — the
+    module body, or one function/method body. Enumeration of AST nodes that
+    bind a name to a value, and whether each can carry a hardcoded string
+    literal into an execute() call:
+
+    HANDLED — the value is written inline at the binding site, so a
+    literal there is a real candidate:
+      - ast.Assign        x = "..."
+      - ast.AnnAssign     x: str = "..."   (skipped when .value is None,
+                                             i.e. a bare annotation)
+      - ast.AugAssign     x += "..."       (records the added text; does
+                                             not track prior concatenation
+                                             — same file-local-heuristic
+                                             limit as module docstring
+                                             point 1)
+      - ast.NamedExpr     (x := "...")     (walrus; target is always a
+                                             plain Name per grammar)
+
+    CONSCIOUSLY EXCLUDED — no realistic or in-scope path to a hardcoded
+    literal:
+      - ast.For / ast.AsyncFor / comprehension `for` clauses: the target
+        is bound to elements of an *iterable*, not a literal written at
+        the binding site. Extracting a string from a List/Tuple-of-
+        Constants iterable is a materially different shape than "value is
+        a Constant/JoinedStr" and falls under the same disclaimed gap as
+        ".join()"/concatenation in module docstring point 1.
+      - ast.With / ast.AsyncWith `as` targets: bound to a context
+        manager's __enter__() return value — never a literal present in
+        source at the binding site.
+      - ast.ExceptHandler `as` targets: bound to a raised exception
+        instance, never a literal.
+      - Function/lambda parameters (incl. defaults): the runtime value
+        comes from the call site, not the default text — tracking it
+        requires interprocedural analysis, explicitly out of scope
+        ("a helper function's return value can evade it", docstring
+        point 1).
+      - ast.Global / ast.Nonlocal: declarations with no value to record.
+      - Tuple/list-destructured Assign (`a, b = "core.x", "core.y"`):
+        still an ast.Assign node (no separate node type), but
+        `_literal_text` only extracts Constant/JoinedStr — a destructured
+        Tuple/List RHS is silently not unpacked. Noted as a residual gap
+        on the existing Assign handler, not a new node type to enumerate.
+    """
+    var_literals: _ScopeLiterals = {}
     seed_names: set[str] = set()
     scanned: list[tuple[int, str]] = []  # (lineno, text) reaching execute()
 
-    # Enumeration of AST nodes that bind a name to a value, and whether each
-    # can carry a hardcoded string literal into an execute() call:
-    #
-    # HANDLED — the value is written inline at the binding site, so a
-    # literal there is a real candidate:
-    #   - ast.Assign        x = "..."
-    #   - ast.AnnAssign     x: str = "..."   (skipped when .value is None,
-    #                                          i.e. a bare annotation)
-    #   - ast.AugAssign     x += "..."       (records the added text; does
-    #                                          not track prior concatenation
-    #                                          — same file-local-heuristic
-    #                                          limit as module docstring
-    #                                          point 1)
-    #   - ast.NamedExpr     (x := "...")     (walrus; target is always a
-    #                                          plain Name per grammar)
-    #
-    # CONSCIOUSLY EXCLUDED — no realistic or in-scope path to a hardcoded
-    # literal:
-    #   - ast.For / ast.AsyncFor / comprehension `for` clauses: the target
-    #     is bound to elements of an *iterable*, not a literal written at
-    #     the binding site. Extracting a string from a List/Tuple-of-
-    #     Constants iterable is a materially different shape than "value is
-    #     a Constant/JoinedStr" and falls under the same disclaimed gap as
-    #     ".join()"/concatenation in module docstring point 1.
-    #   - ast.With / ast.AsyncWith `as` targets: bound to a context
-    #     manager's __enter__() return value — never a literal present in
-    #     source at the binding site.
-    #   - ast.ExceptHandler `as` targets: bound to a raised exception
-    #     instance, never a literal.
-    #   - Function/lambda parameters (incl. defaults): the runtime value
-    #     comes from the call site, not the default text — tracking it
-    #     requires interprocedural analysis, explicitly out of scope
-    #     ("a helper function's return value can evade it", docstring
-    #     point 1).
-    #   - ast.Global / ast.Nonlocal: declarations with no value to record.
-    #   - Tuple/list-destructured Assign (`a, b = "core.x", "core.y"`):
-    #     still an ast.Assign node (no separate node type), but
-    #     `_literal_text` only extracts Constant/JoinedStr — a destructured
-    #     Tuple/List RHS is silently not unpacked. Noted as a residual gap
-    #     on the existing Assign handler, not a new node type to enumerate.
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name):
@@ -314,29 +354,76 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
                     scanned.append((arg.lineno, text))
                     seed_names |= _embedded_names(arg)
 
-    # Fixed-point worklist: a name "reaches" execute() directly, or
-    # transitively through an f-string interpolation inside another
-    # reaching literal (module docstring point 1).
+    return var_literals, seed_names, scanned
+
+
+def _resolve_worklist(
+    seed_names: set[str],
+    local_literals: _ScopeLiterals,
+    fallback_literals: _ScopeLiterals,
+) -> list[tuple[int, str]]:
+    """Fixed-point worklist: resolve seed names to their literal text.
+
+    Checks `local_literals` (this scope) first; a name with no local binding
+    falls back to `fallback_literals` (the module scope) — module docstring
+    point 3. A name "reaches" execute() directly, or transitively through an
+    f-string interpolation inside another reaching literal (docstring
+    point 1).
+    """
     worklist = list(seed_names)
     visited: set[str] = set()
+    scanned: list[tuple[int, str]] = []
     while worklist:
         name = worklist.pop()
         if name in visited:
             continue
         visited.add(name)
-        for lineno, text, embedded in var_literals.get(name, []):
+        entries = local_literals.get(name) or fallback_literals.get(name, [])
+        for lineno, text, embedded in entries:
             scanned.append((lineno, text))
             worklist.extend(embedded - visited)
+    return scanned
+
+
+def _scan_file(path: Path) -> list[tuple[int, str, str]]:
+    """Return (lineno, clause_keyword, "schema.table") violations for one file.
+
+    Scans the module scope and every function/method body as independent
+    scopes (module docstring point 3), each falling back to the module scope
+    for names it doesn't bind locally. Returned in source order (sorted by
+    lineno) so a caller can assign stable per-(clause, table) occurrence
+    indices — see TABLE_LITERAL_ALLOWLIST's key-shape comment.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except SyntaxError:
+        return []
+
+    module_literals, module_seeds, all_scanned = _collect_scope(
+        _direct_scope_nodes(tree)
+    )
+    all_scanned = list(all_scanned)
+    all_scanned.extend(_resolve_worklist(module_seeds, module_literals, {}))
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            local_literals, local_seeds, local_scanned = _collect_scope(
+                _direct_scope_nodes(node)
+            )
+            all_scanned.extend(local_scanned)
+            all_scanned.extend(
+                _resolve_worklist(local_seeds, local_literals, module_literals)
+            )
 
     violations: list[tuple[int, str, str]] = []
-    for lineno, text in scanned:
+    for lineno, text in all_scanned:
         for match in SCHEMA_TABLE_PATTERN.finditer(text):
             clause = match.group(1).upper()
             table = f"{match.group(2)}.{match.group(3)}"
             violations.append((lineno, clause, table))
     # Sort by lineno so occurrence indices (assigned by the caller) reflect
-    # top-to-bottom source order rather than ast.walk()'s traversal order —
-    # see TABLE_LITERAL_ALLOWLIST's key-shape comment. Stable sort preserves
+    # top-to-bottom source order rather than scan-order — see
+    # TABLE_LITERAL_ALLOWLIST's key-shape comment. Stable sort preserves
     # finditer()'s left-to-right order for multiple matches sharing one
     # literal's (single) lineno.
     violations.sort(key=lambda item: item[0])
@@ -432,3 +519,96 @@ def test_migrations_runner_is_not_exempt() -> None:
     runner = SRC_ROOT / "migrations.py"
     assert runner.is_file(), "expected src/moneybin/migrations.py to exist"
     assert not _is_exempt_migration(runner)
+
+
+# --- Synthetic-fixture scanner unit tests -----------------------------------
+#
+# The tests above assert against whatever src/moneybin currently contains —
+# real coverage of the scanner's own core logic (keyword gate, alias
+# exclusion, CTE-splice tracing, function-scope boundary) is incidental to
+# that, not guaranteed. These exercise `_scan_file` directly against small
+# synthetic snippets written to `tmp_path`, so each mechanism is pinned
+# independently of what the live tree happens to contain.
+
+
+def _scan_source(tmp_path: Path, source: str) -> list[tuple[int, str, str]]:
+    """Write `source` to a temp module and return `_scan_file`'s violations."""
+    module = tmp_path / "_synthetic_module.py"
+    module.write_text(source, encoding="utf-8")
+    return _scan_file(module)
+
+
+def test_keyword_gate_flags_a_genuine_table_reference(tmp_path: Path) -> None:
+    """A schema.table immediately after FROM is a violation."""
+    source = 'db.execute("SELECT * FROM core.fct_transactions")\n'
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
+
+
+def test_keyword_gate_excludes_column_reference_through_alias(tmp_path: Path) -> None:
+    """A table aliased to its own schema name is not a false positive on its column refs.
+
+    ``raw.account_id`` is a column reference through the ``AS raw`` alias —
+    only the genuine ``FROM raw.tabular_accounts`` table target is flagged
+    (module docstring point 2).
+    """
+    source = 'db.execute("SELECT raw.account_id FROM raw.tabular_accounts AS raw")\n'
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "raw.tabular_accounts")]
+
+
+def test_keyword_gate_excludes_sql_comment_prose(tmp_path: Path) -> None:
+    """A schema.table mentioned in a SQL comment, not after a clause keyword, is not flagged."""
+    source = 'db.execute("-- core.fct_transactions is expensive\\nSELECT 1")\n'
+    assert _scan_source(tmp_path, source) == []
+
+
+def test_sql_method_is_a_recognized_sink(tmp_path: Path) -> None:
+    """`.sql()` (Database.sql()) is scanned like `.execute()`/`.executemany()`."""
+    source = 'db.sql("SELECT * FROM core.fct_transactions")\n'
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
+
+
+def test_cte_splice_transitively_reaches_execute(tmp_path: Path) -> None:
+    """A module-level literal spliced via f-string into a method's query is traced.
+
+    Mirrors ``_NEWEST_HOLDINGS_SNAPSHOT_CTE`` in ``doctor_service.py``
+    (module docstring point 1): a module-level fragment assigned once, then
+    interpolated into a query built inside a function.
+    """
+    source = (
+        '_CTE = "SELECT * FROM core.fct_transactions"\n'
+        "\n\n"
+        "def f(db):\n"
+        '    db.execute(f"WITH x AS ({_CTE}) SELECT 1")\n'
+    )
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
+
+
+def test_local_binding_reaches_execute_within_its_own_function(tmp_path: Path) -> None:
+    """A literal assigned and used within one function is caught (positive control)."""
+    source = (
+        "def f(db):\n"
+        '    query = "SELECT * FROM core.fct_transactions"\n'
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(2, "FROM", "core.fct_transactions")]
+
+
+def test_function_scope_does_not_leak_a_same_named_local_across_functions(
+    tmp_path: Path,
+) -> None:
+    """A local reused as a name in an unrelated function is not a false positive.
+
+    ``f``'s ``query`` local is a real literal; ``g``'s ``query`` is a
+    parameter with no local binding of its own. Before function-scoping
+    (module docstring point 3), the file-global name lookup let ``g``'s
+    ``execute(query)`` pick up ``f``'s unrelated literal.
+    """
+    source = (
+        "def f():\n"
+        '    query = "SELECT * FROM core.fct_transactions"\n'
+        "    return query\n"
+        "\n\n"
+        "def g(db, query):\n"
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == []
