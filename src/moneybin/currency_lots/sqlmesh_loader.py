@@ -10,12 +10,14 @@ from __future__ import annotations
 import hashlib
 import re
 import typing as t
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 import pandas as pd
 
+from moneybin.investments.cost_basis import LedgerEvent, compute_lots_and_gains
 from moneybin.services.currency_service import last_publication_day
 
 if t.TYPE_CHECKING:
@@ -57,6 +59,97 @@ class CurrencyConversionRow:
     to_source_transaction_id: str | None
     coverage_status: str
     coverage_reason: str | None
+    updated_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ForeignSecuritySale:
+    """One foreign-currency cash acquisition from a Security sale."""
+
+    investment_transaction_id: str
+    account_id: str
+    trade_date: date
+    net_proceeds: Decimal
+    fees: Decimal | None
+    currency_code: str
+    home_currency: str
+    home_value: Decimal | None
+    valuation_rate: Decimal | None
+    valuation_rate_date: date | None
+    valuation_source_type: str | None
+    updated_at: datetime | None
+
+
+@dataclass(frozen=True)
+class CurrencyLotRow:
+    """One public Currency-lot row derived from the private engine key."""
+
+    currency_lot_id: str
+    account_id: str
+    currency_code: str
+    acquisition_date: date
+    acquisition_type: str
+    original_quantity: Decimal
+    remaining_quantity: Decimal
+    cost_basis_total: Decimal | None
+    cost_basis_remaining: Decimal | None
+    cost_basis_method: str
+    home_currency: str
+    source_conversion_id: str | None
+    source_investment_transaction_id: str | None
+    basis_incomplete: bool
+    coverage_status: str
+    coverage_reason: str | None
+    updated_at: datetime | None
+
+
+@dataclass(frozen=True)
+class RealizedFXGainRow:
+    """One public realized-FX row for a disposal and consumed Currency lot."""
+
+    realized_fx_gain_id: str
+    account_id: str
+    conversion_id: str
+    currency_lot_id: str
+    currency_code: str
+    home_currency: str
+    acquisition_date: date
+    disposal_date: date
+    disposed_amount: Decimal
+    proceeds: Decimal
+    cost_basis: Decimal | None
+    gain_loss: Decimal | None
+    fee_amount: Decimal
+    cost_basis_method: str
+    valuation_rate: Decimal | None
+    valuation_rate_date: date | None
+    valuation_source_type: str | None
+    coverage_status: str
+    coverage_reason: str | None
+    updated_at: datetime | None
+
+
+@dataclass(frozen=True)
+class CurrencyAccountingResult:
+    """Immutable Currency lots and realized-FX output."""
+
+    lots: Sequence[CurrencyLotRow]
+    gains: Sequence[RealizedFXGainRow]
+
+
+@dataclass(frozen=True)
+class _EventMetadata:
+    account_id: str
+    currency_code: str
+    home_currency: str
+    source_conversion_id: str | None
+    source_investment_transaction_id: str | None
+    acquisition_type: str | None
+    quantity: Decimal
+    home_value: Decimal
+    valuation_rate: Decimal | None
+    valuation_rate_date: date | None
+    valuation_source_type: str | None
     updated_at: datetime | None
 
 
@@ -524,3 +617,507 @@ def load_conversion_rows(
         if row is not None:
             rows.append(row)
     return rows
+
+
+def _public_lot_id(account_id: str, currency: str, source_event_id: str) -> str:
+    raw = f"{account_id}|{currency}|{source_event_id}"
+    return "clot_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _public_gain_id(disposal_id: str, currency_lot_id: str) -> str:
+    raw = f"{disposal_id}|{currency_lot_id}"
+    return "rfx_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _method(account_id: str, account_methods: Mapping[str, str | None]) -> str:
+    return account_methods.get(account_id) or "fifo"
+
+
+def _event(
+    event_id: str,
+    *,
+    account_id: str,
+    currency: str,
+    home_currency: str,
+    trade_date: date,
+    event_type: str,
+    quantity: Decimal,
+    home_value: Decimal | None,
+) -> LedgerEvent:
+    return LedgerEvent(
+        investment_transaction_id=event_id,
+        account_id=account_id,
+        security_id=f"currency:{currency}",
+        trade_date=trade_date,
+        original_acquisition_date=None,
+        type=event_type,
+        quantity=quantity,
+        price=None,
+        amount=(
+            -home_value
+            if event_type == "buy" and home_value is not None
+            else home_value
+        ),
+        fees=Decimal("0.00"),
+        currency_code=home_currency,
+    )
+
+
+def _conversion_events(
+    conversion: CurrencyConversionRow,
+) -> list[tuple[LedgerEvent, _EventMetadata]]:
+    if conversion.coverage_status != "complete":
+        return []
+    required = (
+        conversion.from_account_id,
+        conversion.to_account_id,
+        conversion.from_date,
+        conversion.to_date,
+        conversion.from_amount,
+        conversion.from_currency,
+        conversion.to_amount,
+        conversion.to_currency,
+        conversion.home_currency,
+        conversion.home_value,
+    )
+    if any(value is None for value in required):
+        return []
+
+    from_account_id = t.cast("str", conversion.from_account_id)
+    to_account_id = t.cast("str", conversion.to_account_id)
+    from_date = t.cast("date", conversion.from_date)
+    to_date = t.cast("date", conversion.to_date)
+    from_amount = t.cast("Decimal", conversion.from_amount)
+    from_currency = t.cast("str", conversion.from_currency)
+    to_amount = t.cast("Decimal", conversion.to_amount)
+    to_currency = t.cast("str", conversion.to_currency)
+    home_currency = t.cast("str", conversion.home_currency)
+    home_value = t.cast("Decimal", conversion.home_value)
+    events: list[tuple[LedgerEvent, _EventMetadata]] = []
+
+    if from_currency != home_currency:
+        event = _event(
+            f"{conversion.conversion_id}:dispose",
+            account_id=from_account_id,
+            currency=from_currency,
+            home_currency=home_currency,
+            trade_date=from_date,
+            event_type="sell",
+            quantity=-from_amount,
+            home_value=home_value,
+        )
+        events.append((
+            event,
+            _EventMetadata(
+                account_id=from_account_id,
+                currency_code=from_currency,
+                home_currency=home_currency,
+                source_conversion_id=conversion.conversion_id,
+                source_investment_transaction_id=None,
+                acquisition_type=None,
+                quantity=from_amount,
+                home_value=home_value,
+                valuation_rate=conversion.valuation_rate,
+                valuation_rate_date=conversion.valuation_rate_date,
+                valuation_source_type=conversion.valuation_source_type,
+                updated_at=conversion.updated_at,
+            ),
+        ))
+
+    if to_currency != home_currency:
+        event = _event(
+            f"{conversion.conversion_id}:acquire",
+            account_id=to_account_id,
+            currency=to_currency,
+            home_currency=home_currency,
+            trade_date=to_date,
+            event_type="buy",
+            quantity=to_amount,
+            home_value=home_value,
+        )
+        events.append((
+            event,
+            _EventMetadata(
+                account_id=to_account_id,
+                currency_code=to_currency,
+                home_currency=home_currency,
+                source_conversion_id=conversion.conversion_id,
+                source_investment_transaction_id=None,
+                acquisition_type="conversion",
+                quantity=to_amount,
+                home_value=home_value,
+                valuation_rate=conversion.valuation_rate,
+                valuation_rate_date=conversion.valuation_rate_date,
+                valuation_source_type=conversion.valuation_source_type,
+                updated_at=conversion.updated_at,
+            ),
+        ))
+    return events
+
+
+def _sale_reason(sale: ForeignSecuritySale) -> str | None:
+    if not _valid_currency(sale.currency_code):
+        return "unknown_currency"
+    if not _valid_currency(sale.home_currency):
+        return "missing_home_currency"
+    if sale.home_value is None:
+        return "missing_valuation_rate"
+    return None
+
+
+def _sale_event(sale: ForeignSecuritySale) -> tuple[LedgerEvent, _EventMetadata]:
+    event_id = f"{sale.investment_transaction_id}:currency_acquire"
+    event = _event(
+        event_id,
+        account_id=sale.account_id,
+        currency=sale.currency_code,
+        home_currency=sale.home_currency,
+        trade_date=sale.trade_date,
+        event_type="buy",
+        quantity=sale.net_proceeds,
+        home_value=sale.home_value,
+    )
+    return (
+        event,
+        _EventMetadata(
+            account_id=sale.account_id,
+            currency_code=sale.currency_code,
+            home_currency=sale.home_currency,
+            source_conversion_id=None,
+            source_investment_transaction_id=sale.investment_transaction_id,
+            acquisition_type="security_sale",
+            quantity=sale.net_proceeds,
+            home_value=sale.home_value or Decimal("0.00"),
+            valuation_rate=sale.valuation_rate,
+            valuation_rate_date=sale.valuation_rate_date,
+            valuation_source_type=sale.valuation_source_type,
+            updated_at=sale.updated_at,
+        ),
+    )
+
+
+def _incomplete_lot(
+    event: LedgerEvent,
+    metadata: _EventMetadata,
+    method: str,
+    reason: str,
+    updated_at: datetime | None,
+) -> CurrencyLotRow:
+    return CurrencyLotRow(
+        currency_lot_id=_public_lot_id(
+            metadata.account_id,
+            metadata.currency_code,
+            event.investment_transaction_id,
+        ),
+        account_id=metadata.account_id,
+        currency_code=metadata.currency_code,
+        acquisition_date=event.trade_date,
+        acquisition_type=t.cast("str", metadata.acquisition_type),
+        original_quantity=metadata.quantity,
+        remaining_quantity=metadata.quantity,
+        cost_basis_total=None,
+        cost_basis_remaining=None,
+        cost_basis_method=method,
+        home_currency=metadata.home_currency,
+        source_conversion_id=metadata.source_conversion_id,
+        source_investment_transaction_id=metadata.source_investment_transaction_id,
+        basis_incomplete=True,
+        coverage_status="incomplete",
+        coverage_reason=reason,
+        updated_at=updated_at,
+    )
+
+
+def _incomplete_gain(
+    event: LedgerEvent,
+    metadata: _EventMetadata,
+    method: str,
+    reason: str,
+    updated_at: datetime | None,
+) -> RealizedFXGainRow:
+    conversion_id = t.cast("str", metadata.source_conversion_id)
+    return RealizedFXGainRow(
+        realized_fx_gain_id=_public_gain_id(conversion_id, ""),
+        account_id=metadata.account_id,
+        conversion_id=conversion_id,
+        currency_lot_id="",
+        currency_code=metadata.currency_code,
+        home_currency=metadata.home_currency,
+        acquisition_date=event.trade_date,
+        disposal_date=event.trade_date,
+        disposed_amount=metadata.quantity,
+        proceeds=metadata.home_value,
+        cost_basis=None,
+        gain_loss=None,
+        fee_amount=Decimal("0.00"),
+        cost_basis_method=method,
+        valuation_rate=metadata.valuation_rate,
+        valuation_rate_date=metadata.valuation_rate_date,
+        valuation_source_type=metadata.valuation_source_type,
+        coverage_status="incomplete",
+        coverage_reason=reason,
+        updated_at=updated_at,
+    )
+
+
+def derive_currency_accounting(
+    conversions: Sequence[CurrencyConversionRow],
+    security_sales: Sequence[ForeignSecuritySale],
+    account_methods: Mapping[str, str | None],
+) -> CurrencyAccountingResult:
+    """Adapt Currency events to the unchanged cost-basis engine."""
+    event_rows: list[tuple[LedgerEvent, _EventMetadata]] = []
+    incomplete_sales: list[tuple[LedgerEvent, _EventMetadata, str]] = []
+    for conversion in conversions:
+        event_rows.extend(_conversion_events(conversion))
+    for sale in security_sales:
+        if (
+            _valid_currency(sale.currency_code)
+            and _valid_currency(sale.home_currency)
+            and sale.currency_code == sale.home_currency
+        ):
+            continue
+        event, metadata = _sale_event(sale)
+        if reason := _sale_reason(sale):
+            incomplete_sales.append((event, metadata, reason))
+        else:
+            event_rows.append((event, metadata))
+
+    group_updated_at: dict[tuple[str, str], datetime] = {}
+    for _event_row, metadata in event_rows:
+        if metadata.updated_at is None:
+            continue
+        key = (metadata.account_id, metadata.currency_code)
+        current = group_updated_at.get(key)
+        if current is None or metadata.updated_at > current:
+            group_updated_at[key] = metadata.updated_at
+
+    metadata_for = {
+        event.investment_transaction_id: metadata for event, metadata in event_rows
+    }
+    supported_events: list[LedgerEvent] = []
+    unsupported: list[tuple[LedgerEvent, _EventMetadata, str]] = []
+    for event, metadata in event_rows:
+        method = _method(event.account_id, account_methods)
+        if method in {"fifo", "average"}:
+            supported_events.append(event)
+        else:
+            unsupported.append((event, metadata, method))
+
+    engine_lots, engine_gains = ([], [])
+    if supported_events:
+        engine_lots, engine_gains = compute_lots_and_gains(
+            supported_events,
+            method_for=lambda account_id, _security_id: _method(
+                account_id, account_methods
+            ),
+            selections_for=lambda _disposal_id: [],
+        )
+
+    lots: list[CurrencyLotRow] = []
+    engine_lot_ids: dict[str, str] = {}
+    for lot in engine_lots:
+        metadata = metadata_for[lot.source_transaction_id]
+        public_lot_id = _public_lot_id(
+            lot.account_id, metadata.currency_code, lot.source_transaction_id
+        )
+        engine_lot_ids[lot.lot_id] = public_lot_id
+        incomplete = lot.basis_incomplete
+        lots.append(
+            CurrencyLotRow(
+                currency_lot_id=public_lot_id,
+                account_id=lot.account_id,
+                currency_code=metadata.currency_code,
+                acquisition_date=lot.acquisition_date,
+                acquisition_type=t.cast("str", metadata.acquisition_type),
+                original_quantity=lot.original_quantity,
+                remaining_quantity=lot.remaining_quantity,
+                cost_basis_total=None if incomplete else lot.cost_basis_total,
+                cost_basis_remaining=(None if incomplete else lot.cost_basis_remaining),
+                cost_basis_method=lot.cost_basis_method,
+                home_currency=metadata.home_currency,
+                source_conversion_id=metadata.source_conversion_id,
+                source_investment_transaction_id=(
+                    metadata.source_investment_transaction_id
+                ),
+                basis_incomplete=incomplete,
+                coverage_status="incomplete" if incomplete else "complete",
+                coverage_reason="incomplete_history" if incomplete else None,
+                updated_at=group_updated_at.get((
+                    metadata.account_id,
+                    metadata.currency_code,
+                )),
+            )
+        )
+
+    gains: list[RealizedFXGainRow] = []
+    for gain in engine_gains:
+        metadata = metadata_for[gain.disposal_txn_id]
+        conversion_id = t.cast("str", metadata.source_conversion_id)
+        public_lot_id = engine_lot_ids.get(gain.lot_id, "")
+        reason = None
+        if gain.basis_incomplete:
+            reason = "negative_inventory" if gain.lot_id == "" else "incomplete_history"
+        gains.append(
+            RealizedFXGainRow(
+                realized_fx_gain_id=_public_gain_id(conversion_id, public_lot_id),
+                account_id=gain.account_id,
+                conversion_id=conversion_id,
+                currency_lot_id=public_lot_id,
+                currency_code=metadata.currency_code,
+                home_currency=metadata.home_currency,
+                acquisition_date=gain.acquisition_date,
+                disposal_date=gain.disposal_date,
+                disposed_amount=gain.quantity,
+                proceeds=gain.proceeds,
+                cost_basis=None if reason else gain.cost_basis,
+                gain_loss=None if reason else gain.gain_loss,
+                fee_amount=Decimal("0.00"),
+                cost_basis_method=gain.cost_basis_method,
+                valuation_rate=metadata.valuation_rate,
+                valuation_rate_date=metadata.valuation_rate_date,
+                valuation_source_type=metadata.valuation_source_type,
+                coverage_status="incomplete" if reason else "complete",
+                coverage_reason=reason,
+                updated_at=group_updated_at.get((
+                    metadata.account_id,
+                    metadata.currency_code,
+                )),
+            )
+        )
+
+    for event, metadata, method in unsupported:
+        updated_at = group_updated_at.get((metadata.account_id, metadata.currency_code))
+        if event.type == "buy":
+            lots.append(
+                _incomplete_lot(
+                    event, metadata, method, "unsupported_method", updated_at
+                )
+            )
+        else:
+            gains.append(
+                _incomplete_gain(
+                    event, metadata, method, "unsupported_method", updated_at
+                )
+            )
+    for event, metadata, reason in incomplete_sales:
+        method = _method(event.account_id, account_methods)
+        lots.append(
+            _incomplete_lot(event, metadata, method, reason, metadata.updated_at)
+        )
+
+    lots.sort(key=lambda row: (row.acquisition_date, row.currency_lot_id))
+    gains.sort(
+        key=lambda row: (
+            row.disposal_date,
+            row.acquisition_date,
+            row.realized_fx_gain_id,
+        )
+    )
+    return CurrencyAccountingResult(lots=tuple(lots), gains=tuple(gains))
+
+
+def _load_security_sales(
+    context: ExecutionContext,
+    *,
+    home_currency: str | None,
+    home_updated_at: datetime | None,
+    stored_rate: t.Callable[[str, str, date], _StoredRate | None],
+) -> list[ForeignSecuritySale]:
+    ledger = context.resolve_table("core.fct_investment_transactions")
+    frame = context.fetchdf(
+        f"""
+        SELECT investment_transaction_id, account_id,
+               trade_date::VARCHAR AS trade_date,
+               amount::VARCHAR AS net_proceeds,
+               fees::VARCHAR AS fees, currency_code,
+               updated_at::VARCHAR AS event_updated_at
+        FROM {ledger}
+        WHERE type = 'sell' AND amount > 0
+        """  # noqa: S608  # table name resolved by SQLMesh, not user input
+    )
+    sales: list[ForeignSecuritySale] = []
+    for record in _records(frame):
+        account_id = _opt_str(record["account_id"])
+        trade_date = _opt_date(record["trade_date"])
+        net_proceeds = _opt_decimal(record["net_proceeds"])
+        if account_id is None or trade_date is None or net_proceeds is None:
+            continue
+        currency = _opt_str(record["currency_code"]) or ""
+        resolved_home = home_currency or ""
+        if (
+            _valid_currency(currency)
+            and _valid_currency(resolved_home)
+            and currency == resolved_home
+        ):
+            continue
+        rate = (
+            stored_rate(currency, resolved_home, trade_date)
+            if _valid_currency(currency) and _valid_currency(resolved_home)
+            else None
+        )
+        home_value = _quantize_money(net_proceeds * rate.rate) if rate else None
+        sales.append(
+            ForeignSecuritySale(
+                investment_transaction_id=str(record["investment_transaction_id"]),
+                account_id=account_id,
+                trade_date=trade_date,
+                net_proceeds=net_proceeds,
+                fees=_opt_decimal(record["fees"]),
+                currency_code=currency,
+                home_currency=resolved_home,
+                home_value=home_value,
+                valuation_rate=_quantize_rate(rate.rate) if rate else None,
+                valuation_rate_date=rate.rate_date if rate else None,
+                valuation_source_type=rate.source_type if rate else None,
+                updated_at=_latest(
+                    _opt_timestamp(record["event_updated_at"]),
+                    home_updated_at,
+                    rate.updated_at if rate else None,
+                ),
+            )
+        )
+    return sales
+
+
+def _load_account_methods(context: ExecutionContext) -> dict[str, str | None]:
+    frame = context.fetchdf(
+        "SELECT account_id, default_cost_basis_method FROM app.account_settings"
+    )
+    return {
+        str(record["account_id"]): _opt_str(record["default_cost_basis_method"])
+        for record in _records(frame)
+    }
+
+
+def load_currency_accounting(
+    context: ExecutionContext,
+) -> CurrencyAccountingResult:
+    """Load cache-only inputs and derive Currency lots and realized FX."""
+    candidates = _load_candidates(context)
+    home_currency, home_updated_at = _load_home_currency(context)
+    stored_rate = _load_stored_rates(context)
+    conversions = [
+        row
+        for candidate in candidates
+        if (
+            row := _derive_conversion(
+                candidate,
+                home_currency=home_currency,
+                home_updated_at=home_updated_at,
+                stored_rate=stored_rate,
+            )
+        )
+        is not None
+    ]
+    sales = _load_security_sales(
+        context,
+        home_currency=home_currency,
+        home_updated_at=home_updated_at,
+        stored_rate=stored_rate,
+    )
+    return derive_currency_accounting(
+        conversions,
+        sales,
+        _load_account_methods(context),
+    )
