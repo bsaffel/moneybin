@@ -106,12 +106,13 @@ reach the ledger, everything downstream is existing machinery.
    before Plaid's transaction window has no acquiring transaction, so its
    holdings row is the *only* evidence the lot exists — used to seed the ledger,
    not to value it.
-8. **Deterministic event grouping.** Two-row economic events (reinvest pairs,
-   corporate-action legs) are linked by an `event_group_id` synthesized in
-   staging as a **content hash** of the pairing key — never a random UUID,
-   which would churn on every SQLMesh rebuild. Pairing is enrichment, not a
-   correctness gate: an unpaired reinvest row still opens its lot and the
-   income row still counts as income; only the linkage is absent.
+8. **Provider grouping stays source-shaped.** Plaid supplies no trustworthy
+   shared identifier for reinvest or corporate-action legs, so the shipped
+   staging model leaves `event_group_id` NULL. An unpaired reinvest row still
+   opens its lot and the income row still counts as income; only the linkage is
+   absent. [`investment-event-matching.md`](investment-event-matching.md)
+   supersedes the unimplemented content-hash proposal with review-first,
+   whole-event comparison and a MoneyBin-owned Golden `event_group_id`.
 9. **Derived models untouched.** `core.fct_investment_lots`,
    `core.fct_realized_gains`, and `core.dim_holdings`'s ledger-derived columns
    need no changes — they rebuild from the unioned ledger automatically. After
@@ -713,7 +714,7 @@ The heaviest view in this spec. In order:
    | Plaid (type/subtype) | → `type` | → `subtype` / notes |
    |---|---|---|
    | buy/{buy, contribution} | `buy` | |
-   | buy/{dividend, interest, LT/ST capital gain} reinvestment | `reinvest` | subtype records funding source (`dividend`/`interest`/`capital_gain`); the paired Plaid income row maps to its own income type, linked by `event_group_id` |
+   | buy/{dividend, interest, LT/ST capital gain} reinvestment | `reinvest` | subtype records funding source (`dividend`/`interest`/`capital_gain`); the separately delivered Plaid income row maps to its own income type, while M1J.7 later proposes their whole-event relationship for review |
    | buy/assignment, sell/exercise, transfer/{assignment, exercise, expire} | `other` | options out of scope |
    | sell/sell | `sell` | |
    | buy/buy to cover, sell/sell short | `other`, `quantity` NULLed | short-position legs — the engine models only long lots, so mapping to `buy`/`sell` would open a spurious long lot or realize an oversold phantom gain; routed to `other` (recorded, kept out of the lot engine) with a `system doctor` surface until short accounting is modeled (future work). A deliberate route to `other`, not the accidental security-bearing default the guard forbids. MoneyBin models no short positions, so the share count is not a ledger quantity — see the `other`-quantity guard below |
@@ -729,7 +730,7 @@ The heaviest view in this spec. In order:
    | cash/withdrawal | `withdrawal` | NULL security |
    | transfer/{transfer, send} | `transfer_in`/`transfer_out` (security present) or `deposit`/`withdrawal` (cash-only) | direction by sign — `quantity` when a security is present (falling back to the amount sign only when `quantity = 0`, since Plaid never sends NULL for that field), the Plaid `amount` sign alone for cash-only. A cash-only transfer is a cash movement, not a share movement, so it takes the cash vocabulary instead of leaving a NULL-security `transfer_in`/`transfer_out` |
    | transfer/split | `split` | **quantity must be converted to a multiplier** — see the split-normalization note below; a raw passthrough corrupts every lot |
-   | transfer/{merger, spin off, trade} | decomposed leg pairs | Plaid delivers each leg as its own row; `event_group_id` **links** them (same mechanism as reinvest pairs, below) — staging never fabricates a leg |
+   | transfer/{merger, spin off, trade} | decomposed leg pairs | Plaid delivers each leg as its own row; staging never fabricates or groups a leg, and M1J.7 owns later whole-event matching under review |
    | transfer/{adjustment}, fee/adjustment, loan payment, rebalance | `other` | |
 
    **`other`-quantity guard.** Every row explicitly mapped to `other` (option
@@ -838,21 +839,13 @@ The heaviest view in this spec. In order:
    oversold-disposal rule.
 6. **Preserve provider strings:** `investment_transaction_type AS
    provider_type`, `investment_transaction_subtype AS provider_subtype`.
-7. **Synthesize `event_group_id`** for two-row events as a content hash of the
-   pairing key (identifiers.md content-hash pattern — deterministic across
-   rebuilds, unlike a minted UUID, which would churn on every SQLMesh run):
-   - **Reinvest pairs:** a `reinvest` acquisition row and its funding income
-     row (Plaid delivers them as two `InvestmentTransaction` rows with no
-     shared identifier). Candidate key: `(account_id, security_id, date,
-     |amount| correlation)` — **exact key to be validated against Sandbox
-     golden payloads before implementation** (Open Questions).
-   - **Corporate-action legs:** `transfer/{merger, spin off, trade}` pairs.
-     Same validation caveat.
-   - **Degradation is safe:** if pairing fails, `event_group_id` stays NULL —
-     the acquisition still opens its lot, income still counts once (reinvest
-     rows carry the acquisition leg only, per foundation Requirement 6), and
-     unmatched `transfer_in` legs open `basis_incomplete` lots per the
-     established oversold/incomplete machinery. Linkage is audit enrichment.
+7. **Leave provider `event_group_id` NULL.** Plaid exposes no reliable shared
+   identifier for its separately delivered reinvest or corporate-action legs.
+   The rows retain their effects independently: the acquisition opens its lot,
+   income counts once, and an unmatched `transfer_in` opens a
+   `basis_incomplete` lot under the established incomplete-basis machinery.
+   M1J.7 compares and groups these rows as whole source events under review,
+   then projects the MoneyBin-owned Golden `event_group_id` downstream.
 
 ### `prep.stg_plaid__investment_holdings`
 
@@ -1129,10 +1122,10 @@ data still loads.
 
 | Test area | What's tested |
 |---|---|
-| `stg_plaid__investment_transactions` | Sign flip (`2145.50` → `-2145.50`; quantity untouched); fee-convention handling per the validated branch (+ drift-guard fires on a row reconciling under neither); `trade_date` prefers `transaction_datetime`, falls back to posting date; lifecycle exclusion; provider string passthrough; canonical id resolution; deterministic `event_group_id` (identical across two rebuilds). |
+| `stg_plaid__investment_transactions` | Sign flip (`2145.50` → `-2145.50`; quantity untouched); fee-convention handling per the validated branch (+ drift-guard fires on a row reconciling under neither); `trade_date` prefers `transaction_datetime`, falls back to posting date; lifecycle exclusion; provider string passthrough; canonical id resolution; provider `event_group_id` remains NULL pending M1J.7. |
 | `stg_plaid__securities` / `__investment_holdings` | Currency `COALESCE`; MIC → `exchange`; defensive type mapping; both-id resolution on holdings. |
 | Core union | Plaid rows in `fct_investment_transactions` with correct sign + provider columns; manual rows carry NULL provider columns; Plaid buys/sells produce lots and realized gains through the **unmodified** engine; `dim_holdings` reconciliation columns join only each account's newest snapshot — a position absent from it (sold elsewhere, broker stopped reporting) shows NULL `provider_reported_*`, and manual-only positions stay NULL throughout. |
-| Reinvest pairing | Golden fixture (captured from Sandbox): reinvest pair shares one `event_group_id`; unpairable row degrades to NULL group with lot/income effects intact. |
+| Reinvest pairing | Shipped containment: separately delivered Plaid legs retain NULL provider grouping while their independent lot and income effects remain intact; whole-event matching is tested by M1J.7. |
 | Basis-unknown transfer | An in-window `transfer_in`/`stock distribution` with Plaid `amount = 0` maps to `amount = NULL` (not 0) → the engine opens a `basis_incomplete` lot. Staging does **not** borrow basis from `Holding.tax_lots[]` for an individual in-window transfer (those lots describe the whole position and carry no transaction link) — per-lot basis is exercised only by the opening-lot bootstrap row below. |
 | Split normalization | A `transfer/split` share-delta converts to the multiplier `M` from the pre-split running position; every open lot scales by `M`, `cost_basis_total` preserved; an underivable pre-split position routes the split to review, not a corrupted lot. |
 | Opening-lot bootstrap | The eight reconciliation cases (A–H in § Opening-lot bootstrap) each drive a golden fixture: pre-window lots dated `< transactions_window_start` open with real basis+date; in-window and sold-then-rebought lots are excluded; the residual `basis_incomplete` row is dated before `W` and consumed first (a later sell never realizes oversold zero-basis); split/short positions route to review; empty `tax_lots[]` uses `Holding.cost_basis` only when `G=H`; rebuild is idempotent on `institution_lot_id`; no gap → no row; negative gap and engine-derived-≠-snapshot both raise a doctor warning, never a silent write. |
@@ -1263,10 +1256,11 @@ contract above is its specification.
   tension the review surfaced across two rounds: strong ids (CUSIP/ISIN) bypass
   exchange, both-absent binds on the unique ticker, only a genuine cross-listing
   contradiction falls to review.
-- **Content-hash `event_group_id` in staging.** A minted UUID would churn on
-  every SQLMesh rebuild; the content hash is stable and deterministic
-  (identifiers.md pattern). Manual entry keeps its minted-at-entry UUID —
-  persisted in raw, so determinism is unaffected there.
+- **Provider grouping remains NULL in staging.** Plaid exposes no reliable
+  pairing identifier, and a content hash over mutable financial fields would
+  confuse source-event evidence with Golden identity. M1J.7 now owns grouping:
+  it compares whole events under review and persists a stable MoneyBin-owned
+  `event_group_id` outside provider staging.
 - **Taxonomy as an explicit staging `CASE`.** Versioned with the model, exact,
   and testable row-by-row; no seed-table indirection for a mapping that changes
   only when Plaid's enum does.
@@ -1286,13 +1280,11 @@ contract above is its specification.
 
 ## Open questions
 
-- **Reinvest / corporate-action pairing key.** Plaid exposes no explicit
-  pairing identifier; the candidate heuristic `(account_id, security_id, date,
-  |amount| correlation)` must be validated against real Sandbox golden payloads
-  (dividend-reinvestment pair; merger/spin-off if reproducible) **before**
-  implementing the synthesis. Until validated, shipping with pairing disabled
-  (`event_group_id` NULL) loses no correctness — only linkage (§ staging,
-  degradation note).
+- **Reinvest / corporate-action pairing — moved to M1J.7.** Plaid exposes no
+  explicit pairing identifier. Provider staging therefore stays NULL-grouped;
+  the review-first event matcher owns multi-signal comparison, whole-event
+  assignment, and the Golden identity rather than synthesizing a provider
+  grouping key here.
 - **Fee inclusion in Plaid `amount`.** Plaid's API reference does not state
   whether `InvestmentTransaction.amount` includes `fees`, and ships no worked
   sample (verified 2026-07-10). The same Sandbox golden capture that settles
