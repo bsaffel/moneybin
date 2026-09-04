@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 def migrate(conn: object) -> None:
     """Null out whitespace-only category/subcategory in app.transaction_splits."""
-    logger.info(
+    logger.debug(
         "V054: backfill whitespace-only app.transaction_splits.category/subcategory to NULL"
     )
     conn.execute(  # type: ignore[union-attr]
