@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from moneybin import error_codes
 from moneybin.errors import UserError
+from moneybin.tables import OFX_TRANSACTIONS, TABULAR_TRANSACTIONS
 
 if TYPE_CHECKING:
     from moneybin.database import Database
@@ -133,8 +134,8 @@ def _check_refresh(result: RefreshResult) -> None:
 def _count_transactions(db: Database) -> int:
     try:
         row = db.execute(
-            "SELECT (SELECT COUNT(*) FROM raw.ofx_transactions) "
-            "+ (SELECT COUNT(*) FROM raw.tabular_transactions)"
+            f"SELECT (SELECT COUNT(*) FROM {OFX_TRANSACTIONS.full_name}) "
+            f"+ (SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name})"  # noqa: S608  # TableRef constants
         ).fetchone()
         return int(row[0]) if row else 0
     except Exception:  # noqa: BLE001,S110 — tables may not exist in a fresh DB

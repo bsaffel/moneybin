@@ -13,6 +13,7 @@ import typer
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.tables import METRICS
 from moneybin.utils.parsing import parse_duration
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ def stats_command(
                                    PARTITION BY metric_name, metric_type, labels
                                    ORDER BY recorded_at DESC
                                ) AS rn
-                        FROM app.metrics
+                        FROM {METRICS.full_name}
                         {where_sql}
                     )
                     WHERE rn = 1
