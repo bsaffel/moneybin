@@ -244,28 +244,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
-- **A category of spaces no longer counts as a category.** `'   '` passes a
-  `NULL` check while rendering as an empty cell, and
-  `core.uncategorized_queue` selects `WHERE category IS NULL` — so an imported
-  transaction whose category cell held only whitespace was hidden from the
-  curation queue while claiming to carry a category. `category` and
-  `subcategory` now arrive `NULL` from every source when blank, counting as
-  uncategorized the way an empty cell already did. "Blank" means exactly what
-  the write path means by it, so a non-breaking space pasted from a
-  spreadsheet and an ideographic space typed in CJK input both count. A padded
-  `'  Groceries  '` still arrives as `Groceries` rather than being discarded.
-  (#517)
+- **A category of spaces no longer counts as a category.** An imported
+  transaction whose category cell held only whitespace was hidden from
+  `core.uncategorized_queue` (which selects `WHERE category IS NULL`) while
+  claiming to carry a category; `category` and `subcategory` now arrive `NULL`
+  from every source when blank. Blank means what the write path means by it —
+  a non-breaking space pasted from a spreadsheet and an ideographic space
+  typed in CJK input both count — while a padded `'  Groceries  '` still
+  arrives as `Groceries`. (#517)
 
 - **`transactions splits add --category "   "` is refused rather than
-  stored.** MCP already refused a whitespace-only category; the CLI stored it,
-  so the same input produced a blank on one surface and an error on the other.
-  The refusal names the field it refused — `subcategory must be non-empty`,
-  and `splits[2].subcategory …` when setting a batch — so a caller is pointed
-  at the flag they got wrong rather than the one they got right. A split
-  already carrying a whitespace-only category or subcategory is backfilled to
-  `NULL` on the next migration, and a blanked category takes its subcategory
-  with it, since a subcategory without its category is a pair that renders
-  under the parent's category instead. (#517)
+  stored.** MCP already refused a whitespace-only category while the CLI
+  stored it; both now refuse, naming the field — `subcategory must be
+  non-empty`, or `splits[2].subcategory …` when setting a batch — so a caller
+  is pointed at the flag they got wrong. A split already carrying one is
+  backfilled to `NULL` on the next migration, and a blanked category takes its
+  subcategory with it, since a subcategory without its category would render
+  under the parent transaction's instead. (#517)
 
 - **A Plaid transaction's `category` no longer holds Plaid's own category
   code.** `prep.int_transactions__unioned` had aliased the raw
