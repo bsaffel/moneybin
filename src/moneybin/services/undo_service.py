@@ -304,7 +304,7 @@ class UndoService:
             clauses.append("is_undo = FALSE")
         if domain is not None:
             clauses.append(
-                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "
+                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
                 "WHERE action LIKE ?)"
             )
             params.append(f"{domain}.%")
@@ -369,7 +369,7 @@ class UndoService:
             clauses.append("is_undo = FALSE")
         if domain is not None:
             clauses.append(
-                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "
+                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
                 "WHERE action LIKE ?)"
             )
             params.append(f"{domain}.%")
@@ -517,7 +517,7 @@ class UndoService:
         refuses with ``recovery_no_path``.
         """
         row = self._db.conn.execute(
-            f"SELECT 1 FROM {AUDIT_LOG.full_name} "
+            f"SELECT 1 FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
             "WHERE operation_id = ? AND target_id IS NOT NULL "
             "AND before_value IS DISTINCT FROM after_value LIMIT 1",
             [operation_id],
@@ -532,7 +532,7 @@ class UndoService:
         still live?" — see :class:`_UndoLiveness`.
         """
         rows = self._db.conn.execute(
-            f"SELECT DISTINCT operation_id, undoes_operation_id FROM {AUDIT_LOG.full_name} "
+            f"SELECT DISTINCT operation_id, undoes_operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
             "WHERE undoes_operation_id IS NOT NULL"
         ).fetchall()
         children: dict[str, list[str]] = {}
@@ -549,7 +549,7 @@ class UndoService:
         every row's full before/after payload.
         """
         rows = self._db.conn.execute(
-            f"SELECT DISTINCT target_schema, target_table FROM {AUDIT_LOG.full_name} "
+            f"SELECT DISTINCT target_schema, target_table FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
             "WHERE operation_id = ? AND target_id IS NOT NULL",
             [operation_id],
         ).fetchall()

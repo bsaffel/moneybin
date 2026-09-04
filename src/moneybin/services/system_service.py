@@ -149,7 +149,7 @@ class SystemService:
         try:
             row = self._db.execute(
                 "SELECT last_changed_at, last_applied_at, last_executed_at, model_kind "
-                f"FROM {MODEL_FRESHNESS.full_name} "
+                f"FROM {MODEL_FRESHNESS.full_name} "  # noqa: S608  # MODEL_FRESHNESS is a TableRef constant
                 "WHERE model_name = ?",
                 [model_name],
             ).fetchone()
