@@ -19,7 +19,7 @@ What MoneyBin records about itself, how to read it, and what's intentionally NOT
 **Human format** (default; single line per record):
 
 ```
-2026-04-21 14:30:00,123 - moneybin.services.refresh - INFO - Refresh complete in 4.21s
+2026-04-21 14:30:00,123 - moneybin.orchestration.refresh - INFO - Refresh complete in 4.21s
 ```
 
 CLI-stream console output uses a message-only variant — no timestamp prefix — so user-facing output stays clean. File output always carries the timestamp + logger + level prefix.
@@ -27,7 +27,7 @@ CLI-stream console output uses a message-only variant — no timestamp prefix �
 **JSON format** (`MONEYBIN_LOGGING__FORMAT=json`, file output only):
 
 ```json
-{"timestamp": "2026-04-21T14:30:00.123456+00:00", "logger": "moneybin.services.refresh", "level": "INFO", "message": "Refresh complete in 4.21s"}
+{"timestamp": "2026-04-21T14:30:00.123456+00:00", "logger": "moneybin.orchestration.refresh", "level": "INFO", "message": "Refresh complete in 4.21s"}
 ```
 
 Required keys on every JSON record: `timestamp` (ISO 8601 UTC), `logger`, `level`, `message`. When the record carries exception info, an `exception` key holds the formatted traceback. Any non-standard `LogRecord` attribute set via `extra={...}` is copied verbatim alongside the required keys — but **MoneyBin does not currently emit structured event keys** (`event=refresh.completed`, etc.) as a code convention. Today, "did X succeed?" is answered by matching `message` substrings. Stable event names are tracked as a follow-up; until then, treat the `message` field as best-effort prose, not a contract.

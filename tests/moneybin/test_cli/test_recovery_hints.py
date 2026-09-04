@@ -23,7 +23,7 @@ from moneybin.matching.reconciliation import (
     RETIRED_SIDES_COLLAPSED,
     RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED,
 )
-from moneybin.services.refresh import RefreshResult
+from moneybin.orchestration.refresh import RefreshResult
 from tests.cli_command_helpers import assert_published_commands_resolve
 
 

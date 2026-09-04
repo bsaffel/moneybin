@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from moneybin.database import Database
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
     from moneybin.services.review_decisions_service import IdentityDecisionPlan
 
 app = typer.Typer(

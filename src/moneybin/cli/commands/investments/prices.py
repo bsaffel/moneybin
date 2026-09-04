@@ -144,7 +144,7 @@ def investments_prices_pull(
     ):
         # Deferred: the adapters pull in httpx, which every CLI invocation would
         # otherwise pay for at import time (cli.md cold-start hygiene).
-        from moneybin.services import refresh as refresh_module  # noqa: PLC0415
+        from moneybin.orchestration import refresh as refresh_module  # noqa: PLC0415
         from moneybin.services.price_service import build_price_service  # noqa: PLC0415
 
         start = parse_cli_date(since, "--since") if since else None
@@ -261,7 +261,7 @@ def investments_prices_set(
         cli_actor="investments_prices_set",
         payload_type=InvestmentPriceMarkPayload,
     ):
-        from moneybin.services import refresh as refresh_module  # noqa: PLC0415
+        from moneybin.orchestration import refresh as refresh_module  # noqa: PLC0415
         from moneybin.services.price_service import build_price_service  # noqa: PLC0415
 
         with get_database(read_only=False) as db:
@@ -340,7 +340,7 @@ def investments_prices_delete(
         cli_actor="investments_prices_delete",
         payload_type=InvestmentPriceMarkPayload,
     ):
-        from moneybin.services import refresh as refresh_module  # noqa: PLC0415
+        from moneybin.orchestration import refresh as refresh_module  # noqa: PLC0415
         from moneybin.services.price_service import build_price_service  # noqa: PLC0415
 
         with get_database(read_only=False) as db:

@@ -59,7 +59,7 @@ from moneybin.tables import (
 )
 
 if TYPE_CHECKING:
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
 
 _IdentityRequest = (
     AccountLinkDecisionRequest

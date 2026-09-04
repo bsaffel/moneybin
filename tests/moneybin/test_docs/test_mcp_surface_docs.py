@@ -3005,7 +3005,7 @@ def test_final_review_refresh_and_report_counts_match_runtime() -> None:
     reports = REPORT_RECIPE_SPEC.read_text()
     # Derived, not spelled: a literal here pins whatever the docs happen to say,
     # so adding a canonical step leaves both prose copies stale and green.
-    from moneybin.services.refresh import CANONICAL_STEPS
+    from moneybin.orchestration.refresh import CANONICAL_STEPS
 
     default_sequence = " → ".join(CANONICAL_STEPS)
 

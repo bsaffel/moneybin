@@ -279,7 +279,7 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
         [
             "moneybin.cli.commands.sync",
             "moneybin.database",
-            "moneybin.services.refresh",
+            "moneybin.orchestration.refresh",
             "moneybin.extractors.institution_resolution",
             # The link harvesters. Suppressing these was tried in #356 and
             # reverted: `import files` and `inbox sync` run the same refresh

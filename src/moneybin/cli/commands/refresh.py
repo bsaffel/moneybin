@@ -2,7 +2,7 @@
 
 CLI peer of the ``refresh_run`` MCP tool. Runs the post-load refresh
 pipeline (gsheet pull → matching → SQLMesh apply → categorization → identity
-backfill → exchange-rate gather) via ``moneybin.services.refresh.refresh()``.
+backfill → exchange-rate gather) via ``moneybin.orchestration.refresh.refresh()``.
 Idempotent — safe to retry after a failure.
 """
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 class RefreshStepChoice(StrEnum):
-    """User-selectable subset of ``services.refresh.RefreshStep`` for Typer.
+    """User-selectable subset of ``orchestration.refresh.RefreshStep`` for Typer.
 
     Rejecting invalid step names at parse time surfaces a usage error
     (exit code 2) rather than a runtime UserError (exit code 1). The
@@ -78,7 +78,7 @@ def refresh_command(
     from moneybin.mcp.adapters.refresh_adapters import (  # noqa: PLC0415
         refresh_envelope,
     )
-    from moneybin.services.refresh import (  # noqa: PLC0415
+    from moneybin.orchestration.refresh import (  # noqa: PLC0415
         expand_steps,
         refresh,
         step_outcome,

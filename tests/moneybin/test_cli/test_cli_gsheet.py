@@ -282,7 +282,7 @@ def test_gsheet_connect_column_mapping_kv(mock_build: MagicMock) -> None:
 
 
 @pytest.mark.unit
-@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.orchestration.refresh.refresh")
 @patch("moneybin.database.get_database")
 @patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
 @patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
@@ -323,7 +323,7 @@ def test_gsheet_pull_single_connection_runs_refresh(
 
 
 @pytest.mark.unit
-@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.orchestration.refresh.refresh")
 @patch("moneybin.database.get_database")
 @patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
 @patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
@@ -351,7 +351,7 @@ def test_gsheet_pull_nonzero_exit_on_failed_pull(
 
 
 @pytest.mark.unit
-@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.orchestration.refresh.refresh")
 @patch("moneybin.database.get_database")
 @patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
 @patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
@@ -377,7 +377,7 @@ def test_gsheet_pull_no_refresh_skips_pipeline(
 
 
 @pytest.mark.unit
-@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.orchestration.refresh.refresh")
 @patch("moneybin.database.get_database")
 @patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
 @patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
@@ -413,7 +413,7 @@ def test_gsheet_pull_json_output(
 
 
 @pytest.mark.unit
-@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.orchestration.refresh.refresh")
 @patch("moneybin.database.get_database")
 @patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
 @patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
@@ -431,7 +431,7 @@ def test_gsheet_pull_reports_a_transfer_its_refresh_retired(
     `error` off the RefreshResult, so a routine "✅ pulled N rows" could sit on
     top of a reversed user decision with nothing naming it or the way back.
     """
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
 
     service = MagicMock()
     service.pull_connection.return_value = PullResult(
@@ -453,7 +453,7 @@ def test_gsheet_pull_reports_a_transfer_its_refresh_retired(
 
 
 @pytest.mark.unit
-@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.orchestration.refresh.refresh")
 @patch("moneybin.database.get_database")
 @patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
 @patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
@@ -466,7 +466,7 @@ def test_gsheet_pull_json_carries_transfers_retired(
     mock_refresh: MagicMock,
 ) -> None:
     """The agent parsing JSON is owed the same count the human is told."""
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
 
     service = MagicMock()
     service.pull_connection.return_value = PullResult(
@@ -487,7 +487,7 @@ def test_gsheet_pull_json_carries_transfers_retired(
 
 
 @pytest.mark.unit
-@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.orchestration.refresh.refresh")
 @patch("moneybin.database.get_database")
 @patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
 @patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
@@ -505,7 +505,7 @@ def test_gsheet_pull_reports_a_crashed_rates_step(
     still applies when the backfill crashes, so the command's own
     `applied`/`error` check stays silent and only this signal remains.
     """
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
 
     service = MagicMock()
     service.pull_connection.return_value = PullResult(
@@ -526,7 +526,7 @@ def test_gsheet_pull_reports_a_crashed_rates_step(
 
 
 @pytest.mark.unit
-@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.orchestration.refresh.refresh")
 @patch("moneybin.database.get_database")
 @patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
 @patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
@@ -544,8 +544,8 @@ def test_gsheet_pull_names_an_unsupported_pair_and_its_remedy(
     ``rate_backfill_error``, so it isolates the per-pair lines rather than
     passing on the crash warning.
     """
+    from moneybin.orchestration.refresh import RefreshResult
     from moneybin.services.rate_backfill import RateBackfillResult
-    from moneybin.services.refresh import RefreshResult
 
     service = MagicMock()
     service.pull_connection.return_value = PullResult(
@@ -573,7 +573,7 @@ def test_gsheet_pull_names_an_unsupported_pair_and_its_remedy(
 
 
 @pytest.mark.unit
-@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.orchestration.refresh.refresh")
 @patch("moneybin.database.get_database")
 @patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
 @patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
@@ -590,8 +590,8 @@ def test_gsheet_pull_json_carries_the_rate_backfill_outcome(
     Field names match ``refresh_envelope`` so a caller reading one surface does
     not have to learn a second spelling for the same outcome.
     """
+    from moneybin.orchestration.refresh import RefreshResult
     from moneybin.services.rate_backfill import RateBackfillResult
-    from moneybin.services.refresh import RefreshResult
 
     service = MagicMock()
     service.pull_connection.return_value = PullResult(
