@@ -1256,13 +1256,19 @@ def _active_profile_is_registered() -> bool | None:
     on the same frame — so this reads a cached value and can never trigger
     first-run profile resolution.
 
-    ``Path.is_file`` swallows only ENOENT-class errors, so a denied read
-    (macOS TCC, a locked-down profile root) raises rather than answering False.
-    Left uncaught it would replace "database not found" with an unrelated
-    permission error, so an unanswerable probe degrades to ``None``.
+    ``ProfileService.is_registered`` owns this question and answers it the same
+    way. Calling it here would put ``database`` above ``services``, which import
+    it — so the predicate is duplicated deliberately, and duplicated *exactly*:
+    both spell the probe ``(<profile dir>/"config.yaml").exists()``, so the two
+    can never disagree about a profile.
+
+    ``Path.exists`` swallows only ENOENT-class errors, so a denied read (macOS
+    TCC, a locked-down profile root) raises rather than answering False. Left
+    uncaught it would replace "database not found" with an unrelated permission
+    error, so an unanswerable probe degrades to ``None``.
     """
     try:
-        return (get_settings().profile_dir / "config.yaml").is_file()
+        return (get_settings().profile_dir / "config.yaml").exists()
     except OSError:
         return None
 

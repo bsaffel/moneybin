@@ -410,7 +410,7 @@ class TestDatabaseNotInitializedAnnotation:
     ) -> None:
         """An EPERM on the registration probe must not replace the error.
 
-        `Path.is_file` swallows only ENOENT-class errors, so a denied read
+        `Path.exists` swallows only ENOENT-class errors, so a denied read
         (macOS TCC, a locked-down profile root) propagates. If that escaped it
         would turn "database not found" into an unrelated PermissionError —
         the error path is exactly where a second failure must stay quiet.
@@ -420,12 +420,19 @@ class TestDatabaseNotInitializedAnnotation:
 
         monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
         set_current_profile("denied")
-        get_settings()  # warm the cache before Path.is_file starts raising
+        get_settings()  # warm the cache before the probe starts raising
+
+        # Only the registration probe is denied. `Database.__init__` reaches
+        # `db_path.exists()` first, and denying that too would raise before the
+        # annotation ever runs — proving nothing about the guard under test.
+        real_exists = Path.exists
 
         def _denied(self: Path) -> bool:
-            raise PermissionError(1, "Operation not permitted", str(self))
+            if self.name == "config.yaml":
+                raise PermissionError(1, "Operation not permitted", str(self))
+            return real_exists(self)
 
-        monkeypatch.setattr(Path, "is_file", _denied)
+        monkeypatch.setattr(Path, "exists", _denied)
 
         with pytest.raises(DatabaseNotInitializedError) as excinfo:
             get_database(read_only=True)
