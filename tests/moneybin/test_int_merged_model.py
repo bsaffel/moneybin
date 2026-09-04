@@ -19,7 +19,17 @@ class TestIntTransactionsMergedModel:
         assert "canonical_source_type" in content
         assert "source_count" in content
         assert "FIRST(" in content
-        assert "{'conversion_from_date': m.transaction_date" in content
+        ordered_conversion_fields = (
+            "{'conversion_source_transaction_id': m.source_transaction_id, "
+            "'conversion_from_currency': m.currency_code, "
+            "'to_currency': m.to_currency, "
+            "'conversion_source_type': m.source_type, "
+            "'conversion_source_origin': m.source_origin, "
+            "'conversion_from_amount': m.amount, "
+            "'to_amount': m.to_amount, "
+            "'conversion_from_date': m.transaction_date}"
+        )
+        assert ordered_conversion_fields in content
         assert content.count("prep.int_transactions__matched") == 1
         assert "conversion_source_type" in content
         assert "conversion_source_origin" in content

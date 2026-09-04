@@ -105,7 +105,7 @@ class CurrencyLotRow:
     currency_code: str
     acquisition_type: str
     cost_basis_method: str
-    home_currency: str
+    home_currency: str | None
     coverage_status: str
     coverage_reason: str | None
     original_quantity: Decimal
@@ -126,7 +126,7 @@ class RealizedFXGainRow:
     conversion_id: str
     currency_lot_id: str | None
     currency_code: str
-    home_currency: str
+    home_currency: str | None
     cost_basis_method: str
     valuation_source_type: str | None
     coverage_status: str
@@ -155,7 +155,7 @@ class CurrencyAccountingResult:
 class _EventMetadata:
     account_id: str
     currency_code: str
-    home_currency: str
+    home_currency: str | None
     source_conversion_id: str | None
     source_investment_transaction_id: str | None
     acquisition_type: str | None
@@ -538,7 +538,6 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
             single_row.loaded_at,
             CASE
               WHEN single_row.conversion_from_currency IS NULL
-                AND NOT sent_account.currency_code IS NULL
               THEN COALESCE(sent_account.updated_at, single_row.loaded_at)
               ELSE single_row.loaded_at
             END
@@ -749,7 +748,7 @@ def _event(
     *,
     account_id: str,
     currency: str,
-    home_currency: str,
+    home_currency: str | None,
     trade_date: date,
     event_type: str,
     quantity: Decimal,
@@ -777,8 +776,10 @@ def _event(
 def _conversion_events(
     conversion: CurrencyConversionRow,
 ) -> list[tuple[LedgerEvent, _EventMetadata]]:
-    if conversion.coverage_status != "complete" and (
-        conversion.coverage_reason != "missing_valuation_rate"
+    quantity_only_reasons = {"missing_home_currency", "missing_valuation_rate"}
+    if (
+        conversion.coverage_status != "complete"
+        and conversion.coverage_reason not in quantity_only_reasons
     ):
         return []
     required = (
@@ -790,7 +791,6 @@ def _conversion_events(
         conversion.from_currency,
         conversion.to_amount,
         conversion.to_currency,
-        conversion.home_currency,
     )
     if any(value is None for value in required):
         return []
@@ -803,7 +803,7 @@ def _conversion_events(
     from_currency = t.cast("str", conversion.from_currency)
     to_amount = t.cast("Decimal", conversion.to_amount)
     to_currency = t.cast("str", conversion.to_currency)
-    home_currency = t.cast("str", conversion.home_currency)
+    home_currency = conversion.home_currency
     home_value = conversion.home_value
     events: list[tuple[LedgerEvent, _EventMetadata]] = []
 

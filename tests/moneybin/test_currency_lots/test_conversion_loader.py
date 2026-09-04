@@ -334,6 +334,23 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     assert single.coverage_status == "complete"
     assert str(single.updated_at) == "2026-03-19 09:00:00"
 
+    db.execute(
+        """
+        UPDATE core.dim_accounts
+           SET currency_code = NULL,
+               updated_at = '2026-03-20 09:00:00'::TIMESTAMP
+         WHERE account_id = 'acct-eur'
+        """
+    )
+
+    cleared = {
+        row.source_shape: row
+        for row in module.load_conversion_rows(t.cast(t.Any, _DatabaseContext(db)))
+    }["single_row"]
+    assert cleared.from_currency is None
+    assert cleared.coverage_reason == "unknown_currency"
+    assert str(cleared.updated_at) == "2026-03-20 09:00:00"
+
 
 @pytest.mark.parametrize(
     ("from_amount", "from_currency", "to_amount", "to_currency", "rate"),

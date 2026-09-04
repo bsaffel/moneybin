@@ -634,6 +634,56 @@ def test_missing_sale_home_valuation_is_visible_without_fabricated_basis() -> No
     assert result.lots[0].coverage_reason == "missing_valuation_rate"
 
 
+def test_missing_home_currency_retains_both_quantity_movements() -> None:
+    acquisition = _conversion(
+        home_currency=None,
+        home_value=None,
+        valuation_rate=None,
+        valuation_rate_date=None,
+        valuation_source_type=None,
+        coverage_status="incomplete",
+        coverage_reason="missing_home_currency",
+    )
+    disposal = _conversion(
+        conversion_id="fxc_dispose",
+        from_account_id="acct-eur",
+        to_account_id="acct-gbp",
+        from_date=date(2026, 2, 1),
+        to_date=date(2026, 2, 1),
+        from_amount=D("20.00"),
+        from_currency="EUR",
+        to_amount=D("30.00"),
+        to_currency="GBP",
+        home_currency=None,
+        home_value=None,
+        valuation_rate=None,
+        valuation_rate_date=None,
+        valuation_source_type=None,
+        coverage_status="incomplete",
+        coverage_reason="missing_home_currency",
+        updated_at=T2,
+    )
+
+    result = _derive(acquisition, disposal)
+
+    eur_lot = next(lot for lot in result.lots if lot.currency_code == "EUR")
+    gbp_lot = next(lot for lot in result.lots if lot.currency_code == "GBP")
+    eur_gain = next(gain for gain in result.gains if gain.currency_code == "EUR")
+    assert eur_lot.remaining_quantity == D("60.00")
+    assert gbp_lot.remaining_quantity == D("30.00")
+    assert eur_lot.cost_basis_total is None
+    assert eur_lot.cost_basis_remaining is None
+    assert gbp_lot.cost_basis_total is None
+    assert gbp_lot.cost_basis_remaining is None
+    assert eur_gain.disposed_amount == D("20.00")
+    assert eur_gain.proceeds is None
+    assert eur_gain.cost_basis is None
+    assert eur_gain.gain_loss is None
+    assert {eur_lot.coverage_reason, gbp_lot.coverage_reason} == {
+        "missing_home_currency"
+    }
+
+
 @pytest.mark.parametrize(
     ("currency", "home", "reason"),
     [("", "USD", "unknown_currency"), ("EUR", "", "missing_home_currency")],

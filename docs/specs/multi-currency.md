@@ -716,8 +716,10 @@ Numbered, testable. Tagged by phase.
     loader adapts completed conversions and eligible
     foreign-Security sale proceeds to the unchanged investments cost-basis engine,
     producing `core.fct_currency_lots` and `core.fct_realized_fx_gains`; unsupported
-    methods still consume quantities while their basis and gain remain visibly
-    uncovered. Rate backfill includes the received leg of materialized conversions,
+    methods and missing Home currency still preserve known quantities while basis
+    and gain remain visibly uncovered. Inherited Account Currency changes, including
+    clearing the value, advance conversion freshness. Rate backfill includes the
+    received leg of materialized conversions,
     so a single-row conversion can obtain a Home valuation when that Currency appears
     nowhere else. The bounded row-count Gauge above is live, and the international
     synthetic scenario proves complete
