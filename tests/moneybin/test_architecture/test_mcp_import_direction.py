@@ -33,7 +33,7 @@ Three shapes it reads that a grep does not:
   runs.
 - **Relative imports.** ``from ..mcp.server import mcp`` parks ``mcp.server``
   in ``node.module`` and matches no absolute comparison, so it would be a live
-  bypass rather than a blind spot. ``_resolved_module`` resolves the level
+  bypass rather than a blind spot. ``resolved_module`` resolves the level
   first. Relative imports are already an active pattern in ``cli/``.
 - **String module paths.** ``cli/commands/mcp.py`` registers the resource and
   prompt modules through ``importlib.import_module``, so an import-node-only
@@ -47,6 +47,8 @@ import re
 from pathlib import Path
 
 import pytest
+
+from tests.moneybin.test_architecture._import_graph import package_of, resolved_module
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SRC_ROOT = REPO_ROOT / "src" / "moneybin"
@@ -97,51 +99,17 @@ MCP_IMPORT_EXEMPTIONS: frozenset[tuple[str, str, str]] = frozenset({
 })
 
 
-def _package_of(path: Path) -> str:
-    """Dotted package a file under ``src/moneybin`` belongs to.
-
-    A package's ``__init__`` measures a relative import from that package, not
-    from its parent, so both ``cli/main.py`` and ``cli/__init__.py`` answer
-    ``moneybin.cli``.
-    """
-    return ".".join(("moneybin", *path.relative_to(SRC_ROOT).parts[:-1]))
-
-
-def _resolved_module(node: ast.ImportFrom, package: str) -> str:
-    """Absolute dotted module an ``ImportFrom`` names, relative or not.
-
-    Without this a relative import is a live bypass, not a blind spot:
-    ``from ..mcp.server import mcp`` parks ``"mcp.server"`` in ``node.module``,
-    which matches nothing the caller compares against. Relative imports are
-    already an active pattern in ``cli/`` — the package holding most of the
-    edges this guard exists to keep out.
-
-    An over-relative import resolves to ``""`` at every depth. Python raises
-    ``ImportError`` on that shape before any name binds, so it cannot be a
-    bypass either way; the depth is tested rather than the slice, because too
-    many dots drives the index negative and ``parts[:-1]`` then hands back a
-    plausible base that would invent an edge out of nothing.
-    """
-    if not node.level:
-        return node.module or ""
-    parts = package.split(".")
-    if node.level > len(parts):
-        return ""
-    base = ".".join(parts[: len(parts) - node.level + 1])
-    return f"{base}.{node.module}" if node.module else base
-
-
 def _collect_mcp_references(path: Path) -> list[tuple[str, str, str]]:
     """Return (relpath, mcp_module, imported_name) triples for one module."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     relpath = path.relative_to(SRC_ROOT).as_posix()
 
-    package = _package_of(path)
+    package = package_of(path)
 
     triples: list[tuple[str, str, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            module = _resolved_module(node, package)
+            module = resolved_module(node, package)
             if MCP_MODULE_RE.match(module):
                 triples.extend((relpath, module, alias.name) for alias in node.names)
             elif module == "moneybin":
