@@ -22,11 +22,11 @@ from pathlib import Path
 import pytest
 
 from moneybin.database import Database
+from moneybin.orchestration.refresh import refresh
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.account_resolution_types import AccountProposalDict
 from moneybin.services.import_confirmation import ImportConfirmationRequiredError
 from moneybin.services.import_service import ImportService
-from moneybin.services.refresh import refresh
 from tests.import_helpers import import_answering_gate
 from tests.scenarios._runner.loader import Scenario, SetupSpec
 from tests.scenarios._runner.runner import scenario_env

@@ -3005,7 +3005,7 @@ def test_final_review_refresh_and_report_counts_match_runtime() -> None:
     reports = REPORT_RECIPE_SPEC.read_text()
     # Derived, not spelled: a literal here pins whatever the docs happen to say,
     # so adding a canonical step leaves both prose copies stale and green.
-    from moneybin.services.refresh import CANONICAL_STEPS
+    from moneybin.orchestration.refresh import CANONICAL_STEPS
 
     default_sequence = " → ".join(CANONICAL_STEPS)
 
@@ -3153,12 +3153,16 @@ def test_final_review_refresh_surface_semantics_match_runtime() -> None:
     assert '`refresh_run(steps=["match"])`' in pr6
     assert "`dedup_reconciliation` emits `refresh_run()`" in recovery
 
-    assert (
-        "MCP default: `gsheet → match → transform → categorize → identity`" in pipeline
-    )
-    assert (
-        "CLI selectable steps: `match → transform → categorize → identity`" in pipeline
-    )
+    # Derived, not spelled, like the sibling test above: a literal here pins
+    # whatever the docs happen to say.
+    from moneybin.cli.commands.refresh import RefreshStepChoice
+    from moneybin.orchestration.refresh import CANONICAL_STEPS
+
+    mcp_default = " → ".join(CANONICAL_STEPS)
+    selectable = {choice.value for choice in RefreshStepChoice}
+    cli_selectable = " → ".join(s for s in CANONICAL_STEPS if s in selectable)
+    assert f"MCP default: `{mcp_default}`" in pipeline
+    assert f"CLI selectable steps: `{cli_selectable}`" in pipeline
     for field in (
         "`data.error`",
         "`matching_error`",

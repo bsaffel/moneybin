@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-21 -->
+<!-- Last reviewed: 2026-09-04 -->
 # What Works Today
 
 What MoneyBin can do today. Each capability links to its guide; the [roadmap](roadmap.md) covers what's planned and the [CHANGELOG](../CHANGELOG.md) carries the dated record.
@@ -21,7 +21,7 @@ Capabilities below are shipped and exercised end-to-end. Work that has not shipp
 
 - **Encrypted DuckDB at rest** — AES-256-GCM by default. Argon2id KDF for passphrase mode; OS keychain for auto-key mode. One encrypted DuckDB file per profile under `~/.moneybin/profiles/<name>/`. -> [Database and security guide](guides/database-security.md)
 - **Threat model** — What encryption protects against, and what it doesn't (forgotten passphrase, malware on your machine, AI-vendor data flow). -> [Threat model](guides/threat-model.md)
-- **Key management and lifecycle** — `moneybin db init / lock / unlock / rotate-key / backup / restore / key show`. Encryption CLI is symmetric with the rest of the surface. -> [Database and security guide](guides/database-security.md)
+- **Key management and lifecycle** — `moneybin db init / lock / unlock / backup / restore` and `moneybin db key show / rotate`. Encryption CLI is symmetric with the rest of the surface. -> [Database and security guide](guides/database-security.md)
 - **Backup and restore** — `moneybin db backup` produces a portable encrypted snapshot; `db restore` recovers it. Snapshots are point-in-time of when the command ran; automated schedules are not yet built — use cron or your platform's scheduler. -> [Database and security guide](guides/database-security.md)
 - **Schema migrations** — Auto-upgrade on first invocation; details are operator-level and live in the [Database and security guide](guides/database-security.md). Capacity: supports years of multi-account history on a single laptop (DuckDB columnar storage).
 - **Multi-profile isolation** — Per-profile DB, config, and logs. `moneybin profile create / list / switch / delete / show / set`. -> [Profiles guide](guides/profiles.md)
@@ -166,7 +166,7 @@ blocker.
 
 ## MCP server
 
-- **Bounded tool registry** — One 50-tool standard registry spans 13 user-facing domain groups across 17 literal tool-name prefixes. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots; 50 tools is the hard limit, and the registry now sits at it — admitting another tool means retiring one. Full per-domain inventory: [MCP registry](specs/moneybin-mcp.md).
+- **Bounded tool registry** — One 50-tool standard registry spans 13 user-facing domain groups across 17 literal tool-name prefixes. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots; 50 tools is the hard limit, and the registry now sits at it — admitting another tool means retiring one. Full per-domain inventory: [MCP registry](specs/moneybin-mcp.md); every tool's client-visible definition, generated from the code: [MCP tool reference](reference/mcp-tools.md).
 - **Transport** — stdio today. Streamable HTTP transport ships with the web UI milestone (see [roadmap](roadmap.md)).
 - **Auth and session model** — Each MCP session inherits the profile unlocked by `moneybin db unlock`. `moneybin db lock` clears the stored key so no new session can open the profile; sessions already running keep their in-memory key until they exit (`moneybin db kill` is the confirmation-gated command that terminates them).
 - **Concurrency** — Reads coexist freely; writes are serialized per profile (single-writer rule). Two agents can read concurrently; only one can mutate at a time.
@@ -186,7 +186,7 @@ blocker.
 - **Typer v2 taxonomy** — Path-prefix-verb-suffix naming; entity groups (`accounts`, `transactions`), reference-data groups (`categories`, `merchants`), `reports` for cross-domain rollups, `system` for orientation. -> [CLI reference](guides/cli-reference.md)
 - **`--output json` parity with MCP** — Every read command exposes `--output json` and returns the same `{status, summary, data, actions, error?, next_cursor?}` envelope as the corresponding MCP tool, redacted by the same middleware. Agents driving the shell are first-class. Six commands are deliberate exceptions — the `db query` operator bypass, the `db info` / `db ps` reads that describe the database file rather than its contents, and the `stats` / `logs` / `migrate status` operations-metadata reads — each named in the CLI reference. -> [CLI reference](guides/cli-reference.md)
 - **Structured error envelopes** — Runtime errors emit a machine-readable envelope to stdout when `--output json` is active.
-- **Field projection** — `--json-fields` on `moneybin transactions list` selects a subset of fields; other read-only commands will adopt progressively.
+- **Field projection** — `--json-fields` narrows `--output json` to a named subset of fields on `moneybin sql query` and `moneybin sync status`. No other command declares it yet.
 - **Shell completion** — `moneybin --install-completion` / `--show-completion`.
 - **Version** — `moneybin --version` prints the installed MoneyBin version.
 
@@ -197,9 +197,9 @@ blocker.
 
 ## Observability
 
-- **Structured logs** — `moneybin logs clean / path / tail`. PII and financial detail are stripped at the formatter layer; see [Threat model](guides/threat-model.md). -> [Observability guide](guides/observability.md)
+- **Structured logs** — `moneybin logs cli|mcp|sqlmesh` tails one stream, filtered by `--level`, `--since`, `--until`, and `--grep`; `moneybin logs --print-path` locates the log directory and `moneybin logs --prune --older-than 30d` deletes old files. PII and financial detail are stripped at the formatter layer; see [Threat model](guides/threat-model.md). -> [Observability guide](guides/observability.md)
 - **Prometheus-style metrics** — Per-operation counters and durations, persisted to DuckDB. `moneybin stats`. -> [Observability guide](guides/observability.md)
-- **`moneybin system doctor`** — Read-only pipeline integrity check (FK integrity, sign convention, transfer balance, staging coverage, categorization coverage, one account imported under two identities). Exits 0 on pass / warn, 1 on fail. `--verbose` for affected IDs, `--output json` for agents. MCP exposes the same outcome through `system_status(sections=["doctor"])`. -> [CLI reference](guides/cli-reference.md)
+- **`moneybin system doctor`** — Read-only pipeline integrity check: SQLMesh audits for FK integrity, sign convention, and transfer-pair balance; transform model presence; dedup reconciliation, one account imported under two identities, and cross-source duplicates without a merge proposal; categorization coverage; currency integrity; `app.*` audit coverage and orphaned app state; and 13 investment checks. Exits 0 on pass / warn, 1 on fail. `--verbose` for affected IDs, `--full` for a whole-table scan, `--output json` for agents. MCP exposes the same outcome through `system_status(sections=["doctor"])`. -> [CLI reference](guides/cli-reference.md)
 
 ## Extensibility
 
@@ -224,7 +224,7 @@ These are visible gaps a migrant or agent author will notice. See [Roadmap](road
 - **Reference package: `us_tax`** — Locale-specific tax reporting helpers (realized gain/loss summaries, cost-basis snapshots). Built on top of investment tracking; not Schedule D generation.
 - **First-class split rows** — Splits ship as annotations on the parent row; that's the intended shape. First-class split lines are parked, revisited only if budgeting needs or real-data feedback force them.
 - **Subscription-cancellation workflow** — `reports.recurring_subscriptions` surfaces the candidates; a "mark cancelled / paused" tracking surface is planned.
-- **Native mobile apps** — Not on the roadmap.
-- **Household / shared budgets** — Multi-user accounts within one profile. Not on the roadmap.
+- **Native mobile apps** — MoneyBin is desktop and CLI; the planned web UI runs in a phone browser. [Where MoneyBin fits](comparison.md#where-moneybin-is-not-the-best-fit) names the mobile tools to use instead.
+- **Household / shared budgets** — Multi-user accounts within one profile. MoneyBin is single-user; [Where MoneyBin fits](comparison.md#where-moneybin-is-not-the-best-fit) names the shared-budget tools to use instead.
 
 Post-launch candidates (AI-assisted parsing of non-PDF file types, ML-powered categorization, mobile read-only viewer, expanded privacy tiers) live on the same page.

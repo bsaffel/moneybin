@@ -69,6 +69,7 @@ from moneybin.privacy.taxonomy import (
     DataClass,
     Tier,
 )
+from moneybin.tables import SCHEMA_MIGRATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +173,7 @@ class SchemaSnapshot:
 def _schema_version(db: Database) -> int:
     try:
         row = db.execute(
-            "SELECT COALESCE(MAX(version), 0) FROM app.schema_migrations"
+            f"SELECT COALESCE(MAX(version), 0) FROM {SCHEMA_MIGRATIONS.full_name}"  # noqa: S608  # TableRef constant
         ).fetchone()
         return int(row[0]) if row else 0
     except duckdb.CatalogException:

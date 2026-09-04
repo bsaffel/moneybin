@@ -21,8 +21,8 @@ from moneybin.connectors.sync_models import (
 )
 from moneybin.database import Database
 from moneybin.extractors.plaid import PlaidExtractor
+from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services import sync_service
-from moneybin.services.refresh import RefreshResult
 from moneybin.services.sync_service import SyncService
 
 FIXTURE = (
@@ -845,8 +845,8 @@ class TestPullAutoRefreshes:
         loader: PlaidExtractor,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import sync_service as mod
-        from moneybin.services.refresh import RefreshResult
 
         calls = 0
 
@@ -879,8 +879,8 @@ class TestPullAutoRefreshes:
         fields would let that land inside a routine "sync succeeded" with
         nothing pointing at the reversal or the way back.
         """
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import sync_service as mod
-        from moneybin.services.refresh import RefreshResult
 
         def fake_refresh(_db: object) -> RefreshResult:
             return RefreshResult(
@@ -900,8 +900,8 @@ class TestPullAutoRefreshes:
         loader: PlaidExtractor,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import sync_service as mod
-        from moneybin.services.refresh import RefreshResult
 
         calls = 0
 
@@ -927,8 +927,8 @@ class TestPullAutoRefreshes:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """No raw rows landed → nothing to refresh."""
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import sync_service as mod
-        from moneybin.services.refresh import RefreshResult
 
         calls = 0
 
@@ -972,8 +972,8 @@ class TestPullAutoRefreshes:
         reads as holding its old positions, which is precisely the phantom the
         receipt was added to expose.
         """
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import sync_service as mod
-        from moneybin.services.refresh import RefreshResult
 
         calls = 0
 
@@ -1043,8 +1043,8 @@ class TestPullAutoRefreshes:
         not optional.
         """
         from moneybin.extractors.plaid.extractor import LoadResult
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import sync_service as mod
-        from moneybin.services.refresh import RefreshResult
 
         calls = 0
 
@@ -1131,8 +1131,8 @@ class TestPullAutoRefreshes:
         rows. The self-heal the resolver promises is only real if the refresh
         it depends on actually runs.
         """
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import sync_service as mod
-        from moneybin.services.refresh import RefreshResult
 
         calls = 0
 
@@ -1192,8 +1192,8 @@ class TestPullAutoRefreshes:
         cash-only pull for the rest of the database's life, which is the exact
         cost the rows-changed gate exists to avoid.
         """
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import sync_service as mod
-        from moneybin.services.refresh import RefreshResult
 
         calls = 0
 
@@ -1255,8 +1255,8 @@ class TestPullAutoRefreshes:
         raw but skip refresh, leaving the deleted row visible in
         core.fct_transactions.
         """
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import sync_service as mod
-        from moneybin.services.refresh import RefreshResult
 
         calls = 0
 
@@ -1316,8 +1316,8 @@ class TestPullAutoRefreshes:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Refresh soft-fails — the SQLMesh error must reach the envelope."""
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import sync_service as mod
-        from moneybin.services.refresh import RefreshResult
 
         def fake_refresh(_db: object) -> RefreshResult:
             return RefreshResult(

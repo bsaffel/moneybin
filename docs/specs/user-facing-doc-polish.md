@@ -5,6 +5,8 @@ in-progress
 
 > **Progress note (2026-05-17).** The "now" batch (Requirements 1–12, 15–18) shipped: README rewrite, `CHANGELOG.md`, `docs/guides/threat-model.md`, `docs/guides/database-security.md` polish, `CONTRIBUTING.md` strategy pointer, `pyproject.toml` metadata. Remaining work is the M0D and M3B close-out (Requirements 13–14 — `docs/architecture.md` distillation gated on `architecture-shared-primitives.md` reaching `implemented`, plus the brew-install Quick Start flip and demo asset). The spec moves to `implemented` when those land.
 
+> **Progress note (2026-09-02).** A repo-wide pass over every human-facing public doc started; its structure decisions are recorded in [Information architecture (2026-09)](#information-architecture-2026-09) below. The structure, broken commands, one privacy misstatement, and the CLI-invocation guard shipped on `docs/public-docs-structure`. The spec now moves to `implemented` when the remaining scope listed there is delivered.
+
 ## Goal
 
 Bring the user-facing documentation surface (README, CHANGELOG, threat model, database-security guide, License framing, comparison table) up to a bar that survives ruthless scrutiny from the technical personas MoneyBin can credibly serve today and at M3B close — Sam (curator-engineer), Devon (MCP-native developer), and Priya (self-hosted privacy refugee). Most of the work ships *before* M3B and doesn't depend on product changes; the parts that do (architecture distillation, brew install instructions, demo asset) flip cleanly when their gating milestone closes.
@@ -149,6 +151,65 @@ None. This spec does not exercise the data pipeline.
 - **No code dependencies.** This work does not require any product change to ship the `now` batch.
 - **`architecture-shared-primitives.md`** (M0D, not yet written) — required only for the *full* `docs/architecture.md` distillation. The placeholder version ships without it.
 - **M3B distribution work** (`brew install`, PyPI publish, demo profile) — required only for the M3B-close batch (Quick Start flip, demo asset). The `now` batch does not block on this.
+
+## Information architecture (2026-09)
+
+Added 2026-09-02 during the repo-wide public docs pass, so the structure
+decisions outlive the session that made them.
+
+**Findings that drove the pass.** Drift ran one direction: docs described
+shipped features as planned (multi-currency conversion, export, account merge,
+price feeds, the PyPI publish workflow). The audit found eleven CLI
+invocations across the guides and top-level pages that named commands or
+options that do not exist; the guard that followed, reading the CLI reference
+tables too, found 34. One guide misdescribed what `categorize assist` sends
+to the model.
+Hand-maintained inventories (command trees, tool lists, client counts) rotted
+within six weeks of being written. Generation plus a guard is the durable fix;
+another hand pass is not.
+
+**Structure.**
+
+- The repository root keeps `README.md` (storefront), `CHANGELOG.md`,
+  `CONTRIBUTING.md`, `CONTEXT.md` (glossary), and `SECURITY.md`.
+- `docs/README.md` is the single index; `docs/guides/README.md` was merged into
+  it.
+- `docs/guides/` holds one task per file. `docs/reference/` holds lookup
+  material and the internal-mechanics pages; `docs/architecture/` and
+  `docs/tech/` were collapsed into it.
+- `docs/reference/prompts/` was merged into `guides/mcp-server.md` → Prompts.
+- `docs/specs/` and `docs/decisions/` stay internal working records; the index
+  lists them under Project and process, and a guide or reference page links to
+  a spec or ADR only where it records the decision behind that page.
+
+**Generated references.** `scripts/generate_reference_docs.py` renders
+`docs/reference/cli/` (one page per top-level command plus an index, from the
+Typer command tree), `docs/reference/mcp-tools.md` (from the MCP surface
+snapshot plus each tool's registered maximum sensitivity), and
+`docs/reference/configuration.md` (from `MoneyBinSettings`). `make
+generate-docs` rewrites them, and `test_generated_references_are_current`
+fails while a checked-in page differs from the render. The CLI reference
+guide keeps what a command tree cannot carry — shared flags, exit codes,
+envelopes, and each group's behaviour notes — and links the generated page
+for the commands themselves instead of restating them.
+
+**Guard.** `tests/test_documentation_policy.py` →
+`test_public_docs_cli_invocations_resolve` resolves every `moneybin …`
+invocation in the public docs against the registered command tree. A line that
+deliberately shows a wrong or absent command carries
+`<!-- cli-invocation-ok: reason -->`.
+
+**Remaining scope.** The structure above, the broken commands, the
+`categorize assist` privacy statement, shipped-as-planned drift, and the guard
+shipped on `docs/public-docs-structure`; the generated references on
+`docs/generated-references`. What's left: `account-identifiers.md` and
+`data-pipeline.md` rewrites;
+`system-overview.md` folded into `docs/architecture.md`; storefront and guide
+rewrites plus a `getting-started.md`; and reports, investments, and
+multi-currency guides.
+
+**Site.** GitHub-only until the release trigger — see ADR-011's 2026-09-02
+amendment.
 
 ## Out of Scope
 

@@ -11,21 +11,20 @@ from typing import Literal
 from fastmcp import FastMCP
 
 from moneybin import error_codes
+from moneybin.adapters.categorize_adapters import (
+    auto_accept_envelope,
+    auto_review_envelope,
+)
 from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
-from moneybin.mcp.adapters.categorize_adapters import (
-    auto_accept_envelope,
-    auto_review_envelope,
-)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.write_contracts import CategorizationRuleTarget
 from moneybin.privacy.payloads.categorize import (
     AutoAcceptPayload,
     AutoReviewPayload,
@@ -47,6 +46,7 @@ from moneybin.privacy.payloads.categorize import (
     RulesDeletePayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.write_contracts import CategorizationRuleTarget
 from moneybin.services.account_service import AccountService
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import (
@@ -264,7 +264,7 @@ def register_categorization_coarse_writes(mcp: FastMCP) -> None:
         "require rule_id and forbid replacement fields. The tool advertises its "
         "maximum destructive risk, but asks for exact payload-bound confirmation "
         "only before a present rule is hard-deleted. Rule removal is recoverable "
-        "with system_audit_undo(operation_id).",
+        "with system_audit_undo(operation_id=...).",
         privacy_actor="transactions_categorize_rules_set",
     )
 

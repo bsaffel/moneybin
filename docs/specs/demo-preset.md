@@ -38,7 +38,7 @@ The pieces already exist; `demo` orchestrates them.
 - **Profile lifecycle** (`services/profile_service.py`): `ProfileService.create`
   builds the profile dir + `config.yaml` + encrypted DB + optional inbox. It
   does **not** activate the profile.
-- **Refresh pipeline** (`services/refresh.py`): unscoped `refresh(db)` runs the
+- **Refresh pipeline** (`orchestration/refresh.py`): unscoped `refresh(db)` runs the
   full `gsheet → match → transform → categorize → identity` cascade. Demo uses
   two scoped calls instead: `refresh(db, steps=["transform"])` builds the views,
   then `refresh(db, steps=["match", "categorize"])` operates on them. The

@@ -26,7 +26,7 @@ from typing import Any, cast
 
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
-from moneybin.tables import SECURITIES
+from moneybin.tables import AUDIT_LOG, SECURITIES
 
 _SECURITIES_COLUMNS = (
     "security_id",
@@ -268,8 +268,8 @@ class SecuritiesRepo(BaseRepo):
         legitimately owns.
         """
         row = self._db.execute(
-            """
-            SELECT after_value FROM app.audit_log
+            f"""
+            SELECT after_value FROM {AUDIT_LOG.full_name}
              WHERE target_schema = ? AND target_table = ? AND target_id = ?
                AND is_undo = FALSE
                AND after_value IS NOT NULL
@@ -277,7 +277,7 @@ class SecuritiesRepo(BaseRepo):
                     OR (action = 'securities.upsert' AND before_value IS NULL))
              ORDER BY rowid DESC
              LIMIT 1
-            """,
+            """,  # noqa: S608  # AUDIT_LOG is a TableRef constant, values parameterized
             [*self._audit_target, security_id],
         ).fetchone()
         if row is None:

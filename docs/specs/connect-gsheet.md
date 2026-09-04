@@ -197,7 +197,7 @@ flowchart TB
 
     subgraph "Existing (reused)"
         Tabular["extractors/tabular/<br/>Stages 1-5 detection + transform + load"]
-        Refresh["services/refresh.py<br/>refresh_run umbrella"]
+        Refresh["orchestration/refresh.py<br/>refresh_run umbrella"]
         Repo["GSheetConnectionsRepo<br/>+ app.audit_log"]
         DB[("DuckDB<br/>raw.tabular_transactions<br/>raw.gsheet_seeds<br/>app.gsheet_connections<br/>raw.import_log")]
         Secrets["SecretStore<br/>(keyring)"]
@@ -530,7 +530,7 @@ Verify against the current `raw_import_log.sql` schema at implementation time. P
 
 | File | Change |
 |---|---|
-| `src/moneybin/services/refresh.py` | Add `"gsheet"` to default steps, call `GSheetPullService.pull_all_healthy()` |
+| `src/moneybin/orchestration/refresh.py` | Add `"gsheet"` to default steps, call `GSheetPullService.pull_all_healthy()` |
 | `src/moneybin/sql/schema/raw_tabular_transactions.sql` | Add `deleted_from_source_at` column |
 | `src/moneybin/sqlmesh/models/prep/stg_tabular__transactions.sql` | Add `WHERE deleted_from_source_at IS NULL` filter |
 | `src/moneybin/cli/__init__.py` | Register `gsheet` subgroup |

@@ -151,9 +151,14 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "import_status": (642, 1_236),
     "gsheet": (441, 1_016),
     "privacy": (590, 1_007),
-    "accounts_balance_assert": (1_416, 1_679),
+    # This tool, transactions_categorize_rules_set, and identity_links_decide
+    # each grew 4–16 bytes when their undo hint spelled its keyword
+    # (`system_audit_undo(operation_id=...)`): the docs scanner requires keyword
+    # arguments in every public call example, and the generated MCP reference
+    # makes each description public text.
+    "accounts_balance_assert": (1_420, 1_679),
     "transactions_annotate": (3_457, 3_653),
-    "transactions_categorize_rules_set": (3_043, 2_670),
+    "transactions_categorize_rules_set": (3_047, 2_670),
     # The one cohort whose candidate now costs more than the four tools it
     # replaced (2,727 vs 2,566). The overrun is a disclosure the replaced
     # tools never owed: accepting a match can reverse a transfer the user
@@ -175,7 +180,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # description is the only place the agent can learn it: one that omitted it
     # would have the agent retry a merge with a token, read the refusal as a
     # bug, and route around the confirmation this exists to enforce.
-    "identity_links_decide": (3_481, 5_762),
+    "identity_links_decide": (3_497, 5_762),
     "taxonomy_set": (3_480, 3_223),
     "privacy_consent_set": (1_217, 2_188),
 }

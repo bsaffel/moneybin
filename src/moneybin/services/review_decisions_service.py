@@ -20,7 +20,7 @@ from moneybin.matching.application import (
     record_committed_match_effects,
 )
 from moneybin.matching.persistence import get_match_decision
-from moneybin.mcp.write_contracts import (
+from moneybin.protocol.write_contracts import (
     AccountLinkDecisionRequest,
     CategorizationDecisionRequest,
     IdentityDecisionRequest,
@@ -59,7 +59,7 @@ from moneybin.tables import (
 )
 
 if TYPE_CHECKING:
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
 
 _IdentityRequest = (
     AccountLinkDecisionRequest

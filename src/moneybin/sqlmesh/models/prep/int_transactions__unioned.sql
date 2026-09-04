@@ -127,7 +127,7 @@ WITH ofx AS (
     merchant_name,
     merchant_entity_id,
     NULL::TEXT AS memo,
-    plaid_category AS category,
+    NULL::TEXT AS category, /* Plaid contributes no category: a PFC code is a provider vocabulary, and it belongs in plaid_category below, which the categorizer reads. `category` carries a MoneyBin category or the user's own text (the tabular and manual branches above). Aliasing the PFC code here put FOOD_AND_DRINK beside Food & Drink in one rendered column and emptied core.uncategorized_queue, which selects WHERE category IS NULL */
     NULL::TEXT AS subcategory,
     category_detailed,
     plaid_category,

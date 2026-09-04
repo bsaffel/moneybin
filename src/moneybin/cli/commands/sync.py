@@ -183,7 +183,7 @@ def sync_link(
                 # Event-driven: emit initiate response and exit. Agent verifies
                 # completion via `sync link-status` after the user finishes
                 # the Plaid Hosted Link flow out-of-band.
-                from moneybin.mcp.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
+                from moneybin.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
                     sync_link_envelope,
                 )
 
@@ -258,7 +258,7 @@ def sync_link_status(
         result = client.get_link_status(session_id)
 
     if output == OutputFormat.JSON:
-        from moneybin.mcp.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
+        from moneybin.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
             sync_link_status_envelope,
         )
 
@@ -350,7 +350,7 @@ def sync_disconnect(
         with _build_sync_service() as service:
             service.disconnect(institution=institution)
     if output == OutputFormat.JSON:
-        from moneybin.mcp.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
+        from moneybin.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
             sync_disconnect_envelope,
         )
 
@@ -412,7 +412,7 @@ def sync_pull(
     warn_refresh_steps(result.refresh_steps)
 
     if output == OutputFormat.JSON:
-        from moneybin.mcp.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
+        from moneybin.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
             sync_pull_envelope,
         )
 
@@ -545,7 +545,7 @@ def sync_status(
             connections = service.list_connections()
 
     if output == OutputFormat.JSON:
-        from moneybin.mcp.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
+        from moneybin.adapters.sync_adapters import (  # noqa: PLC0415 — defer import
             sync_status_envelope,
         )
 

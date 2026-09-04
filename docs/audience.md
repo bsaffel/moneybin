@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Who MoneyBin Is For
 
 MoneyBin is built for a specific set of people. This page tells you whether you're one of them — honestly, including who you should use instead if you're not.
@@ -30,7 +30,7 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 - **Beancount / hledger** — no direct ledger importer; export postings to CSV and import that. Round-tripping back to Beancount syntax isn't supported.
 - **Bank OFX/QFX/QBO** — full first-class import alongside tabular.
 
-**Data exit:** A plaintext-export command (CSV out of every core table) is planned. Today the database itself is portable — one encrypted DuckDB file per profile, queryable with any DuckDB client.
+**Data exit:** `moneybin export bundle` writes a 13-table canonical bundle (accounts, transactions, balances, categories, merchants, securities, investment activity) as CSV, Parquet, or XLSX, to a local file or Google Sheets. Beyond that closed set, the database itself is portable — one encrypted DuckDB file per profile, queryable with any DuckDB client.
 
 **What's still rough:** The install path is still `git clone` + `uv` + `make setup`. No visual UI yet — see the tracker persona below.
 
@@ -41,7 +41,7 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 **Job to be done:** Ask "what did I spend on AWS last quarter?" inside the same chat window where they write code. Get back a real answer with SQL behind it, not a hosted vendor's summary — and when the built-in answer isn't enough, have the agent *build* the missing piece.
 
 **Why MoneyBin fits today:**
-- A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` (nine clients supported).
+- A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` (eight clients supported).
 - MCP and CLI preserve capability and service-outcome parity without requiring
   1:1 methods; `--output json` keeps the CLI a first-class agent surface.
 - The agent answers with SQL it wrote against canonical fact and dimension tables — and you can read that SQL and verify it.
@@ -110,25 +110,20 @@ Plaid investment ingestion is available through `moneybin sync pull`; manual ent
 
 **Job to be done:** Import multi-currency transactions, see home-currency equivalents, get FX gain/loss on conversions.
 
-**Why MoneyBin will fit:** Multi-currency support is planned — original-currency amounts preserved alongside home-currency conversions, daily FX rates, realized FX gain/loss on conversions. The work closes when a non-USD user can round-trip a deliberate conversion and the FX gain/loss ties to bank-statement-derived expectation within $0.01.
+**Why MoneyBin will fit:** Multi-currency capture and display conversion are shipped: every transaction keeps its original currency, daily rates are cached from Frankfurter, and `moneybin profile set home_currency` plus `--display-currency` convert the net worth, balance drift, and large-transactions reports into one currency.
 
-**What's still rough:** Today MoneyBin treats every amount as USD. **Use [Firefly III](https://www.firefly-iii.org/) or [Beancount](https://beancount.github.io/) in the meantime.**
+**What's still rough:** Realized FX gain/loss on a deliberate conversion isn't computed yet — reusing the cost-basis engine for it is designed but not built, and that's the piece that closes this persona: the gain/loss needs to tie to bank-statement-derived expectation within $0.01. Holdings do not count toward net worth yet, in any currency. **Use [Firefly III](https://www.firefly-iii.org/) or [Beancount](https://beancount.github.io/) in the meantime if FX gain/loss tracking is the deciding factor.**
 
 ## Not yet for you
 
-If any of these is a hard requirement, MoneyBin isn't the right answer. The competitor noted is genuinely the better fit — these aren't disclaimers, they're recommendations.
+If a hard requirement falls outside MoneyBin's lane, [Where MoneyBin Fits](comparison.md) names the better tool for a shared household budget, pure envelope budgeting, plain-text double-entry ledgers, a polished mobile app, and a self-host stack you can deploy today. Four more that page does not cover:
 
 | If you need… | Use instead |
 |---|---|
-| To share a household budget collaboratively with a partner | [Tiller](https://www.tiller.com/), [YNAB](https://www.ynab.com/), [Lunch Money](https://lunchmoney.app/) |
-| Pure envelope budgeting (zero-based, every dollar a job) | [YNAB](https://www.ynab.com/), [Actual Budget](https://actualbudget.org/) |
-| Plain-text double-entry accounting (postings, ledger files) | [Beancount](https://beancount.github.io/) + [Fava](https://github.com/beancount/fava), [hledger](https://hledger.org/) |
 | To bookkeep client books as a CPA or tax preparer | [QuickBooks](https://quickbooks.intuit.com/), [Xero](https://www.xero.com/) |
 | Small-business accounting with employees and payroll | [QuickBooks](https://quickbooks.intuit.com/) |
 | Crypto-heavy or DeFi-only tracking with on-chain integrations | [Rotki](https://rotki.com/) |
-| A polished mobile app available today | [Copilot](https://copilot.money/), [Monarch](https://www.monarchmoney.com/), [Lunch Money](https://lunchmoney.app/) |
-| Budgeting only, no AI in the loop | [YNAB](https://www.ynab.com/), [Actual Budget](https://actualbudget.org/), [Beancount](https://beancount.github.io/) + Fava |
-| Tax-form generation (Schedule D, Form 8949) | [Beancount](https://beancount.github.io/), TurboTax, a professional accountant |
+| Tax-form generation (Schedule D, Form 8949) | [Beancount](https://beancount.github.io/), a professional preparer |
 
 ---
 

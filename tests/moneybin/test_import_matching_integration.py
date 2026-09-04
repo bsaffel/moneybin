@@ -18,8 +18,8 @@ class TestImportRefreshIntegration:
         tmp_path: Path,
     ) -> None:
         """Verify refresh() is called once after a successful import."""
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services.import_service import ImportResult, ImportService
-        from moneybin.services.refresh import RefreshResult
 
         qfx = tmp_path / "test.qfx"
         qfx.touch()
@@ -72,8 +72,8 @@ class TestImportRefreshIntegration:
         """Single-file import path is fail-loud: SQLMesh error propagates."""
         import pytest
 
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services.import_service import ImportResult, ImportService
-        from moneybin.services.refresh import RefreshResult
 
         qfx = tmp_path / "test.qfx"
         qfx.touch()
@@ -107,8 +107,8 @@ class TestImportRefreshIntegration:
         ``moneybin import files <one-file>`` invocation, so dropping the count
         here hides the reversal on the most common path there is.
         """
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services.import_service import ImportResult, ImportService
-        from moneybin.services.refresh import RefreshResult
 
         qfx = tmp_path / "test.qfx"
         qfx.touch()
@@ -146,7 +146,7 @@ class TestRefreshCategorizationProposalSummary:
         """Pending proposals trigger a hint line referencing auto-review."""
         import logging
 
-        from moneybin.services.refresh import refresh
+        from moneybin.orchestration.refresh import refresh
         from moneybin.services.transform_service import ApplyResult
 
         mock_apply.return_value = ApplyResult(applied=True, duration_seconds=0.0)
@@ -163,7 +163,7 @@ class TestRefreshCategorizationProposalSummary:
             pending_proposals=4
         )
 
-        with caplog.at_level(logging.INFO, logger="moneybin.services.refresh"):  # type: ignore[attr-defined]
+        with caplog.at_level(logging.INFO, logger="moneybin.orchestration.refresh"):  # type: ignore[attr-defined]
             refresh(MagicMock())
 
         text = "\n".join(r.message for r in caplog.records)  # type: ignore[attr-defined]
@@ -187,7 +187,7 @@ class TestRefreshCategorizationProposalSummary:
         """No pending proposals → no hint line."""
         import logging
 
-        from moneybin.services.refresh import refresh
+        from moneybin.orchestration.refresh import refresh
         from moneybin.services.transform_service import ApplyResult
 
         mock_apply.return_value = ApplyResult(applied=True, duration_seconds=0.0)
@@ -204,7 +204,7 @@ class TestRefreshCategorizationProposalSummary:
             pending_proposals=0
         )
 
-        with caplog.at_level(logging.INFO, logger="moneybin.services.refresh"):  # type: ignore[attr-defined]
+        with caplog.at_level(logging.INFO, logger="moneybin.orchestration.refresh"):  # type: ignore[attr-defined]
             refresh(MagicMock())
 
         text = "\n".join(r.message for r in caplog.records)  # type: ignore[attr-defined]

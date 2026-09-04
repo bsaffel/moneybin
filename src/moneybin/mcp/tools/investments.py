@@ -51,7 +51,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
 from moneybin.price_sources import FEED_KEY_REF_KINDS
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.investments import (
@@ -74,6 +73,7 @@ from moneybin.privacy.payloads.investments import (
     SecurityLinksPendingPayload,
     SecurityLinksSetPayload,
 )
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
     KeysetPosition,

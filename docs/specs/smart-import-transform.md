@@ -18,13 +18,13 @@ Close the agent-driven ingest loop. An agent (Claude Code, Codex CLI, MCP client
 
 1. `refresh_run(steps=["transform"])` returns the standard response envelope for an explicit SQLMesh apply. The CLI keeps `moneybin transform apply` as an operator entry point.
 2. `import_files` accepts `paths: list[str]`.
-3. `import_files` runs the full `gsheet → match → transform → categorize → identity` refresh pipeline once at end-of-batch by default via `services/refresh.py`. Caller opts out by passing `refresh=False`.
+3. `import_files` runs the full `gsheet → match → transform → categorize → identity` refresh pipeline once at end-of-batch by default via `orchestration/refresh.py`. Caller opts out by passing `refresh=False`.
 4. Per-file failures inside an `import_files` call do not abort the batch. The refresh runs if at least one file succeeded; skipped if zero succeeded.
 5. If the refresh itself fails after successful imports, raw rows stay durable; the envelope reports `transforms_applied=false` with a generic error message and an action hint to retry.
 6. `import_inbox_sync` internally builds the discovered-file list and calls the same batch path. New `refresh` parameter on the MCP tool and `--no-refresh` flag on the CLI.
 7. CLI command renamed to `moneybin import files PATHS...` (variadic). `--output json` parity for all transform commands and the renamed import command per `cli.md`.
 8. `system_status` adds a `transforms` block: `{"pending": bool, "last_apply_at": iso|None}`. Pending heuristic: the newest landing stamp across all 17 raw tables a SQLMesh model reads (`_RAW_LANDING_COLUMNS`, guarded set-equal against `raw_tables_read_by_models()`) is newer than `MIN(last_executed_at)` over the rows of `meta.model_freshness` a refresh actually rebuilds (`_UNREBUILT_MODEL_KINDS` excludes the symbolic kinds plus `VIEW` and `SEED`) — the oldest model execution, so an untouched model holds the comparison down. Rows belonging to a reverted or failed `raw.import_log` batch are excluded. When pending, `actions` includes a hint to run `refresh_run`. No SQLMesh Context init on the `system_status` hot path.
-9. A new `TransformService` owns SQLMesh interaction. `TransformService.apply()` replaces the prior inline transform call; source-priority seeding and `refresh_views` calls migrate with it. `ImportService` invokes the full refresh pipeline via `services.refresh.refresh(db)` at end-of-batch (PR #151), which calls `TransformService(db).apply()` along with matching and categorization steps. `ImportService.run_transforms()` is retained as a thin compatibility shim.
+9. A new `TransformService` owns SQLMesh interaction. `TransformService.apply()` replaces the prior inline transform call; source-priority seeding and `refresh_views` calls migrate with it. `ImportService` invokes the full refresh pipeline via `orchestration.refresh.refresh(db)` at end-of-batch (PR #151), which calls `TransformService(db).apply()` along with matching and categorization steps. `ImportService.run_transforms()` is retained as a thin compatibility shim.
 10. A scenario test imports multiple files and asserts `MAX(dim_accounts.updated_at)` advances and all imported accounts appear in `accounts` — regression guard for the originating finding.
 11. Metrics: a new `IMPORT_BATCH_SIZE` histogram per `AGENTS.md` observability requirement. The existing `SQLMESH_RUN_DURATION_SECONDS` is reused; no per-pending gauge (derived signal, not state to scrape).
 12. **Schema drift detection with self-heal** — a wider failure mode than transforms-pending. `core.dim_accounts` (and other FULL-materialized core tables) can have a snapshot built at an older model revision; queries that SELECT columns added in the newer revision fail with binder errors, surfacing as opaque MCP tool failures. Detection runs at FastMCP startup via a single `duckdb_columns()` catalog query and compares observed columns to a static `EXPECTED_CORE_COLUMNS` constant. On mismatch, the server runs one synchronous `TransformService.apply()` self-heal attempt, then re-verifies on a fresh read-only connection — closing the chicken-and-egg where the recovery path lives inside a server that won't boot. Extended in PR #146/#156 to also self-heal SQLMesh drift and stuck migrations at MCP boot. Plain apply is used deliberately: SQLMesh's restatement mode explicitly ignores local file changes (per `Context.plan_builder` docstring), so it would no-op against the very fingerprint-change drift the heal needs to fix. Persistent drift after the heal raises `SchemaDriftError("Stale materialized snapshots persist after auto-heal: ...")`; a soft-failed apply raises `SchemaDriftError("Auto-heal failed: ...")` carrying the SQLMesh error type name. Both branches route through `classify_user_error()`'s `schema_drift` hint pointing at `moneybin transform apply`, so users get a clean message rather than a stack trace. Single-tenant policy; multi-tenant degraded-mode is a TODO comment, not built now.
@@ -47,7 +47,7 @@ No schema changes. The spec leans on three existing columns/tables:
 ### Files to Create
 
 - `src/moneybin/services/transform_service.py` — `TransformService` with `freshness()` and `apply()` methods. Owns SQLMesh Context lifecycle for apply; `freshness()` deliberately bypasses Context to keep it cheap.
-- `src/moneybin/services/refresh.py` — `refresh()` umbrella that runs `gsheet → match → transform → categorize → identity` in canonical order. Re-exposed at the MCP layer as `refresh_run` with optional `steps=` scoping.
+- `src/moneybin/orchestration/refresh.py` — `refresh()` umbrella that runs `gsheet → match → transform → categorize → identity` in canonical order. Re-exposed at the MCP layer as `refresh_run` with optional `steps=` scoping.
 - `src/moneybin/mcp/tools/refresh.py` — `refresh_run` MCP tool wrapping the refresh umbrella (PR #165/#173).
 - `tests/moneybin/test_services/test_transform_service.py` — unit + integration tests for the new service.
 - `tests/moneybin/test_mcp/test_transform_tools.py` — envelope-shape and error-path tests for the refresh-backed MCP path.
@@ -65,7 +65,7 @@ No schema changes. The spec leans on three existing columns/tables:
 - `src/moneybin/mcp/tools/import_tools.py` — expose `import_files` with `paths: list[str]`, `refresh: bool = True`, and per-file rows.
 - `src/moneybin/mcp/tools/system.py` — extend `system_status` envelope with the `transforms` block; add the pending-state action hint.
 - `src/moneybin/mcp/server.py` — keep server instructions aligned with the batch import entry (per `mcp.md` Server Instructions Field rule).
-- `src/moneybin/services/import_service.py` — end-of-batch refresh routes through `services.refresh.refresh(self._db)`, which invokes `TransformService.apply()` along with matching and categorization.
+- `src/moneybin/services/import_service.py` — end-of-batch refresh routes through `orchestration.refresh.refresh(self._db)`, which invokes `TransformService.apply()` along with matching and categorization.
 - `src/moneybin/services/system_service.py` — `SystemStatus` gains `transforms_pending: bool` and `transforms_last_apply_at: datetime | None`. `status()` calls `TransformService(self._db).freshness()`. Also surfaces `schema_drift` info (queried via the boot-time check's cached state or re-run on demand).
 - `src/moneybin/database.py` — add `SchemaDriftError`, `EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]]` constant, and a `check_core_schema_drift(db) -> dict[str, list[str]]` function that returns a mapping of `table_name -> list of missing columns` (empty dict means no drift). Constant is the source of truth for each FULL-materialized `core.*` table's expected column set, captured manually from the final SELECT of `src/moneybin/sqlmesh/models/core/*.sql`; NOT parsed at runtime.
 - `src/moneybin/mcp/server.py` — invoke `check_core_schema_drift()` at FastMCP startup; on mismatch, run one `TransformService.apply()` self-heal, then re-verify and raise `SchemaDriftError` only if drift persists. Leave a `# TODO multi-tenant:` comment noting degraded-mode is the alternative if we ever go multi-tenant.
@@ -168,7 +168,7 @@ flowchart TD
     MCP_IF --> IS[ImportService.import_files]
     CLI_IF --> IS
     IS -->|per-file| EX[extractors → raw.*]
-    IS -->|"end-of-batch, if any succeeded"| RF[services.refresh.refresh]
+    IS -->|"end-of-batch, if any succeeded"| RF[orchestration.refresh.refresh]
     RF --> Match[TransactionMatcher]
     RF --> TS_A[TransformService.apply]
     RF --> Cat[CategorizationService]

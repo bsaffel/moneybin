@@ -139,7 +139,7 @@ def _patch_cli_builders(
         ),
         # Suppress the refresh step — that pipeline is exercised in scenarios;
         # this test focuses on the gsheet lifecycle plumbing in isolation.
-        patch("moneybin.services.refresh.refresh"),
+        patch("moneybin.orchestration.refresh.refresh"),
     ):
         yield
 

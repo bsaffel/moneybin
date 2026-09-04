@@ -1,7 +1,7 @@
 # MoneyBin Development Makefile
 # This Makefile provides development commands for the MoneyBin project
 
-.PHONY: help setup clean install install-dev test test-cov lint format format-sql type-check pre-commit venv activate status install-uv test-e2e test-scenarios generate-report-classes claude-mcp audit
+.PHONY: help setup clean install install-dev test test-cov lint format format-sql type-check pre-commit venv activate status install-uv test-e2e test-scenarios generate-report-classes generate-docs claude-mcp audit
 
 # Default target
 .DEFAULT_GOAL := help
@@ -162,6 +162,10 @@ generate-report-classes: venv ## Development: Regenerate the derived reports.* p
 	@uv run python scripts/generate_derived_report_classes.py
 	@echo "$(BLUE)ℹ️  Commit src/moneybin/reports/definitions/_derived_classes.py to apply$(RESET)"
 
+generate-docs: venv ## Development: Regenerate the CLI, MCP tool, and configuration references under docs/reference/; commit the result
+	@echo "$(BLUE)📚 Regenerating docs/reference/ from the command tree, MCP server, and settings...$(RESET)"
+	@uv run python scripts/generate_reference_docs.py
+
 format: venv format-sql ## Development: Format SQL models (format-sql) + code with ruff
 	@echo "$(BLUE)🎨 Formatting code with ruff...$(RESET)"
 	@uv run ruff format .
@@ -198,9 +202,8 @@ check: format lint type-check ## Development: Run all code quality checks
 # The single home for the pip-audit invocation: both the Security workflow and
 # the Release pipeline call `make audit`, so the accepted-vuln ignore list lives
 # here once and cannot drift. `uv run` auto-syncs, so this stands alone in CI.
-# `--all-groups` is load-bearing: without it the docs and server groups are
-# never resolved, and CVEs in them (e.g. pymdown-extensions via mkdocs-material)
-# go unreported by both pipelines.
+# `--all-groups` is load-bearing: without it the server group is never
+# resolved, and CVEs in it go unreported by both pipelines.
 #
 # Accepted, time-boxed starlette ignores — all share one root cause and one
 # exposure rationale. Root cause: the fixes are all on the starlette 1.x

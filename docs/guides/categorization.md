@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Categorization
 
 How MoneyBin categorizes transactions: deterministic rules and merchant mappings first, LLM-assist as the human helper for what's left, source precedence enforced on every write so your manual choices outrank automation. The same workflow is reachable from CLI (`moneybin transactions categorize ...`) and the bounded MCP categorization tools — pick whichever feels natural for the task.
@@ -41,7 +41,7 @@ Categories themselves live in `core.dim_categories` (seeded defaults plus user-c
 
 ```mermaid
 flowchart TD
-    A[Import / Plaid sync<br/>writes raw rows] --> B[moneybin refresh<br/>gsheet + match + transform + categorize + identity]
+    A[Import / Plaid sync<br/>writes raw rows] --> B[moneybin refresh<br/>gsheet + match + transform + categorize + identity + rates]
     B --> C{rows still<br/>uncategorized?}
     C -->|no| END[done]
     C -->|yes| D[transactions categorize assist<br/>returns PII-scrubbed batch]
@@ -53,9 +53,9 @@ flowchart TD
 
 Four points about the diagram above:
 
-- **`refresh` runs the deterministic cascade.** The `moneybin refresh` CLI and `refresh_run` MCP tool both invoke the same canonical pipeline: gsheet pull, cross-source matching, SQLMesh transform, categorization, then identity backfill. Imports and `sync pull` auto-refresh by default — you rarely call this by hand.
+- **`refresh` runs the deterministic cascade.** The `moneybin refresh` CLI and `refresh_run` MCP tool both invoke the same canonical pipeline: gsheet pull, cross-source matching, SQLMesh transform, categorization, identity backfill, then exchange-rate gather. Imports and `sync pull` auto-refresh by default — you rarely call this by hand.
 - **Newly created rules apply on the next refresh.** Creating a rule does not retroactively categorize old rows unless you opt in. Pass `--reapply` on the CLI `rules create`; MCP callers update the complete rule target state with `transactions_categorize_rules_set` and invoke `transactions_categorize_run` when they need an immediate run.
-- **`transactions categorize assist` never writes.** It returns PII-scrubbed records — merchant text is sent, embedded account numbers are masked; an LLM (in your MCP host, or a separate pipeline you wire up) proposes categorizations; you review; then a separate commit call persists the decisions.
+- **`transactions categorize assist` never writes.** It returns PII-scrubbed records — merchant text is kept as the categorization signal, scrubbed of embedded PII (card and account numbers, emails, phone numbers, dates, city/state); an LLM (in your MCP host, or a separate pipeline you wire up) proposes categorizations; you review; then a separate commit call persists the decisions.
 - **`commit`, `commit-from-file`, and the MCP `transactions_categorize_commit` tool all write `categorized_by='ai'`** — see the Hazard callout above. This is by design: the LLM is a probabilistic proposer, and `ai`-source means "anything else can override this," which is the right default for a guess.
 
 ## Surfaces
@@ -82,7 +82,7 @@ All commands live under `moneybin transactions categorize ...`. Every read comma
 | `auto stats` | Counts: active auto-rules, pending proposals, transactions auto-ruled. |
 | `auto rules` | Lists active rules where `created_by='auto_rule'`. |
 | `stats` | Coverage summary: total, categorized, uncategorized, percentage, and per-source breakdown. |
-| `ml status` / `ml train` / `ml apply` | Stubs. ML categorization (`categorized_by='ml'`) exits with a not-implemented notice today. |
+| `ml status` / `ml train` / `ml apply` | Stubs, hidden from `--help`. ML categorization (`categorized_by='ml'`) exits with a not-implemented notice today. |
 
 ### MCP
 
@@ -302,14 +302,14 @@ Two design choices that matter:
 1. **Exact exemplars, not inferred patterns.** Categorizing one `PAYPAL INST XFER` row for YouTube does not category-stamp every other PayPal row — only rows whose normalized `match_text` matches one of the exemplars. If you want a broad pattern like "everything containing COSTCO is Groceries," author it as a rule explicitly. Rules are a user choice; exemplars are evidence.
 2. **Multiple rows under one canonical name merge.** When several rows in the same batch share a `canonical_merchant_name`, they accumulate exemplars on the same merchant rather than spawning per-row merchants.
 
-**Inspecting and pruning.** `moneybin transactions categorize auto stats` reports active auto-rule and exemplar counts. There is no first-class "list exemplars" or "remove this exemplar from a merchant" CLI today — to surgically remove a bad exemplar you either edit `app.user_merchants` directly via `moneybin db query` (advanced) or hard-delete the merchant and re-categorize the affected rows. Merchant-specific MCP curation is not currently admitted to the standard registry.
+**Inspecting and pruning.** `moneybin transactions categorize auto stats` reports active auto-rule count, pending proposals, and transactions auto-ruled — it does not report an exemplar count. There is no first-class "list exemplars" or "remove this exemplar from a merchant" CLI today — to surgically remove a bad exemplar you either edit `app.user_merchants` directly via `moneybin db query` (advanced) or hard-delete the merchant and re-categorize the affected rows. Merchant-specific MCP curation is not currently admitted to the standard registry.
 
 ## LLM-assist in depth
 
 `transactions_categorize_assist` (and the matching CLI command) returns a `RedactedTransaction` per uncategorized row. The shape is frozen:
 
 - `transaction_id`
-- `description_scrubbed`, `memo_scrubbed` — merchant text preserved and sent in full (it's the categorization signal); both passed through `redact_for_llm()` which strips card last-fours, emails, phones, P2P recipient names, and other embedded-PII patterns
+- `description_scrubbed`, `memo_scrubbed` — merchant text kept as the categorization signal, scrubbed of embedded PII: card and account numbers, emails, phone numbers, P2P recipient names, dates, and city/state
 - `source_type` — `csv`, `ofx`, `plaid`, etc.
 - `transaction_type` — `DEBIT` / `CREDIT` / `CHECK` / `XFER` / `ATM` / ...
 - `check_number` — for handwritten checks
@@ -325,7 +325,7 @@ MoneyBin does not call an LLM provider itself. The CLI/MCP tool produces the PII
 
 What crosses to the LLM on `assist`:
 
-- PII-scrubbed description and memo (merchant text preserved; embedded account numbers masked)
+- PII-scrubbed description and memo (merchant text kept; embedded PII scrubbed — card and account numbers, emails, phone numbers, dates, city/state)
 - Structural fields: type, check number, transfer flags, channel, sign
 - `source_type` and `transaction_id`
 
@@ -342,14 +342,14 @@ See [`docs/guides/threat-model.md`](threat-model.md) for the broader threat mode
 
 There is no `categorize revert` command today. To investigate or undo a batch:
 
-- **Find the batch.** `moneybin db query "SELECT * FROM app.audit_log WHERE action LIKE 'category.%' ORDER BY recorded_at DESC LIMIT 50"` lists recent per-row edits. Bulk paths (`commit-from-file`, `run`, rule reapply) are deliberately audit-silent today — broader coverage is tracked under the app-integrity invariant 9 work.
+- **Find the batch.** `moneybin db query "SELECT * FROM app.audit_log WHERE action LIKE 'category.%' ORDER BY recorded_at DESC LIMIT 50"` lists recent per-row edits. Bulk paths (`commit-from-file`, `run`, rule reapply) are deliberately audit-silent today — broader coverage is tracked under the app-integrity invariant 10 work.
 - **Undo a single user edit.** The audit row carries `before` and `after` JSON; rewrite the row by hand via the MCP `transactions_categorize_commit` path or by direct SQL.
 - **Undo a rule batch.** `moneybin transactions categorize rules delete <rule_id> --reapply` strips every row the rule wrote and re-evaluates against remaining matchers — the cleanest path for "I committed a bad rule."
 - **Undo a `commit-from-file` batch.** No first-class path. The pragmatic approach: identify the affected `transaction_id`s from your input file, then either author a higher-priority rule that corrects them, or use `moneybin db query` to `DELETE FROM app.transaction_categories WHERE transaction_id IN (...)` and let the next refresh re-evaluate. Audit-based revert tooling is planned.
 
 ## Known gaps
 
-- **ML-based categorization.** The `ml` source already occupies its position in the precedence ladder — between `migration` and `provider_native` — and the `transactions categorize ml {status,train,apply}` commands are registered, but they're stubs today: invoking any of them returns a not-implemented notice.
+- **ML-based categorization.** The `ml` source already occupies its position in the precedence ladder — between `migration` and `provider_native` — and the `transactions categorize ml {status,train,apply}` commands are registered, but they're stubs today, hidden from `--help`: invoking any of them returns a not-implemented notice.
 - **Bulk-import-as-user CLI.** See [Migrating curated categories](#migrating-curated-categories). The service method exists; the CLI/MCP entry point doesn't.
 - **CLI parity for `canonical_merchant_name`.** The CLI `commit` and `commit-from-file` strip the key today; only the MCP `transactions_categorize_commit` tool routes it through to the exemplar accumulator.
 - **Merchant exemplar inspection / pruning.** No MCP route currently lists or removes exemplars or hard-deletes merchants. `taxonomy(view="merchants")` exposes catalog state; any future mutation remains unnamed until admission.

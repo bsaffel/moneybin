@@ -511,8 +511,8 @@ Numbered, each independently testable.
     observable outcome, including stages whose outcome is zero. A run that changed
     nothing and a run that recategorized 400 transactions are distinguishable from
     stderr alone. This requires a **result-carrier change**, not a renderer-only
-    one: `RefreshResult` (`src/moneybin/services/refresh.py:92`) carries
-    error-or-`None` per step, and `_run_categorize_step` (line 479) computes its
+    one: `RefreshResult` (`src/moneybin/orchestration/refresh.py:109`) carries
+    error-or-`None` per step, and `_run_categorize_step` (line 486) computes its
     counts, logs them, and returns `str | None`, discarding them. The renderer
     cannot recover a count the service already dropped, and must not re-query for
     it. `RefreshResult` therefore gains a per-stage outcome carrying the counts the
@@ -613,21 +613,101 @@ Numbered, each independently testable.
 
 **Categories (F8)**
 
-29. Category values are resolved to the display taxonomy at one boundary. No
-    single rendered column contains both `Food & Drink` and `FOOD_AND_DRINK`.
-30. A category with no display mapping renders a single consistent placeholder —
-    `Uncategorized` — never the raw provider code. Rendering the raw value would
-    itself produce the mixed column requirement 29 prohibits, which is the defect,
-    not a disclosure of it. The count of unmapped rows rides the **result framing**
-    (requirement 10), not a `render_note`: requirement 4 suppresses notes under
-    `--quiet`, and a taxonomy gap the user cannot see is exactly what requirement
-    29 exists to prevent. This **widens requirement 10's trigger**: result framing
-    is emitted when columns are omitted *or* when any rendered column contains an
-    unmapped placeholder. Without that widening the disclosure would vanish in
-    exactly the cases it matters — under `--wide`, and for any report whose full
-    projection already fits 80 columns, neither of which omits a column. The two
-    framing clauses may share one line. The raw provider value remains available
-    in `--output json`, which requirement 8 leaves unfiltered.
+29. The provider vocabulary never enters the category column, so no single
+    rendered column contains both `Food & Drink` and `FOOD_AND_DRINK`. **The
+    boundary is below the CLI**, in `prep.int_transactions__unioned`: its Plaid
+    branch aliased the raw PFC code into `category` (`plaid_category AS
+    category`), which `core.fct_transactions` then reached as the third arm of
+    `COALESCE(dc.category, c.category, t.category)`. The branch now contributes
+    `NULL::TEXT AS category`; the PFC code was already carried separately as
+    `plaid_category`, so nothing is lost and no column is added.
+
+    **Revised during implementation.** This requirement originally placed the
+    resolution in the CLI renderer. Reading the code first showed that wrong
+    twice over. The mixed column is a data-layer fact every consumer sees —
+    reports, `sql_query`, MCP — so a renderer fix would leave it everywhere
+    except the CLI. And all four report models group by `category`, so mapping
+    unknown values to a placeholder *at render time* would turn one grouping key
+    into several rows all labelled `Uncategorized` with different amounts —
+    which requirement 35 forbids the renderer collapsing. The renderer boundary
+    trades a mixed column for a duplicated one.
+
+    **Scope is the provider vocabulary only.** `category` still falls back to
+    the source's own text where a person wrote it — a tabular CSV's category
+    column (`stg_tabular__transactions`), a manual entry (`stg_manual__`) —
+    because that is a category the user chose, not a machine code. `t.category`
+    meant two different things depending on source, and only one of them was the
+    defect; dropping the fallback wholesale would have discarded user-authored
+    categories, a regression this scoping avoids.
+
+    **Two further defects fall out of the same one-line change**, and are the
+    evidence the boundary belongs here rather than in the renderer:
+    `core.uncategorized_queue` selects `WHERE category IS NULL`, so a
+    never-categorized Plaid row carrying a raw code was **excluded from the
+    curation queue** — while `transactions list --uncategorized`
+    (`categorized_by IS NULL`, `transaction_service.py:1007`) included it. Two
+    definitions of "uncategorized" disagreeing on exactly the rows F8 is about.
+    And an unmapped code formed its own row in a spending breakdown, splitting
+    a category's total. Neither is a rendering bug and neither was in F8's
+    report; both are now covered by `test_categorize_plaid_e2e.py`.
+30. A row with no category renders a single consistent placeholder —
+    `Uncategorized` — in **text output only**. Requirement 29 means the raw
+    provider code can no longer reach this column, so the placeholder now stands
+    for a genuine absence rather than masking a vocabulary mismatch. The count of
+    such rows rides the **result framing** (requirement 10), not a `render_note`:
+    requirement 4 suppresses notes under `--quiet`, and a taxonomy gap the user
+    cannot see is exactly what requirement 29 exists to prevent. This **widens
+    requirement 10's trigger**: result framing is emitted when columns are
+    omitted *or* when the placeholder appears in the column declared to carry
+    it. Without that widening the disclosure would vanish in exactly the cases
+    it matters — under `--wide`, and for any report whose full projection
+    already fits 80 columns, neither of which omits a column. The framing
+    clauses share one line.
+
+    **The renderer substitutes, and counts what it substituted (surfaced
+    during implementation).** The caller declares the column and the word, then
+    passes the stored value through — NULL included — rather than substituting
+    and letting the renderer match the string back. Two things fall out that
+    the string match got wrong. A description or a category a person *authored*
+    as `Uncategorized` is a value, not a gap: `tabular` and `manual` keep
+    whatever text was written, and plenty of tools export that exact word as
+    their own placeholder, so matching the rendered string would count an
+    authored value as a missing one — collapsing the very distinction the
+    paragraph below promises `--output json` preserves. And the count is
+    confined to one column, because a taxonomy gap lives in one column while
+    every other cell in the row is data.
+
+    Absent means NULL, and only NULL. A whitespace-only category is reachable —
+    Polars reads an empty CSV cell as NULL but keeps a cell holding spaces —
+    and treating it as a gap is the tempting mistake. `core.uncategorized_queue`
+    selects `WHERE category IS NULL`, so such a row is not in the queue, and
+    counting it would advertise a gap `transactions categorize run` cannot act
+    on: the same class of lie as the provider code requirement 29 removes from
+    this column. Making the two agree means normalizing blanks in staging
+    (`NULLIF(TRIM(category), '')` in `stg_tabular__` and `stg_manual__`), which
+    changes what the queue *contains* rather than how it renders, and is
+    therefore not this requirement's to make.
+
+    A declared column absent from the table is refused rather than skipped, for
+    the reason `column_view` already gives: a disclosure that silently counts
+    nothing renders exactly like a table with no gaps. A declared column the
+    *width fit* dropped is skipped, which is the different case — the gap is
+    real but not on screen to be misread.
+
+    `--output json` carries the underlying NULL untouched, so a caller can still
+    tell an uncategorized row from one categorized as the literal string
+    `Uncategorized`. The raw provider code remains readable at
+    `prep.int_transactions__merged.plaid_category` through `sql_query` /
+    `moneybin sql query`, which AGENTS.md already designates as the surface for
+    inspecting `raw` and `prep`. It is deliberately **not** added to
+    `TransactionRow`: that is the payload change requirements 26 and 27 declined,
+    for the same reason — requirement 8 keeps the JSON/MCP contract untouched.
+    The cost, named rather than hidden: an agent debugging why a row failed to
+    categorize runs one SQL query instead of reading the list payload.
+
+    One placeholder, tree-wide. `transactions splits list` rendered `-` for the
+    same absence; it now renders the same word, because two placeholders for one
+    condition is the second pattern the coherence rule prohibits.
 
 **Stubs (F4)**
 
@@ -707,6 +787,17 @@ Numbered, each independently testable.
     does not bite. This is the count F10 actually wanted: the finding was that
     a human asking "how much is there?" got a base64 cursor instead.
 
+    **The count and the continuation are gated separately (surfaced during
+    implementation).** `total_count` is every row matching the filters and does
+    not shrink as a walk advances, so the remainder it implies is not evidence
+    that a further page exists: on the last page of a `--cursor` walk the total
+    still exceeds the rows shown, and `--limit` there would fetch nothing. The
+    count follows the remainder; the continuation follows `next_cursor`, the
+    same fact the JSON envelope publishes as `summary.has_more`. A last page
+    therefore reads `6 of 2,046 shown` and offers nothing — the slice is still
+    disclosed, because requirement 34 exists so a partial result cannot read as
+    a whole one, and that is true of a walk's last page as much as its first.
+
     **The text branch must stop printing the cursor — a deletion, not an
     omission.** `list_.py:229` currently emits
     `Next page: --cursor {result.next_cursor}` to stderr. That line *is* F10:
@@ -728,22 +819,39 @@ Numbered, each independently testable.
     receives the count because that is what they asked for. Neither surface
     gets the other's answer.
 
-    **The same defect is live in `reports networth`, from the other
-    direction.** `core:networth` declares three `actions`
-    (`src/moneybin/reports/service_reports.py:336-343`), each written as an MCP
-    call — a `reports` invocation carrying a report id and a date range, an
-    `accounts_balances` invocation carrying a view and an account reference,
-    and an `accounts` invocation carrying a closed-account flag. Read them at
-    that citation rather than here: quoting a tool call in a public doc binds
-    it to the live schema, and this is a note about the CLI's prose, not about
-    the MCP contract. `echo_report_notes` prints all three verbatim to a CLI
-    reader, who has no such commands to type. It is this requirement's rule
-    with the surfaces swapped:
-    there, a token the human cannot use; here, a call signature the human
-    cannot use. The fix is the same shape — the text branch renders the CLI
-    invocation or renders nothing — and it lands with this requirement rather
-    than as a separate cleanup, because one `actions` list serving two
-    vocabularies is the thing to remove.
+    **The same defect is live on the report surface, from the other
+    direction — and it is systemic, not confined to one report.** Five sites
+    declare `actions` written as MCP calls:
+    `service_reports.py:342` and `:400`, `balance_drift.py:295`,
+    `cash_flow.py:198`, and `spending_trend.py:271`. Read them at those
+    citations rather than here: quoting a tool call in a public doc binds it to
+    the live schema, and this is a note about the CLI's prose, not about the
+    MCP contract. `cli_register.py:155` prints every one of them verbatim to a
+    CLI reader who has no such commands to type, while
+    `mcp/tools/reports.py:97` sends the same list to MCP, where it is correct.
+    It is this requirement's rule with the surfaces swapped: there, a token the
+    human cannot use; here, a call signature the human cannot use.
+
+    **The framework already contains the answer, applied once.**
+    `inspection_hint` (`execute.py:512`) produces an action naming
+    `moneybin reports explain`, and its docstring states the reason: an action
+    must bind to an admitted surface, and the verify surface has no MCP
+    identity. One producer follows that; five do not. Two patterns for one job
+    is what the coherence rule in
+    [`design-principles.md`](../../.claude/rules/design-principles.md) forbids,
+    so the fix is to make the declaration carry both vocabularies rather than
+    to teach the CLI to translate MCP strings.
+
+    **Scope note (decided during implementation).** This half does *not* land
+    with requirement 34's first half. Rendering it correctly means adding a
+    declaration to the report contract — documented in `extension-contracts.md`
+    — so one declared action renders a CLI invocation on one surface and a tool
+    call on the other, across 5 definitions and 2 render paths. That is a
+    contract change on top of a rendering change, and larger than the rest of
+    requirement 34. It lands with the increment covering requirements 18 and
+    23–25, which already reaches below the CLI into `orchestration/refresh.py` and
+    `metrics/registry.py`; grouping by the layer touched keeps each review to
+    one shape.
 
 **Non-interference with data correctness (F0)**
 
@@ -808,7 +916,10 @@ removed field and costs a `stats` surface that cannot label nine of its metrics.
 | `src/moneybin/reports/definitions/*.py` | Declare each report's `DEFAULT_COLUMNS`, `spending_trend.py` first (F1) |
 | `src/moneybin/cli/commands/reports/networth.py` | The two hand-written NetworthService-backed commands; adopt `render_summary` / `render_rows` |
 | `src/moneybin/cli/commands/accounts/__init__.py` | Account ID column (26); adopt `render_rows` |
-| `src/moneybin/cli/commands/transactions/list_.py` | Keep rendering the account ID only — requirement 27 excludes the display name (27); **delete the `Next page: --cursor …` line at 229** and render `N of M shown` from the `total_count` already passed at line 173 (34) |
+| `src/moneybin/cli/commands/transactions/list_.py` | Keep rendering the account ID only — requirement 27 excludes the display name (27); rename its header `account` → `account_id`, the key `accounts list` now shares (28); **delete the `Next page: --cursor …` line at 229** and render `N of M shown` from the `total_count` already passed at line 173 (34); pass `placeholder=` so an absent category renders and is counted (29, 30) |
+| `src/moneybin/sqlmesh/models/prep/int_transactions__unioned.sql` | The Plaid branch contributes `NULL::TEXT AS category` instead of `plaid_category AS category` — **this is requirement 29's boundary** (29). One line; the PFC code already flows separately as `plaid_category` |
+| `src/moneybin/sqlmesh/models/core/fct_transactions.sql` | Column comment only: the `category` fallback chain no longer reaches a provider taxonomy code, and the comment said it did (29) |
+| `src/moneybin/cli/commands/transactions/splits.py` | Render the shared `Uncategorized` placeholder instead of `-` — one word for one condition (30) |
 | `src/moneybin/cli/commands/transactions/categorize/__init__.py` | Uncategorized queue is a Shape-5 read-projection — migrate off `render_rich_table` (1) |
 | `src/moneybin/cli/commands/accounts/links.py` | `links pending` (line 55) and `links history` (line 512) hand-format an aligned table via `typer.echo`; there is no `links list` subcommand — requirement 1 applies from day one |
 | `src/moneybin/cli/commands/investments/security_links.py` | `links pending` (line 42) / `links history` (line 202) hand-format the same padded-column table |
@@ -817,7 +928,7 @@ removed field and costs a `stats` surface that cannot label nine of its metrics.
 | `src/moneybin/cli/commands/merchants/links.py` | `links pending` (line 34) / `links history` (line 140) — same hand-formatted-table pattern as its accounts twin; migrate both together per the coherence rule |
 | `src/moneybin/cli/commands/transactions/matches.py` | `matches pending` (line 35) hand-formats a padded f-string table at lines 70-85 — the third of the three review-queue renderers |
 | `src/moneybin/cli/commands/refresh.py` | Per-stage notes (18); drop function-name prefixes and `SQLMesh` (16, 17) |
-| `src/moneybin/services/refresh.py` | `RefreshResult` gains per-stage outcomes so the counts `_run_categorize_step` already computes reach the renderer instead of only the log (18) |
+| `src/moneybin/orchestration/refresh.py` | `RefreshResult` gains per-stage outcomes so the counts `_run_categorize_step` already computes reach the renderer instead of only the log (18) |
 | `src/moneybin/services/merchant_links_service.py` | Line 301 — rephrase the `merchant_links_run: bound=… conflicts=…` log into prose, keeping the counts (16). The second and smaller of this spec's two below-CLI reaches |
 | `docs/specs/extension-contracts.md` | Document `DEFAULT_COLUMNS` as an optional `ReportSpec` field and its width-bounded fallback (6) |
 | `src/moneybin/cli/commands/system/doctor.py` | Quiet on success (20–22); recovery-action rendering unchanged per req 16's exception |
@@ -1010,24 +1121,42 @@ today's code. Two need specific shapes:
 - **F6** — a doctor run with one failing invariant must print that invariant and
   not the 48 passing ones. A fixture where everything passes cannot distinguish
   quiet-on-success from a renderer that prints nothing at all.
-- **F8** — a fixture containing both a mapped and an unmapped category, asserting
-  the column is homogeneous and the unmapped one is counted in the result framing — not a `render_note`, which requirement 4 suppresses under `-q`. A
-  fully-mapped fixture passes trivially.
-- **F10** — two assertions, because requirement 34 both adds and deletes.
+- **F8** — two tiers, because requirement 29's boundary moved below the CLI.
+  At the data layer, `test_categorize_plaid_e2e.py` asserts an uncategorized
+  Plaid row carries `category IS NULL` — **and reaches
+  `core.uncategorized_queue`**, the behavioural partner that proves the raw code
+  was not merely hidden from a column but was emptying the curation queue. Two
+  assertions in that file previously pinned the defect
+  (`assert row[0] == "FOOD_AND_DRINK", "raw Plaid category text still passes
+  through"`); they were incidental to what the test exists to prove, and now
+  assert the NULL. At the CLI, a fixture containing both a mapped and an unmapped
+  category asserts the column is homogeneous, the unmapped row is counted in the
+  result framing — not a `render_note`, which requirement 4 suppresses under `-q`
+  — and that `--output json` still carries the NULL. A fully-mapped fixture
+  passes trivially.
+- **F10** — three assertions, because requirement 34 adds, deletes, and gates.
   The first: a paged text run renders `N of M shown` with `M` equal to
   `total_count`, not to the page length, which requires a fixture whose match
   count exceeds its `--limit`. The second: **no text-branch output contains
   the cursor token**, asserted against stdout *and* stderr together, because
   the line being deleted (`list_.py:229`) writes to stderr — an assertion over
-  stdout alone passes against the unfixed code.
+  stdout alone passes against the unfixed code. A third followed from the gate
+  above: a result with `next_cursor=None` and a `total_count` above the page
+  length still frames the slice and offers no `--limit`, which no fixture
+  asserting only the common case can distinguish from the ungated line.
 - **F9 / req 36** — the behavioural partner to the source scan above: render a
   `magnitude`, a negative `flow`, and a negative `balance` with color forced
   on, and assert the emitted ANSI codes match the palette's declared values.
   This catches a bypassed palette that the source scan misses.
 
-**Not covered by the default gate:** these are CLI-surface tests in
-`tests/moneybin/test_cli/`, so `make check test` is the correct gate. No
-scenario-suite run is required — no data shape changes.
+**Gate.** Most of these are CLI-surface tests in `tests/moneybin/test_cli/`,
+where `make check test` is correct. **Requirement 29 is the exception and
+changes the answer:** it edits a `prep` model that feeds `core.fct_transactions`,
+which is a data shape, so the change carrying it also runs
+`make test-integration` and `make test-scenarios` per AGENTS.md's blast-radius
+rule. The original note here read "no scenario-suite run is required — no data
+shape changes," which was true of the renderer-boundary design and false of the
+one that shipped.
 
 ## Synthetic Data Requirements
 

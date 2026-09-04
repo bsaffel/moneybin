@@ -24,6 +24,7 @@ from typing import Any
 from moneybin.database import Database
 from moneybin.metrics.registry import audit_events_emitted_total
 from moneybin.services.mutation_context import current_operation_id
+from moneybin.tables import AUDIT_LOG
 
 logger = logging.getLogger(__name__)
 
@@ -133,14 +134,14 @@ class AuditService:
         # operation — operation_id is NOT NULL by design.
         operation_id = current_operation_id()
         self._db.conn.execute(
-            """
-            INSERT INTO app.audit_log (
+            f"""
+            INSERT INTO {AUDIT_LOG.full_name} (
                 audit_id, actor, action,
                 target_schema, target_table, target_id,
                 before_value, after_value, parent_audit_id, operation_id,
                 context_json, is_undo, undoes_operation_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            """,  # noqa: S608  # AUDIT_LOG is a TableRef constant, values parameterized
             [
                 audit_id,
                 actor,
@@ -239,7 +240,7 @@ class AuditService:
         )
         self._db.conn.execute(
             f"""
-            INSERT INTO app.audit_log (
+            INSERT INTO {AUDIT_LOG.full_name} (
                 audit_id, actor, action,
                 target_schema, target_table, target_id,
                 before_value, after_value, parent_audit_id, operation_id,
@@ -303,7 +304,7 @@ class AuditService:
                    target_schema, target_table, target_id,
                    before_value, after_value, parent_audit_id,
                    operation_id, context_json, {self._undo_columns_sql()}
-              FROM app.audit_log
+              FROM {AUDIT_LOG.full_name}
               {where}
               ORDER BY occurred_at DESC, audit_id DESC
               {limit_sql}
@@ -324,7 +325,7 @@ class AuditService:
             where = "WHERE occurred_at < ? OR (occurred_at = ? AND audit_id <= ?)"
             params.extend([snapshot[0], snapshot[0], snapshot[1]])
         row = self._db.conn.execute(
-            f"SELECT COUNT(*) FROM app.audit_log {where}",  # noqa: S608  # fixed predicate fragment
+            f"SELECT COUNT(*) FROM {AUDIT_LOG.full_name} {where}",  # noqa: S608  # fixed predicate fragment
             params,
         ).fetchone()
         return int(row[0]) if row is not None else 0
@@ -346,7 +347,7 @@ class AuditService:
                    target_schema, target_table, target_id,
                    before_value, after_value, parent_audit_id,
                    operation_id, context_json, {self._undo_columns_sql()}
-              FROM app.audit_log
+              FROM {AUDIT_LOG.full_name}
              WHERE target_id = ?
                 OR json_extract_string(before_value, '$.transaction_id') = ?
                 OR json_extract_string(after_value, '$.transaction_id') = ?
@@ -376,7 +377,7 @@ class AuditService:
                    target_schema, target_table, target_id,
                    before_value, after_value, parent_audit_id,
                    operation_id, context_json, {self._undo_columns_sql()}
-              FROM app.audit_log
+              FROM {AUDIT_LOG.full_name}
              WHERE operation_id = ?
              ORDER BY occurred_at ASC, rowid ASC
             """,  # noqa: S608  # undo-columns fragment is a controlled literal
@@ -392,7 +393,7 @@ class AuditService:
                    target_schema, target_table, target_id,
                    before_value, after_value, parent_audit_id,
                    operation_id, context_json, {self._undo_columns_sql()}
-              FROM app.audit_log
+              FROM {AUDIT_LOG.full_name}
              WHERE audit_id = ? OR parent_audit_id = ?
              ORDER BY occurred_at ASC, audit_id ASC
             """,  # noqa: S608  # undo-columns fragment is a controlled literal

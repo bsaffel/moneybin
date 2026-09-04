@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-04 -->
 
 # Profiles
 
@@ -118,7 +118,7 @@ moneybin profile set logging.level DEBUG
 moneybin profile set logging.log_to_file false --profile business
 ```
 
-This only updates the per-profile YAML — env-var overrides like `MONEYBIN_DATABASE__PATH` still take precedence at load time.
+This only updates the per-profile YAML — env-var overrides like `MONEYBIN_DATABASE__PATH` still take precedence at load time. Every variable, with its type and default, is in the [configuration reference](../reference/configuration.md).
 
 ### `moneybin profile delete <name>`
 
@@ -153,7 +153,7 @@ Three ways to pick the profile a command runs against, in precedence order:
 ```bash
 # One-off: import into 'business' without changing the active profile,
 # even if MONEYBIN_PROFILE=personal is exported.
-moneybin --profile business import file statement.qfx
+moneybin --profile business import files statement.qfx
 
 # Whole shell session
 export MONEYBIN_PROFILE=business
@@ -172,7 +172,7 @@ moneybin profile switch business
 ```bash
 moneybin profile create scratch
 moneybin --profile scratch db restore --from ~/.moneybin/profiles/personal/backups/moneybin_20260517.duckdb
-moneybin --profile scratch reports summary
+moneybin --profile scratch accounts summary
 moneybin profile delete scratch -y
 ```
 
@@ -193,7 +193,7 @@ The MCP server is bound to **one profile per process**. `moneybin mcp serve` res
 - **Switching profiles between sessions:** supported. Restart the server with `--profile <name>` or after `profile switch`.
 - **Switching profiles mid-session is not supported.** The DuckDB connection is bound to one profile's key.
 - **`profile switch` in another shell does NOT affect a running MCP server.** It only updates the active-profile pointer in `<base>/config.yaml`, which is read at the *next* unbound CLI or MCP startup. The already-running server keeps serving its original profile until you stop it.
-- **Multiple profiles at once:** run separate `moneybin mcp serve --profile <name>` processes per profile. Stdio MCP clients spawn each as a child process; each client config entry points at one profile.
+- **Multiple profiles at once:** run separate `moneybin --profile <name> mcp serve` processes per profile — `--profile` is a root-level flag, so it goes before the subcommand. Stdio MCP clients spawn each as a child process; each client config entry points at one profile.
 
 ## Multi-machine workflows
 

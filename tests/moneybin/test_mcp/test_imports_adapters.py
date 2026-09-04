@@ -14,7 +14,10 @@ from typing import Any
 
 import pytest
 
-from moneybin.mcp.adapters.imports_adapters import pdf_format_detail, pdf_format_row
+from moneybin.adapters.imports_adapters import (
+    pdf_format_detail,
+    pdf_format_row,
+)
 
 
 def _pdf_format(**overrides: Any) -> Any:

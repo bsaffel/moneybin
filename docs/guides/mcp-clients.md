@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-20 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Configuring MCP Clients
 
 MoneyBin's MCP server runs over stdio today and connects to any MCP-spec-compliant client. This guide covers the clients we test against and the install steps for each. For the protocol-level details (envelope shape, tool catalog, sensitivity tiers), see the [MCP server guide](mcp-server.md).
@@ -91,7 +91,7 @@ a future schema or tool must pass the admission record in
 
 Anthropic's desktop app for macOS and Windows.
 
-Anthropic now blesses **desktop extensions (`.mcpb` bundles)** as the primary way to add a local MCP server: one file, installed through the app's own UI, no JSON editing. Hand-editing `claude_desktop_config.json` still works and is still supported — it is simply the legacy path now.
+Anthropic now documents **desktop extensions (`.mcpb` bundles)** as the way to add a local MCP server: "single-click installable packages" installed through Settings → Extensions, with no JSON editing. Hand-editing `claude_desktop_config.json` still works — it is the path `moneybin mcp install` takes — but Anthropic's own setup article no longer covers it.
 
 **MoneyBin does not ship an `.mcpb` bundle.** The config-file path below is the supported way to install it.
 
@@ -201,7 +201,7 @@ moneybin mcp install --client gemini-cli -y
 - **Restart required:** No — `gemini` reads settings on each invocation.
 - **Server lifecycle:** Per-invocation. Every `gemini` command in any terminal spawns its own MoneyBin server. Multiple `gemini` sessions on the same profile coexist — reads usually coexist and writes serialize. A write-mode tool call fails only when another session holds a conflicting lock past the retry window (a long write, or a long read holding the read lock); a read-mode call fails only when it lands during a long write — see [Concurrency](#concurrency-which-clients-share-a-server) below.
 - **Confirmation UI:** `gemini` prompts in the terminal before invoking tools by default. Tool annotations are not currently surfaced in the prompt text.
-- **`trust` is deliberately not set.** Gemini CLI supports a per-server `"trust": true` setting that, in its own words, will "trust this server and bypass all tool call confirmations." MoneyBin does not write it. Our surface includes write tools — import, categorize, delete, refresh — and those should ask before they act on your financial data. Add it by hand only if you accept that every MoneyBin tool call runs unprompted.
+- **`trust` is deliberately not set.** Gemini CLI supports a per-server `"trust"` boolean that, in its own words, "bypasses all tool call confirmations for this server (default: `false`)." MoneyBin does not write it. Our surface includes write tools — import, categorize, delete, refresh — and those should ask before they act on your financial data. Add it by hand only if you accept that every MoneyBin tool call runs unprompted.
 
 ### Codex (CLI, Desktop app, IDE extension)
 
@@ -298,7 +298,7 @@ You can cross-check the same payload from the CLI:
 
 ```bash
 moneybin system status --output json
-moneybin accounts --output json
+moneybin accounts list --output json
 ```
 
 The envelope shape is identical. See the [CLI reference](cli-reference.md) for the full command list.
@@ -307,7 +307,7 @@ For direct stdio inspection without going through a client (useful for debugging
 
 ## Uninstall and reset
 
-There is no `moneybin mcp uninstall` command today — removal is a manual edit to the client's config file.
+There is no `moneybin mcp uninstall` command today — removal is a manual edit to the client's config file. <!-- cli-invocation-ok: names a command that deliberately does not exist -->
 
 1. Run `moneybin mcp config path --client <name>` to print the resolved config path.
 2. Open the file in an editor.

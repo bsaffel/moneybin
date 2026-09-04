@@ -614,7 +614,7 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
   exists, prompt to update it (or auto-update with `--yes`).
 - Trigger the end-of-batch refresh pipeline (matching + SQLMesh apply + deterministic
   categorization) once after the batch completes, unless `--no-refresh` is specified.
-  Routed through `services/refresh.py` (PR #151).
+  Routed through `orchestration/refresh.py` (PR #151).
 
 **Import reverting:** `moneybin import revert <import-id>` deletes all
 `raw.tabular_transactions` and `raw.tabular_accounts` rows matching that
