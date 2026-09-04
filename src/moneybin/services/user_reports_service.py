@@ -21,6 +21,14 @@ from typing import Any, Literal
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.limits import (
+    DESCRIPTION_MAX_LEN,
+    IDENTIFIER_MAX_LEN,
+    NOTE_MAX_LEN,
+    REPORT_DOWNGRADES_MAX_LEN,
+    REPORT_PARAMS_MAX_LEN,
+    REPORT_QUERY_MAX_LEN,
+)
 from moneybin.metrics import registry as metrics
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import get_report_catalog
@@ -39,14 +47,6 @@ from moneybin.reports._framework.dynamic import (
     unknown_semantics,
 )
 from moneybin.repositories.user_reports_repo import UNSET, Unset, UserReportsRepo
-from moneybin.services._validators import (
-    DESCRIPTION_MAX_LEN,
-    IDENTIFIER_MAX_LEN,
-    NOTE_MAX_LEN,
-    REPORT_DOWNGRADES_MAX_LEN,
-    REPORT_PARAMS_MAX_LEN,
-    REPORT_QUERY_MAX_LEN,
-)
 from moneybin.services.audit_service import AuditEvent
 from moneybin.services.entity_reference import (
     EntityCandidate,

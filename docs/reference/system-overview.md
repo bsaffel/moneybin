@@ -156,7 +156,7 @@ A single tool invocation, end-to-end:
 5. **Envelope wrap-up.** The decorator checks the return is a `ResponseEnvelope`, attaches sensitivity metadata, and lets the body's action hints (suggested next tools) ride along. Classified domain exceptions become error envelopes; timeouts become a `timed_out` envelope; anything unclassified propagates to FastMCP.
 6. **Audit + return.** The audit primitive logs `tool=<name> sensitivity=<tier> metadata=<...>`. FastMCP serializes the envelope and returns it to the client.
 
-Source: `src/moneybin/mcp/decorator.py`, `src/moneybin/mcp/middleware.py`, `src/moneybin/mcp/privacy.py`.
+Source: `src/moneybin/mcp/decorator.py`, `src/moneybin/mcp/middleware.py`, `src/moneybin/privacy/sensitivity.py`.
 
 ## Storage
 

@@ -22,7 +22,6 @@ from moneybin.database import (
     get_database,
 )
 from moneybin.errors import UserError
-from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.metrics.registry import USER_REPORT_RUNS_TOTAL
 from moneybin.privacy.payloads.reports import (
     ReportCatalogEntry,
@@ -31,6 +30,7 @@ from moneybin.privacy.payloads.reports import (
     ReportResultPayload,
     ReportSemanticsPayload,
 )
+from moneybin.privacy.sensitivity import tier_to_sensitivity
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     USER_NAMESPACE,

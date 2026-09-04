@@ -17,28 +17,27 @@ from typing import Any, Literal, cast
 from fastmcp import FastMCP
 
 from moneybin import error_codes
-from moneybin.config import get_settings
-from moneybin.connectors.sync_models import ConnectedInstitution, PullResult
-from moneybin.errors import UserError
-from moneybin.mcp._registration import register
-from moneybin.mcp.adapters.refresh_adapters import (
+from moneybin.adapters.refresh_adapters import (
     refresh_rate_gap_hints,
     refresh_step_actions,
 )
-from moneybin.mcp.adapters.sync_adapters import (
+from moneybin.adapters.rematch_report import retired_transfers_action
+from moneybin.adapters.sync_adapters import (
     sync_link_envelope,
     sync_link_status_envelope,
     sync_pull_envelope,
     sync_status_envelope,
 )
+from moneybin.config import get_settings
+from moneybin.connectors.sync_models import ConnectedInstitution, PullResult
+from moneybin.errors import UserError
+from moneybin.mcp._registration import register
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
-from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.sync import (
     SyncAuthView,
@@ -55,6 +54,7 @@ from moneybin.privacy.payloads.sync import (
     SyncStatusCoarsePayload,
     SyncStatusPayload,
 )
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,

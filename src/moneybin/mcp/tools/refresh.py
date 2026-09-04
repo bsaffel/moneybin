@@ -15,9 +15,9 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
+from moneybin.adapters.refresh_adapters import refresh_envelope
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
-from moneybin.mcp.adapters.refresh_adapters import refresh_envelope
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.orchestration.refresh import RefreshStep, expand_steps, refresh
 from moneybin.privacy.payloads.system import RefreshRunPayload

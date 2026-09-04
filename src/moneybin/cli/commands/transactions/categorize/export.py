@@ -46,8 +46,8 @@ def categorize_export_uncategorized(
     are stripped at the commit boundary).
     """
     from moneybin.config import get_settings
-    from moneybin.mcp.privacy import audit_log
     from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
+    from moneybin.privacy.sensitivity import audit_log
     from moneybin.services.categorization import CategorizationService
 
     with handle_cli_errors():

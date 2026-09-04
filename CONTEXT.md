@@ -415,6 +415,14 @@ _Avoid_: tier, level, grade, rating
   Providers' own class names still carry the old term. They are internal
   naming, so they migrate as they are touched.
 
+- **"Adapter"** carries three senses: the `moneybin/adapters/` package, which
+  renders a service or orchestration result as the response both surfaces
+  emit; the **price adapter** that fetches from a market-data vendor; and the
+  loose use in `test_adapter_layering.py` for the surface modules it guards —
+  the MCP tools and CLI commands. Resolved: unqualified **Adapter** is the
+  rendering package; say **price adapter** and **surface module** for the
+  other two.
+
 - **"Account"** carries four meanings across the sources MoneyBin reads: the
   real account at an institution, a source's own identifier for it, a login
   covering several accounts at once, and, loosely, the user's own MoneyBin

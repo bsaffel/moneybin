@@ -10,9 +10,9 @@ from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import audit_log
 from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
 from moneybin.privacy.payloads.categorize import AssistRow, CatAssistPayload
+from moneybin.privacy.sensitivity import audit_log
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.categorization import CategorizationService
 

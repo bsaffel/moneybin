@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING
 import typer
 
 from moneybin import error_codes
+from moneybin.adapters.gsheet_adapters import (
+    gsheet_connect_payload,
+    gsheet_connection_row,
+    gsheet_pull_rows,
+)
 from moneybin.cli.output import (
     OutputFormat,
     output_option,
@@ -39,11 +44,6 @@ from moneybin.connectors.gsheet.service_factory import (
 from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import SignConventionType
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
-from moneybin.mcp.adapters.gsheet_adapters import (
-    gsheet_connect_payload,
-    gsheet_connection_row,
-    gsheet_pull_rows,
-)
 from moneybin.privacy.payloads.gsheet import (
     GsheetAuthPayload,
     GsheetConnectionsPayload,

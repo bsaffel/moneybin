@@ -15,7 +15,6 @@ from moneybin.mcp.tools.taxonomy import (
     taxonomy_coarse,
     taxonomy_set_coarse,
 )
-from moneybin.mcp.write_contracts import CategoryStateRequest, MerchantStateRequest
 from moneybin.privacy.payloads.categories import (
     CategoriesPayload,
     CategoryRow,
@@ -23,6 +22,7 @@ from moneybin.privacy.payloads.categories import (
     MerchantsPayload,
 )
 from moneybin.protocol.pagination import encode_keyset_cursor
+from moneybin.protocol.write_contracts import CategoryStateRequest, MerchantStateRequest
 from moneybin.services.categorization import CategorizationService
 
 from .schema_assertions import (

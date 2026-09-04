@@ -21,15 +21,6 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.matching.hashing import gold_key_unmatched
-from moneybin.mcp.write_contracts import (
-    AnnotationRequest,
-    NoteAdd,
-    NoteDelete,
-    NoteEdit,
-    SplitsSet,
-    TagRename,
-    TagsSet,
-)
 from moneybin.protocol.pagination import (
     KeysetPosition,
     KeysetScalar,
@@ -39,6 +30,15 @@ from moneybin.protocol.pagination import (
     decode_keyset_cursor,
     reject_inverted_keyset,
     validate_keyset_shape,
+)
+from moneybin.protocol.write_contracts import (
+    AnnotationRequest,
+    NoteAdd,
+    NoteDelete,
+    NoteEdit,
+    SplitsSet,
+    TagRename,
+    TagsSet,
 )
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo

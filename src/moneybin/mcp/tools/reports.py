@@ -11,8 +11,8 @@ from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity, get_max_rows, tier_to_sensitivity
 from moneybin.privacy.payloads.reports import ReportsPayload
+from moneybin.privacy.sensitivity import Sensitivity, get_max_rows, tier_to_sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework.catalog import (
     catalog_classes_returned,
