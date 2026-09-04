@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-02 -->
 
 # Auto-Rule Pipeline
 
@@ -156,7 +156,7 @@ Each accepted proposal runs three writes — insert rule, mark proposal approved
 
 ### Refusal guards on promotion
 
-Two independent guards run inside `AutoRuleService.approve` before a `pending` proposal is promoted (`src/moneybin/services/auto_rule_service.py:638-734`), both tuned by settings under `MoneyBinSettings.categorization` (`src/moneybin/config.py:622-651`):
+Two independent guards run inside `AutoRuleService.approve` before a `pending` proposal is promoted (`src/moneybin/services/auto_rule_service.py:638-734`), both tuned by settings under `MoneyBinSettings.categorization` (`CategorizationSettings` in `src/moneybin/config.py`):
 
 - **Specificity floor** (`is_unselective_contains`) — a `contains` pattern shorter than `auto_rule_min_contains_length` (default `4`) is refused. A 2-char pattern like `TO`, invented from a truncated `TRANSFER TO ...`, matches `STORE`, `AUTO`, and `TOTAL`.
 - **Blast radius** (`_is_broad`) — a proposal is refused when its `estimated_match_count` exceeds `auto_rule_broad_match_factor` (default `10`) times its `trigger_count`, and the match count is at or above the `auto_rule_broad_match_min` floor (default `20`, so thin-evidence proposals under that floor are never flagged regardless of ratio).
@@ -243,7 +243,7 @@ Deactivation (both the override path and a manual `rules delete`) routes through
 
 ### Threshold ordering invariant
 
-`auto_rule_proposal_threshold <= auto_rule_override_threshold` is enforced by a Pydantic validator (`src/moneybin/config.py:682-698`). The deactivation bar must not sit below the creation bar: if `override_threshold` were less than `proposal_threshold`, a pattern could accumulate enough user corrections to deactivate its rule via `check_overrides` before enough auto-categorizations had ever occurred to propose the rule via `record_categorization` — an obviously degenerate configuration.
+`auto_rule_proposal_threshold <= auto_rule_override_threshold` is enforced by a Pydantic validator (`CategorizationSettings.proposal_threshold_lte_override_threshold` in `src/moneybin/config.py`). The deactivation bar must not sit below the creation bar: if `override_threshold` were less than `proposal_threshold`, a pattern could accumulate enough user corrections to deactivate its rule via `check_overrides` before enough auto-categorizations had ever occurred to propose the rule via `record_categorization` — an obviously degenerate configuration.
 
 ## Concurrency and locking
 

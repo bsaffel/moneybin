@@ -5,6 +5,10 @@ The MoneyBin layering convention (see `.claude/rules/mcp.md`,
 
     MCP tools / CLI commands  →  ServiceClass(db).method(...)  →  DuckDB
 
+"Adapter" here means a surface module — the MCP tools and CLI commands named by
+`ADAPTER_ROOTS` below — not the `moneybin.adapters` package, which renders a
+domain result as a response and is a different job under the same word.
+
 Adapters in `src/moneybin/mcp/tools/` and `src/moneybin/cli/commands/` must not
 reach past the service layer into `moneybin.loaders`, `moneybin.extractors`, or
 `moneybin.matching` for domain orchestration. When they do, the audit pattern
@@ -106,7 +110,7 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
     ),
     # The clause naming what collapsed, in the module that does the
     # collapsing. Pure text, no side effects. It lives there rather than in
-    # each surface's helpers because the MCP twin (mcp/rematch_report.py)
+    # each surface's helpers because the MCP twin (adapters/rematch_report.py)
     # prints the same sentence, and a copy per surface is exactly how the two
     # wordings drifted apart before.
     (

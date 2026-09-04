@@ -8,17 +8,17 @@ from unittest.mock import MagicMock, patch
 from click.testing import Result
 from typer.testing import CliRunner
 
+from moneybin.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
 from moneybin.cli.main import app
-from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
+from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services.rate_backfill import RateBackfillResult
-from moneybin.services.refresh import RefreshResult
 
 
 def test_refresh_json_success(runner: CliRunner) -> None:
     """Full-refresh JSON success exposes identity review next steps."""
     fake_result = RefreshResult(applied=True, duration_seconds=4.2, error=None)
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -42,7 +42,7 @@ def test_refresh_json_failure_includes_action_hint(runner: CliRunner) -> None:
     """JSON output on apply failure must mirror the MCP tool's recovery hint."""
     fake_result = RefreshResult(applied=False, duration_seconds=1.1, error="model boom")
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -61,7 +61,7 @@ def test_refresh_quiet_failure_exits_nonzero(runner: CliRunner) -> None:
     """Quiet mode must still exit non-zero on apply failure."""
     fake_result = RefreshResult(applied=False, duration_seconds=0.5, error="boom")
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -74,7 +74,7 @@ def test_refresh_text_failure_exits_nonzero(runner: CliRunner) -> None:
     """Text mode logs the error and exits non-zero on apply failure."""
     fake_result = RefreshResult(applied=False, duration_seconds=0.5, error="model boom")
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -87,7 +87,9 @@ def test_refresh_step_transform_only(runner: CliRunner) -> None:
     """``--step transform`` runs only the transform step."""
     fake_result = RefreshResult(applied=True, duration_seconds=0.5, error=None)
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result) as svc,
+        patch(
+            "moneybin.orchestration.refresh.refresh", return_value=fake_result
+        ) as svc,
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -101,7 +103,9 @@ def test_refresh_step_identity_only(runner: CliRunner) -> None:
     """Identity proposal backfill is a selectable CLI refresh stage."""
     fake_result = RefreshResult(applied=False, duration_seconds=None)
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result) as svc,
+        patch(
+            "moneybin.orchestration.refresh.refresh", return_value=fake_result
+        ) as svc,
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -115,7 +119,9 @@ def test_refresh_step_repeatable(runner: CliRunner) -> None:
     """``--step match --step categorize`` collects into a list."""
     fake_result = RefreshResult(applied=False, duration_seconds=None, error=None)
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result) as svc,
+        patch(
+            "moneybin.orchestration.refresh.refresh", return_value=fake_result
+        ) as svc,
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -133,7 +139,7 @@ def test_refresh_step_json_partial_cascade(runner: CliRunner) -> None:
     """``--step transform --output json`` returns the same envelope MCP returns."""
     fake_result = RefreshResult(applied=True, duration_seconds=0.7, error=None)
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -156,7 +162,7 @@ def test_refresh_step_match_without_categorize_emits_followup_hint(
     """``--step match --output json`` emits the categorize follow-up hint."""
     fake_result = RefreshResult(applied=False, duration_seconds=None, error=None)
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -174,7 +180,7 @@ def test_refresh_matcher_crash_surfaced_in_json(runner: CliRunner) -> None:
         applied=True, duration_seconds=2.0, matching_error="matcher boom"
     )
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -217,7 +223,7 @@ def _rates_result(
 def _invoke_refresh(runner: CliRunner, result: RefreshResult, *args: str) -> Result:
     """Run `moneybin refresh` against a canned service result."""
     with (
-        patch("moneybin.services.refresh.refresh", return_value=result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -355,7 +361,7 @@ def test_refresh_matcher_crash_warns_in_text(runner: CliRunner) -> None:
         applied=True, duration_seconds=2.0, matching_error="matcher boom"
     )
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -371,7 +377,7 @@ def test_refresh_matcher_crash_warns_even_in_quiet(runner: CliRunner) -> None:
         applied=True, duration_seconds=2.0, matching_error="matcher boom"
     )
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -385,7 +391,7 @@ def test_refresh_clean_success_keeps_check_banner(runner: CliRunner) -> None:
     """A clean run still prints the ✅ success banner (no contradictory output)."""
     fake_result = RefreshResult(applied=True, duration_seconds=2.0)
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -406,7 +412,7 @@ def test_refresh_apply_failure_with_matcher_crash_suppresses_retry_hint(
         matching_error="matcher boom",
     )
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -429,7 +435,7 @@ def test_refresh_warns_when_the_match_step_retired_an_accepted_transfer(
     """
     fake_result = RefreshResult(applied=True, duration_seconds=2.0, transfers_retired=2)
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -449,7 +455,7 @@ def test_refresh_clean_pass_does_not_warn_about_retired_transfers(
     """
     fake_result = RefreshResult(applied=True, duration_seconds=2.0)
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
@@ -468,7 +474,7 @@ def test_refresh_json_discloses_the_match_counts(runner: CliRunner) -> None:
         transfers_retired=1,
     )
     with (
-        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
     ):
         get_db.return_value.__enter__.return_value = MagicMock()

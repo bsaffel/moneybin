@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Threat Model
 
 What MoneyBin protects against, and what it does not. This page is the honest list — written so a privacy-conscious user can decide whether MoneyBin meets their threat model, not so MoneyBin looks good. If you're trusting MoneyBin with real financial data, read this in full before you decide.
@@ -163,7 +163,7 @@ The `.claude/rules/security.md` log-content rules and `docs/specs/privacy-data-p
 
 ## Logs and retention
 
-- **Default location.** `<base>/profiles/<profile>/logs/moneybin.log`, where `<base>` is the MoneyBin data directory. The default `log_file_path` is `logs/default/moneybin.log` resolved against the active profile directory.
+- **Default location.** `<base>/profiles/<profile>/logs/`, where `<base>` is the MoneyBin data directory. Each stream writes its own daily file named `{stream}_{YYYY-MM-DD}.log` (e.g. `cli_2026-09-02.log`, `mcp_2026-09-02.log`, `sqlmesh_2026-09-02.log`) — the configured `log_file_path` (`logs/default/moneybin.log` by default) is the base path that pattern is derived from, not a literal filename on disk.
 - **Default verbosity.** `INFO`. `--verbose` raises to `DEBUG`. Format is `human` by default; switch to structured JSON via `MONEYBIN_LOGGING__FORMAT=json`.
 - **Disabling file logging entirely.** `MONEYBIN_LOGGING__LOG_TO_FILE=false` (or set `log_to_file: false` in your config file). Logs still go to stderr.
 - **Rotation.** MoneyBin does NOT rotate log files itself. Use the OS facility (`logrotate` on Linux, `newsyslog` on macOS) or rotate by hand.

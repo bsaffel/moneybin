@@ -26,19 +26,19 @@ import time_machine
 
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.services import matching_service
-from moneybin.services.merchant_resolver import HarvestResult
-from moneybin.services.rate_backfill import (
-    RateBackfillNotReadyError,
-    RateBackfillResult,
-)
-from moneybin.services.refresh import (
+from moneybin.orchestration.refresh import (
     RefreshResult,
     # The step's own branches are the subject of the last section in this file.
     # Only two of them are swallows; a step that ran and crashed reports an
     # error `refresh()` carries out to the caller.
     _run_rates_step,  # pyright: ignore[reportPrivateUsage]
     refresh,
+)
+from moneybin.services import matching_service
+from moneybin.services.merchant_resolver import HarvestResult
+from moneybin.services.rate_backfill import (
+    RateBackfillNotReadyError,
+    RateBackfillResult,
 )
 from moneybin.services.transform_service import ApplyResult
 
@@ -61,13 +61,13 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
     auto_stats = MagicMock(return_value=MagicMock(pending_proposals=0))
     identity = MagicMock(return_value=())
 
-    # Patches target the consumer module (moneybin.services.refresh) where
+    # Patches target the consumer module (moneybin.orchestration.refresh) where
     # each name is bound — refresh.py imports TransformService at module level
     # and the other backends via deferred imports, so patching the source
     # modules wouldn't intercept the call paths used here.
     with (
         patch(
-            "moneybin.services.refresh._run_gsheet_step",
+            "moneybin.orchestration.refresh._run_gsheet_step",
             gsheet_pull,
         ),
         patch(
@@ -75,7 +75,7 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
             matcher_run,
         ),
         patch(
-            "moneybin.services.refresh.TransformService",
+            "moneybin.orchestration.refresh.TransformService",
             return_value=MagicMock(apply=transform_apply),
         ),
         patch(
@@ -87,7 +87,7 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
             return_value=MagicMock(stats=auto_stats),
         ),
         patch(
-            "moneybin.services.refresh._run_identity_step",
+            "moneybin.orchestration.refresh._run_identity_step",
             identity,
             create=True,
         ),
@@ -148,7 +148,7 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
         return None, None
 
     monkeypatch.setattr(
-        "moneybin.services.refresh._run_gsheet_step",
+        "moneybin.orchestration.refresh._run_gsheet_step",
         _gsheet,
     )
     monkeypatch.setattr(
@@ -157,20 +157,20 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
         _match,
     )
     monkeypatch.setattr(
-        "moneybin.services.refresh.TransformService",
+        "moneybin.orchestration.refresh.TransformService",
         _transform,
     )
     monkeypatch.setattr(
-        "moneybin.services.refresh._run_categorize_step",
+        "moneybin.orchestration.refresh._run_categorize_step",
         _categorize,
     )
     monkeypatch.setattr(
-        "moneybin.services.refresh._run_identity_step",
+        "moneybin.orchestration.refresh._run_identity_step",
         _identity,
         raising=False,
     )
     monkeypatch.setattr(
-        "moneybin.services.refresh._run_rates_step",
+        "moneybin.orchestration.refresh._run_rates_step",
         _rates,
         raising=False,
     )
@@ -179,7 +179,7 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
 @pytest.mark.unit
 def test_refresh_result_has_error_surfacing_fields() -> None:
     """RefreshResult carries matcher/categorizer errors and self-heal records."""
-    from moneybin.services.refresh import SelfHealRecord
+    from moneybin.orchestration.refresh import SelfHealRecord
 
     r = RefreshResult(applied=True, duration_seconds=1.0)
     assert r.matching_error is None
@@ -404,7 +404,7 @@ def test_rates_can_run_surgically(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.unit
 def test_rates_is_a_known_step() -> None:
     """A step the service rejects would be unreachable from either surface."""
-    from moneybin.services.refresh import CANONICAL_STEPS
+    from moneybin.orchestration.refresh import CANONICAL_STEPS
 
     assert "rates" in CANONICAL_STEPS
 
@@ -451,7 +451,7 @@ def test_identity_failure_does_not_prevent_other_domain(
         _merchants_service,
     )
 
-    caplog.set_level(logging.ERROR, logger="moneybin.services.refresh")
+    caplog.set_level(logging.ERROR, logger="moneybin.orchestration.refresh")
     result = refresh(MagicMock(), steps=["identity"])
 
     accounts_run.assert_called_once()
@@ -461,7 +461,7 @@ def test_identity_failure_does_not_prevent_other_domain(
     refresh_records = [
         record
         for record in caplog.records
-        if record.name == "moneybin.services.refresh"
+        if record.name == "moneybin.orchestration.refresh"
     ]
     assert len(refresh_records) == 1
     assert sensitive_error not in refresh_records[0].getMessage()
@@ -604,7 +604,7 @@ def test_rates_step_survives_an_unreadable_home_currency(
         backfill=RateBackfillResult(rates_written=1, pairs_failed=()),
         reached=reached,
     )
-    caplog.set_level(logging.ERROR, logger="moneybin.services.refresh")
+    caplog.set_level(logging.ERROR, logger="moneybin.orchestration.refresh")
 
     backfill, error = _run_rates_step(MagicMock())
     assert backfill is None
@@ -634,7 +634,7 @@ def test_rates_step_missing_core_views_is_not_an_error(
         backfill=RateBackfillNotReadyError(),
         reached=reached,
     )
-    caplog.set_level(logging.ERROR, logger="moneybin.services.refresh")
+    caplog.set_level(logging.ERROR, logger="moneybin.orchestration.refresh")
 
     assert _run_rates_step(MagicMock()) == (None, None), (
         "a first-load precondition is not a failure the caller must report"
@@ -689,7 +689,7 @@ def test_rates_step_reports_a_backfill_crash_without_naming_it(
         backfill=RuntimeError("rates boom"),
         reached=reached,
     )
-    caplog.set_level(logging.ERROR, logger="moneybin.services.refresh")
+    caplog.set_level(logging.ERROR, logger="moneybin.orchestration.refresh")
 
     backfill, error = _run_rates_step(MagicMock())
     assert backfill is None
@@ -713,7 +713,7 @@ def test_refresh_carries_a_crashed_rates_step_out_to_the_caller(
     embedded caller runs.
     """
     with patch(
-        "moneybin.services.refresh._run_rates_step",
+        "moneybin.orchestration.refresh._run_rates_step",
         return_value=(None, "Rate backfill failed — the cause is in the local log"),
     ):
         result = refresh(MagicMock(), steps=steps)
@@ -1056,8 +1056,8 @@ def test_step_outcome_carries_every_best_effort_failure_channel() -> None:
     because the Pydantic result carriers that embed this sit on the CLI's cold
     path, and that type pulls polars in behind it.
     """
+    from moneybin.orchestration.refresh import RefreshResult, step_outcome
     from moneybin.services.rate_backfill import RateBackfillResult
-    from moneybin.services.refresh import RefreshResult, step_outcome
 
     outcome = step_outcome(
         RefreshResult(
@@ -1094,7 +1094,7 @@ def test_step_outcome_keeps_null_rates_written_distinct_from_zero() -> None:
     field that separates them; a 0 here would tell a caller coverage was
     checked.
     """
-    from moneybin.services.refresh import RefreshResult, step_outcome
+    from moneybin.orchestration.refresh import RefreshResult, step_outcome
 
     outcome = step_outcome(RefreshResult(applied=True, duration_seconds=1.0))
 

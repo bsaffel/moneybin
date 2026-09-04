@@ -1,5 +1,5 @@
 {
-  "sha256": "ab59da00720aff8ce5007eca522f27affb0a7876fb3bda960a177222a80b5c03",
+  "sha256": "2db17b883f84fb1132069376ec74e46e83a070d3a46a5c59a05b5ae71b48851b",
   "tool_count": 50,
   "tools": [
     {
@@ -93,7 +93,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Declare a manual balance assertion present or absent for one resolved account and date. Present requires amount and upserts app.balance_assertions; absent forbids amount, requires exact payload-bound confirmation, and hard-deletes the assertion. Repeat an unchanged target state returns mutation_nothing_to_do. Reverse a mutation with system_audit_undo(operation_id). Amounts are positions in the currency named by summary.display_currency.",
+        "description": "Declare a manual balance assertion present or absent for one resolved account and date. Present requires amount and upserts app.balance_assertions; absent forbids amount, requires exact payload-bound confirmation, and hard-deletes the assertion. Repeat an unchanged target state returns mutation_nothing_to_do. Reverse a mutation with system_audit_undo(operation_id=...). Amounts are positions in the currency named by summary.display_currency.",
         "inputSchema": {
           "additionalProperties": false,
           "allOf": [
@@ -205,12 +205,12 @@
         },
         "name": "accounts_balance_assert"
       },
-      "description_bytes": 440,
+      "description_bytes": 444,
       "input_schema_bytes": 775,
       "name": "accounts_balance_assert",
       "other_bytes": 65,
       "output_schema_bytes": 0,
-      "total_bytes": 1416
+      "total_bytes": 1420
     },
     {
       "annotation_bytes": 89,
@@ -712,7 +712,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Assert one named export destination's local or Sheets target state. state='present' upserts the typed target; state='absent' removes only MoneyBin configuration and never deletes artifacts, workbooks, or tabs. Writes app.export_destinations through its audited repository; revert with system_audit_undo(operation_id). Read readiness with system_status(sections=['exports']).",
+        "description": "Assert one named export destination's local or Sheets target state. state='present' upserts the typed target; state='absent' removes only MoneyBin configuration and never deletes artifacts, workbooks, or tabs. Writes app.export_destinations through its audited repository; revert with system_audit_undo(operation_id=...). Read readiness with system_status(sections=['exports']).",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -915,12 +915,12 @@
         },
         "name": "exports_set"
       },
-      "description_bytes": 374,
+      "description_bytes": 378,
       "input_schema_bytes": 1584,
       "name": "exports_set",
       "other_bytes": 62,
       "output_schema_bytes": 0,
-      "total_bytes": 2155
+      "total_bytes": 2159
     },
     {
       "annotation_bytes": 89,
@@ -1202,7 +1202,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically accept or reject account, merchant, and security identity link decisions. Accepting a security decision either merges two instruments' tax lots, manual events, and price marks, or only binds a price-feed symbol to a security, which deletes nothing and moves no row; the confirmation prompt names which one and counts every category it moves. Accepting an account decision re-runs matching over the merged account, which can reverse a transfer the user already accepted: `rematch_transfers_retired` counts those, and system_audit_undo() restores them. Any accepted merge or bind confirms the exact normalized full batch and complete live before-state; reject-only batches do not prompt. An accepted account link takes the prompt only \u2014 it refuses confirmation_token, and refuses a client that cannot prompt rather than issue one.",
+        "description": "Atomically accept or reject account, merchant, and security identity link decisions. Accepting a security decision either merges two instruments' tax lots, manual events, and price marks, or only binds a price-feed symbol to a security, which deletes nothing and moves no row; the confirmation prompt names which one and counts every category it moves. Accepting an account decision re-runs matching over the merged account, which can reverse a transfer the user already accepted: `rematch_transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them. Any accepted merge or bind confirms the exact normalized full batch and complete live before-state; reject-only batches do not prompt. An accepted account link takes the prompt only \u2014 it refuses confirmation_token, and refuses a client that cannot prompt rather than issue one.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1507,12 +1507,12 @@
         },
         "name": "identity_links_decide"
       },
-      "description_bytes": 841,
+      "description_bytes": 857,
       "input_schema_bytes": 2438,
       "name": "identity_links_decide",
       "other_bytes": 63,
       "output_schema_bytes": 0,
-      "total_bytes": 3481
+      "total_bytes": 3497
     },
     {
       "annotation_bytes": 91,
@@ -1639,7 +1639,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them.",
+        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1684,12 +1684,12 @@
         },
         "name": "import_files"
       },
-      "description_bytes": 477,
+      "description_bytes": 493,
       "input_schema_bytes": 341,
       "name": "import_files",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 1012
+      "total_bytes": 1028
     },
     {
       "annotation_bytes": 91,
@@ -1700,7 +1700,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Synchronize the import inbox. Draining it imports every staged file and runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them.",
+        "description": "Synchronize the import inbox. Draining it imports every staged file and runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1718,12 +1718,12 @@
         },
         "name": "import_inbox_sync"
       },
-      "description_bytes": 237,
+      "description_bytes": 253,
       "input_schema_bytes": 105,
       "name": "import_inbox_sync",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 539
+      "total_bytes": 555
     },
     {
       "annotation_bytes": 90,
@@ -2626,7 +2626,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Set the profile's home currency (ISO 4217). Records which currency is home; converts nothing \u2014 amounts keep their original currency. Writes app.profile_settings. Reverse with system_audit_undo(operation_id).",
+        "description": "Set the profile's home currency (ISO 4217). Records which currency is home; converts nothing \u2014 amounts keep their original currency. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2649,12 +2649,12 @@
         },
         "name": "profile_set"
       },
-      "description_bytes": 209,
+      "description_bytes": 213,
       "input_schema_bytes": 196,
       "name": "profile_set",
       "other_bytes": 62,
       "output_schema_bytes": 0,
-      "total_bytes": 607
+      "total_bytes": 611
     },
     {
       "annotation_bytes": 90,
@@ -2665,7 +2665,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, identity proposal backfill, and an exchange-rate gather in canonical order. Pass steps to select from gsheet, match, transform, categorize, identity, and rates. The match step acts without asking, and folding a duplicate can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them. The rates step caches the rates this profile's own rows imply so reports convert offline; an unfilled pair lands in rate_pairs_failed (retried), rate_pairs_unsupported (needs `moneybin fx set`), or rate_pairs_discarded (partly unusable, so gaps). Rebuilds core.* and reports.* and may write app categorization or identity-review state, plus the raw exchange-rate cache. No revert; fix inputs and rerun.",
+        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, identity proposal backfill, and an exchange-rate gather in canonical order. Pass steps to select from gsheet, match, transform, categorize, identity, and rates. The match step acts without asking, and folding a duplicate can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them. The rates step caches the rates this profile's own rows imply so reports convert offline; an unfilled pair lands in rate_pairs_failed (retried), rate_pairs_unsupported (needs `moneybin fx set`), or rate_pairs_discarded (partly unusable, so gaps). Rebuilds core.* and reports.* and may write app categorization or identity-review state, plus the raw exchange-rate cache. No revert; fix inputs and rerun.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2702,12 +2702,12 @@
         },
         "name": "refresh_run"
       },
-      "description_bytes": 880,
+      "description_bytes": 896,
       "input_schema_bytes": 706,
       "name": "refresh_run",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 1776
+      "total_bytes": 1792
     },
     {
       "annotation_bytes": 89,
@@ -3298,7 +3298,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Pull connected financial data. The pull runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo() restores them.",
+        "description": "Pull connected financial data. The pull runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3323,12 +3323,12 @@
         },
         "name": "sync_pull"
       },
-      "description_bytes": 205,
+      "description_bytes": 221,
       "input_schema_bytes": 136,
       "name": "sync_pull",
       "other_bytes": 51,
       "output_schema_bytes": 0,
-      "total_bytes": 529
+      "total_bytes": 545
     },
     {
       "annotation_bytes": 89,
@@ -4665,7 +4665,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically declare categorization rules present, inactive, or absent. Present requires matcher, category, and priority; inactive and absent require rule_id and forbid replacement fields. The tool advertises its maximum destructive risk, but asks for exact payload-bound confirmation only before a present rule is hard-deleted. Rule removal is recoverable with system_audit_undo(operation_id).",
+        "description": "Atomically declare categorization rules present, inactive, or absent. Present requires matcher, category, and priority; inactive and absent require rule_id and forbid replacement fields. The tool advertises its maximum destructive risk, but asks for exact payload-bound confirmation only before a present rule is hard-deleted. Rule removal is recoverable with system_audit_undo(operation_id=...).",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -4980,12 +4980,12 @@
         },
         "name": "transactions_categorize_rules_set"
       },
-      "description_bytes": 392,
+      "description_bytes": 396,
       "input_schema_bytes": 2428,
       "name": "transactions_categorize_rules_set",
       "other_bytes": 87,
       "output_schema_bytes": 0,
-      "total_bytes": 3043
+      "total_bytes": 3047
     },
     {
       "annotation_bytes": 90,
@@ -5056,7 +5056,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Create manual transactions as a validated batch. Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. Reverse with system_audit_undo(operation_id).",
+        "description": "Create manual transactions as a validated batch. Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. Reverse with system_audit_undo(operation_id=...).",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -5080,13 +5080,13 @@
         },
         "name": "transactions_create"
       },
-      "description_bytes": 190,
+      "description_bytes": 194,
       "input_schema_bytes": 175,
       "name": "transactions_create",
       "other_bytes": 61,
       "output_schema_bytes": 0,
-      "total_bytes": 564
+      "total_bytes": 568
     }
   ],
-  "total_bytes": 59775
+  "total_bytes": 59875
 }

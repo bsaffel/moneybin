@@ -1,4 +1,4 @@
-"""Strict request contracts for standard coarse MCP writes."""
+"""Strict request contracts for the standard coarse writes."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from pydantic import (
     model_validator,
 )
 
-from moneybin.services._validators import (
+from moneybin.limits import (
     CATEGORY_NAME_MAX_LEN,
     DESCRIPTION_MAX_LEN,
     IDENTIFIER_MAX_LEN,

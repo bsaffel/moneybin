@@ -12,6 +12,11 @@ from fastmcp import FastMCP
 from pydantic import Field, JsonValue
 
 from moneybin import error_codes
+from moneybin.adapters.matching_adapters import (
+    match_history_row,
+    match_pending_row,
+)
+from moneybin.adapters.rematch_report import rematch_actions
 from moneybin.config import get_settings
 from moneybin.database import Database, get_database
 from moneybin.errors import (
@@ -20,24 +25,12 @@ from moneybin.errors import (
     exception_origin,
 )
 from moneybin.mcp._registration import register
-from moneybin.mcp.adapters.matching_adapters import (
-    match_history_row,
-    match_pending_row,
-)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
-from moneybin.mcp.rematch_report import rematch_actions
-from moneybin.mcp.write_contracts import (
-    AutoRuleDecisionRequest,
-    IdentityDecisionRequest,
-    OrdinaryReviewDecisionRequest,
-    ReviewDecisionRequest,
-)
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.accounts import LinkHistoryRow, LinkPendingGroup
 from moneybin.privacy.payloads.categorize import (
@@ -89,6 +82,7 @@ from moneybin.privacy.payloads.reviews import (
     SecurityLinkPendingDetails,
     SecurityLinkReviewRow,
 )
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
@@ -103,6 +97,12 @@ from moneybin.protocol.pagination import (
     paginate_keyset,
     reject_inverted_keyset,
     validate_keyset_shape,
+)
+from moneybin.protocol.write_contracts import (
+    AutoRuleDecisionRequest,
+    IdentityDecisionRequest,
+    OrdinaryReviewDecisionRequest,
+    ReviewDecisionRequest,
 )
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
@@ -1355,7 +1355,8 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         "it moves. Accepting an account decision re-runs matching over the "
         "merged account, which can reverse a transfer the user already "
         "accepted: `rematch_transfers_retired` counts those, and "
-        "system_audit_undo() restores them. Any accepted merge or bind confirms "
+        "system_audit_undo(operation_id=...) restores them. Any accepted merge or "
+        "bind confirms "
         "the exact normalized full batch and complete live before-state; "
         "reject-only batches do not prompt. An accepted account link takes the "
         "prompt only — it refuses confirmation_token, and refuses a client that "

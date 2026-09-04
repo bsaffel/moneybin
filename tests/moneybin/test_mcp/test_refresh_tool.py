@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastmcp import FastMCP
 
-from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
+from moneybin.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
 from moneybin.mcp.tools.refresh import refresh_run, register_refresh_tools
-from moneybin.services.refresh import RefreshResult
+from moneybin.orchestration.refresh import RefreshResult
 
 
 @pytest.mark.unit

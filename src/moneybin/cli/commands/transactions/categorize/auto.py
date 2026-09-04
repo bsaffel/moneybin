@@ -40,7 +40,7 @@ def review(
     ),
 ) -> None:
     """List pending auto-rule proposals with sample transactions and trigger counts."""
-    from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
+    from moneybin.adapters.categorize_adapters import auto_review_envelope
     from moneybin.services.auto_rule_service import AutoRuleService
 
     with handle_cli_errors(cli_actor="categorize_auto_review"):

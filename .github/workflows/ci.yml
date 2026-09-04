@@ -84,6 +84,34 @@ jobs:
       - name: Type check
         run: uv run pyright
 
+  # Docs-only PRs skip every code job above. The unit suite is what reads
+  # the docs (the policy guards, the MCP-surface prose checks, the
+  # spec-status tests), so run it once, unsharded, on exactly those PRs.
+  # Pushes to main and code PRs cover it through the sharded test-unit job.
+  test-unit-docs-only:
+    name: Unit tests (docs-only PR)
+    needs: [changes]
+    if: needs.changes.outputs.code == 'false' && github.event_name == 'pull_request' && !inputs.record_durations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Install DuckDB CLI
+        run: |
+          curl -fsSL https://install.duckdb.org | bash
+          echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
+
+      - name: Test
+        run: uv run pytest tests/ -m unit -n logical
+
   # Test jobs select by marker across the whole tests/ tree, not by
   # directory. Every test ends up with exactly one of
   # {unit, integration, e2e, scenarios} — the root conftest auto-applies

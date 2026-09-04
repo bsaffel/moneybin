@@ -20,7 +20,7 @@ from moneybin import error_codes
 from moneybin.database import Database, get_database
 from moneybin.errors import UserError
 from moneybin.privacy.sql_query import ALLOWED_QUERY_SCHEMAS
-from moneybin.tables import IMPORT_LOG, INTERFACE_TABLES
+from moneybin.tables import GSHEET_CONNECTIONS, IMPORT_LOG, INTERFACE_TABLES
 
 logger = logging.getLogger(__name__)
 
@@ -911,14 +911,14 @@ def _gsheet_seed_views(db: Database) -> list[dict[str, Any]]:
     """
     try:
         connections = db.execute(
-            """
+            f"""
             SELECT connection_id, alias
-            FROM app.gsheet_connections
+            FROM {GSHEET_CONNECTIONS.full_name}
             WHERE adapter = 'seed'
               AND status != 'disconnected'
               AND alias IS NOT NULL
             ORDER BY created_at ASC, connection_id ASC
-            """
+            """  # noqa: S608  # GSHEET_CONNECTIONS is a TableRef constant
         ).fetchall()
     except duckdb.CatalogException:
         # Table absent on bare DBs before init_schemas — no seed views to add.

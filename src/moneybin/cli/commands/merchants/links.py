@@ -111,8 +111,8 @@ def links_set(
       --new                            reject; resolver mints a new merchant on next run
 
     Examples:
-      merchants links set dec001 --into merch0001aa
-      merchants links set dec001 --new
+      moneybin merchants links set dec001 --into merch0001aa
+      moneybin merchants links set dec001 --new
     """
     if into is not None and new:
         logger.error("❌ --into and --new are mutually exclusive")

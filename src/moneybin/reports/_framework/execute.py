@@ -27,8 +27,8 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.log_sanitizer import sql_digest
-from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.redaction import MaskStrength, mask_strength, redact_records
+from moneybin.privacy.sensitivity import tier_to_sensitivity
 from moneybin.privacy.sql_lineage import derive_query_tier
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import (

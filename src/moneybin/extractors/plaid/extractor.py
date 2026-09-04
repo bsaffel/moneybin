@@ -38,11 +38,14 @@ from moneybin.metrics.registry import (
     SYNC_INVESTMENTS_RECORDS_LOADED,
 )
 from moneybin.tables import (
+    PLAID_ACCOUNTS,
+    PLAID_BALANCES,
     PLAID_INVESTMENT_HOLDING_LOTS,
     PLAID_INVESTMENT_HOLDINGS,
     PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
     PLAID_INVESTMENT_TRANSACTIONS,
     PLAID_SECURITIES,
+    PLAID_TRANSACTIONS,
     SECURITY_PRICES,
 )
 
@@ -529,7 +532,7 @@ class PlaidExtractor:
             ],
             schema=_ACCOUNTS_SCHEMA,
         )
-        self.db.ingest_dataframe("raw.plaid_accounts", df, on_conflict="upsert")
+        self.db.ingest_dataframe(PLAID_ACCOUNTS.full_name, df, on_conflict="upsert")
         # Info, not debug: the CLI's per-institution totals go out via
         # typer.echo, which never reaches the log file — so these row counts
         # are the only durable record of what a sync loaded. Denylisted from
@@ -563,7 +566,7 @@ class PlaidExtractor:
             ],
             schema=_TRANSACTIONS_SCHEMA,
         )
-        self.db.ingest_dataframe("raw.plaid_transactions", df, on_conflict="upsert")
+        self.db.ingest_dataframe(PLAID_TRANSACTIONS.full_name, df, on_conflict="upsert")
         logger.info(f"Loaded {len(df)} Plaid transactions")
         return len(df)
 
@@ -591,7 +594,7 @@ class PlaidExtractor:
             ],
             schema=_BALANCES_SCHEMA,
         )
-        self.db.ingest_dataframe("raw.plaid_balances", df, on_conflict="upsert")
+        self.db.ingest_dataframe(PLAID_BALANCES.full_name, df, on_conflict="upsert")
         logger.info(f"Loaded {len(df)} Plaid balance snapshots")
         return len(df)
 
@@ -933,12 +936,12 @@ class PlaidExtractor:
         # COUNT(*) is the simplest accurate signal; the two statements share the
         # write lock for the duration of the call.
         count_row = self.db.execute(
-            f"SELECT COUNT(*) FROM raw.plaid_transactions WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?, values parameterized
+            f"SELECT COUNT(*) FROM {PLAID_TRANSACTIONS.full_name} WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?, values parameterized
             removed_ids,
         ).fetchone()
         deleted = int(count_row[0]) if count_row else 0
         self.db.execute(
-            f"DELETE FROM raw.plaid_transactions WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?, values parameterized
+            f"DELETE FROM {PLAID_TRANSACTIONS.full_name} WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?, values parameterized
             removed_ids,
         )
         return deleted

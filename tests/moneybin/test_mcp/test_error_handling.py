@@ -11,7 +11,7 @@ from moneybin import error_codes
 from moneybin.database import DatabaseKeyError
 from moneybin.errors import UserError
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope
 
 

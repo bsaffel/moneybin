@@ -10,8 +10,8 @@ import pytest
 
 from moneybin.config import ImportSettings, MoneyBinSettings
 from moneybin.database import Database
+from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services.inbox_service import InboxService
-from moneybin.services.refresh import RefreshResult
 
 
 def _make_settings(tmp_path: Path, profile: str = "test") -> MoneyBinSettings:
@@ -22,7 +22,7 @@ def _make_settings(tmp_path: Path, profile: str = "test") -> MoneyBinSettings:
 
 
 def _fake_refresh(_db: Database) -> RefreshResult:
-    """Default no-op stand-in for moneybin.services.refresh.refresh.
+    """Default no-op stand-in for moneybin.orchestration.refresh.refresh.
 
     Tests monkeypatch this in to keep refresh out of the inbox sync path
     when they only care about per-file move behavior.
@@ -260,9 +260,9 @@ class TestSyncHappyPath:
     def test_imports_root_file_and_moves_to_processed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import inbox_service as mod
         from moneybin.services.import_service import ImportResult
-        from moneybin.services.refresh import RefreshResult
 
         captured: list[dict[str, object]] = []
 
@@ -285,7 +285,7 @@ class TestSyncHappyPath:
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+            "moneybin.orchestration.refresh.refresh", fake_refresh, raising=True
         )
 
         db = MagicMock(spec=Database)
@@ -318,9 +318,9 @@ class TestSyncHappyPath:
         reaches the reconciliation — nobody is watching a watched folder — so
         dropping the count here is the version of this bug that hides longest.
         """
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import inbox_service as mod
         from moneybin.services.import_service import ImportResult
-        from moneybin.services.refresh import RefreshResult
 
         class FakeImportService:
             def __init__(self, db: object) -> None:
@@ -336,7 +336,7 @@ class TestSyncHappyPath:
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+            "moneybin.orchestration.refresh.refresh", fake_refresh, raising=True
         )
 
         db = MagicMock(spec=Database)
@@ -358,9 +358,9 @@ class TestSyncHappyPath:
         so the per-file entry must say so or the decision acts invisibly exactly
         where nobody is watching.
         """
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import inbox_service as mod
         from moneybin.services.import_service import ImportResult
-        from moneybin.services.refresh import RefreshResult
 
         class FakeImportService:
             def __init__(self, db: object) -> None:
@@ -379,7 +379,7 @@ class TestSyncHappyPath:
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+            "moneybin.orchestration.refresh.refresh", fake_refresh, raising=True
         )
 
         db = MagicMock(spec=Database)
@@ -402,9 +402,9 @@ class TestSyncHappyPath:
         wholesale and fabricate its return value, so ``_sync_one``'s own
         population logic only ever runs here.
         """
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import inbox_service as mod
         from moneybin.services.import_service import CreatedAccount, ImportResult
-        from moneybin.services.refresh import RefreshResult
 
         class FakeImportService:
             def __init__(self, db: object) -> None:
@@ -427,7 +427,7 @@ class TestSyncHappyPath:
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+            "moneybin.orchestration.refresh.refresh", fake_refresh, raising=True
         )
 
         db = MagicMock(spec=Database)
@@ -453,9 +453,9 @@ class TestSyncHappyPath:
         rather than "this drain had nothing to say", and would change the shape
         of every row that has ever drained.
         """
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import inbox_service as mod
         from moneybin.services.import_service import ImportResult
-        from moneybin.services.refresh import RefreshResult
 
         class FakeImportService:
             def __init__(self, db: object) -> None:
@@ -470,7 +470,7 @@ class TestSyncHappyPath:
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+            "moneybin.orchestration.refresh.refresh", fake_refresh, raising=True
         )
 
         db = MagicMock(spec=Database)
@@ -502,7 +502,7 @@ class TestSyncHappyPath:
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh",
+            "moneybin.orchestration.refresh.refresh",
             _fake_refresh,
             raising=True,
         )
@@ -543,7 +543,7 @@ class TestSyncHappyPath:
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh", _fake_refresh, raising=True
+            "moneybin.orchestration.refresh.refresh", _fake_refresh, raising=True
         )
 
         db = MagicMock(spec=Database)
@@ -614,7 +614,7 @@ class TestSyncHappyPath:
 
         monkeypatch.setattr(mod, "ImportService", GuardedImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh", _fake_refresh, raising=True
+            "moneybin.orchestration.refresh.refresh", _fake_refresh, raising=True
         )
 
         db = MagicMock(spec=Database)
@@ -642,9 +642,9 @@ class TestSyncRefreshOnce:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Two files should trigger exactly one refresh() call."""
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import inbox_service as mod
         from moneybin.services.import_service import ImportResult
-        from moneybin.services.refresh import RefreshResult
 
         refresh_call_count = 0
         per_file_kwargs: list[dict[str, object]] = []
@@ -666,7 +666,7 @@ class TestSyncRefreshOnce:
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+            "moneybin.orchestration.refresh.refresh", fake_refresh, raising=True
         )
 
         db = MagicMock(spec=Database)
@@ -691,8 +691,8 @@ class TestSyncRefreshOnce:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """All-failure batch must NOT call refresh()."""
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import inbox_service as mod
-        from moneybin.services.refresh import RefreshResult
 
         refresh_calls = 0
 
@@ -710,7 +710,7 @@ class TestSyncRefreshOnce:
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+            "moneybin.orchestration.refresh.refresh", fake_refresh, raising=True
         )
 
         db = MagicMock(spec=Database)
@@ -729,9 +729,9 @@ class TestSyncRefreshOnce:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """sync(refresh=False) defers the refresh pipeline entirely."""
+        from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import inbox_service as mod
         from moneybin.services.import_service import ImportResult
-        from moneybin.services.refresh import RefreshResult
 
         refresh_calls = 0
 
@@ -749,7 +749,7 @@ class TestSyncRefreshOnce:
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+            "moneybin.orchestration.refresh.refresh", fake_refresh, raising=True
         )
 
         db = MagicMock(spec=Database)
@@ -1217,7 +1217,7 @@ class TestRecovery:
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh",
+            "moneybin.orchestration.refresh.refresh",
             _fake_refresh,
             raising=True,
         )
@@ -1339,7 +1339,7 @@ class TestSyncMoveRace:
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
-            "moneybin.services.refresh.refresh",
+            "moneybin.orchestration.refresh.refresh",
             _fake_refresh,
             raising=True,
         )

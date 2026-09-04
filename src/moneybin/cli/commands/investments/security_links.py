@@ -164,8 +164,8 @@ def links_set(
     the wrong security.
 
     Examples:
-      investments securities links set dec001 --accept --into sec001aabbcc
-      investments securities links set dec001 --reject
+      moneybin investments securities links set dec001 --accept --into sec001aabbcc
+      moneybin investments securities links set dec001 --reject
     """
     if accept and reject:
         logger.error("❌ --accept and --reject are mutually exclusive")

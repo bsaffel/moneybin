@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Scenario Authoring Guide
 
 How to write a scenario test that exercises the whole pipeline end-to-end against a synthetic dataset or a hand-authored fixture, with assertions that survive code changes. Companion: [`synthetic-data.md`](synthetic-data.md) covers the generator that scenarios consume.
@@ -109,7 +109,7 @@ Every scenario test carries `@pytest.mark.scenarios` and almost always `@pytest.
 |---|---|---|---|
 | (top) | `scenario` | `str` (kebab-case, path-safe) | Required. Used as tempdir prefix. |
 | (top) | `description` | `str` | Free-text; appears in failure output. |
-| `setup` | `persona` | `str` | Persona slug; must exist under `tests/scenarios/personas/`. |
+| `setup` | `persona` | `str` | Persona slug; must exist under `src/moneybin/synthetic/data/personas/`. |
 | `setup` | `seed` | `int` | Default `42`. Drives the deterministic generator. |
 | `setup` | `years` | `int` | Default `1`. Defines the date window. |
 | `setup` | `fixtures` | `list[FixtureSpec]` | Optional. CSV / OFX-shaped CSV inputs under `tests/scenarios/data/fixtures/<name>/`. |
@@ -329,7 +329,7 @@ For non-bug-repro work (covering a new pipeline stage, adding distribution asser
 
 If you're reproducing a bug from a real CSV, OFX, or DB snapshot, the input must be anonymized before it lands in the repo.
 
-The fully-automated path is the planned `moneybin synthetic anonymize` engine (see [`docs/specs/testing-anonymized-data.md`](../specs/testing-anonymized-data.md)) — a structure-preserving anonymizer that masks merchants, perturbs amounts, shifts dates while preserving distributions. It is **planned**.
+A fully-automated structure-preserving anonymizer — masking merchants, perturbing amounts, shifting dates while preserving distributions — is planned as a future `synthetic` subcommand (see [`docs/specs/testing-anonymized-data.md`](../specs/testing-anonymized-data.md)).
 
 The manual recipe in the meantime — sufficient for bug-repro fixtures:
 

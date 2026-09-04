@@ -71,7 +71,7 @@ def matches_pending(
             rows = service.get_pending(match_type=match_type, limit=limit)
 
             if output == OutputFormat.JSON:
-                from moneybin.mcp.adapters.matching_adapters import (  # noqa: PLC0415 — defer import
+                from moneybin.adapters.matching_adapters import (  # noqa: PLC0415 — defer import
                     matches_pending_envelope,
                 )
 
@@ -211,7 +211,7 @@ def matches_history(
             entries = MatchingService(db).get_log(limit=limit, match_type=match_type)
 
             if output == OutputFormat.JSON:
-                from moneybin.mcp.adapters.matching_adapters import (  # noqa: PLC0415 — defer import
+                from moneybin.adapters.matching_adapters import (  # noqa: PLC0415 — defer import
                     matches_history_envelope,
                 )
 

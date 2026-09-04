@@ -101,5 +101,5 @@ def register_profile_tools(mcp: FastMCP) -> None:
         "profile_set",
         "Set the profile's home currency (ISO 4217). Records which currency is "
         "home; converts nothing — amounts keep their original currency. Writes "
-        "app.profile_settings. Reverse with system_audit_undo(operation_id).",
+        "app.profile_settings. Reverse with system_audit_undo(operation_id=...).",
     )

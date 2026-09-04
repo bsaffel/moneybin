@@ -65,6 +65,7 @@ from moneybin.tables import (
     SECURITY_LINKS,
     SECURITY_PRICE_OVERRIDES,
     SECURITY_PRICES,
+    STG_SECURITY_PRICES,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
@@ -1374,10 +1375,10 @@ class DoctorService:
         tolerance = get_settings().investments.price_disagreement_tolerance_pct / 100
         try:
             rows = self._db.execute(
-                """
+                f"""
                 SELECT DISTINCT a.security_id
-                FROM prep.stg_security_prices AS a
-                JOIN prep.stg_security_prices AS b
+                FROM {STG_SECURITY_PRICES.full_name} AS a
+                JOIN {STG_SECURITY_PRICES.full_name} AS b
                   ON b.security_id = a.security_id
                   AND b.price_date = a.price_date
                   AND b.quote_currency = a.quote_currency
@@ -1385,13 +1386,13 @@ class DoctorService:
                 WHERE ABS(a.close - b.close) / ((a.close + b.close) / 2) > ?
                   AND NOT EXISTS (
                     SELECT 1
-                    FROM app.security_price_overrides AS o
+                    FROM {SECURITY_PRICE_OVERRIDES.full_name} AS o
                     WHERE o.security_id = a.security_id
                       AND o.price_date = a.price_date
                       AND o.quote_currency = a.quote_currency
                   )
                 ORDER BY a.security_id
-                """,  # noqa: S608  # fixed view name + bound parameter, no user input
+                """,  # noqa: S608  # TableRef constants + bound parameter, no user input
                 [tolerance],
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — staging view absent before first transform
@@ -1599,7 +1600,7 @@ class DoctorService:
                   AND l.ref_value = p.provider_security_key
                 WHERE NOT EXISTS (
                     SELECT 1
-                    FROM prep.stg_security_prices AS s
+                    FROM {STG_SECURITY_PRICES.full_name} AS s
                     WHERE s.source_type = p.source_type
                 )
                 ORDER BY p.source_type

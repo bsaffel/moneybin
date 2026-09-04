@@ -9,6 +9,13 @@ and MCP surfaces deliver via their own conventions:
 Unrecognized exceptions return ``None`` from ``classify_user_error`` so they
 propagate as 500-equivalent failures — programmer errors must not be silently
 translated into user-facing messages.
+
+This module is a leaf: importing it pulls in nothing from ``moneybin`` but
+``error_codes``, so any layer may raise a ``UserError`` without minting an
+import cycle — which is what lets ``connectors.feed_errors`` and the price and
+rate error modules subclass it outright. The domain families
+``classify_user_error`` recognizes are imported inside the function, on the
+failure path.
 """
 
 from __future__ import annotations
@@ -22,15 +29,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin import error_codes
-from moneybin.connectors.sync_errors import SyncError
-from moneybin.database import (
-    DatabaseCryptoError,
-    DatabaseKeyError,
-    DatabaseLockError,
-    DatabaseNotInitializedError,
-    SchemaDriftError,
-    database_key_error_hint,
-)
 
 
 class RecoveryAction(BaseModel):
@@ -262,23 +260,42 @@ def classify_user_error(exc: BaseException) -> UserError | None:
     """
     if isinstance(exc, UserError):
         return exc
-    if isinstance(exc, DatabaseNotInitializedError):
-        suggest_create = False
-        try:  # deferred imports avoid an errors<->services import cycle
-            from moneybin.config import get_current_profile
-            from moneybin.services.profile_service import ProfileService
 
-            profiles = ProfileService()
-            profile = get_current_profile(auto_resolve=False)
-            # Registration, not the directory, decides the verb. `profile create`
-            # completes an unregistered directory in place (config, database, and
-            # inbox), so it is the right advice whether or not one is already there.
-            # A *registered* profile has finished setup and is only missing its
-            # database — that is `db init`'s job, and `profile create` would refuse.
-            suggest_create = not profiles.is_registered(profile)
-        except Exception:  # noqa: BLE001 — fall back to the db-init message
-            suggest_create = False
-        if suggest_create:
+    # Deferred so this module stays a leaf of the import graph. A module-level
+    # import would put `moneybin.database` (and everything it loads) behind
+    # every `from moneybin.errors import UserError`, so nothing `database.py`
+    # imports could raise a UserError without minting a cycle — which is what
+    # forced the service layer into deferred imports back the other way.
+    # Classification runs on the failure path, where a one-time module load
+    # costs nothing and the module that raised is already loaded.
+    # Guarded by tests/moneybin/test_architecture/test_errors_is_import_light.py.
+    from moneybin.connectors.sync_errors import (  # noqa: PLC0415 — keeps errors.py import-light
+        SyncError,
+    )
+    from moneybin.database import (  # noqa: PLC0415 — keeps errors.py import-light
+        DatabaseCryptoError,
+        DatabaseKeyError,
+        DatabaseLockError,
+        DatabaseNotInitializedError,
+        SchemaDriftError,
+        database_key_error_hint,
+    )
+    from moneybin.secrets import (  # noqa: PLC0415 — keeps errors.py import-light
+        SecretNotFoundError,
+        SecretStorageUnavailableError,
+        SecretUnavailableError,
+    )
+
+    if isinstance(exc, DatabaseNotInitializedError):
+        # Registration, not the directory, decides the verb. `profile create`
+        # completes an unregistered directory in place (config, database, and
+        # inbox), so it is the right advice whether or not one is already there.
+        # A *registered* profile has finished setup and is only missing its
+        # database — that is `db init`'s job, and `profile create` would refuse.
+        # `get_database` answers this while it still holds resolved settings; an
+        # unanswered `None` takes the `db init` message, the verb that never
+        # refuses.
+        if exc.profile_registered is False:
             message = (
                 "Profile not set up. Run 'moneybin profile create <name> "
                 "--init-inbox' to create the profile (config, database, and inbox)."
@@ -339,6 +356,37 @@ def classify_user_error(exc: BaseException) -> UserError | None:
             str(exc),
             code=error_codes.INFRA_SCHEMA_DRIFT,
             hint="💡 Run 'moneybin transform apply' to rebuild stale models",
+        )
+    if isinstance(exc, SecretUnavailableError):
+        # Above its SecretNotFoundError base on purpose: the keychain reported
+        # the read as denied rather than missing, and "unlock it" is a different
+        # remedy from "store the secret".
+        return UserError(
+            str(exc),
+            code=error_codes.INFRA_PERMISSION_DENIED,
+            hint=(
+                "💡 Unlock the OS keychain, or grant the process running MoneyBin "
+                "access to it, then retry."
+            ),
+        )
+    if isinstance(exc, SecretNotFoundError):
+        return UserError(
+            str(exc),
+            code=error_codes.INFRA_SETUP_REQUIRED,
+            hint=(
+                "💡 The message names the missing secret — store it with the "
+                "command that owns it (e.g. 'moneybin db unlock' for the "
+                "database encryption key)."
+            ),
+        )
+    if isinstance(exc, SecretStorageUnavailableError):
+        return UserError(
+            str(exc),
+            code=error_codes.INFRA_SETUP_REQUIRED,
+            hint=(
+                "💡 No OS keyring backend is available to store secrets. "
+                "Configure one (macOS Keychain, GNOME Keyring, KWallet) and retry."
+            ),
         )
     if isinstance(exc, FileNotFoundError):
         # Drop the "[Errno 2]" prefix that str(FileNotFoundError) includes —
@@ -410,12 +458,17 @@ def classify_user_error(exc: BaseException) -> UserError | None:
 def _is_match_run_error(exc: BaseException) -> bool:
     """True if ``exc`` is the matcher's partial-run carrier.
 
-    Imported inside the call because `moneybin.matching.engine` reaches back
-    into repositories that import this module — the same cycle the deferred
-    imports above avoid. Kept out of the hot path: only an exception that
-    matched no branch above gets this far.
+    Imported inside the call for the same reason as the block in
+    ``classify_user_error``: ``moneybin.matching.engine`` pulls in the config,
+    database and metrics layers, and this module stays a leaf. There is no
+    cycle to break here — this marker used to claim one, but
+    ``matching.engine`` imports no repository and reaches this module by no
+    module-level path, so hoisting it would cost import weight, not correctness.
+
+    Kept in its own function rather than joining that block so only an exception
+    that matched no branch above pays the import.
     """
-    from moneybin.matching.engine import (  # noqa: PLC0415 — errors<->matching cycle
+    from moneybin.matching.engine import (  # noqa: PLC0415 — keeps errors.py import-light
         MatchRunError,
     )
 

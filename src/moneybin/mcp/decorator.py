@@ -41,11 +41,11 @@ from moneybin.errors import (
     classify_user_error,
     exception_origin,
 )
-from moneybin.mcp.privacy import Sensitivity, log_tool_call, tier_to_sensitivity
 from moneybin.privacy.classified_envelope import classify
 from moneybin.privacy.introspection import PrivacyContractError, derive_tier
 from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import has_active_transform, redact_typed
+from moneybin.privacy.sensitivity import Sensitivity, log_tool_call, tier_to_sensitivity
 from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 from moneybin.services.mutation_context import operation

@@ -11,6 +11,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **The public docs have one index, one reference directory, and a test that
+  every command they cite exists.** `docs/architecture/` and `docs/tech/` are
+  folded into `docs/reference/`; `docs/guides/README.md` and
+  `docs/reference/prompts/README.md` are merged into `docs/README.md` and a
+  new Prompts section of the MCP server guide. A documentation-policy test now
+  parses every `moneybin …` invocation in the public docs, including the
+  command and flags columns of the CLI reference tables, and resolves it
+  against the registered command tree; CI now runs the unit suite on
+  docs-only pull requests, which skipped every test job before. The 34
+  invocations it caught are corrected —
+  among them `db rotate-key`, `db shell -c`, `import file`, `reports summary`,
+  `mcp serve --profile`, a bare `moneybin doctor`, and 13 reference rows that
+  showed a positional (`db restore <backup-path>`, `sync pull [<item-id>]`)
+  where the command takes an option (`--from`, `--institution`).
+
+  One corrected claim was about privacy. The CLI reference said
+  `transactions categorize assist` sends description and memo text redacted.
+  It sends that text in full, masking only embedded identifiers such as
+  account numbers, and omits amount, date, and account id; the wording now
+  matches the command's own help.
+
+  Stale mechanics are brought up to date across the guides and references:
+  the refresh cascade has six steps (`rates` is the sixth); cross-source
+  merges rank `manual, gsheet, ofx, plaid` ahead of the tabular formats;
+  `dim_accounts` merges per field rather than keeping one winning row; five
+  price sources are registered; multi-currency display conversion has
+  shipped; metrics flush once at session end with no interval setting;
+  `stats --output json` emits `{"metrics": [...]}` rather than the envelope;
+  the `system doctor` check list matches the implementation; and the
+  `reports networth` JSON sample is real output — a list with one totals row
+  per currency followed by one row per account.
+
+  The unused `docs` dependency group (MkDocs Material and friends) is dropped
+  from `pyproject.toml`, and ADR-011 records why: Material for MkDocs entered
+  maintenance mode in November 2025, so the docs site is deferred to the first
+  public release and builds on its successor if that has reached 1.0 by then.
+  (#516)
+
+- **`accounts list` and `transactions list` now name the account in a column
+  you can quote back.** `accounts list` had glued the id onto the display name
+  (`Checking (acct_a1b2)`) and `transactions list` headed its id column
+  `account`; both now render an `account_id` column, so the two tables visibly
+  join and `--output json` is unchanged. (#515)
+
+- **A truncated `transactions list` page says how much it left behind instead
+  of printing a cursor.** `Next page: --cursor <token>` is replaced by
+  `20 of 2,046 shown · raise --limit for more`, with the continuation offered
+  only where a further page exists; `--cursor` is unchanged for
+  `--output json`. (#515)
+
 - **The last eight commands that drew their own columns now render like every
   other one.** `db ps`, `db kill`, `demo`, `fx list`, `import history`,
   `import formats list`, and the four `investments` list commands each built a
@@ -232,6 +282,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **A missing or locked keychain entry no longer prints a stack trace.**
+  `moneybin db info`, `db unlock` and the DuckDB init-script builder read the
+  encryption key directly, and the secret-store exceptions had no branch in the
+  error classifier — so the CLI showed a raw traceback and MCP returned
+  `infra_unclassified_error`. They now classify: a keychain that denies the
+  read reports `infra_permission_denied` with an unlock hint, and a missing
+  secret or absent keyring backend reports `infra_setup_required` naming the
+  command that stores it. (#522)
+
+- **A Plaid transaction's `category` no longer holds Plaid's own category
+  code.** `prep.int_transactions__unioned` had aliased the raw
+  personal-finance-category code into `category`, so one column mixed
+  `FOOD_AND_DRINK` with `Food & Drink` depending only on the row's source; the
+  code now stays in `plaid_category`, where the categorizer already reads it,
+  and report grouping no longer splits one category's total in two. (#515)
+
+- **`core.uncategorized_queue` and every count drawn from it grow on a Plaid
+  profile.** The queue selects `WHERE category IS NULL`, so the aliased code
+  above had been hiding transactions the categorizer never resolved — this is
+  the inverse of the drop in #502, and for the same reason. (#515)
+
+- **An absent category renders `Uncategorized`, and the line beneath the table
+  counts it.** `transactions list` printed an empty cell and
+  `transactions splits` printed `-` for the same state; both now draw on one
+  placeholder and disclose the count (`… · 7 uncategorized`), counting only
+  genuinely absent categories so a category authored as the literal word
+  `Uncategorized` renders as itself. (#515)
+
 - **An amount no longer folds across two lines.** Folding is the right failure
   for an identifier — an account id or a display name ending in a masked last
   four wraps rather than losing the characters that tell two rows apart — but
@@ -329,6 +407,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `moneybin accounts set --display-name` already refused such a name;
   `moneybin import --account-metadata display_name=…` did not, and now does, so
   a rename is no longer undone by re-importing the same file. (#533)
+- **Three references are generated from the code and pinned by a test.**
+  `make generate-docs` renders `docs/reference/cli/` (one page per top-level
+  command plus an index) from the Typer command tree,
+  `docs/reference/mcp-tools.md` (every tool's description, parameters,
+  annotations, and maximum sensitivity) from the tool list the MCP server hands
+  a connecting client, and `docs/reference/configuration.md` (every setting's
+  variable, type, default, and description) from `MoneyBinSettings`, and
+  `test_generated_references_are_current` fails while any page is stale.
+  Rendering that text exposed defects fixed at the source — five settings had
+  no description, the `gsheet auth` help named a retired MCP tool, and ten tool
+  descriptions spelled the undo hint as a positional call — and the CLI
+  reference guide now keeps its prose and links each group's generated page in
+  place of its command tables.
 - **`core.bridge_merchant_entities`** — a new queryable core view mapping each
   transaction to the merchant identifier its source system assigned, alongside
   the source that issued it and the merchant name that source stated. Available
@@ -2039,7 +2130,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   regenerated is not imported twice, and pinning a statement already bound to
   another account now errors. If a file was imported under the old scheme,
   delete its previous import batch before re-importing it or it will be counted
-  twice ([`account-identifiers.md`](docs/architecture/account-identifiers.md),
+  twice ([`account-identifiers.md`](docs/reference/account-identifiers.md),
   #438, #418).
 
 - **Account-merge prompts and the decision log now name the accounts instead of

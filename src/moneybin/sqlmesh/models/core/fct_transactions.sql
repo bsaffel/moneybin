@@ -125,7 +125,7 @@ SELECT
   merchant_name, /* Normalized merchant name from core.dim_merchants; falls back to source value */
   merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL when no canonical merchant has been resolved for this transaction. Reports should GROUP/PARTITION on this FK; merchant_name is for display. */
   memo, /* Additional notes from highest-priority source */
-  category, /* Spending category resolved via category_id FK to core.dim_categories; falls back to app.transaction_categories.category snapshot for orphaned rows, then to source-system text for uncategorized rows */
+  category, /* Spending category resolved via category_id FK to core.dim_categories; falls back to app.transaction_categories.category snapshot for orphaned rows, then to the source's OWN category text where the source supplies one a person wrote (tabular CSV column, manual entry). Never a provider taxonomy code: Plaid contributes no category here, so an uncategorized Plaid row is NULL, which is what core.uncategorized_queue selects on. The raw PFC code lives in prep.int_transactions__merged.plaid_category */
   subcategory, /* Spending subcategory resolved via FK; same fallback chain as category */
   categorized_by, /* How the category was assigned: rule, ai, user, or NULL if uncategorized */
   payment_channel, /* Payment channel (online, in store, other) */

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-09-03 -->
 # Observability
 
 What MoneyBin records about itself, how to read it, and what's intentionally NOT recorded. Three surfaces: structured logs (per-profile log files + stderr), persisted metrics (in the `app.metrics` table), and the `system doctor` integrity sweep. The privacy threat model lives in [`threat-model.md`](threat-model.md); this guide is operational.
@@ -19,7 +19,7 @@ What MoneyBin records about itself, how to read it, and what's intentionally NOT
 **Human format** (default; single line per record):
 
 ```
-2026-04-21 14:30:00,123 - moneybin.services.refresh - INFO - Refresh complete in 4.21s
+2026-04-21 14:30:00,123 - moneybin.orchestration.refresh - INFO - Refresh complete in 4.21s
 ```
 
 CLI-stream console output uses a message-only variant — no timestamp prefix — so user-facing output stays clean. File output always carries the timestamp + logger + level prefix.
@@ -27,7 +27,7 @@ CLI-stream console output uses a message-only variant — no timestamp prefix �
 **JSON format** (`MONEYBIN_LOGGING__FORMAT=json`, file output only):
 
 ```json
-{"timestamp": "2026-04-21T14:30:00.123456+00:00", "logger": "moneybin.services.refresh", "level": "INFO", "message": "Refresh complete in 4.21s"}
+{"timestamp": "2026-04-21T14:30:00.123456+00:00", "logger": "moneybin.orchestration.refresh", "level": "INFO", "message": "Refresh complete in 4.21s"}
 ```
 
 Required keys on every JSON record: `timestamp` (ISO 8601 UTC), `logger`, `level`, `message`. When the record carries exception info, an `exception` key holds the formatted traceback. Any non-standard `LogRecord` attribute set via `extra={...}` is copied verbatim alongside the required keys — but **MoneyBin does not currently emit structured event keys** (`event=refresh.completed`, etc.) as a code convention. Today, "did X succeed?" is answered by matching `message` substrings. Stable event names are tracked as a follow-up; until then, treat the `message` field as best-effort prose, not a contract.
@@ -93,7 +93,7 @@ Set `MONEYBIN_LOGGING__LOG_TO_FILE=false` (or `log_to_file: false` in your profi
 
 - **Storage.** Persisted to the `app.metrics` table in the per-profile encrypted DuckDB. Each flush appends a snapshot row per (metric, labels).
 - **Backend.** `prometheus_client` in-process registry — used for its instrument API, not its HTTP exposition.
-- **Flush cadence.** On process exit (`atexit`), and every `MONEYBIN_METRICS__FLUSH_INTERVAL_SECONDS` (default `300`) for long-running processes like `moneybin mcp serve`. Flushes are skipped when no write connection was opened that session — read-only invocations don't take a write lock just to persist counters.
+- **Flush cadence.** Once per session, at the end. CLI runs flush from an `atexit` hook; `moneybin mcp serve` flushes when the server closes its database. There is no interval flush and no setting to configure one, so a long-lived MCP session writes nothing to `app.metrics` until it shuts down. Flushes are skipped when no write connection was opened that session — read-only invocations don't take a write lock just to persist counters.
 - **Counter restore.** On startup, counters are restored from the most recent snapshot so lifetime totals survive restarts. Gauges (point-in-time values) are not restored — after a restart, gauges read `0` until the next observation.
 
 ### Naming and labels
@@ -150,10 +150,12 @@ moneybin stats --metric import
 moneybin stats --since 24h
 
 # Machine-readable
-moneybin stats --output json | jq '.data[] | select(.type=="counter")'
+moneybin stats --output json | jq '.metrics[] | select(.type=="counter")'
 ```
 
 `stats` returns the most recent snapshot per `(metric_name, labels)` and reports counts as `N total`, gauges as `value`, and histograms as `N observations (sum=Ns)`. Cumulative counters are not summed across snapshots — that would double-count.
+
+`stats --output json` is one of the operations-metadata reads that stay off the standard response envelope (`logs`, `migrate status`, `db info`, and `db ps` are the others; with the `db query` operator bypass, the CLI reference names all six). It emits `{"metrics": [...]}`, each entry carrying `name`, `type`, `labels`, `value`, `snapshots`, and `last_recorded` — so the jq path is `.metrics[]`, not `.data[]`, and there is no top-level `status` to match on.
 
 ---
 
@@ -162,18 +164,24 @@ moneybin stats --output json | jq '.data[] | select(.type=="counter")'
 A read-only sweep that asks: is the pipeline internally consistent right now?
 
 ```bash
-moneybin system doctor                # human-readable
-moneybin system doctor --verbose      # also print affected transaction IDs
+moneybin system doctor                # only the invariants needing attention
+moneybin system doctor --verbose      # every invariant that ran, plus affected IDs
+moneybin system doctor --full         # scan every protected app.* row, not a sample
 moneybin system doctor --output json  # ResponseEnvelope for agents
 ```
 
-What it audits (via `DoctorService`, which calls SQLMesh named audits plus two service-layer checks):
+What it audits, via `DoctorService`:
 
-- **SQLMesh audits** on `core.fct_transactions` — FK integrity to `dim_accounts`, sign convention, transfer-pair balance, and any other named audits attached to core models.
-- **Staging coverage** — every staged row reaches `core.fct_transactions`.
+- **SQLMesh named audits** attached to core models — FK integrity and sign convention on `core.fct_transactions`, the same two plus uniqueness on `core.fct_investment_transactions`, and transfer-pair balance on `core.bridge_transfers`.
+- **Transform model presence** — the SQLMesh models the pipeline expects are materialized.
+- **Dedup reconciliation** and **cross-source duplicates** — duplicate account overlap, plus cross-source duplicate transactions that have no merge proposal.
 - **Categorization coverage** — share of transactions with a category assigned. Warns (not fails) when under 50% of non-transfer rows are categorized.
+- **Currency integrity** — profile currencies and rows carrying an unknown currency.
+- **Protected `app.*` audit coverage** — one check per repository-wrapped table (`user_categories`, `categorization_rules`, `account_settings`, `balance_assertions`, `imports`, and the rest), verifying every mutation left an audit-log row. Sampled over recent rows by default; `--full` scans the whole table.
+- **Orphaned app state** — `app.*` rows pointing at accounts, categories, or transactions that no longer exist.
+- **13 investment checks** — staging rejects, opening-lot review, unmodeled legs, holdings-snapshot divergence, source overlap, unresolved securities, conflicting security references, unreported and phantom holdings, price disagreement, unpriced holdings, stale prices, and unmapped price sources.
 
-Exit codes: `0` if every invariant passes or warns; `1` if any fails. `--verbose` lists the offending IDs per failing invariant. The equivalent agent call is `system_status(sections=['doctor'], detail='full')` — the same checks in the standard response envelope.
+Exit codes: `0` if every invariant passes, warns, or is skipped; `1` if any fails. `--verbose` lists the offending IDs per failing invariant. The equivalent agent call is `system_status(sections=['doctor'], detail='full')` — the same checks in the standard response envelope.
 
 ### JSON envelope shape
 
@@ -206,7 +214,7 @@ On failure (exit `1`), the top-level `status` flips to `"error"`, an `error` obj
 
 For agents and watchdog scripts driving MoneyBin directly:
 
-- **Tail logs**: `moneybin logs <stream> -f --output json | your-event-handler`. JSON keys are fixed (`timestamp`, `logger`, `level`, `message`); `message` substring matching is the current contract for event detection.
+- **Tail logs**: `moneybin logs <stream> --output json | your-event-handler`, polled on a timer. JSON keys are fixed (`timestamp`, `logger`, `level`, `message`); `message` substring matching is the current contract for event detection. `--output json` applies only to the backfill, which is a bare JSON array rather than the standard envelope — once `-f` starts following, every new line is echoed as raw text, so a follow loop and a JSON parser cannot be combined today.
 - **Poll metrics**: `moneybin stats --output json` on a timer. Reads the latest snapshot per `(metric_name, labels)` from `app.metrics`.
 - **Poll health**: `moneybin system doctor --output json` (CLI) or `system_status(sections=['doctor'], detail='full')` (agent surface). Match on `data.invariants[].status` or top-level `status`.
 - **Cost signals**: MoneyBin does not call hosted LLMs and does not track token cost. If your agent (Claude Code, Codex, etc.) drives MoneyBin via MCP, cost tracking is your client's responsibility.
@@ -246,7 +254,7 @@ Three patterns that compose with the cron / systemd timer of your choice:
 ```bash
 moneybin system doctor --output json \
   | jq -e '.status == "ok"' >/dev/null \
-  || /usr/local/bin/alert "moneybin doctor failed on $(hostname)"
+  || /usr/local/bin/alert "MoneyBin doctor failed on $(hostname)"
 ```
 
 **2. Stale sync** — no successful pull in the last 24h.

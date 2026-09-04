@@ -228,12 +228,6 @@ def mcp_install(
     the desktop app, the Codex CLI, and the IDE extension. ChatGPT on the web can
     NOT see it — reaching that needs a remote MCP server (M3D).
 
-    Args:
-        client: Target MCP client identifier.
-        profile: MoneyBin profile to embed in the config.
-        print_only: Emit the snippet to stdout instead of writing it.
-        yes: Bypass install confirmation prompt.
-
     Examples:
         # Install for Claude Desktop without prompting
         moneybin mcp install --client claude-desktop --yes
