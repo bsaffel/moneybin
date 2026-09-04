@@ -676,7 +676,8 @@ Numbered, testable. Tagged by phase.
     foreign conversion uses the actual two-leg amounts for its executed rate and
     uses a stored M1K.2 rate or override only to value the received leg in Home
     currency; the valuation source stays separate and auditable. Missing valuation
-    evidence leaves the event uncovered.
+    evidence leaves basis and gain/loss uncovered while retaining both quantity
+    movements.
 
     A foreign-denominated Security sale opens a Currency lot for the net foreign
     proceeds, using its recorded fees and stored sale-date Home valuation as that
@@ -782,52 +783,52 @@ appropriate, but no caller learns the engine adapter.
 ```sql
 CREATE TABLE core.bridge_currency_conversions (
     conversion_id            VARCHAR,          -- content hash of the trusted evidence identity
-    source_shape             VARCHAR,          -- linked_two_row | single_row
     transfer_pair_id         VARCHAR,          -- accepted Transfer Decision; NULL for single-row
     from_transaction_id      VARCHAR,          -- canonical sent Transaction
     to_transaction_id        VARCHAR,          -- canonical received Transaction; NULL for single-row
     from_account_id          VARCHAR,
     to_account_id            VARCHAR,          -- same as from_account_id for single-row
-    from_date                DATE,
-    to_date                  DATE,
-    from_amount              DECIMAL(18,2),     -- positive magnitude actually sent
+    from_source_transaction_id VARCHAR,
+    to_source_transaction_id VARCHAR,
+    source_shape             VARCHAR,          -- linked_two_row | single_row
     from_currency            VARCHAR,
-    to_amount                DECIMAL(18,2),     -- positive magnitude actually received
     to_currency              VARCHAR,
-    executed_rate            DECIMAL(18,8),     -- to_amount / from_amount; never a reference rate
     home_currency            VARCHAR,
-    home_value               DECIMAL(18,2),     -- actual Home leg, else auditable valuation
-    valuation_rate           DECIMAL(18,8),
-    valuation_rate_date      DATE,
     valuation_source_type    VARCHAR,          -- actual | override | provider; NULL when unavailable
     from_source_type         VARCHAR,
     from_source_origin       VARCHAR,
-    from_source_transaction_id VARCHAR,
     to_source_type           VARCHAR,
     to_source_origin         VARCHAR,
-    to_source_transaction_id VARCHAR,
     coverage_status          VARCHAR,          -- complete | incomplete
     coverage_reason          VARCHAR,          -- closed reason vocabulary; NULL when complete
+    from_amount              DECIMAL(18,2),     -- positive magnitude actually sent
+    to_amount                DECIMAL(18,2),     -- positive magnitude actually received
+    executed_rate            DECIMAL(18,8),     -- to_amount / from_amount; never a reference rate
+    home_value               DECIMAL(18,2),     -- actual Home leg, else auditable valuation
+    valuation_rate           DECIMAL(18,8),
+    from_date                DATE,
+    to_date                  DATE,
+    valuation_rate_date      DATE,
     updated_at               TIMESTAMP
 );
 
 CREATE TABLE core.fct_currency_lots (
     currency_lot_id          VARCHAR,
     account_id               VARCHAR,
+    source_conversion_id     VARCHAR,
+    source_investment_transaction_id VARCHAR,
     currency_code            VARCHAR,
-    acquisition_date         DATE,
     acquisition_type         VARCHAR,          -- conversion | security_sale
+    cost_basis_method        VARCHAR,          -- fifo | average
+    home_currency            VARCHAR,
+    coverage_status          VARCHAR,
+    coverage_reason          VARCHAR,
     original_quantity        DECIMAL(18,2),
     remaining_quantity       DECIMAL(18,2),
     cost_basis_total         DECIMAL(18,2),
     cost_basis_remaining     DECIMAL(18,2),
-    cost_basis_method        VARCHAR,          -- fifo | average
-    home_currency            VARCHAR,
-    source_conversion_id     VARCHAR,
-    source_investment_transaction_id VARCHAR,
     basis_incomplete         BOOLEAN,
-    coverage_status          VARCHAR,
-    coverage_reason          VARCHAR,
+    acquisition_date         DATE,
     updated_at               TIMESTAMP
 );
 
@@ -838,19 +839,19 @@ CREATE TABLE core.fct_realized_fx_gains (
     currency_lot_id          VARCHAR,
     currency_code            VARCHAR,
     home_currency            VARCHAR,
-    acquisition_date         DATE,
-    disposal_date            DATE,
+    cost_basis_method        VARCHAR,
+    valuation_source_type    VARCHAR,
+    coverage_status          VARCHAR,
+    coverage_reason          VARCHAR,
     disposed_amount          DECIMAL(18,2),
     proceeds                 DECIMAL(18,2),
     cost_basis               DECIMAL(18,2),
     gain_loss                DECIMAL(18,2),
     fee_amount               DECIMAL(18,2),
-    cost_basis_method        VARCHAR,
     valuation_rate           DECIMAL(18,8),
+    acquisition_date         DATE,
+    disposal_date            DATE,
     valuation_rate_date      DATE,
-    valuation_source_type    VARCHAR,
-    coverage_status          VARCHAR,
-    coverage_reason          VARCHAR,
     updated_at               TIMESTAMP
 );
 ```

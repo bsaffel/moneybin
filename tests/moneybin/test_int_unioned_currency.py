@@ -7,6 +7,7 @@ to isolate the union SQL from the extractor path.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -22,6 +23,8 @@ def _insert_ofx_transaction(
     txn_id: str,
     account_id: str,
     currency_code: str | None,
+    transaction_date: str = "2026-07-01",
+    amount: str = "-10.00",
     to_amount: str | None = None,
     to_currency: str | None = None,
 ) -> None:
@@ -31,10 +34,18 @@ def _insert_ofx_transaction(
             (source_transaction_id, account_id, transaction_type, date_posted,
              amount, payee, source_file, extracted_at, source_type,
              source_origin, currency_code, to_amount, to_currency)
-        VALUES (?, ?, 'DEBIT', '2026-07-01'::TIMESTAMP, -10.00, 'Test Payee',
+        VALUES (?, ?, 'DEBIT', ?::TIMESTAMP, ?::DECIMAL(18,2), 'Test Payee',
                 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?, ?, ?)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [txn_id, account_id, currency_code, to_amount, to_currency],
+        [
+            txn_id,
+            account_id,
+            transaction_date,
+            amount,
+            currency_code,
+            to_amount,
+            to_currency,
+        ],
     )
 
 
@@ -44,6 +55,8 @@ def _insert_manual_transaction(
     txn_id: str,
     account_id: str,
     currency_code: str | None,
+    transaction_date: str = "2026-07-01",
+    amount: str = "-10.00",
     to_amount: str | None = None,
     to_currency: str | None = None,
 ) -> None:
@@ -53,10 +66,18 @@ def _insert_manual_transaction(
             (source_transaction_id, import_id, account_id, transaction_date,
              amount, description, created_by, currency_code, to_amount,
              to_currency)
-        VALUES (?, 'manual_test_import', ?, '2026-07-01'::DATE, -10.00,
+        VALUES (?, 'manual_test_import', ?, ?::DATE, ?::DECIMAL(18,2),
                 'Test Manual Entry', 'cli', ?, ?, ?)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [txn_id, account_id, currency_code, to_amount, to_currency],
+        [
+            txn_id,
+            account_id,
+            transaction_date,
+            amount,
+            currency_code,
+            to_amount,
+            to_currency,
+        ],
     )
 
 
@@ -261,9 +282,11 @@ def test_merged_received_leg_prefers_one_complete_pair_with_its_provenance(
         db,
         txn_id="manual-complete-fx",
         account_id="shared-account",
-        currency_code="USD",
-        to_amount="90.00",
-        to_currency="EUR",
+        currency_code="GBP",
+        transaction_date="2026-07-02",
+        amount="-90.00",
+        to_amount="100.00",
+        to_currency="USD",
     )
     db.execute(
         """
@@ -286,16 +309,37 @@ def test_merged_received_leg_prefers_one_complete_pair_with_its_provenance(
 
     row = db.execute(
         """
-        SELECT to_amount, to_currency, conversion_source_type,
+        SELECT conversion_from_date, conversion_from_amount,
+               conversion_from_currency, to_amount, to_currency, conversion_source_type,
                conversion_source_origin, conversion_source_transaction_id
         FROM prep.int_transactions__merged
         WHERE account_id = 'shared-account'
         """
     ).fetchone()
     assert row == (
-        Decimal("90.00"),
-        "EUR",
+        date(2026, 7, 2),
+        Decimal("-90.00"),
+        "GBP",
+        Decimal("100.00"),
+        "USD",
         "manual",
         "user",
+        "manual-complete-fx",
+    )
+
+    conversion = db.execute(
+        """
+        SELECT from_date, from_amount, from_currency, to_amount, to_currency,
+               from_source_transaction_id
+        FROM core.bridge_currency_conversions
+        WHERE source_shape = 'single_row'
+        """
+    ).fetchone()
+    assert conversion == (
+        date(2026, 7, 2),
+        Decimal("90.00"),
+        "GBP",
+        Decimal("100.00"),
+        "USD",
         "manual-complete-fx",
     )

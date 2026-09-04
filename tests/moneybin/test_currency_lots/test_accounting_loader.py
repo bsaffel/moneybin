@@ -493,31 +493,85 @@ def test_nonempty_incomplete_engine_lot_maps_to_incomplete_history(
     assert result.gains[0].gain_loss is None
 
 
-def test_incomplete_bridge_row_never_enters_engine(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    called = False
-
-    def recording_engine(
-        *_args: object, **_kwargs: object
-    ) -> tuple[list[object], list[object]]:
-        nonlocal called
-        called = True
-        return [], []
-
-    monkeypatch.setattr(sqlmesh_loader, "compute_lots_and_gains", recording_engine)
-
-    result = _derive(
-        _conversion(
-            coverage_status="incomplete",
-            coverage_reason="missing_valuation_rate",
-            home_value=None,
-        )
+def test_missing_conversion_valuation_preserves_both_quantity_movements() -> None:
+    """An unknown Home value must not leave stale sent or received quantities."""
+    acquire_gbp = _conversion(
+        conversion_id="fxc_gbp_acquire",
+        to_account_id="acct-gbp",
+        to_amount=D("100.00"),
+        to_currency="GBP",
+    )
+    unvalued = _conversion(
+        conversion_id="fxc_gbp_eur",
+        from_account_id="acct-gbp",
+        to_account_id="acct-eur",
+        from_date=date(2026, 2, 1),
+        to_date=date(2026, 2, 1),
+        from_amount=D("40.00"),
+        from_currency="GBP",
+        to_amount=D("50.00"),
+        to_currency="EUR",
+        home_value=None,
+        valuation_rate=None,
+        valuation_rate_date=None,
+        valuation_source_type=None,
+        coverage_status="incomplete",
+        coverage_reason="missing_valuation_rate",
+        updated_at=T2,
     )
 
-    assert called is False
-    assert result.lots == ()
-    assert result.gains == ()
+    result = _derive(acquire_gbp, unvalued)
+
+    gbp_lot = next(lot for lot in result.lots if lot.currency_code == "GBP")
+    eur_lot = next(lot for lot in result.lots if lot.currency_code == "EUR")
+    assert gbp_lot.remaining_quantity == D("60.00")
+    assert eur_lot.original_quantity == D("50.00")
+    assert eur_lot.remaining_quantity == D("50.00")
+    assert eur_lot.cost_basis_total is None
+    assert eur_lot.coverage_reason == "missing_valuation_rate"
+    assert len(result.gains) == 1
+    assert result.gains[0].disposed_amount == D("40.00")
+    assert result.gains[0].proceeds is None
+    assert result.gains[0].cost_basis is None
+    assert result.gains[0].gain_loss is None
+    assert result.gains[0].coverage_reason == "missing_valuation_rate"
+
+
+def test_unvalued_security_sale_quantity_is_consumed_by_later_disposal() -> None:
+    """An unvalued sale lot remains real inventory rather than a placeholder."""
+    disposal = _conversion(
+        conversion_id="fxc_dispose_sale_cash",
+        from_account_id="acct-eur",
+        to_account_id="acct-usd",
+        from_date=date(2026, 3, 1),
+        to_date=date(2026, 3, 1),
+        from_amount=D("20.00"),
+        from_currency="EUR",
+        to_amount=D("30.00"),
+        to_currency="USD",
+        home_value=D("30.00"),
+        updated_at=T3,
+    )
+
+    result = _derive(
+        disposal,
+        sales=(
+            _sale(
+                home_value=None,
+                valuation_rate=None,
+                valuation_rate_date=None,
+                valuation_source_type=None,
+            ),
+        ),
+    )
+
+    assert len(result.lots) == 1
+    assert result.lots[0].remaining_quantity == D("20.00")
+    assert result.lots[0].coverage_reason == "missing_valuation_rate"
+    assert len(result.gains) == 1
+    assert result.gains[0].disposed_amount == D("20.00")
+    assert result.gains[0].coverage_reason == "incomplete_history"
+    assert result.gains[0].currency_lot_id == result.lots[0].currency_lot_id
 
 
 def test_missing_sale_home_valuation_is_visible_without_fabricated_basis() -> None:
@@ -636,6 +690,7 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
         name: TableRef("alternate", table)
         for name, table in (
             ("BRIDGE_TRANSFERS", "trusted_transfers"),
+            ("DIM_ACCOUNTS", "canonical_accounts"),
             ("INT_TRANSACTIONS_MERGED", "merged_transactions"),
             ("MATCH_DECISIONS", "trusted_decisions"),
             ("PROFILE_SETTINGS", "profile_config"),
@@ -673,6 +728,7 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
     expected = {ref.full_name for ref in refs.values()}
     model_refs = {
         refs["BRIDGE_TRANSFERS"].full_name,
+        refs["DIM_ACCOUNTS"].full_name,
         refs["INT_TRANSACTIONS_MERGED"].full_name,
     }
     physical_refs = expected - model_refs

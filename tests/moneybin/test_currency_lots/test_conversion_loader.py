@@ -201,10 +201,10 @@ def _load(context: _FakeContext) -> list[t.Any]:
     return module.load_conversion_rows(t.cast(t.Any, context))
 
 
-def test_sent_currency_comes_from_canonical_transactions_for_both_shapes(
+def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     db: Database,
 ) -> None:
-    """Merged terms stay authoritative while canonical sent Currency completes rows."""
+    """Merged terms stay authoritative while Account Currency completes rows."""
     db.execute(
         """
         CREATE OR REPLACE TABLE core.bridge_transfers (
@@ -223,6 +223,9 @@ def test_sent_currency_comes_from_canonical_transactions_for_both_shapes(
             transaction_date DATE,
             amount DECIMAL(18, 2),
             currency_code VARCHAR,
+            conversion_from_date DATE,
+            conversion_from_amount DECIMAL(18, 2),
+            conversion_from_currency VARCHAR,
             to_amount DECIMAL(18, 2),
             to_currency VARCHAR,
             conversion_source_type VARCHAR,
@@ -266,14 +269,30 @@ def test_sent_currency_comes_from_canonical_transactions_for_both_shapes(
         """
         INSERT INTO prep.int_transactions__merged VALUES
             ('txn-linked-out', 'acct-usd', '2026-03-16'::DATE, -100.00,
-             NULL, NULL, NULL, NULL, NULL, NULL,
+             NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
              '2026-03-16 10:00:00'::TIMESTAMP),
             ('txn-linked-in', 'acct-eur', '2026-03-16'::DATE, 90.00,
-             NULL, NULL, NULL, NULL, NULL, NULL,
+             NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
              '2026-03-16 11:00:00'::TIMESTAMP),
             ('txn-single', 'acct-eur', '2026-03-17'::DATE, -80.00,
-             NULL, 100.00, 'USD', 'manual', 'user', 'native-single',
+             NULL, '2026-03-17'::DATE, -80.00, NULL, 100.00, 'USD',
+             'manual', 'user', 'native-single',
              '2026-03-17 12:00:00'::TIMESTAMP)
+        """
+    )
+    db.execute(
+        """
+        CREATE OR REPLACE TABLE core.dim_accounts (
+            account_id VARCHAR,
+            currency_code VARCHAR,
+            updated_at TIMESTAMP
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO core.dim_accounts VALUES
+            ('acct-eur', 'EUR', '2026-03-19 09:00:00'::TIMESTAMP)
         """
     )
     db.execute(

@@ -361,7 +361,8 @@ def refresh(
             transfers_retired=transfers_retired,
         )
 
-    apply_result = TransformService(db).apply()
+    transform_service = TransformService(db)
+    apply_result = transform_service.apply()
     if not apply_result.applied:
         # categorize is not attempted when apply fails (it reads SQLMesh-built
         # views), so categorization_error stays None here — "not attempted",
@@ -385,10 +386,30 @@ def refresh(
     rate_backfill, rate_backfill_error = (
         _run_rates_step(db) if "rates" in requested else (None, None)
     )
+    duration_seconds = apply_result.duration_seconds
+    if rate_backfill is not None and rate_backfill.rates_written > 0:
+        rate_apply_result = transform_service.apply()
+        duration_seconds += rate_apply_result.duration_seconds
+        if not rate_apply_result.applied:
+            return RefreshResult(
+                applied=False,
+                duration_seconds=duration_seconds,
+                error=rate_apply_result.error,
+                matching_error=matching_error,
+                categorization_error=categorization_error,
+                identity_errors=identity_errors,
+                rate_backfill=rate_backfill,
+                rate_backfill_error=rate_backfill_error,
+                matches_auto_merged=auto_merged,
+                matches_pending_review=pending_review,
+                matches_pending_transfers=pending_transfers,
+                matching_skipped=matching_skipped,
+                transfers_retired=transfers_retired,
+            )
 
     return RefreshResult(
         applied=True,
-        duration_seconds=apply_result.duration_seconds,
+        duration_seconds=duration_seconds,
         matching_error=matching_error,
         categorization_error=categorization_error,
         identity_errors=identity_errors,

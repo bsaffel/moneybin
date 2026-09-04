@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # this key set equals `raw_tables_read_by_models()`, so a new raw table wired
 # into a model fails loudly here rather than going silently unwatched.
 _RAW_LANDING_COLUMNS: dict[str, str] = {
+    "exchange_rates": "loaded_at",
     "ofx_accounts": "loaded_at",
     "ofx_balances": "loaded_at",
     "ofx_institutions": "loaded_at",

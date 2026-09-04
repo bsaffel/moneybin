@@ -23,6 +23,7 @@ from moneybin.tables import (
     ACCOUNT_SETTINGS,
     BRIDGE_CURRENCY_CONVERSIONS,
     BRIDGE_TRANSFERS,
+    DIM_ACCOUNTS,
     EXCHANGE_RATE_OVERRIDES,
     EXCHANGE_RATES,
     FCT_INVESTMENT_TRANSACTIONS,
@@ -46,32 +47,32 @@ class CurrencyConversionRow:
     """One immutable row in ``core.bridge_currency_conversions``."""
 
     conversion_id: str
-    source_shape: str
     transfer_pair_id: str | None
     from_transaction_id: str | None
     to_transaction_id: str | None
     from_account_id: str | None
     to_account_id: str | None
-    from_date: date | None
-    to_date: date | None
-    from_amount: Decimal | None
+    from_source_transaction_id: str | None
+    to_source_transaction_id: str | None
+    source_shape: str
     from_currency: str | None
-    to_amount: Decimal | None
     to_currency: str | None
-    executed_rate: Decimal | None
     home_currency: str | None
-    home_value: Decimal | None
-    valuation_rate: Decimal | None
-    valuation_rate_date: date | None
     valuation_source_type: str | None
     from_source_type: str | None
     from_source_origin: str | None
-    from_source_transaction_id: str | None
     to_source_type: str | None
     to_source_origin: str | None
-    to_source_transaction_id: str | None
     coverage_status: str
     coverage_reason: str | None
+    from_amount: Decimal | None
+    to_amount: Decimal | None
+    executed_rate: Decimal | None
+    home_value: Decimal | None
+    valuation_rate: Decimal | None
+    from_date: date | None
+    to_date: date | None
+    valuation_rate_date: date | None
     updated_at: datetime | None
 
 
@@ -99,20 +100,20 @@ class CurrencyLotRow:
 
     currency_lot_id: str
     account_id: str
+    source_conversion_id: str | None
+    source_investment_transaction_id: str | None
     currency_code: str
-    acquisition_date: date
     acquisition_type: str
+    cost_basis_method: str
+    home_currency: str
+    coverage_status: str
+    coverage_reason: str | None
     original_quantity: Decimal
     remaining_quantity: Decimal
     cost_basis_total: Decimal | None
     cost_basis_remaining: Decimal | None
-    cost_basis_method: str
-    home_currency: str
-    source_conversion_id: str | None
-    source_investment_transaction_id: str | None
     basis_incomplete: bool
-    coverage_status: str
-    coverage_reason: str | None
+    acquisition_date: date
     updated_at: datetime | None
 
 
@@ -126,19 +127,19 @@ class RealizedFXGainRow:
     currency_lot_id: str | None
     currency_code: str
     home_currency: str
-    acquisition_date: date
-    disposal_date: date
-    disposed_amount: Decimal
-    proceeds: Decimal
-    cost_basis: Decimal | None
-    gain_loss: Decimal | None
-    fee_amount: Decimal
     cost_basis_method: str
-    valuation_rate: Decimal | None
-    valuation_rate_date: date | None
     valuation_source_type: str | None
     coverage_status: str
     coverage_reason: str | None
+    disposed_amount: Decimal
+    proceeds: Decimal | None
+    cost_basis: Decimal | None
+    gain_loss: Decimal | None
+    fee_amount: Decimal
+    valuation_rate: Decimal | None
+    acquisition_date: date
+    disposal_date: date
+    valuation_rate_date: date | None
     updated_at: datetime | None
 
 
@@ -159,7 +160,8 @@ class _EventMetadata:
     source_investment_transaction_id: str | None
     acquisition_type: str | None
     quantity: Decimal
-    home_value: Decimal
+    home_value: Decimal | None
+    coverage_reason: str | None
     valuation_rate: Decimal | None
     valuation_rate_date: date | None
     valuation_source_type: str | None
@@ -423,6 +425,7 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
     bridge = context.resolve_table(BRIDGE_TRANSFERS.full_name)
     merged = context.resolve_table(INT_TRANSACTIONS_MERGED.full_name)
     match_decisions = MATCH_DECISIONS.full_name
+    accounts = context.resolve_table(DIM_ACCOUNTS.full_name)
     transactions = context.resolve_table(FCT_TRANSACTIONS.full_name)
     linked = context.fetchdf(
         f"""
@@ -516,10 +519,13 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
           NULL::VARCHAR AS to_transaction_id,
           single_row.account_id AS from_account_id,
           single_row.account_id AS to_account_id,
-          single_row.transaction_date::VARCHAR AS from_date,
-          single_row.transaction_date::VARCHAR AS to_date,
-          single_row.amount::VARCHAR AS from_amount,
-          canonical_sent.currency_code AS from_currency,
+          single_row.conversion_from_date::VARCHAR AS from_date,
+          single_row.conversion_from_date::VARCHAR AS to_date,
+          single_row.conversion_from_amount::VARCHAR AS from_amount,
+          COALESCE(
+            single_row.conversion_from_currency,
+            sent_account.currency_code
+          ) AS from_currency,
           single_row.to_amount::VARCHAR AS to_amount,
           single_row.to_currency,
           single_row.conversion_source_type AS from_source_type,
@@ -531,14 +537,15 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
           GREATEST(
             single_row.loaded_at,
             CASE
-              WHEN NOT canonical_sent.currency_code IS NULL
-              THEN COALESCE(canonical_sent.updated_at, single_row.loaded_at)
+              WHEN single_row.conversion_from_currency IS NULL
+                AND NOT sent_account.currency_code IS NULL
+              THEN COALESCE(sent_account.updated_at, single_row.loaded_at)
               ELSE single_row.loaded_at
             END
           )::VARCHAR AS candidate_updated_at
         FROM {merged} AS single_row
-        LEFT JOIN {transactions} AS canonical_sent
-          ON single_row.transaction_id = canonical_sent.transaction_id
+        LEFT JOIN {accounts} AS sent_account
+          ON single_row.account_id = sent_account.account_id
         WHERE NOT single_row.to_amount IS NULL OR NOT single_row.to_currency IS NULL
         """  # noqa: S608  # table name resolved by SQLMesh, not user input
     )
@@ -770,7 +777,9 @@ def _event(
 def _conversion_events(
     conversion: CurrencyConversionRow,
 ) -> list[tuple[LedgerEvent, _EventMetadata]]:
-    if conversion.coverage_status != "complete":
+    if conversion.coverage_status != "complete" and (
+        conversion.coverage_reason != "missing_valuation_rate"
+    ):
         return []
     required = (
         conversion.from_account_id,
@@ -782,7 +791,6 @@ def _conversion_events(
         conversion.to_amount,
         conversion.to_currency,
         conversion.home_currency,
-        conversion.home_value,
     )
     if any(value is None for value in required):
         return []
@@ -796,7 +804,7 @@ def _conversion_events(
     to_amount = t.cast("Decimal", conversion.to_amount)
     to_currency = t.cast("str", conversion.to_currency)
     home_currency = t.cast("str", conversion.home_currency)
-    home_value = t.cast("Decimal", conversion.home_value)
+    home_value = conversion.home_value
     events: list[tuple[LedgerEvent, _EventMetadata]] = []
 
     if from_currency != home_currency:
@@ -821,6 +829,7 @@ def _conversion_events(
                 acquisition_type=None,
                 quantity=from_amount,
                 home_value=home_value,
+                coverage_reason=conversion.coverage_reason,
                 valuation_rate=conversion.valuation_rate,
                 valuation_rate_date=conversion.valuation_rate_date,
                 valuation_source_type=conversion.valuation_source_type,
@@ -850,6 +859,7 @@ def _conversion_events(
                 acquisition_type="conversion",
                 quantity=to_amount,
                 home_value=home_value,
+                coverage_reason=conversion.coverage_reason,
                 valuation_rate=conversion.valuation_rate,
                 valuation_rate_date=conversion.valuation_rate_date,
                 valuation_source_type=conversion.valuation_source_type,
@@ -891,7 +901,8 @@ def _sale_event(sale: ForeignSecuritySale) -> tuple[LedgerEvent, _EventMetadata]
             source_investment_transaction_id=sale.investment_transaction_id,
             acquisition_type="security_sale",
             quantity=sale.net_proceeds,
-            home_value=sale.home_value or Decimal("0.00"),
+            home_value=sale.home_value,
+            coverage_reason=_sale_reason(sale),
             valuation_rate=sale.valuation_rate,
             valuation_rate_date=sale.valuation_rate_date,
             valuation_source_type=sale.valuation_source_type,
@@ -997,7 +1008,7 @@ def _derive_currency_accounting(
         ):
             continue
         event, metadata = _sale_event(sale)
-        if reason := _sale_reason(sale):
+        if (reason := _sale_reason(sale)) and reason != "missing_valuation_rate":
             incomplete_sales.append((event, metadata, reason))
         else:
             event_rows.append((event, metadata))
@@ -1044,7 +1055,10 @@ def _derive_currency_accounting(
             lot.account_id, metadata.currency_code, lot.source_transaction_id
         )
         engine_lot_ids[lot.lot_id] = public_lot_id
-        incomplete = lot.basis_incomplete
+        reason = metadata.coverage_reason
+        if reason is None and lot.basis_incomplete:
+            reason = "incomplete_history"
+        incomplete = reason is not None
         lots.append(
             CurrencyLotRow(
                 currency_lot_id=public_lot_id,
@@ -1064,7 +1078,7 @@ def _derive_currency_accounting(
                 ),
                 basis_incomplete=incomplete,
                 coverage_status="incomplete" if incomplete else "complete",
-                coverage_reason="incomplete_history" if incomplete else None,
+                coverage_reason=reason,
                 updated_at=group_updated_at.get((
                     metadata.account_id,
                     metadata.currency_code,
@@ -1077,8 +1091,8 @@ def _derive_currency_accounting(
         metadata = metadata_for[gain.disposal_txn_id]
         conversion_id = t.cast("str", metadata.source_conversion_id)
         public_lot_id = engine_lot_ids.get(gain.lot_id)
-        reason = None
-        if gain.basis_incomplete:
+        reason = metadata.coverage_reason
+        if reason is None and gain.basis_incomplete:
             reason = "negative_inventory" if gain.lot_id == "" else "incomplete_history"
         gains.append(
             RealizedFXGainRow(
@@ -1091,7 +1105,7 @@ def _derive_currency_accounting(
                 acquisition_date=gain.acquisition_date,
                 disposal_date=gain.disposal_date,
                 disposed_amount=gain.quantity,
-                proceeds=gain.proceeds,
+                proceeds=None if reason else gain.proceeds,
                 cost_basis=None if reason else gain.cost_basis,
                 gain_loss=None if reason else gain.gain_loss,
                 fee_amount=Decimal("0.00"),
