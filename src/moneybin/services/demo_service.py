@@ -26,8 +26,8 @@ from moneybin.errors import UserError
 
 if TYPE_CHECKING:
     from moneybin.database import Database
+    from moneybin.orchestration.refresh import RefreshResult
     from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
-    from moneybin.services.refresh import RefreshResult
 
 logger = logging.getLogger(__name__)
 
@@ -271,10 +271,10 @@ class DemoService:
         from moneybin.config import set_current_profile
         from moneybin.database import get_database
         from moneybin.metrics.registry import DEMO_RUN_TOTAL
+        from moneybin.orchestration.refresh import refresh
         from moneybin.services.doctor_service import DoctorService
         from moneybin.services.networth_service import NetworthService
         from moneybin.services.profile_service import ProfileService
-        from moneybin.services.refresh import refresh
         from moneybin.synthetic.engine import GeneratorEngine
         from moneybin.synthetic.merchant_seed import seed_merchant_catalog
         from moneybin.synthetic.writer import SyntheticWriter

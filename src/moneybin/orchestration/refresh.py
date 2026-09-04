@@ -46,6 +46,20 @@ add tens-to-hundreds of milliseconds combined. High-frequency callers
 (scheduled syncs, webhooks) should pass ``refresh=False`` to their
 loader entry point and run refresh on a separate schedule. See
 ``docs/specs/sync-plaid.md`` Req 10.
+
+**Why the step bodies defer their imports.** Not import cycles — there are
+none, and the annotations that used to claim one were wrong. This module is on
+the CLI's cold-start path (``import_service`` imports it at module level, and
+``moneybin import inbox`` imports that), so every ``moneybin --help`` and every
+shell completion pays for whatever it imports eagerly. Each step therefore
+imports its own collaborators inside its body. Measured marginal cost of
+hoisting, from this module's own import: rates ``run_rate_backfill`` +348
+modules and polars, ``GSheetPullService`` +252 and polars, the Frankfurter
+adapter +121, categorize +77, identity +44…49, the two repos +43…45. The
+cheap-looking members of a step's block stay with their expensive siblings so
+the block reads as one decision.
+``test_orchestration_layering.test_orchestrator_import_stays_light`` fails if
+any of it is hoisted.
 """
 
 from __future__ import annotations
@@ -61,6 +75,9 @@ import duckdb
 
 from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError, classify_user_error, exception_origin
+from moneybin.matching.engine import MatchRunError
+from moneybin.services.matching_service import PENDING_MATCHES_HINT, MatchingService
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.services.transform_service import TransformService
 
@@ -226,13 +243,6 @@ def refresh(
     callers can preserve already-loaded raw rows and surface the failure
     in their response envelope.
     """
-    from moneybin.errors import UserError  # noqa: PLC0415
-    from moneybin.matching.engine import MatchRunError  # noqa: PLC0415
-    from moneybin.services.matching_service import (  # noqa: PLC0415
-        PENDING_MATCHES_HINT,
-        MatchingService,
-    )
-
     if steps is not None:
         unknown = [s for s in steps if s not in CANONICAL_STEPS]
         if unknown:
@@ -409,11 +419,6 @@ def _step_error(exc: Exception, *, step: str) -> str:
     ``exception_origin`` documents: a traceback's last line is the message, and
     AGENTS.md's no-financial-data rule has no local-log carve-out.
     """
-    from moneybin.errors import (  # noqa: PLC0415 — errors<->services cycle
-        classify_user_error,
-        exception_origin,
-    )
-
     logger.error(
         f"{step} failed during refresh at {exception_origin(exc.__cause__ or exc)}"
     )
@@ -425,6 +430,8 @@ def _step_error(exc: Exception, *, step: str) -> str:
 
 def _run_gsheet_step(db: Database) -> list[Any]:
     """Best-effort GSheet pull step. Failures log-only — never propagated."""
+    # Deferred as one block: GSheetPullService reaches polars (+252 modules on
+    # this module's import), and this module is on the CLI cold-start path.
     from moneybin.config import get_settings  # noqa: PLC0415
     from moneybin.connectors.gsheet.oauth_client import (
         GoogleOAuthClient,  # noqa: PLC0415
@@ -485,6 +492,8 @@ def _run_categorize_step(db: Database) -> str | None:
     logs ERROR and returns its message so ``refresh`` can surface it in
     ``RefreshResult.categorization_error``.
     """
+    # Deferred: the categorization stack costs +77 modules on this module's
+    # import, and this module is on the CLI cold-start path.
     from moneybin.services.auto_rule_service import AutoRuleService  # noqa: PLC0415
     from moneybin.services.categorization import CategorizationService  # noqa: PLC0415
 
@@ -546,6 +555,10 @@ def _run_rates_step(db: Database) -> tuple[RateBackfillResult | None, str | None
     the backfill is null on all three, so a caller reading only that would tell
     the user nothing happened when in fact something broke.
     """
+    # Deferred as one block: run_rate_backfill reaches polars through
+    # currency_service (+348 modules on this module's import) and the
+    # Frankfurter adapter pulls httpx (+121); this module is on the CLI
+    # cold-start path.
     from moneybin.connectors.rates.frankfurter import (  # noqa: PLC0415
         FrankfurterRateAdapter,
     )
@@ -594,6 +607,8 @@ def _run_rates_step(db: Database) -> tuple[RateBackfillResult | None, str | None
 
 def _run_identity_step(db: Database) -> tuple[str, ...]:
     """Generate account and merchant identity proposals without aborting refresh."""
+    # Deferred: the two link services cost +44…49 modules on this module's
+    # import, and this module is on the CLI cold-start path.
     from moneybin.services.account_links_service import (  # noqa: PLC0415
         AccountLinksService,
     )

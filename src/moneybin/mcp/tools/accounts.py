@@ -52,6 +52,7 @@ from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity
 from moneybin.mcp.rematch_report import rematch_actions
 from moneybin.mcp.write_contracts import FiniteDecimal
+from moneybin.orchestration.refresh import RefreshResult
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
@@ -120,7 +121,6 @@ from moneybin.services.identity_confirmation import (
     identity_confirm_message,
 )
 from moneybin.services.mutation_context import current_operation_id
-from moneybin.services.refresh import RefreshResult
 
 # Display order of each paged accounts view's immutable keyset.
 _ACCOUNT_LIST_KEY_DIRECTIONS: tuple[SortDirection, ...] = ("asc",)

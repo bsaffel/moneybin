@@ -1105,7 +1105,7 @@
       "merchants links run"
     ],
     "service_methods": [
-      "moneybin.services.refresh.refresh",
+      "moneybin.orchestration.refresh.refresh",
       "moneybin.services.matching_service.MatchingService.run",
       "moneybin.services.account_links_service.AccountLinksService.run",
       "moneybin.services.merchant_links_service.MerchantLinksService.run"

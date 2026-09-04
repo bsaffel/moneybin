@@ -50,6 +50,8 @@ from moneybin.metrics.registry import (
     TABULAR_DETECTION_CONFIDENCE,
     TABULAR_FORMAT_MATCHES,
 )
+from moneybin.orchestration.refresh import refresh as _refresh
+from moneybin.orchestration.refresh import step_outcome as _step_outcome
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
@@ -78,8 +80,6 @@ from moneybin.services.ledger_overlap import (
     IncomingTransaction,
     probe_incoming_ledger_overlap,
 )
-from moneybin.services.refresh import refresh as _refresh
-from moneybin.services.refresh import step_outcome as _step_outcome
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.utils.file import source_sha256
 
@@ -6104,7 +6104,7 @@ class ImportService:
         """Extract + load one file. Does NOT run the refresh pipeline.
 
         Refresh (matching, SQLMesh apply, categorization) is the caller's
-        responsibility — see :func:`moneybin.services.refresh.refresh` and
+        responsibility — see :func:`moneybin.orchestration.refresh.refresh` and
         ``import_files``.
         """
         path = Path(file_path)

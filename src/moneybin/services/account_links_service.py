@@ -44,7 +44,7 @@ from moneybin.tables import (
 from moneybin.utils.parsing import signal_from_match_signals
 
 if TYPE_CHECKING:
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
 
 logger = logging.getLogger(__name__)
 
@@ -952,9 +952,12 @@ class AccountLinksService:
         it is added here. One counter because the user is owed one fact — a
         transfer they accepted is gone — and one way back for both.
         """
-        from moneybin.services.refresh import (
-            refresh,  # noqa: PLC0415 — cycle: refresh's identity step imports this module
-        )
+        # Upward call: the orchestrator's identity step composes this service,
+        # so this names it back and the two modules would import each other at
+        # their tops. Deferring keeps that out of a cycle; it does not make the
+        # dependency go away, and test_orchestration_layering enumerates it as
+        # an inversion either way.
+        from moneybin.orchestration.refresh import refresh  # noqa: PLC0415
 
         collapsed = self._transfers_retired_by_collapse
         self._transfers_retired_by_collapse = 0

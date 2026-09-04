@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from moneybin.matching.reconciliation import RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED
 
 if TYPE_CHECKING:
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
 
 
 def retired_transfers_action(count: int, *, operation: str) -> str | None:

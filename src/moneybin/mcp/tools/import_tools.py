@@ -429,8 +429,8 @@ def import_files(
                         and one.details.get("transactions_extracted", 0) > 0
                     )
                 ):
-                    from moneybin.services.refresh import refresh as _refresh
-                    from moneybin.services.refresh import step_outcome
+                    from moneybin.orchestration.refresh import refresh as _refresh
+                    from moneybin.orchestration.refresh import step_outcome
 
                     refresh_result = _refresh(db)
                     transforms_applied = refresh_result.applied
