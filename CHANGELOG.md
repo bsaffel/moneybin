@@ -246,45 +246,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - **A category of spaces no longer counts as a category.** `'   '` passes a
   `NULL` check while rendering as an empty cell, and
-  `core.uncategorized_queue` selects `WHERE category IS NULL` — so a
-  whitespace-only category hid a transaction from the curation queue while
-  claiming to carry one. `prep.stg_tabular__transactions` and
-  `prep.stg_manual__transactions` now wrap `category` and `subcategory` in
-  `NULLIF(...)` — nulling a blank out rather than storing it is the convention
-  `stg_plaid__accounts` documents and every other free-text column in staging
-  already follows. These two columns reach it through a regex rather than the
-  bare `TRIM` their siblings use, because they are the only staging columns
-  that must agree with a Python-side counterpart: `validate_category_text`
-  refuses on `str.strip()`. Bare `TRIM` cannot express that — it strips the
-  Unicode space separators but no control character, so it drops a
-  non-breaking space and keeps a tab. The class is therefore defined to equal
-  `str.strip()` rather than to list the characters anyone thought of: all 29
-  codepoints Python calls whitespace, the non-breaking space a spreadsheet
-  paste produces and the ideographic space ordinary in CJK input among them.
-  A new guard enumerates that set and fails naming any codepoint the class
-  misses, so the definition cannot drift from the validator it exists to match.
-  A padded `'  Groceries  '` still arrives as `Groceries` rather than being
-  discarded. (#517)
+  `core.uncategorized_queue` selects `WHERE category IS NULL` — so an imported
+  transaction whose category cell held only whitespace was hidden from the
+  curation queue while claiming to carry a category. `category` and
+  `subcategory` now arrive `NULL` from every source when blank, counting as
+  uncategorized the way an empty cell already did. "Blank" means exactly what
+  the write path means by it, so a non-breaking space pasted from a
+  spreadsheet and an ideographic space typed in CJK input both count. A padded
+  `'  Groceries  '` still arrives as `Groceries` rather than being discarded.
+  (#517)
 
 - **`transactions splits add --category "   "` is refused rather than
-  stored.** The MCP write contracts already refuse a whitespace-only string,
-  but the two split paths that reach `TransactionService` without passing
-  through a Pydantic model — `add_split` and the granular `set_splits` — did
-  not, so the CLI could write a blank that the staging models would have
-  nulled out had it arrived from a file. Both now apply the same rule, which
-  is what lets the renderer treat `NULL` as the one absence it has to spell.
-  A split already stored with a whitespace-only category or subcategory
-  before this fix is backfilled to `NULL` on next migration (padding, e.g.
-  `'  Groceries  '`, is left as-is — same restraint as the write path). A
-  blanked category takes its subcategory with it: a subcategory is a child of
-  a category, so `(NULL, 'Coffee')` is an invalid pair rather than a partial
-  one — it is the shape MCP writes already refuse, and
-  `core.fct_transaction_lines` would otherwise render the parent's category
-  beside the split's orphaned subcategory.
-  The refusal names the field it refused — `subcategory must be non-empty`
-  rather than `category must be non-empty`, and `splits[2].subcategory …`
-  when a batch is being set — so a caller is pointed at the flag they got
-  wrong rather than the one they got right. (#517)
+  stored.** MCP already refused a whitespace-only category; the CLI stored it,
+  so the same input produced a blank on one surface and an error on the other.
+  The refusal names the field it refused — `subcategory must be non-empty`,
+  and `splits[2].subcategory …` when setting a batch — so a caller is pointed
+  at the flag they got wrong rather than the one they got right. A split
+  already carrying a whitespace-only category or subcategory is backfilled to
+  `NULL` on the next migration, and a blanked category takes its subcategory
+  with it, since a subcategory without its category is a pair that renders
+  under the parent's category instead. (#517)
 
 - **A Plaid transaction's `category` no longer holds Plaid's own category
   code.** `prep.int_transactions__unioned` had aliased the raw
