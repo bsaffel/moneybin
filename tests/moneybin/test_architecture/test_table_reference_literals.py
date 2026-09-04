@@ -216,9 +216,15 @@ _FALLBACK_TABLE_KEYWORDS = (
     "REFERENCES",
     "TRUNCATE",
 )
+# Each identifier position accepts an optional double quote, because quoting
+# is a property of *every* identifier in SQL, not of particular ones: DuckDB
+# reads `core.t`, `"core".t`, `core."t"` and `"core"."t"` as the same table.
+# The primary parse path gets this for free (sqlglot strips quoting when it
+# exposes `Table.db`/`.name`); the fallback has to state the rule itself, or
+# the two matchers in this file would disagree about what an identifier is.
 _FALLBACK_SCHEMA_TABLE_PATTERN = re.compile(
     r"\b(" + "|".join(_FALLBACK_TABLE_KEYWORDS) + r")\s+"
-    r"(" + "|".join(_SCHEMA_NAMES) + r")\.([a-z][a-z0-9_]+)\b",
+    r"\"?(" + "|".join(_SCHEMA_NAMES) + r")\"?\.\"?([a-z][a-z0-9_]+)\b\"?",
     re.IGNORECASE,
 )
 
@@ -229,10 +235,12 @@ def _fallback_regex_tables(text: str) -> list[tuple[str, str]]:
     Only called for ``exp.Command`` nodes (see ``_tables_in_text``) — never
     as the primary matcher. Shares the same false-positive exposure the
     original regex-only design had (an aliased-to-schema-name column
-    reference, a SQL comment mentioning a table in prose, a quoted
-    identifier not matching) — acceptable here because the statements that
-    reach this path are the ones sqlglot's DuckDB grammar cannot represent
-    at all, a narrow, bounded fallback rather than the file's main path.
+    reference, a SQL comment mentioning a table in prose) — acceptable here
+    because the statements that reach this path are the ones sqlglot's DuckDB
+    grammar cannot represent at all, a narrow, bounded fallback rather than
+    the file's main path. Quoted identifiers are *not* in that exposure list:
+    the pattern handles them, so an `EXPLAIN` (which always lands here) does
+    not silently reopen the quoting hole the parse path closed.
     """
     found: list[tuple[str, str]] = []
     for match in _FALLBACK_SCHEMA_TABLE_PATTERN.finditer(text):
@@ -864,6 +872,26 @@ def test_explain_statement_is_flagged(tmp_path: Path) -> None:
 def test_explain_analyze_statement_is_flagged(tmp_path: Path) -> None:
     """`EXPLAIN ANALYZE SELECT ...` is a violation too — same `exp.Command` bucket."""
     source = 'db.execute("EXPLAIN ANALYZE SELECT * FROM core.fct_transactions")\n'
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'db.execute("EXPLAIN SELECT * FROM \\"core\\".\\"fct_transactions\\"")\n',
+        'db.execute("EXPLAIN SELECT * FROM core.\\"fct_transactions\\"")\n',
+        'db.execute("EXPLAIN SELECT * FROM \\"core\\".fct_transactions")\n',
+    ],
+    ids=["both-quoted", "table-quoted", "schema-quoted"],
+)
+def test_explain_flags_quoted_identifiers(tmp_path: Path, source: str) -> None:
+    """Quoting an identifier inside an `EXPLAIN` does not hide it.
+
+    The composition case the two paths make easy to miss: `EXPLAIN` always
+    routes to `_fallback_regex_tables`, so a quote-blind fallback would
+    reopen — on exactly that path — the hole the sqlglot parse path closed.
+    Both matchers have to agree that an identifier may be quoted.
+    """
     assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
 
 
