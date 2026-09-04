@@ -112,6 +112,15 @@ WHERE s.old_id IS NOT NULL
     WHERE a.old_transaction_id = s.old_id
   )
 QUALIFY ROW_NUMBER() OVER (PARTITION BY s.old_id ORDER BY s.cause, s.new_id) = 1
+-- old_transaction_id is the map's primary key, so one superseded id forwards to
+-- exactly one successor and a tie has to be broken here rather than at insert.
+-- Two ways one arises. A row can be superseded both by a merge and by a
+-- pending→posted transition; 'merge' sorts first, which is the id the dedup
+-- group's anchor actually carries. And Plaid does not document whether one
+-- pending authorization may settle as several postings -- if it does, the
+-- siblings are indistinguishable to this derivation, so it takes the lowest
+-- new_id: an arbitrary but stable choice, which keeps a re-run idempotent
+-- rather than letting the curation land on a different sibling each pass.
 ORDER BY old_id
 """  # noqa: S608  # TableRef constants and code-supplied column expressions only
 

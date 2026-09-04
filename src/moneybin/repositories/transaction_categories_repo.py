@@ -456,6 +456,13 @@ class TransactionCategoriesRepo(BaseRepo):
         ``SOURCE_PRIORITY`` ladder ``upsert_guarded`` enforces — a merge must not
         let a lower-authority categorization displace a higher one, and must not
         drop the user's edit in favour of the anchor's provider default.
+
+        **A tie moves the superseded row**, matching ``upsert_guarded``, whose
+        guard admits an incoming write of equal authority. Two ``user`` edits on
+        the two halves of a merge are both the user's, and neither the id nor
+        the ladder ranks one above the other; taking the incoming one keeps the
+        two write paths answering a tie the same way, which is the property that
+        matters when the alternative is a second rule to remember.
         """
         # Deferred import: the ``services.categorization`` package's __init__
         # imports the applier, which imports this repo — a module-level import

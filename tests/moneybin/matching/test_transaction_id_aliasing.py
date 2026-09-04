@@ -683,6 +683,58 @@ class TestForwardingIsIdempotentAndConflictSafe:
         assert rows == [(new_id, "Food & Drink", "user")]
 
     @pytest.mark.unit
+    def test_equal_authority_moves_the_superseded_category(
+        self, matched_db: Database
+    ) -> None:
+        """A tie admits the incoming row, the way `upsert_guarded` does.
+
+        Two `user` edits are both the user's, and neither the id nor the ladder
+        ranks one above the other. The two write paths onto this table must
+        answer that the same way or the table has two precedence rules.
+        """
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="csv_1234",
+            source_type="tabular",
+            source_file="export.csv",
+        )
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="ofx_5678",
+            source_type="ofx",
+            source_file="statement.qfx",
+        )
+        old_id = _canonical_id("tabular", "csv_1234")
+        new_id = _canonical_id("ofx", "ofx_5678")
+        TransactionCategoriesRepo(matched_db).set(
+            old_id,
+            category="Food & Drink",
+            subcategory="Coffee",
+            category_id=None,
+            categorized_by="user",
+            actor="cli",
+        )
+        TransactionCategoriesRepo(matched_db).set(
+            new_id,
+            category="Shopping",
+            subcategory=None,
+            category_id=None,
+            categorized_by="user",
+            actor="cli",
+        )
+
+        _seed_pending_dedup(matched_db, match_id="match0000011")
+        MatchingService(matched_db).set_status(
+            "match0000011", status="accepted", actor="cli"
+        )
+
+        rows: list[Any] = matched_db.execute(
+            "SELECT transaction_id, category, categorized_by "
+            "FROM app.transaction_categories"
+        ).fetchall()
+        assert rows == [(new_id, "Food & Drink", "user")]
+
+    @pytest.mark.unit
     def test_duplicate_tag_on_the_surviving_id_is_collapsed(
         self, matched_db: Database
     ) -> None:
