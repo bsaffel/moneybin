@@ -26,11 +26,13 @@ from decimal import Decimal
 
 import pytest
 
-from moneybin.database import Database
+from moneybin.database import Database, sqlmesh_context
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.services.networth_service import NetworthService
 from moneybin.synthetic.engine import GeneratorEngine
 from moneybin.synthetic.models import GenerationResult
-from tests.scenarios._runner import load_shipped_scenario, run_scenario
+from tests.scenarios._runner import load_shipped_scenario, run_scenario, scenario_env
+from tests.scenarios._runner.steps import run_step
 from tests.scenarios._tier1_backfill import tier1_backfill
 from tests.validation.result import AssertionResult
 
@@ -40,14 +42,20 @@ from tests.validation.result import AssertionResult
 # alias would make that assertion unwritable.
 _Positions = dict[str | None, tuple[Decimal, int]]
 
+_FX_RESTATE_MODELS = [
+    "core.bridge_currency_conversions",
+    "core.fct_currency_lots",
+    "core.fct_realized_fx_gains",
+]
+
 
 def _expected_positions(result: GenerationResult, as_of: date) -> _Positions:
     """Net worth and account count per currency on `as_of`, by arithmetic.
 
     Both writers anchor an account at its declared opening balance before any
     activity and then emit its transactions, so the balance on any date is
-    their running sum. This persona has no transfers and no two accounts share
-    a currency, so a currency's total is exactly its one account's.
+    their running sum. No two accounts share a currency, so a currency's total
+    is exactly its one account's, including its side of each explicit transfer.
 
     `as_of` is read from the report rather than assumed to be the generator's
     last day. `core.fct_balances_daily` ends its spine at the newest balance
@@ -100,6 +108,241 @@ def test_international_multi_currency() -> None:
 
     result = run_scenario(scenario, extra_assertions=extra)
     assert result.passed, result.failure_summary()
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_international_realized_fx_ground_truth() -> None:
+    """Each completed month realizes exactly five Home-currency dollars."""
+    scenario = load_shipped_scenario("international-multi-currency")
+    assert scenario is not None
+    setup = scenario.setup
+    generated = GeneratorEngine(
+        setup.persona, seed=setup.seed, years=setup.years
+    ).generate()
+    completed_months = setup.years * 12
+    expected_pairs = completed_months * 2
+
+    with scenario_env(scenario) as (db, _tmp, env):
+        run_step("generate", setup, db, env=env)
+        run_step("transform", setup, db, env=env)
+
+        ProfileSettingsRepo(db).set_home_currency("USD", actor="system")
+        _seed_ground_truth_transfer_decisions(db, expected_pairs=expected_pairs)
+        accepted = db.execute(
+            """
+            SELECT COUNT(*) FROM app.match_decisions
+            WHERE match_type = 'transfer' AND match_status = 'accepted'
+              AND reversed_at IS NULL
+            """
+        ).fetchone()
+        bridge = db.execute("SELECT COUNT(*) FROM core.bridge_transfers").fetchone()
+        assert accepted == (expected_pairs,)
+        assert bridge == (expected_pairs,)
+
+        # app.match_decisions and app.profile_settings are external to SQLMesh,
+        # so the already-covered FULL intervals need explicit restatement.
+        with sqlmesh_context(db) as ctx:
+            ctx.plan(
+                restate_models=_FX_RESTATE_MODELS,
+                auto_apply=True,
+                no_prompts=True,
+            )
+
+        conversions = db.execute(
+            """
+            SELECT conversion_id, transfer_pair_id, from_currency, to_currency,
+                   coverage_status, coverage_reason
+            FROM core.bridge_currency_conversions
+            ORDER BY transfer_pair_id
+            """
+        ).fetchall()
+        assert len(conversions) == expected_pairs
+        coverage = db.execute(
+            """
+            SELECT coverage_status, coverage_reason, COUNT(*)
+            FROM core.bridge_currency_conversions
+            GROUP BY coverage_status, coverage_reason
+            ORDER BY coverage_status, coverage_reason
+            """
+        ).fetchall()
+        assert all(row[4:] == ("complete", None) for row in conversions), {
+            "coverage": coverage,
+            "profile": db.execute(
+                "SELECT home_currency FROM app.profile_settings"
+            ).fetchall(),
+            "currencies": sorted({(row[2], row[3]) for row in conversions}),
+        }
+
+        acquisitions = {
+            row[0] for row in conversions if row[2] == "USD" and row[3] == "EUR"
+        }
+        lots = db.execute(
+            """
+            SELECT source_conversion_id, currency_code, acquisition_type,
+                   original_quantity, cost_basis_total, coverage_status
+            FROM core.fct_currency_lots
+            WHERE acquisition_type = 'conversion'
+            ORDER BY acquisition_date, currency_lot_id
+            """
+        ).fetchall()
+        assert len(lots) == completed_months
+        assert {row[0] for row in lots} == acquisitions
+        assert all(
+            row[1:]
+            == (
+                "EUR",
+                "conversion",
+                Decimal("90.00"),
+                Decimal("100.00"),
+                "complete",
+            )
+            for row in lots
+        )
+
+        gains = db.execute(
+            """
+            SELECT disposed_amount, proceeds, cost_basis, gain_loss,
+                   coverage_status, coverage_reason
+            FROM core.fct_realized_fx_gains
+            ORDER BY disposal_date, realized_fx_gain_id
+            """
+        ).fetchall()
+        assert len(gains) == completed_months
+        assert all(
+            row
+            == (
+                Decimal("45.00"),
+                Decimal("55.00"),
+                Decimal("50.00"),
+                Decimal("5.00"),
+                "complete",
+                None,
+            )
+            for row in gains
+        )
+        assert sum(row[3] for row in gains) == Decimal(completed_months * 5)
+
+        as_of = _report_as_of(db)
+        expected_positions = _expected_positions(generated, as_of)
+        assert len(expected_positions) == 5
+        assert _segments_hold_their_own_currency(db, expected_positions, as_of).passed
+        assert _the_headline_refuses_to_blend(db, expected_positions).passed
+
+        snapshot = NetworthService(db).current()
+        aed = next(
+            segment
+            for segment in snapshot.per_currency
+            if segment.currency_code == "AED"
+        )
+        assert (aed.net_worth, aed.account_count) == expected_positions["AED"]
+        assert snapshot.net_worth is None
+
+
+def _seed_ground_truth_transfer_decisions(db: Database, *, expected_pairs: int) -> None:
+    """Accept only exact synthetic pairs, orienting debit before credit."""
+    rows = db.execute(
+        """
+        WITH legs AS (
+          SELECT
+            gt.transfer_pair_id,
+            matched.source_transaction_id,
+            matched.source_type,
+            matched.source_origin,
+            matched.account_id,
+            matched.amount,
+            gt.generated_at
+          FROM synthetic.ground_truth AS gt
+          JOIN prep.int_transactions__matched AS matched
+            ON gt.source_transaction_id = matched.source_transaction_id
+          WHERE gt.transfer_pair_id IS NOT NULL
+        )
+        SELECT
+          transfer_pair_id,
+          COUNT(*) AS leg_count,
+          COUNT(*) FILTER (WHERE amount < 0) AS debit_count,
+          COUNT(*) FILTER (WHERE amount > 0) AS credit_count
+        FROM legs
+        GROUP BY transfer_pair_id
+        ORDER BY transfer_pair_id
+        """
+    ).fetchall()
+    assert len(rows) == expected_pairs
+    assert all(row[1:] == (2, 1, 1) for row in rows)
+
+    db.execute(
+        """
+        WITH legs AS (
+          SELECT
+            gt.transfer_pair_id,
+            matched.source_transaction_id,
+            matched.source_type,
+            matched.source_origin,
+            matched.account_id,
+            matched.amount,
+            gt.generated_at
+          FROM synthetic.ground_truth AS gt
+          JOIN prep.int_transactions__matched AS matched
+            ON gt.source_transaction_id = matched.source_transaction_id
+          WHERE gt.transfer_pair_id IS NOT NULL
+        ), paired AS (
+          SELECT
+            transfer_pair_id,
+            MAX(source_transaction_id) FILTER (WHERE amount < 0) AS debit_id,
+            MAX(source_type) FILTER (WHERE amount < 0) AS debit_source_type,
+            MAX(source_origin) FILTER (WHERE amount < 0) AS debit_source_origin,
+            MAX(account_id) FILTER (WHERE amount < 0) AS debit_account_id,
+            MAX(source_transaction_id) FILTER (WHERE amount > 0) AS credit_id,
+            MAX(source_type) FILTER (WHERE amount > 0) AS credit_source_type,
+            MAX(source_origin) FILTER (WHERE amount > 0) AS credit_source_origin,
+            MAX(account_id) FILTER (WHERE amount > 0) AS credit_account_id,
+            MAX(generated_at) AS generated_at
+          FROM legs
+          GROUP BY transfer_pair_id
+          HAVING COUNT(*) = 2
+             AND COUNT(*) FILTER (WHERE amount < 0) = 1
+             AND COUNT(*) FILTER (WHERE amount > 0) = 1
+        )
+        INSERT INTO app.match_decisions (
+          match_id,
+          source_transaction_id_a,
+          source_type_a,
+          source_origin_a,
+          source_transaction_id_b,
+          source_type_b,
+          source_origin_b,
+          account_id,
+          confidence_score,
+          match_signals,
+          match_type,
+          match_tier,
+          account_id_b,
+          match_status,
+          match_reason,
+          decided_by,
+          decided_at
+        )
+        SELECT
+          'synthetic-fx-' || transfer_pair_id,
+          debit_id,
+          debit_source_type,
+          debit_source_origin,
+          credit_id,
+          credit_source_type,
+          credit_source_origin,
+          debit_account_id,
+          1.0000,
+          CAST('{"synthetic_ground_truth": true}' AS JSON),
+          'transfer',
+          NULL,
+          credit_account_id,
+          'accepted',
+          'exact synthetic transfer pair',
+          'system',
+          generated_at
+        FROM paired
+        """
+    )
 
 
 def _report_as_of(db: Database) -> date:

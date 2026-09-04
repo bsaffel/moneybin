@@ -152,6 +152,7 @@ class TransferConfig(BaseModel):
     from_account: str = Field(alias="from")
     to_account: str = Field(alias="to")
     amount: float | Literal["statement_balance"]
+    received_amount: float | None = Field(default=None, gt=0)
     schedule: Literal["monthly", "biweekly"]
     day_of_month: int = Field(ge=1, le=28)
     description_template: str = ""
@@ -207,20 +208,22 @@ class PersonaConfig(BaseModel):
                 raise ValueError(
                     f"Transfer references unknown account: {xfer.to_account!r}"
                 )
-            # `TransferGenerator` puts one magnitude on both sides, and each side
-            # inherits its own account's currency downstream — so an unconverted
-            # 100 USD outflow lands as a +100 EUR inflow and quietly corrupts
-            # both balances. Refuse until M1K.3 gives the generator a conversion;
-            # a persona that needs cross-currency funding declares income in each
-            # currency instead.
             from_currency = currency_of[xfer.from_account]
             to_currency = currency_of[xfer.to_account]
             if from_currency != to_currency:
+                if xfer.amount == "statement_balance":
+                    raise ValueError(
+                        "statement_balance is only valid for a same-currency transfer"
+                    )
+                if xfer.received_amount is None:
+                    raise ValueError(
+                        f"cross-currency transfer {xfer.from_account!r} "
+                        f"({from_currency}) → {xfer.to_account!r} ({to_currency}) "
+                        "requires an explicit received_amount"
+                    )
+            elif xfer.received_amount is not None:
                 raise ValueError(
-                    f"cross-currency transfer {xfer.from_account!r} "
-                    f"({from_currency}) → {xfer.to_account!r} ({to_currency}) "
-                    f"is not supported: the generator does not convert, so both "
-                    f"sides would move the same number in different currencies"
+                    "received_amount is only valid for a cross-currency transfer"
                 )
 
         return self

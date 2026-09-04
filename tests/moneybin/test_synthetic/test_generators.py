@@ -507,6 +507,18 @@ class TestTransferGenerator:
             "description_template": "ONLINE PAYMENT",
         })
 
+    @pytest.fixture
+    def cross_currency_transfer(self) -> TransferConfig:
+        return TransferConfig.model_validate({
+            "from": "US Checking",
+            "to": "Eurozone Checking",
+            "amount": 100.0,
+            "received_amount": 90.0,
+            "schedule": "monthly",
+            "day_of_month": 5,
+            "description_template": "USD TO EUR",
+        })
+
     def test_fixed_transfer_generates_two_transactions(
         self,
         rng: SeededRandom,
@@ -546,6 +558,27 @@ class TestTransferGenerator:
         txns = gen.generate_month(2024, 3, balances)
         assert txns[0].transfer_pair_id == txns[1].transfer_pair_id
         assert txns[0].transfer_pair_id is not None
+
+    def test_cross_currency_transfer_uses_explicit_received_amount(
+        self,
+        rng: SeededRandom,
+        cross_currency_transfer: TransferConfig,
+    ) -> None:
+        from moneybin.synthetic.generators.transfers import TransferGenerator
+
+        gen = TransferGenerator([cross_currency_transfer], rng)
+        balances = {
+            "US Checking": Decimal("5000"),
+            "Eurozone Checking": Decimal("10000"),
+        }
+
+        txns = gen.generate_month(2024, 3, balances)
+
+        sent = next(txn for txn in txns if txn.account_name == "US Checking")
+        received = next(txn for txn in txns if txn.account_name == "Eurozone Checking")
+        assert sent.amount == Decimal("-100.00")
+        assert received.amount == Decimal("90.00")
+        assert sent.transfer_pair_id == received.transfer_pair_id
 
     def test_statement_balance_pays_off_card(
         self,
