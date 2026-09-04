@@ -39,26 +39,25 @@ if TYPE_CHECKING:
         SavedFormatDeletePlan,
     )
 
+from moneybin.adapters.imports_adapters import (
+    pdf_format_row,
+    tabular_format_row,
+)
+from moneybin.adapters.refresh_adapters import (
+    refresh_rate_gap_hints,
+    refresh_step_actions,
+)
+from moneybin.adapters.rematch_report import retired_transfers_action
 from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
-from moneybin.mcp.adapters.imports_adapters import (
-    pdf_format_row,
-    tabular_format_row,
-)
-from moneybin.mcp.adapters.refresh_adapters import (
-    refresh_rate_gap_hints,
-    refresh_step_actions,
-)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
-from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.classified_envelope import build_classified_envelope, classify
 from moneybin.privacy.payloads.imports import (
     ImportConfirmationPayload,
@@ -91,6 +90,7 @@ from moneybin.privacy.payloads.imports import (
     ImportTabularPreviewCoarsePayload,
 )
 from moneybin.privacy.redaction import redact_typed
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,

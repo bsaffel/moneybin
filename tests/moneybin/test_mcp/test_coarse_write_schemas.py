@@ -21,7 +21,8 @@ from moneybin.mcp.tools.transactions import register_transaction_coarse_writes
 from moneybin.mcp.tools.transactions_categorize import (
     register_categorization_coarse_writes,
 )
-from moneybin.mcp.write_contracts import (
+from moneybin.privacy.consent import FEATURE_CATEGORIES
+from moneybin.protocol.write_contracts import (
     AccountLinkDecisionRequest,
     AnnotationRequest,
     CategorizationDecisionRequest,
@@ -38,7 +39,6 @@ from moneybin.mcp.write_contracts import (
     SplitTarget,
     TaxonomyStateRequest,
 )
-from moneybin.privacy.consent import FEATURE_CATEGORIES
 from moneybin.services._validators import (
     CATEGORY_NAME_MAX_LEN,
     DESCRIPTION_MAX_LEN,

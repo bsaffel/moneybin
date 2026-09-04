@@ -14,12 +14,12 @@ from unittest.mock import patch
 import pytest
 
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
 from moneybin.privacy.payloads.reports import (
     ReportOutputColumn,
     ReportResultPayload,
     ReportSemanticsPayload,
 )
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 

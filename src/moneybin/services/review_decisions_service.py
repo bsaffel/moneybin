@@ -20,7 +20,7 @@ from moneybin.matching.application import (
     record_committed_match_effects,
 )
 from moneybin.matching.persistence import get_match_decision
-from moneybin.mcp.write_contracts import (
+from moneybin.protocol.write_contracts import (
     AccountLinkDecisionRequest,
     CategorizationDecisionRequest,
     IdentityDecisionRequest,

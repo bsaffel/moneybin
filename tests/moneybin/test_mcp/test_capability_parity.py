@@ -33,7 +33,7 @@ from moneybin.mcp.tools.sql import sql_query
 from moneybin.mcp.tools.sync import sync_disconnect
 from moneybin.mcp.tools.taxonomy import taxonomy_coarse, taxonomy_set_coarse
 from moneybin.mcp.tools.transactions import transactions_annotate_coarse
-from moneybin.mcp.write_contracts import (
+from moneybin.protocol.write_contracts import (
     CategoryStateRequest,
     MerchantStateRequest,
     TagsSet,

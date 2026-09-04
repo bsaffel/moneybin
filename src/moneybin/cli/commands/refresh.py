@@ -73,11 +73,11 @@ def refresh_command(
     not answer is reported and retried next run. Only a SQLMesh apply error
     exits non-zero.
     """
-    from moneybin.cli.output import render_or_json  # noqa: PLC0415
-    from moneybin.database import get_database  # noqa: PLC0415
-    from moneybin.mcp.adapters.refresh_adapters import (  # noqa: PLC0415
+    from moneybin.adapters.refresh_adapters import (  # noqa: PLC0415
         refresh_envelope,
     )
+    from moneybin.cli.output import render_or_json  # noqa: PLC0415
+    from moneybin.database import get_database  # noqa: PLC0415
     from moneybin.orchestration.refresh import (  # noqa: PLC0415
         expand_steps,
         refresh,

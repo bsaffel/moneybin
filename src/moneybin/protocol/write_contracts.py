@@ -1,4 +1,4 @@
-"""Strict request contracts for standard coarse MCP writes."""
+"""Strict request contracts for the standard coarse writes."""
 
 from __future__ import annotations
 

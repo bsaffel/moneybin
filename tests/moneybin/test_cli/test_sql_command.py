@@ -69,7 +69,7 @@ def _patched(  # pyright: ignore[reportUnusedFunction]  # used via @pytest.mark.
         return None
 
     monkeypatch.setattr("moneybin.cli.commands.sql.get_database", _fake_get_database)
-    monkeypatch.setattr("moneybin.mcp.privacy.get_max_rows", lambda: 100)
+    monkeypatch.setattr("moneybin.privacy.sensitivity.get_max_rows", lambda: 100)
     # Keep the test hermetic — don't write to a real privacy.log.jsonl.
     monkeypatch.setattr("moneybin.cli.output.write_privacy_event", _noop_event)
 

@@ -33,11 +33,13 @@ an entry that stops applying fails until someone removes it.
 
 Five boundaries, stated rather than implied:
 
-- Reachability follows calls by name through ``src/moneybin/mcp``. The sibling
-  guard scans `cli` too; this one does not, because an MCP tool's envelope is
-  built on the MCP surface and `_mcp_module_path` resolves nothing outside it. A
-  call it cannot resolve — a method, a callback passed as an argument, a helper
-  in another package — ends that branch. Ending a branch is not the same as
+- Reachability follows calls by name through the roots in ``REACHABLE_ROOTS``:
+  ``src/moneybin/mcp``, plus the shared ``moneybin/adapters`` package several
+  tools return their envelope from. The sibling guard scans `cli` too; this one
+  does not, because an MCP tool's envelope is built on one of those two and
+  `_reachable_module_path` resolves nothing outside them. A call it cannot
+  resolve — a method, a callback passed as an argument, a helper in another
+  package — ends that branch. Ending a branch is not the same as
   clearing it: a sibling branch reaching the builder must not vouch for one the
   scan never read. So every ``return`` in a function *annotated* as returning a
   ``ResponseEnvelope`` has to land on something this scan can name, and a tool
@@ -88,7 +90,13 @@ from moneybin.protocol.envelope import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-MCP_ROOT = REPO_ROOT / "src" / "moneybin" / "mcp"
+SRC_ROOT = REPO_ROOT / "src" / "moneybin"
+
+# Where reachability may follow a call. The MCP surface, plus the shared
+# adapter package the envelope builders live in — a tool that returns
+# `sync_status_envelope(...)` is reaching a builder, not ending its branch,
+# and the scan has to be able to say which. Anything else ends the branch.
+REACHABLE_ROOTS = ("moneybin.mcp", "moneybin.adapters")
 
 # The one builder that derives both declared fields from the payload contract.
 # Taken from the symbol so a rename cannot leave the scan hunting a dead name.
@@ -577,14 +585,18 @@ _ModuleIndex = tuple[
 _INDEX_CACHE: dict[Path, _ModuleIndex] = {}
 
 
-def _mcp_module_path(dotted: str) -> Path | None:
-    """Resolve a ``moneybin.mcp`` dotted name to the file that defines it."""
-    if not dotted.startswith("moneybin.mcp"):
+def _reachable_module_path(dotted: str) -> Path | None:
+    """Resolve a dotted name inside a reachable root to the file defining it.
+
+    Matched on a whole path segment rather than a string prefix, so a future
+    ``moneybin.mcpx`` cannot be read as part of the MCP surface.
+    """
+    if not any(
+        dotted == root or dotted.startswith(f"{root}.") for root in REACHABLE_ROOTS
+    ):
         return None
-    relative = dotted.removeprefix("moneybin.mcp").lstrip(".").replace(".", "/")
-    if not relative:
-        return MCP_ROOT / "__init__.py"
-    for candidate in (MCP_ROOT / f"{relative}.py", MCP_ROOT / relative / "__init__.py"):
+    relative = dotted.removeprefix("moneybin").lstrip(".").replace(".", "/")
+    for candidate in (SRC_ROOT / f"{relative}.py", SRC_ROOT / relative / "__init__.py"):
         if candidate.exists():
             return candidate
     return None
@@ -624,7 +636,7 @@ def _index(path: Path) -> _ModuleIndex:
     for node in tree.body:
         if not isinstance(node, ast.ImportFrom) or node.level or node.module is None:
             continue
-        source = _mcp_module_path(node.module)
+        source = _reachable_module_path(node.module)
         if source is None:
             continue
         for alias in node.names:
@@ -795,7 +807,7 @@ def mechanism_of(path: Path, function: str) -> Mechanism:
                     and (child.module, alias.name) != (BUILDER_MODULE, BUILDER)
                     for alias in child.names
                 )
-                source = _mcp_module_path(child.module)
+                source = _reachable_module_path(child.module)
                 if source is None:
                     continue
                 for alias in child.names:

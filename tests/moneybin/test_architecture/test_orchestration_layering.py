@@ -37,7 +37,17 @@ SRC = REPO_ROOT / "src" / "moneybin"
 # enumeration of those goes stale the first time one is added, and a package
 # missing from that enumeration is silently unguarded — the failure mode this
 # file exists to prevent.
-LAYERS_AT_OR_ABOVE_ORCHESTRATION = frozenset({"cli", "mcp", "orchestration"})
+# `adapters` is here because an adapter reads what the pipeline produced — a
+# `RefreshResult`, a connector model — and renders it as the response a surface
+# returns. That is the orchestrator's consumer, not its peer's dependency, and
+# it is shared by both transports rather than owned by either. The package
+# holds no writes and no orchestration of its own.
+LAYERS_AT_OR_ABOVE_ORCHESTRATION = frozenset({
+    "adapters",
+    "cli",
+    "mcp",
+    "orchestration",
+})
 
 # The below-orchestration packages that exist today, pinned so that widening
 # the exemption list above cannot quietly shrink the scan. Subset-checked, not
