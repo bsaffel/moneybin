@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from moneybin.currency_lots import sqlmesh_loader
+from moneybin.tables import TableRef
 
 pytestmark = pytest.mark.unit
 
@@ -563,6 +564,38 @@ class _FakeContext:
     def fetchdf(self, sql: str) -> pd.DataFrame:
         self.queries.append(sql)
         return self.frames.pop(0)
+
+
+def test_materialized_accounting_reads_follow_registered_table_refs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both materialized inputs route through the loader's registered tables."""
+    conversions = TableRef("alternate", "trusted_conversions")
+    investments = TableRef("alternate", "investment_ledger")
+    monkeypatch.setattr(
+        sqlmesh_loader, "BRIDGE_CURRENCY_CONVERSIONS", conversions, raising=False
+    )
+    monkeypatch.setattr(
+        sqlmesh_loader, "FCT_INVESTMENT_TRANSACTIONS", investments, raising=False
+    )
+    context = _FakeContext(
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+    )
+
+    result = sqlmesh_loader.load_currency_accounting(t.cast(t.Any, context))
+
+    assert result.lots == ()
+    assert result.gains == ()
+    assert "alternate.trusted_conversions" in context.resolved_tables
+    assert "alternate.investment_ledger" in context.resolved_tables
+    query_text = "\n".join(context.queries).lower()
+    assert "from alternate.trusted_conversions" in query_text
+    assert "from alternate.investment_ledger" in query_text
 
 
 def _empty_conversion_frame() -> pd.DataFrame:

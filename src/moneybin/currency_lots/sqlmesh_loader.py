@@ -19,6 +19,7 @@ import pandas as pd
 
 from moneybin.investments.cost_basis import LedgerEvent, compute_lots_and_gains
 from moneybin.services.currency_service import last_publication_day
+from moneybin.tables import BRIDGE_CURRENCY_CONVERSIONS, FCT_INVESTMENT_TRANSACTIONS
 
 if t.TYPE_CHECKING:
     from sqlmesh import ExecutionContext  # type: ignore[import-untyped]
@@ -623,7 +624,7 @@ def load_conversion_rows(
 def _load_materialized_conversions(
     context: ExecutionContext,
 ) -> list[CurrencyConversionRow]:
-    table = context.resolve_table("core.bridge_currency_conversions")
+    table = context.resolve_table(BRIDGE_CURRENCY_CONVERSIONS.full_name)
     frame = context.fetchdf(
         f"""
         SELECT conversion_id, source_shape, transfer_pair_id,
@@ -1112,7 +1113,7 @@ def _load_security_sales(
     home_updated_at: datetime | None,
     stored_rate: t.Callable[[str, str, date], _StoredRate | None],
 ) -> list[ForeignSecuritySale]:
-    ledger = context.resolve_table("core.fct_investment_transactions")
+    ledger = context.resolve_table(FCT_INVESTMENT_TRANSACTIONS.full_name)
     frame = context.fetchdf(
         f"""
         SELECT investment_transaction_id, account_id,
