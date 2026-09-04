@@ -989,7 +989,7 @@ def test_public_docs_refresh_cascades_match_runtime() -> None:
     every other spelling, so a step appended to the cascade cannot leave a guide
     stale and green.
     """
-    from moneybin.services.refresh import CANONICAL_STEPS
+    from moneybin.orchestration.refresh import CANONICAL_STEPS
 
     step = "|".join(CANONICAL_STEPS)
     chain = re.compile(rf"\b(?:{step})(?: → (?:{step}))+\b")
