@@ -28,6 +28,16 @@ class _PayloadContainer:
     row: _Payload
 
 
+@dataclass(frozen=True)
+class _LowTierPayload:
+    label: Annotated[str, DataClass.CATEGORY]
+
+
+@dataclass(frozen=True)
+class _HighTierPayload:
+    balance: Annotated[str, DataClass.BALANCE]
+
+
 def test_decorator_derives_sensitivity_from_return_type() -> None:
     @mcp_tool()
     def my_tool() -> ResponseEnvelope[_PayloadContainer]:
@@ -39,6 +49,50 @@ def test_decorator_derives_sensitivity_from_return_type() -> None:
         )
 
     assert my_tool._mcp_sensitivity == Sensitivity.CRITICAL  # type: ignore[attr-defined]
+
+
+def test_stamp_floors_a_higher_derived_sensitivity_instead_of_overriding_it() -> None:
+    """MB-157: a call-computed sensitivity above the type's tier must survive.
+
+    Direct inverse of the defect: ``_stamp_envelope_sensitivity`` used to
+    unconditionally override ``summary.sensitivity`` with the decorator's
+    static tier, in both directions. The payload type here derives LOW, but
+    the call itself reports HIGH — the scenario the defect report names as
+    "a future tool returning a more sensitive payload down a branch that
+    doesn't rebuild". Overriding would silently downgrade the response (and
+    the privacy audit row) back to LOW; flooring must not.
+    """
+
+    @mcp_tool()
+    def low_tool() -> ResponseEnvelope[_LowTierPayload]:
+        return build_envelope(data=_LowTierPayload(label="x"), sensitivity="high")
+
+    assert low_tool._mcp_sensitivity == Sensitivity.LOW  # type: ignore[attr-defined]
+
+    envelope = asyncio.run(low_tool())
+
+    assert envelope.summary.sensitivity == "high"
+
+
+def test_stamp_still_raises_a_lower_derived_sensitivity_to_the_declared_ceiling() -> (
+    None
+):
+    """The legitimate direction of the floor must keep working.
+
+    The payload type derives HIGH; the call itself never raises
+    ``summary.sensitivity`` above ``build_envelope``'s "low" default. The
+    decorator's static ceiling must still apply.
+    """
+
+    @mcp_tool()
+    def high_tool() -> ResponseEnvelope[_HighTierPayload]:
+        return build_envelope(data=_HighTierPayload(balance="1.00"))
+
+    assert high_tool._mcp_sensitivity == Sensitivity.HIGH  # type: ignore[attr-defined]
+
+    envelope = asyncio.run(high_tool())
+
+    assert envelope.summary.sensitivity == "high"
 
 
 def test_decorator_fails_on_unclassified_return_type() -> None:

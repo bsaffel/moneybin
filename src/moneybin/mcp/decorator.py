@@ -45,7 +45,12 @@ from moneybin.privacy.classified_envelope import classify
 from moneybin.privacy.introspection import PrivacyContractError, derive_tier
 from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import has_active_transform, redact_typed
-from moneybin.privacy.sensitivity import Sensitivity, log_tool_call, tier_to_sensitivity
+from moneybin.privacy.sensitivity import (
+    Sensitivity,
+    log_tool_call,
+    sensitivity_to_tier,
+    tier_to_sensitivity,
+)
 from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 from moneybin.services.mutation_context import operation
@@ -335,12 +340,25 @@ def _envelope_row_count(envelope: ResponseEnvelope[Any]) -> int:
 def _stamp_envelope_sensitivity(
     envelope: ResponseEnvelope[Any], sensitivity: Sensitivity
 ) -> ResponseEnvelope[Any]:
-    """Return an envelope stamped with the operation's static sensitivity."""
-    if sensitivity.value == envelope.summary.sensitivity:
+    """Return an envelope floored at the operation's static sensitivity.
+
+    ``sensitivity`` is a floor, not an answer: it may only ever raise the
+    envelope's already-derived tier, never lower it. Overriding unconditionally
+    would let a payload that actually derived a higher tier (e.g. a helper that
+    computed its own per-call sensitivity from the data it returned) get
+    stamped back down to whatever the decorator declared — silently
+    understating both the response and the privacy audit row. Comparison goes
+    through ``sensitivity_to_tier`` (Tier is the one canonical severity
+    ordering; see its docstring), the same mechanism the ``discloses=`` floor
+    uses at registration time.
+    """
+    derived = Sensitivity(envelope.summary.sensitivity)
+    floored = max(derived, sensitivity, key=sensitivity_to_tier)
+    if floored.value == envelope.summary.sensitivity:
         return envelope
     updated = dataclasses.replace(
         envelope.summary,
-        sensitivity=sensitivity.value,  # pyright: ignore[reportArgumentType]
+        sensitivity=floored.value,  # pyright: ignore[reportArgumentType]
     )
     return dataclasses.replace(envelope, summary=updated)  # pyright: ignore[reportUnknownArgumentType]
 
