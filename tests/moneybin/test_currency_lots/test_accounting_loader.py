@@ -22,6 +22,7 @@ T1 = datetime(2026, 1, 1, 10)
 T2 = datetime(2026, 2, 1, 10)
 T3 = datetime(2026, 3, 1, 10)
 T4 = datetime(2026, 4, 1, 10)
+T5 = datetime(2026, 5, 1, 10)
 
 
 def _conversion(**changes: object) -> sqlmesh_loader.CurrencyConversionRow:
@@ -658,7 +659,7 @@ def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -
             "net_proceeds": ["40.00"],
             "fees": ["2.00"],
             "currency_code": ["EUR"],
-            "event_updated_at": [str(T1)],
+            "event_updated_at": [str(T5)],
         }),
         pd.DataFrame({
             "account_id": ["acct-eur"],
@@ -671,7 +672,7 @@ def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -
 
     assert result.lots[0].original_quantity == D("40.00")
     assert result.lots[0].cost_basis_total == D("50.00")
-    assert result.lots[0].updated_at == T4
+    assert result.lots[0].updated_at == T5
     query_text = "\n".join(context.queries).lower()
     assert "type = 'sell'" in query_text
     assert "amount > 0" in query_text

@@ -354,6 +354,16 @@ def test_accepted_two_row_conversion_preserves_orientation_and_actual_terms(
     assert row.coverage_status == "complete"
 
 
+def test_home_to_foreign_actual_valuation_uses_sent_leg_date() -> None:
+    """Actual Home value is dated by the Home leg that supplies it."""
+    row = _load(
+        _context(linked=_frame(_linked(from_date="2026-03-15", to_date="2026-03-16")))
+    )[0]
+
+    assert row.valuation_source_type == "actual"
+    assert row.valuation_rate_date == date(2026, 3, 15)
+
+
 def test_source_provided_single_row_keeps_one_evidence_identity() -> None:
     row = _load(_context(single=_frame(_single())))[0]
 

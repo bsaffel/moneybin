@@ -362,7 +362,7 @@ def _derive_conversion(
         if from_currency == complete_home_currency:
             home_value = _quantize_money(complete_from_amount)
             valuation_rate = _quantize_rate(complete_from_amount / complete_to_amount)
-            valuation_rate_date = to_date
+            valuation_rate_date = t.cast("date", candidate.from_date)
             valuation_source_type = "actual"
         elif to_currency == complete_home_currency:
             home_value = _quantize_money(complete_to_amount)
