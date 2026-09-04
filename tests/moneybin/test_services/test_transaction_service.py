@@ -1726,6 +1726,8 @@ class TestManualEntry:
             (None, "Coffee", "subcategory"),
             ("   ", "Coffee", "subcategory"),
             ("Food", "   ", "subcategory"),
+            ("x" * 101, None, "category"),
+            ("Food", "x" * 101, "subcategory"),
         ],
     )
     def test_create_manual_batch_refuses_an_unusable_category_pair(
@@ -1743,6 +1745,13 @@ class TestManualEntry:
         dropped whole and the subcategory vanished without a word. The third
         passed that filter and reached ``set_category_in_active_txn``, which
         validates nothing, storing the blank against a NULL ``category_id``.
+
+        The last two are the length cap. Narrowing this check to preserve the
+        blank-category skip is what dropped it: with ``validate_category_text``
+        no longer reached for ``category``, an over-long one flowed to the
+        write and landed in ``app.transaction_categories.category``, an
+        unbounded ``VARCHAR`` with no CHECK, while ``add_split`` and
+        ``create_merchant_core`` refused the identical string.
 
         A blank category with no subcategory is deliberately *not* here. It
         stores nothing wrong — the row simply lands uncategorized, which is
