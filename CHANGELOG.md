@@ -250,10 +250,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   whitespace-only category hid a transaction from the curation queue while
   claiming to carry one. `prep.stg_tabular__transactions` and
   `prep.stg_manual__transactions` now wrap `category` and `subcategory` in
-  `NULLIF(TRIM(...), '')`, the convention `stg_plaid__accounts` documents and
-  every other free-text column in staging already follows; a padded
-  `'  Groceries  '` still arrives as `Groceries` rather than being discarded.
-  (#517)
+  `NULLIF(TRIM(...), '')` over the full whitespace set (space, tab, newline,
+  CR — not just the ASCII space DuckDB's default `TRIM` strips, so a stray
+  tab in a malformed TSV cell hides no differently than a space), the
+  convention `stg_plaid__accounts` documents and every other free-text column
+  in staging already follows; a padded `'  Groceries  '` still arrives as
+  `Groceries` rather than being discarded. (#517)
 
 - **`transactions splits add --category "   "` is refused rather than
   stored.** The MCP write contracts already refuse a whitespace-only string,
@@ -262,6 +264,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not, so the CLI could write a blank that the staging models would have
   nulled out had it arrived from a file. Both now apply the same rule, which
   is what lets the renderer treat `NULL` as the one absence it has to spell.
+  A split already stored with a whitespace-only category or subcategory
+  before this fix is backfilled to `NULL` on next migration (padding, e.g.
+  `'  Groceries  '`, is left as-is — same restraint as the write path).
   (#517)
 
 - **A Plaid transaction's `category` no longer holds Plaid's own category
