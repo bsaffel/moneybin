@@ -16,7 +16,7 @@ from pydantic import (
     model_validator,
 )
 
-from moneybin.services._validators import (
+from moneybin.limits import (
     CATEGORY_NAME_MAX_LEN,
     DESCRIPTION_MAX_LEN,
     IDENTIFIER_MAX_LEN,
