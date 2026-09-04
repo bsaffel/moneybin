@@ -36,8 +36,9 @@ from moneybin.reports._framework.execute import (
 )
 from moneybin.reports._framework.registry import register_generic_reports_tool
 from moneybin.services.currency_service import ResolvedRate
+from moneybin.services.matching_service import PENDING_MATCHES_HINT
 from tests.database_mocks import without_a_profile
-from tests.moneybin.db_helpers import create_core_tables_raw
+from tests.moneybin.db_helpers import create_core_tables_raw, seed_pending_dedup_pair
 
 _SEMANTICS = ReportSemantics(
     unit="currency",
@@ -278,38 +279,14 @@ async def test_reports_marks_a_total_provisional_while_a_duplicate_pair_is_undec
 
     Dedup escalates a low-confidence duplicate to the review queue rather than
     merging it, so both rows stay in ``core.fct_transactions`` and every total
-    covering them is overstated. The CLI prints the reason and the next step as
-    ``⚠️`` and ``💡``; ``summary.degraded_reason`` and ``actions`` are how the
-    agent learns the same thing, and an agent cannot run the CLI hint alone —
-    so the next step names the MCP tools that clear the queue too.
+    covering them is overstated. ``summary.degraded_reason`` carries the caveat,
+    ``actions`` the CLI hint, and ``recovery_actions`` the queue an agent can
+    read and decide without parsing that hint.
     """
-    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
     from moneybin.services.user_reports_service import UserReportsService
 
     create_core_tables_raw(db.conn)
-    db.execute(
-        """
-        INSERT INTO core.fct_transactions (transaction_id, account_id, amount)
-        VALUES ('dup_ofx', 'acct_11112222', -25.00),
-               ('dup_csv', 'acct_11112222', -25.00)
-        """
-    )
-    MatchDecisionsRepo(db).insert(
-        match_id="match00000001",
-        source_transaction_id_a="ofx-1",
-        source_type_a="ofx",
-        source_origin_a="test-bank",
-        source_transaction_id_b="csv-1",
-        source_type_b="tabular",
-        source_origin_b="test-export",
-        account_id="acct_11112222",
-        confidence_score=0.58,
-        match_signals={"date_distance": 0},
-        match_status="pending",
-        match_tier="3",
-        decided_by="auto",
-        actor="test",
-    )
+    seed_pending_dedup_pair(db)
     UserReportsService(db).create(
         name="my_total",
         query_sql="SELECT SUM(amount) AS total FROM core.fct_transactions",
@@ -317,10 +294,6 @@ async def test_reports_marks_a_total_provisional_while_a_duplicate_pair_is_undec
     )
 
     with (
-        patch(
-            "moneybin.reports._framework.catalog.get_database",
-            return_value=_database_context(db),
-        ),
         patch(
             "moneybin.mcp.tools.reports.get_database",
             return_value=_database_context(db),
@@ -333,13 +306,10 @@ async def test_reports_marks_a_total_provisional_while_a_duplicate_pair_is_undec
     assert response.error is None
     assert response.summary.degraded is True
     assert response.summary.degraded_reason is not None
-    assert DEGRADED_PENDING_DEDUP in response.summary.degraded_reason
-    assert "1 duplicate-transaction match is" in response.summary.degraded_reason
-    assert [
-        action
-        for action in response.actions
-        if "moneybin review" in action and "reviews_decide" in action
-    ], response.actions
+    assert response.summary.degraded_reason.startswith(f"{DEGRADED_PENDING_DEDUP}: 1 ")
+    assert PENDING_MATCHES_HINT in response.actions
+    assert response.recovery_actions is not None
+    assert [action.tool for action in response.recovery_actions] == ["reviews"]
 
 
 @pytest.mark.unit

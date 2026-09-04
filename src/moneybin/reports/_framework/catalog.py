@@ -21,7 +21,8 @@ from moneybin.database import (
     DatabaseNotInitializedError,
     get_database,
 )
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
+from moneybin.matching.persistence import count_pending_matches
 from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.metrics.registry import USER_REPORT_RUNS_TOTAL
 from moneybin.privacy.payloads.reports import (
@@ -43,6 +44,7 @@ from moneybin.reports._framework.contract import (
     validate_default_columns,
 )
 from moneybin.reports._framework.derive import json_scalar, typed_value
+from moneybin.reports._framework.dynamic import DEGRADED_PENDING_DEDUP
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     CatalogReportResult,
@@ -56,7 +58,8 @@ from moneybin.services.currency_service import (
     build_cache_only_currency_service,
     require_currency,
 )
-from moneybin.services.matching_service import PENDING_MATCHES_HINT, MatchingService
+from moneybin.sqlmesh_registry import relations_downstream_of
+from moneybin.tables import FCT_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -98,64 +101,47 @@ def _conversion_target(
         return None
 
 
-def _merged_reason(*reasons: str | None) -> str | None:
+def merged_degraded_reason(*reasons: str | None) -> str | None:
     """Every stated reason a result is degraded, or ``None`` if it is not."""
     stated = [reason for reason in reasons if reason]
     return "; ".join(stated) if stated else None
 
 
-#: Leading token on ``degraded_reason`` when undecided duplicate-match proposals
-#: leave both rows of a pair in the ledger. Same discriminator shape the user
-#: tier's codes use (``dynamic.DEGRADED_STALE_CLASSIFICATION`` and its
-#: siblings): ``degraded`` carries several meanings, and a machine reader tells
-#: them apart by the token rather than by parsing the prose after it.
-DEGRADED_PENDING_DEDUP: Final = "pending_dedup_decisions"
+#: The MCP half of the pending-duplicate next step: the queue an agent can read
+#: and decide without parsing the CLI hint beside it.
+_PENDING_DEDUP_RECOVERY: Final = RecoveryAction(
+    tool="reviews",
+    arguments={"kind": "matches", "status": "pending"},
+    rationale=(
+        "Undecided duplicate matches leave both rows of each pair in the ledger; "
+        "decide them with reviews_decide and totals over them stop being "
+        "provisional."
+    ),
+    confidence="suggested",
+    idempotent=True,
+)
 
 
-@dataclass(frozen=True, slots=True)
-class ProvisionalTotals:
-    """What a result owes its reader when an undecided duplicate pair inflates it."""
-
-    reason: str
-    next_step: str
+def _reads_transactions(provenance: Iterable[str]) -> bool:
+    """Whether any relation a report reads is fed by ``core.fct_transactions``."""
+    downstream = relations_downstream_of(FCT_TRANSACTIONS.full_name)
+    return any(relation.lower() in downstream for relation in provenance)
 
 
-def pending_dedup_disclosure(db: Database) -> ProvisionalTotals | None:
-    """The warning and the next step owed to a total a pending pair overstates.
+def pending_dedup_reason(db: Database) -> str | None:
+    """The caveat a total over an undecided duplicate pair owes its reader (#409).
 
-    Cross-source dedup escalates a low-confidence duplicate to the review queue
-    instead of merging it silently, which is the right call — but both rows stay
-    in ``core.fct_transactions`` while the pair is undecided, so every total that
-    covers them counts the payment twice and nothing said so (issue #409).
-
-    The count is profile-wide rather than scoped to the rows on screen. A report
-    returns aggregates, so which transactions it summed is not recoverable from
-    its result, and there is no cheap join back from a match proposal to the
-    grain of an arbitrary report. Warning wider than the rows shown is the safe
-    direction of that imprecision: a disclosure that under-reported the exposure
-    would leave exactly the inflated total this exists to flag unmarked.
+    Counted per profile, not per row: a report returns aggregates, so which
+    transactions it summed is not recoverable from its result, and warning wider
+    is the safe direction of that imprecision.
     """
-    pending = MatchingService(db).count_pending(match_type="dedup")
+    pending = count_pending_matches(db, match_type="dedup")
     if pending == 0:
         return None
-    return ProvisionalTotals(
-        reason=(
-            f"{DEGRADED_PENDING_DEDUP}: {pending} duplicate-transaction "
-            f"{'match is' if pending == 1 else 'matches are'} still awaiting a "
-            "decision; both rows of each undecided pair remain in the ledger, so "
-            "totals covering them are provisional."
-        ),
-        # The CLI half is `PENDING_MATCHES_HINT` verbatim — the one constant the
-        # matcher, the backfill, and the refresh pipeline already print, and the
-        # one a test actually executes. Restating the invocation here is how
-        # those three drifted into an unrunnable command before it existed. The
-        # MCP half is named beside it because this disclosure reaches an agent
-        # that cannot run a shell command, and `reviews`/`reviews_decide` are the
-        # registered tools that clear the same queue.
-        next_step=(
-            f"{PENDING_MATCHES_HINT}; from MCP, reviews(kind='matches', "
-            "status='pending') lists them and reviews_decide decides them"
-        ),
+    verb = "match leaves its" if pending == 1 else "matches leave their"
+    return (
+        f"{DEGRADED_PENDING_DEDUP}: {pending} undecided duplicate {verb} "
+        "transactions unmerged, so totals over them are provisional"
     )
 
 
@@ -335,12 +321,7 @@ class ReportCatalog:
         deliberately declares neither a currency nor a date column, so it can
         never convert. Callers resolve ``home_currency`` themselves (see
         ``profile_home_currency``) rather than having it read here, so a
-        *policy default* stays the caller's to choose.
-
-        A *disclosure* is the opposite case and is read here: the pending-duplicate
-        check below reads ``db`` on every execution, because a caveat each surface
-        has to remember to ask for is one a surface will forget — which is how the
-        inflated totals in issue #409 reached four surfaces unmarked.
+        policy default stays the caller's to choose.
         """
         target = _conversion_target(display_currency, home_currency)
         spec, execution = self.execute_raw(
@@ -353,6 +334,7 @@ class ReportCatalog:
             # describe what that repair produced, not what fed it.
             defer_truncation=target is not None,
         )
+        disclosed = execution.degraded_reason
         if target is not None:
             # Between execution and redaction, the only window where the rows
             # are both final and still numeric.
@@ -361,38 +343,33 @@ class ReportCatalog:
                 to_currency=target,
                 service=build_cache_only_currency_service(db),
             )
-            if display_currency is None:
-                execution = replace(execution, degraded_reason=None)
+            # A requested currency's fallback is explained and a default's is
+            # silent (see above); either way the caveat `execute_raw` attached
+            # outlives the conversion, which only knows its own reason.
+            execution = replace(
+                execution,
+                degraded_reason=merged_degraded_reason(
+                    disclosed,
+                    execution.degraded_reason if display_currency is not None else None,
+                ),
+            )
         execution = truncate_execution(execution)
         result = redact_catalog_execution(spec, execution)
         status = self.status(spec.report_id)
-        # The single point every report-reading surface passes through — see the
-        # docstring on why this one reads ``db`` where the currency default does
-        # not. Skipped on an empty result, whose totals nothing inflated.
-        provisional = pending_dedup_disclosure(db) if result.records else None
-        if provisional is None and not status.degraded:
+        if not status.degraded:
             return result
         # R4's drift reason belongs on the response, not only on the intermediate
         # object the catalog built the spec from: masked rows with no stated cause
         # are the failure the whole degraded flag exists to prevent. A conversion
         # that also degraded keeps its reason beside it rather than losing to it:
         # they are independent, and a reader told only about drift would think
-        # the currency label was trustworthy. The provisional-totals reason joins
-        # them on the same terms, and its next step rides ``actions`` — where the
-        # CLI renders a hint and the MCP envelope already carries one — because
-        # a warning naming no way to clear it leaves the reader where it found
-        # them.
+        # the currency label was trustworthy.
         return replace(
             result,
             degraded=True,
-            degraded_reason=_merged_reason(
-                status.degraded_reason if status.degraded else None,
-                result.degraded_reason,
-                provisional.reason if provisional else None,
+            degraded_reason=merged_degraded_reason(
+                status.degraded_reason, result.degraded_reason
             ),
-            actions=[*result.actions, provisional.next_step]
-            if provisional
-            else result.actions,
         )
 
     def execute_raw(
@@ -436,6 +413,30 @@ class ReportCatalog:
             USER_REPORT_RUNS_TOTAL.labels(tier=tier, outcome="error").inc()
             raise
         USER_REPORT_RUNS_TOTAL.labels(tier=tier, outcome="ok").inc()
+        if _reads_transactions(execution.provenance):
+            # Attached beneath every reading surface, so an export inherits the
+            # caveat without asking for it (#409).
+            reason = pending_dedup_reason(db)
+            if reason is not None:
+                # The CLI half is `PENDING_MATCHES_HINT` verbatim, so it cannot
+                # drift from the command a test executes; imported here because
+                # the service module drags the matching engine into every catalog
+                # import.
+                from moneybin.services.matching_service import (  # noqa: PLC0415
+                    PENDING_MATCHES_HINT,
+                )
+
+                execution = replace(
+                    execution,
+                    degraded_reason=merged_degraded_reason(
+                        execution.degraded_reason, reason
+                    ),
+                    actions=[*execution.actions, PENDING_MATCHES_HINT],
+                    recovery_actions=(
+                        *execution.recovery_actions,
+                        _PENDING_DEDUP_RECOVERY,
+                    ),
+                )
         if defer_truncation:
             execution = replace(execution, pending_limit=limit)
         return spec, execution

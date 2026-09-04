@@ -46,6 +46,12 @@ _PY_MODEL_NAME = re.compile(
 # *adds* a table, which fails the scan-set guard loudly and visibly. Missing
 # a real reference is the silent direction, so the pattern errs wide.
 _RAW_TABLE_REF = re.compile(r"\braw\.([a-z_][a-z0-9_]*)", re.IGNORECASE)
+# Any `<schema>.<table>` reference in a model file, schema-anchored so an
+# `alias.column` never matches. Errs wide for the same reason as the raw scan.
+_RELATION_REF = re.compile(
+    r"\b(raw|prep|core|app|meta|seeds|synthetic|reports)\.([a-z_][a-z0-9_]*)",
+    re.IGNORECASE,
+)
 
 
 @lru_cache(maxsize=1)
@@ -96,6 +102,44 @@ def raw_tables_read_by_models() -> frozenset[str]:
             m.group(1).lower() for m in _RAW_TABLE_REF.finditer(path.read_text())
         )
     return frozenset(names)
+
+
+@lru_cache(maxsize=1)
+def _relations_read_by_model() -> dict[str, frozenset[str]]:
+    """Each registered model's own ``schema.table`` read set, keyed by model."""
+    reads: dict[str, frozenset[str]] = {}
+    for path, pattern in (
+        *((p, _SQL_MODEL_NAME) for p in sorted(_MODELS_DIR.rglob("*.sql"))),
+        *((p, _PY_MODEL_NAME) for p in sorted(_MODELS_DIR.rglob("*.py"))),
+    ):
+        text = path.read_text()
+        match = pattern.search(text)
+        if match is None:
+            continue
+        name = match.group(1).lower()
+        reads[name] = frozenset(
+            f"{m.group(1)}.{m.group(2)}".lower() for m in _RELATION_REF.finditer(text)
+        ) - {name}
+    return reads
+
+
+@lru_cache(maxsize=8)
+def relations_downstream_of(relation: str) -> frozenset[str]:
+    """``relation`` plus every registered model that reads it, transitively.
+
+    Text-derived, so a prose mention counts as a read. That only ever widens
+    the set, which is the safe direction for the caveats built on it.
+    """
+    downstream = {relation.lower()}
+    reads = _relations_read_by_model()
+    grew = True
+    while grew:
+        grew = False
+        for name, read_set in reads.items():
+            if name not in downstream and read_set & downstream:
+                downstream.add(name)
+                grew = True
+    return frozenset(downstream)
 
 
 @dataclass(frozen=True, slots=True)

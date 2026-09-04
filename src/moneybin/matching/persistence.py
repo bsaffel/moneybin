@@ -11,6 +11,8 @@ import logging
 from collections.abc import Sequence
 from typing import Any, Literal, get_args
 
+import duckdb
+
 from moneybin.database import Database
 from moneybin.tables import MATCH_DECISIONS
 
@@ -101,6 +103,26 @@ def get_pending_matches(
         params,
     ).fetchall()
     return [dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True)) for row in rows]
+
+
+def count_pending_matches(db: Database, *, match_type: str | None = None) -> int:
+    """Match decisions awaiting user review; ``match_type`` narrows to one type."""
+    where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
+    params: list[Any] = []
+    if match_type is not None:
+        where += " AND match_type = ?"
+        params.append(match_type)
+    try:
+        row = db.execute(
+            f"""
+            SELECT COUNT(*) FROM {MATCH_DECISIONS.full_name}
+            {where}
+            """,  # noqa: S608  # TableRef constant + literal where; values parameterized
+            params,
+        ).fetchone()
+    except duckdb.CatalogException:
+        return 0  # table not created until the first matcher run
+    return int(row[0]) if row else 0
 
 
 def get_match_decision(db: Database, match_id: str) -> dict[str, Any] | None:

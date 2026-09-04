@@ -582,3 +582,39 @@ def install_uncategorized_queue_view(db: Database) -> None:
     end = raw.index(");", start) + 2
     body = raw[end:].strip()
     db.execute(f"CREATE OR REPLACE VIEW core.uncategorized_queue AS\n{body}")  # noqa: S608  # model body read from the repo file, not user input
+
+
+def seed_pending_dedup_pair(db: Database) -> None:
+    """Two same-amount rows from different sources, proposed as duplicates, undecided.
+
+    The shape issue #409 reported: dedup escalated the pair instead of merging
+    it, so both rows stay in ``core.fct_transactions`` and every total covering
+    them counts the payment twice. Needs the core tables already created.
+    """
+    from moneybin.repositories.match_decisions_repo import (  # noqa: PLC0415  # keep the repo off this helper module's import path
+        MatchDecisionsRepo,
+    )
+
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions (transaction_id, account_id, amount)
+        VALUES ('dup_ofx', 'acct_11112222', -25.00),
+               ('dup_csv', 'acct_11112222', -25.00)
+        """
+    )
+    MatchDecisionsRepo(db).insert(
+        match_id="match00000001",
+        source_transaction_id_a="ofx-1",
+        source_type_a="ofx",
+        source_origin_a="test-bank",
+        source_transaction_id_b="csv-1",
+        source_type_b="tabular",
+        source_origin_b="test-export",
+        account_id="acct_11112222",
+        confidence_score=0.58,
+        match_signals={"date_distance": 0},
+        match_status="pending",
+        match_tier="3",
+        decided_by="auto",
+        actor="test",
+    )

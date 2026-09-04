@@ -10,7 +10,11 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError, classify_user_error
 from moneybin.seeds import INIT_CREATED_MODELS
-from moneybin.sqlmesh_registry import model_presence, registered_model_names
+from moneybin.sqlmesh_registry import (
+    model_presence,
+    registered_model_names,
+    relations_downstream_of,
+)
 
 
 def _built_relations(db: Database) -> set[str]:
@@ -150,3 +154,14 @@ def test_a_wiped_staging_layer_does_not_read_as_never_built(db: Database) -> Non
 
     assert presence.never_built is False
     assert "prep.int_transactions__merged" in presence.missing
+
+
+def test_relations_downstream_of_follows_model_reads_transitively() -> None:
+    """A report over daily balances is fed by transactions two hops away."""
+    downstream = relations_downstream_of("core.fct_transactions")
+
+    assert "core.fct_transactions" in downstream
+    assert "reports.spending_trend" in downstream  # reads the fact directly
+    assert "reports.net_worth" in downstream  # via core.fct_balances_daily
+    assert "raw.plaid_transactions" not in downstream  # upstream of the fact
+    assert "reports.no_such_model" not in downstream
