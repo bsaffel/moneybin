@@ -151,6 +151,22 @@ def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool]:
         if event.target_table in {"exchange_rate_overrides", "profile_settings"}:
             needs_restatement = True
             continue
+        if event.target_table == "match_decisions":
+            before = event.before_value or {}
+            after = event.after_value or {}
+            before_is_accepted_transfer = (
+                before.get("match_type") == "transfer"
+                and before.get("match_status") == "accepted"
+                and before.get("reversed_at") is None
+            )
+            after_is_accepted_transfer = (
+                after.get("match_type") == "transfer"
+                and after.get("match_status") == "accepted"
+                and after.get("reversed_at") is None
+            )
+            if before_is_accepted_transfer != after_is_accepted_transfer:
+                needs_restatement = True
+            continue
         if event.target_table != "account_settings":
             continue
         before = event.before_value or {}
@@ -301,7 +317,7 @@ class UndoService:
             restate_fx_accounting(
                 self._db,
                 account_currency_changed=account_currency_changed,
-                undo_committed=True,
+                committed_change="undo",
             )
         return UndoResult(
             undo_operation_id=undo_op,

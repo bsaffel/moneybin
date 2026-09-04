@@ -710,10 +710,12 @@ Numbered, testable. Tagged by phase.
     reserved single-row shape now feed `core.bridge_currency_conversions`, with
     canonical Transaction currency inherited from its Account when the source row
     omits it. Relevant committed changes to the Home currency, an Account's
-    Currency or cost-basis method, and exchange-rate overrides — including undoing
-    those changes — trigger a targeted restatement of this bridge and its downstream
-    FX-accounting models before the mutation surface reports success. A cache-only
-    loader adapts completed conversions and eligible
+    Currency or cost-basis method, exchange-rate overrides, and accepted Transfer
+    Decisions — including undoing those changes — trigger a targeted restatement of
+    this bridge and its downstream FX-accounting models before the mutation surface
+    reports success. Removing an exchange-rate override also advances affected row
+    freshness through its audit event, even when valuation falls back to an older
+    provider rate. A cache-only loader adapts completed conversions and eligible
     foreign-Security sale proceeds to the unchanged investments cost-basis engine,
     producing `core.fct_currency_lots` and `core.fct_realized_fx_gains`; unsupported
     methods and missing Home currency still preserve known quantities while basis

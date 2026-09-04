@@ -21,6 +21,7 @@ from moneybin.investments.cost_basis import LedgerEvent, compute_lots_and_gains
 from moneybin.services.currency_service import last_publication_day
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
+    AUDIT_LOG,
     BRIDGE_CURRENCY_CONVERSIONS,
     BRIDGE_TRANSFERS,
     DIM_ACCOUNTS,
@@ -199,6 +200,12 @@ class _StoredRate:
     updated_at: datetime | None
 
 
+@dataclass(frozen=True)
+class _RateResolution:
+    rate: _StoredRate | None
+    updated_at: datetime | None
+
+
 def _records(frame: pd.DataFrame) -> list[dict[str, object]]:
     return t.cast(
         "list[dict[str, object]]",
@@ -292,7 +299,7 @@ def _derive_conversion(
     *,
     home_currency: str | None,
     home_updated_at: datetime | None,
-    stored_rate: t.Callable[[str, str, date], _StoredRate | None],
+    stored_rate: t.Callable[[str, str, date], _RateResolution],
 ) -> CurrencyConversionRow | None:
     missing_leg = candidate.source_shape == "linked_two_row" and (
         candidate.from_transaction_id is None or candidate.to_transaction_id is None
@@ -379,15 +386,16 @@ def _derive_conversion(
             valuation_rate_date = to_date
             valuation_source_type = "actual"
         else:
-            rate = stored_rate(to_currency, complete_home_currency, to_date)
-            if rate is None:
+            resolved_rate = stored_rate(to_currency, complete_home_currency, to_date)
+            rate_updated_at = resolved_rate.updated_at
+            if resolved_rate.rate is None:
                 reason = "missing_valuation_rate"
             else:
+                rate = resolved_rate.rate
                 valuation_rate = _quantize_rate(rate.rate)
                 valuation_rate_date = rate.rate_date
                 valuation_source_type = rate.source_type
                 home_value = _quantize_money(complete_to_amount * valuation_rate)
-                rate_updated_at = rate.updated_at
 
     return CurrencyConversionRow(
         conversion_id=_conversion_id(candidate),
@@ -578,9 +586,10 @@ def _load_home_currency(
 
 def _load_stored_rates(
     context: ExecutionContext,
-) -> t.Callable[[str, str, date], _StoredRate | None]:
+) -> t.Callable[[str, str, date], _RateResolution]:
     override_table = EXCHANGE_RATE_OVERRIDES.full_name
     rates_table = EXCHANGE_RATES.full_name
+    audit_log = AUDIT_LOG.full_name
     override_frame = context.fetchdf(
         f"""
         SELECT from_currency, to_currency, rate_date::VARCHAR AS rate_date,
@@ -594,6 +603,15 @@ def _load_stored_rates(
                rate::VARCHAR AS rate, source_type,
                loaded_at::VARCHAR AS loaded_at
         FROM {rates_table}
+        """  # noqa: S608  # registered physical table name, not user input
+    )
+    watermark_frame = context.fetchdf(
+        f"""
+        SELECT target_id, MAX(occurred_at)::VARCHAR AS rate_changed_at
+        FROM {audit_log}
+        WHERE target_schema = 'app'
+          AND target_table = 'exchange_rate_overrides'
+        GROUP BY target_id
         """  # noqa: S608  # registered physical table name, not user input
     )
 
@@ -638,13 +656,28 @@ def _load_stored_rates(
         ):
             provider_rates[key] = candidate
 
-    def stored_rate(base: str, quote: str, requested: date) -> _StoredRate | None:
+    mutation_watermarks: dict[tuple[str, str, date], datetime] = {}
+    for record in _records(watermark_frame):
+        target_id = _opt_str(record["target_id"])
+        changed_at = _opt_timestamp(record["rate_changed_at"])
+        if target_id is None or changed_at is None:
+            continue
+        parts = target_id.split("|")
+        if len(parts) != 3 or not all(_valid_currency(part) for part in parts[:2]):
+            continue
+        rate_date = _opt_date(parts[2])
+        if rate_date is not None:
+            mutation_watermarks[(parts[0], parts[1], rate_date)] = changed_at
+
+    def stored_rate(base: str, quote: str, requested: date) -> _RateResolution:
+        changed_at: datetime | None = None
         for rate_date in dict.fromkeys((requested, last_publication_day(requested))):
-            if override := overrides.get((base, quote, rate_date)):
-                return override
-            if cached := provider_rates.get((base, quote, rate_date)):
-                return cached
-        return None
+            key = (base, quote, rate_date)
+            changed_at = _latest(changed_at, mutation_watermarks.get(key))
+            rate = overrides.get(key) or provider_rates.get(key)
+            if rate is not None:
+                return _RateResolution(rate, _latest(rate.updated_at, changed_at))
+        return _RateResolution(None, changed_at)
 
     return stored_rate
 
@@ -1008,7 +1041,10 @@ def _derive_currency_accounting(
         ):
             continue
         event, metadata = _sale_event(sale)
-        if (reason := _sale_reason(sale)) and reason != "missing_valuation_rate":
+        if (reason := _sale_reason(sale)) and reason not in {
+            "missing_home_currency",
+            "missing_valuation_rate",
+        }:
             incomplete_sales.append((event, metadata, reason))
         else:
             event_rows.append((event, metadata))
@@ -1163,7 +1199,7 @@ def _load_security_sales(
     *,
     home_currency: str | None,
     home_updated_at: datetime | None,
-    stored_rate: t.Callable[[str, str, date], _StoredRate | None],
+    stored_rate: t.Callable[[str, str, date], _RateResolution],
 ) -> list[ForeignSecuritySale]:
     ledger = context.resolve_table(FCT_INVESTMENT_TRANSACTIONS.full_name)
     frame = context.fetchdf(
@@ -1192,11 +1228,12 @@ def _load_security_sales(
             and currency == resolved_home
         ):
             continue
-        rate = (
+        resolved_rate = (
             stored_rate(currency, resolved_home, trade_date)
             if _valid_currency(currency) and _valid_currency(resolved_home)
-            else None
+            else _RateResolution(None, None)
         )
+        rate = resolved_rate.rate
         home_value = _quantize_money(net_proceeds * rate.rate) if rate else None
         sales.append(
             ForeignSecuritySale(
@@ -1214,7 +1251,7 @@ def _load_security_sales(
                 updated_at=_latest(
                     _opt_timestamp(record["event_updated_at"]),
                     home_updated_at,
-                    rate.updated_at if rate else None,
+                    resolved_rate.updated_at,
                 ),
             )
         )

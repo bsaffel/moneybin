@@ -679,47 +679,68 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
     )
     corrected = db.execute(
         """
-        SELECT home_value, valuation_rate, valuation_source_type
+        SELECT home_value, valuation_rate, valuation_source_type, updated_at
         FROM core.bridge_currency_conversions
         WHERE conversion_id = 'fxc_9498dd3eb745369b'
         """
     ).fetchone()
-    assert corrected == (Decimal("100.00"), Decimal("2.00000000"), "override")
+    assert corrected is not None
+    assert corrected[:3] == (Decimal("100.00"), Decimal("2.00000000"), "override")
     corrected_gain = db.execute(
         """
-        SELECT proceeds, cost_basis, gain_loss
+        SELECT proceeds, cost_basis, gain_loss, updated_at
         FROM core.fct_realized_fx_gains
         WHERE conversion_id = 'fxc_9498dd3eb745369b'
         """
     ).fetchone()
-    assert corrected_gain == (
+    assert corrected_gain is not None
+    assert corrected_gain[:3] == (
         Decimal("100.00"),
         Decimal("60.00"),
         Decimal("40.00"),
     )
+    corrected_lot_updated_at = db.execute(
+        """
+        SELECT updated_at FROM core.fct_currency_lots
+        WHERE source_conversion_id = 'fxc_9498dd3eb745369b'
+        """
+    ).fetchone()
+    assert corrected_lot_updated_at is not None
 
     UndoService(db).undo(override_event.operation_id, actor="test")
     restored = db.execute(
         """
-        SELECT home_value, valuation_rate, valuation_source_type
+        SELECT home_value, valuation_rate, valuation_source_type, updated_at
         FROM core.bridge_currency_conversions
         WHERE conversion_id = 'fxc_9498dd3eb745369b'
         """
     ).fetchone()
-    assert restored == (
+    assert restored is not None
+    assert restored[:3] == (
         Decimal("75.00"),
         Decimal("1.50000000"),
         "frankfurter",
     )
     restored_gain = db.execute(
         """
-        SELECT proceeds, cost_basis, gain_loss
+        SELECT proceeds, cost_basis, gain_loss, updated_at
         FROM core.fct_realized_fx_gains
         WHERE conversion_id = 'fxc_9498dd3eb745369b'
         """
     ).fetchone()
-    assert restored_gain == (
+    assert restored_gain is not None
+    assert restored_gain[:3] == (
         Decimal("75.00"),
         Decimal("60.00"),
         Decimal("15.00"),
     )
+    restored_lot_updated_at = db.execute(
+        """
+        SELECT updated_at FROM core.fct_currency_lots
+        WHERE source_conversion_id = 'fxc_9498dd3eb745369b'
+        """
+    ).fetchone()
+    assert restored_lot_updated_at is not None
+    assert restored[3] > corrected[3]
+    assert restored_gain[3] > corrected_gain[3]
+    assert restored_lot_updated_at[0] > corrected_lot_updated_at[0]

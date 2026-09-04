@@ -615,6 +615,55 @@ def test_unvalued_security_sale_quantity_is_consumed_by_later_disposal() -> None
     assert result.gains[0].currency_lot_id == result.lots[0].currency_lot_id
 
 
+def test_missing_home_security_sale_quantity_is_consumed_by_later_disposal() -> None:
+    """Missing Home valuation must not turn real sale proceeds into a placeholder."""
+    disposal = _conversion(
+        conversion_id="fxc_dispose_sale_cash_without_home",
+        from_account_id="acct-eur",
+        to_account_id="acct-gbp",
+        from_date=date(2026, 3, 1),
+        to_date=date(2026, 3, 1),
+        from_amount=D("20.00"),
+        from_currency="EUR",
+        to_amount=D("30.00"),
+        to_currency="GBP",
+        home_currency=None,
+        home_value=None,
+        valuation_rate=None,
+        valuation_rate_date=None,
+        valuation_source_type=None,
+        coverage_status="incomplete",
+        coverage_reason="missing_home_currency",
+        updated_at=T3,
+    )
+
+    result = _derive(
+        disposal,
+        sales=(
+            _sale(
+                home_currency="",
+                home_value=None,
+                valuation_rate=None,
+                valuation_rate_date=None,
+                valuation_source_type=None,
+            ),
+        ),
+    )
+
+    eur_lot = next(lot for lot in result.lots if lot.currency_code == "EUR")
+    eur_gain = next(gain for gain in result.gains if gain.currency_code == "EUR")
+    assert eur_lot.remaining_quantity == D("20.00")
+    assert eur_lot.cost_basis_total is None
+    assert eur_lot.cost_basis_remaining is None
+    assert eur_lot.coverage_reason == "missing_home_currency"
+    assert eur_gain.disposed_amount == D("20.00")
+    assert eur_gain.currency_lot_id == eur_lot.currency_lot_id
+    assert eur_gain.proceeds is None
+    assert eur_gain.cost_basis is None
+    assert eur_gain.gain_loss is None
+    assert eur_gain.coverage_reason == "missing_home_currency"
+
+
 def test_missing_sale_home_valuation_is_visible_without_fabricated_basis() -> None:
     result = _derive(
         sales=(
@@ -731,6 +780,7 @@ def test_materialized_accounting_reads_follow_registered_table_refs(
         pd.DataFrame(),
         pd.DataFrame(),
         pd.DataFrame(),
+        pd.DataFrame(),
     )
 
     result = sqlmesh_loader.load_currency_accounting(t.cast(t.Any, context))
@@ -787,6 +837,7 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
             ("PROFILE_SETTINGS", "profile_config"),
             ("EXCHANGE_RATE_OVERRIDES", "rate_overrides"),
             ("EXCHANGE_RATES", "stored_rates"),
+            ("AUDIT_LOG", "audit_log"),
             ("ACCOUNT_SETTINGS", "account_config"),
         )
     }
@@ -800,8 +851,9 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
         pd.DataFrame(),
         pd.DataFrame(),
         pd.DataFrame(),
+        pd.DataFrame(),
     )
-    accounting_context = _FakeContext(*(pd.DataFrame() for _ in range(6)))
+    accounting_context = _FakeContext(*(pd.DataFrame() for _ in range(7)))
 
     assert sqlmesh_loader.load_conversion_rows(t.cast(t.Any, conversion_context)) == []
     assert sqlmesh_loader.load_currency_accounting(
@@ -852,6 +904,7 @@ def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -
             "source_type": ["frankfurter"],
             "loaded_at": [str(T2)],
         }),
+        pd.DataFrame(columns=t.cast(t.Any, ["target_id", "rate_changed_at"])),
         pd.DataFrame({
             "investment_transaction_id": ["security-sale-1"],
             "account_id": ["acct-eur"],
@@ -932,6 +985,8 @@ class _RoutingContext:
                     ],
                 )
             )
+        if "from app.audit_log" in normalized:
+            return pd.DataFrame(columns=t.cast(t.Any, ["target_id", "rate_changed_at"]))
         if "from core.fct_investment_transactions" in normalized:
             return pd.DataFrame(
                 columns=t.cast(

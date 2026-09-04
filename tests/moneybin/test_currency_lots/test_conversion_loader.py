@@ -177,6 +177,13 @@ def _provider_rates(*rows: Mapping[str, object]) -> pd.DataFrame:
     )
 
 
+def _rate_watermarks(*rows: Mapping[str, object]) -> pd.DataFrame:
+    return pd.DataFrame(
+        rows,
+        columns=t.cast(t.Any, ("target_id", "rate_changed_at")),
+    )
+
+
 def _context(
     *,
     linked: pd.DataFrame | None = None,
@@ -185,6 +192,7 @@ def _context(
     home_currency: str | None = "USD",
     overrides: pd.DataFrame | None = None,
     provider_rates: pd.DataFrame | None = None,
+    rate_watermarks: pd.DataFrame | None = None,
 ) -> _FakeContext:
     return _FakeContext(
         linked if linked is not None else _frame(),
@@ -193,6 +201,7 @@ def _context(
         _profile(home_currency),
         overrides if overrides is not None else _overrides(),
         provider_rates if provider_rates is not None else _provider_rates(),
+        rate_watermarks if rate_watermarks is not None else _rate_watermarks(),
     )
 
 

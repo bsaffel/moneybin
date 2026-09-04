@@ -26,7 +26,7 @@ from moneybin.matching.application import (
     record_committed_match_effects,
 )
 from moneybin.matching.assignment import NodeKey, connected_components
-from moneybin.matching.engine import TransactionMatcher
+from moneybin.matching.engine import MatchRunError, TransactionMatcher
 from moneybin.matching.persistence import (
     VALID_MATCH_TYPES,
     get_active_dedup_edges,
@@ -180,9 +180,22 @@ class MatchingService:
         ``"cli"``/``"mcp"``; defaults to ``"system"`` for automated callers).
         """
         seed_source_priority(self._db, self._settings)
-        return TransactionMatcher(self._db, self._settings, actor=actor).run(
-            auto_accept_transfers=auto_accept_transfers
+        matcher = TransactionMatcher(self._db, self._settings, actor=actor)
+        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+            restate_fx_accounting_after_match_run,
         )
+
+        try:
+            result = matcher.run(auto_accept_transfers=auto_accept_transfers)
+        except MatchRunError as exc:
+            try:
+                restate_fx_accounting_after_match_run(self._db, exc.partial)
+            except UserError as restatement_error:
+                exc.restatement_error = restatement_error
+                raise exc from restatement_error
+            raise
+        restate_fx_accounting_after_match_run(self._db, result)
+        return result
 
     def seed_priority(self) -> None:
         """Seed ``app.seed_source_priority`` from current MatchingSettings.
@@ -207,6 +220,11 @@ class MatchingService:
         match with this id exists.
         """
         self._match_repo().reverse(match_id, reversed_by=reversed_by, actor=actor)
+        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+            restate_fx_accounting_after_match_undo,
+        )
+
+        restate_fx_accounting_after_match_undo(self._db, match_id)
 
     def get_log(
         self, *, limit: int | None = 50, match_type: str | None = None
@@ -317,6 +335,11 @@ class MatchingService:
             self._db.rollback()
             raise
         record_committed_match_effects(effects)
+        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+            restate_fx_accounting_after_match_effects,
+        )
+
+        restate_fx_accounting_after_match_effects(self._db, effects)
         return MatchDecisionOutcome(
             match_status=effects.effective_statuses[match_id],
             transfers_retired=effects.standing_transfers_retired,
@@ -478,6 +501,11 @@ class MatchingService:
             self._db.rollback()
             raise
         record_committed_match_effects(effects)
+        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+            restate_fx_accounting_after_match_effects,
+        )
+
+        restate_fx_accounting_after_match_effects(self._db, effects)
         return BulkAcceptOutcome(
             accepted=effects.accepted_count,
             reversed_by_reconciliation=effects.immediate_reversals,
