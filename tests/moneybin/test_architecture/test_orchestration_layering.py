@@ -27,6 +27,7 @@ import subprocess  # noqa: S404 — clean-interpreter import check
 import sys
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Literal
 
 from tests.moneybin.test_architecture._import_graph import package_of, resolved_module
 
@@ -78,47 +79,56 @@ GUARDED_PACKAGES: frozenset[str] = frozenset({
     "utils",
 })
 
+ImportKind = Literal["module", "deferred"]
+
 # Every executing import of `moneybin.orchestration` from below the layer, as
-# paths relative to src/moneybin/ — module top and method body alike. Each
+# (path relative to src/moneybin/, kind) pairs — "module" for a module-top
+# import, "deferred" for one written inside a function or method body. Each
 # entry is a known inversion, not a pattern to copy: the service calls the
 # orchestrator at the end of its own write, so the dependency points the wrong
 # way whichever line it is written on.
 #
-# Keyed by file, so a file holding two upward imports is one entry.
+# Keyed by (file, kind), not file alone: hoisting a deferred import to module
+# level (or the reverse) is itself a layering-relevant change — module-level
+# binds the name for `unittest.mock.patch` targets and pays the import cost
+# eagerly, deferred does neither — so the two kinds must compare unequal, or
+# a hoist would pass this guard silently. A file holding two upward imports of
+# the *same* kind is still one entry; a file that legitimately holds one of
+# each kind would be two entries, but none below does today.
 #
 # Draining this list means moving the closing refresh out of the service and
 # into the surfaces that call it — a contract change for both CLI and MCP, so
 # it is deliberately not part of the relocation that created this file.
-KNOWN_INVERSIONS: frozenset[str] = frozenset({
+KNOWN_INVERSIONS: frozenset[tuple[str, ImportKind]] = frozenset({
     # why: ImportService.import_files() closes a batch by running the full
     # refresh pipeline (`smart-import-transform.md` Req 3). Module-level
     # because `unittest.mock.patch` targets that predate this package bind the
     # rebound names on this module. Inverting it would change the import
     # contract on both surfaces.
-    "services/import_service.py",
+    ("services/import_service.py", "module"),
     # why: SyncService.pull() runs refresh once after a sync that changed raw
     # state (`sync-plaid.md` Req 10). Same inversion, module-level for the same
     # patch targets.
-    "services/sync_service.py",
+    ("services/sync_service.py", "module"),
     # why: AccountLinksService.rematch_after_merge() re-runs the match and
     # transform steps once an account merge has committed, so the ledger the
     # user reads reflects the merged identity. Deferred into the method
     # because the orchestrator's identity step imports this service back: the
     # two modules name each other, so at least one of the pair has to stay off
     # its module top.
-    "services/account_links_service.py",
+    ("services/account_links_service.py", "deferred"),
     # why: DemoService.run() drives generate → load → refresh → answer, and
     # refresh is one step of it. Deferred with the rest of that method's
     # import block, which defers as a unit: hoisting the block costs +311
     # modules over a bare `import demo_service` and pulls polars in through
     # `synthetic.writer`.
-    "services/demo_service.py",
+    ("services/demo_service.py", "deferred"),
     # why: InboxService.sync() imports `refresh` and `step_outcome` to run the
     # pipeline once at end-of-batch instead of once per file. Deferred as
     # forward cover, not as a saving today: `import_service` already pulls the
     # orchestrator onto the cold-start path at module level, so this deferral
     # only starts paying once that entry above is drained.
-    "services/inbox_service.py",
+    ("services/inbox_service.py", "deferred"),
 })
 
 HEAVY_PREFIXES: tuple[str, ...] = ("fastmcp", "sqlmesh", "polars")
@@ -154,8 +164,10 @@ def _nested_blocks(stmt: ast.stmt) -> Iterator[list[ast.stmt]]:
         yield case.body
 
 
-def _runtime_imports(body: Sequence[ast.stmt]) -> Iterator[ast.Import | ast.ImportFrom]:
-    """Imports that execute at some point when the program runs.
+def _runtime_imports(
+    body: Sequence[ast.stmt], *, deferred: bool = False
+) -> Iterator[tuple[ast.Import | ast.ImportFrom, ImportKind]]:
+    """Imports that execute at some point when the program runs, tagged by kind.
 
     Recurses through every compound statement — ``if``/``else``, ``try``'s
     handlers, ``else`` and ``finally``, ``match`` cases, ``with``, ``for``,
@@ -163,7 +175,15 @@ def _runtime_imports(body: Sequence[ast.stmt]) -> Iterator[ast.Import | ast.Impo
     a pass over ``tree.body`` alone would let both ``try: ... except
     ImportError: <import>`` and the far commoner ``def f(): import …``
     through. A deferred import still runs; deferring it changes *when* the
-    dependency is paid, never whether it exists.
+    dependency is paid, never whether it exists — which is why both kinds are
+    still yielded, just tagged differently.
+
+    ``deferred`` tracks whether recursion has passed through a function or
+    method body (``FunctionDef``/``AsyncFunctionDef``). Everything else that
+    can wrap an import — ``if``, ``try``, ``class``, ``with``, ``for``,
+    ``while``, ``match`` — runs at the moment its enclosing scope does, so it
+    does not itself defer anything; only a callable body postpones execution
+    to call time.
 
     One thing is excluded, because it genuinely never runs: the body of an
     ``if TYPE_CHECKING:`` block. That block's ``else`` branch is *not*
@@ -174,13 +194,16 @@ def _runtime_imports(body: Sequence[ast.stmt]) -> Iterator[ast.Import | ast.Impo
     """
     for stmt in body:
         if isinstance(stmt, ast.Import | ast.ImportFrom):
-            yield stmt
+            yield stmt, "deferred" if deferred else "module"
             continue
         if isinstance(stmt, ast.If) and _is_type_checking_test(stmt.test):
-            yield from _runtime_imports(stmt.orelse)
+            yield from _runtime_imports(stmt.orelse, deferred=deferred)
             continue
+        stmt_deferred = deferred or isinstance(
+            stmt, ast.FunctionDef | ast.AsyncFunctionDef
+        )
         for block in _nested_blocks(stmt):
-            yield from _runtime_imports(block)
+            yield from _runtime_imports(block, deferred=stmt_deferred)
 
 
 def _imports_orchestration(node: ast.Import | ast.ImportFrom, package: str) -> bool:
@@ -213,13 +236,15 @@ def _guarded_files() -> Iterator[Path]:
         yield path
 
 
-def _scan() -> set[str]:
-    offenders: set[str] = set()
+def _scan() -> set[tuple[str, ImportKind]]:
+    offenders: set[tuple[str, ImportKind]] = set()
     for path in _guarded_files():
         tree = ast.parse(path.read_text(), filename=str(path))
         package = package_of(path)
-        if any(_imports_orchestration(n, package) for n in _runtime_imports(tree.body)):
-            offenders.add(path.relative_to(SRC).as_posix())
+        relative = path.relative_to(SRC).as_posix()
+        for node, kind in _runtime_imports(tree.body):
+            if _imports_orchestration(node, package):
+                offenders.add((relative, kind))
     return offenders
 
 
@@ -388,7 +413,7 @@ def test_runtime_import_detection_sees_every_executing_block() -> None:
     }
     for label, source in executing.items():
         found = list(_runtime_imports(ast.parse(source).body))
-        assert any(_imports_orchestration(n, package) for n in found), (
+        assert any(_imports_orchestration(n, package) for n, _kind in found), (
             f"{label}: an import that runs went undetected"
         )
 
@@ -416,7 +441,7 @@ def test_runtime_import_detection_sees_every_executing_block() -> None:
     }
     for label, source in inert.items():
         found = list(_runtime_imports(ast.parse(source).body))
-        assert not any(_imports_orchestration(n, package) for n in found), (
+        assert not any(_imports_orchestration(n, package) for n, _kind in found), (
             f"{label}: an import that never reaches the orchestration layer "
             "was reported as an inversion"
         )
@@ -426,7 +451,9 @@ def test_runtime_import_detection_sees_every_executing_block() -> None:
     deeper = "moneybin.services.categorization"
     assert any(
         _imports_orchestration(n, deeper)
-        for n in _runtime_imports(ast.parse("from ...orchestration import x").body)
+        for n, _kind in _runtime_imports(
+            ast.parse("from ...orchestration import x").body
+        )
     ), "three dots from a second-level package should reach the layer"
     # More dots than the package has parts. Python refuses these outright, so
     # the scan must not resolve them into the layer. Two depths, because the
@@ -440,7 +467,7 @@ def test_runtime_import_detection_sees_every_executing_block() -> None:
     for label, source in over_relative.items():
         assert not any(
             _imports_orchestration(n, package)
-            for n in _runtime_imports(ast.parse(source).body)
+            for n, _kind in _runtime_imports(ast.parse(source).body)
         ), f"{label}: an import Python would refuse was resolved into the layer"
 
 
