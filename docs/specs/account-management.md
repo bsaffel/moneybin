@@ -220,7 +220,7 @@ institution-specific subtypes).
 
 This spec ships a new doc explaining the project-wide identifier conventions, since `account_id` vs `account_number` vs `last_four` vs `routing_number` is now spread across `dim_accounts`, `app.account_settings`, and the loaders:
 
-**`docs/architecture/account-identifiers.md`** (new):
+**`docs/reference/account-identifiers.md`** (new):
 - `account_id` — synthetic stable identifier, primary key on `dim_accounts`. Source-derived (OFX `<ACCTID>` hash, tabular content hash, future Plaid `account_id`). Safe to log.
 - `account_number` — full bank account number. **Never stored in MoneyBin.** Loaders extract only `last_four` from raw inputs; the full number is dropped at the parser boundary.
 - `last_four` — last 4 digits, validated `^[0-9]{4}$`. Stored in `app.account_settings.last_four`. Logged only as `<account_id>.last_four` reference, never as a value.
@@ -306,7 +306,7 @@ CLI commands:
 - `src/moneybin/cli/commands/accounts/` — top-level `accounts` group with `list`, `get`, `set`, `resolve`. The `set` command is the partial-update entry point covering display_name, include/exclude, archive/unarchive, plus structural metadata. Net-worth ships the `balance` sub-app inside this same package.
 
 Documentation:
-- `docs/architecture/account-identifiers.md` — `account_id` vs `account_number` vs `last_four` vs `routing_number`, masking story (per Requirement 14 and §Identifier and PII Documentation)
+- `docs/reference/account-identifiers.md` — `account_id` vs `account_number` vs `last_four` vs `routing_number`, masking story (per Requirement 14 and §Identifier and PII Documentation)
 
 Tests:
 - `tests/moneybin/test_services/test_account_service.py` — extended for settings + soft-validation + cascade logic

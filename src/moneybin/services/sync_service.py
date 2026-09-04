@@ -35,10 +35,10 @@ from moneybin.metrics.registry import (
     SYNC_PULL_OUTCOMES_TOTAL,
     SYNC_PULL_TRANSACTIONS_LOADED,
 )
+from moneybin.orchestration.refresh import refresh as _refresh
+from moneybin.orchestration.refresh import step_outcome as _step_outcome
 from moneybin.services.account_resolution_types import SourceAccount
 from moneybin.services.account_resolver import AccountResolver
-from moneybin.services.refresh import refresh as _refresh
-from moneybin.services.refresh import step_outcome as _step_outcome
 from moneybin.services.security_resolver import SecurityResolver
 from moneybin.tables import (
     ACCOUNT_LINKS,
@@ -94,7 +94,7 @@ class SyncService:
 
         When ``refresh`` is True (default) and the sync changed raw state
         (loaded new rows or processed removals), runs the post-load
-        :func:`moneybin.services.refresh.refresh` pipeline — matching,
+        :func:`moneybin.orchestration.refresh.refresh` pipeline — matching,
         SQLMesh apply, and categorization — so derived ``core.*`` models
         reflect the new data before this call returns.
 

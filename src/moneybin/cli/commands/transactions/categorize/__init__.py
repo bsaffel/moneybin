@@ -391,9 +391,9 @@ def categorize_assist(
     `moneybin transactions categorize commit`.
     """
     from moneybin.cli.output import render_or_json
-    from moneybin.mcp.privacy import audit_log
     from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
     from moneybin.privacy.payloads.categorize import AssistRow, CatAssistPayload
+    from moneybin.privacy.sensitivity import audit_log
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.categorization import CategorizationService
 

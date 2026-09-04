@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-20 -->
+<!-- Last reviewed: 2026-09-02 -->
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
   <picture>
@@ -21,8 +21,9 @@
 </div>
 <!-- markdownlint-enable MD033 MD041 -->
 
-MoneyBin imports bank files (CSV, OFX/QFX/QBO, Excel, Parquet, selectable-text
-PDF), syncs Plaid-linked accounts, and connects Google Sheets — all into one
+MoneyBin imports bank files (OFX/QFX/QBO, selectable-text PDF, CSV, TSV, Excel,
+Parquet, Feather), syncs Plaid-linked accounts, and connects [Google
+Sheets](docs/guides/connect-gsheet.md) — all into one
 AES-256-GCM-encrypted [DuckDB](https://duckdb.org) file. Query it three ways:
 the CLI, raw SQL, or a 50-tool MCP server for Claude, Cursor, VS Code, Gemini
 CLI, Codex, and other clients. Every surface reads the same tables.
@@ -34,7 +35,9 @@ CLI, Codex, and other clients. Every surface reads the same tables.
 </picture>
 <!-- markdownlint-enable MD033 -->
 
-Local only. No telemetry. No vendor account. Account and routing numbers in
+Local only. No telemetry. No vendor account for file import, the CLI, or SQL —
+the Plaid sync login and the Google Sheets authorization are the two opt-in
+exceptions. Account and routing numbers in
 typed fields leave the machine only as masked placeholders (`****1234`) — no
 consent tier unlocks the real value, and what free text can carry is
 [documented](docs/guides/what-the-ai-sees.md), not hand-waved. Every one of
@@ -165,4 +168,4 @@ use it before migrating.
 
 [AGPL-3.0](LICENSE). Bug reports, focused proposals, and pull requests are
 welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md); questions and design
-conversations go to [GitHub Discussions](https://github.com/bsaffel/moneybin/discussions).
+conversations go to [GitHub Issues](https://github.com/bsaffel/moneybin/issues).

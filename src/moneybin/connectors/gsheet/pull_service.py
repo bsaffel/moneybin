@@ -35,6 +35,7 @@ from moneybin.connectors.gsheet.errors import (
 from moneybin.connectors.gsheet.sheets_api import SheetsAPI
 from moneybin.database import Database
 from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
+from moneybin.tables import IMPORT_LOG
 
 logger = logging.getLogger(__name__)
 
@@ -300,12 +301,12 @@ class GSheetPullService:
         """Insert an ``importing`` row in raw.import_log scoped to this pull."""
         account_names = [] if conn.account_name is None else [conn.account_name]
         self._db.execute(
-            """
-            INSERT INTO raw.import_log (
+            f"""
+            INSERT INTO {IMPORT_LOG.full_name} (
                 import_id, source_file, source_type, source_origin,
                 format_name, format_source, account_names, status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            """,  # noqa: S608  # IMPORT_LOG is a TableRef constant, values parameterized
             [
                 import_id,
                 f"gsheet://{conn.spreadsheet_id}/{conn.sheet_gid}",
@@ -330,13 +331,13 @@ class GSheetPullService:
     ) -> None:
         """Finalize the import_log row with terminal status."""
         self._db.execute(
-            """
-            UPDATE raw.import_log
+            f"""
+            UPDATE {IMPORT_LOG.full_name}
                SET status = ?,
                    rows_imported = ?,
                    completed_at = CURRENT_TIMESTAMP
              WHERE import_id = ?
-            """,
+            """,  # noqa: S608  # IMPORT_LOG is a TableRef constant, values parameterized
             [status, rows_imported, import_id],
         )
 

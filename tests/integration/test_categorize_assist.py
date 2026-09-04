@@ -197,7 +197,7 @@ class TestCategorizeAssistMCPTool:
         _seed_uncategorized_transactions(db, count=3)
         _wire_db_to_assist(monkeypatch, db)
 
-        with caplog.at_level(logging.INFO, logger="moneybin.mcp.privacy"):
+        with caplog.at_level(logging.INFO, logger="moneybin.privacy.sensitivity"):
             await transactions_categorize_assist(limit=5)
 
         audit_entries = [r for r in caplog.records if "audit:" in r.message]

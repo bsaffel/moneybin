@@ -29,21 +29,20 @@ from fastmcp import FastMCP
 from pydantic import BeforeValidator, Field, JsonValue
 
 from moneybin import error_codes
+from moneybin.adapters.matching_adapters import (
+    matches_history_envelope,
+    matches_pending_envelope,
+)
 from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError, exception_origin
 from moneybin.mcp._registration import register
-from moneybin.mcp.adapters.matching_adapters import (
-    matches_history_envelope,
-    matches_pending_envelope,
-)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.write_contracts import AnnotationRequest
 from moneybin.privacy.payloads.transactions import (
     MatchesHistoryPayload,
     MatchesPendingPayload,
@@ -61,6 +60,7 @@ from moneybin.protocol.pagination import (
     build_keyset_page,
     decode_keyset_cursor,
 )
+from moneybin.protocol.write_contracts import AnnotationRequest
 from moneybin.services.account_resolution_types import matchable_account_name
 from moneybin.services.account_service import AccountService
 from moneybin.services.categorization import CategorizationService

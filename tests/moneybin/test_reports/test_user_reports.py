@@ -20,6 +20,14 @@ from pydantic import JsonValue
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.limits import (
+    DESCRIPTION_MAX_LEN,
+    IDENTIFIER_MAX_LEN,
+    NOTE_MAX_LEN,
+    REPORT_DOWNGRADES_MAX_LEN,
+    REPORT_PARAMS_MAX_LEN,
+    REPORT_QUERY_MAX_LEN,
+)
 from moneybin.privacy import sql_lineage
 from moneybin.privacy.redaction import mask_strength
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
@@ -31,14 +39,6 @@ from moneybin.reports._framework.catalog import (
 from moneybin.reports._framework.contract import ParamSpec, ReportSpec
 from moneybin.reports._framework.dynamic import spec_from_row, user_report_specs
 from moneybin.repositories.user_reports_repo import UserReportsRepo
-from moneybin.services._validators import (
-    DESCRIPTION_MAX_LEN,
-    IDENTIFIER_MAX_LEN,
-    NOTE_MAX_LEN,
-    REPORT_DOWNGRADES_MAX_LEN,
-    REPORT_PARAMS_MAX_LEN,
-    REPORT_QUERY_MAX_LEN,
-)
 from moneybin.services.audit_service import AuditService
 from moneybin.services.user_reports_service import (
     ConfirmedVia,

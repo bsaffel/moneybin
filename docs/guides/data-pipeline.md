@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-03 -->
 # Data Pipeline
 
 Every transaction you see in `core.fct_transactions` traces back to a specific source row in `raw.*`. The pipeline that gets it there is a layered medallion: Python loaders write raw, SQLMesh transforms raw into staging views and canonical tables, services maintain user state in a parallel `app.*` schema, and curated `reports.*` views shape the result for display. This guide walks the layers, explains what each one's job is, names the actual models in the repo, and shows where consumers should query from.
@@ -48,6 +48,7 @@ Every row in `core.fct_transactions` carries a `source_type` recording which loa
 | `source_type` | Loader / origin | Lands in (raw) |
 |---|---|---|
 | `manual` | `transactions create` | `raw.manual_transactions` |
+| `gsheet` | `gsheet pull` (Google Sheets) | `raw.tabular_transactions` |
 | `plaid` | `sync pull` (Plaid `/transactions/sync`) | `raw.plaid_transactions` |
 | `csv` | `import files` (CSV) | `raw.tabular_transactions` |
 | `excel` | `import files` (`.xlsx`/`.xls`) | `raw.tabular_transactions` |
@@ -57,12 +58,13 @@ Every row in `core.fct_transactions` carries a `source_type` recording which loa
 | `pipe` | `import files` (pipe-delimited) | `raw.tabular_transactions` |
 | `ofx` | `import files` (OFX/QFX/QBO) | `raw.ofx_transactions` |
 
-When two sources both observed the same real-world transaction (matched via dedup, below) the per-field merge in `prep.int_transactions__merged` picks the highest-priority non-null value for each column. The default priority order is:
+When two sources both observed the same real-world transaction (matched via dedup, below) the per-field merge in `prep.int_transactions__merged` picks the highest-priority non-null value for each column. The default priority order (`MatchingSettings.source_priority` in `src/moneybin/config.py`) is:
 
 1. `manual` (you typed it; trust it)
-2. `plaid` (live API, normalized merchant + category)
-3. `csv`, `excel`, `tsv`, `parquet`, `feather`, `pipe` (tabular file imports)
-4. `ofx` (lowest — file metadata is often institution-specific and lossy)
+2. `gsheet`
+3. `ofx`
+4. `plaid`
+5. `csv`, `excel`, `tsv`, `parquet`, `feather`, `pipe` (tabular file imports, lowest)
 
 Configurable via the `matching.source_priority` setting; the live list is seeded into `app.seed_source_priority` on every matcher run.
 
@@ -77,7 +79,7 @@ Owned by Python: every loader writes to a source-specific `raw` table via `Datab
 | `raw.ofx_transactions` | OFX/QFX/QBO transactions | `import files` |
 | `raw.ofx_balances` | OFX/QFX/QBO balance snapshots | `import files` |
 | `raw.tabular_accounts` | CSV/TSV/Excel/Parquet/Feather account columns | `import files` |
-| `raw.tabular_transactions` | CSV/TSV/Excel/Parquet/Feather transaction rows | `import files` |
+| `raw.tabular_transactions` | CSV/TSV/Excel/Parquet/Feather and Google Sheets transaction rows | `import files`, `gsheet pull` |
 | `raw.plaid_accounts` | Plaid `/accounts/get` | `sync pull` |
 | `raw.plaid_transactions` | Plaid `/transactions/sync` | `sync pull` |
 | `raw.plaid_balances` | Plaid balance snapshots | `sync pull` |
@@ -192,7 +194,7 @@ Trace a single transaction end to end, starting from a CSV row.
 
 1. **The CSV lands in the inbox or you run `moneybin import files`.** The tabular importer detects delimiter, header, and sign convention; matches columns against the alias dictionary; resolves the account.
 2. **The loader writes `raw.tabular_transactions`** via `Database.ingest_dataframe()`. Each row carries a content-hash `transaction_id` (SHA-256 of `date|amount|description|account_id`, truncated to 16 hex, prefixed by source — see `.claude/rules/identifiers.md`). A row also lands in `raw.import_log` capturing the file hash, batch ID, and source path.
-3. **`refresh` runs automatically after the import** (unless you passed `--no-refresh`). The cascade is gsheet → match → transform → categorize → identity, in that order.
+3. **`refresh` runs automatically after the import** (unless you passed `--no-refresh`). The cascade is gsheet → match → transform → categorize → identity → rates, in that order.
 4. **`prep.stg_tabular__transactions`** projects the raw row into the canonical staging shape: casts types, trims strings, normalizes column names. Still one row per source row.
 5. **`prep.int_transactions__unioned`** unions OFX, tabular, manual, and Plaid staging views. The CSV row sits alongside any other source rows with their own source-specific `transaction_id`s.
 6. **The matcher writes `app.match_decisions`** for any new dedup candidates (e.g., the CSV row matched against an existing OFX row from the same statement). Decisions persist; on a future `refresh`, the matcher replays accepted decisions rather than re-running scoring.
@@ -269,7 +271,7 @@ Both share the `app.match_decisions` table — `match_type = 'dedup'` versus `ma
 
 ## `refresh` — the canonical command
 
-`refresh` is the post-load cascade: gsheet → match → transform → categorize → identity. Idempotent. Safe to retry. It's the right answer 99% of the time when you want derived state to catch up with new raw data.
+`refresh` is the post-load cascade: gsheet → match → transform → categorize → identity → rates. Idempotent. Safe to retry. It's the right answer 99% of the time when you want derived state to catch up with new raw data.
 
 ```bash
 moneybin refresh                         # full cascade
@@ -277,6 +279,7 @@ moneybin refresh --step match            # matcher only
 moneybin refresh --step transform        # SQLMesh apply only
 moneybin refresh --step categorize       # categorization engines only
 moneybin refresh --step identity         # identity proposal backfill only
+moneybin refresh --step rates            # exchange-rate gather only
 moneybin refresh --step match --step transform   # subset, in order
 ```
 
@@ -290,14 +293,14 @@ moneybin refresh --step match --step transform   # subset, in order
 Both surfaces default to the full cascade, but their selectable step spellings
 intentionally differ:
 
-- MCP default: `gsheet → match → transform → categorize → identity`.
-  `refresh_run(steps=[...])` accepts any subset of all five stages, including
+- MCP default: `gsheet → match → transform → categorize → identity → rates`.
+  `refresh_run(steps=[...])` accepts any subset of all six stages, including
   `gsheet`.
-- CLI selectable steps: `match → transform → categorize → identity`.
+- CLI selectable steps: `match → transform → categorize → identity → rates`.
   `moneybin refresh --step ...` omits `gsheet`; use the dedicated
   `moneybin gsheet pull` command to request a sheet pull from the CLI.
 
-Matching, categorization, and identity are best-effort. Their failures do not
+Matching, categorization, identity, and rates are best-effort. Their failures do not
 populate `data.error` or make the CLI exit non-zero, but they are surfaced in
 the response payload and as CLI warnings. Only a SQLMesh apply error populates
 `data.error` and causes a non-zero CLI exit; `ResponseEnvelope.error` remains
@@ -316,7 +319,7 @@ The response envelope follows the standard shape
 
 | Outcome | `data.applied` | Surface contract |
 |---|---|---|
-| All five default stages succeed | `true` | Success; all error fields are empty. |
+| All six default stages succeed | `true` | Success; all error fields are empty. |
 | A Google Sheets pull is non-complete | Depends on transform | Warning in logs; query `gsheet(view="status")` for per-connection detail. |
 | Matching crashes | `true` if transform later succeeds | `matching_error` plus executable `recovery_actions` for a match-only retry and doctor diagnosis. |
 | SQLMesh apply fails | `false` | `data.error` is populated; CLI exits non-zero. Later categorization and identity stages do not run. |

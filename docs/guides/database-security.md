@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Database & Security
 
 MoneyBin encrypts every profile database at rest by default. This guide covers the encryption model, key lifecycle, headless and multi-machine deployments, backup and restore, disaster recovery, and what a stolen laptop or synced folder actually reveals. There is no unencrypted mode — every `.duckdb` file MoneyBin creates is AES-256-GCM encrypted from the moment it exists.
@@ -72,10 +72,12 @@ moneybin db key show
 # Generate a new key and re-encrypt the database in place.
 moneybin db key rotate
 
-# Reserved subcommands — hidden from `db key --help`, and each one
-# reports "not yet implemented" and exits 1.
+# Reserved subcommands — hidden from `db key --help`. `export` and `verify`
+# take no arguments and report "not yet implemented" (exit 1). `import`
+# requires a path argument; called bare (as below) it exits 2 for the missing
+# argument before ever reaching the not-implemented body.
 moneybin db key export
-moneybin db key import
+moneybin db key import  # <!-- cli-invocation-ok: shown bare on purpose, exits 2 for the missing path -->
 moneybin db key verify
 ```
 

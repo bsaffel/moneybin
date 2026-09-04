@@ -14,7 +14,6 @@ from pydantic import StrictBool
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
 from moneybin.mcp.tools.accounts import register_accounts_coarse_reads
 from moneybin.mcp.tools.gsheet import register_gsheet_coarse_reads
 from moneybin.mcp.tools.import_tools import register_import_coarse_reads
@@ -22,6 +21,7 @@ from moneybin.mcp.tools.investments import register_investment_coarse_reads
 from moneybin.mcp.tools.privacy import register_privacy_coarse_reads
 from moneybin.mcp.tools.system import register_system_coarse_reads
 from moneybin.mcp.tools.transactions import register_transaction_coarse_reads
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 from .schema_assertions import (

@@ -9,7 +9,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.mcp.write_contracts import (
+from moneybin.protocol.write_contracts import (
     AnnotationRequest,
     NoteAdd,
     NoteDelete,

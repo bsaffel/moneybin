@@ -227,16 +227,6 @@ dev = [
     "hypothesis>=6.100",
 ]
 
-docs = [
-    "mkdocs>=1.6.1",
-    "mkdocs-material>=9.6.18",
-    "mkdocstrings[python]>=0.30.0",
-    # Security floor for pymdown-extensions (transitive via mkdocs-material,
-    # which pins only >=10.2): PYSEC-2026-3609 — fixed in 11.0.0;
-    # PYSEC-2026-3654 — fixed in 11.0.1.
-    "pymdown-extensions>=11.0.1",
-]
-
 server = [
     # Server-side API framework (for future hosted MoneyBin Sync)
     "fastapi>=0.115.0",

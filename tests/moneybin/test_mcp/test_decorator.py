@@ -9,12 +9,12 @@ import pytest
 from moneybin import error_codes
 from moneybin.errors import UserError
 from moneybin.mcp.decorator import internal_envelope_adapter, mcp_tool
-from moneybin.mcp.privacy import Sensitivity, log_tool_call
 from moneybin.privacy.introspection import PrivacyContractError
 from moneybin.privacy.payloads.accounts import (
     AccountLinksSetPayload,
     AccountListPayload,
 )
+from moneybin.privacy.sensitivity import Sensitivity, log_tool_call
 from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
 

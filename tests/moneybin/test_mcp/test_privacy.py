@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
 from moneybin.privacy.log import write_privacy_event
+from moneybin.privacy.sensitivity import get_max_rows
+from moneybin.privacy.sql_query import validate_read_only_query
 
 
 async def test_privacy_coarse_status_is_default(mcp_db: object) -> None:

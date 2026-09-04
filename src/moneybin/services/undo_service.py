@@ -30,6 +30,7 @@ from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.services.mutation_context import operation
 from moneybin.services.undo_dispatch import is_registered, repo_for
+from moneybin.tables import AUDIT_LOG
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +304,7 @@ class UndoService:
             clauses.append("is_undo = FALSE")
         if domain is not None:
             clauses.append(
-                "operation_id IN (SELECT operation_id FROM app.audit_log "
+                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
                 "WHERE action LIKE ?)"
             )
             params.append(f"{domain}.%")
@@ -334,7 +335,7 @@ class UndoService:
                    MAX(undoes_operation_id) AS undoes_operation_id,
                    list(DISTINCT action) AS actions,
                    list(DISTINCT target_table) AS tables
-              FROM app.audit_log
+              FROM {AUDIT_LOG.full_name}
               {where}
              GROUP BY operation_id
              {having}
@@ -368,7 +369,7 @@ class UndoService:
             clauses.append("is_undo = FALSE")
         if domain is not None:
             clauses.append(
-                "operation_id IN (SELECT operation_id FROM app.audit_log "
+                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
                 "WHERE action LIKE ?)"
             )
             params.append(f"{domain}.%")
@@ -385,7 +386,7 @@ class UndoService:
             SELECT COUNT(*)
             FROM (
                 SELECT operation_id
-                FROM app.audit_log
+                FROM {AUDIT_LOG.full_name}
                 {where}
                 GROUP BY operation_id
                 {having}
@@ -516,7 +517,7 @@ class UndoService:
         refuses with ``recovery_no_path``.
         """
         row = self._db.conn.execute(
-            "SELECT 1 FROM app.audit_log "
+            f"SELECT 1 FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
             "WHERE operation_id = ? AND target_id IS NOT NULL "
             "AND before_value IS DISTINCT FROM after_value LIMIT 1",
             [operation_id],
@@ -531,7 +532,7 @@ class UndoService:
         still live?" — see :class:`_UndoLiveness`.
         """
         rows = self._db.conn.execute(
-            "SELECT DISTINCT operation_id, undoes_operation_id FROM app.audit_log "
+            f"SELECT DISTINCT operation_id, undoes_operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
             "WHERE undoes_operation_id IS NOT NULL"
         ).fetchall()
         children: dict[str, list[str]] = {}
@@ -548,7 +549,7 @@ class UndoService:
         every row's full before/after payload.
         """
         rows = self._db.conn.execute(
-            "SELECT DISTINCT target_schema, target_table FROM app.audit_log "
+            f"SELECT DISTINCT target_schema, target_table FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
             "WHERE operation_id = ? AND target_id IS NOT NULL",
             [operation_id],
         ).fetchall()
@@ -575,15 +576,15 @@ class UndoService:
         ``occurred_at`` so sub-second sequential operations order deterministically.
         """
         rows = self._db.conn.execute(
-            """
+            f"""
             WITH op_rows AS (
                 SELECT target_schema, target_table, target_id, rowid
-                  FROM app.audit_log
+                  FROM {AUDIT_LOG.full_name}
                  WHERE operation_id = ?
             ),
             boundary AS (SELECT MAX(rowid) AS r FROM op_rows)
             SELECT a.operation_id, MAX(a.rowid) AS latest
-              FROM app.audit_log a
+              FROM {AUDIT_LOG.full_name} a
               JOIN (
                   SELECT DISTINCT target_schema, target_table, target_id
                     FROM op_rows WHERE target_id IS NOT NULL
@@ -596,7 +597,7 @@ class UndoService:
                AND a.is_undo = FALSE
              GROUP BY a.operation_id
              ORDER BY latest DESC
-            """,
+            """,  # noqa: S608  # AUDIT_LOG is a TableRef constant, values parameterized
             [operation_id, operation_id],
         ).fetchall()
         return [str(r[0]) for r in rows if not liveness.is_undone(str(r[0]))]

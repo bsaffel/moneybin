@@ -505,8 +505,19 @@ class ConfidenceBands(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    t_high: float = Field(default=0.90, ge=0.0, le=1.0)
-    t_med: float = Field(default=0.70, ge=0.0, le=1.0)
+    t_high: float = Field(
+        default=0.90,
+        ge=0.0,
+        le=1.0,
+        description="Score at or above which a detection is banded high.",
+    )
+    t_med: float = Field(
+        default=0.70,
+        ge=0.0,
+        le=1.0,
+        description="Score at or above which a detection is banded medium; "
+        "below it, low.",
+    )
 
     @model_validator(mode="after")
     def _check_ordering(self) -> "ConfidenceBands":

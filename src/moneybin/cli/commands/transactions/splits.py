@@ -19,6 +19,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.render import UNCATEGORIZED_LABEL
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.transactions import (
@@ -130,7 +131,12 @@ def transactions_splits_list(
             logger.info(f"No splits on {transaction_id}")
         return
     for s in splits:
-        cat = s.category or "-"
+        # NULL only, matching the `Placeholder` rule `transactions list` uses:
+        # absent means absent, and a stored blank is a value someone wrote.
+        # `add_split` applies no non-empty check, so `--category ""` is stored
+        # verbatim, and a falsy `or` here would report that blank as a gap the
+        # curator never left.
+        cat = UNCATEGORIZED_LABEL if s.category is None else s.category
         typer.echo(f"  [{s.split_id}] {s.amount} {cat}")
 
 

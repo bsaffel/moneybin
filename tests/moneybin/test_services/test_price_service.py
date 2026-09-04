@@ -31,6 +31,9 @@ from moneybin.connectors.prices.protocol import (
 from moneybin.connectors.prices.tiingo import TickerMetadata
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.limits import (
+    NOTE_MAX_LEN,
+)
 from moneybin.price_sources import (
     FEED_KEY_ROLE,
     PRICE_SOURCES,
@@ -40,7 +43,6 @@ from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
-from moneybin.services._validators import NOTE_MAX_LEN
 from moneybin.services.price_service import (
     _AUTO_REVERSAL,  # pyright: ignore[reportPrivateUsage]  # pinned against the model
     COINGECKO,

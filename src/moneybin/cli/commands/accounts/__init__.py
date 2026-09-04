@@ -97,21 +97,32 @@ def accounts_list(
         return
 
     def _display(acct: AccountSummary) -> str:
-        """The account's name, or the shared label plus the id to act on.
+        """The account's name, or the shared label when it has none.
 
-        `set` takes an id and the resolvers refuse the unnamed label, so a row
-        carrying only the label names an account the reader is then unable to
-        do anything with.
+        The id no longer rides this cell. Requirement 26 gives it a column on
+        every row, which serves the same end more evenly: `set` takes an id,
+        and a display name is not unique — two cards at one institution
+        routinely share one, so a named row needs its selector just as much as
+        a nameless one did.
         """
         if is_a_name(acct.display_name):
             return acct.display_name
-        return f"{UNNAMED_ACCOUNT_LABEL} ({acct.account_id})"
+        return UNNAMED_ACCOUNT_LABEL
 
     if result.rows:
         render_rows(
-            ["account", "institution", "type"],
+            # `account_id` is named identically in `transactions list` and
+            # holds equal values, so the two outputs join on it (requirement
+            # 28). That shared key is the whole of the fix; the display name
+            # beside it is an ergonomic extra.
+            ["account", "account_id", "institution", "type"],
             [
-                (_display(acct), acct.institution_name or "", acct.account_type or "")
+                (
+                    _display(acct),
+                    acct.account_id,
+                    acct.institution_name or "",
+                    acct.account_type or "",
+                )
                 for acct in result.rows
             ],
         )

@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from moneybin.tables import SCHEMA_MIGRATIONS, VERSIONS
+
 if TYPE_CHECKING:
     from datetime import datetime
 
@@ -253,7 +255,7 @@ class MigrationRunner:
         ).fetchone()
         if row is None:
             self._db.execute(
-                "ALTER TABLE app.schema_migrations ADD COLUMN content_hash VARCHAR"
+                f"ALTER TABLE {SCHEMA_MIGRATIONS.full_name} ADD COLUMN content_hash VARCHAR"
             )
         self._tracking_schema_bootstrapped = True
 
@@ -264,7 +266,7 @@ class MigrationRunner:
             List of DriftWarning for files that have changed or gone missing.
         """
         applied_rows = self._db.execute(
-            "SELECT version, filename, checksum FROM app.schema_migrations "
+            f"SELECT version, filename, checksum FROM {SCHEMA_MIGRATIONS.full_name} "  # noqa: S608  # TableRef constant
             "WHERE success = TRUE"
         ).fetchall()
         if not applied_rows:
@@ -343,7 +345,7 @@ class MigrationRunner:
         """
         self._ensure_tracking_schema()
         rows = self._db.execute(
-            "SELECT version, filename, content_hash FROM app.schema_migrations "
+            f"SELECT version, filename, content_hash FROM {SCHEMA_MIGRATIONS.full_name} "  # noqa: S608  # TableRef constant
             "WHERE success = FALSE ORDER BY version"
         ).fetchall()
         if not rows:
@@ -367,7 +369,7 @@ class MigrationRunner:
             Dict mapping version number to checksum string.
         """
         rows = self._db.execute(
-            "SELECT version, checksum FROM app.schema_migrations"
+            f"SELECT version, checksum FROM {SCHEMA_MIGRATIONS.full_name}"  # noqa: S608  # TableRef constant
         ).fetchall()
         return {row[0]: row[1] for row in rows}
 
@@ -378,8 +380,8 @@ class MigrationRunner:
             List of AppliedMigration records.
         """
         rows = self._db.execute(
-            "SELECT version, filename, success, execution_ms, applied_at "
-            "FROM app.schema_migrations ORDER BY version"
+            "SELECT version, filename, success, execution_ms, applied_at "  # noqa: S608  # TableRef constant
+            f"FROM {SCHEMA_MIGRATIONS.full_name} ORDER BY version"
         ).fetchall()
         return [
             AppliedMigration(
@@ -403,7 +405,7 @@ class MigrationRunner:
         """
         self._ensure_tracking_schema()
         rows = self._db.execute(
-            "SELECT version, success, content_hash FROM app.schema_migrations"
+            f"SELECT version, success, content_hash FROM {SCHEMA_MIGRATIONS.full_name}"  # noqa: S608  # TableRef constant
         ).fetchall()
         state_by_version: dict[int, tuple[bool, str | None]] = {
             row[0]: (row[1], row[2]) for row in rows
@@ -439,7 +441,7 @@ class MigrationRunner:
             elapsed_ms: Execution time in milliseconds.
         """
         self._db.execute(
-            "INSERT INTO app.schema_migrations "
+            f"INSERT INTO {SCHEMA_MIGRATIONS.full_name} "  # noqa: S608  # TableRef constant, values parameterized
             "(version, filename, checksum, success, execution_ms, content_hash) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             [
@@ -471,7 +473,7 @@ class MigrationRunner:
         """
         self._ensure_tracking_schema()
         existing = self._db.execute(
-            "SELECT success, content_hash FROM app.schema_migrations WHERE version = ?",
+            f"SELECT success, content_hash FROM {SCHEMA_MIGRATIONS.full_name} WHERE version = ?",  # noqa: S608  # TableRef constant
             [migration.version],
         ).fetchone()
         if existing is not None:
@@ -501,7 +503,7 @@ class MigrationRunner:
                 f"and retrying."
             )
             self._db.execute(
-                "DELETE FROM app.schema_migrations WHERE version = ?",
+                f"DELETE FROM {SCHEMA_MIGRATIONS.full_name} WHERE version = ?",  # noqa: S608  # TableRef constant
                 [migration.version],
             )
 
@@ -602,7 +604,9 @@ def get_current_versions(db: Database) -> dict[str, str]:
     Returns:
         Dict mapping component name to version string.
     """
-    rows = db.execute("SELECT component, version FROM app.versions").fetchall()
+    rows = db.execute(
+        f"SELECT component, version FROM {VERSIONS.full_name}"  # noqa: S608  # TableRef constant
+    ).fetchall()
     return {row[0]: row[1] for row in rows}
 
 
@@ -618,18 +622,19 @@ def record_version(db: Database, component: str, version: str) -> None:
         version: Current version string.
     """
     existing = db.execute(
-        "SELECT version FROM app.versions WHERE component = ?", [component]
+        f"SELECT version FROM {VERSIONS.full_name} WHERE component = ?",  # noqa: S608  # TableRef constant
+        [component],
     ).fetchone()
 
     if existing is None:
         db.execute(
-            "INSERT INTO app.versions (component, version) VALUES (?, ?)",
+            f"INSERT INTO {VERSIONS.full_name} (component, version) VALUES (?, ?)",  # noqa: S608  # TableRef constant
             [component, version],
         )
         logger.debug(f"Recorded {component} version {version} (first install)")
     elif existing[0] != version:
         db.execute(
-            "UPDATE app.versions SET previous_version = version, "
+            f"UPDATE {VERSIONS.full_name} SET previous_version = version, "  # noqa: S608  # TableRef constant
             "version = ?, updated_at = CURRENT_TIMESTAMP WHERE component = ?",
             [version, component],
         )

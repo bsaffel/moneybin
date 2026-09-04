@@ -74,7 +74,10 @@ def sql_query_command(
     """
     # Deferred: execute_sql_query pulls in sqlglot (a SQL parser); keep it off
     # the CLI cold-start path per .claude/rules/cli.md "Cold-Start Hygiene".
-    from moneybin.mcp.privacy import get_max_rows, tier_to_sensitivity  # noqa: PLC0415
+    from moneybin.privacy.sensitivity import (  # noqa: PLC0415
+        get_max_rows,
+        tier_to_sensitivity,
+    )
     from moneybin.privacy.sql_query import execute_sql_query  # noqa: PLC0415
 
     # render_or_json stays inside handle_cli_errors so a rendering/serialization

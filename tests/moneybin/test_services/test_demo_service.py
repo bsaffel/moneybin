@@ -96,12 +96,12 @@ def _mock_pipeline(
     (no single total is meaningful) while ``per_currency`` carries each
     currency's own figure — the real shape NetworthService returns.
     """
+    from moneybin.orchestration.refresh import RefreshResult
     from moneybin.privacy.payloads.networth import (
         NetWorthCurrencySegment,
         NetWorthSnapshotPayload,
     )
     from moneybin.services.doctor_service import DoctorReport, InvariantResult
-    from moneybin.services.refresh import RefreshResult
 
     engine = mocker.patch("moneybin.synthetic.engine.GeneratorEngine")
     engine.return_value.generate.return_value = SimpleNamespace(
@@ -111,7 +111,7 @@ def _mock_pipeline(
     writer.return_value.write.return_value = {"tabular_transactions": 5}
 
     mocker.patch(
-        "moneybin.services.refresh.refresh",
+        "moneybin.orchestration.refresh.refresh",
         return_value=RefreshResult(applied=True, duration_seconds=0.0),
     )
     invariants = [
@@ -593,10 +593,10 @@ def test_raises_on_refresh_error(
     monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
     _mock_pipeline(mocker)
 
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
 
     mocker.patch(
-        "moneybin.services.refresh.refresh",
+        "moneybin.orchestration.refresh.refresh",
         return_value=RefreshResult(
             applied=False, duration_seconds=0.0, categorization_error="boom"
         ),

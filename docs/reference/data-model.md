@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Data Model
 
 The user-facing data model. Tables in `core.*`, `reports.*`, and `app.*` are the surfaces consumers (CLI, MCP, your own SQL) read from for analysis; `raw.*` and `prep.*` are readable for inspection through the agent-safe SQL paths. This page covers each table's grain, key columns, and what they mean. For the pipeline that fills them, see [`docs/guides/data-pipeline.md`](../guides/data-pipeline.md).
@@ -14,7 +14,7 @@ Schema is stable but not yet frozen — see [`docs/architecture.md`](../architec
 | `core` | Canonical analytical tables — `fct_*`, `dim_*`, `bridge_*`. | Views and tables | Yes | **Blocked** |
 | `app` | User state — categorizations, notes, tags, splits, budgets, settings. | Tables | Yes | Via services / MCP write tools |
 | `meta` | Cross-source provenance + lineage. | Views | **Refused** | SQLMesh / system |
-| `seeds` | Reference data shipped with MoneyBin (categories). | CSV-backed tables | **Refused** | SQLMesh |
+| `seeds` | Reference data shipped with MoneyBin — six registries: categories, provider-category map, account types, exchange MICs, institutions, price sources. | CSV-backed tables | **Refused** | SQLMesh |
 | `reports` | Curated presentation views, one per CLI/MCP report. | Views | Yes | **Blocked** |
 
 "Read?" answers for the agent-safe SQL surface — the `sql_query` MCP tool and `moneybin sql query`. Those admit `core`, `app`, `reports`, `raw`, and `prep`, and refuse `meta` and `seeds` by `DESCRIBE` as by `SELECT`. `raw` and `prep` are an inspection exception, not a widening of the analysis contract: their shapes change without notice, and they carry 34 column declarations with every other value masked by a value-shape scan rather than by a declared class. `moneybin db shell` and `moneybin db query` are raw operator access with no privacy middleware; they read every schema and mask nothing.
@@ -65,7 +65,7 @@ Every `reports.*` view that sums money carries a `currency_code` column and grou
 
 ### Money types
 
-`DECIMAL(18,2)` for money columns — never `FLOAT`. The values are **major units** (dollars, euros), not minor units (cents). Polars uses `pl.Decimal(18, 2)`; Python uses `decimal.Decimal`. Investment quantities and unit prices (share counts, cost basis per share, security closes) use `DECIMAL(28,10)` — see [Investments](#investments) below. Exchange rates are not yet materialized (see "Currency handling" above). Every money column in `reports.*` inherits `DECIMAL(18,2)` from the underlying `core` source.
+`DECIMAL(18,2)` for money columns — never `FLOAT`. The values are **major units** (dollars, euros), not minor units (cents). Polars uses `pl.Decimal(18, 2)`; Python uses `decimal.Decimal`. Investment quantities and unit prices (share counts, cost basis per share, security closes) use `DECIMAL(28,10)` — see [Investments](#investments) below. Exchange rates use `DECIMAL(18,8)` in `raw.exchange_rates` and `app.exchange_rate_overrides`: a rate is a ratio, not an amount, so it never rounds to cents. Every money column in `reports.*` inherits `DECIMAL(18,2)` from the underlying `core` source.
 
 ### Merchant normalization (`merchant_normalized`)
 
@@ -150,7 +150,16 @@ Canonical accounts dimension. Grain: one row per `account_id` (`FULL` model). Jo
 | `archived` | BOOLEAN | Hides from default lists and `reports.net_worth`. |
 | `include_in_net_worth` | BOOLEAN | Independent toggle; archiving forces FALSE. |
 
-Logical grain key: `account_id` (unique after dedup by `ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY extracted_at DESC)`).
+Logical grain key: `account_id`.
+
+The three staging views union into one set, then group on the canonical id — the `app.account_links` id when the source record is bound to one, its own source-native key when it is not. Each column is then merged across the group on its own, not taken wholesale from one winning row:
+
+- **Structured bank fields** (`routing_number`, `institution_fid`, `last_four`, and the displayed `source_type` / `source_file`) — first non-null by source strength, then recency: `ARG_MIN` over `(source_rank, -EPOCH_US(extracted_at))`, with `ofx` = 0, `plaid` = 1, everything else 2.
+- **`institution_slug`** — resolved-first, then recency. A slug `seeds.institutions` resolved outranks raw text however recently the raw text arrived; ranking by recency alone would let one unregistered spelling in a later spreadsheet overwrite the canonical slug and stop the account matching itself on the next import.
+- **Descriptive fields** (`institution_name`, `account_type`, `official_name`, `account_label`, `account_subtype`, and the source-reported currency) — first non-null by recency: `ARG_MAX` over `extracted_at`.
+- **`extracted_at` / `loaded_at`** — `MAX` over the group, which keeps `updated_at` monotone.
+
+The per-field merge is what stops a later, weaker source's `NULL` from clobbering a value a stronger source already supplied.
 
 ### `core.dim_merchants`
 
@@ -268,7 +277,7 @@ Per-account daily balance spine. Grain: one row per `(account_id, balance_date)`
 
 Observed days use the most authoritative source (per-day precedence: `user assertion > {ofx, plaid} > tabular`; `ofx` and `plaid` tie and are broken by freshest `updated_at`, then `source_type` ascending). Gaps are filled by carrying the last balance forward, adjusted by intervening transactions from `core.fct_transactions`.
 
-Only transactions denominated in the **currency being carried** adjust the balance. A transaction in any other currency needs an exchange rate to become an amount of this balance, and MoneyBin has none until M1K.2, so it is left out rather than added as though the units matched. The excluded movement is not lost: it appears in the next observation's `reconciliation_delta`, and therefore as drift in `reports.balance_drift`. `moneybin system doctor` warns whenever a profile holds more than one currency and names this consequence.
+Only transactions denominated in the **currency being carried** adjust the balance. A transaction in any other currency is left out rather than added as though the units matched. This spine converts nothing: exchange rates live in `raw.exchange_rates` and conversion runs at the report layer, after `core` is built, so no rate reaches this model. The excluded movement is not lost: it appears in the next observation's `reconciliation_delta`, and therefore as drift in `reports.balance_drift`. `moneybin system doctor` warns whenever a profile holds more than one currency and names this consequence.
 
 | Column | Type | Description |
 |---|---|---|
@@ -277,7 +286,7 @@ Only transactions denominated in the **currency being carried** adjust the balan
 | `balance` | DECIMAL(18,2) | End-of-day balance. |
 | `is_observed` | BOOLEAN | TRUE if an authoritative observation exists for this date. |
 | `observation_source` | VARCHAR | Winning observation's source (`ofx`, `tabular`, `assertion`, `plaid`); NULL when interpolated. |
-| `reconciliation_delta` | DECIMAL(18,2) | `observed_balance − transaction_derived_balance`. Positive when the observed balance exceeds what transactions alone would predict; negative when below. NULL on interpolated days, on the first observation, and whenever the observed currency differs from the one carried into that day — the prior balance is then in another unit, so no comparison is defined until conversion arrives (M1K.2). |
+| `reconciliation_delta` | DECIMAL(18,2) | `observed_balance − transaction_derived_balance`. Positive when the observed balance exceeds what transactions alone would predict; negative when below. NULL on interpolated days, on the first observation, and whenever the observed currency differs from the one carried into that day — the prior balance is then in another unit, and this model converts nothing, so no comparison is defined. |
 | `currency_code` | VARCHAR | ISO 4217; carried forward from the winning observation (or its interpolated predecessor) on each day. |
 
 Logical grain key: `(account_id, balance_date)`.
@@ -441,7 +450,7 @@ The resolved price series: one close per `(security_id, price_date, quote_curren
 | `price_date` | DATE | The date this close applies to (grain). |
 | `quote_currency` | VARCHAR | ISO 4217 the close is expressed in (grain); this model converts nothing. |
 | `close` | DECIMAL(28,10) | The winning close for one unit, in `quote_currency`; always > 0. |
-| `source_type` | VARCHAR | Which source supplied the winning close, by preference rank: `override` \| `plaid` \| `stooq` \| `coingecko` \| `trade_implied`. Only `plaid` is implemented today; the rest are planned (`docs/specs/investments-price-feeds.md`). |
+| `source_type` | VARCHAR | Which source supplied the winning close. Five sources are registered in `seeds.price_source_map`, in precedence order: `override` (your own mark, `moneybin investments prices set`), `plaid` (the close carried on a broker snapshot), `tiingo` (equities, ETFs, mutual funds, bonds), `coingecko` (crypto), `trade_implied` (derived from an executed trade in `core.fct_investment_transactions`). Rank decides first, then freshness. The registry is a closed set for providers: a provider observation whose `source_type` is absent from it is dropped in `prep.stg_security_prices` rather than ranked — see `src/moneybin/sqlmesh/models/core/fct_security_prices.sql`. |
 | `price_basis` | VARCHAR | Always `'raw'` here. |
 | `updated_at` | TIMESTAMP | When the winning observation was served by its provider (the source's own `extracted_at`). |
 
@@ -764,6 +773,7 @@ MCP-visible app tables are tagged `audience="interface"` in [`src/moneybin/table
 | `seeds.account_type_map` | One row per `alias` | CSV-backed (`.../seeds/account_type_map.csv`). Source-spelling → canonical `(account_type, account_subtype)` registry (OFX `<ACCTTYPE>`, Plaid, tabular). Lookup is on `UPPER(alias)`. Consumed by `core.dim_accounts`. |
 | `seeds.exchange_mic_map` | One row per `alias` | CSV-backed (`.../seeds/exchange_mic_map.csv`). Alias → canonical ISO-10383 MIC registry for exchange-identity resolution. An alias absent from the table is treated as unknown, not a mismatch. |
 | `seeds.institutions` | One row per `fid` | CSV-backed (`.../seeds/institutions.csv`). OFX `<FI><FID>` → `(slug, display_name)`. Consumed by `core.dim_accounts.institution_name`; `slug` also feeds `source_origin` at import time (renaming an existing slug re-keys transaction ids and needs a migration). |
+| `seeds.price_source_map` | One row per `source_type` | CSV-backed (`.../seeds/price_source_map.csv`). The price-source registry: `source_rank` (declared precedence — append ranks, never reorder them, since inserting a source ahead of an incumbent silently revalues every date where both hold a close), `ref_kind` (the `app.security_links` reference the source resolves through; NULL for the two sources derived at model build), `ref_role` (`feed_key` binds a feed, `identity` merges two catalog rows), and `security_types` (pipe-delimited; which securities `PriceService` fetches from this source, and the only column retiring a source touches). Consumed by `prep.stg_security_prices` and `core.fct_security_prices`. |
 
 `seeds.categories` is surfaced via `core.dim_categories` alongside `app.user_categories`; `seeds.category_source_map` via `core.bridge_category_source_map` alongside `app.category_source_map`.
 

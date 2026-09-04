@@ -198,7 +198,12 @@ class TestAccountsList:
         mock_get_db: MagicMock,
         runner: CliRunner,
     ) -> None:
-        """The sentinel is not a selector, and `accounts set` takes only an id."""
+        """The sentinel is not a selector, and `accounts set` takes only an id.
+
+        Requirement 26 gives every row its id in a column of its own, so the
+        `Unnamed account (acct_…)` suffix this row used to carry is gone: the
+        id is no longer something only the nameless rows get back.
+        """
         mock_get_db.return_value = MagicMock()
         svc = mock_svc_cls.return_value
         svc.list_accounts.return_value = AccountListPayload(
@@ -213,17 +218,23 @@ class TestAccountsList:
 
         assert result.exit_code == 0, result.stderr
         assert "acct_nameless" in result.stdout
+        assert f"{UNNAMED_ACCOUNT_LABEL} (" not in result.stdout
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
-    def test_list_leaves_a_named_account_row_alone(
+    def test_list_shows_the_id_of_a_named_account_too(
         self,
         mock_svc_cls: MagicMock,
         mock_get_db: MagicMock,
         runner: CliRunner,
     ) -> None:
-        """Only the rows that lost their selector get one back."""
+        """Requirement 26: every row carries its id, not just the nameless ones.
+
+        A display name is not unique — two cards at one institution routinely
+        share one — so a name alone cannot tell the reader which row to act on.
+        This assertion was previously inverted, pinning the id's absence.
+        """
         mock_get_db.return_value = MagicMock()
         svc = mock_svc_cls.return_value
         svc.list_accounts.return_value = AccountListPayload(
@@ -234,7 +245,43 @@ class TestAccountsList:
 
         assert result.exit_code == 0, result.stderr
         assert "Chase Checking" in result.stdout
-        assert "acct_a" not in result.stdout
+        assert "acct_a" in result.stdout
+        # Requirement 28 is about the header, not only the value: the two
+        # tables join visibly because both spell the column `account_id`, and
+        # every other assertion here passes just as well if this one is
+        # renamed back to `id`. `transactions list` is pinned the same way by
+        # `test_list_text_names_the_account_column_for_the_key_it_holds`.
+        assert "account_id" in result.stdout
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.commands.accounts.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_list_distinguishes_two_accounts_sharing_a_display_name(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """Requirement 26 states the defect it closes: rows that look identical.
+
+        Without the id column these two rows render the same three cells, and
+        no amount of reading tells the user which one a later command will act
+        on. This is the case the requirement exists for.
+        """
+        mock_get_db.return_value = MagicMock()
+        svc = mock_svc_cls.return_value
+        svc.list_accounts.return_value = AccountListPayload(
+            rows=[
+                _as_account_summary(_make_account("acct_one", "Everyday")),
+                _as_account_summary(_make_account("acct_two", "Everyday")),
+            ]
+        )
+
+        result = runner.invoke(app, ["accounts", "list"])
+
+        assert result.exit_code == 0, result.stderr
+        assert "acct_one" in result.stdout
+        assert "acct_two" in result.stdout
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
