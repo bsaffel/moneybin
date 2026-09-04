@@ -50,6 +50,7 @@ flowchart TD
   cli["CLI command<br/>(Typer entrypoint)"]
   tool["MCP tool<br/>(@mcp_tool decorator)"]
   mw["Privacy middleware<br/>(sensitivity, timeout,<br/>envelope, validation)"]
+  orch["Orchestration layer<br/>src/moneybin/orchestration/*"]
   svc["Service layer<br/>src/moneybin/services/*"]
   db["Database<br/>(encrypted DuckDB)"]
   sm["SQLMesh pipeline"]
@@ -57,9 +58,13 @@ flowchart TD
   srv["moneybin-sync"]
 
   cli --> svc
+  cli --> orch
   tool --> mw --> svc
+  tool --> mw --> orch
+  orch --> svc
   svc --> db
-  svc -->|refresh / transform| sm
+  orch -->|refresh| sm
+  svc -->|transform| sm
   sm --> db
   svc -->|sync.* only| sync
   sync --> srv
@@ -69,7 +74,8 @@ Concretely:
 
 - **CLI and MCP both call the service layer.** Neither invokes the other. CLI commands import services directly (e.g., `from moneybin.services.transaction_service import TransactionService`); MCP tool bodies do the same. Same redaction, same audit log, same response envelope.
 - **The privacy middleware sits in front of every MCP call.** The `@mcp_tool` decorator wraps each tool body with sensitivity tagging, a wall-clock timeout, error classification, and envelope assembly; FastMCP's `ValidationErrorMiddleware` translates argument-validation failures into friendly error envelopes before the body runs. CLI commands skip the decorator (they reach the service layer directly) but emit the same audit primitives.
-- **The SQLMesh pipeline is invoked from the service layer**, never from CLI/MCP code directly. `orchestration/refresh.py` and `services/transform_service.py` open a `sqlmesh_context(db)` from `moneybin.database` and apply plans against the open DuckDB connection.
+- **The SQLMesh pipeline is invoked below the adapters**, never from CLI/MCP code directly. `services/transform_service.py` owns the `sqlmesh_context(db)` and applies plans against the open DuckDB connection; `orchestration/refresh.py` reaches it by composing that service alongside the matcher, the categorizer and the identity link services.
+- **Orchestration sits one layer above services.** `src/moneybin/orchestration/` holds pipelines that compose several services into one operation — today, the `refresh` cascade. An orchestrator imports services; a service does not import an orchestrator. `tests/moneybin/test_architecture/test_orchestration_layering.py` enforces that direction and carries the two module-level inversions that predate the package.
 - **`moneybin-sync` is reached only via the sync client** (`src/moneybin/connectors/sync_client.py`) when `moneybin sync *` commands or `sync_*` MCP tools fire. File-based imports (OFX, CSV, PDF) and inbox watch never touch the network.
 - **The categorization service** runs from three callers: the orchestrator during `refresh` (best-effort, after SQLMesh apply), the `transactions categorize *` CLI commands, and the `transactions_categorize_*` MCP tools.
 - **The migration runner** runs at process startup (inside `Database.__init__`, gated by `no_auto_upgrade`) and as a manual command (`db migrate apply`). Every process that opens the database checks the migration log first.

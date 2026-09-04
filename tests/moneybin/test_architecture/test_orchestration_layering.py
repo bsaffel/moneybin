@@ -19,21 +19,19 @@ from __future__ import annotations
 import ast
 import subprocess  # noqa: S404 — clean-interpreter import check
 import sys
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SRC = REPO_ROOT / "src" / "moneybin"
 
-# The service layer and everything beneath it. `cli/` and `mcp/` sit *above*
-# orchestration and may import it at module level without comment.
-GUARDED_ROOTS = (
-    "services",
-    "repositories",
-    "connectors",
-    "loaders",
-    "extractors",
-    "matching",
-)
+# Everything under src/moneybin is guarded except the layers at or above
+# orchestration. Named as an exemption list rather than an inventory of guarded
+# packages: `src/moneybin/` holds 24 packages plus top-level modules, an
+# enumeration of them goes stale the first time one is added, and a package
+# missing from that enumeration is silently unguarded — which is the failure
+# mode this test exists to prevent.
+LAYERS_AT_OR_ABOVE_ORCHESTRATION = frozenset({"cli", "mcp", "orchestration"})
 
 # Module-level imports of `moneybin.orchestration` from below the layer, as
 # paths relative to src/moneybin/. Each entry is a known inversion, not a
@@ -57,28 +55,54 @@ KNOWN_INVERSIONS: frozenset[str] = frozenset({
 HEAVY_PREFIXES: tuple[str, ...] = ("fastmcp", "sqlmesh", "polars")
 
 
-def _module_level_imports(tree: ast.Module) -> list[ast.Import | ast.ImportFrom]:
-    """Imports executed at import time — TYPE_CHECKING blocks excluded.
+def _is_type_checking_test(test: ast.expr) -> bool:
+    """True only for a bare ``TYPE_CHECKING`` / ``typing.TYPE_CHECKING`` test.
 
-    A `TYPE_CHECKING` import never runs, so it cannot create a runtime
-    dependency and is not an inversion. Function-body imports are excluded for
-    the same reason: deferring is the sanctioned way to call upward.
+    Deliberately not a substring search over the unparsed test. ``if not
+    TYPE_CHECKING:`` *does* execute at import time, and a search for the name
+    would exempt precisely the block that runs — stating the rule backwards
+    rather than merely missing a case.
     """
-    found: list[ast.Import | ast.ImportFrom] = []
-    for stmt in tree.body:
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+
+
+def _nested_blocks(stmt: ast.stmt) -> Iterator[list[ast.stmt]]:
+    """Every statement list a compound statement can execute."""
+    for field in ("body", "orelse", "finalbody"):
+        block = getattr(stmt, field, None)
+        if isinstance(block, list):
+            yield block
+    for handler in getattr(stmt, "handlers", []):
+        yield handler.body
+
+
+def _runtime_imports(body: Sequence[ast.stmt]) -> Iterator[ast.Import | ast.ImportFrom]:
+    """Imports that execute when the module is imported.
+
+    Recurses through every compound statement — ``if``/``else``, ``try``'s
+    handlers, ``else`` and ``finally``, ``with``, ``for``, ``while``, class
+    bodies — because each of those runs at import time and a hand-rolled pass
+    over `tree.body` alone would let `try: ... except ImportError: <import>`
+    through.
+
+    Two things are excluded, both because they do not run: function and method
+    bodies, where deferring is the sanctioned way to call upward, and the body
+    of an ``if TYPE_CHECKING:`` block. That block's ``else`` branch is *not*
+    excluded.
+    """
+    for stmt in body:
+        if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
         if isinstance(stmt, ast.Import | ast.ImportFrom):
-            found.append(stmt)
-        elif isinstance(stmt, ast.If):
-            if "TYPE_CHECKING" in ast.unparse(stmt.test):
-                continue
-            found.extend(
-                s for s in stmt.body if isinstance(s, ast.Import | ast.ImportFrom)
-            )
-        elif isinstance(stmt, ast.Try):
-            found.extend(
-                s for s in stmt.body if isinstance(s, ast.Import | ast.ImportFrom)
-            )
-    return found
+            yield stmt
+            continue
+        if isinstance(stmt, ast.If) and _is_type_checking_test(stmt.test):
+            yield from _runtime_imports(stmt.orelse)
+            continue
+        for block in _nested_blocks(stmt):
+            yield from _runtime_imports(block)
 
 
 def _imports_orchestration(node: ast.Import | ast.ImportFrom) -> bool:
@@ -88,8 +112,7 @@ def _imports_orchestration(node: ast.Import | ast.ImportFrom) -> bool:
             "moneybin.orchestration."
         ):
             return True
-        # `from moneybin import orchestration` / `from moneybin.orchestration
-        # import refresh` both land here.
+        # `from moneybin import orchestration` lands here.
         return module == "moneybin" and any(
             alias.name == "orchestration" for alias in node.names
         )
@@ -100,13 +123,22 @@ def _imports_orchestration(node: ast.Import | ast.ImportFrom) -> bool:
     )
 
 
+def _guarded_files() -> Iterator[Path]:
+    for path in sorted(SRC.rglob("*.py")):
+        relative = path.relative_to(SRC)
+        if relative.parts[0] in LAYERS_AT_OR_ABOVE_ORCHESTRATION:
+            continue
+        if "__pycache__" in relative.parts:
+            continue
+        yield path
+
+
 def _scan() -> set[str]:
     offenders: set[str] = set()
-    for root in GUARDED_ROOTS:
-        for path in sorted((SRC / root).rglob("*.py")):
-            tree = ast.parse(path.read_text(), filename=str(path))
-            if any(_imports_orchestration(n) for n in _module_level_imports(tree)):
-                offenders.add(path.relative_to(SRC).as_posix())
+    for path in _guarded_files():
+        tree = ast.parse(path.read_text(), filename=str(path))
+        if any(_imports_orchestration(n) for n in _runtime_imports(tree.body)):
+            offenders.add(path.relative_to(SRC).as_posix())
     return offenders
 
 
@@ -124,6 +156,89 @@ def test_services_do_not_import_orchestration_at_module_level() -> None:
         "KNOWN_INVERSIONS entry (with a `# why`) for a dependency that cannot "
         "be inverted without a contract change."
     )
+
+
+def test_scan_covers_every_layer_below_orchestration() -> None:
+    """The exemption list is the only thing the scan skips.
+
+    Without this, shrinking the scan is indistinguishable from fixing an
+    inversion: both turn the assertion above green.
+    """
+    scanned = {p.relative_to(SRC).parts[0] for p in _guarded_files()}
+    all_packages = {
+        p.relative_to(SRC).parts[0]
+        for p in SRC.rglob("*.py")
+        if "__pycache__" not in p.relative_to(SRC).parts
+    }
+    assert all_packages - scanned == LAYERS_AT_OR_ABOVE_ORCHESTRATION, (
+        "The set of directories skipped by the layering scan drifted from the "
+        "declared exemption list."
+    )
+
+
+def test_runtime_import_detection_sees_every_executing_block() -> None:
+    """`_runtime_imports` finds imports in each block that runs at import time.
+
+    The scan's value is entirely in what it detects, and the shapes below are
+    the ones a hand-rolled pass over `tree.body` misses. `if not
+    TYPE_CHECKING:` is the sharp case: it executes, so a name search over the
+    test expression would exempt the one block that must be caught.
+    """
+    executing = {
+        "plain": "import moneybin.orchestration.refresh",
+        "if-else": (
+            "if FLAG:\n    pass\nelse:\n    import moneybin.orchestration.refresh"
+        ),
+        "try-except": (
+            "try:\n    pass\nexcept ImportError:\n"
+            "    import moneybin.orchestration.refresh"
+        ),
+        "try-else": (
+            "try:\n    pass\nexcept ImportError:\n    pass\nelse:\n"
+            "    import moneybin.orchestration.refresh"
+        ),
+        "try-finally": (
+            "try:\n    pass\nfinally:\n    import moneybin.orchestration.refresh"
+        ),
+        "not-type-checking": (
+            "if not TYPE_CHECKING:\n    import moneybin.orchestration.refresh"
+        ),
+        "type-checking-else": (
+            "if TYPE_CHECKING:\n    pass\nelse:\n"
+            "    import moneybin.orchestration.refresh"
+        ),
+        "nested-if": (
+            "if A:\n    if B:\n        import moneybin.orchestration.refresh"
+        ),
+        "with": "with ctx():\n    import moneybin.orchestration.refresh",
+        "class-body": "class C:\n    import moneybin.orchestration.refresh",
+    }
+    for label, source in executing.items():
+        found = list(_runtime_imports(ast.parse(source).body))
+        assert any(_imports_orchestration(n) for n in found), (
+            f"{label}: an import that runs at import time went undetected"
+        )
+
+    inert = {
+        "type-checking-body": (
+            "if TYPE_CHECKING:\n    import moneybin.orchestration.refresh"
+        ),
+        "typing-qualified": (
+            "if typing.TYPE_CHECKING:\n    import moneybin.orchestration.refresh"
+        ),
+        "function-body": ("def f():\n    import moneybin.orchestration.refresh"),
+        "method-body": (
+            "class C:\n    def f(self):\n        import moneybin.orchestration.refresh"
+        ),
+        "async-function-body": (
+            "async def f():\n    import moneybin.orchestration.refresh"
+        ),
+    }
+    for label, source in inert.items():
+        found = list(_runtime_imports(ast.parse(source).body))
+        assert not any(_imports_orchestration(n) for n in found), (
+            f"{label}: an import that never runs was reported as an inversion"
+        )
 
 
 def test_orchestrator_import_stays_light() -> None:
