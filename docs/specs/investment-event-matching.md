@@ -218,12 +218,20 @@ A candidate is ineligible unless all applicable legs agree on:
 
 - ratified canonical account identity;
 - ratified canonical security identity;
-- currency code for every compared monetary field; and
+- effective currency for every compared monetary field; and
 - an event shape supported by both adapters.
 
 A transfer compares the entire account pair, direction, security, and quantity.
 A missing or unresolved identity routes to its existing account- or
 security-identity review; the event matcher does not guess it.
+
+After account identity resolves, each leg's effective currency is
+`COALESCE(source currency, canonical account currency)`, matching the shipped
+investment ledger. A candidate is ineligible only when an effective currency is
+still unknown or the compared effective currencies disagree. The Proposal
+fingerprint includes the resolved account identity, effective currency, and the
+canonical account-currency value used to derive it. Acceptance rereads those
+inputs, so an account-currency correction stales the old eligibility result.
 
 Splits require an exact normalized ratio and an adapter that declares split
 support. The manual adapter may support that contract. The Plaid adapter must
@@ -311,12 +319,20 @@ first time it sees a new source event, so even an unmatched singleton has a
 stable Golden event identity. Acceptance rewrites the entire affected
 membership set atomically. Reversal retires that accepted membership rather
 than deleting its history. Historical membership retains observation versions,
-prior Golden ids, and legacy source-group ids as the event-id forwarding path.
+prior Golden ids, and source-group references as provenance.
 
 There is no separate mutable `app.investment_events` registry or App state
 observation snapshot. An active Golden event exists because it has active
 membership, and its source values remain in Raw. This avoids parallel sources
 of truth for event existence or source evidence.
+
+### `core.bridge_investment_event_id_aliases`
+
+A derived public bridge maps a retired post-M1J.7 Golden `event_group_id` to its
+active Golden id. It is projected from historical membership, not maintained as
+another mutable registry. Public consumers can therefore resolve an id retired
+by a later accepted Match. Pre-M1J.7 source-group references are provenance,
+not aliases in this bridge.
 
 ### `app.investment_match_field_resolutions`
 
@@ -344,16 +360,20 @@ not issue raw writes against these protected tables.
 
 On first observation, MoneyBin mints a truncated UUID `event_group_id` that is
 independent of source row ids and values, then persists it with the standalone
-membership. Existing populated group ids are retained as legacy aliases during
-the migration; they do not become source-dependent Golden identities.
+membership. M1J.7 is a pre-launch hard cut: there are no legacy Golden ids or
+consumers to preserve. Existing Raw and staging `event_group_id` values remain
+source-group references in provenance, while every migrated source event
+receives a newly minted MoneyBin-owned Golden id. Core exposes only the Golden
+id after migration; no compatibility alias is created for a pre-M1J.7
+source-group reference.
 
 When acceptance joins existing Golden events, the oldest established Golden
 event identity remains canonical, with the opaque id as the deterministic
-tie-breaker. Historical membership forwards every retired event id to the
-result. Golden leg ids follow the corresponding established semantic leg where
-one exists; other previously published transaction ids become append-only
-aliases. Adding a third observation to an existing event therefore changes
-neither the event id nor its leg ids.
+tie-breaker. The public event-id bridge forwards every post-M1J.7 retired Golden
+event id to the result. Golden leg ids follow the corresponding established
+semantic leg where one exists; other previously published transaction ids
+become append-only aliases. Adding a third observation to an existing event
+therefore changes neither the event id nor its leg ids.
 
 A material change to leg structure stales the existing decision. The system
 does not silently repurpose a leg id for a different semantic role. When an
@@ -461,6 +481,15 @@ fail the request. Reject forbids field choices. A Proposal with no material
 conflicts accepts with an empty choice set. This keeps CLI and MCP semantics
 identical without adding one tool per command.
 
+Before committing acceptance, the service constructs every complete selected
+Golden leg and validates it against the existing investment-ledger contract.
+The combined selection must satisfy required and forbidden fields by type,
+quantity and cash signs, multi-leg completeness, and fee-aware
+quantity-price-cash consistency under the approved numeric tolerances. This
+prevents individually allowed field choices from creating a combination that
+no source asserted and the ledger cannot represent. An incoherent selection
+fails atomically and leaves the Proposal pending.
+
 Accept and reject operate on a whole Proposal. The confirmation copy states
 that acceptance rebuilds the investment ledger and its dependent lots,
 holdings, gains, and reports. Acceptance revalidates the Proposal fingerprint
@@ -546,12 +575,13 @@ fixtures and expected Golden-ledger outcomes.
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Native or remembered correction/reversal accepted; fuzzy-only similarity rejected |
 | Revisions | Identical re-delivery reuses a version; an unreviewed singleton advances without rotating Golden ids; changed accepted or multi-source evidence stales without silently changing Golden fields |
-| Identity | Unresolved or contradictory account, security, or currency identities remain ineligible |
+| Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency |
+| Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; only later retired Golden ids enter the public forwarding bridge |
 | Splits | Normalized contract fixtures pass for supported adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
 | Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
 | Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo |
-| Field choices | Missing, unknown, duplicate, stale, and complete choice sets have identical CLI/MCP outcomes; acceptance writes decision, membership, and resolutions atomically |
+| Field choices | Missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
 | Recovery | Stale Proposal refusal; committed decision plus failed rebuild reports durable decision and stale derived state |
 | Guard coverage | Manual history overlapping Plaid transactions or holdings-derived bootstrap rows emits the same visible warning and doctor finding |
@@ -559,6 +589,9 @@ fixtures and expected Golden-ledger outcomes.
 ## Verification
 
 - Pure normalization and tolerance tests for every supported event type.
+- Currency tests for explicit values, account inheritance, unknown or
+  contradictory effective currency, and account-currency changes that stale a
+  Proposal.
 - Pure global-assignment tests, including competing and repeated-event graphs.
 - DuckDB repository tests for atomic membership, rejection suppression, aliases,
   field resolutions, observation-version binding, audit records, and reversal.
@@ -571,7 +604,8 @@ fixtures and expected Golden-ledger outcomes.
 - Scenario tests for every row in the matrix, including exact downstream tax-lot
   outputs.
 - CLI and MCP parity tests for plan, inspect, accept, reject, stale, failure, and
-  undo outcomes, including identical field-choice validation.
+  undo outcomes, including identical field-choice and complete Golden-event
+  invariant validation.
 - Property or invariant tests proving a source event has at most one active
   Golden membership and every accepted multi-leg event is complete.
 - Real mixed-history validation before any guard or auto-accept promotion.
@@ -598,10 +632,13 @@ only after this contract is accepted.
    validation, audit integration, and metrics. Acceptance remains unavailable
    until slice 4 can apply the whole transition atomically.
 4. **Golden materialization.** Add stable event and leg identities, membership,
-   aliases, field resolution, provenance, and the dependent rebuild. Enable
-   acceptance by committing its decision, exact revision membership, and field
-   resolutions in one transaction. Advance an unreviewed singleton to a newer
-   revision atomically without rotating its Golden ids or creating a Proposal.
+   the public event-id bridge, transaction aliases, field resolution,
+   provenance, and the dependent rebuild. Perform the pre-launch Golden-id hard
+   cut, preserving existing source-group references only as provenance. Enable
+   acceptance after validating the complete Golden event, then commit its
+   decision, exact revision membership, and field resolutions in one
+   transaction. Advance an unreviewed singleton to a newer revision atomically
+   without rotating its Golden ids or creating a Proposal.
 5. **Lifecycle proof.** Complete the scenario matrix, repeated-sync and failure
    recovery tests, labeled real-data validation, and evidence for a later
    guard-promotion decision.
