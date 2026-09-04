@@ -215,6 +215,39 @@ SURFACE: dict[str, Any] = {
                             "anyOf": [{"type": "string"}, {"type": "null"}],
                             "default": None,
                         },
+                        "scope": {
+                            "anyOf": [
+                                {
+                                    "oneOf": [
+                                        {
+                                            "description": "Every thing.",
+                                            "properties": {
+                                                "kind": {
+                                                    "const": "everything",
+                                                    "type": "string",
+                                                }
+                                            },
+                                            "required": ["kind"],
+                                            "type": "object",
+                                        },
+                                        {
+                                            "description": "One thing.",
+                                            "properties": {
+                                                "kind": {
+                                                    "const": "one",
+                                                    "type": "string",
+                                                },
+                                                "thing_id": {"type": "string"},
+                                            },
+                                            "required": ["kind", "thing_id"],
+                                            "type": "object",
+                                        },
+                                    ]
+                                },
+                                {"type": "null"},
+                            ],
+                            "default": None,
+                        },
                         "target": {
                             "oneOf": [
                                 {
@@ -316,6 +349,19 @@ def test_mcp_page_renders_oneof_variants_by_discriminator() -> None:
         < page.index("#### Variants of `requests`")
         < page.index("### zeta")
     )
+
+
+def test_mcp_page_renders_variants_of_a_nullable_oneof() -> None:
+    """An optional discriminated union gets the same variants block as a required one."""
+    page = render_mcp_tools(SURFACE, {"accounts": "critical", "zeta": "low"})
+    assert "| `scope` | one of `everything`, `one` |" in page
+    assert "#### Variants of `scope`" in page
+    assert "##### `everything`" in page
+    assert "Every thing." in page
+    assert "##### `one`" in page
+    assert "One thing." in page
+    assert "| `thing_id` | string |  | required |" in page
+    assert page.index("#### Variants of `scope`") < page.index("### zeta")
 
 
 def test_mcp_page_refuses_a_tool_without_a_registered_sensitivity() -> None:

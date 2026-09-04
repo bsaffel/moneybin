@@ -394,13 +394,26 @@ def _oneof_variant_name(variant: Mapping[str, object], index: int) -> str:
 
 
 def _oneof_variants(schema: Mapping[str, object]) -> list[Mapping[str, object]] | None:
-    """The ``oneOf`` variants on this schema, or on an array schema's items."""
+    """The ``oneOf`` variants on this schema, under its nullable wrapper, or on its items.
+
+    Mirrors the unwrapping in ``_schema_type`` so an optional discriminated
+    union gets the same variants block as a required one. An ``anyOf`` with
+    more than one non-null option is a real alternation, not a wrapper, and
+    yields no block.
+    """
     if "oneOf" in schema:
         return typing.cast(list[Mapping[str, object]], schema["oneOf"])
+    if "anyOf" in schema:
+        options = [
+            option
+            for option in typing.cast(list[Mapping[str, object]], schema["anyOf"])
+            if option.get("type") != "null"
+        ]
+        return _oneof_variants(options[0]) if len(options) == 1 else None
     if schema.get("type") == "array":
-        items = typing.cast(Mapping[str, object], schema.get("items", {}))
-        if "oneOf" in items:
-            return typing.cast(list[Mapping[str, object]], items["oneOf"])
+        return _oneof_variants(
+            typing.cast(Mapping[str, object], schema.get("items", {}))
+        )
     return None
 
 
