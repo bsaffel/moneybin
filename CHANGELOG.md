@@ -328,7 +328,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   `moneybin accounts set --display-name` already refused such a name;
   `moneybin import --account-metadata display_name=…` did not, and now does, so
-  a rename is no longer undone by re-importing the same file.
+  a rename is no longer undone by re-importing the same file. (#533)
 - **`core.bridge_merchant_entities`** — a new queryable core view mapping each
   transaction to the merchant identifier its source system assigned, alongside
   the source that issued it and the merchant name that source stated. Available
