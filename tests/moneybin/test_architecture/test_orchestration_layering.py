@@ -192,15 +192,18 @@ def _resolved_module(node: ast.ImportFrom, package: str) -> str:
     ``cli/main``), just not yet inside a guarded package.
 
     An over-relative import — more leading dots than the package has parts —
-    resolves to ``""``. It cannot be a live bypass: Python raises
-    ``ImportError`` on it before any of its names bind.
+    resolves to ``""`` at every depth. It cannot be a live bypass either way:
+    Python raises ``ImportError`` on that shape before any of its names bind.
+    The depth is tested rather than the slice result, because two dots too
+    many drives the slice index negative and ``parts[:-1]`` hands back a
+    plausible-looking base that would invent an inversion out of nothing.
     """
     if not node.level:
         return node.module or ""
     parts = package.split(".")
-    base = ".".join(parts[: len(parts) - node.level + 1])
-    if not base:
+    if node.level > len(parts):
         return ""
+    base = ".".join(parts[: len(parts) - node.level + 1])
     return f"{base}.{node.module}" if node.module else base
 
 
@@ -449,10 +452,20 @@ def test_runtime_import_detection_sees_every_executing_block() -> None:
         _imports_orchestration(n, deeper)
         for n in _runtime_imports(ast.parse("from ...orchestration import x").body)
     ), "three dots from a second-level package should reach the layer"
-    assert not any(
-        _imports_orchestration(n, package)
-        for n in _runtime_imports(ast.parse("from ...orchestration import x").body)
-    ), "three dots from a first-level package resolve above moneybin, not to it"
+    # More dots than the package has parts. Python refuses these outright, so
+    # the scan must not resolve them into the layer. Two depths, because the
+    # first invalid one zeroes the slice index and the next one drives it
+    # negative — different arithmetic, same required answer.
+    over_relative = {
+        "one-dot-too-many": "from ...orchestration import x",
+        "one-dot-too-many-bare": "from ... import orchestration",
+        "two-dots-too-many-bare": "from .... import orchestration",
+    }
+    for label, source in over_relative.items():
+        assert not any(
+            _imports_orchestration(n, package)
+            for n in _runtime_imports(ast.parse(source).body)
+        ), f"{label}: an import Python would refuse was resolved into the layer"
 
 
 def test_orchestrator_import_stays_light() -> None:
