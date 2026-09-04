@@ -2,7 +2,7 @@
 
 ## Status
 
-accepted
+accepted — amended 2026-09-02 (site build deferred to the release trigger; see the Amendment section)
 
 ## Context
 
@@ -150,6 +150,37 @@ content and traffic to qualify.
   `docs/reference/data-model.md`, `docs/reference/system-overview.md`). Without the
   extension, those pages render raw fenced code instead of diagrams. The extension is a
   one-line config addition to `mkdocs.yml`; no per-file changes are needed.
+
+## Amendment (2026-09-02): site build deferred to the release trigger
+
+**The framework moved under the decision.** Checked 2026-09-02:
+
+- Material for MkDocs entered maintenance mode on 2025-11-05, with a stated
+  12-month commitment to security and compatibility fixes only.
+- MkDocs core has had no release since 1.6.1 (2024-08-30).
+- The Material maintainers' successor is Zensical. It reads an existing
+  `mkdocs.yml` and Material-style Markdown unchanged, so the zero-rewrite
+  constraint and the peer-config precedent both carry over — but it was at
+  0.0.x (alpha) when checked. beancount already ships its docs on it: one
+  `zensical.yml` plus one GitHub Pages workflow.
+
+**Decision.** Do not build the site now. Public docs stay GitHub-rendered
+Markdown, with `docs/README.md` as the single index, until the earlier of the
+first public release or a Zensical 1.0. At that point build on Zensical if it
+has reached 1.0, otherwise on Material for MkDocs while its maintenance window
+is open. Either way the site is one config file plus one workflow, and the
+Markdown does not change.
+
+**Reversal.** The `docs` dependency group listed under "What ships" was added
+ahead of any `mkdocs.yml` and never used. It is removed, along with the
+`pymdown-extensions` security floor it carried, since nothing else depends on
+that package. `make audit` keeps `--all-groups` for the `server` group.
+
+**Structure for a future `nav:`.** The 2026-09 information-architecture pass
+(recorded in [`user-facing-doc-polish.md`](../specs/user-facing-doc-polish.md)
+→ "Information architecture (2026-09)") collapsed `docs/architecture/` and
+`docs/tech/` into `docs/reference/`, so the public nav needs two content
+sections — Guides and Reference — plus Decisions.
 
 ## References
 

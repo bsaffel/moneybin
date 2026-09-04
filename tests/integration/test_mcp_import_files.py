@@ -173,7 +173,7 @@ async def test_hard_refresh_failure_is_not_reported_as_a_parse_error(
     _setup_db(tmp_path, monkeypatch)
     fixture = _copy_fixture(FIXTURES_DIR / "sample_minimal.ofx", tmp_path)
     monkeypatch.setattr(
-        "moneybin.services.refresh.refresh",
+        "moneybin.orchestration.refresh.refresh",
         MagicMock(side_effect=RuntimeError("sqlmesh exploded")),
     )
 

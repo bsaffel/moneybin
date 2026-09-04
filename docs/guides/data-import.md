@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Data Import
 
 MoneyBin ingests financial data from files you already have (CSV, TSV, Excel, Parquet, Feather, OFX/QFX/QBO) and from Plaid-connected banks. Every file lands in `raw.*`, flows through the SQLMesh pipeline into `core.fct_transactions` / `core.dim_accounts`, and is queryable by the CLI, MCP server, and any DuckDB client. This guide walks through the entry points by source tool and by file format, plus the housekeeping commands you'll reach for after the first import.
@@ -27,8 +27,8 @@ See the [Profiles guide](profiles.md) and [Database and security guide](database
 Before pointing MoneyBin at real history, snapshot the profile:
 
 ```bash
-moneybin db backup                    # encrypted snapshot under data/<profile>/backups/
-moneybin db restore <backup-path>     # roll back if an import goes wrong
+moneybin db backup                       # encrypted snapshot under data/<profile>/backups/
+moneybin db restore --from <backup-path> # roll back if an import goes wrong
 ```
 
 `import revert` (below) handles batch-level rollback after a single import, but a full `db backup` is the right thing to do before your first real ingest of years of history.
@@ -355,7 +355,7 @@ Google Sheets connects via direct OAuth — no aggregator, no moneybin-sync medi
 moneybin gsheet auth                                            # one-time OAuth (browser flow)
 moneybin gsheet connect "https://docs.google.com/spreadsheets/d/.../edit#gid=0"
 moneybin gsheet pull                                            # explicit pull (also runs on refresh)
-moneybin gsheet                                                  # list connected sheets
+moneybin gsheet list                                             # list connected sheets
 ```
 
 See the [Google Sheets guide](connect-gsheet.md) for adapter choice, drift recovery, and the limitations of the read-only OAuth scope.
@@ -402,7 +402,7 @@ Revert deletes all transactions and accounts loaded in the specified batch and m
 - Add or correct notes: `moneybin transactions notes add <id> "..."`
 - Add or correct tags: `moneybin transactions tags add <id> ...`
 - Split into child rows: `moneybin transactions splits add <id> ...`
-- Re-categorize: `moneybin transactions categorize <id> ...`
+- Re-categorize: `moneybin transactions categorize commit --input one-row.json`, where the file holds a one-element JSON array of `{transaction_id, category, subcategory}`
 
 For anything beyond those (rewriting the amount or date on a single row), the current path is revert the batch, fix the source file, and re-import.
 

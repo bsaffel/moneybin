@@ -198,9 +198,8 @@ check: format lint type-check ## Development: Run all code quality checks
 # The single home for the pip-audit invocation: both the Security workflow and
 # the Release pipeline call `make audit`, so the accepted-vuln ignore list lives
 # here once and cannot drift. `uv run` auto-syncs, so this stands alone in CI.
-# `--all-groups` is load-bearing: without it the docs and server groups are
-# never resolved, and CVEs in them (e.g. pymdown-extensions via mkdocs-material)
-# go unreported by both pipelines.
+# `--all-groups` is load-bearing: without it the server group is never
+# resolved, and CVEs in it go unreported by both pipelines.
 #
 # Accepted, time-boxed starlette ignores — all share one root cause and one
 # exposure rationale. Root cause: the fixes are all on the starlette 1.x

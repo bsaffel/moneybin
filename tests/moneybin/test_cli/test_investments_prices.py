@@ -25,9 +25,9 @@ from typer.testing import CliRunner
 from moneybin import error_codes
 from moneybin.cli.commands.investments.prices import PriceSourceChoice, app
 from moneybin.errors import UserError
+from moneybin.orchestration.refresh import RefreshResult
 from moneybin.price_sources import PRICE_SOURCES
 from moneybin.services.price_service import PullResult, UnpricedSecurity
-from moneybin.services.refresh import RefreshResult
 
 runner = CliRunner()
 
@@ -94,7 +94,7 @@ class TestPricesPullRefresh:
         assert result.exit_code == 0
         assert _REFRESH_HINT not in result.output
 
-    @patch("moneybin.services.refresh.refresh")
+    @patch("moneybin.orchestration.refresh.refresh")
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_pull(_pull_result())
     def test_refresh_rebuilds_only_the_transform_step(
@@ -116,7 +116,7 @@ class TestPricesPullRefresh:
         # Having done the work, it must not also tell the user to do it.
         assert _REFRESH_HINT not in result.output
 
-    @patch("moneybin.services.refresh.refresh")
+    @patch("moneybin.orchestration.refresh.refresh")
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_pull(_pull_result())
     def test_a_failed_apply_exits_nonzero_and_says_the_rows_landed(
@@ -143,7 +143,7 @@ class TestPricesPullRefresh:
         assert "model VTI not found" in caplog.text
         assert _REFRESH_HINT in caplog.text
 
-    @patch("moneybin.services.refresh.refresh")
+    @patch("moneybin.orchestration.refresh.refresh")
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_pull(_pull_result())
     def test_json_carries_the_refresh_outcome(
@@ -200,7 +200,7 @@ class TestPriceMarkRefresh:
         assert result.exit_code == 0
         assert _REFRESH_HINT in result.output
 
-    @patch("moneybin.services.refresh.refresh")
+    @patch("moneybin.orchestration.refresh.refresh")
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_resolve()
     @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
@@ -224,7 +224,7 @@ class TestPriceMarkRefresh:
         assert mock_refresh.call_args.kwargs["steps"] == ["transform"]
         assert _REFRESH_HINT not in result.output
 
-    @patch("moneybin.services.refresh.refresh")
+    @patch("moneybin.orchestration.refresh.refresh")
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_resolve()
     @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
@@ -259,7 +259,7 @@ class TestPriceMarkRefresh:
         assert "model VTI not found" in caplog.text
         assert _REFRESH_HINT in caplog.text
 
-    @patch("moneybin.services.refresh.refresh")
+    @patch("moneybin.orchestration.refresh.refresh")
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_resolve()
     @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
@@ -326,7 +326,7 @@ class TestPriceMarkRefresh:
         assert result.exit_code == 0
         assert _REFRESH_HINT not in result.output
 
-    @patch("moneybin.services.refresh.refresh")
+    @patch("moneybin.orchestration.refresh.refresh")
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_resolve()
     @patch(

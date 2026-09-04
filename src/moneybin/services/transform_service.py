@@ -21,7 +21,7 @@ from moneybin.database import Database, sqlmesh_context
 from moneybin.metrics.registry import SQLMESH_RUN_DURATION_SECONDS
 from moneybin.seeds import refresh_views
 from moneybin.services.matching_service import MatchingService
-from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG
+from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG, MODEL_FRESHNESS
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ def _build_raw_landing_scan(
         """  # noqa: S608  # identifiers come from the module constants above
     return f"""
         WITH bad_imports AS (
-            SELECT import_id FROM raw.import_log
+            SELECT import_id FROM {IMPORT_LOG.full_name}
             WHERE status IN ('reverted', 'failed')
         ), candidates AS (
             {union}
@@ -195,7 +195,7 @@ def _oldest_execution_scan(model_count: int) -> str:
         SELECT
             (MIN(last_executed_at) AT TIME ZONE 'UTC'),
             COUNT(*) FILTER (WHERE last_executed_at IS NULL)
-        FROM meta.model_freshness
+        FROM {MODEL_FRESHNESS.full_name}
         WHERE COALESCE(model_kind, '') NOT IN ({kinds})
           AND LOWER(model_name) IN ({names})
     """  # noqa: S608  # kinds are a module constant; names are `?` placeholders

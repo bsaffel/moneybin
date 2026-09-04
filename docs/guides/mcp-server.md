@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-21 -->
+<!-- Last reviewed: 2026-09-02 -->
 # MCP Server
 
 MoneyBin exposes one **50-tool standard registry** to every generic MCP client.
@@ -35,6 +35,27 @@ then call `reports(report_id=..., parameters=...)` for a selected report.
 read-only SQL surface; `sql_schema(table='raw.*')` lists the queryable
 relations one schema at a time, curated or not; `sql_query` is the operator
 escape hatch.
+
+## Prompts
+
+Alongside the tools, the server registers seven prompts — conversation starters
+a client can offer as a menu entry. Client support varies; run
+`moneybin mcp list-prompts` for the live catalog of your installed version.
+
+| Prompt | Purpose |
+|---|---|
+| `monthly_review` | Review spending, cash flow, balances, and recurring charges. |
+| `categorization_organize` | Work through uncategorized transactions and propose rules. |
+| `review_auto_rules` | Review pending auto-categorization rules before accepting them. |
+| `onboarding` | Import initial data, verify accounts, and inspect categorization coverage. |
+| `curate_recent_transactions` | Add useful tags and notes to recent transactions. |
+| `review_curation_history` | Summarize recent curation activity from the audit log. |
+| `sync_review` | Review sync health and suggest next steps. |
+
+All seven are defined in
+[`src/moneybin/mcp/prompts.py`](../../src/moneybin/mcp/prompts.py). Each returns
+text, not data: a prompt describes a workflow over the tools above and grants no
+capability of its own, so it takes no tool slot and changes no approval.
 
 ## Export data
 

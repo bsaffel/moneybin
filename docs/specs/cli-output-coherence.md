@@ -511,8 +511,8 @@ Numbered, each independently testable.
     observable outcome, including stages whose outcome is zero. A run that changed
     nothing and a run that recategorized 400 transactions are distinguishable from
     stderr alone. This requires a **result-carrier change**, not a renderer-only
-    one: `RefreshResult` (`src/moneybin/services/refresh.py:92`) carries
-    error-or-`None` per step, and `_run_categorize_step` (line 479) computes its
+    one: `RefreshResult` (`src/moneybin/orchestration/refresh.py:109`) carries
+    error-or-`None` per step, and `_run_categorize_step` (line 486) computes its
     counts, logs them, and returns `str | None`, discarding them. The renderer
     cannot recover a count the service already dropped, and must not re-query for
     it. `RefreshResult` therefore gains a per-stage outcome carrying the counts the
@@ -849,7 +849,7 @@ Numbered, each independently testable.
     call on the other, across 5 definitions and 2 render paths. That is a
     contract change on top of a rendering change, and larger than the rest of
     requirement 34. It lands with the increment covering requirements 18 and
-    23–25, which already reaches below the CLI into `services/refresh.py` and
+    23–25, which already reaches below the CLI into `orchestration/refresh.py` and
     `metrics/registry.py`; grouping by the layer touched keeps each review to
     one shape.
 
@@ -928,7 +928,7 @@ removed field and costs a `stats` surface that cannot label nine of its metrics.
 | `src/moneybin/cli/commands/merchants/links.py` | `links pending` (line 34) / `links history` (line 140) — same hand-formatted-table pattern as its accounts twin; migrate both together per the coherence rule |
 | `src/moneybin/cli/commands/transactions/matches.py` | `matches pending` (line 35) hand-formats a padded f-string table at lines 70-85 — the third of the three review-queue renderers |
 | `src/moneybin/cli/commands/refresh.py` | Per-stage notes (18); drop function-name prefixes and `SQLMesh` (16, 17) |
-| `src/moneybin/services/refresh.py` | `RefreshResult` gains per-stage outcomes so the counts `_run_categorize_step` already computes reach the renderer instead of only the log (18) |
+| `src/moneybin/orchestration/refresh.py` | `RefreshResult` gains per-stage outcomes so the counts `_run_categorize_step` already computes reach the renderer instead of only the log (18) |
 | `src/moneybin/services/merchant_links_service.py` | Line 301 — rephrase the `merchant_links_run: bound=… conflicts=…` log into prose, keeping the counts (16). The second and smaller of this spec's two below-CLI reaches |
 | `docs/specs/extension-contracts.md` | Document `DEFAULT_COLUMNS` as an optional `ReportSpec` field and its width-bounded fallback (6) |
 | `src/moneybin/cli/commands/system/doctor.py` | Quiet on success (20–22); recovery-action rendering unchanged per req 16's exception |
