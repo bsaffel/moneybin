@@ -27,8 +27,10 @@ import shutil
 import subprocess  # noqa: S404 -- the policy test queries local Git metadata
 from collections.abc import Collection
 from pathlib import Path
+from typing import NamedTuple
 
 import click
+import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -334,6 +336,19 @@ _BRACE_ALTERNATIVES = re.compile(r"^\{([^{}]+)\}$")
 _PATH_LIKE = re.compile(r"^[~./]|\.\w+$")
 
 
+class _CodeLine(NamedTuple):
+    """One scanned line and where it came from.
+
+    A fenced shell block is a transcript that must run as written
+    (``runnable=True``); an inline span or table row names a command
+    (``runnable=False``) and is held to a looser standard.
+    """
+
+    number: int
+    code: str
+    runnable: bool
+
+
 def _user_facing_documents() -> list[Path]:
     documents = [
         _REPO_ROOT / "README.md",
@@ -375,16 +390,19 @@ def _inline_spans(
     return spans
 
 
-def _code_lines(text: str, top_level: Collection[str] = ()) -> list[tuple[int, str]]:
-    """Return (line_number, code) for fenced-block lines and inline code spans."""
-    lines: list[tuple[int, str]] = []
+def _code_lines(text: str, top_level: Collection[str] = ()) -> list[_CodeLine]:
+    """Return one `_CodeLine` per fenced-block line and inline code span."""
+    lines: list[_CodeLine] = []
     prose: list[tuple[int, str]] = []
     fence: str | None = None
     shell_block = False
     for number, line in enumerate(text.splitlines(), start=1):
         match = _FENCE.match(line.strip())
         if match and (fence is None or line.strip().startswith(fence)):
-            lines += _inline_spans(prose, top_level)
+            lines += (
+                _CodeLine(n, c, runnable=False)
+                for n, c in _inline_spans(prose, top_level)
+            )
             prose = []
             if fence:
                 fence = None
@@ -394,20 +412,27 @@ def _code_lines(text: str, top_level: Collection[str] = ()) -> list[tuple[int, s
             continue
         if fence:
             if shell_block:
-                lines.append((number, line))
+                lines.append(_CodeLine(number, line, runnable=True))
         else:
             prose.append((number, line))
-    return lines + _inline_spans(prose, top_level)
+    lines += (
+        _CodeLine(n, c, runnable=False) for n, c in _inline_spans(prose, top_level)
+    )
+    return lines
 
 
-def _join_continuations(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
-    joined: list[tuple[int, str]] = []
-    for number, line in lines:
-        if joined and joined[-1][1].rstrip().endswith("\\"):
-            previous_number, previous = joined[-1]
-            joined[-1] = (previous_number, previous.rstrip()[:-1] + " " + line.strip())
+def _join_continuations(lines: list[_CodeLine]) -> list[_CodeLine]:
+    joined: list[_CodeLine] = []
+    for entry in lines:
+        if joined and joined[-1].code.rstrip().endswith("\\"):
+            previous = joined[-1]
+            joined[-1] = _CodeLine(
+                previous.number,
+                previous.code.rstrip()[:-1] + " " + entry.code.strip(),
+                previous.runnable,
+            )
         else:
-            joined.append((number, line))
+            joined.append(entry)
     return joined
 
 
@@ -441,7 +466,10 @@ def _invocations(code: str) -> list[list[str]]:
             rest = rest[: rest.index(")")]
         for quote in ('"', "'"):  # a multi-line string: stop where it opens
             if rest.count(quote) % 2:
-                rest = rest[: rest.index(quote)]
+                # The cut string may have been an option's value (`--sql
+                # "SELECT …`): an elision keeps that option from reading as
+                # the last token in the invocation with nothing following.
+                rest = rest[: rest.index(quote)] + " ..."
         try:
             tokens = shlex.split(rest, posix=True)
         except ValueError:
@@ -484,18 +512,28 @@ def _expand_alternatives(token: str) -> list[str]:
     return [token]
 
 
-def _resolve_invocation(tokens: list[str], root: click.Command) -> str | None:
-    """Return why the invocation does not resolve, or None when it does."""
+def _resolve_invocation(
+    tokens: list[str], root: click.Command, *, runnable: bool
+) -> str | None:
+    """Return why the invocation does not resolve, or None when it does.
+
+    A runnable invocation (from a fenced shell block — a transcript that must
+    run as written) is held to two additional checks a mention (an inline
+    span or table row naming a command) is not: a group requiring a
+    subcommand must get one, and a value-taking option must get a value.
+    """
     node = root
     path = ["moneybin"]
     parents: list[tuple[click.Command, list[str]]] = []
     positionals = 0
     options_done = False
+    saw_help = False
     index = 0
     while index < len(tokens):
         token = tokens[index]
         index += 1
         if token in {"--help", ""}:  # noqa: S105  # CLI argument, not a secret
+            saw_help = saw_help or token == "--help"  # noqa: S105  # ditto
             continue
         if token == "--":  # noqa: S105  # end of options: the rest are positionals
             options_done = True
@@ -527,6 +565,13 @@ def _resolve_invocation(tokens: list[str], root: click.Command) -> str | None:
             option = next(
                 p for p in options if aliases[0] in (*p.opts, *p.secondary_opts)
             )
+            if (
+                runnable
+                and not option.is_flag
+                and not has_inline_value
+                and index >= len(tokens)
+            ):
+                return f"`{' '.join(path)}` option `{name}` requires a value"
             following = tokens[index] if index < len(tokens) else ""
             # A bare value-taking option in a flags column (`--pattern`,
             # `--match-type {exact,contains,regex}`) must not swallow the next
@@ -563,6 +608,19 @@ def _resolve_invocation(tokens: list[str], root: click.Command) -> str | None:
         )
         if positionals > capacity:
             return f"`{' '.join(path)}` takes no positional `{token}`"
+    # A concrete group with no callback of its own (`invoke_without_command`
+    # unset) errors when invoked bare, e.g. `db key` — only `db key show`
+    # works. `moneybin <command>` at the root is a generic reference, not an
+    # invocation, so root is exempt; `--help` anywhere satisfies the
+    # subcommand requirement (`moneybin db --help` is valid).
+    if (
+        runnable
+        and not saw_help
+        and isinstance(node, click.Group)
+        and node is not root
+        and not getattr(node, "invoke_without_command", False)
+    ):
+        return f"`{' '.join(path)}` takes a subcommand"
     return None
 
 
@@ -570,12 +628,14 @@ def test_public_docs_cli_invocations_resolve() -> None:
     """Every `moneybin …` in a user-facing doc names a registered command.
 
     Registered means the group and subcommand exist and every option is one
-    the command declares; option values and placeholders are not checked. A
-    row of the CLI reference tables whose first code span starts with a
-    top-level command is read as `moneybin …` with the row's flag spans
-    appended, so the flags column is checked too. A line that must show a
-    wrong invocation on purpose (an error example) carries
-    ``<!-- cli-invocation-ok: <reason> -->``.
+    the command declares; placeholders are not checked. A fenced shell block
+    is a transcript that must run as written, so it is additionally held to a
+    subcommand and an option value actually being present; an inline span or
+    table row names a command and is exempt from those two. A row of the CLI
+    reference tables whose first code span starts with a top-level command is
+    read as `moneybin …` with the row's flag spans appended, so the flags
+    column is checked too. A line that must show a wrong invocation on
+    purpose (an error example) carries ``<!-- cli-invocation-ok: <reason> -->``.
     """
     from typer.main import get_command
 
@@ -592,14 +652,14 @@ def test_public_docs_cli_invocations_resolve() -> None:
             if _CLI_INVOCATION_MARKER in line
         }
         top_level = root.commands if document.name == "cli-reference.md" else ()
-        for number, code in _join_continuations(_code_lines(text, top_level)):
-            if number in allowed_lines:
+        for entry in _join_continuations(_code_lines(text, top_level)):
+            if entry.number in allowed_lines:
                 continue
-            for tokens in _invocations(code):
-                problem = _resolve_invocation(tokens, root)
+            for tokens in _invocations(entry.code):
+                problem = _resolve_invocation(tokens, root, runnable=entry.runnable)
                 if problem:
                     relative = document.relative_to(_REPO_ROOT)
-                    violations.append(f"{relative}:{number}: {problem}")
+                    violations.append(f"{relative}:{entry.number}: {problem}")
 
     assert not violations, (
         "Public docs cite CLI invocations that do not resolve against the "
@@ -607,6 +667,219 @@ def test_public_docs_cli_invocations_resolve() -> None:
         "doc, or mark a deliberate error example with "
         "`<!-- cli-invocation-ok: reason -->`.\n" + "\n".join(violations)
     )
+
+
+# ---------------------------------------------------------------------------
+# CLI-invocation guard parser: unit tests against a synthetic fixture
+# ---------------------------------------------------------------------------
+#
+# Independent of the real MoneyBin CLI and the current doc corpus: correctness
+# here does not depend on the corpus happening to exercise a given code path.
+
+
+def _fixture_callback() -> None:
+    """Shared no-op callback: these commands are inspected, never invoked."""
+
+
+@pytest.fixture
+def _fixture_cli() -> click.Group:  # pyright: ignore[reportUnusedFunction]  # pytest fixture
+    """A small synthetic command tree exercising the resolver's checks.
+
+    Built from plain Click objects (not Typer's decorator sugar, and not
+    nested `def`s pyright can't see used) — a fixture only ever inspected,
+    never invoked.
+    """
+    db = click.Group(
+        "db",
+        commands={"show": click.Command("show", callback=_fixture_callback)},
+        # No `invoke_without_command`: a bare invocation requires a subcommand.
+    )
+    inbox = click.Group(
+        "inbox",
+        commands={"list": click.Command("list", callback=_fixture_callback)},
+        invoke_without_command=True,  # Runs its own callback bare.
+        callback=_fixture_callback,
+    )
+    create = click.Command(
+        "create",
+        callback=_fixture_callback,
+        params=[
+            click.Argument(["name"]),
+            click.Argument(["amount"], required=False),
+        ],
+    )
+    commit = click.Command(
+        "commit",
+        callback=_fixture_callback,
+        params=[click.Option(["-y", "--yes"], is_flag=True)],
+    )
+    rules = click.Command(
+        "rules", callback=_fixture_callback, params=[click.Option(["--pattern"])]
+    )
+    secret = click.Command("secret", callback=_fixture_callback, hidden=True)
+    return click.Group(
+        "cli",
+        commands={
+            "db": db,
+            "inbox": inbox,
+            "create": create,
+            "commit": commit,
+            "rules": rules,
+            "secret": secret,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("tokens", "runnable", "expected_ok"),
+    [
+        # Bare group requiring a subcommand: strict only when runnable.
+        pytest.param(["db"], True, False, id="bare-group-runnable-violation"),
+        pytest.param(["db"], False, True, id="bare-group-inline-ok"),
+        # `--help` anywhere satisfies the subcommand requirement, either way.
+        pytest.param(["db", "--help"], True, True, id="group-help-runnable-ok"),
+        pytest.param(["db", "--help"], False, True, id="group-help-inline-ok"),
+        # A group with its own callback (`invoke_without_command=True`) never
+        # needs a subcommand.
+        pytest.param(["inbox"], True, True, id="invoke-without-command-ok"),
+        # A value-taking option at the very end: strict only when runnable.
+        pytest.param(
+            ["rules", "--pattern"], True, False, id="option-value-runnable-violation"
+        ),
+        pytest.param(["rules", "--pattern"], False, True, id="option-value-inline-ok"),
+        # A flag never needs a value, regardless of position.
+        pytest.param(["commit", "-y"], True, True, id="flag-no-value-needed"),
+        # Negative number is a value, not an option.
+        pytest.param(
+            ["create", "foo", "-12.50"], True, True, id="negative-number-is-value"
+        ),
+    ],
+)
+def test_resolve_invocation_runnable_scoping(
+    _fixture_cli: click.Group,
+    tokens: list[str],
+    runnable: bool,
+    expected_ok: bool,
+) -> None:
+    """A fenced shell block is strict; an inline mention or table row is not."""
+    problem = _resolve_invocation(tokens, _fixture_cli, runnable=runnable)
+    assert (problem is None) == expected_ok, problem
+
+
+def test_invocations_redirection_terminates() -> None:
+    """`2>&1 | tee log` ends the invocation right after the command."""
+    (command,) = _invocations("moneybin db show 2>&1 | tee log")
+    assert command == ["db", "show"]
+
+
+def test_invocations_semicolon_chain_finds_both() -> None:
+    """A `;`-chained pair yields two separate, independently checkable commands."""
+    commands = _invocations("moneybin db show; moneybin create x")
+    assert commands == [["db", "show"], ["create", "x"]]
+
+
+def test_resolve_invocation_elision_short_circuits(_fixture_cli: click.Group) -> None:
+    """An elision (`...`) stops the check before a trailing bogus flag."""
+    (command,) = _invocations("moneybin commit ... --bogus")
+    assert command == ["commit", "...", "--bogus"]
+    assert _resolve_invocation(command, _fixture_cli, runnable=True) is None
+
+
+def test_invocations_unwraps_moneybin_substitution() -> None:
+    """`$(moneybin …)` is unwrapped so the inner invocation is checked."""
+    (command,) = _invocations("KEY=$(moneybin db show)")
+    assert command == ["db", "show"]
+
+
+def test_invocations_masks_non_moneybin_substitution() -> None:
+    """`$(date …)` stays an opaque token — it never splits the outer command."""
+    (command,) = _invocations("moneybin db show -o backup-$(date +%F).db")
+    assert command == ["db", "show", "-o", "backup-SUBST.db"]
+
+
+def test_invocations_elides_unterminated_quote_value(_fixture_cli: click.Group) -> None:
+    """An unterminated quote (a multi-line string) elides rather than vanishing.
+
+    Cutting the value away entirely would leave `--pattern` as the last token
+    with nothing following it, which reads as a truncated invocation.
+    """
+    (command,) = _invocations('moneybin rules --pattern "SELECT * FROM')
+    assert command == ["rules", "--pattern", "..."]
+    assert _resolve_invocation(command, _fixture_cli, runnable=True) is None
+
+
+def test_resolve_invocation_placeholder_then_bogus_flag(
+    _fixture_cli: click.Group,
+) -> None:
+    (command,) = _invocations("moneybin create <name> --bogus")
+    assert _resolve_invocation(command, _fixture_cli, runnable=False) is not None
+
+
+def test_resolve_invocation_bracketed_bogus_option(_fixture_cli: click.Group) -> None:
+    (command,) = _invocations("moneybin create <name> [--bogus]")
+    assert _resolve_invocation(command, _fixture_cli, runnable=False) is not None
+
+
+def test_resolve_invocation_root_dash_h_unregistered(_fixture_cli: click.Group) -> None:
+    (command,) = _invocations("moneybin -h")
+    assert _resolve_invocation(command, _fixture_cli, runnable=True) is not None
+
+
+def test_code_lines_reads_soft_wrapped_span(_fixture_cli: click.Group) -> None:
+    """A code span that soft-wraps across a line is still read as one span."""
+    text = "run `moneybin\ncommit --bogus` now"
+    (entry,) = _code_lines(text)
+    assert not entry.runnable
+    (command,) = _invocations(entry.code)
+    assert (
+        _resolve_invocation(command, _fixture_cli, runnable=entry.runnable) is not None
+    )
+
+
+def test_code_lines_reference_row_checks_flags_column(
+    _fixture_cli: click.Group,
+) -> None:
+    """A CLI-reference-table row reads its flags column as part of the invocation.
+
+    The row's second span (`--bogus`, not first-in-row) surfaces as its own
+    non-invocation entry alongside the enriched one — harmless, since it
+    contains no `moneybin` for `_invocations` to find.
+    """
+    text = "| `create <name>` | Create a thing. | `--bogus` |"
+    entries = _code_lines(text, top_level=_fixture_cli.commands)
+    commands = [tokens for entry in entries for tokens in _invocations(entry.code)]
+    assert commands == [["create", "<name>", "--bogus"]]
+    (command,) = commands
+    assert _resolve_invocation(command, _fixture_cli, runnable=False) is not None
+
+
+def test_full_pipeline_scopes_fenced_block_vs_inline_mention(
+    _fixture_cli: click.Group,
+) -> None:
+    """End to end: the same bare-group text is strict fenced, lenient inline."""
+    text = (
+        "The `db` group manages the database; bare `moneybin db` is shown here "
+        "only as a name, not something to run.\n"
+        "\n"
+        "```bash\n"
+        "moneybin db\n"
+        "```\n"
+    )
+    entries = _join_continuations(_code_lines(text))
+    inline_problems = [
+        _resolve_invocation(tokens, _fixture_cli, runnable=False)
+        for entry in entries
+        if not entry.runnable
+        for tokens in _invocations(entry.code)
+    ]
+    fenced_problems = [
+        _resolve_invocation(tokens, _fixture_cli, runnable=True)
+        for entry in entries
+        if entry.runnable
+        for tokens in _invocations(entry.code)
+    ]
+    assert inline_problems == [None]
+    assert fenced_problems and all(problem is not None for problem in fenced_problems)
 
 
 # ---------------------------------------------------------------------------

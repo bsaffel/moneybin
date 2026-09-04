@@ -312,7 +312,7 @@ Categorization workflow. Engines: deterministic rules + merchant mappings (local
 | Command | Purpose | Key flags |
 |---|---|---|
 | `transactions categorize run` | Run the engine cascade over uncategorized rows. Engines run in order; a rule write blocks a merchant write at the same priority. | `--methods rules,merchants` |
-| `transactions categorize assist` | Return uncategorized rows as PII-scrubbed records for LLM categorization — merchant text (description/memo) is sent in full, with only embedded PII (e.g. account numbers) masked; no amount, date, or account ID. Same shape as the `transactions_categorize_assist` MCP tool. | `--limit`, `--account-filter`, `--date-range` |
+| `transactions categorize assist` | Return uncategorized rows as PII-scrubbed records for LLM categorization — merchant text (description/memo) is kept as the categorization signal, scrubbed of embedded PII (card and account numbers, phone numbers, emails, dates, city/state); no amount, date, or account ID. Same shape as the `transactions_categorize_assist` MCP tool. | `--limit`, `--account-filter`, `--date-range` |
 | `transactions categorize commit` | Commit externally-decided categorizations from a JSON array. | `--input <path>` or `-` (stdin) |
 | `transactions categorize commit-from-file <path>` | Convenience wrapper around `commit --input <path>`. | — |
 | `transactions categorize export-uncategorized` | Export uncategorized rows for offline review. | `--limit`, `--output` |
@@ -672,7 +672,7 @@ moneybin import inbox list       # preview without moving
 ### Categorize with an LLM, agent-driven
 
 ```bash
-# 1. Pull PII-scrubbed records out for the LLM (merchant text sent in full).
+# 1. Pull PII-scrubbed records out for the LLM (merchant text preserved, embedded PII stripped).
 moneybin transactions categorize assist --limit 50 --output json > to_categorize.json
 
 # 2. Run your LLM workflow against to_categorize.json; produce decisions.json.

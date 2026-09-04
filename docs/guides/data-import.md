@@ -355,7 +355,7 @@ Google Sheets connects via direct OAuth — no aggregator, no moneybin-sync medi
 moneybin gsheet auth                                            # one-time OAuth (browser flow)
 moneybin gsheet connect "https://docs.google.com/spreadsheets/d/.../edit#gid=0"
 moneybin gsheet pull                                            # explicit pull (also runs on refresh)
-moneybin gsheet                                                  # list connected sheets
+moneybin gsheet list                                             # list connected sheets
 ```
 
 See the [Google Sheets guide](connect-gsheet.md) for adapter choice, drift recovery, and the limitations of the read-only OAuth scope.

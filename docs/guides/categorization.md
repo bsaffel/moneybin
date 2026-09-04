@@ -309,7 +309,7 @@ Two design choices that matter:
 `transactions_categorize_assist` (and the matching CLI command) returns a `RedactedTransaction` per uncategorized row. The shape is frozen:
 
 - `transaction_id`
-- `description_scrubbed`, `memo_scrubbed` — merchant text preserved and sent in full (it's the categorization signal); both passed through `redact_for_llm()` which strips card last-fours, emails, phones, P2P recipient names, and other embedded-PII patterns
+- `description_scrubbed`, `memo_scrubbed` — merchant text kept as the categorization signal, scrubbed of embedded PII: card and account numbers, emails, phone numbers, P2P recipient names, dates, and city/state
 - `source_type` — `csv`, `ofx`, `plaid`, etc.
 - `transaction_type` — `DEBIT` / `CREDIT` / `CHECK` / `XFER` / `ATM` / ...
 - `check_number` — for handwritten checks
