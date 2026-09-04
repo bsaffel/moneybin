@@ -15,6 +15,7 @@ from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type st
 )
 
 from moneybin.currency_lots.sqlmesh_loader import load_conversion_rows
+from moneybin.metrics.registry import set_fx_accounting_rows
 
 
 @model(
@@ -96,6 +97,7 @@ def execute(
 ) -> Iterator[pd.DataFrame]:
     """Emit one explicitly typed row per trusted Currency conversion."""
     rows = load_conversion_rows(context)
+    set_fx_accounting_rows("conversion", (row.coverage_reason for row in rows))
     if not rows:
         yield from ()
         return
