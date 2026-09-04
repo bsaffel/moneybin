@@ -59,7 +59,7 @@ def validate_note_text(text: str) -> None:
         raise ValueError(f"note text exceeds {NOTE_MAX_LEN} chars")
 
 
-def validate_category_text(value: str, field: str = "category") -> None:
+def validate_category_text(value: str, field: str) -> None:
     """Enforce non-blank category text within ``CATEGORY_NAME_MAX_LEN`` chars.
 
     A category of spaces is not a category. The MCP write contracts already

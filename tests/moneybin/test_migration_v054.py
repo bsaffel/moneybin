@@ -78,9 +78,20 @@ def _category_pair(db: Database, split_id: str) -> tuple[str | None, str | None]
 class TestV054BackfillBlankSplitCategories:
     """V054 nulls out whitespace-only category/subcategory, leaves the rest."""
 
-    def test_whitespace_only_category_becomes_null(self, v054_db: Database) -> None:
+    def test_whitespace_only_category_takes_its_subcategory_with_it(
+        self, v054_db: Database
+    ) -> None:
+        """A subcategory cannot outlive the category it hangs off.
+
+        Nulling only the category would leave ``(NULL, 'Coffee')``, and
+        ``core.fct_transaction_lines`` coalesces each field independently — so
+        the rendered line would pair the *parent's* category with this split's
+        leftover subcategory, a combination nobody chose. `SplitTarget` refuses
+        that same shape on MCP writes, so producing one here would have the
+        migration manufacture a state the write path forbids.
+        """
         run_migration(v054_db, migrate)
-        assert _category_pair(v054_db, BLANK_CATEGORY_SPLIT) == (None, "Coffee")
+        assert _category_pair(v054_db, BLANK_CATEGORY_SPLIT) == (None, None)
 
     def test_whitespace_only_subcategory_becomes_null(self, v054_db: Database) -> None:
         run_migration(v054_db, migrate)
@@ -115,7 +126,7 @@ class TestV054BackfillBlankSplitCategories:
         """Re-running the migration on an already-migrated DB is harmless."""
         run_migration(v054_db, migrate)
         run_migration(v054_db, migrate)
-        assert _category_pair(v054_db, BLANK_CATEGORY_SPLIT) == (None, "Coffee")
+        assert _category_pair(v054_db, BLANK_CATEGORY_SPLIT) == (None, None)
         assert _category_pair(v054_db, PADDED_SPLIT) == ("  Gas  ", None)
 
 

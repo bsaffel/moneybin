@@ -275,7 +275,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is what lets the renderer treat `NULL` as the one absence it has to spell.
   A split already stored with a whitespace-only category or subcategory
   before this fix is backfilled to `NULL` on next migration (padding, e.g.
-  `'  Groceries  '`, is left as-is — same restraint as the write path).
+  `'  Groceries  '`, is left as-is — same restraint as the write path). A
+  blanked category takes its subcategory with it: a subcategory is a child of
+  a category, so `(NULL, 'Coffee')` is an invalid pair rather than a partial
+  one — it is the shape MCP writes already refuse, and
+  `core.fct_transaction_lines` would otherwise render the parent's category
+  beside the split's orphaned subcategory.
   The refusal names the field it refused — `subcategory must be non-empty`
   rather than `category must be non-empty`, and `splits[2].subcategory …`
   when a batch is being set — so a caller is pointed at the flag they got

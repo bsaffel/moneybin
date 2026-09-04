@@ -16,8 +16,43 @@ is left as-is: this PR deliberately does not trim padding anywhere, on the
 write path or here, to avoid a second normalization pattern; only the blank
 case this PR exists to close is backfilled.
 
+A blanked ``category`` takes its ``subcategory`` with it. A subcategory is a
+child of a category in this taxonomy, so ``(NULL, 'Coffee')`` is not a
+weaker answer than ``(NULL, NULL)`` — it is an invalid one, and
+``write_contracts.SplitTarget`` refuses exactly that shape on MCP writes.
+``core.fct_transaction_lines`` coalesces the two fields independently, so
+leaving the orphan would render the parent's category beside this split's
+subcategory: a pair nobody chose. The reverse does not hold — a blank
+subcategory under a real category just nulls the subcategory.
+
 Idempotent: the ``UPDATE`` only touches rows that are non-NULL and entirely
 whitespace, so replay is a no-op.
+
+Deliberately NOT re-resolved: ``category_id``. It is the canonical FK
+(``category``/``subcategory`` are V014's deprecated display snapshot), and
+normalizing the text can make a pair resolvable that was not — a legacy
+``('Hobbies', '   ')`` becomes ``('Hobbies', NULL)``, which matches a real
+``core.dim_categories`` row, while the FK stays the ``NULL`` it was. Such a
+row displays as categorized but is invisible to the reference scan in
+``plan_category_delete``, which keys on ``category_id``. Re-deriving it here
+would mean inlining a copy of the ``dim_categories`` view the way V014 does,
+because migrations run before ``refresh_views()`` and the view may not exist
+yet. That machinery is not justified for this migration: it is a no-op on
+every install in existence — MoneyBin has no installed base, so there are no
+legacy rows for it to touch — and the write path it protects now refuses a
+blank outright, so no new row can reach this shape. A future install that
+imports pre-existing data does not reach it either; the staging models null a
+blank out before it is ever stored.
+
+Deliberately NOT rewritten: historical ``app.audit_log`` images.
+``BaseRepo.undo_event()`` → ``_insert_row()`` restores a captured before-image
+verbatim, with no validator in the path, so undoing a pre-V054
+``split.remove`` could write a blank straight back. That is a general property
+of the undo mechanism for every field on every table rather than anything
+specific to category text, and it needs an image captured before this PR's
+guard existed — which, per the paragraph above, cannot exist. Closing it
+properly means validating on the undo path, not rewriting audit history, and
+that is its own change.
 """
 
 from __future__ import annotations
@@ -60,6 +95,7 @@ def migrate(conn: object) -> None:
             END,
             subcategory = CASE
                 WHEN REGEXP_FULL_MATCH(subcategory, ?)
+                  OR REGEXP_FULL_MATCH(category, ?)
                 THEN NULL
                 ELSE subcategory
             END
@@ -67,5 +103,5 @@ def migrate(conn: object) -> None:
             REGEXP_FULL_MATCH(category, ?)
             OR REGEXP_FULL_MATCH(subcategory, ?)
         """,
-        [_BLANK] * 4,
+        [_BLANK] * 5,
     )
