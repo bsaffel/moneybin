@@ -1,0 +1,87 @@
+"""Integration tests for the Core Currency conversion Python model."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+
+import pytest
+
+from moneybin.database import Database
+from moneybin.services.transform_service import TransformService
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.mark.slow
+def test_transform_materializes_exact_single_row_currency_conversion(
+    db: Database,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO app.profile_settings (home_currency, updated_at)
+        VALUES ('USD', '2026-03-01 09:00:00'::TIMESTAMP)
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO raw.manual_transactions (
+            source_transaction_id, import_id, account_id, transaction_date,
+            amount, to_amount, description, currency_code, to_currency,
+            created_at, created_by
+        ) VALUES (
+            'manual_conversion_1', 'import_conversion_1', 'acct-eur',
+            '2026-03-16'::DATE, -80.00, 100.00, 'Currency conversion',
+            'EUR', 'USD', '2026-03-16 14:00:00'::TIMESTAMP, 'cli'
+        )
+        """
+    )
+
+    result = TransformService(db).apply()
+    assert result.applied, f"transform apply failed: {result.error}"
+
+    rows = db.execute(
+        """
+        SELECT conversion_id, source_shape, transfer_pair_id, from_transaction_id,
+               to_transaction_id, from_account_id, to_account_id,
+               from_amount, from_currency, to_amount, to_currency,
+               executed_rate, home_currency, home_value, valuation_rate,
+               valuation_rate_date, valuation_source_type,
+               from_source_type, from_source_origin,
+               from_source_transaction_id, to_source_type, to_source_origin,
+               to_source_transaction_id, coverage_status, coverage_reason,
+               updated_at
+        FROM core.bridge_currency_conversions
+        """
+    ).fetchall()
+
+    assert rows == [
+        (
+            "conversion_9cc10e7dc8449fc4",
+            "single_row",
+            None,
+            "649f6d8958fb4c49",
+            None,
+            "acct-eur",
+            "acct-eur",
+            Decimal("80.00"),
+            "EUR",
+            Decimal("100.00"),
+            "USD",
+            Decimal("1.25000000"),
+            "USD",
+            Decimal("100.00"),
+            Decimal("1.25000000"),
+            date(2026, 3, 16),
+            "actual",
+            "manual",
+            "user",
+            "manual_conversion_1",
+            "manual",
+            "user",
+            "manual_conversion_1",
+            "complete",
+            None,
+            datetime(2026, 3, 16, 14, 0, 0),
+        )
+    ]

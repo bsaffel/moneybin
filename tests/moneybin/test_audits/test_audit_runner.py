@@ -58,6 +58,7 @@ def _txn_values(
     *,
     amount: str,
     direction: str,
+    currency: str = "USD",
     category: str = "NULL",
     is_transfer: str = "FALSE",
     transfer_pair_id: str = "NULL",
@@ -71,7 +72,7 @@ def _txn_values(
     return (
         f"('{transaction_id}', 'ACC1', '2026-01-{day:02d}', {amount}, {absolute}, "
         f"'{direction}', 'Row {transaction_id}', {category_sql}, {is_transfer}, "
-        f"{pair_sql}, 'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, "
+        f"{pair_sql}, 'DEBIT', false, '{currency}', 'ofx', CURRENT_TIMESTAMP, "
         f"CURRENT_TIMESTAMP, 2026, 1, {day}, 3, '2026-01', '2026-Q1')"
     )
 
@@ -182,6 +183,20 @@ def test_balanced_transfers_accepts_a_pair_that_nets_to_zero(db: Database) -> No
         db,
         _txn_values("T_DEBIT", amount="-100.00", direction="expense"),
         _txn_values("T_CREDIT", amount="100.00", direction="income"),
+    )
+    _insert_transfer(db, "XFER1", "T_DEBIT", "T_CREDIT", "100.00")
+
+    assert _violations(db, "bridge_transfers_balanced") == []
+
+
+def test_balanced_transfers_accepts_a_known_cross_currency_pair(
+    db: Database,
+) -> None:
+    _seed_account(db)
+    _insert_transactions(
+        db,
+        _txn_values("T_DEBIT", amount="-100.00", direction="expense", currency="USD"),
+        _txn_values("T_CREDIT", amount="90.00", direction="income", currency="EUR"),
     )
     _insert_transfer(db, "XFER1", "T_DEBIT", "T_CREDIT", "100.00")
 

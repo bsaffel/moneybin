@@ -29,6 +29,7 @@ from moneybin.connectors.rates.errors import (
 from moneybin.connectors.rates.protocol import RateAdapter, RateObservation
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.services import currency_service
 from moneybin.services.currency_service import CurrencyService, RateUnavailableError
 
 _FRI = date(2026, 3, 13)
@@ -36,6 +37,16 @@ _SAT = date(2026, 3, 14)
 _SUN = date(2026, 3, 15)
 _MON = date(2026, 3, 16)
 _TUE = date(2026, 3, 17)
+
+
+@pytest.mark.parametrize("day", [_FRI, _MON, _TUE])
+def test_last_publication_day_keeps_weekdays(day: date) -> None:
+    assert currency_service.last_publication_day(day) == day
+
+
+@pytest.mark.parametrize("day", [_SAT, _SUN])
+def test_last_publication_day_returns_friday_for_weekends(day: date) -> None:
+    assert currency_service.last_publication_day(day) == _FRI
 
 
 class _OfflineAdapter:
