@@ -57,7 +57,7 @@ def test_transform_materializes_exact_single_row_currency_conversion(
 
     assert rows == [
         (
-            "conversion_9cc10e7dc8449fc4",
+            "fxc_3c30f82ad673cc5f",
             "single_row",
             None,
             "649f6d8958fb4c49",

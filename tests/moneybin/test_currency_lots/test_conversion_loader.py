@@ -254,6 +254,18 @@ def test_conversion_id_ignores_corrected_amounts_and_dates() -> None:
     assert original.conversion_id == corrected.conversion_id
 
 
+def test_linked_conversion_id_uses_transfer_evidence_identity() -> None:
+    row = _load(_context(linked=_frame(_linked())))[0]
+
+    assert row.conversion_id == "fxc_18b6a46c9f164284"
+
+
+def test_single_row_conversion_id_uses_transaction_evidence_identity() -> None:
+    row = _load(_context(single=_frame(_single())))[0]
+
+    assert row.conversion_id == "fxc_2bbdacbd8d0310a6"
+
+
 def test_only_accepted_unreversed_transfer_decisions_are_queried() -> None:
     context = _context()
 
@@ -270,6 +282,51 @@ def test_same_currency_transfer_is_not_a_currency_conversion() -> None:
         _load(_context(linked=_frame(_linked(from_currency="USD", to_currency="USD"))))
         == []
     )
+
+
+def test_positive_sent_amount_is_incomplete_shape() -> None:
+    row = _load(_context(linked=_frame(_linked(from_amount="100.00"))))[0]
+
+    assert row.coverage_status == "incomplete"
+    assert row.coverage_reason == "incomplete_shape"
+    assert row.executed_rate is None
+
+
+@pytest.mark.parametrize("to_amount", ["0.00", "-90.00"])
+def test_nonpositive_received_amount_is_incomplete_shape(to_amount: str) -> None:
+    row = _load(_context(linked=_frame(_linked(to_amount=to_amount))))[0]
+
+    assert row.coverage_status == "incomplete"
+    assert row.coverage_reason == "incomplete_shape"
+    assert row.executed_rate is None
+
+
+def test_reversed_transfer_terms_are_incomplete_shape() -> None:
+    row = _load(
+        _context(linked=_frame(_linked(from_amount="100.00", to_amount="-90.00")))
+    )[0]
+
+    assert row.coverage_status == "incomplete"
+    assert row.coverage_reason == "incomplete_shape"
+    assert row.executed_rate is None
+
+
+def test_invalid_same_currency_transfer_stays_inspectable() -> None:
+    rows = _load(
+        _context(
+            linked=_frame(
+                _linked(
+                    from_amount="100.00",
+                    from_currency="USD",
+                    to_currency="USD",
+                )
+            )
+        )
+    )
+
+    assert len(rows) == 1
+    assert rows[0].coverage_status == "incomplete"
+    assert rows[0].coverage_reason == "incomplete_shape"
 
 
 def test_accepted_decision_missing_from_transfer_bridge_stays_inspectable() -> None:

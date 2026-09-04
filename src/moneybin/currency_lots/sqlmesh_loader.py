@@ -146,17 +146,20 @@ def _candidate(record: dict[str, object]) -> _Candidate:
 
 
 def _conversion_id(candidate: _Candidate) -> str:
-    evidence_id = (
-        candidate.transfer_pair_id
-        if candidate.source_shape == "linked_two_row"
-        else candidate.from_transaction_id
-    )
+    if candidate.source_shape == "linked_two_row":
+        evidence_id = candidate.transfer_pair_id
+        evidence_kind = "transfer"
+    elif candidate.source_shape == "single_row":
+        evidence_id = candidate.from_transaction_id
+        evidence_kind = "transaction"
+    else:
+        raise ValueError(
+            f"unsupported conversion source shape: {candidate.source_shape}"
+        )
     if evidence_id is None:
         raise ValueError("trusted conversion evidence has no identity")
-    digest = hashlib.sha256(
-        f"{candidate.source_shape}|{evidence_id}".encode()
-    ).hexdigest()[:16]
-    return f"conversion_{digest}"
+    digest = hashlib.sha256(f"{evidence_kind}|{evidence_id}".encode()).hexdigest()[:16]
+    return f"fxc_{digest}"
 
 
 def _latest(*values: datetime | None) -> datetime | None:
@@ -183,15 +186,14 @@ def _derive_conversion(
     home_updated_at: datetime | None,
     stored_rate: t.Callable[[str, str, date], _StoredRate | None],
 ) -> CurrencyConversionRow | None:
-    if (
-        candidate.from_currency is not None
-        and candidate.to_currency is not None
-        and candidate.from_currency == candidate.to_currency
-    ):
-        return None
-
     missing_leg = candidate.source_shape == "linked_two_row" and (
         candidate.from_transaction_id is None or candidate.to_transaction_id is None
+    )
+    valid_terms = (
+        candidate.from_amount is not None
+        and candidate.from_amount < 0
+        and candidate.to_amount is not None
+        and candidate.to_amount > 0
     )
     incomplete_shape = (
         any(
@@ -210,11 +212,19 @@ def _derive_conversion(
             candidate.source_shape == "single_row"
             and (candidate.to_amount is None or candidate.to_currency is None)
         )
-        or candidate.from_amount == 0
+        or not valid_terms
     )
     unknown_currency = not _valid_currency(
         candidate.from_currency
     ) or not _valid_currency(candidate.to_currency)
+
+    if (
+        not missing_leg
+        and not incomplete_shape
+        and not unknown_currency
+        and candidate.from_currency == candidate.to_currency
+    ):
+        return None
 
     reason: str | None = None
     if missing_leg:
@@ -231,8 +241,10 @@ def _derive_conversion(
     )
     to_amount = abs(candidate.to_amount) if candidate.to_amount is not None else None
     executed_rate: Decimal | None = None
-    if from_amount not in (None, 0) and to_amount is not None:
-        executed_rate = _quantize_rate(to_amount / from_amount)
+    if valid_terms:
+        complete_from_amount = t.cast("Decimal", from_amount)
+        complete_to_amount = t.cast("Decimal", to_amount)
+        executed_rate = _quantize_rate(complete_to_amount / complete_from_amount)
 
     home_value: Decimal | None = None
     valuation_rate: Decimal | None = None
