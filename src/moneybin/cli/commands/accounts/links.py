@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from moneybin.database import Database
-    from moneybin.services.refresh import RefreshResult
+    from moneybin.orchestration.refresh import RefreshResult
     from moneybin.services.review_decisions_service import IdentityDecisionPlan
 
 app = typer.Typer(
@@ -167,9 +167,9 @@ def links_set(
     it is.
 
     Examples:
-      accounts links set dec001 --into ACC002
-      accounts links set dec001 --into ACC002 --yes
-      accounts links set dec001 --standalone
+      moneybin accounts links set dec001 --into ACC002
+      moneybin accounts links set dec001 --into ACC002 --yes
+      moneybin accounts links set dec001 --standalone
     """
     if into is not None and standalone:
         logger.error("❌ --into and --standalone are mutually exclusive")
@@ -312,7 +312,7 @@ def _plan_merge(
     """Resolve the merge against ``db``, the way MCP plans the same decision."""
     # Deferred: the identity contracts and decision service are not worth loading
     # on every CLI invocation to gate one subcommand.
-    from moneybin.mcp.write_contracts import (  # noqa: PLC0415 — keep off the cold-start path
+    from moneybin.protocol.write_contracts import (  # noqa: PLC0415 — keep off the cold-start path
         AccountLinkDecisionRequest,
     )
     from moneybin.services.review_decisions_service import (  # noqa: PLC0415 — keep off the cold-start path

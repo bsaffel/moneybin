@@ -78,6 +78,161 @@ def test_list_text_output_shows_columns() -> None:
 
 
 @pytest.mark.unit
+def test_list_text_names_the_account_column_for_the_key_it_holds() -> None:
+    """Requirement 28: the column is `account_id` on both sides of the join.
+
+    It has always held an id. Calling it `account` left the reader to guess
+    whether they were looking at a name, and left the shared key with
+    `accounts list` — the whole of the F7 fix — implicit.
+    """
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result([_make_txn()])
+            ):
+                result = runner.invoke(app, ["transactions", "list"])
+    assert result.exit_code == 0
+    assert "account_id" in result.output
+    assert "A1" in result.output
+
+
+@pytest.mark.unit
+def test_list_text_frames_the_page_against_the_whole_result() -> None:
+    """Requirement 34: `N of M shown` replaces the raw cursor line.
+
+    The count comes from `total_count`, which the envelope already carried —
+    the text branch simply never rendered it.
+    """
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService,
+                "get",
+                return_value=_mock_result(
+                    [_make_txn()], next_cursor="Y3Vyc29y", total_count=42
+                ),
+            ):
+                result = runner.invoke(app, ["transactions", "list"])
+    assert result.exit_code == 0
+    assert "1 of 42 shown" in result.output
+
+
+@pytest.mark.unit
+def test_list_text_offers_no_continuation_on_the_last_page_of_a_walk() -> None:
+    """Requirement 34's remedy follows `next_cursor`, not the remainder.
+
+    `total_count` is every row matching the filters and does not shrink as a
+    walk advances, so the last page of one still shows fewer rows than the
+    total. Reading the remainder alone would offer `--limit` against a page
+    that does not exist. The slice is still disclosed — the promise is not.
+    """
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService,
+                "get",
+                return_value=_mock_result(
+                    [_make_txn()], next_cursor=None, total_count=42
+                ),
+            ):
+                result = runner.invoke(
+                    app, ["transactions", "list", "--cursor", "Y3Vyc29y"]
+                )
+    assert result.exit_code == 0
+    assert "1 of 42 shown" in result.output
+    assert "--limit" not in result.output
+
+
+@pytest.mark.unit
+def test_list_text_never_prints_the_raw_cursor() -> None:
+    """Requirement 34 deletes the line, it does not relocate it.
+
+    F10 reported a base64 keyset token printed at the user. It is unreadable,
+    cannot be retyped reliably, and told the reader nothing about the result.
+    The continuation remains available where a caller can actually use it: the
+    JSON envelope's `actions[]`, covered by its own test below.
+    """
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService,
+                "get",
+                return_value=_mock_result(
+                    [_make_txn()], next_cursor="Y3Vyc29y", total_count=42
+                ),
+            ):
+                result = runner.invoke(app, ["transactions", "list"])
+    assert result.exit_code == 0
+    assert "Y3Vyc29y" not in result.output
+    assert "Next page" not in result.output
+
+
+@pytest.mark.unit
+def test_list_text_names_an_uncategorized_row_and_counts_it() -> None:
+    """Requirements 29, 30: one word for an absent category, and a count.
+
+    `core.fct_transactions.category` is NULL for a row categorization has not
+    reached, and the text branch is the only surface that owes the reader a
+    word for that. The count rides the framing line rather than a
+    `render_note`, which `-q` would suppress — a taxonomy gap the user cannot
+    see is what requirement 29 exists to prevent.
+    """
+    txns = [_make_txn(), _make_txn(transaction_id="T2", category=None)]
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result(txns)
+            ):
+                result = runner.invoke(app, ["transactions", "list"])
+    assert result.exit_code == 0
+    assert "Uncategorized" in result.output
+    assert "1 uncategorized" in result.output
+
+
+@pytest.mark.unit
+def test_list_text_keeps_the_uncategorized_count_under_quiet() -> None:
+    """Requirement 30: `-q` asks for less chatter, not for a narrower truth.
+
+    The count states how far the categories on screen can be trusted, which
+    `cli.md` keeps printing under `-q` for the same reason it keeps a
+    truncation notice.
+    """
+    txns = [_make_txn(transaction_id="T2", category=None)]
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result(txns)
+            ):
+                result = runner.invoke(app, ["transactions", "list", "--quiet"])
+    assert result.exit_code == 0
+    assert "1 uncategorized" in result.output
+
+
+@pytest.mark.unit
+def test_list_json_leaves_an_absent_category_null() -> None:
+    """Requirement 30: the placeholder is a text-rendering decision only.
+
+    JSON carries the NULL through untouched, so a caller can still tell an
+    uncategorized row from one categorized as the literal string.
+    """
+    import json
+
+    txns = [_make_txn(category=None)]
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result(txns)
+            ):
+                result = runner.invoke(
+                    app, ["transactions", "list", "--output", "json"]
+                )
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["data"]["transactions"][0]["category"] is None
+    assert "Uncategorized" not in result.stdout
+
+
+@pytest.mark.unit
 def test_list_does_not_elide_a_long_description() -> None:
     """A description wider than the old 50-character cut folds instead of clipping.
 

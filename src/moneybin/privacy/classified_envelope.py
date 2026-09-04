@@ -29,7 +29,7 @@ from the transform table rather than a comment, the way the gsheet drift hint
 does; a comment does not fail when someone changes the class.
 
 Lives under ``moneybin.privacy`` rather than ``moneybin.mcp``: both surfaces
-use it, and ``moneybin.mcp.privacy`` already imports from here, so the reverse
+use it, and ``moneybin.privacy.sensitivity`` already imports from here, so the reverse
 edge would be a cycle.
 """
 
@@ -50,9 +50,10 @@ type SensitivityLiteral = Literal["low", "medium", "high", "critical"]
 def tier_sensitivity(tier: Tier) -> SensitivityLiteral:
     """Return the envelope's ``sensitivity`` string for ``tier``.
 
-    Spelled here rather than through ``mcp.privacy.tier_to_sensitivity`` to
-    keep ``moneybin.privacy`` free of an import edge back into
-    ``moneybin.mcp``. A test pins the two spellings together.
+    Duplicates ``privacy.sensitivity.tier_to_sensitivity``, which lived under
+    ``moneybin.mcp`` when this was written — spelling it here was how
+    ``moneybin.privacy`` stayed free of an import edge into the transport
+    package. That edge is gone; a test still pins the two together.
     """
     return cast(SensitivityLiteral, tier.name.lower())
 

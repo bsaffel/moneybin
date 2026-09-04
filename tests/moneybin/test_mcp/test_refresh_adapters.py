@@ -6,15 +6,15 @@ from typing import Any
 
 import pytest
 
-from moneybin.mcp.adapters.refresh_adapters import (
+from moneybin.adapters.refresh_adapters import (
     refresh_envelope,
     refresh_rate_gap_hints,
     refresh_step_actions,
 )
+from moneybin.orchestration.refresh import RefreshResult, SelfHealRecord, expand_steps
 from moneybin.privacy.payloads.system import RefreshRunPayload
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.rate_backfill import RateBackfillResult
-from moneybin.services.refresh import RefreshResult, SelfHealRecord, expand_steps
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 from tests.moneybin.test_mcp.schema_assertions import (
     assert_recovery_actions_executable,
@@ -328,7 +328,9 @@ async def test_both_errors_emit_single_doctor_action() -> None:
 @pytest.mark.unit
 def test_categorize_followup_suppressed_when_matcher_crashed() -> None:
     """A matcher crash suppresses the 'run categorize' hint (recovery says retry match)."""
-    from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
+    from moneybin.adapters.refresh_adapters import (
+        REFRESH_CATEGORIZE_FOLLOWUP_HINT,
+    )
 
     env = refresh_envelope(
         RefreshResult(applied=False, duration_seconds=None, matching_error="boom"),
@@ -340,7 +342,9 @@ def test_categorize_followup_suppressed_when_matcher_crashed() -> None:
 @pytest.mark.unit
 def test_categorize_followup_still_fires_on_clean_match_only() -> None:
     """A clean match-only run still emits the categorize follow-up hint."""
-    from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
+    from moneybin.adapters.refresh_adapters import (
+        REFRESH_CATEGORIZE_FOLLOWUP_HINT,
+    )
 
     env = refresh_envelope(
         RefreshResult(applied=False, duration_seconds=None),

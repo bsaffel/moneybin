@@ -21,15 +21,6 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.matching.hashing import gold_key_unmatched
-from moneybin.mcp.write_contracts import (
-    AnnotationRequest,
-    NoteAdd,
-    NoteDelete,
-    NoteEdit,
-    SplitsSet,
-    TagRename,
-    TagsSet,
-)
 from moneybin.protocol.pagination import (
     KeysetPosition,
     KeysetScalar,
@@ -39,6 +30,15 @@ from moneybin.protocol.pagination import (
     decode_keyset_cursor,
     reject_inverted_keyset,
     validate_keyset_shape,
+)
+from moneybin.protocol.write_contracts import (
+    AnnotationRequest,
+    NoteAdd,
+    NoteDelete,
+    NoteEdit,
+    SplitsSet,
+    TagRename,
+    TagsSet,
 )
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
@@ -57,6 +57,8 @@ from moneybin.tables import (
     FCT_TRANSACTIONS,
     MANUAL_TRANSACTIONS,
     TRANSACTION_NOTES,
+    TRANSACTION_SPLITS,
+    TRANSACTION_TAGS,
 )
 
 logger = logging.getLogger(__name__)
@@ -1329,11 +1331,11 @@ class TransactionService:
             transaction_id=transaction_id, note_id=note_id, text=text, actor=actor
         )
         row = self._db.conn.execute(
-            """
+            f"""
             SELECT note_id, transaction_id, text, author, created_at
-              FROM app.transaction_notes
+              FROM {TRANSACTION_NOTES.full_name}
              WHERE note_id = ?
-            """,
+            """,  # noqa: S608  # TRANSACTION_NOTES is a TableRef constant
             [note_id],
         ).fetchone()
         if row is None:  # defensive — insert just succeeded
@@ -1349,11 +1351,11 @@ class TransactionService:
         validate_note_text(text)
         self._notes_repo.edit(note_id=note_id, text=text, actor=actor)
         row = self._db.conn.execute(
-            """
+            f"""
             SELECT note_id, transaction_id, text, author, created_at
-              FROM app.transaction_notes
+              FROM {TRANSACTION_NOTES.full_name}
              WHERE note_id = ?
-            """,
+            """,  # noqa: S608  # TRANSACTION_NOTES is a TableRef constant
             [note_id],
         ).fetchone()
         if row is None:
@@ -1390,7 +1392,7 @@ class TransactionService:
         try:
             for tag in tags:
                 existed = self._db.conn.execute(
-                    "SELECT 1 FROM app.transaction_tags "
+                    f"SELECT 1 FROM {TRANSACTION_TAGS.full_name} "  # noqa: S608  # TableRef constant
                     "WHERE transaction_id = ? AND tag = ?",
                     [transaction_id, tag],
                 ).fetchone()
@@ -1427,7 +1429,7 @@ class TransactionService:
         try:
             for tag in tags:
                 existed = self._db.conn.execute(
-                    "SELECT 1 FROM app.transaction_tags "
+                    f"SELECT 1 FROM {TRANSACTION_TAGS.full_name} "  # noqa: S608  # TableRef constant
                     "WHERE transaction_id = ? AND tag = ?",
                     [transaction_id, tag],
                 ).fetchone()
@@ -1554,26 +1556,26 @@ class TransactionService:
         validate_slug(old_tag)
         validate_slug(new_tag)
         rows = self._db.conn.execute(
-            """
+            f"""
             SELECT transaction_id
-              FROM app.transaction_tags
+              FROM {TRANSACTION_TAGS.full_name}
              WHERE tag = ?
              ORDER BY transaction_id
-            """,
+            """,  # noqa: S608  # TRANSACTION_TAGS is a TableRef constant
             [old_tag],
         ).fetchall()
         target_ids = tuple(str(row[0]) for row in rows)
         if target_ids:
             conflicts = self._db.conn.execute(
-                """
+                f"""
                 SELECT transaction_id
-                  FROM app.transaction_tags
+                  FROM {TRANSACTION_TAGS.full_name}
                  WHERE tag = ? AND transaction_id IN (
                     SELECT transaction_id
-                      FROM app.transaction_tags
+                      FROM {TRANSACTION_TAGS.full_name}
                      WHERE tag = ?
                  )
-                """,
+                """,  # noqa: S608  # TRANSACTION_TAGS is a TableRef constant
                 [new_tag, old_tag],
             ).fetchall()
             if conflicts:
@@ -1622,11 +1624,11 @@ class TransactionService:
     def list_tags(self, transaction_id: str) -> list[str]:
         """Return the tags applied to a transaction in lexicographic order."""
         rows = self._db.conn.execute(
-            """
-            SELECT tag FROM app.transaction_tags
+            f"""
+            SELECT tag FROM {TRANSACTION_TAGS.full_name}
              WHERE transaction_id = ?
              ORDER BY tag
-            """,
+            """,  # noqa: S608  # TRANSACTION_TAGS is a TableRef constant
             [transaction_id],
         ).fetchall()
         return [str(r[0]) for r in rows]
@@ -1638,24 +1640,24 @@ class TransactionService:
         i.e. the number of (transaction, tag) applications.
         """
         rows = self._db.conn.execute(
-            """
+            f"""
             SELECT tag, COUNT(*) AS usage_count
-              FROM app.transaction_tags
+              FROM {TRANSACTION_TAGS.full_name}
              GROUP BY tag
              ORDER BY tag
-            """
+            """  # noqa: S608  # TRANSACTION_TAGS is a TableRef constant
         ).fetchall()
         return [(str(r[0]), int(r[1])) for r in rows]
 
     def list_notes(self, transaction_id: str) -> list[Note]:
         """Return all notes for a transaction in chronological order."""
         rows = self._db.conn.execute(
-            """
+            f"""
             SELECT note_id, transaction_id, text, author, created_at
-              FROM app.transaction_notes
+              FROM {TRANSACTION_NOTES.full_name}
              WHERE transaction_id = ?
              ORDER BY created_at, note_id
-            """,
+            """,  # noqa: S608  # TRANSACTION_NOTES is a TableRef constant
             [transaction_id],
         ).fetchall()
         return [_row_to_note(r) for r in rows]
@@ -1685,11 +1687,11 @@ class TransactionService:
         self._db.begin()
         try:
             ord_row = self._db.conn.execute(
-                """
+                f"""
                 SELECT COALESCE(MAX(ord) + 1, 0)
-                  FROM app.transaction_splits
+                  FROM {TRANSACTION_SPLITS.full_name}
                  WHERE transaction_id = ?
-                """,
+                """,  # noqa: S608  # TRANSACTION_SPLITS is a TableRef constant
                 [transaction_id],
             ).fetchone()
             next_ord = int(ord_row[0]) if ord_row is not None else 0
@@ -1711,12 +1713,12 @@ class TransactionService:
             self._db.rollback()
             raise
         row = self._db.conn.execute(
-            """
+            f"""
             SELECT split_id, transaction_id, amount, category, subcategory,
                    note, ord, created_at, created_by
-              FROM app.transaction_splits
+              FROM {TRANSACTION_SPLITS.full_name}
              WHERE split_id = ?
-            """,
+            """,  # noqa: S608  # TRANSACTION_SPLITS is a TableRef constant
             [split_id],
         ).fetchone()
         if row is None:  # defensive — insert just succeeded
@@ -1841,12 +1843,12 @@ class TransactionService:
                 code=error_codes.TRANSACTION_SPLIT_TOTAL_INVALID,
             )
         rows = self._db.conn.execute(
-            """
+            f"""
             SELECT amount, category, subcategory, category_id, note
-              FROM app.transaction_splits
+              FROM {TRANSACTION_SPLITS.full_name}
              WHERE transaction_id = ?
              ORDER BY ord, split_id
-            """,
+            """,  # noqa: S608  # TRANSACTION_SPLITS is a TableRef constant
             [transaction_id],
         ).fetchall()
         current = tuple(
@@ -1902,13 +1904,13 @@ class TransactionService:
     def list_splits(self, transaction_id: str) -> list[Split]:
         """Return all splits for a transaction ordered by ``ord, split_id``."""
         rows = self._db.conn.execute(
-            """
+            f"""
             SELECT split_id, transaction_id, amount, category, subcategory,
                    note, ord, created_at, created_by
-              FROM app.transaction_splits
+              FROM {TRANSACTION_SPLITS.full_name}
              WHERE transaction_id = ?
              ORDER BY ord, split_id
-            """,
+            """,  # noqa: S608  # TRANSACTION_SPLITS is a TableRef constant
             [transaction_id],
         ).fetchall()
         return [_row_to_split(r) for r in rows]
@@ -1942,7 +1944,7 @@ class TransactionService:
             f"""
             SELECT t.amount - COALESCE((
                 SELECT SUM(amount)
-                  FROM app.transaction_splits s
+                  FROM {TRANSACTION_SPLITS.full_name} s
                  WHERE s.transaction_id = t.transaction_id
             ), 0) AS residual
               FROM {FCT_TRANSACTIONS.full_name} t

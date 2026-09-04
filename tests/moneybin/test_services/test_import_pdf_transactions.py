@@ -26,13 +26,13 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.metrics.observations import MetricObservations
+from moneybin.orchestration.refresh import RefreshResult
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     SignConventionProposal,
 )
 from moneybin.services.import_service import ImportService
-from moneybin.services.refresh import RefreshResult
 from tests.import_helpers import import_answering_gate
 from tests.moneybin.db_helpers import create_core_tables
 from tests.moneybin.pdf_statement_fixtures import (

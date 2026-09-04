@@ -167,8 +167,9 @@ def investments_securities_set(
 ) -> None:
     """Update one or more fields of an existing security (partial update).
 
-    Unset flags leave the existing value untouched; ``security_type`` is not
-    settable here (immutable post-creation in v1). ``--method`` applies
+    At least one field flag is required; unset flags leave the existing value
+    untouched. ``security_type`` is not settable here (immutable post-creation
+    in v1). ``--method`` applies
     retroactively: core.fct_investment_lots/fct_realized_gains re-derive the
     full history from the current method on every refresh, so changing it
     after a disposal was realized silently recomputes that disposal's cost

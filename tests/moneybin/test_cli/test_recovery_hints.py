@@ -23,7 +23,7 @@ from moneybin.matching.reconciliation import (
     RETIRED_SIDES_COLLAPSED,
     RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED,
 )
-from moneybin.services.refresh import RefreshResult
+from moneybin.orchestration.refresh import RefreshResult
 from tests.cli_command_helpers import assert_published_commands_resolve
 
 
@@ -183,7 +183,7 @@ def test_mcp_partial_rematch_action_names_the_decisions_that_landed() -> None:
     the caller least able to go read the audit log on a hunch — holding the
     vaguer of the two.
     """
-    from moneybin.mcp.rematch_report import rematch_actions
+    from moneybin.adapters.rematch_report import rematch_actions
 
     actions = rematch_actions(
         RefreshResult(
@@ -206,7 +206,7 @@ def test_mcp_partial_rematch_states_its_counts_once() -> None:
     merge exposed 2 new duplicate proposal(s)" that reads like a finished pass.
     The CLI twin never had this — its branches are exclusive.
     """
-    from moneybin.mcp.rematch_report import rematch_actions
+    from moneybin.adapters.rematch_report import rematch_actions
 
     actions = rematch_actions(
         RefreshResult(

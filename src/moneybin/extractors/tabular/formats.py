@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Literal
 import yaml
 from pydantic import BaseModel
 
+from moneybin.tables import TABULAR_FORMATS
+
 if TYPE_CHECKING:
     from moneybin.database import Database
 
@@ -224,16 +226,16 @@ def load_formats_from_db(db: Database) -> dict[str, TabularFormat]:
     """
     try:
         rows = db.execute(
-            """
+            f"""
             SELECT
                 name, institution_name, file_type, delimiter, encoding,
                 skip_rows, sheet, header_signature, field_mapping,
                 sign_convention, date_format, number_format,
                 skip_trailing_patterns, multi_account, source,
                 times_used, last_used_at
-            FROM app.tabular_formats
+            FROM {TABULAR_FORMATS.full_name}
             ORDER BY name
-            """
+            """  # noqa: S608  # TABULAR_FORMATS is a TableRef constant
         ).fetchall()
     except Exception:  # noqa: BLE001  # table may not exist before first migration
         logger.debug("app.tabular_formats not available; returning empty format set")

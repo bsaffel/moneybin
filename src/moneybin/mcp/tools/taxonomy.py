@@ -20,11 +20,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
-from moneybin.mcp.write_contracts import (
-    CategoryStateRequest,
-    TaxonomyStateRequest,
-)
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.categories import CategoryRow, MerchantRow
 from moneybin.privacy.payloads.taxonomy import (
@@ -34,11 +29,16 @@ from moneybin.privacy.payloads.taxonomy import (
     TaxonomySetPayload,
     TaxonomyStateResult,
 )
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
     KeysetPosition,
     decode_keyset_cursor,
     encode_keyset_cursor,
+)
+from moneybin.protocol.write_contracts import (
+    CategoryStateRequest,
+    TaxonomyStateRequest,
 )
 from moneybin.services.categorization import (
     CategorizationService,

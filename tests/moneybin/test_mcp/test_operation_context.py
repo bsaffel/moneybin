@@ -11,7 +11,7 @@ import re
 from typing import Any
 
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
 from moneybin.services.mutation_context import current_operation_id
 

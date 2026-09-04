@@ -30,8 +30,8 @@ def categorize_commit_from_file(
 ) -> None:
     r"""Commit LLM-generated categorizations from a JSON file to transactions.
 
-    Reads a JSON array where each object has:
-      transaction_id, category, and (optionally) subcategory.
+    Reads a JSON array where each object has transaction_id, category, and
+    (optionally) subcategory.
 
     Designed for the export → LLM → commit workflow:
 

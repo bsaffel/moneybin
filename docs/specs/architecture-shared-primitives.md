@@ -210,9 +210,9 @@ Each surface uses its native operation shape while preserving the same result. T
 
 2. **`ResponseEnvelope`** is the common response shape across MCP tools and CLI `--output json`. Fields: `summary` (counts, truncation flag, sensitivity tier, display currency), `data` (list of records or single dict), `actions` (next-step hints), and optional `error` (classified `UserError`). Decimal values serialize as JSON numbers — `_DecimalEncoder.default()` returns `float(o)`, which is safe because float64's ~15.95 significant digits comfortably cover personal-finance magnitudes (the docstring on the encoder spells this out). Source: `src/moneybin/protocol/envelope.py`. Constructors: `build_envelope()`, `build_error_envelope()`, `not_implemented_envelope()`.
 
-3. **Privacy middleware** (`src/moneybin/mcp/privacy.py`) provides:
-   - **Sensitivity tiers** — derived from typed result fields or computed per call by explicitly dynamic tools. Classification and critical-field masking are active; global consent enforcement and automatic degraded responses remain deferred.
-   - **Read-only validation** for the general SQL query tool: rejects writes, file-access functions, URL literals, and quoted-path scans.
+3. **Privacy middleware** provides:
+   - **Sensitivity tiers** (`src/moneybin/privacy/sensitivity.py`) — derived from typed result fields or computed per call by explicitly dynamic tools. Classification and critical-field masking are active; global consent enforcement and automatic degraded responses remain deferred.
+   - **Read-only validation** (`src/moneybin/privacy/sql_query.py`) for the general SQL query tool: rejects writes, file-access functions, URL literals, and quoted-path scans.
 
 ### Protocol-standard MCP fields are first-class, not optional
 
@@ -498,8 +498,10 @@ Two narrow naming changes rode along with this spec landing — both shipped. Re
 - `src/moneybin/tables.py` — `TableRef` constants and the `INTERFACE_TABLES` derivation.
 - `src/moneybin/staleness.py` — `resolve_threshold_days`, `is_stale`, `SECURITY_TYPE_STALENESS_DAYS`; the observation-age vocabulary shared by every valuation domain (see "Observation staleness" below).
 - `src/moneybin/protocol/envelope.py` — `ResponseEnvelope`, `SummaryMeta`, `build_envelope`, `build_error_envelope`.
+- `src/moneybin/protocol/write_contracts.py` — the strict request contracts for the standard coarse writes.
+- `src/moneybin/adapters/` — renders a service or orchestration result as the response both surfaces emit, so MCP and CLI `--output json` cannot drift. Above `orchestration`, below the transports; `actions` stay with the caller.
 - `src/moneybin/mcp/decorator.py` — `mcp_tool` decorator.
-- `src/moneybin/mcp/privacy.py` — `Sensitivity` enum and the `validate_read_only_query` re-export.
+- `src/moneybin/privacy/sensitivity.py` — the `Sensitivity` enum, the tool-call audit stubs, and `get_max_rows`.
 - `src/moneybin/observability.py` — `setup_observability`, `flush_metrics`.
 - `src/moneybin/log_sanitizer.py` — `SanitizedLogFormatter`.
 - `src/moneybin/privacy/taxonomy.py` — `DataClass` / `Tier` registry; column-level classification source of truth (PR #169, see `privacy-data-classification.md`).

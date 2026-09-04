@@ -11,13 +11,20 @@ from sqlglot import exp
 
 from moneybin.database import Database
 from moneybin.tables import (
+    AUDIT_LOG,
     GROUND_TRUTH,
+    MATCH_DECISIONS,
+    METRICS,
     OFX_ACCOUNTS,
     OFX_BALANCES,
     OFX_TRANSACTIONS,
+    SCHEMA_MIGRATIONS,
+    SEED_SOURCE_PRIORITY,
     TABULAR_ACCOUNTS,
     TABULAR_TRANSACTIONS,
+    TRANSACTION_CATEGORIES,
     USER_MERCHANTS,
+    VERSIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,21 +100,21 @@ def has_synthetic_ground_truth(db: Database) -> bool:
 # guard is `test_demo_rerun_after_a_real_cli_run`, which runs `moneybin demo` twice
 # as a real subprocess.
 _NON_USER_TABLES = frozenset({
-    "app.schema_migrations",
-    "app.versions",
-    "app.seed_source_priority",
-    "app.metrics",
+    SCHEMA_MIGRATIONS.full_name,
+    VERSIONS.full_name,
+    SEED_SOURCE_PRIORITY.full_name,
+    METRICS.full_name,
     # Evidence, not financial state — and redundant here: every mutation it records
     # also landed in a table this guard already checks.
-    "app.audit_log",
+    AUDIT_LOG.full_name,
     # Strictly derived from transactions, and written by demo's own match/categorize
     # steps. Safe to exclude because they cannot exist without a transaction behind
     # them: if that transaction is real, the raw table it came from already flags the
     # profile; if it is synthetic, the rebuild regenerates these rows anyway. Contrast
     # `_OURS_IN_APP` below — a user can author a merchant with no transactions at all,
     # so that table needs a provenance filter rather than a blanket exclusion.
-    "app.transaction_categories",
-    "app.match_decisions",
+    TRANSACTION_CATEGORIES.full_name,
+    MATCH_DECISIONS.full_name,
 })
 
 # App tables BOTH we and the user write. Blanket-excluding one would blind the guard

@@ -11,8 +11,8 @@ from typing import Annotated, Any
 import pytest
 
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
 from moneybin.privacy.introspection import PrivacyContractError
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 

@@ -13,6 +13,15 @@ from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
 from mcp.types import TextContent
 from pydantic import TypeAdapter, ValidationError
 
+from moneybin.limits import (
+    CATEGORY_NAME_MAX_LEN,
+    DESCRIPTION_MAX_LEN,
+    IDENTIFIER_MAX_LEN,
+    MERCHANT_NAME_MAX_LEN,
+    MERCHANT_PATTERN_MAX_LEN,
+    NOTE_MAX_LEN,
+    SLUG_MAX_LEN,
+)
 from moneybin.mcp.tools.accounts import BalanceAmount, register_accounts_coarse_writes
 from moneybin.mcp.tools.exports import register_export_tools
 from moneybin.mcp.tools.privacy import register_privacy_coarse_writes
@@ -21,7 +30,8 @@ from moneybin.mcp.tools.transactions import register_transaction_coarse_writes
 from moneybin.mcp.tools.transactions_categorize import (
     register_categorization_coarse_writes,
 )
-from moneybin.mcp.write_contracts import (
+from moneybin.privacy.consent import FEATURE_CATEGORIES
+from moneybin.protocol.write_contracts import (
     AccountLinkDecisionRequest,
     AnnotationRequest,
     CategorizationDecisionRequest,
@@ -37,16 +47,6 @@ from moneybin.mcp.write_contracts import (
     SecurityLinkDecisionRequest,
     SplitTarget,
     TaxonomyStateRequest,
-)
-from moneybin.privacy.consent import FEATURE_CATEGORIES
-from moneybin.services._validators import (
-    CATEGORY_NAME_MAX_LEN,
-    DESCRIPTION_MAX_LEN,
-    IDENTIFIER_MAX_LEN,
-    MERCHANT_NAME_MAX_LEN,
-    MERCHANT_PATTERN_MAX_LEN,
-    NOTE_MAX_LEN,
-    SLUG_MAX_LEN,
 )
 from moneybin.services.categorization._shared import MatchType as ServiceMatchType
 from moneybin.vocabulary import CategorizationMatchType, ConsentFeatureCategory

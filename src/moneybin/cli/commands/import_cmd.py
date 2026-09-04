@@ -2782,11 +2782,11 @@ def formats_list(
     show_pdf = _type in (_FormatTypeFilter.pdf, _FormatTypeFilter.all)
 
     if output == OutputFormat.JSON:
-        from moneybin.cli.output import render_or_json
-        from moneybin.mcp.adapters.imports_adapters import (
+        from moneybin.adapters.imports_adapters import (
             pdf_format_row,
             tabular_format_row,
         )
+        from moneybin.cli.output import render_or_json
         from moneybin.privacy.payloads.imports import (
             ImportFormatEntry,
             ImportFormatsPayload,
@@ -2923,8 +2923,10 @@ def formats_show(
     # ---- Tabular format ----
     if fmt is not None:
         if output == OutputFormat.JSON:
+            from moneybin.adapters.imports_adapters import (
+                tabular_format_detail,
+            )
             from moneybin.cli.output import render_or_json
-            from moneybin.mcp.adapters.imports_adapters import tabular_format_detail
             from moneybin.protocol.envelope import build_envelope
 
             render_or_json(
@@ -2972,8 +2974,8 @@ def formats_show(
         else None
     )
     if output == OutputFormat.JSON:
+        from moneybin.adapters.imports_adapters import pdf_format_detail
         from moneybin.cli.output import render_or_json
-        from moneybin.mcp.adapters.imports_adapters import pdf_format_detail
         from moneybin.protocol.envelope import build_envelope
 
         render_or_json(

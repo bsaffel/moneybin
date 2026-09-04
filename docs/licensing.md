@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Licensing
 
 MoneyBin is licensed under [AGPL-3.0-or-later](../LICENSE). This page explains
@@ -276,19 +276,23 @@ Honest current state — what exists today, what doesn't.
 - **Dependency pinning: `uv.lock`** pins every direct and transitive
   dep to a specific version and hash. `uv sync --frozen` installs
   exactly the locked versions.
-- **No PyPI release** today; no PyPI publish workflow. Installation is
-  from source.
+- **No PyPI release yet.** A `release.yml` workflow publishes to PyPI via
+  Trusted Publishing (OIDC, no API token) with PEP 740 attestations on tag
+  push, but no version tag has been pushed and no release has fired.
+  Installation is from source.
 - **No container image** today; no GHCR or Docker Hub publish workflow.
-- **No release signing** today — no sigstore/cosign, no GPG-signed
-  release tags. (Individual maintainer commits may be signed; that is
-  separate from release signing.)
+- **No release signing has fired yet.** The same PyPI publish step generates
+  Sigstore-backed PEP 740 attestations automatically through Trusted
+  Publishing — but that step has never run, so no artifact carries one.
+  GPG-signed release tags aren't part of the workflow. (Individual
+  maintainer commits may be signed; that is separate from release signing.)
 - **No SBOM** published today; `uv.lock` can be transformed into
   CycloneDX or SPDX with standard tooling.
 
 To verify what you're running matches upstream today: clone from
 GitHub, check out a specific commit, `uv sync --frozen`. There is no
 cryptographic chain from a maintainer-signed artifact to your running
-build until release signing ships.
+build until a release actually ships.
 
 ## License compatibility
 

@@ -4,7 +4,7 @@ Tool:
     - refresh_run — gsheet pull + match + SQLMesh apply + categorization +
       identity backfill + exchange-rate gather
 
-Wraps :func:`moneybin.services.refresh.refresh`. Operators needing
+Wraps :func:`moneybin.orchestration.refresh.refresh`. Operators needing
 SQLMesh-step granularity can pass ``steps=["transform"]`` (the granular
 form formerly exposed as ``transform_apply``), or use the CLI for
 read-only introspection: ``moneybin transform plan|validate|audit|status``
@@ -15,13 +15,13 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
+from moneybin.adapters.refresh_adapters import refresh_envelope
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
-from moneybin.mcp.adapters.refresh_adapters import refresh_envelope
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.orchestration.refresh import RefreshStep, expand_steps, refresh
 from moneybin.privacy.payloads.system import RefreshRunPayload
 from moneybin.protocol.envelope import ResponseEnvelope
-from moneybin.services.refresh import RefreshStep, expand_steps, refresh
 
 
 @mcp_tool(read_only=False)
@@ -91,7 +91,8 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         "order. Pass steps to select from gsheet, match, transform, categorize, "
         "identity, and rates. The match step acts without asking, and folding a "
         "duplicate can reverse a transfer the user already accepted: "
-        "`transfers_retired` counts those, and system_audit_undo() restores "
+        "`transfers_retired` counts those, and system_audit_undo(operation_id=...) "
+        "restores "
         "them. The rates step caches the rates this profile's own rows imply so "
         "reports convert offline; an unfilled pair lands in rate_pairs_failed "
         "(retried), rate_pairs_unsupported (needs `moneybin fx set`), or "

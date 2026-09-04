@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-02 -->
 
 # CLI Startup Flow
 
@@ -41,7 +41,7 @@ sequenceDiagram
 
 2. **Python import.** Python imports `moneybin.cli.main`. The module imports Typer, the config helpers, the observability setup, and every command-group module in [`src/moneybin/cli/commands/`](../../src/moneybin/cli/commands/). Heavy transitive dependencies (`fastmcp`, `sqlmesh`, `polars`) are **not** imported here — they live inside individual command bodies (see "Cold-start hygiene" below).
 
-3. **Typer app instantiation.** `app = typer.Typer(name="moneybin", no_args_is_help=True, ...)`. Each sub-group is attached via `app.add_typer(...)`; the leaf commands (`stats`, `logs`) are attached via `app.command(...)`.
+3. **Typer app instantiation.** `app = typer.Typer(name="moneybin", no_args_is_help=True, ...)`. Each sub-group is attached via `app.add_typer(...)`; the five leaf commands registered directly on the root — `demo`, `review`, `refresh`, `stats`, `logs` — are attached via `app.command(...)`.
 
 4. **Typer argument parsing.** Typer (a thin layer over Click) parses argv, identifies the leaf command, and routes through `main_callback` on the way down.
 
@@ -272,7 +272,7 @@ What a regression in this layer looks like, and where to look first:
 - **`moneybin db` (bare group).** `main_callback` runs (inert), Typer exits with the group's help via `no_args_is_help=True`. Resolver is registered but never fires.
 - **`moneybin profile create <new>` / `moneybin synthetic ...`.** `main_callback` skips `register_profile_resolver(...)`. The eager `set_current_profile(name)` still runs if `--profile` was supplied. Both subgroups use `get_current_profile(auto_resolve=False)` internally.
 - **`moneybin demo`.** `main_callback` skips `register_profile_resolver(...)` the same way; `DemoService` sets the active profile to the hardcoded `demo` profile itself rather than relying on the lazy chain.
-- **`moneybin demo --profile other`.** Rejected before any profile or I/O work: the guard clause in `main_callback` raises `typer.BadParameter` (exit 2) because `demo` cannot be pointed at a non-`demo` profile.
+- **`moneybin demo --profile other`.** Rejected before any profile or I/O work: the guard clause in `main_callback` raises `typer.BadParameter` (exit 2) because `demo` cannot be pointed at a non-`demo` profile. <!-- cli-invocation-ok: documents the rejection -->
 - **`moneybin logs` (no stream argument).** `stream` is an optional Typer argument (so `--print-path` and `--prune` can run without one). The command body itself checks `stream is None and not print_path and not prune` and exits 2 with its own usage message *before* calling `get_settings()` — the wizard never runs for usage errors, but the enforcement is explicit body validation, not Typer's built-in required-argument check.
 
 ## Extending the CLI

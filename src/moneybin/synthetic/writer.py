@@ -22,7 +22,14 @@ from moneybin.synthetic.models import (
     GeneratedTransaction,
     GenerationResult,
 )
-from moneybin.tables import GROUND_TRUTH
+from moneybin.tables import (
+    GROUND_TRUTH,
+    OFX_ACCOUNTS,
+    OFX_BALANCES,
+    OFX_TRANSACTIONS,
+    TABULAR_ACCOUNTS,
+    TABULAR_TRANSACTIONS,
+)
 from moneybin.utils.slugify import slugify
 
 logger = logging.getLogger(__name__)
@@ -144,7 +151,7 @@ class SyntheticWriter:
                 "extracted_at": now,
             })
         df = pl.DataFrame(rows)
-        self._db.ingest_dataframe("raw.ofx_accounts", df, on_conflict="upsert")
+        self._db.ingest_dataframe(OFX_ACCOUNTS.full_name, df, on_conflict="upsert")
         return len(rows)
 
     def _write_ofx_balances(
@@ -176,7 +183,7 @@ class SyntheticWriter:
                 "extracted_at": now,
             })
         df = pl.DataFrame(rows)
-        self._db.ingest_dataframe("raw.ofx_balances", df, on_conflict="upsert")
+        self._db.ingest_dataframe(OFX_BALANCES.full_name, df, on_conflict="upsert")
         return len(rows)
 
     def _write_ofx_transactions(
@@ -203,7 +210,7 @@ class SyntheticWriter:
                 "extracted_at": now,
             })
         df = pl.DataFrame(rows)
-        self._db.ingest_dataframe("raw.ofx_transactions", df, on_conflict="upsert")
+        self._db.ingest_dataframe(OFX_TRANSACTIONS.full_name, df, on_conflict="upsert")
         return len(rows)
 
     def _write_tabular_accounts(
@@ -227,7 +234,7 @@ class SyntheticWriter:
                 "extracted_at": now,
             })
         df = pl.DataFrame(rows)
-        self._db.ingest_dataframe("raw.tabular_accounts", df, on_conflict="upsert")
+        self._db.ingest_dataframe(TABULAR_ACCOUNTS.full_name, df, on_conflict="upsert")
         return len(rows)
 
     def _write_tabular_transactions(
@@ -265,7 +272,9 @@ class SyntheticWriter:
                 })
 
         df = pl.DataFrame(rows)
-        self._db.ingest_dataframe("raw.tabular_transactions", df, on_conflict="upsert")
+        self._db.ingest_dataframe(
+            TABULAR_TRANSACTIONS.full_name, df, on_conflict="upsert"
+        )
         return len(rows)
 
     def _write_ground_truth(

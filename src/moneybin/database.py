@@ -301,7 +301,22 @@ class DatabaseLockError(Exception):
 
 
 class DatabaseNotInitializedError(Exception):
-    """Database file missing or incomplete; run 'moneybin db init'."""
+    """Database file missing or incomplete; run 'moneybin db init'.
+
+    ``profile_registered`` answers the one question the user-facing message
+    turns on: had the active profile finished setup (its ``config.yaml``
+    exists), or is its directory still incomplete? ``get_database`` fills it in
+    because it already holds resolved settings; ``classify_user_error`` reads
+    the answer rather than reaching up into the service layer to compute it
+    while the failure is in flight. ``None`` means unanswered — a directly
+    constructed instance, or a registration probe the filesystem refused — and
+    every reader falls back to the ``db init`` message.
+    """
+
+    def __init__(self, message: str, *, profile_registered: bool | None = None) -> None:
+        """Store the message and, when known, the profile's setup state."""
+        super().__init__(message)
+        self.profile_registered = profile_registered
 
 
 class SchemaDriftError(Exception):
@@ -1231,6 +1246,33 @@ def database_was_written() -> bool:
     return _database_written
 
 
+def _active_profile_is_registered() -> bool | None:
+    """Whether the active profile finished setup, or ``None`` if unreadable.
+
+    Answers the question ``DatabaseNotInitializedError`` carries — a registered
+    profile is only missing its database (``db init``), an unregistered one has
+    never been set up (``profile create``). Called only while that error is in
+    flight, and only from ``get_database``, which has already resolved settings
+    on the same frame — so this reads a cached value and can never trigger
+    first-run profile resolution.
+
+    ``ProfileService.is_registered`` owns this question and answers it the same
+    way. Calling it here would put ``database`` above ``services``, which import
+    it — so the predicate is duplicated deliberately, and duplicated *exactly*:
+    both spell the probe ``(<profile dir>/"config.yaml").exists()``, so the two
+    can never disagree about a profile.
+
+    ``Path.exists`` swallows only ENOENT-class errors, so a denied read (macOS
+    TCC, a locked-down profile root) raises rather than answering False. Left
+    uncaught it would replace "database not found" with an unrelated permission
+    error, so an unanswerable probe degrades to ``None``.
+    """
+    try:
+        return (get_settings().profile_dir / "config.yaml").exists()
+    except OSError:
+        return None
+
+
 def get_database(
     *,
     read_only: bool,
@@ -1277,7 +1319,8 @@ def get_database(
     if require_existing and not db_path.exists():
         raise DatabaseNotInitializedError(
             f"Database not found at {db_path}.\n"
-            f"Run 'moneybin db init' to initialize it first."
+            f"Run 'moneybin db init' to initialize it first.",
+            profile_registered=_active_profile_is_registered(),
         )
     deadline = time.monotonic() + max_wait
     skip_upgrade = (
@@ -1331,7 +1374,8 @@ def get_database(
         if require_existing and not db_path.exists():
             raise DatabaseNotInitializedError(
                 f"Database not found at {db_path}.\n"
-                f"Run 'moneybin db init' to initialize it first."
+                f"Run 'moneybin db init' to initialize it first.",
+                profile_registered=_active_profile_is_registered(),
             )
         db = _open_with_attach_retry(
             db_path=db_path,
@@ -1396,6 +1440,16 @@ def _open_with_attach_retry(
                 no_auto_upgrade=skip_upgrade,
             )
             return db
+        except DatabaseNotInitializedError as exc:
+            # Answered here rather than in `classify_user_error`: this frame
+            # runs under `get_database`, which already resolved settings, so
+            # the lookup cannot trigger first-run profile resolution — and the
+            # classifier stays free of the config and service layers it would
+            # otherwise have to reach into mid-failure. A `Database` built
+            # directly (tests, the template-copy fixture) has no such frame and
+            # leaves the state unanswered.
+            exc.profile_registered = _active_profile_is_registered()
+            raise
         except DatabaseLockError:
             if time.monotonic() >= deadline:
                 raise DatabaseLockError(

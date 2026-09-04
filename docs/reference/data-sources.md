@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-02 -->
 # Data Sources
 
 Every supported data source — what file formats and API integrations MoneyBin can ingest, what fields each preserves, where the data lands. For the how-to (running the import), see [`docs/guides/data-import.md`](../guides/data-import.md). For the resulting schema, see [`docs/reference/data-model.md`](data-model.md). For how these sources resolve to one canonical account — which identity signal each format provides — see [`docs/reference/account-matching.md`](account-matching.md).
@@ -73,7 +73,7 @@ The order below is what `ImportService._import_tabular_file` executes (`src/mone
 | Sign convention | Per-profile or inferred | `--sign {negative_is_expense\|negative_is_income\|split_debit_credit}` | Overrides detection. |
 | Excel sheet | Largest sheet | `--sheet <name>` | Explicit sheet by name. |
 
-**Multi-currency files.** The `currency` column is parsed when present (e.g., the `maybe` profile reads it into `raw.tabular_transactions.currency`) and carried through to `core.fct_transactions.currency_code` — every source (tabular, OFX `<CURDEF>`, Plaid, manual) captures its own currency end-to-end rather than defaulting the unknown case to USD; a row without one inherits `core.dim_accounts.currency_code`. Reports sub-total each currency separately rather than adding the raw numbers, and `moneybin system doctor` reports a profile holding more than one. What's still missing is conversion: two currencies produce two sub-totals and no combined figure.
+**Multi-currency files.** The `currency` column is parsed when present (e.g., the `maybe` profile reads it into `raw.tabular_transactions.currency`) and carried through to `core.fct_transactions.currency_code` — every source (tabular, OFX `<CURDEF>`, Plaid, manual) captures its own currency end-to-end rather than defaulting the unknown case to USD; a row without one inherits `core.dim_accounts.currency_code`. Reports sub-total each currency separately rather than adding the raw numbers, and `moneybin system doctor` reports a profile holding more than one. Conversion is a display step on top of that, not a change to the stored data: set `moneybin profile set home_currency <ISO 4217>`, or pass `--display-currency` per call, and the three reports whose rows each carry one amount and one date to price it on — net worth, balance drift, large transactions — return a single converted figure. Every other report stays segmented per currency. No converted amount is written anywhere; `raw.*` and `core.*` keep the currency the source stated.
 
 Each named profile below ships in `src/moneybin/data/tabular_formats/<name>.yaml` and matches first-import autodetection without needing `--format`. Field-mapping legend: each profile lists `field_mapping` (source-column → canonical field). Anything appearing in `header_signature` but **not** in `field_mapping` is read off the row but not persisted — those are the "fields dropped" entries.
 
@@ -315,7 +315,7 @@ On extractor failure (single-file path), the same envelope shape is emitted with
 
 The investments fields default to `0` for a non-investment account. `PullResult` also carries `opening_bootstrap_rows`, `investment_source_overlap_accounts` (accounts with both manual and Plaid investment rows — lots and gains double-count until one source is chosen per account), and `security_resolution` / `security_resolution_error` (the `app.security_links` resolution sweep run after load), omitted above for brevity.
 
-Note: `sync pull` emits the `PullResult` directly (no envelope wrapper) — the import command emits the envelope. This is a known asymmetry; sync commands will adopt the envelope alongside the rest of the surface.
+Every `sync` command that emits JSON goes through the same `render_or_json` path as `import files`, so the shape above is the `data` block of the envelope, not a bare payload.
 
 ## Idempotency across sources
 
@@ -410,7 +410,7 @@ Honest gap list. See [`docs/roadmap.md`](../roadmap.md) for current sequencing.
 - **Beancount / hledger ledger files.** No plain-text-accounting parsers. Workaround: export the source transactions your ledger was built from and import those.
 - **Broker / investment statements outside Plaid.** No eTrade, Schwab, Fidelity, or Vanguard CSV parsers, and no investments-aware PDF routing — a brokerage positions/holdings PDF lands in `raw.pdf_seeds`, not a core investments table. A Plaid-linked brokerage account is first-class: securities, investment transactions, holdings, and cost basis (FIFO, HIFO, specific-identification, average-cost) are implemented — see "Investments" under Plaid sync above.
 - **HSA / 401(k) transaction history outside Plaid.** If Plaid exposes the account, raw rows land; otherwise unsupported.
-- **FX conversion.** Every source captures its own `currency_code` (tabular, OFX, Plaid, manual) and reports sub-total each currency separately — see "Multi-currency files" above. Nothing converts between them, so a two-currency profile gets two sub-totals and no combined figure.
+- **FX conversion inside `core.*`.** Conversion is presentation-only: three reports price into a display currency, and every stored amount keeps the currency its source stated — see "Multi-currency files" above. So `core.fct_balances_daily` still drops a transaction denominated in anything but the balance's own currency rather than converting it, and that movement resurfaces as `reconciliation_delta` drift instead. `moneybin refresh` caches rates into the home currency only; another target falls back to per-currency segmentation until its own rates are stored.
 - **Scanned / image-only PDFs.** A PDF with no text layer is declined outright (`import_pdf_no_text_layer`); no vision/OCR backend runs. Text-layer bank and credit-card statements extract deterministically or through agent-assisted recipe derivation — see "PDF statements" above.
 - **Tax forms.** No W-2, 1040, 1099-INT/DIV/B, K-1, or state-form parsers — including from a text-layer PDF, which lands in `raw.pdf_seeds` rather than a tax-shaped table.
 - **Direct Monarch / Copilot API pulls.** CSV-only — export from the tool, import the file.

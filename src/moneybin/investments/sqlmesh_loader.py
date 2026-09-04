@@ -26,6 +26,7 @@ from decimal import Decimal
 import pandas as pd
 
 from moneybin.investments.cost_basis import LedgerEvent, resolve_cost_basis_method
+from moneybin.tables import ACCOUNT_SETTINGS, LOT_SELECTIONS, SECURITIES
 
 if t.TYPE_CHECKING:
     from sqlmesh import ExecutionContext  # type: ignore[import-untyped]
@@ -164,7 +165,8 @@ def _load_ledger(
 def _load_method_for(context: ExecutionContext) -> MethodFor:
     """Fetch the election tables and bind them to ``resolve_cost_basis_method``."""
     securities: pd.DataFrame = context.fetchdf(
-        "SELECT security_id, cost_basis_method, security_type FROM app.securities"
+        "SELECT security_id, cost_basis_method, security_type "  # noqa: S608  # SECURITIES is a TableRef constant
+        f"FROM {SECURITIES.full_name}"
     )
     security_method: dict[str, str] = {}
     security_type: dict[str, str] = {}
@@ -175,11 +177,11 @@ def _load_method_for(context: ExecutionContext) -> MethodFor:
         if method is not None:
             security_method[sid] = str(method)
     accounts: pd.DataFrame = context.fetchdf(
-        """
+        f"""
         SELECT account_id, default_cost_basis_method
-        FROM app.account_settings
+        FROM {ACCOUNT_SETTINGS.full_name}
         WHERE NOT default_cost_basis_method IS NULL
-        """
+        """  # noqa: S608  # ACCOUNT_SETTINGS is a TableRef constant
     )
     account_default = {
         str(record["account_id"]): str(record["default_cost_basis_method"])
@@ -203,11 +205,11 @@ def _load_selections_for(context: ExecutionContext) -> SelectionsFor:
     # to the LAST slice. A non-deterministic row order could shift a one-cent
     # residual between lots across rebuilds, breaking content-hash-stable output.
     selections_frame: pd.DataFrame = context.fetchdf(
-        """
+        f"""
         SELECT investment_transaction_id, lot_id, quantity::VARCHAR AS quantity
-        FROM app.lot_selections
+        FROM {LOT_SELECTIONS.full_name}
         ORDER BY investment_transaction_id, lot_id
-        """
+        """  # noqa: S608  # LOT_SELECTIONS is a TableRef constant
     )
     selections: dict[str, list[tuple[str, Decimal]]] = {}
     for record in _records(selections_frame):

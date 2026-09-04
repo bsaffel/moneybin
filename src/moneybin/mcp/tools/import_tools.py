@@ -39,26 +39,25 @@ if TYPE_CHECKING:
         SavedFormatDeletePlan,
     )
 
+from moneybin.adapters.imports_adapters import (
+    pdf_format_row,
+    tabular_format_row,
+)
+from moneybin.adapters.refresh_adapters import (
+    refresh_rate_gap_hints,
+    refresh_step_actions,
+)
+from moneybin.adapters.rematch_report import retired_transfers_action
 from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
-from moneybin.mcp.adapters.imports_adapters import (
-    pdf_format_row,
-    tabular_format_row,
-)
-from moneybin.mcp.adapters.refresh_adapters import (
-    refresh_rate_gap_hints,
-    refresh_step_actions,
-)
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
-from moneybin.mcp.rematch_report import retired_transfers_action
 from moneybin.privacy.classified_envelope import build_classified_envelope, classify
 from moneybin.privacy.payloads.imports import (
     ImportConfirmationPayload,
@@ -91,6 +90,7 @@ from moneybin.privacy.payloads.imports import (
     ImportTabularPreviewCoarsePayload,
 )
 from moneybin.privacy.redaction import redact_typed
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -429,8 +429,8 @@ def import_files(
                         and one.details.get("transactions_extracted", 0) > 0
                     )
                 ):
-                    from moneybin.services.refresh import refresh as _refresh
-                    from moneybin.services.refresh import step_outcome
+                    from moneybin.orchestration.refresh import refresh as _refresh
+                    from moneybin.orchestration.refresh import step_outcome
 
                     refresh_result = _refresh(db)
                     transforms_applied = refresh_result.applied
@@ -2626,7 +2626,7 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "proposal_ref (@0 is the file's first source account). A completed "
             "import runs the refresh cascade, whose match step can reverse a "
             "transfer the user already accepted: `transfers_retired` counts "
-            "those, and system_audit_undo() restores them.",
+            "those, and system_audit_undo(operation_id=...) restores them.",
         ),
         (
             import_preview_coarse,
@@ -2673,7 +2673,7 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "Synchronize the import inbox. Draining it imports every staged "
             "file and runs the refresh cascade, whose match step can reverse a "
             "transfer the user already accepted: `transfers_retired` counts "
-            "those, and system_audit_undo() restores them.",
+            "those, and system_audit_undo(operation_id=...) restores them.",
         ),
         (
             import_labels_set_coarse,

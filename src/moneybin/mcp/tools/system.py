@@ -27,7 +27,6 @@ from moneybin.errors import (
 )
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import Sensitivity
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.system import (
     AuditDetail,
@@ -67,6 +66,7 @@ from moneybin.privacy.payloads.system import (
     SystemStatusTransformsInfo,
     SystemStatusWriter,
 )
+from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
     KeysetPosition,

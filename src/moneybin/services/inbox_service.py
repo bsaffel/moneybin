@@ -462,12 +462,16 @@ class InboxService:
 
         Per-file imports run with ``refresh=False`` so the refresh pipeline
         runs once at end-of-batch instead of N times. When at least one
-        transformable file imported successfully, :func:`moneybin.services.refresh.refresh`
+        transformable file imported successfully, :func:`moneybin.orchestration.refresh.refresh`
         is invoked once and the SQLMesh-step timing/error fields land in
         the result.
         """
-        from moneybin.services.refresh import refresh as run_refresh  # noqa: PLC0415
-        from moneybin.services.refresh import step_outcome  # noqa: PLC0415
+        from moneybin.orchestration.refresh import (  # noqa: PLC0415
+            refresh as run_refresh,
+        )
+        from moneybin.orchestration.refresh import (  # noqa: PLC0415
+            step_outcome,
+        )
 
         if self._db is None:
             raise RuntimeError("InboxService.sync() requires a database connection")
