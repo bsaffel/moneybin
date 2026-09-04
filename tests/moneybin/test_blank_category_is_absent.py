@@ -22,39 +22,55 @@ pytestmark = pytest.mark.integration
 
 
 def _insert_tabular_transaction(
-    db: Database, *, txn_id: str, category: str | None
+    db: Database,
+    *,
+    txn_id: str,
+    category: str | None,
+    subcategory: str | None = None,
 ) -> None:
     db.execute(
         """
         INSERT INTO raw.tabular_transactions
             (transaction_id, account_id, transaction_date, amount, description,
-             source_file, source_type, source_origin, import_id, category)
+             source_file, source_type, source_origin, import_id, category,
+             subcategory)
         VALUES (?, 'acct_blank_cat', '2026-07-01'::DATE, -10.00, 'Test Payee',
                 '/tmp/blank_cat.csv', 'csv', 'test_bank',
-                '00000000-0000-0000-0000-0000000000b1', ?)
+                '00000000-0000-0000-0000-0000000000b1', ?, ?)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [txn_id, category],
+        [txn_id, category, subcategory],
     )
 
 
 def _insert_manual_transaction(
-    db: Database, *, txn_id: str, category: str | None
+    db: Database,
+    *,
+    txn_id: str,
+    category: str | None,
+    subcategory: str | None = None,
 ) -> None:
     db.execute(
         """
         INSERT INTO raw.manual_transactions
             (source_transaction_id, import_id, account_id, transaction_date,
-             amount, description, created_by, category)
+             amount, description, created_by, category, subcategory)
         VALUES (?, 'manual_blank_cat', 'acct_blank_cat', '2026-07-01'::DATE,
-                -10.00, 'Test Manual Entry', 'cli', ?)
+                -10.00, 'Test Manual Entry', 'cli', ?, ?)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [txn_id, category],
+        [txn_id, category, subcategory],
     )
 
 
 def _fact_category(db: Database, description: str) -> tuple[str | None, ...] | None:
     return db.execute(
         "SELECT category FROM core.fct_transactions WHERE description = ?",
+        [description],
+    ).fetchone()
+
+
+def _fact_pair(db: Database, description: str) -> tuple[str | None, ...] | None:
+    return db.execute(
+        "SELECT category, subcategory FROM core.fct_transactions WHERE description = ?",
         [description],
     ).fetchone()
 
@@ -114,6 +130,67 @@ def test_a_non_breaking_space_category_is_absent_in_the_fact(
     row = _fact_category(db, "Test Payee")
     assert row is not None
     assert row[0] is None
+
+
+@pytest.mark.slow
+def test_a_blanked_category_takes_its_subcategory_with_it(db: Database) -> None:
+    """Nulling the two columns independently manufactures an orphan.
+
+    A subcategory is a child of a category here: ``resolve_category_id`` short-
+    circuits to NULL the moment ``category`` is NULL, so no lone subcategory can
+    ever resolve to a ``category_id``. ``core.fct_transaction_lines`` then
+    coalesces the two columns independently, rendering this row's subcategory
+    beside the *parent's* category. ``SplitTarget`` refuses the shape on MCP and
+    the service now refuses it on every write path, so the import path must not
+    be the one place that still creates it.
+    """
+    _insert_tabular_transaction(
+        db, txn_id="csv_orphan", category="   ", subcategory="Coffee"
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = _fact_pair(db, "Test Payee")
+    assert row is not None
+    assert row == (None, None)
+
+
+@pytest.mark.slow
+def test_a_blanked_category_takes_its_subcategory_with_it_on_the_manual_arm(
+    db: Database,
+) -> None:
+    """The manual arm carries the same pair, so it carries the same rule."""
+    _insert_manual_transaction(
+        db, txn_id="manual_orphan", category="   ", subcategory="Coffee"
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = _fact_pair(db, "Test Manual Entry")
+    assert row is not None
+    assert row == (None, None)
+
+
+@pytest.mark.slow
+def test_a_blank_subcategory_leaves_its_category_standing(db: Database) -> None:
+    """The cascade runs one way only.
+
+    A category with a blank subcategory is a real, resolvable state — 17 of the
+    seeded categories are top-level with a NULL subcategory. Nulling the parent
+    too would discard a categorization the user made.
+    """
+    _insert_tabular_transaction(
+        db, txn_id="csv_blank_sub", category="Groceries", subcategory="   "
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = _fact_pair(db, "Test Payee")
+    assert row is not None
+    assert row == ("Groceries", None)
 
 
 @pytest.mark.slow

@@ -476,6 +476,13 @@ class MerchantStateRequest(_StrictRequest):
         if self.state == "present":
             if self.raw_pattern is None or self.canonical_name is None:
                 raise ValueError("Present requires raw_pattern and canonical_name")
+            # A merchant's default mapping is the same (category, subcategory)
+            # pair a split carries, so it takes the same rule SplitTarget
+            # enforces above. The service refuses it too; this puts the
+            # refusal at the boundary, where the agent can read which field
+            # is wrong before a write is attempted.
+            if self.subcategory is not None and self.category is None:
+                raise ValueError("Merchant subcategory requires category")
             return self
         if self.merchant_id is None:
             raise ValueError("Absent requires merchant_id")

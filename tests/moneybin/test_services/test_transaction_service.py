@@ -630,6 +630,25 @@ class TestAnnotationBatches:
             )
 
     @pytest.mark.unit
+    def test_set_splits_refuses_a_subcategory_without_a_category(
+        self, transaction_db: Database
+    ) -> None:
+        """A subcategory is a child of a category, on every surface.
+
+        `write_contracts.SplitTarget._validate_category_hierarchy` refuses this
+        on MCP, and V054 now cascades the same rule onto legacy rows — so the
+        granular arm was the one place the pair could still be written.
+        """
+        with pytest.raises(
+            ValueError, match=r"splits\[0\]\.subcategory requires a category"
+        ):
+            TransactionService(transaction_db).set_splits(
+                "T1",
+                [{"amount": Decimal("-50"), "subcategory": "Coffee"}],
+                actor="cli",
+            )
+
+    @pytest.mark.unit
     def test_set_splits_keeps_a_category_at_the_limit(
         self, transaction_db: Database
     ) -> None:
@@ -1115,6 +1134,19 @@ class TestSplits:
             )
 
     @pytest.mark.unit
+    def test_add_split_refuses_a_subcategory_without_a_category(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        """The same hierarchy rule MCP's `SplitTarget` already enforces."""
+        with pytest.raises(ValueError, match="subcategory requires a category"):
+            txn_service.add_split(
+                sample_transaction_id,
+                Decimal("-30.00"),
+                subcategory="Coffee",
+                actor="cli",
+            )
+
+    @pytest.mark.unit
     def test_add_split_keeps_a_category_at_the_limit(
         self, txn_service: TransactionService, sample_transaction_id: str
     ) -> None:
@@ -1315,12 +1347,26 @@ class TestSplits:
         txn_service: TransactionService,
         sample_transaction_id: str,
     ) -> None:
+        """The untyped-dict arm quantizes amounts and ignores keys it invents.
+
+        Both halves are the adapter's actual contract: a legacy caller may hand
+        over more precision than the column holds, and may carry keys this
+        service never had a field for. Neither is an error.
+
+        This used to pass ``subcategory`` with no ``category`` to exercise the
+        unknown-key half, which incidentally pinned an orphan as an accepted
+        state. It is not one — ``resolve_category_id`` cannot resolve a lone
+        subcategory to a ``category_id``, so the row would store a label the FK
+        disagrees with. ``test_set_splits_refuses_a_subcategory_without_a_category``
+        now covers the refusal; this test keeps only what it was named for.
+        """
         result = txn_service.set_splits(
             sample_transaction_id,
             [
                 {
                     "amount": Decimal("0.001"),
-                    "subcategory": "orphan-child",
+                    "category": "Legacy",
+                    "subcategory": "Adapter",
                     "legacy_extra": "ignored",
                 }
             ],
@@ -1329,8 +1375,8 @@ class TestSplits:
 
         assert len(result) == 1
         assert result[0].amount == Decimal("0.00")
-        assert result[0].category is None
-        assert result[0].subcategory == "orphan-child"
+        assert result[0].category == "Legacy"
+        assert result[0].subcategory == "Adapter"
 
     @pytest.mark.unit
     def test_set_splits_reinserts_identical_state_with_new_ids_and_audits(

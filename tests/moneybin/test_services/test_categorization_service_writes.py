@@ -1010,6 +1010,29 @@ class TestCreateMerchantDualWrite:
         assert row == (None, None)
 
     @pytest.mark.unit
+    def test_create_merchant_refuses_a_subcategory_without_a_category(
+        self, db: Database
+    ) -> None:
+        """A merchant's default mapping is the same pair, under the same rule.
+
+        Unlike the two tests around it, this text is not merely unresolved-for-
+        now: ``resolve_category_id`` short-circuits on a NULL category, so no
+        later ``create_category`` can ever back this subcategory. The lookup
+        that reuses a merchant (``_find_merchant``) also keys on
+        ``category = ?``, which no NULL category satisfies — so the row is
+        unreachable by the code meant to find it.
+        """
+        svc = CategorizationService(db)
+        with pytest.raises(ValueError, match="subcategory requires a category"):
+            svc.create_merchant(
+                raw_pattern="ORPHAN PATTERN",
+                canonical_name="Orphan Merchant",
+                match_type="contains",
+                subcategory="Coffee",
+                created_by="user",
+            )
+
+    @pytest.mark.unit
     def test_create_merchant_with_unresolved_text_leaves_fk_null(
         self, db: Database
     ) -> None:

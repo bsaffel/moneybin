@@ -262,6 +262,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   subcategory with it, since a subcategory without its category would render
   under the parent transaction's instead. (#517)
 
+- **A subcategory with no category is refused everywhere, not just on MCP.**
+  A subcategory is a child of a category here, so a lone one never resolves to
+  a `category_id` and renders under the parent transaction's category instead
+  — `splits add`, `splits set`, and merchant creation now refuse it the way
+  MCP's split contract always has. The import path stops producing one too: a
+  category blanked on the way in takes its subcategory with it, while a blank
+  subcategory under a real category still nulls only itself. (#517)
+
 - **A Plaid transaction's `category` no longer holds Plaid's own category
   code.** `prep.int_transactions__unioned` had aliased the raw
   personal-finance-category code into `category`, so one column mixed

@@ -58,6 +58,7 @@ from moneybin.repositories.user_categories_repo import (
     UserCategoriesRepo,
 )
 from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
+from moneybin.services._validators import validate_category_hierarchy
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import (
     SOURCE_PRIORITY,
@@ -480,7 +481,7 @@ class MatchApplier:
                 §Schema changes); user-authored merchants pick 'contains' or
                 'regex' explicitly.
             category: Optional default category for this merchant.
-            subcategory: Optional default subcategory.
+            subcategory: Optional default subcategory; requires ``category``.
             created_by: Who created the mapping ('user', 'ai', 'rule').
             exemplars: Initial exemplar set (exact match_text values) for
                 oneOf merchants. Defaults to ``[]``.
@@ -489,6 +490,7 @@ class MatchApplier:
                 ``"system"`` default.
             in_outer_txn: Join the caller's active transaction when true.
         """
+        validate_category_hierarchy(category, subcategory, "subcategory")
         # Resolve the FK alongside the text snapshot (read; stays in the
         # service per Req 2). The repo owns the INSERT + audit.
         category_id = resolve_category_id(self._db, category, subcategory)

@@ -21,7 +21,18 @@ MODEL (
    str.isspace() accepts, fails naming any the class misses, and holds all three
    copies of it (both staging models and V054) identical. Bare TRIM is not a
    substitute in either direction: it strips the space separators but leaves
-   every control character, so a tab survives it. */
+   every control character, so a tab survives it.
+
+   A blanked category then takes its subcategory with it, in the projection
+   below. Nulling the two independently manufactures an orphan the write path
+   forbids: a subcategory is a child of a category here, so resolve_category_id
+   short-circuits on a NULL category and no lone subcategory can ever resolve
+   to a category_id. core.fct_transaction_lines coalesces the two columns
+   independently, so the orphan would render this row's subcategory beside the
+   *parent transaction's* category — a pair nobody chose. The cascade runs one
+   way only: a blank subcategory under a real category nulls just itself,
+   because a top-level category is a legitimate state (17 of the seeded
+   categories are exactly that). */
 WITH ranked AS (
   SELECT
     transaction_id,
@@ -78,7 +89,7 @@ SELECT
   ranked.description,
   ranked.memo,
   ranked.category,
-  ranked.subcategory,
+  CASE WHEN ranked.category IS NULL THEN NULL ELSE ranked.subcategory END AS subcategory, /* a blanked category takes its subcategory with it; see the header */
   ranked.transaction_type,
   ranked.status,
   ranked.check_number,

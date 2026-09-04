@@ -85,6 +85,26 @@ def validate_category_text(value: str, field: str) -> None:
         raise ValueError(f"{field} exceeds {CATEGORY_NAME_MAX_LEN} chars")
 
 
+def validate_category_hierarchy(
+    category: str | None, subcategory: str | None, field: str
+) -> None:
+    """Refuse a subcategory with no category to hang off.
+
+    A subcategory is a child of a category in this taxonomy, so the pair is
+    invalid rather than partial: ``core.fct_transaction_lines`` coalesces the
+    two fields independently, and a split carrying only a subcategory renders
+    it beside the *parent transaction's* category — a combination nobody
+    chose. ``write_contracts.SplitTarget`` has refused this on the MCP path all
+    along; this is the same rule for the two split paths that reach the service
+    without a Pydantic model, so the three surfaces stop disagreeing.
+
+    ``field`` names the subcategory as the caller spells it, matching
+    ``validate_category_text``.
+    """
+    if subcategory is not None and category is None:
+        raise ValueError(f"{field} requires a category")
+
+
 def validate_currency_code(value: str) -> None:
     """Enforce ISO 4217 shape: exactly 3 uppercase letters."""
     if not _CURRENCY_RE.fullmatch(value):

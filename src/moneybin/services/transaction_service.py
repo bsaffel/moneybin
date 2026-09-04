@@ -44,6 +44,7 @@ from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
 from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
 from moneybin.services._validators import (
+    validate_category_hierarchy,
     validate_category_text,
     validate_currency_code,
     validate_note_text,
@@ -1687,6 +1688,7 @@ class TransactionService:
             validate_category_text(category, "category")
         if subcategory is not None:
             validate_category_text(subcategory, "subcategory")
+        validate_category_hierarchy(category, subcategory, "subcategory")
         self._db.begin()
         try:
             ord_row = self._db.conn.execute(
@@ -1829,6 +1831,9 @@ class TransactionService:
                 validate_category_text(split.category, f"splits[{idx}].category")
             if split.subcategory is not None:
                 validate_category_text(split.subcategory, f"splits[{idx}].subcategory")
+            validate_category_hierarchy(
+                split.category, split.subcategory, f"splits[{idx}].subcategory"
+            )
             category_id = resolve_category_id(
                 self._db,
                 split.category,
