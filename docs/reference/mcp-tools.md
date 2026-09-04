@@ -212,7 +212,7 @@ Present or absent target state for one named local destination.
 | `kind` | `local` |  | required |
 | `state` | one of `present`, `absent` |  | required |
 | `name` | string |  | required; min length 1 |
-| `local_path` | string |  | min length 1 |
+| `local_path` | string |  | min length 1; required when `state` is `present`; forbidden otherwise |
 
 ##### `sheets`
 
@@ -223,8 +223,8 @@ Present or absent target state for one named Sheets destination.
 | `kind` | `sheets` |  | required |
 | `state` | one of `present`, `absent` |  | required |
 | `name` | string |  | required; min length 1 |
-| `spreadsheet_id` | string |  | min length 1 |
-| `managed_tab_prefix` | string |  | min length 1 |
+| `spreadsheet_id` | string |  | min length 1; required when `state` is `present`; forbidden otherwise |
+| `managed_tab_prefix` | string |  | min length 1; forbidden otherwise |
 
 ### gsheet
 
@@ -300,7 +300,7 @@ Accept or reject one account-link proposal.
 |---|---|---|---|
 | `decision_id` | string |  | required; min length 1; max length 64 |
 | `decision` | one of `accept`, `reject` |  | required |
-| `target_id` | string |  | min length 1; max length 64 |
+| `target_id` | string |  | min length 1; max length 64; required when `decision` is `accept`; forbidden when `decision` is `reject` |
 | `kind` | `account_link` |  | required |
 
 ##### `merchant_link`
@@ -311,7 +311,7 @@ Accept or reject one merchant-link proposal.
 |---|---|---|---|
 | `decision_id` | string |  | required; min length 1; max length 64 |
 | `decision` | one of `accept`, `reject` |  | required |
-| `target_id` | string |  | min length 1; max length 64 |
+| `target_id` | string |  | min length 1; max length 64; required when `decision` is `accept`; forbidden when `decision` is `reject` |
 | `kind` | `merchant_link` |  | required |
 
 ##### `security_link`
@@ -322,7 +322,7 @@ Accept or reject one security-link proposal.
 |---|---|---|---|
 | `decision_id` | string |  | required; min length 1; max length 64 |
 | `decision` | one of `accept`, `reject` |  | required |
-| `target_id` | string |  | min length 1; max length 64 |
+| `target_id` | string |  | min length 1; max length 64; required when `decision` is `accept`; forbidden when `decision` is `reject` |
 | `kind` | `security_link` |  | required |
 
 ### import_confirm
@@ -573,9 +573,9 @@ Accept or reject one categorization proposal.
 | `kind` | `categorization` |  | required |
 | `decision_id` | string |  | required; min length 1; max length 64 |
 | `decision` | one of `accept`, `reject` |  | required |
-| `category` | string |  | min length 1; max length 100 |
-| `subcategory` | string |  | min length 1; max length 100 |
-| `canonical_merchant_name` | string |  | min length 1; max length 200 |
+| `category` | string |  | min length 1; max length 100; required when `decision` is `accept`; forbidden when `decision` is `reject` |
+| `subcategory` | string |  | min length 1; max length 100; forbidden when `decision` is `reject` |
+| `canonical_merchant_name` | string |  | min length 1; max length 200; forbidden when `decision` is `reject` |
 
 ##### `match`
 
@@ -596,7 +596,7 @@ Accept or reject one auto-generated categorization-rule proposal.
 | `kind` | `auto_rule` |  | required |
 | `decision_id` | string |  | required; min length 1; max length 64 |
 | `decision` | one of `accept`, `reject` |  | required |
-| `allow_broad` | boolean | `false` |  |
+| `allow_broad` | boolean | `false` | must be `false` when `decision` is `reject` |
 
 ### sql_query
 
@@ -732,11 +732,11 @@ Declare one category's target state.
 |---|---|---|---|
 | `kind` | `category` |  | required |
 | `state` | one of `present`, `inactive`, `absent` |  | required |
-| `category_id` | string |  | min length 1; max length 64 |
-| `category` | string |  | min length 1; max length 100 |
-| `subcategory` | string |  | min length 1; max length 100 |
-| `description` | string |  | max length 2000 |
-| `force` | boolean | `false` |  |
+| `category_id` | string |  | min length 1; max length 64; required when `state` is `inactive` or `absent` |
+| `category` | string |  | min length 1; max length 100; required when `state` is `present`; forbidden when `state` is `inactive` or `absent` |
+| `subcategory` | string |  | min length 1; max length 100; forbidden when `state` is `inactive` or `absent` |
+| `description` | string |  | max length 2000; forbidden when `state` is `inactive` or `absent` |
+| `force` | boolean | `false` | must be `false` when `state` is `present` or `inactive` |
 
 ##### `merchant`
 
@@ -746,12 +746,12 @@ Declare one merchant mapping's target state.
 |---|---|---|---|
 | `kind` | `merchant` |  | required |
 | `state` | one of `present`, `absent` |  | required |
-| `merchant_id` | string |  | min length 1; max length 64 |
-| `raw_pattern` | string |  | min length 1; max length 500 |
-| `canonical_name` | string |  | min length 1; max length 200 |
-| `match_type` | one of `exact`, `contains`, `regex` |  |  |
-| `category` | string |  | min length 1; max length 100 |
-| `subcategory` | string |  | min length 1; max length 100 |
+| `merchant_id` | string |  | min length 1; max length 64; required when `state` is `absent` |
+| `raw_pattern` | string |  | min length 1; max length 500; required when `state` is `present`; forbidden when `state` is `absent` |
+| `canonical_name` | string |  | min length 1; max length 200; required when `state` is `present`; forbidden when `state` is `absent` |
+| `match_type` | one of `exact`, `contains`, `regex` |  | forbidden when `state` is `absent` |
+| `category` | string |  | min length 1; max length 100; forbidden when `state` is `absent` |
+| `subcategory` | string |  | min length 1; max length 100; forbidden when `state` is `absent` |
 
 ### transactions
 

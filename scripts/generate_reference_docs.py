@@ -463,7 +463,12 @@ _CONSTRAINT_KEYS = (
 )
 
 
-def _schema_notes(name: str, schema: Mapping[str, object], required: set[str]) -> str:
+def _schema_notes(
+    name: str,
+    schema: Mapping[str, object],
+    required: set[str],
+    conditionals: Mapping[str, list[str]] | None = None,
+) -> str:
     notes = ["required"] if name in required else []
     for key, template in _CONSTRAINT_KEYS:
         if key in schema:
@@ -476,6 +481,8 @@ def _schema_notes(name: str, schema: Mapping[str, object], required: set[str]) -
             for key, template in _CONSTRAINT_KEYS:
                 if key in option:
                     notes.append(template.format(option[key]))
+    if conditionals:
+        notes.extend(conditionals.get(name, []))
     if "description" in schema:
         notes.append(str(schema["description"]))
     return "; ".join(notes)
@@ -488,17 +495,202 @@ def _schema_default(schema: Mapping[str, object]) -> str:
 
 
 def _property_rows(
-    properties: Mapping[str, Mapping[str, object]], required: set[str]
+    properties: Mapping[str, Mapping[str, object]],
+    required: set[str],
+    conditionals: Mapping[str, list[str]] | None = None,
 ) -> list[list[str]]:
     return [
         [
             _code(name),
             _schema_type(schema),
             _schema_default(schema),
-            _schema_notes(name, schema, required),
+            _schema_notes(name, schema, required, conditionals),
         ]
         for name, schema in properties.items()
     ]
+
+
+# One conditional clause: (verdict, discriminator field, discriminator values it
+# fires on, the fixed value for a "must be" verdict). The discriminator field is
+# ``None`` for an ``else`` "forbidden otherwise" clause, which fires unconditionally.
+_Clause = tuple[str, str | None, list[object], object]
+
+
+def _condition_field_value(
+    param_name: str, variant_name: str, branch: Mapping[str, object]
+) -> tuple[str, object]:
+    """The ``(field, value)`` an ``allOf`` branch's ``if`` tests, or raise on a wider shape."""
+    if_ = branch.get("if")
+    if not isinstance(if_, Mapping) or set(if_) != {"properties", "required"}:
+        raise ValueError(
+            f"{param_name!r} variant {variant_name!r}: unrecognized if clause {if_!r}"
+        )
+    properties = typing.cast(Mapping[str, Mapping[str, object]], if_["properties"])
+    if len(properties) != 1:
+        raise ValueError(
+            f"{param_name!r} variant {variant_name!r}: if must test exactly one property"
+        )
+    ((field, field_schema),) = properties.items()
+    if set(field_schema) != {"const"} or if_["required"] != [field]:
+        raise ValueError(
+            f"{param_name!r} variant {variant_name!r}: if.{field} is not a bare const test"
+        )
+    return field, field_schema["const"]
+
+
+def _forbidden_fields(
+    param_name: str, variant_name: str, not_clause: object
+) -> list[str]:
+    """Field names a ``{"not": {"anyOf": [{"required": [name]}, ...]}}`` clause forbids."""
+    if not isinstance(not_clause, Mapping) or set(not_clause) != {"anyOf"}:
+        raise ValueError(
+            f"{param_name!r} variant {variant_name!r}: unrecognized not clause {not_clause!r}"
+        )
+    names = []
+    for item in typing.cast(list[Mapping[str, object]], not_clause["anyOf"]):
+        required = typing.cast(list[str], item.get("required"))
+        if (
+            set(item) != {"required"}
+            or not isinstance(required, list)
+            or len(required) != 1
+        ):
+            raise ValueError(
+                f"{param_name!r} variant {variant_name!r}: unrecognized forbidden "
+                f"clause {item!r}"
+            )
+        names.append(required[0])
+    return names
+
+
+def _then_clauses(
+    param_name: str,
+    variant_name: str,
+    then: Mapping[str, object],
+    condition_field: str,
+    condition_value: object,
+) -> dict[str, list[_Clause]]:
+    """The per-field clauses one branch's ``then`` contributes."""
+    remaining = dict(then)
+    required = typing.cast(list[str], remaining.pop("required", []))
+    clauses: dict[str, list[_Clause]] = {
+        name: [("required", condition_field, [condition_value], None)]
+        for name in required
+    }
+    not_clause = remaining.pop("not", None)
+    if not_clause is not None:
+        for name in _forbidden_fields(param_name, variant_name, not_clause):
+            clauses.setdefault(name, []).append((
+                "forbidden",
+                condition_field,
+                [condition_value],
+                None,
+            ))
+    properties = typing.cast(
+        Mapping[str, Mapping[str, object]], remaining.pop("properties", {})
+    )
+    for name, schema in properties.items():
+        if schema == {"not": {"type": "null"}}:
+            if name not in required:
+                raise ValueError(
+                    f"{param_name!r} variant {variant_name!r}: {name} is not-null "
+                    "without a matching required"
+                )
+            continue
+        if set(schema) == {"const"}:
+            clauses.setdefault(name, []).append((
+                "must_be",
+                condition_field,
+                [condition_value],
+                schema["const"],
+            ))
+            continue
+        raise ValueError(
+            f"{param_name!r} variant {variant_name!r}: unrecognized then.{name} {schema!r}"
+        )
+    if remaining:
+        raise ValueError(
+            f"{param_name!r} variant {variant_name!r}: unrecognized then keys "
+            f"{sorted(remaining)}"
+        )
+    return clauses
+
+
+def _else_clauses(
+    param_name: str, variant_name: str, else_: object
+) -> dict[str, list[_Clause]]:
+    """The per-field ``forbidden otherwise`` clauses one branch's ``else`` contributes."""
+    if not isinstance(else_, Mapping) or set(else_) != {"not"}:
+        raise ValueError(
+            f"{param_name!r} variant {variant_name!r}: unrecognized else clause {else_!r}"
+        )
+    names = _forbidden_fields(param_name, variant_name, else_["not"])
+    return {name: [("forbidden_otherwise", None, [], None)] for name in names}
+
+
+def _merge_clauses(clauses: list[_Clause]) -> list[_Clause]:
+    """Combine clauses sharing a verdict, condition field, and (for `must be`) value."""
+    merged: list[_Clause] = []
+    index: dict[tuple[str, str | None, object], int] = {}
+    for verdict, condition_field, values, must_be in clauses:
+        key = (verdict, condition_field, must_be)
+        if key in index:
+            merged[index[key]][2].extend(values)
+        else:
+            index[key] = len(merged)
+            merged.append((verdict, condition_field, list(values), must_be))
+    return merged
+
+
+def _render_clause(clause: _Clause) -> str:
+    verdict, condition_field, values, must_be = clause
+    if verdict == "forbidden_otherwise":
+        return "forbidden otherwise"
+    condition = " or ".join(_code(value) for value in values)
+    if verdict == "required":
+        return f"required when {_code(condition_field)} is {condition}"
+    if verdict == "must_be":
+        return f"must be {_json_code(must_be)} when {_code(condition_field)} is {condition}"
+    return f"forbidden when {_code(condition_field)} is {condition}"
+
+
+def _variant_conditionals(
+    param_name: str, variant_name: str, variant: Mapping[str, object]
+) -> dict[str, list[str]]:
+    """Field name -> ordered Notes clauses from a variant's ``allOf`` conditionals.
+
+    Covers exactly the shapes ``_state_schema`` (``exports.py``) and
+    ``_conditional_schema_branch`` (``write_contracts.py``) emit; any other
+    ``if``/``then``/``else`` shape raises so a future schema change fails
+    regeneration loudly instead of silently dropping a constraint.
+    """
+    all_of = variant.get("allOf")
+    if not all_of:
+        return {}
+    by_field: dict[str, list[_Clause]] = {}
+    for branch in typing.cast(list[Mapping[str, object]], all_of):
+        condition_field, condition_value = _condition_field_value(
+            param_name, variant_name, branch
+        )
+        then = typing.cast(Mapping[str, object], branch.get("then", {}))
+        for name, clauses in _then_clauses(
+            param_name, variant_name, then, condition_field, condition_value
+        ).items():
+            by_field.setdefault(name, []).extend(clauses)
+        if "else" in branch:
+            for name, clauses in _else_clauses(
+                param_name, variant_name, branch["else"]
+            ).items():
+                by_field.setdefault(name, []).extend(clauses)
+        extra = set(branch) - {"if", "then", "else"}
+        if extra:
+            raise ValueError(
+                f"{param_name!r} variant {variant_name!r}: unrecognized allOf keys "
+                f"{sorted(extra)}"
+            )
+    return {
+        name: [_render_clause(clause) for clause in _merge_clauses(clauses)]
+        for name, clauses in by_field.items()
+    }
 
 
 def _variant_sections(
@@ -507,7 +699,8 @@ def _variant_sections(
     """A ``Variants of `param_name`` block: one field table per discriminated variant."""
     lines = [f"#### Variants of {_code(param_name)}", ""]
     for index, variant in enumerate(variants):
-        lines += [f"##### {_code(_oneof_variant_name(variant, index))}", ""]
+        variant_name = _oneof_variant_name(variant, index)
+        lines += [f"##### {_code(variant_name)}", ""]
         description = variant.get("description")
         if description:
             lines += [_escape_angles(str(description).strip()), ""]
@@ -516,9 +709,10 @@ def _variant_sections(
         )
         required = set(typing.cast(list[str], variant.get("required", [])))
         if properties:
+            conditionals = _variant_conditionals(param_name, variant_name, variant)
             lines += _table(
                 ["Field", "Type", "Default", "Notes"],
-                _property_rows(properties, required),
+                _property_rows(properties, required, conditionals),
             )
         lines.append("")
     return lines[:-1]
