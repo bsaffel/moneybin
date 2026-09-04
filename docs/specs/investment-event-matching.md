@@ -393,11 +393,18 @@ When a source row receives a new revision:
 
 - an affected pending Proposal becomes `stale`, and the planner may issue a new
   Proposal over the latest revisions;
-- an affected accepted decision and its active membership become stale and
-  untrusted, but continue to project the last-reviewed exact revisions until a
-  person accepts a replacement or reverses the Match; and
+- an active standalone membership not governed by an accepted Match advances
+  atomically to the latest revision while retaining its Golden event and leg
+  ids; this creates neither a Proposal nor a second active membership;
+- any accepted or multi-source membership becomes stale and untrusted, but
+  continues to project the last-reviewed exact revisions until a person accepts
+  a replacement or reverses the Match; and
 - the visible-collision guard remains active and review surfaces identify the
   changed source row without exposing its financial values in logs.
+
+If the advancing singleton participated in a pending Proposal, that Proposal
+still becomes stale; a later planning pass may issue a replacement over its new
+revision. Historical membership retains the prior exact revision.
 
 Acceptance of the replacement atomically installs the new exact membership and
 field resolutions. Reversal restores the prior exact membership and its field
@@ -432,19 +439,20 @@ moneybin review --type investment-matches --reject <review-id>
 moneybin system audit undo <operation-id>
 ```
 
-MCP reuses `reviews`, `reviews_decide`, and `system_audit_undo` with an explicit
-`investment_matches` kind. An accept request carries the equivalent structured
-payload:
+MCP reuses `reviews`, `reviews_decide`, and `system_audit_undo`. The read queue
+uses `reviews(kind="investment_matches", ...)`. Decisions add an
+`investment_match` variant to the existing discriminated item union and retain
+the existing batch envelope:
 
-```json
-{
-  "kind": "investment_matches",
-  "review_id": "<review-id>",
+```text
+reviews_decide(decisions=[{
+  "kind": "investment_match",
+  "decision_id": "<review-id>",
   "decision": "accept",
   "field_choices": [
     {"conflict_id": "<conflict-id>", "choice_id": "<choice-id>"}
   ]
-}
+}])
 ```
 
 The CLI flag is repeatable. Accept requires exactly one currently allowed
@@ -537,7 +545,7 @@ fixtures and expected Golden-ledger outcomes.
 | Repetition | Unique two-to-two assignment of identical same-day trades; ambiguous one-to-two assignment remains competing |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Native or remembered correction/reversal accepted; fuzzy-only similarity rejected |
-| Revisions | Identical re-delivery reuses a version; changed source values append a revision; pending and accepted Matches stale without silently changing Golden fields |
+| Revisions | Identical re-delivery reuses a version; an unreviewed singleton advances without rotating Golden ids; changed accepted or multi-source evidence stales without silently changing Golden fields |
 | Identity | Unresolved or contradictory account, security, or currency identities remain ineligible |
 | Splits | Normalized contract fixtures pass for supported adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
@@ -558,6 +566,8 @@ fixtures and expected Golden-ledger outcomes.
   match-relevant or Golden-projected value appends a new observation revision.
 - SQLMesh tests for comparison views, Golden projection, provenance, and stable
   identities.
+- Membership tests proving an unreviewed singleton advances to one active latest
+  revision with stable Golden ids while preserving its prior history.
 - Scenario tests for every row in the matrix, including exact downstream tax-lot
   outputs.
 - CLI and MCP parity tests for plan, inspect, accept, reject, stale, failure, and
@@ -590,7 +600,8 @@ only after this contract is accepted.
 4. **Golden materialization.** Add stable event and leg identities, membership,
    aliases, field resolution, provenance, and the dependent rebuild. Enable
    acceptance by committing its decision, exact revision membership, and field
-   resolutions in one transaction.
+   resolutions in one transaction. Advance an unreviewed singleton to a newer
+   revision atomically without rotating its Golden ids or creating a Proposal.
 5. **Lifecycle proof.** Complete the scenario matrix, repeated-sync and failure
    recovery tests, labeled real-data validation, and evidence for a later
    guard-promotion decision.
