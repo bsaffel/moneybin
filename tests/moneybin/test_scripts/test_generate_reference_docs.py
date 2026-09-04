@@ -364,6 +364,90 @@ def test_mcp_page_renders_variants_of_a_nullable_oneof() -> None:
     assert page.index("#### Variants of `scope`") < page.index("### zeta")
 
 
+def test_mcp_page_names_oneof_variant_by_title_without_a_const() -> None:
+    """A variant with no ``const``-bearing property falls back to its ``title``."""
+    surface: dict[str, Any] = {
+        "tool_count": 1,
+        "tools": [
+            {
+                "name": "titled",
+                "definition": {
+                    "description": "Has titled variants.",
+                    "annotations": {"readOnlyHint": True},
+                    "inputSchema": {
+                        "properties": {
+                            "target": {
+                                "oneOf": [
+                                    {
+                                        "title": "Widget Variant",
+                                        "description": "A widget target.",
+                                        "properties": {"widget_id": {"type": "string"}},
+                                        "required": ["widget_id"],
+                                        "type": "object",
+                                    },
+                                    {
+                                        "title": "Gadget Variant",
+                                        "description": "A gadget target.",
+                                        "properties": {"gadget_id": {"type": "string"}},
+                                        "required": ["gadget_id"],
+                                        "type": "object",
+                                    },
+                                ]
+                            },
+                        },
+                        "type": "object",
+                    },
+                },
+            },
+        ],
+    }
+    page = render_mcp_tools(surface, {"titled": "low"})
+    assert "| `target` | one of `Widget Variant`, `Gadget Variant` |  |  |" in page
+    assert "##### `Widget Variant`" in page
+    assert "##### `Gadget Variant`" in page
+
+
+def test_mcp_page_names_oneof_variant_by_position_without_a_title() -> None:
+    """A variant with neither ``const`` nor ``title`` falls back to its position."""
+    surface: dict[str, Any] = {
+        "tool_count": 1,
+        "tools": [
+            {
+                "name": "untitled",
+                "definition": {
+                    "description": "Has untitled variants.",
+                    "annotations": {"readOnlyHint": True},
+                    "inputSchema": {
+                        "properties": {
+                            "target": {
+                                "oneOf": [
+                                    {
+                                        "description": "First option.",
+                                        "properties": {"value": {"type": "string"}},
+                                        "required": ["value"],
+                                        "type": "object",
+                                    },
+                                    {
+                                        "description": "Second option.",
+                                        "properties": {"value": {"type": "string"}},
+                                        "required": ["value"],
+                                        "type": "object",
+                                    },
+                                ]
+                            },
+                        },
+                        "type": "object",
+                    },
+                },
+            },
+        ],
+    }
+    page = render_mcp_tools(surface, {"untitled": "low"})
+    assert "| `target` | one of `variant 1`, `variant 2` |  |  |" in page
+    assert "##### `variant 1`" in page
+    assert "##### `variant 2`" in page
+
+
 def test_mcp_page_refuses_a_tool_without_a_registered_sensitivity() -> None:
     with pytest.raises(ValueError, match="zeta"):
         render_mcp_tools(SURFACE, {"accounts": "critical"})
