@@ -59,7 +59,7 @@ def validate_note_text(text: str) -> None:
         raise ValueError(f"note text exceeds {NOTE_MAX_LEN} chars")
 
 
-def validate_category_text(value: str) -> None:
+def validate_category_text(value: str, field: str = "category") -> None:
     """Enforce non-blank category text within ``CATEGORY_NAME_MAX_LEN`` chars.
 
     A category of spaces is not a category. The MCP write contracts already
@@ -70,11 +70,19 @@ def validate_category_text(value: str) -> None:
     pipeline already gives: ``core.uncategorized_queue`` selects
     ``category IS NULL``, and the staging models NULL a blank out, so a blank
     stored here counts under no category at all while claiming to have one.
+
+    ``field`` names what is being refused, because both callers validate
+    ``category`` and ``subcategory`` through this one function and the
+    granular arm validates a whole list. Fixed to the word "category", the
+    message sends a ``--subcategory`` caller to the flag they got right and
+    never says which split failed. Callers pass the caller-facing name — the
+    plain field for ``add_split``, ``splits[i].<field>`` for the batch arm —
+    so the refusal matches the sibling type-check message beside it.
     """
     if not value.strip():
-        raise ValueError("category must be non-empty")
+        raise ValueError(f"{field} must be non-empty")
     if len(value) > CATEGORY_NAME_MAX_LEN:
-        raise ValueError(f"category exceeds {CATEGORY_NAME_MAX_LEN} chars")
+        raise ValueError(f"{field} exceeds {CATEGORY_NAME_MAX_LEN} chars")
 
 
 def validate_currency_code(value: str) -> None:

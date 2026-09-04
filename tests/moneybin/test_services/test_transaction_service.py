@@ -19,7 +19,7 @@ from moneybin.mcp.write_contracts import (
     TagRename,
     TagsSet,
 )
-from moneybin.services._validators import InvalidSlugError
+from moneybin.services._validators import CATEGORY_NAME_MAX_LEN, InvalidSlugError
 from moneybin.services.audit_service import AuditService
 from moneybin.services.transaction_service import (
     ManualBatchResult,
@@ -554,7 +554,9 @@ class TestAnnotationBatches:
         ``amount``, so the guard that existed on one arm was absent on the
         other.
         """
-        with pytest.raises(ValueError, match="category must be non-empty"):
+        with pytest.raises(
+            ValueError, match=r"splits\[0\]\.category must be non-empty"
+        ):
             TransactionService(transaction_db).set_splits(
                 "T1",
                 [{"amount": Decimal("-50"), "category": "   "}],
@@ -569,9 +571,12 @@ class TestAnnotationBatches:
 
         Staging nulls a blank one out alongside `category`, and V054 backfills
         both, so a blank reaching the write path would be the one place the
-        three disagree.
+        three disagree. The message names `subcategory`, not `category` — a
+        caller told the wrong field name looks at the wrong flag.
         """
-        with pytest.raises(ValueError, match="category must be non-empty"):
+        with pytest.raises(
+            ValueError, match=r"splits\[0\]\.subcategory must be non-empty"
+        ):
             TransactionService(transaction_db).set_splits(
                 "T1",
                 [{"amount": Decimal("-50"), "category": "Food", "subcategory": " "}],
@@ -597,6 +602,47 @@ class TestAnnotationBatches:
                 [{"amount": Decimal("-50"), "category": 123}],
                 actor="cli",
             )
+
+    @pytest.mark.unit
+    def test_set_splits_refuses_an_over_long_category(
+        self, transaction_db: Database
+    ) -> None:
+        """The length half of `validate_category_text`, on the granular arm.
+
+        `CATEGORY_NAME_MAX_LEN` matches the MCP `CategoryName` field, so the
+        two paths agree on the ceiling as well as on blank. Only the blank
+        branch was exercised before, so a regression that dropped or
+        mis-compared this branch would have passed the suite.
+        """
+        with pytest.raises(
+            ValueError,
+            match=rf"splits\[0\]\.category exceeds {CATEGORY_NAME_MAX_LEN} chars",
+        ):
+            TransactionService(transaction_db).set_splits(
+                "T1",
+                [
+                    {
+                        "amount": Decimal("-50"),
+                        "category": "x" * (CATEGORY_NAME_MAX_LEN + 1),
+                    }
+                ],
+                actor="cli",
+            )
+
+    @pytest.mark.unit
+    def test_set_splits_keeps_a_category_at_the_limit(
+        self, transaction_db: Database
+    ) -> None:
+        """The boundary's other side: exactly the limit is allowed.
+
+        Without this, `>` could become `>=` and the refusal test above would
+        still pass.
+        """
+        TransactionService(transaction_db).set_splits(
+            "T1",
+            [{"amount": Decimal("-50"), "category": "x" * CATEGORY_NAME_MAX_LEN}],
+            actor="cli",
+        )
 
 
 class TestNotes:
@@ -1039,8 +1085,12 @@ class TestSplits:
     def test_add_split_refuses_a_blank_subcategory(
         self, txn_service: TransactionService, sample_transaction_id: str
     ) -> None:
-        """The same rule on the other half of the pair `add_split` accepts."""
-        with pytest.raises(ValueError, match="category must be non-empty"):
+        """The same rule on the other half of the pair `add_split` accepts.
+
+        Named `subcategory`, since `--subcategory "   "` refused as "category"
+        points the caller at the flag they got right.
+        """
+        with pytest.raises(ValueError, match="subcategory must be non-empty"):
             txn_service.add_split(
                 sample_transaction_id,
                 Decimal("-30.00"),
@@ -1048,6 +1098,35 @@ class TestSplits:
                 subcategory="   ",
                 actor="cli",
             )
+
+    @pytest.mark.unit
+    def test_add_split_refuses_an_over_long_category(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        """`add_split` had no length check at all before this PR."""
+        with pytest.raises(
+            ValueError, match=f"category exceeds {CATEGORY_NAME_MAX_LEN} chars"
+        ):
+            txn_service.add_split(
+                sample_transaction_id,
+                Decimal("-30.00"),
+                category="x" * (CATEGORY_NAME_MAX_LEN + 1),
+                actor="cli",
+            )
+
+    @pytest.mark.unit
+    def test_add_split_keeps_a_category_at_the_limit(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        """The boundary's other side, so `>` cannot silently become `>=`."""
+        split = txn_service.add_split(
+            sample_transaction_id,
+            Decimal("-30.00"),
+            category="x" * CATEGORY_NAME_MAX_LEN,
+            actor="cli",
+        )
+
+        assert split.category == "x" * CATEGORY_NAME_MAX_LEN
 
     @pytest.mark.unit
     def test_add_split_keeps_a_category_a_person_wrote(

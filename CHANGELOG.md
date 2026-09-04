@@ -276,7 +276,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A split already stored with a whitespace-only category or subcategory
   before this fix is backfilled to `NULL` on next migration (padding, e.g.
   `'  Groceries  '`, is left as-is — same restraint as the write path).
-  (#517)
+  The refusal names the field it refused — `subcategory must be non-empty`
+  rather than `category must be non-empty`, and `splits[2].subcategory …`
+  when a batch is being set — so a caller is pointed at the flag they got
+  wrong rather than the one they got right. (#517)
 
 - **A Plaid transaction's `category` no longer holds Plaid's own category
   code.** `prep.int_transactions__unioned` had aliased the raw

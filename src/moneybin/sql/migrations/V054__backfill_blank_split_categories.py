@@ -50,21 +50,22 @@ def migrate(conn: object) -> None:
         "V054: backfill whitespace-only app.transaction_splits.category/subcategory to NULL"
     )
     conn.execute(  # type: ignore[union-attr]
-        f"""
+        """
         UPDATE app.transaction_splits
         SET
             category = CASE
-                WHEN REGEXP_FULL_MATCH(category, '{_BLANK}')
+                WHEN REGEXP_FULL_MATCH(category, ?)
                 THEN NULL
                 ELSE category
             END,
             subcategory = CASE
-                WHEN REGEXP_FULL_MATCH(subcategory, '{_BLANK}')
+                WHEN REGEXP_FULL_MATCH(subcategory, ?)
                 THEN NULL
                 ELSE subcategory
             END
         WHERE
-            REGEXP_FULL_MATCH(category, '{_BLANK}')
-            OR REGEXP_FULL_MATCH(subcategory, '{_BLANK}')
-        """  # noqa: S608  # module constant, not caller input
+            REGEXP_FULL_MATCH(category, ?)
+            OR REGEXP_FULL_MATCH(subcategory, ?)
+        """,
+        [_BLANK] * 4,
     )

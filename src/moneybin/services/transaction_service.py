@@ -1684,9 +1684,9 @@ class TransactionService:
         """
         split_id = uuid.uuid4().hex[:12]
         if category is not None:
-            validate_category_text(category)
+            validate_category_text(category, "category")
         if subcategory is not None:
-            validate_category_text(subcategory)
+            validate_category_text(subcategory, "subcategory")
         self._db.begin()
         try:
             ord_row = self._db.conn.execute(
@@ -1822,13 +1822,13 @@ class TransactionService:
         """Validate and resolve one declarative split sequence."""
         desired: list[_PreparedSplit] = []
         total = Decimal("0")
-        for split in splits:
+        for idx, split in enumerate(splits):
             # The MCP arm reaches here already validated by SplitTarget; the
             # granular `set_splits` arm takes untyped dicts and does not.
             if split.category is not None:
-                validate_category_text(split.category)
+                validate_category_text(split.category, f"splits[{idx}].category")
             if split.subcategory is not None:
-                validate_category_text(split.subcategory)
+                validate_category_text(split.subcategory, f"splits[{idx}].subcategory")
             category_id = resolve_category_id(
                 self._db,
                 split.category,
