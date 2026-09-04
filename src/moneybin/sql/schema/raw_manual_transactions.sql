@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_transactions (
     account_id            VARCHAR NOT NULL,                           -- FK to core.dim_accounts
     transaction_date      DATE NOT NULL,                              -- Date of the transaction as the user reports it
     amount                DECIMAL(18, 2) NOT NULL,                    -- Signed; negative = expense, positive = income
+    to_amount             DECIMAL(18, 2),                             -- Received-leg amount for a source-provided single-row currency conversion; NULL when absent
     description           VARCHAR NOT NULL,                           -- User-supplied description (free text)
     merchant_name         VARCHAR,                                    -- Optional user-supplied merchant; resolved against core.dim_merchants on next pipeline pass
     memo                  VARCHAR,                                    -- Additional free-text memo
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_transactions (
     transaction_type      VARCHAR,                                    -- Optional source-style type code
     check_number          VARCHAR,                                    -- Optional check number
     currency_code         VARCHAR,                                    -- ISO 4217 currency code; NULL when unknown (never fabricated)
+    to_currency           VARCHAR,                                    -- Received-leg currency for a source-provided single-row currency conversion; NULL when absent
     created_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
     created_by            VARCHAR NOT NULL,                           -- 'cli' or 'mcp'; future-extensible for multi-user identity
     transaction_id        VARCHAR                                     -- Predicted gold-key (SHA256 of 'manual|user|account_id|source_transaction_id'[:16] per ADR-015/RD-2); populated at INSERT so doctor orphan_app_state can suppress false-positives on rows not yet materialized in core.fct_transactions

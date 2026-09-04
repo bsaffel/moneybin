@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS raw.tabular_transactions (
     transaction_date DATE NOT NULL,             -- Primary transaction date parsed from source using detected or specified date format
     post_date DATE,                             -- Settlement or posting date when distinct from transaction date; NULL if source provides only one date
     amount DECIMAL(18, 2) NOT NULL,             -- Normalized amount: negative = expense, positive = income regardless of source sign convention
+    to_amount DECIMAL(18, 2),                   -- Received-leg amount for a source-provided single-row currency conversion; NULL when absent
     original_amount VARCHAR,                    -- Raw amount string exactly as it appeared in the source file before sign normalization and parsing
     original_date_str VARCHAR,                  -- Raw date string exactly as it appeared in the source file before format parsing
     description VARCHAR,                        -- Primary transaction description, payee, or merchant name from source
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS raw.tabular_transactions (
     reference_number VARCHAR,                   -- Institution-assigned reference, confirmation, or receipt number; not guaranteed unique across transactions
     balance DECIMAL(18, 2),                     -- Running account balance after this transaction if provided by source
     currency VARCHAR,                           -- ISO 4217 currency code if present in source (e.g. USD, EUR); captured now, multi-currency processing deferred
+    to_currency VARCHAR,                        -- Received-leg currency for a source-provided single-row currency conversion; NULL when absent
     member_name VARCHAR,                        -- Account holder, cardholder, or member name if present in source
     source_file VARCHAR NOT NULL,               -- Absolute path to the imported file at time of extraction
     source_type VARCHAR NOT NULL,               -- Import pathway that produced this record: csv, tsv, excel, parquet, feather, pipe, pdf

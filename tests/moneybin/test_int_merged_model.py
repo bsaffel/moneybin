@@ -18,6 +18,10 @@ class TestIntTransactionsMergedModel:
         assert "transaction_id" in content
         assert "canonical_source_type" in content
         assert "source_count" in content
+        assert "conversion_shape_ranked" in content
+        assert "conversion_source_type" in content
+        assert "conversion_source_origin" in content
+        assert "conversion_source_transaction_id" in content
         assert (
             "MIN(m.transaction_date)" in content or "MIN(transaction_date)" in content
         )

@@ -9,11 +9,13 @@ SELECT
   t.transaction_id,
   t.transaction_date AS posted_date,
   -1 * t.amount AS amount, /* Flip Plaid (positive = expense) → MoneyBin (negative = expense) */
+  t.to_amount,
   TRIM(t.description) AS description,
   TRIM(t.merchant_name) AS merchant_name,
   t.category AS plaid_category,
   TRIM(t.original_description) AS original_description,
   t.iso_currency_code,
+  t.to_currency,
   t.authorized_date,
   t.pending_transaction_id,
   t.payment_channel,

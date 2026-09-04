@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS prep.int_transactions__unioned (
     location_latitude     DOUBLE,
     location_longitude    DOUBLE,
     currency_code         VARCHAR,
+    to_amount             DECIMAL(18, 2),
+    to_currency           VARCHAR,
     source_type           VARCHAR,
     source_origin         VARCHAR,
     source_file           VARCHAR,

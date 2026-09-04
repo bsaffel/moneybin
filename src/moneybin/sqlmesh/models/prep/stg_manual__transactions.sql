@@ -12,6 +12,7 @@ SELECT
   t.import_id,
   t.transaction_date::DATE AS transaction_date,
   t.amount::DECIMAL(18, 2) AS amount,
+  t.to_amount::DECIMAL(18, 2) AS to_amount,
   t.description,
   t.merchant_name,
   t.memo,
@@ -21,6 +22,7 @@ SELECT
   t.transaction_type,
   t.check_number,
   t.currency_code,
+  t.to_currency,
   t.created_at,
   t.created_by
 FROM raw.manual_transactions AS t
