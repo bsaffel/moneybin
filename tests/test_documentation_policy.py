@@ -518,10 +518,13 @@ def _resolve_invocation(
     """Return why the invocation does not resolve, or None when it does.
 
     A runnable invocation (from a fenced shell block — a transcript that must
-    run as written) is held to three additional checks a mention (an inline
+    run as written) is held to four additional checks a mention (an inline
     span or table row naming a command) is not: a group requiring a
-    subcommand must get one, a value-taking option must get a value, and a
-    required positional argument must actually be present.
+    subcommand must get one, a value-taking option must get a value (and gets
+    the very next token regardless of its shape, matching Click's own greedy
+    consumption), a required positional argument must actually be present
+    (a required variadic counts as needing one), and every required option
+    must be seen.
     """
     node = root
     path = ["moneybin"]
@@ -529,6 +532,7 @@ def _resolve_invocation(
     positionals = 0
     options_done = False
     saw_help = False
+    seen_options: set[click.Option] = set()
     index = 0
     while index < len(tokens):
         token = tokens[index]
@@ -543,6 +547,7 @@ def _resolve_invocation(
             if parents:
                 node, path = parents.pop()
                 positionals = 0
+                seen_options = set()
             continue
         if token in {"*", "…", "..."}:  # noqa: S105  # CLI argument, not a secret
             return None  # a wildcard or elision: nothing checkable past it
@@ -566,6 +571,7 @@ def _resolve_invocation(
             option = next(
                 p for p in options if aliases[0] in (*p.opts, *p.secondary_opts)
             )
+            seen_options.add(option)
             if (
                 runnable
                 and not option.is_flag
@@ -576,11 +582,15 @@ def _resolve_invocation(
             following = tokens[index] if index < len(tokens) else ""
             # A bare value-taking option in a flags column (`--pattern`,
             # `--match-type {exact,contains,regex}`) must not swallow the next
-            # flag; a negative number (`--amount -12.50`) is still a value.
+            # flag; a negative number (`--amount -12.50`) is still a value. A
+            # *runnable* transcript gets no such benefit of the doubt: Click
+            # itself always consumes the very next token as the value,
+            # whatever it looks like.
             looks_like_option = (
                 following.startswith("-") and not following[1:2].isdigit()
             )
-            if not option.is_flag and not has_inline_value and not looks_like_option:
+            takes_next_token = following != "" and (runnable or not looks_like_option)
+            if not option.is_flag and not has_inline_value and takes_next_token:
                 index += 1  # the option's value
             continue
         if _is_placeholder(token):
@@ -599,6 +609,8 @@ def _resolve_invocation(
             parents.append((node, list(path)))
             node = node.commands[token]
             path.append(token)
+            positionals = 0
+            seen_options = set()
             continue
         else:
             positionals += 1
@@ -624,17 +636,32 @@ def _resolve_invocation(
         return f"`{' '.join(path)}` takes a subcommand"
     # A runnable invocation that stops before a required positional arrives
     # (`moneybin db key import` with no path) exits non-zero, same as the
-    # subcommand and option-value checks above.
+    # subcommand and option-value checks above. A required variadic
+    # (`FILE_PATHS...` `[required]`) still needs at least one.
     if runnable and not saw_help and not isinstance(node, click.Group):
         arguments = [p for p in node.params if isinstance(p, click.Argument)]
         minimum = sum(
-            0 if argument.nargs < 0 or not argument.required else argument.nargs
+            (1 if argument.required else 0)
+            if argument.nargs < 0
+            else (argument.nargs if argument.required else 0)
             for argument in arguments
         )
         if positionals < minimum:
             return (
                 f"`{' '.join(path)}` requires {minimum} positional argument(s), "
                 f"got {positionals}"
+            )
+        missing_options = [
+            option
+            for option in node.params
+            if isinstance(option, click.Option)
+            and option.required
+            and option not in seen_options
+        ]
+        if missing_options:
+            return (
+                f"`{' '.join(path)}` is missing required option "
+                f"`{missing_options[0].opts[0]}`"
             )
     return None
 
@@ -645,9 +672,10 @@ def test_public_docs_cli_invocations_resolve() -> None:
     Registered means the group and subcommand exist and every option is one
     the command declares; placeholders are not checked. A fenced shell block
     is a transcript that must run as written, so it is additionally held to a
-    subcommand, an option value, and a required positional actually being
-    present; an inline span or table row names a command and is exempt from
-    those three. A row of the CLI
+    subcommand, a required option, and a required positional (including a
+    required variadic) actually being present, and a value-taking option
+    greedily consuming the next token exactly as Click does; an inline span
+    or table row names a command and is exempt from those four. A row of the CLI
     reference tables whose first code span starts with a top-level command is
     read as `moneybin …` with the row's flag spans appended, so the flags
     column is checked too. A line that must show a wrong invocation on
@@ -733,6 +761,16 @@ def _fixture_cli() -> click.Group:  # pyright: ignore[reportUnusedFunction]  # p
         "rules", callback=_fixture_callback, params=[click.Option(["--pattern"])]
     )
     secret = click.Command("secret", callback=_fixture_callback, hidden=True)
+    deploy = click.Command(
+        "deploy",
+        callback=_fixture_callback,
+        params=[click.Option(["--target"], required=True)],
+    )
+    files = click.Command(
+        "files",
+        callback=_fixture_callback,
+        params=[click.Argument(["file_paths"], nargs=-1, required=True)],
+    )
     return click.Group(
         "cli",
         commands={
@@ -742,6 +780,8 @@ def _fixture_cli() -> click.Group:  # pyright: ignore[reportUnusedFunction]  # p
             "commit": commit,
             "rules": rules,
             "secret": secret,
+            "deploy": deploy,
+            "files": files,
         },
     )
 
@@ -777,6 +817,33 @@ def _fixture_cli() -> click.Group:  # pyright: ignore[reportUnusedFunction]  # p
         # Negative number is a value, not an option.
         pytest.param(
             ["create", "foo", "-12.50"], True, True, id="negative-number-is-value"
+        ),
+        # A missing required option: strict only when runnable.
+        pytest.param(["deploy"], True, False, id="missing-required-option-runnable"),
+        pytest.param(["deploy"], False, True, id="missing-required-option-inline-ok"),
+        pytest.param(
+            ["deploy", "--target", "prod"], True, True, id="required-option-present"
+        ),
+        # A runnable transcript's value-taking option greedily takes the very
+        # next token, exactly like Click — even one shaped like another
+        # option; a mention still catches the apparent typo.
+        pytest.param(
+            ["rules", "--pattern", "--bogus"],
+            True,
+            True,
+            id="option-value-greedy-runnable-ok",
+        ),
+        pytest.param(
+            ["rules", "--pattern", "--bogus"],
+            False,
+            False,
+            id="option-value-not-greedy-inline-violation",
+        ),
+        # A required variadic still needs at least one value.
+        pytest.param(["files"], True, False, id="required-variadic-empty-violation"),
+        pytest.param(["files"], False, True, id="required-variadic-inline-ok"),
+        pytest.param(
+            ["files", "a.csv"], True, True, id="required-variadic-one-value-ok"
         ),
     ],
 )

@@ -55,7 +55,7 @@ Four points about the diagram above:
 
 - **`refresh` runs the deterministic cascade.** The `moneybin refresh` CLI and `refresh_run` MCP tool both invoke the same canonical pipeline: gsheet pull, cross-source matching, SQLMesh transform, categorization, identity backfill, then exchange-rate gather. Imports and `sync pull` auto-refresh by default — you rarely call this by hand.
 - **Newly created rules apply on the next refresh.** Creating a rule does not retroactively categorize old rows unless you opt in. Pass `--reapply` on the CLI `rules create`; MCP callers update the complete rule target state with `transactions_categorize_rules_set` and invoke `transactions_categorize_run` when they need an immediate run.
-- **`transactions categorize assist` never writes.** It returns PII-scrubbed records — merchant text is sent, embedded account numbers are masked; an LLM (in your MCP host, or a separate pipeline you wire up) proposes categorizations; you review; then a separate commit call persists the decisions.
+- **`transactions categorize assist` never writes.** It returns PII-scrubbed records — merchant text is kept as the categorization signal, scrubbed of embedded PII (card and account numbers, emails, phone numbers, dates, city/state); an LLM (in your MCP host, or a separate pipeline you wire up) proposes categorizations; you review; then a separate commit call persists the decisions.
 - **`commit`, `commit-from-file`, and the MCP `transactions_categorize_commit` tool all write `categorized_by='ai'`** — see the Hazard callout above. This is by design: the LLM is a probabilistic proposer, and `ai`-source means "anything else can override this," which is the right default for a guess.
 
 ## Surfaces
@@ -325,7 +325,7 @@ MoneyBin does not call an LLM provider itself. The CLI/MCP tool produces the PII
 
 What crosses to the LLM on `assist`:
 
-- PII-scrubbed description and memo (merchant text preserved; embedded account numbers masked)
+- PII-scrubbed description and memo (merchant text kept; embedded PII scrubbed — card and account numbers, emails, phone numbers, dates, city/state)
 - Structural fields: type, check number, transfer flags, channel, sign
 - `source_type` and `transaction_id`
 
