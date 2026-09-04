@@ -63,13 +63,17 @@ def _run_generate(
             from moneybin.database import (
                 get_database,  # noqa: PLC0415 — deferred import
             )
+            from moneybin.tables import (
+                OFX_TRANSACTIONS,  # noqa: PLC0415 — deferred import
+                TABULAR_TRANSACTIONS,
+            )
 
             with get_database(read_only=False) as db:
                 # Check if profile already has data
                 try:
                     row = db.execute(
-                        """SELECT (SELECT COUNT(*) FROM raw.ofx_transactions)
-                                + (SELECT COUNT(*) FROM raw.tabular_transactions)"""
+                        f"""SELECT (SELECT COUNT(*) FROM {OFX_TRANSACTIONS.full_name})
+                                + (SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name})"""  # noqa: S608  # TableRef constants
                     ).fetchone()
                     existing_count = row[0] if row else 0
                 except Exception:  # noqa: BLE001,S110 — tables may not exist in a fresh DB
