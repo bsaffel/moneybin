@@ -289,6 +289,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 
 ### Added
+- **A Core accounting foundation for realized foreign-exchange gains.** Trusted
+  accepted Transfer Decisions and the reserved single-row conversion shape now
+  produce auditable Currency lots and realized gains through the existing
+  cost-basis engine. The public report and deliberate EUR/USD statement tie-out
+  remain in progress.
 - **`core.bridge_merchant_entities`** — a new queryable core view mapping each
   transaction to the merchant identifier its source system assigned, alongside
   the source that issued it and the merchant name that source stated. Available

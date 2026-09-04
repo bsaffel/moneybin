@@ -111,7 +111,7 @@ both failure modes while preserving original-currency facts.
 |---|---|---|---|
 | **M1K.1** | Currency capture & integrity (no conversion) | nothing | Independent of investments; **may be pulled into the first public release** (see [`roadmap.md`](../roadmap.md) §"The first public release"). Closes the live silent-blend bug. Requirements 1, 2, 3, 8 (capture, schema, account-currency inheritance) implemented 2026-07-17; Requirements 4–7 (home currency, no-silent-blend guard, doctor check, report guard) implemented 2026-07-25, and Requirement 3's account-grain `'USD'` fallback removed 2026-07-26 — **M1K.1 closed**, except the first-run-wizard locale default explicitly descoped under Requirement 4. |
 | **M1K.2** | Display conversion (auditable rates) | M1K.1 + **investments (M1J)** | The unifying conversion layer over both cash and investment grains. Sequenced after investments so it converts *everything* in one coherent pass. |
-| **M1K.3** | Realized FX gain/loss | M1K.2 + investments cost-basis engine | Reuses the investments lot/cost-basis machinery; the genuinely investment-shaped part. |
+| **M1K.3** | Realized FX gain/loss | M1K.2 + investments cost-basis engine | Core conversion, Currency-lot, and realized-FX foundation implemented 2026-09-04 by reusing the unchanged investments cost-basis engine. The report and deliberate EUR/USD statement tie-out remain open. |
 
 **Sequencing rule:** investments (M1J) lands before M1K.2/M1K.3. The dependency runs
 one direction only — realized FX gain/loss is currency-lot accounting, i.e. the same
@@ -704,6 +704,18 @@ Numbered, testable. Tagged by phase.
     `moneybin_fx_accounting_rows` Gauge records current row counts by `grain` and
     closed `coverage_reason`, using `complete` for covered rows; it contains no
     financial values or identifiers.
+
+    **Implemented foundation, 2026-09-04.** Accepted Transfer Decisions and the
+    reserved single-row shape now feed `core.bridge_currency_conversions`, with
+    canonical Transaction currency inherited from its Account when the source row
+    omits it. A cache-only loader adapts completed conversions and eligible
+    foreign-Security sale proceeds to the unchanged investments cost-basis engine,
+    producing `core.fct_currency_lots` and `core.fct_realized_fx_gains`; unsupported
+    or incomplete evidence remains visibly uncovered. The bounded row-count Gauge
+    above is live, and the international synthetic scenario proves complete
+    conversions and exactly $5.00 of realized FX gain per completed month. This is
+    a Core accounting foundation, not a public reporting surface.
+
     M1K.3 and MB-111 remain open until the user-visible report and deliberate
     EUR/USD statement tie-out also ship.
 
