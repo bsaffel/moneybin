@@ -77,7 +77,7 @@ moneybin db key rotate
 # requires a path argument; called bare (as below) it exits 2 for the missing
 # argument before ever reaching the not-implemented body.
 moneybin db key export
-moneybin db key import
+moneybin db key import  # <!-- cli-invocation-ok: shown bare on purpose, exits 2 for the missing path -->
 moneybin db key verify
 ```
 

@@ -518,9 +518,10 @@ def _resolve_invocation(
     """Return why the invocation does not resolve, or None when it does.
 
     A runnable invocation (from a fenced shell block — a transcript that must
-    run as written) is held to two additional checks a mention (an inline
+    run as written) is held to three additional checks a mention (an inline
     span or table row naming a command) is not: a group requiring a
-    subcommand must get one, and a value-taking option must get a value.
+    subcommand must get one, a value-taking option must get a value, and a
+    required positional argument must actually be present.
     """
     node = root
     path = ["moneybin"]
@@ -621,6 +622,20 @@ def _resolve_invocation(
         and not getattr(node, "invoke_without_command", False)
     ):
         return f"`{' '.join(path)}` takes a subcommand"
+    # A runnable invocation that stops before a required positional arrives
+    # (`moneybin db key import` with no path) exits non-zero, same as the
+    # subcommand and option-value checks above.
+    if runnable and not saw_help and not isinstance(node, click.Group):
+        arguments = [p for p in node.params if isinstance(p, click.Argument)]
+        minimum = sum(
+            0 if argument.nargs < 0 or not argument.required else argument.nargs
+            for argument in arguments
+        )
+        if positionals < minimum:
+            return (
+                f"`{' '.join(path)}` requires {minimum} positional argument(s), "
+                f"got {positionals}"
+            )
     return None
 
 
@@ -630,8 +645,9 @@ def test_public_docs_cli_invocations_resolve() -> None:
     Registered means the group and subcommand exist and every option is one
     the command declares; placeholders are not checked. A fenced shell block
     is a transcript that must run as written, so it is additionally held to a
-    subcommand and an option value actually being present; an inline span or
-    table row names a command and is exempt from those two. A row of the CLI
+    subcommand, an option value, and a required positional actually being
+    present; an inline span or table row names a command and is exempt from
+    those three. A row of the CLI
     reference tables whose first code span starts with a top-level command is
     read as `moneybin …` with the row's flag spans appended, so the flags
     column is checked too. A line that must show a wrong invocation on
@@ -747,6 +763,15 @@ def _fixture_cli() -> click.Group:  # pyright: ignore[reportUnusedFunction]  # p
             ["rules", "--pattern"], True, False, id="option-value-runnable-violation"
         ),
         pytest.param(["rules", "--pattern"], False, True, id="option-value-inline-ok"),
+        # A missing required positional: strict only when runnable.
+        pytest.param(
+            ["create"], True, False, id="missing-positional-runnable-violation"
+        ),
+        pytest.param(["create"], False, True, id="missing-positional-inline-ok"),
+        # The optional positional may be omitted either way.
+        pytest.param(
+            ["create", "foo"], True, True, id="optional-positional-omitted-ok"
+        ),
         # A flag never needs a value, regardless of position.
         pytest.param(["commit", "-y"], True, True, id="flag-no-value-needed"),
         # Negative number is a value, not an option.
