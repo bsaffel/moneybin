@@ -246,7 +246,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   agent can call from MCP. The count is profile-wide rather than scoped to the
   rows on screen: a report returns aggregates, so which transactions it summed
   is not recoverable from its result, and warning wider is the safe direction
-  of that imprecision. (#409)
+  of that imprecision. (#534)
 
 - **An amount no longer folds across two lines.** Folding is the right failure
   for an identifier — an account id or a display name ending in a masked last
