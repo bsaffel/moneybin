@@ -563,8 +563,13 @@ def mcp_tool(
             loop and serialize concurrent tool calls.
 
             For dynamic_classification tools, reads sensitivity and classes from
-            the envelope itself (set by the tool per call); for static tools,
-            uses the registration-time closure values.
+            the envelope itself (set by the tool per call). For static tools,
+            sensitivity is also read off the envelope — every call site below
+            passes it through ``_stamp_sensitivity`` first, so this always sees
+            the floored (derived vs. declared) value, never a stale closure
+            read — while classes still use the registration-time closure value
+            (`classes_for_log`), which is a fixed function of the return type
+            with no per-call analogue to floor against (MB-157).
             """
             if dynamic_classification:
                 ev_sensitivity = env.summary.sensitivity
@@ -576,7 +581,7 @@ def mcp_tool(
                     else ["unclassified"]
                 )
             else:
-                ev_sensitivity = sensitivity.value
+                ev_sensitivity = env.summary.sensitivity
                 ev_classes = classes_for_log
             event = build_tool_call_event(
                 actor=f"mcp.{_public_privacy_actor.get() or fn.__name__}",
@@ -593,7 +598,12 @@ def mcp_tool(
             Error envelopes from build_error_envelope hardcode "low"; without
             this a CRITICAL-tier tool (e.g. accounts_get) that raises would
             report summary.sensitivity="low" in its error response and audit
-            row, understating the tier. Applied on every error return path.
+            row, understating the tier. Applied on every return path that
+            reaches _emit_privacy_event — including the two crash/cancellation
+            paths that build their envelope inline rather than through one of
+            the classify/timeout helpers above (MB-157: _emit_privacy_event's
+            static branch now reads sensitivity off the envelope, so any path
+            that skipped this stamp would under-report its audit row).
 
             No-op for dynamic_classification tools: their sensitivity is decided
             per call (the static ``sensitivity`` here is only a HIGH placeholder),
@@ -750,8 +760,13 @@ def mcp_tool(
                     # CancelledError (a BaseException, not Exception) raised here
                     # would escape both the TimeoutError and Exception handlers
                     # with no audit row. Emit the crash event, then propagate.
+                    # Stamped like every other emit call site (MB-157) — this
+                    # crash-escape envelope would otherwise report "low" for a
+                    # HIGH/CRITICAL-tier tool's audit row.
                     await _emit_privacy_event(
-                        _build_unclassified_failure_envelope(fn.__name__)
+                        _stamp_sensitivity(
+                            _build_unclassified_failure_envelope(fn.__name__)
+                        )
                     )
                     raise
                 timeout_env = _stamp_sensitivity(
@@ -780,9 +795,14 @@ def mcp_tool(
                 request_lifetime.cancel()
                 await asyncio.to_thread(request_lifetime.wait_for_publication)
                 try:
+                    # Stamped like every other emit call site (MB-157) — this
+                    # cancellation envelope would otherwise report "low" for a
+                    # HIGH/CRITICAL-tier tool's audit row.
                     await asyncio.shield(
                         _emit_privacy_event(
-                            _build_unclassified_failure_envelope(fn.__name__)
+                            _stamp_sensitivity(
+                                _build_unclassified_failure_envelope(fn.__name__)
+                            )
                         )
                     )
                 except asyncio.CancelledError:
