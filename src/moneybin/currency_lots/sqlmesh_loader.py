@@ -26,6 +26,7 @@ if t.TYPE_CHECKING:
 _RATE_QUANTUM = Decimal("0.00000001")
 _MONEY_QUANTUM = Decimal("0.01")
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+_UNATTRIBUTED_LOT_HASH_KEY = "<unattributed-currency-lot>"
 
 
 @dataclass(frozen=True)
@@ -110,7 +111,7 @@ class RealizedFXGainRow:
     realized_fx_gain_id: str
     account_id: str
     conversion_id: str
-    currency_lot_id: str
+    currency_lot_id: str | None
     currency_code: str
     home_currency: str
     acquisition_date: date
@@ -619,13 +620,73 @@ def load_conversion_rows(
     return rows
 
 
+def _load_materialized_conversions(
+    context: ExecutionContext,
+) -> list[CurrencyConversionRow]:
+    table = context.resolve_table("core.bridge_currency_conversions")
+    frame = context.fetchdf(
+        f"""
+        SELECT conversion_id, source_shape, transfer_pair_id,
+               from_transaction_id, to_transaction_id,
+               from_account_id, to_account_id,
+               from_date::VARCHAR AS from_date,
+               to_date::VARCHAR AS to_date,
+               from_amount::VARCHAR AS from_amount, from_currency,
+               to_amount::VARCHAR AS to_amount, to_currency,
+               executed_rate::VARCHAR AS executed_rate, home_currency,
+               home_value::VARCHAR AS home_value,
+               valuation_rate::VARCHAR AS valuation_rate,
+               valuation_rate_date::VARCHAR AS valuation_rate_date,
+               valuation_source_type, from_source_type, from_source_origin,
+               from_source_transaction_id, to_source_type, to_source_origin,
+               to_source_transaction_id, coverage_status, coverage_reason,
+               updated_at::VARCHAR AS conversion_updated_at
+        FROM {table}
+        """  # noqa: S608  # table name resolved by SQLMesh, not user input
+    )
+    return [
+        CurrencyConversionRow(
+            conversion_id=str(record["conversion_id"]),
+            source_shape=str(record["source_shape"]),
+            transfer_pair_id=_opt_str(record["transfer_pair_id"]),
+            from_transaction_id=_opt_str(record["from_transaction_id"]),
+            to_transaction_id=_opt_str(record["to_transaction_id"]),
+            from_account_id=_opt_str(record["from_account_id"]),
+            to_account_id=_opt_str(record["to_account_id"]),
+            from_date=_opt_date(record["from_date"]),
+            to_date=_opt_date(record["to_date"]),
+            from_amount=_opt_decimal(record["from_amount"]),
+            from_currency=_opt_str(record["from_currency"]),
+            to_amount=_opt_decimal(record["to_amount"]),
+            to_currency=_opt_str(record["to_currency"]),
+            executed_rate=_opt_decimal(record["executed_rate"]),
+            home_currency=_opt_str(record["home_currency"]),
+            home_value=_opt_decimal(record["home_value"]),
+            valuation_rate=_opt_decimal(record["valuation_rate"]),
+            valuation_rate_date=_opt_date(record["valuation_rate_date"]),
+            valuation_source_type=_opt_str(record["valuation_source_type"]),
+            from_source_type=_opt_str(record["from_source_type"]),
+            from_source_origin=_opt_str(record["from_source_origin"]),
+            from_source_transaction_id=_opt_str(record["from_source_transaction_id"]),
+            to_source_type=_opt_str(record["to_source_type"]),
+            to_source_origin=_opt_str(record["to_source_origin"]),
+            to_source_transaction_id=_opt_str(record["to_source_transaction_id"]),
+            coverage_status=str(record["coverage_status"]),
+            coverage_reason=_opt_str(record["coverage_reason"]),
+            updated_at=_opt_timestamp(record["conversion_updated_at"]),
+        )
+        for record in _records(frame)
+    ]
+
+
 def _public_lot_id(account_id: str, currency: str, source_event_id: str) -> str:
     raw = f"{account_id}|{currency}|{source_event_id}"
     return "clot_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-def _public_gain_id(disposal_id: str, currency_lot_id: str) -> str:
-    raw = f"{disposal_id}|{currency_lot_id}"
+def _public_gain_id(disposal_id: str, currency_lot_id: str | None) -> str:
+    lot_hash_key = currency_lot_id or _UNATTRIBUTED_LOT_HASH_KEY
+    raw = f"{disposal_id}|{lot_hash_key}"
     return "rfx_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -837,10 +898,10 @@ def _incomplete_gain(
 ) -> RealizedFXGainRow:
     conversion_id = t.cast("str", metadata.source_conversion_id)
     return RealizedFXGainRow(
-        realized_fx_gain_id=_public_gain_id(conversion_id, ""),
+        realized_fx_gain_id=_public_gain_id(conversion_id, None),
         account_id=metadata.account_id,
         conversion_id=conversion_id,
-        currency_lot_id="",
+        currency_lot_id=None,
         currency_code=metadata.currency_code,
         home_currency=metadata.home_currency,
         acquisition_date=event.trade_date,
@@ -866,6 +927,21 @@ def derive_currency_accounting(
     account_methods: Mapping[str, str | None],
 ) -> CurrencyAccountingResult:
     """Adapt Currency events to the unchanged cost-basis engine."""
+    return _derive_currency_accounting(
+        conversions,
+        security_sales,
+        account_methods,
+        account_method_updated_at={},
+    )
+
+
+def _derive_currency_accounting(
+    conversions: Sequence[CurrencyConversionRow],
+    security_sales: Sequence[ForeignSecuritySale],
+    account_methods: Mapping[str, str | None],
+    *,
+    account_method_updated_at: Mapping[str, datetime],
+) -> CurrencyAccountingResult:
     event_rows: list[tuple[LedgerEvent, _EventMetadata]] = []
     incomplete_sales: list[tuple[LedgerEvent, _EventMetadata, str]] = []
     for conversion in conversions:
@@ -885,12 +961,15 @@ def derive_currency_accounting(
 
     group_updated_at: dict[tuple[str, str], datetime] = {}
     for _event_row, metadata in event_rows:
-        if metadata.updated_at is None:
-            continue
         key = (metadata.account_id, metadata.currency_code)
-        current = group_updated_at.get(key)
-        if current is None or metadata.updated_at > current:
-            group_updated_at[key] = metadata.updated_at
+        updated_at = _latest(
+            metadata.updated_at,
+            account_method_updated_at.get(metadata.account_id),
+        )
+        if updated_at is not None:
+            current = group_updated_at.get(key)
+            if current is None or updated_at > current:
+                group_updated_at[key] = updated_at
 
     metadata_for = {
         event.investment_transaction_id: metadata for event, metadata in event_rows
@@ -954,7 +1033,7 @@ def derive_currency_accounting(
     for gain in engine_gains:
         metadata = metadata_for[gain.disposal_txn_id]
         conversion_id = t.cast("str", metadata.source_conversion_id)
-        public_lot_id = engine_lot_ids.get(gain.lot_id, "")
+        public_lot_id = engine_lot_ids.get(gain.lot_id)
         reason = None
         if gain.basis_incomplete:
             reason = "negative_inventory" if gain.lot_id == "" else "incomplete_history"
@@ -1003,7 +1082,16 @@ def derive_currency_accounting(
     for event, metadata, reason in incomplete_sales:
         method = _method(event.account_id, account_methods)
         lots.append(
-            _incomplete_lot(event, metadata, method, reason, metadata.updated_at)
+            _incomplete_lot(
+                event,
+                metadata,
+                method,
+                reason,
+                _latest(
+                    metadata.updated_at,
+                    account_method_updated_at.get(metadata.account_id),
+                ),
+            )
         )
 
     lots.sort(key=lambda row: (row.acquisition_date, row.currency_lot_id))
@@ -1080,44 +1168,45 @@ def _load_security_sales(
     return sales
 
 
-def _load_account_methods(context: ExecutionContext) -> dict[str, str | None]:
+def _load_account_methods(
+    context: ExecutionContext,
+) -> tuple[dict[str, str | None], dict[str, datetime]]:
     frame = context.fetchdf(
-        "SELECT account_id, default_cost_basis_method FROM app.account_settings"
+        """
+        SELECT account_id, default_cost_basis_method,
+               updated_at::VARCHAR AS method_updated_at
+        FROM app.account_settings
+        """
     )
-    return {
+    methods = {
         str(record["account_id"]): _opt_str(record["default_cost_basis_method"])
         for record in _records(frame)
     }
+    updated_at = {
+        str(record["account_id"]): timestamp
+        for record in _records(frame)
+        if (timestamp := _opt_timestamp(record["method_updated_at"])) is not None
+    }
+    return methods, updated_at
 
 
 def load_currency_accounting(
     context: ExecutionContext,
 ) -> CurrencyAccountingResult:
     """Load cache-only inputs and derive Currency lots and realized FX."""
-    candidates = _load_candidates(context)
+    conversions = _load_materialized_conversions(context)
     home_currency, home_updated_at = _load_home_currency(context)
     stored_rate = _load_stored_rates(context)
-    conversions = [
-        row
-        for candidate in candidates
-        if (
-            row := _derive_conversion(
-                candidate,
-                home_currency=home_currency,
-                home_updated_at=home_updated_at,
-                stored_rate=stored_rate,
-            )
-        )
-        is not None
-    ]
     sales = _load_security_sales(
         context,
         home_currency=home_currency,
         home_updated_at=home_updated_at,
         stored_rate=stored_rate,
     )
-    return derive_currency_accounting(
+    account_methods, account_method_updated_at = _load_account_methods(context)
+    return _derive_currency_accounting(
         conversions,
         sales,
-        _load_account_methods(context),
+        account_methods,
+        account_method_updated_at=account_method_updated_at,
     )

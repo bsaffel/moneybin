@@ -20,6 +20,7 @@ D = Decimal
 T1 = datetime(2026, 1, 1, 10)
 T2 = datetime(2026, 2, 1, 10)
 T3 = datetime(2026, 3, 1, 10)
+T4 = datetime(2026, 4, 1, 10)
 
 
 def _conversion(**changes: object) -> sqlmesh_loader.CurrencyConversionRow:
@@ -380,6 +381,7 @@ def test_unsupported_method_produces_lot_and_gain_placeholders(method: str) -> N
     assert result.gains[0].cost_basis is None
     assert result.gains[0].gain_loss is None
     assert result.gains[0].coverage_reason == "unsupported_method"
+    assert result.gains[0].currency_lot_id is None
 
 
 def test_oversold_disposal_maps_empty_engine_lot_to_negative_inventory() -> None:
@@ -398,6 +400,7 @@ def test_oversold_disposal_maps_empty_engine_lot_to_negative_inventory() -> None
     )
 
     result = _derive(_conversion(), disposal)
+    repeated = _derive(_conversion(), disposal)
 
     complete = next(gain for gain in result.gains if gain.coverage_status == "complete")
     incomplete = next(
@@ -406,10 +409,12 @@ def test_oversold_disposal_maps_empty_engine_lot_to_negative_inventory() -> None
     assert complete.disposed_amount == D("80.00")
     assert complete.cost_basis == D("100.00")
     assert incomplete.disposed_amount == D("20.00")
-    assert incomplete.currency_lot_id == ""
+    assert incomplete.currency_lot_id is None
     assert incomplete.cost_basis is None
     assert incomplete.gain_loss is None
     assert incomplete.coverage_reason == "negative_inventory"
+    assert incomplete.realized_fx_gain_id == repeated.gains[1].realized_fx_gain_id
+    assert incomplete.realized_fx_gain_id != _public_gain_id("fxc_oversold", "")
 
 
 def test_nonempty_incomplete_engine_lot_maps_to_incomplete_history(
@@ -549,8 +554,10 @@ class _FakeContext:
     def __init__(self, *frames: pd.DataFrame) -> None:
         self.frames = list(frames)
         self.queries: list[str] = []
+        self.resolved_tables: list[str] = []
 
     def resolve_table(self, name: str) -> str:
+        self.resolved_tables.append(name)
         return name
 
     def fetchdf(self, sql: str) -> pd.DataFrame:
@@ -588,11 +595,8 @@ def _empty_conversion_frame() -> pd.DataFrame:
 
 
 def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -> None:
-    empty = _empty_conversion_frame()
     context = _FakeContext(
-        empty,
-        empty,
-        empty,
+        pd.DataFrame(),
         pd.DataFrame({"home_currency": ["USD"], "profile_updated_at": [str(T1)]}),
         pd.DataFrame(
             columns=t.cast(
@@ -623,15 +627,124 @@ def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -
             "currency_code": ["EUR"],
             "event_updated_at": [str(T1)],
         }),
-        pd.DataFrame({"account_id": ["acct-eur"], "default_cost_basis_method": [None]}),
+        pd.DataFrame({
+            "account_id": ["acct-eur"],
+            "default_cost_basis_method": [None],
+            "method_updated_at": [str(T4)],
+        }),
     )
 
     result = sqlmesh_loader.load_currency_accounting(t.cast(t.Any, context))
 
     assert result.lots[0].original_quantity == D("40.00")
     assert result.lots[0].cost_basis_total == D("50.00")
-    assert result.lots[0].updated_at == T2
+    assert result.lots[0].updated_at == T4
     query_text = "\n".join(context.queries).lower()
     assert "type = 'sell'" in query_text
     assert "amount > 0" in query_text
     assert "http" not in query_text
+
+
+class _RoutingContext:
+    def __init__(self, conversion_frame: pd.DataFrame) -> None:
+        self.conversion_frame = conversion_frame
+        self.queries: list[str] = []
+        self.resolved_tables: list[str] = []
+
+    def resolve_table(self, name: str) -> str:
+        self.resolved_tables.append(name)
+        return name
+
+    def fetchdf(self, sql: str) -> pd.DataFrame:
+        self.queries.append(sql)
+        normalized = " ".join(sql.lower().split())
+        if "from core.bridge_currency_conversions" in normalized:
+            return self.conversion_frame
+        if "from core.bridge_transfers" in normalized:
+            return _empty_conversion_frame()
+        if "from app.match_decisions" in normalized:
+            return _empty_conversion_frame()
+        if "from prep.int_transactions__merged" in normalized:
+            return _empty_conversion_frame()
+        if "from app.profile_settings" in normalized:
+            return pd.DataFrame({
+                "home_currency": ["USD"],
+                "profile_updated_at": [str(T1)],
+            })
+        if "from app.exchange_rate_overrides" in normalized:
+            return pd.DataFrame(
+                columns=t.cast(
+                    t.Any,
+                    [
+                        "from_currency",
+                        "to_currency",
+                        "rate_date",
+                        "rate",
+                        "rate_updated_at",
+                    ],
+                )
+            )
+        if "from raw.exchange_rates" in normalized:
+            return pd.DataFrame(
+                columns=t.cast(
+                    t.Any,
+                    [
+                        "from_currency",
+                        "to_currency",
+                        "rate_date",
+                        "rate",
+                        "source_type",
+                        "loaded_at",
+                    ],
+                )
+            )
+        if "from core.fct_investment_transactions" in normalized:
+            return pd.DataFrame(
+                columns=t.cast(
+                    t.Any,
+                    [
+                        "investment_transaction_id",
+                        "account_id",
+                        "trade_date",
+                        "net_proceeds",
+                        "fees",
+                        "currency_code",
+                        "event_updated_at",
+                    ],
+                )
+            )
+        if "from app.account_settings" in normalized:
+            return pd.DataFrame(
+                columns=t.cast(
+                    t.Any,
+                    [
+                        "account_id",
+                        "default_cost_basis_method",
+                        "method_updated_at",
+                    ],
+                )
+            )
+        raise AssertionError(f"unexpected query: {sql}")
+
+
+def test_load_currency_accounting_reads_typed_materialized_conversion_rows() -> None:
+    conversion = dataclasses.asdict(_conversion())
+    conversion["from_date"] = str(conversion["from_date"])
+    conversion["to_date"] = str(conversion["to_date"])
+    conversion["from_amount"] = str(conversion["from_amount"])
+    conversion["to_amount"] = str(conversion["to_amount"])
+    conversion["executed_rate"] = str(conversion["executed_rate"])
+    conversion["home_value"] = str(conversion["home_value"])
+    conversion["valuation_rate"] = str(conversion["valuation_rate"])
+    conversion["valuation_rate_date"] = str(conversion["valuation_rate_date"])
+    conversion["conversion_updated_at"] = str(conversion.pop("updated_at"))
+    context = _RoutingContext(pd.DataFrame([conversion]))
+
+    result = sqlmesh_loader.load_currency_accounting(t.cast(t.Any, context))
+
+    assert len(result.lots) == 1
+    assert result.lots[0].source_conversion_id == "fxc_acquire"
+    assert context.resolved_tables[0] == "core.bridge_currency_conversions"
+    conversion_query = context.queries[0].lower()
+    assert "from_amount::varchar" in conversion_query
+    assert "updated_at::varchar as conversion_updated_at" in conversion_query
