@@ -106,7 +106,7 @@ reach the ledger, everything downstream is existing machinery.
    before Plaid's transaction window has no acquiring transaction, so its
    holdings row is the *only* evidence the lot exists — used to seed the ledger,
    not to value it.
-8. **Provider grouping stays source-shaped.** Plaid supplies no trustworthy
+8. **Plaid grouping stays source-shaped.** Plaid supplies no trustworthy
    shared identifier for reinvest or corporate-action legs, so the shipped
    staging model leaves `event_group_id` NULL. An unpaired reinvest row still
    opens its lot and the income row still counts as income; only the linkage is
@@ -839,7 +839,7 @@ The heaviest view in this spec. In order:
    oversold-disposal rule.
 6. **Preserve provider strings:** `investment_transaction_type AS
    provider_type`, `investment_transaction_subtype AS provider_subtype`.
-7. **Leave provider `event_group_id` NULL.** Plaid exposes no reliable shared
+7. **Leave Plaid `event_group_id` NULL.** Plaid exposes no reliable shared
    identifier for its separately delivered reinvest or corporate-action legs.
    The rows retain their effects independently: the acquisition opens its lot,
    income counts once, and an unmatched `transfer_in` opens a
@@ -1122,10 +1122,10 @@ data still loads.
 
 | Test area | What's tested |
 |---|---|
-| `stg_plaid__investment_transactions` | Sign flip (`2145.50` → `-2145.50`; quantity untouched); fee-convention handling per the validated branch (+ drift-guard fires on a row reconciling under neither); `trade_date` prefers `transaction_datetime`, falls back to posting date; lifecycle exclusion; provider string passthrough; canonical id resolution; provider `event_group_id` remains NULL pending M1J.7. |
+| `stg_plaid__investment_transactions` | Sign flip (`2145.50` → `-2145.50`; quantity untouched); fee-convention handling per the validated branch (+ drift-guard fires on a row reconciling under neither); `trade_date` prefers `transaction_datetime`, falls back to posting date; lifecycle exclusion; aggregator string passthrough; canonical id resolution; Plaid `event_group_id` remains NULL pending M1J.7. |
 | `stg_plaid__securities` / `__investment_holdings` | Currency `COALESCE`; MIC → `exchange`; defensive type mapping; both-id resolution on holdings. |
 | Core union | Plaid rows in `fct_investment_transactions` with correct sign + provider columns; manual rows carry NULL provider columns; Plaid buys/sells produce lots and realized gains through the **unmodified** engine; `dim_holdings` reconciliation columns join only each account's newest snapshot — a position absent from it (sold elsewhere, broker stopped reporting) shows NULL `provider_reported_*`, and manual-only positions stay NULL throughout. |
-| Reinvest pairing | Shipped containment: separately delivered Plaid legs retain NULL provider grouping while their independent lot and income effects remain intact; whole-event matching is tested by M1J.7. |
+| Reinvest pairing | Shipped behavior: separately delivered Plaid legs retain NULL source grouping while their independent lot and income effects remain intact; whole-event matching is tested by M1J.7. |
 | Basis-unknown transfer | An in-window `transfer_in`/`stock distribution` with Plaid `amount = 0` maps to `amount = NULL` (not 0) → the engine opens a `basis_incomplete` lot. Staging does **not** borrow basis from `Holding.tax_lots[]` for an individual in-window transfer (those lots describe the whole position and carry no transaction link) — per-lot basis is exercised only by the opening-lot bootstrap row below. |
 | Split normalization | A `transfer/split` share-delta converts to the multiplier `M` from the pre-split running position; every open lot scales by `M`, `cost_basis_total` preserved; an underivable pre-split position routes the split to review, not a corrupted lot. |
 | Opening-lot bootstrap | The eight reconciliation cases (A–H in § Opening-lot bootstrap) each drive a golden fixture: pre-window lots dated `< transactions_window_start` open with real basis+date; in-window and sold-then-rebought lots are excluded; the residual `basis_incomplete` row is dated before `W` and consumed first (a later sell never realizes oversold zero-basis); split/short positions route to review; empty `tax_lots[]` uses `Holding.cost_basis` only when `G=H`; rebuild is idempotent on `institution_lot_id`; no gap → no row; negative gap and engine-derived-≠-snapshot both raise a doctor warning, never a silent write. |
@@ -1256,11 +1256,11 @@ contract above is its specification.
   tension the review surfaced across two rounds: strong ids (CUSIP/ISIN) bypass
   exchange, both-absent binds on the unique ticker, only a genuine cross-listing
   contradiction falls to review.
-- **Provider grouping remains NULL in staging.** Plaid exposes no reliable
+- **Plaid grouping remains NULL in staging.** Plaid exposes no reliable
   pairing identifier, and a content hash over mutable financial fields would
   confuse source-event evidence with Golden identity. M1J.7 now owns grouping:
   it compares whole events under review and persists a stable MoneyBin-owned
-  `event_group_id` outside provider staging.
+  `event_group_id` outside Plaid staging.
 - **Taxonomy as an explicit staging `CASE`.** Versioned with the model, exact,
   and testable row-by-row; no seed-table indirection for a mapping that changes
   only when Plaid's enum does.
@@ -1281,9 +1281,9 @@ contract above is its specification.
 ## Open questions
 
 - **Reinvest / corporate-action pairing — moved to M1J.7.** Plaid exposes no
-  explicit pairing identifier. Provider staging therefore stays NULL-grouped;
+  explicit pairing identifier. Plaid staging therefore stays NULL-grouped;
   the review-first event matcher owns multi-signal comparison, whole-event
-  assignment, and the Golden identity rather than synthesizing a provider
+  assignment, and the Golden identity rather than synthesizing a source
   grouping key here.
 - **Fee inclusion in Plaid `amount`.** Plaid's API reference does not state
   whether `InvestmentTransaction.amount` includes `fees`, and ships no worked

@@ -4,7 +4,7 @@
 > Status: ready
 > Address: M1J.7 (Investments — cross-source event matching)
 > Type: Feature
-> Owns: provider-neutral matching of whole investment events, review decisions,
+> Owns: source-neutral matching of whole investment events, review decisions,
 > Golden event materialization, and investment-transaction identity continuity
 > Refines: [`investments-overview.md`](investments-overview.md) and
 > [`matching-overview.md`](matching-overview.md)
@@ -17,13 +17,13 @@
 
 ## One-line goal
 
-Recognize manual and provider observations of the same whole investment event,
+Recognize manual and aggregator observations of the same whole investment event,
 let a person ratify the result, and rebuild one stable Golden event without
 losing source fidelity or prior curation.
 
 ## Decision summary
 
-MoneyBin adds a dedicated, provider-neutral investment-event matcher with a
+MoneyBin adds a dedicated, source-neutral investment-event matcher with a
 review-first launch posture:
 
 1. A comparison layer adapts every source into event headers and typed legs.
@@ -40,15 +40,15 @@ review-first launch posture:
 6. Accepted membership, rejected candidate fingerprints, explicit field
    resolutions, provenance, and transaction-id aliases are durable and
    reversible.
-7. Broad mixed-history containment remains in force until a separate promotion
-   proves that matched history is safe enough to narrow it.
+7. The existing visible-collision guard remains in force until a separate
+   promotion proves that matched history is safe enough to replace it.
 
 The contract starts with manual and Plaid adapters, but no table, decision key,
-or service contract names Plaid as the generic provider.
+or service contract treats Plaid as the generic source.
 
 ## Why this exists
 
-Manual entry and provider sync currently contribute independent rows to
+Manual entry and aggregator sync currently contribute independent rows to
 `core.fct_investment_transactions`. When both histories describe the same
 economic activity, downstream lots, holdings, realized gains, income, and fees
 can all be counted twice. Suppressing one source wholesale is safer than a
@@ -65,7 +65,7 @@ plausible but incorrect tax ledger.
 ## Goals
 
 - Match manual and Plaid observations of the same economic investment event.
-- Make the matching contract provider-neutral so another provider adds an
+- Make the matching contract source-neutral so another Source type adds an
   adapter rather than a parallel matching system.
 - Preserve raw source observations unchanged.
 - Give each accepted event and leg a stable MoneyBin-owned identity.
@@ -86,17 +86,17 @@ plausible but incorrect tax ledger.
   `account_id` and `security_id` values.
 - Reconstructing a split ratio that a source did not provide. Plaid split
   matching remains disabled until M1J.5 supplies a trustworthy adapter.
-- Repairing incomplete provider history, inventing missing event legs, or
+- Repairing incomplete aggregator history, inventing missing event legs, or
   synthesizing a transfer counterpart.
 - Changing tax-lot policy, cost-basis elections, or wash-sale handling.
-- Narrowing mixed-history containment as part of the matcher launch.
+- Replacing the visible-collision guard as part of the matcher launch.
 - Providing a partial-acceptance escape hatch for a multi-leg event.
 
 ## Vocabulary and grain
 
 | Term | Meaning |
 |---|---|
-| Source observation | One raw provider or manual record preserved unchanged. |
+| Source observation | One raw aggregator or manual record preserved unchanged. |
 | Comparison leg | One normalized investment-transaction row used as matching evidence. |
 | Source event | One or more comparison legs that one source says form one economic event. |
 | Proposal | One inferred set of source events that may represent the same real event. |
@@ -115,7 +115,7 @@ Golden event.
 
 ```mermaid
 flowchart LR
-    R["Immutable source observations"] --> A["Provider-neutral adapters"]
+    R["Immutable source observations"] --> A["Source-neutral adapters"]
     A --> H["Comparison event headers"]
     A --> L["Comparison event legs"]
     H --> C["SQL candidate evidence"]
@@ -139,7 +139,7 @@ match decision schema or make cash services understand investment legs.
 
 SQL owns operations that are naturally relational and inspectable:
 
-- provider-neutral normalization;
+- source-neutral normalization;
 - event and leg comparison views;
 - candidate blocking and evidence columns;
 - deterministic Golden-field defaults;
@@ -201,7 +201,7 @@ security-identity review; the event matcher does not guess it.
 
 Splits require an exact normalized ratio and an adapter that declares split
 support. The manual adapter may support that contract. The Plaid adapter must
-declare splits unsupported until M1J.5 resolves provider split semantics, so a
+declare splits unsupported until M1J.5 resolves aggregator split semantics, so a
 Plaid split cannot enter a matching Proposal in this increment.
 
 ### Candidate bands
@@ -315,7 +315,7 @@ not issue raw writes against these protected tables.
 ### Identity
 
 On first observation, MoneyBin mints a truncated UUID `event_group_id` that is
-independent of provider row ids and values, then persists it with the standalone
+independent of source row ids and values, then persists it with the standalone
 membership. Existing populated group ids are retained as legacy aliases during
 the migration; they do not become source-dependent Golden identities.
 
@@ -338,12 +338,12 @@ Golden fields follow this order:
 
 1. preserve an explicit user resolution or curation;
 2. normalize harmless representational differences;
-3. prefer the provider observation for objective financial fields; and
+3. prefer the aggregator observation for objective financial fields; and
 4. require an explicit field choice for a material conflict.
 
 Objective fields include dates, quantities, prices, amounts, fees, currencies,
-and provider-native references. Provider preference is a default, not a claim
-that provider data is infallible. A manually curated field that was explicitly
+and aggregator-native references. Aggregator preference is a default, not a
+claim that aggregator data is infallible. A manually curated field that was explicitly
 chosen remains authoritative when another observation joins the event.
 
 Every Golden field exposes provenance to its chosen source observation or
@@ -391,21 +391,29 @@ models. Planning is safe to repeat.
 
 Decision state commits before the rebuild it requires. If the decision commits
 and the subsequent rebuild fails, the operation reports both facts: the
-decision is durable, derived surfaces are stale, and broad containment remains
+decision is durable, derived surfaces are stale, and the visible-collision guard remains
 active. It must not claim rollback or expose the partially refreshed result as
 current. A later refresh retries the rebuild from the same durable decision.
 
-## Containment and promotion
+## Visible-collision guard and promotion
 
-The existing mixed manual/provider history containment remains the safety
-boundary throughout initial rollout. An account stays contained when it has a
-pending, competing, stale, unsupported, or otherwise ambiguous event risk.
-Accepted matches do not by themselves prove that the rest of the account is
-safe.
+The existing MB-97 safety boundary is a visible-collision guard, not
+account-level withholding. When manual and aggregator investment histories
+coexist for one Account, SyncService emits the review-surfaced warning and
+system doctor reports the overlap. Core, lots, gains, and reports still include
+both histories, so they remain explicitly untrusted for that Account until the
+person selects one history. M1J.7 materialization alone does not remove the
+warning or make the remaining unmatched history trustworthy.
 
-Narrowing containment is a separate promotion decision after this matcher has
-real-data evidence. That change must define which unmatched rows become trusted
-and prove that no relevant event shape can still double-count the ledger.
+During initial rollout, a pending, competing, stale, unsupported, or otherwise
+ambiguous event risk keeps that warning active. Accepting one Match does not
+establish that every remaining row is safe.
+
+Replacing or narrowing the visible-collision guard is a separate promotion
+decision after real-data evidence. It must define the exact state and read
+semantics and prove which unmatched rows can be trusted without double-counting.
+Account-level withholding is not part of the current guard or this initial
+matcher delivery.
 
 Automatic acceptance is also a separate promotion. The first release may
 record which Proposals would have been auto-eligible so precision can be
@@ -418,11 +426,11 @@ Metrics use bounded, non-sensitive labels and are added to
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `investment_match_proposals_total` | Counter | `band`, `outcome` | Planned, pending, suppressed, competing, or stale Proposals |
-| `investment_match_decisions_total` | Counter | `decision` | Accepted, rejected, or reversed decisions after commit |
-| `investment_match_events_total` | Counter | `event_type`, `outcome` | Whole events materialized or withheld |
-| `investment_match_rebuild_total` | Counter | `outcome` | Successful or failed dependent rebuilds |
-| `investment_match_duration_seconds` | Histogram | `operation` | Planning, decision, and rebuild latency |
+| `moneybin_investment_match_proposals_total` | Counter | `band`, `outcome` | Planned, pending, suppressed, competing, or stale Proposals |
+| `moneybin_investment_match_decisions_total` | Counter | `decision` | Accepted, rejected, or reversed decisions after commit |
+| `moneybin_investment_match_events_total` | Counter | `event_type`, `outcome` | Whole events materialized or left under the visible-collision guard |
+| `moneybin_investment_match_rebuild_total` | Counter | `outcome` | Successful or failed dependent rebuilds |
+| `moneybin_investment_match_duration_seconds` | Histogram | `operation` | Planning, decision, and rebuild latency |
 
 Logs may include counts, opaque event ids, status codes, event types, and
 operation names. They must not include descriptions, security names, monetary
@@ -438,15 +446,15 @@ fixtures and expected Golden-ledger outcomes.
 | Simple events | Exact and fuzzy buy, sell, dividend, interest, and fee matches; legitimate unmatched neighbors remain separate |
 | Dates | Same date and both sides of every type-specific boundary; trade date matched to settlement date |
 | Precision | Exact decimal normalization plus inside/outside quantity, amount, fee, and price thresholds |
-| Reinvestment | Manual and provider multi-leg shapes; income and acquisition move atomically; a missing leg is not accepted |
+| Reinvestment | Manual and aggregator multi-leg shapes; income and acquisition move atomically; a missing leg is not accepted |
 | Transfers | Both account directions and quantities agree; one-sided or mismatched transfers remain ineligible |
 | Repetition | Unique two-to-two assignment of identical same-day trades; ambiguous one-to-two assignment remains competing |
-| Partial history | Non-overlapping manual and provider periods remain present once containment is eventually narrowed |
+| Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Native or remembered correction/reversal accepted; fuzzy-only similarity rejected |
 | Identity | Unresolved or contradictory account, security, or currency identities remain ineligible |
 | Splits | Normalized contract fixtures pass for supported adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
-| Extensibility | A third-provider fixture joins an accepted event without changing public Golden identities |
+| Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
 | Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
 | Recovery | Stale Proposal refusal; committed decision plus failed rebuild reports durable decision and stale derived state |
@@ -465,7 +473,7 @@ fixtures and expected Golden-ledger outcomes.
   undo outcomes.
 - Property or invariant tests proving a source event has at most one active
   Golden membership and every accepted multi-leg event is complete.
-- Real mixed-history validation before any containment or auto-accept promotion.
+- Real mixed-history validation before any guard or auto-accept promotion.
 
 No auto-accept threshold may ship from synthetic precision alone. Promotion
 requires zero false consolidations in the labeled scenario corpus and the
@@ -486,13 +494,13 @@ only after this contract is accepted.
    aliases, field resolution, provenance, and the dependent rebuild.
 5. **Lifecycle proof.** Complete the scenario matrix, repeated-sync and failure
    recovery tests, labeled real-data validation, and evidence for a later
-   containment decision.
+   guard-promotion decision.
 
 ## Deferred decisions
 
 - The precision threshold, eligible bands, and safeguards for a future
   auto-accept promotion.
-- The exact containment rule that can replace broad account-level withholding.
+- The exact state and read rule for a future guard-promotion decision.
 - Plaid split matching, owned by M1J.5.
-- Provider-specific adapters beyond manual and Plaid.
+- Source-specific adapters beyond manual and Plaid.
 - Event shapes not represented by the current ledger taxonomy.

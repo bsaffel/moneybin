@@ -614,11 +614,13 @@ provider-identifier resolution rung all exist because of this validation.
 > only; no rename/retype. The child also supersedes the `dim_securities`
 > "Future: UNION ALL from staging" comment — its resolver mints synced
 > securities into `app.securities` (merchant precedent), so the dim stays a
-> catalog view. One refinement to Requirement 5's "`event_group_id` …
-> truncated UUID4 minted at entry/staging time": staging-synthesized group ids
-> are **content hashes**, not UUIDs — a UUID minted inside a staging view
-> would churn on every SQLMesh rebuild. Manual entry keeps its minted UUID
-> (persisted in raw, so determinism is unaffected). Finally, the Taxonomy
+> catalog view. M1J.7 supersedes the earlier staging-content-hash refinement
+> for `event_group_id`: manual entry keeps an authored source-group reference
+> in Raw, while Plaid staging leaves `event_group_id` NULL because the
+> aggregator supplies no trustworthy group reference. M1J.7 constructs Source
+> events from evidence and persists a MoneyBin-owned Golden `event_group_id` in
+> app membership; staging never synthesizes that identity from mutable
+> financial fields. Finally, the Taxonomy
 > mapping table below is **one subtype short**: `stock distribution`
 > (`InvestmentTransactionSubtype.STOCK_DISTRIBUTION`, verified in the Plaid
 > Python SDK 2026-07-10) is a real security-bearing inflow the "48 subtypes,
@@ -640,7 +642,7 @@ Plaid's 6 types × 48 subtypes map onto the taxonomy with no residue beyond
 | Plaid (type/subtype) | → type | → subtype / notes |
 |---|---|---|
 | buy/{buy, contribution} | `buy` | |
-| buy/{dividend, interest, LT/ST capital gain} reinvestment | `reinvest` | subtype records funding source; the paired Plaid income row maps to its income type, linked by `event_group_id` in staging |
+| buy/{dividend, interest, LT/ST capital gain} reinvestment | `reinvest` | subtype records funding source; a separately delivered Plaid income row stays its own staging observation with NULL `event_group_id` until M1J.7 constructs and reviews the whole Source event |
 | buy/assignment, sell/exercise, transfer/{assignment, exercise, expire} | `other` | options out of scope |
 | sell/sell | `sell` | |
 | buy/buy to cover, sell/sell short | `other` | short-position legs — the engine models only long lots, so mapping to `buy`/`sell` would open a spurious long lot or realize an oversold phantom gain; routed to `other` (recorded, kept out of the lot engine) with a `system doctor` surface until short accounting is modeled (future work). A deliberate route to `other`, not the accidental security-bearing default the guard forbids |
@@ -655,7 +657,7 @@ Plaid's 6 types × 48 subtypes map onto the taxonomy with no residue beyond
 | cash/withdrawal | `withdrawal` | NULL security |
 | transfer/{transfer, send} | `transfer_in`/`transfer_out` | direction by sign |
 | transfer/split | `split` | |
-| transfer/{merger, spin off, trade} | decomposed leg pairs | see Corporate actions; staging synthesizes, `event_group_id` links |
+| transfer/{merger, spin off, trade} | decomposed leg observations | staging keeps `event_group_id` NULL; M1J.7 owns whole-event construction and review |
 | transfer/{adjustment}, fee/adjustment, loan payment, rebalance | `other` | |
 | cancel (no subtype), cash/{pending credit, pending debit}, transfer/request | **excluded at staging** | cancellation/pending lifecycle is sync-child territory; `cancel_transaction_id` is a deprecated dead field — never build on it |
 

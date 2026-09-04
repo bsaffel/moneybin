@@ -1,6 +1,6 @@
 # Investments — Overview
 
-> Last updated: 2026-09-04 — the review-first, provider-neutral investment-event
+> Last updated: 2026-09-04 — the review-first, source-neutral investment-event
 > matching child is now specified at
 > [`investment-event-matching.md`](investment-event-matching.md).
 > Earlier reconciliation: HIFO promoted into the
@@ -115,8 +115,8 @@ is specified, and the other children remain planned stubs:
 - Investment OFX import — `<INVSTMTRS>` handling, a child of `smart-import-financial.md`.
 - Portfolio/holdings reports — `reports.portfolio`, `reports.holdings`, gated per `reports-recipe-library.md`.
 - [`investment-event-matching.md`](investment-event-matching.md) — whole-event
-  matching across manual and provider histories, including transfer shapes;
-  review-first and provider-neutral.
+  matching across manual and aggregator histories, including transfer shapes;
+  review-first and source-neutral.
 
 ### The foundation boundary (why A+B ship first, without a price feed)
 
