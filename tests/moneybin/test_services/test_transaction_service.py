@@ -561,6 +561,43 @@ class TestAnnotationBatches:
                 actor="cli",
             )
 
+    @pytest.mark.unit
+    def test_set_splits_refuses_a_blank_subcategory(
+        self, transaction_db: Database
+    ) -> None:
+        """`subcategory` is the same column class and takes the same rule.
+
+        Staging nulls a blank one out alongside `category`, and V054 backfills
+        both, so a blank reaching the write path would be the one place the
+        three disagree.
+        """
+        with pytest.raises(ValueError, match="category must be non-empty"):
+            TransactionService(transaction_db).set_splits(
+                "T1",
+                [{"amount": Decimal("-50"), "category": "Food", "subcategory": " "}],
+                actor="cli",
+            )
+
+    @pytest.mark.unit
+    def test_set_splits_refuses_a_non_string_category(
+        self, transaction_db: Database
+    ) -> None:
+        """A wrong-typed category is a bad request, not an internal error.
+
+        The granular arm builds its targets from `list[dict[str, Any]]` and
+        already type-checks `amount` before use; `category` reached
+        `validate_category_text` unchecked, where `.strip()` raised
+        `AttributeError` — a crash rather than the refusal the caller can act
+        on. The message names the offending index the way the sibling `amount`
+        check does, so a caller with several splits knows which one to fix.
+        """
+        with pytest.raises(ValueError, match=r"splits\[0\]\.category must be str"):
+            TransactionService(transaction_db).set_splits(
+                "T1",
+                [{"amount": Decimal("-50"), "category": 123}],
+                actor="cli",
+            )
+
 
 class TestNotes:
     """Tests for TransactionService note operations (multi-note shape)."""
@@ -996,6 +1033,20 @@ class TestSplits:
         with pytest.raises(ValueError, match="category must be non-empty"):
             txn_service.add_split(
                 sample_transaction_id, Decimal("-30.00"), category="   ", actor="cli"
+            )
+
+    @pytest.mark.unit
+    def test_add_split_refuses_a_blank_subcategory(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        """The same rule on the other half of the pair `add_split` accepts."""
+        with pytest.raises(ValueError, match="category must be non-empty"):
+            txn_service.add_split(
+                sample_transaction_id,
+                Decimal("-30.00"),
+                category="Gas",
+                subcategory="   ",
+                actor="cli",
             )
 
     @pytest.mark.unit

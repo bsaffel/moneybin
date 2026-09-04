@@ -1774,11 +1774,18 @@ class TransactionService:
                 raise ValueError(
                     f"splits[{idx}].amount must be Decimal, got {type(amount).__name__}"
                 )
+            category = s.get("category")
+            subcategory = s.get("subcategory")
+            for field, value in (("category", category), ("subcategory", subcategory)):
+                if value is not None and not isinstance(value, str):
+                    raise ValueError(
+                        f"splits[{idx}].{field} must be str, got {type(value).__name__}"
+                    )
             targets.append(
                 _GranularSplitTarget(
                     amount=amount,
-                    category=s.get("category"),
-                    subcategory=s.get("subcategory"),
+                    category=category,
+                    subcategory=subcategory,
                     note=s.get("note"),
                 )
             )
