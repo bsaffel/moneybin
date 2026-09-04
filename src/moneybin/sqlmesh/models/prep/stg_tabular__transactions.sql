@@ -13,10 +13,14 @@ MODEL (
    These two use a regex rather than the bare TRIM their siblings use, because
    they are the only staging columns with a Python-side counterpart that has to
    agree with them: services._validators.validate_category_text refuses on
-   str.strip(). RE2's \p{Z} is every Unicode space separator — a non-breaking
-   space from a spreadsheet paste, an ideographic space from CJK input — and \s
-   plus \x0B add the C0 control whitespace that \p{Z} excludes. Bare TRIM is not
-   a substitute in either direction: it strips the space separators but leaves
+   str.strip(). The class is defined to equal str.strip() exactly — \p{Z} every
+   Unicode space separator, \s the C0 whitespace RE2 includes, \x0B the vertical
+   tab it excludes, and \x1C-\x1F\x85 the information separators and NEXT LINE.
+   Do not maintain it by appending the character that last leaked;
+   test_blank_whitespace_definition.py enumerates all 29 codepoints
+   str.isspace() accepts, fails naming any the class misses, and holds all three
+   copies of it (both staging models and V054) identical. Bare TRIM is not a
+   substitute in either direction: it strips the space separators but leaves
    every control character, so a tab survives it. */
 WITH ranked AS (
   SELECT
@@ -29,8 +33,14 @@ WITH ranked AS (
     original_date_str,
     TRIM(description) AS description,
     TRIM(memo) AS memo,
-    NULLIF(REGEXP_REPLACE(category, '^[\p{Z}\s\x0B]+|[\p{Z}\s\x0B]+$', '', 'g'), '') AS category,
-    NULLIF(REGEXP_REPLACE(subcategory, '^[\p{Z}\s\x0B]+|[\p{Z}\s\x0B]+$', '', 'g'), '') AS subcategory,
+    NULLIF(
+      REGEXP_REPLACE(category, '^[\p{Z}\s\x0B\x1C-\x1F\x85]+|[\p{Z}\s\x0B\x1C-\x1F\x85]+$', '', 'g'),
+      ''
+    ) AS category,
+    NULLIF(
+      REGEXP_REPLACE(subcategory, '^[\p{Z}\s\x0B\x1C-\x1F\x85]+|[\p{Z}\s\x0B\x1C-\x1F\x85]+$', '', 'g'),
+      ''
+    ) AS subcategory,
     transaction_type,
     status,
     check_number,

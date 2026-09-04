@@ -25,8 +25,14 @@ SELECT
   t.description,
   t.merchant_name,
   t.memo,
-  NULLIF(REGEXP_REPLACE(t.category, '^[\p{Z}\s\x0B]+|[\p{Z}\s\x0B]+$', '', 'g'), '') AS category,
-  NULLIF(REGEXP_REPLACE(t.subcategory, '^[\p{Z}\s\x0B]+|[\p{Z}\s\x0B]+$', '', 'g'), '') AS subcategory,
+  NULLIF(
+    REGEXP_REPLACE(t.category, '^[\p{Z}\s\x0B\x1C-\x1F\x85]+|[\p{Z}\s\x0B\x1C-\x1F\x85]+$', '', 'g'),
+    ''
+  ) AS category,
+  NULLIF(
+    REGEXP_REPLACE(t.subcategory, '^[\p{Z}\s\x0B\x1C-\x1F\x85]+|[\p{Z}\s\x0B\x1C-\x1F\x85]+$', '', 'g'),
+    ''
+  ) AS subcategory,
   t.payment_channel,
   t.transaction_type,
   t.check_number,

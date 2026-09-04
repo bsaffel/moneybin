@@ -257,10 +257,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that must agree with a Python-side counterpart: `validate_category_text`
   refuses on `str.strip()`. Bare `TRIM` cannot express that — it strips the
   Unicode space separators but no control character, so it drops a
-  non-breaking space and keeps a tab. Matching `str.strip()` exactly is what
-  makes a category blank in the same cases on both sides, including the two a
-  hand-written character list reliably omits: the non-breaking space a
-  spreadsheet paste produces, and the ideographic space ordinary in CJK input.
+  non-breaking space and keeps a tab. The class is therefore defined to equal
+  `str.strip()` rather than to list the characters anyone thought of: all 29
+  codepoints Python calls whitespace, the non-breaking space a spreadsheet
+  paste produces and the ideographic space ordinary in CJK input among them.
+  A new guard enumerates that set and fails naming any codepoint the class
+  misses, so the definition cannot drift from the validator it exists to match.
   A padded `'  Groceries  '` still arrives as `Groceries` rather than being
   discarded. (#517)
 

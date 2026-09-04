@@ -26,14 +26,22 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-#: Entirely-whitespace test matching Python ``str.strip()``. RE2's ``\p{Z}``
-#: is every Unicode space separator, which is what catches the two characters
-#: a character-list ``TRIM`` misses in practice: a non-breaking space (what a
-#: spreadsheet paste produces) and an ideographic space (ordinary CJK input).
-#: ``\s`` adds tab/newline/CR/form-feed and ``\x0B`` the vertical tab, which
-#: RE2 excludes from ``\s``. Bare ``TRIM`` is not a substitute: it strips the
-#: space separators but no C0 control character, so it leaves a tab behind.
-_BLANK = r"[\p{Z}\s\x0B]*"
+#: Entirely-whitespace test, defined to equal Python ``str.strip()`` exactly.
+#: The write path refuses a blank with ``str.strip()``
+#: (``services._validators.validate_category_text``), so any character the two
+#: disagree on is a category the validator calls blank and the import path
+#: stores non-NULL — invisible in ``core.uncategorized_queue``, which is the
+#: defect this migration exists to close.
+#:
+#: The class is the union of the four things ``str.isspace()`` covers:
+#: ``\p{Z}`` every Unicode space separator, ``\s`` the C0 whitespace RE2
+#: includes, ``\x0B`` the vertical tab it excludes, and ``\x1C-\x1F\x85`` the
+#: information separators and NEXT LINE. Do not maintain this by adding the
+#: character that last leaked — ``test_blank_whitespace_definition.py``
+#: enumerates all 29 codepoints ``str.isspace()`` accepts and fails naming any
+#: the class misses. Bare ``TRIM`` is not a substitute: it strips the space
+#: separators but no control character, so it leaves a tab behind.
+_BLANK = r"[\p{Z}\s\x0B\x1C-\x1F\x85]*"
 
 
 def migrate(conn: object) -> None:
