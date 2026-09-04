@@ -432,6 +432,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 
 ### Added
+- **Three references are generated from the code and pinned by a test.**
+  `make generate-docs` renders `docs/reference/cli/` (one page per top-level
+  command plus an index) from the Typer command tree,
+  `docs/reference/mcp-tools.md` (every tool's description, parameters,
+  annotations, and maximum sensitivity) from the tool list the MCP server hands
+  a connecting client, and `docs/reference/configuration.md` (every setting's
+  variable, type, default, and description) from `MoneyBinSettings`, and
+  `test_generated_references_are_current` fails while any page is stale.
+  Rendering that text exposed defects fixed at the source — five settings had
+  no description, the `gsheet auth` help named a retired MCP tool, and ten tool
+  descriptions spelled the undo hint as a positional call — and the CLI
+  reference guide now keeps its prose and links each group's generated page in
+  place of its command tables.
 - **`core.bridge_merchant_entities`** — a new queryable core view mapping each
   transaction to the merchant identifier its source system assigned, alongside
   the source that issued it and the merchant name that source stated. Available

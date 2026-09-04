@@ -557,7 +557,7 @@ def register_export_tools(mcp: FastMCP) -> None:
         "state='present' upserts the typed target; state='absent' removes only "
         "MoneyBin configuration and never deletes artifacts, workbooks, or tabs. "
         "Writes app.export_destinations through its audited repository; revert "
-        "with system_audit_undo(operation_id). Read readiness with "
+        "with system_audit_undo(operation_id=...). Read readiness with "
         "system_status(sections=['exports']).",
         privacy_actor="exports_set",
     )

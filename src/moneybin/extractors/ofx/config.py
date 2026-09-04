@@ -10,6 +10,8 @@ extension-contracts implementation.
 
 from pathlib import Path
 
+from pydantic import Field
+
 from moneybin.extractors._types import ProviderConfig
 
 
@@ -22,12 +24,19 @@ class OFXProviderConfig(ProviderConfig):
     ``OFXExtractor.__init__``.
     """
 
-    raw_data_path: Path | None = None
-    """Where raw OFX files are staged. Resolved to ``<profile>/ofx`` by
-    ``OFXExtractor`` when None."""
-
-    preserve_source_files: bool = True
-    """If True, keep the original source files after extraction."""
-
-    validate_balances: bool = True
-    """If True, validate balance fields during extraction."""
+    raw_data_path: Path | None = Field(
+        default=None,
+        description="Where raw OFX files are staged; the extractor resolves "
+        "`<profile dir>/ofx` when unset. Read from a config passed to "
+        "`OFXExtractor`; this setting is not wired to it yet.",
+    )
+    preserve_source_files: bool = Field(
+        default=True,
+        description="Keep the original source files after extraction. Not read "
+        "by the extractor yet.",
+    )
+    validate_balances: bool = Field(
+        default=True,
+        description="Validate balance fields during extraction. Not read by the "
+        "extractor yet.",
+    )

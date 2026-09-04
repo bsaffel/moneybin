@@ -182,11 +182,16 @@ another hand pass is not.
   lists them under Project and process, and a guide or reference page links to
   a spec or ADR only where it records the decision behind that page.
 
-**Generated references.** Three files are generated from the code and
-pinned by a regenerate-and-diff test: the CLI reference (from the Typer command
-tree), the MCP tool reference (from the MCP surface snapshot), and the
-configuration reference (from `MoneyBinSettings`). Hand-written prose links to
-them instead of restating them.
+**Generated references.** `scripts/generate_reference_docs.py` renders
+`docs/reference/cli/` (one page per top-level command plus an index, from the
+Typer command tree), `docs/reference/mcp-tools.md` (from the MCP surface
+snapshot plus each tool's registered maximum sensitivity), and
+`docs/reference/configuration.md` (from `MoneyBinSettings`). `make
+generate-docs` rewrites them, and `test_generated_references_are_current`
+fails while a checked-in page differs from the render. The CLI reference
+guide keeps what a command tree cannot carry — shared flags, exit codes,
+envelopes, and each group's behaviour notes — and links the generated page
+for the commands themselves instead of restating them.
 
 **Guard.** `tests/test_documentation_policy.py` →
 `test_public_docs_cli_invocations_resolve` resolves every `moneybin …`
@@ -196,8 +201,9 @@ deliberately shows a wrong or absent command carries
 
 **Remaining scope.** The structure above, the broken commands, the
 `categorize assist` privacy statement, shipped-as-planned drift, and the guard
-shipped on `docs/public-docs-structure`. What's left: the generated
-references; `account-identifiers.md` and `data-pipeline.md` rewrites;
+shipped on `docs/public-docs-structure`; the generated references on
+`docs/generated-references`. What's left: `account-identifiers.md` and
+`data-pipeline.md` rewrites;
 `system-overview.md` folded into `docs/architecture.md`; storefront and guide
 rewrites plus a `getting-started.md`; and reports, investments, and
 multi-currency guides.

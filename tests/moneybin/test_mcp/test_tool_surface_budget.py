@@ -151,20 +151,28 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "import_status": (642, 1_236),
     "gsheet": (441, 1_016),
     "privacy": (590, 1_007),
-    "accounts_balance_assert": (1_416, 1_679),
+    # This tool, transactions_categorize_rules_set, and identity_links_decide
+    # each grew 4–16 bytes when their undo hint spelled its keyword
+    # (`system_audit_undo(operation_id=...)`): the docs scanner requires keyword
+    # arguments in every public call example, and the generated MCP reference
+    # makes each description public text.
+    "accounts_balance_assert": (1_420, 1_679),
     "transactions_annotate": (3_457, 3_653),
-    "transactions_categorize_rules_set": (3_043, 2_670),
+    "transactions_categorize_rules_set": (3_047, 2_670),
     # The one cohort whose candidate now costs more than the four tools it
     # replaced (2,727 vs 2,566). The overrun is a disclosure the replaced
     # tools never owed: accepting a match can reverse a transfer the user
     # accepted, and an agent that cannot read that from the description
     # reports the reversal as a clean accept. Registry-wide the consolidation
-    # still stands at -33.9% — 59,983 bytes against the baseline's 90,734, both
+    # still stands at -33.8% — 60,083 bytes against the baseline's 90,734, both
     # readable as `total_bytes` in the two fixtures this test loads. (The figure
-    # has drifted three times before — recorded as -38.0%, then -37.0%, then
-    # -34.3% against a 59,577 the fixture had already left behind — because
-    # nothing fails when a comment goes stale. Recompute it from the fixtures
-    # rather than trusting this line.)
+    # has drifted four times before — recorded as -38.0%, then -37.0%, then
+    # -34.3% against a 59,577 the fixture had already left behind, then -33.9%
+    # that went stale in the single merge between being written and being read
+    # — because nothing fails when a comment goes stale. The governing spec's
+    # equivalent figures are derived from the snapshot in
+    # `test_mcp_surface_docs.py` and so cannot drift; this line cannot be, being
+    # a comment. Recompute it from the fixtures rather than trusting it.)
     "reviews_decide": (2_727, 2_566),
     # Grew by the same disclosure, for the same reason: accepting an account
     # decision re-runs matching, which can reverse a transfer the user
@@ -176,7 +184,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # description is the only place the agent can learn it: one that omitted it
     # would have the agent retry a merge with a token, read the refusal as a
     # bug, and route around the confirmation this exists to enforce.
-    "identity_links_decide": (3_481, 5_762),
+    "identity_links_decide": (3_497, 5_762),
     # Grew 208 bytes advertising the rule its model validator already enforced:
     # a merchant subcategory requires a category. `SplitTarget` has carried the
     # same conditional in its JSON schema all along, so a client that validates

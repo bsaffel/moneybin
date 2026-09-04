@@ -2626,7 +2626,7 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "proposal_ref (@0 is the file's first source account). A completed "
             "import runs the refresh cascade, whose match step can reverse a "
             "transfer the user already accepted: `transfers_retired` counts "
-            "those, and system_audit_undo() restores them.",
+            "those, and system_audit_undo(operation_id=...) restores them.",
         ),
         (
             import_preview_coarse,
@@ -2673,7 +2673,7 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "Synchronize the import inbox. Draining it imports every staged "
             "file and runs the refresh cascade, whose match step can reverse a "
             "transfer the user already accepted: `transfers_retired` counts "
-            "those, and system_audit_undo() restores them.",
+            "those, and system_audit_undo(operation_id=...) restores them.",
         ),
         (
             import_labels_set_coarse,
