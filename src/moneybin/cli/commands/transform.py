@@ -97,7 +97,7 @@ def transform_apply(
     from moneybin.services.transform_service import TransformService  # noqa: PLC0415
 
     with (
-        handle_cli_errors(),
+        handle_cli_errors(cli_actor="transform_apply"),
         get_database(read_only=False, operation_type="transform_apply") as db,
     ):
         result = TransformService(db).apply()

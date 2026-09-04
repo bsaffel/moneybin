@@ -71,6 +71,48 @@ def test_splits_list(runner: CliRunner, db: Database) -> None:
     assert body["splits"][0]["category"] == "Food"
 
 
+def test_splits_list_text_names_an_uncategorized_split(
+    runner: CliRunner, db: Database
+) -> None:
+    """Requirement 30: one word for the absence, on every surface that shows it.
+
+    This branch renders `-` before the change, which is a second placeholder
+    for the condition `transactions list` already spells `Uncategorized` — the
+    two-patterns-for-one-job the coherence rule prohibits. The JSON assertion
+    above cannot see it: this line is the text branch, and nothing covered it.
+    """
+    svc = TransactionService(db)
+    svc.add_split("T1", Decimal("-50"), category="Food", actor="cli")
+    svc.add_split("T1", Decimal("-25"), actor="cli")
+
+    result = runner.invoke(app, ["transactions", "splits", "list", "T1"])
+
+    assert result.exit_code == 0
+    assert "Uncategorized" in result.output
+    # The categorised split keeps its own word, so the placeholder is standing
+    # in for the absence rather than flattening the column.
+    assert "Food" in result.output
+
+
+def test_splits_list_text_does_not_call_a_blank_category_absent(
+    runner: CliRunner, db: Database
+) -> None:
+    """Requirement 30: absent means NULL, and only NULL — on this surface too.
+
+    `add_split` applies no non-empty check, so `--category ""` is stored
+    verbatim. A falsy `or` renders that blank as `Uncategorized`, reporting a
+    gap the curator never left — the same defect the sibling `transactions
+    list` placeholder is restricted to NULL to avoid.
+    """
+    svc = TransactionService(db)
+    svc.add_split("T1", Decimal("-75"), category="", actor="cli")
+
+    result = runner.invoke(app, ["transactions", "splits", "list", "T1"])
+
+    assert result.exit_code == 0
+    assert "Uncategorized" not in result.output
+
+
 def test_splits_remove_with_yes(runner: CliRunner, db: Database) -> None:
     s = TransactionService(db).add_split("T1", Decimal("-50"), actor="cli")
     result = runner.invoke(
