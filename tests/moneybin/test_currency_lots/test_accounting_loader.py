@@ -375,6 +375,7 @@ def test_unsupported_method_produces_lot_and_gain_placeholders(method: str) -> N
     result = _derive(_conversion(), disposal, methods={"acct-eur": method})
 
     assert len(result.lots) == 1
+    assert result.lots[0].remaining_quantity == D("60.00")
     assert result.lots[0].cost_basis_total is None
     assert result.lots[0].cost_basis_remaining is None
     assert result.lots[0].coverage_reason == "unsupported_method"

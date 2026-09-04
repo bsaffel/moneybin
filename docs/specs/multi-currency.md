@@ -716,8 +716,11 @@ Numbered, testable. Tagged by phase.
     loader adapts completed conversions and eligible
     foreign-Security sale proceeds to the unchanged investments cost-basis engine,
     producing `core.fct_currency_lots` and `core.fct_realized_fx_gains`; unsupported
-    or incomplete evidence remains visibly uncovered. The bounded row-count Gauge
-    above is live, and the international synthetic scenario proves complete
+    methods still consume quantities while their basis and gain remain visibly
+    uncovered. Rate backfill includes the received leg of materialized conversions,
+    so a single-row conversion can obtain a Home valuation when that Currency appears
+    nowhere else. The bounded row-count Gauge above is live, and the international
+    synthetic scenario proves complete
     conversions and exactly $5.00 of realized FX gain per completed month. This is
     a Core accounting foundation, not a public reporting surface.
 

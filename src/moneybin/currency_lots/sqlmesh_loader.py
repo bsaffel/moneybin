@@ -1028,19 +1028,10 @@ def _derive_currency_accounting(
     metadata_for = {
         event.investment_transaction_id: metadata for event, metadata in event_rows
     }
-    supported_events: list[LedgerEvent] = []
-    unsupported: list[tuple[LedgerEvent, _EventMetadata, str]] = []
-    for event, metadata in event_rows:
-        method = _method(event.account_id, account_methods)
-        if method in {"fifo", "average"}:
-            supported_events.append(event)
-        else:
-            unsupported.append((event, metadata, method))
-
     engine_lots, engine_gains = ([], [])
-    if supported_events:
+    if event_rows:
         engine_lots, engine_gains = compute_lots_and_gains(
-            supported_events,
+            [event for event, _metadata in event_rows],
             method_for=lambda account_id, _security_id: _method(
                 account_id, account_methods
             ),
@@ -1055,7 +1046,11 @@ def _derive_currency_accounting(
             lot.account_id, metadata.currency_code, lot.source_transaction_id
         )
         engine_lot_ids[lot.lot_id] = public_lot_id
-        reason = metadata.coverage_reason
+        reason = (
+            "unsupported_method"
+            if lot.cost_basis_method not in {"fifo", "average"}
+            else metadata.coverage_reason
+        )
         if reason is None and lot.basis_incomplete:
             reason = "incomplete_history"
         incomplete = reason is not None
@@ -1088,6 +1083,8 @@ def _derive_currency_accounting(
 
     gains: list[RealizedFXGainRow] = []
     for gain in engine_gains:
+        if gain.cost_basis_method not in {"fifo", "average"}:
+            continue
         metadata = metadata_for[gain.disposal_txn_id]
         conversion_id = t.cast("str", metadata.source_conversion_id)
         public_lot_id = engine_lot_ids.get(gain.lot_id)
@@ -1122,20 +1119,19 @@ def _derive_currency_accounting(
             )
         )
 
-    for event, metadata, method in unsupported:
-        updated_at = group_updated_at.get((metadata.account_id, metadata.currency_code))
-        if event.type == "buy":
-            lots.append(
-                _incomplete_lot(
-                    event, metadata, method, "unsupported_method", updated_at
-                )
+    for event, metadata in event_rows:
+        method = _method(event.account_id, account_methods)
+        if event.type == "buy" or method in {"fifo", "average"}:
+            continue
+        gains.append(
+            _incomplete_gain(
+                event,
+                metadata,
+                method,
+                "unsupported_method",
+                group_updated_at.get((metadata.account_id, metadata.currency_code)),
             )
-        else:
-            gains.append(
-                _incomplete_gain(
-                    event, metadata, method, "unsupported_method", updated_at
-                )
-            )
+        )
     for event, metadata, reason in incomplete_sales:
         method = _method(event.account_id, account_methods)
         lots.append(
