@@ -244,7 +244,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   annotation stays with the transaction it describes and `moneybin doctor` stops
   reporting the orphans. Successive re-keys chain rather than collide, and an
   already-annotated survivor keeps whichever categorization was authored with
-  more authority — a manual edit is never displaced by an automatic one.
+  more authority — a manual edit is never displaced by an automatic one. (#532)
 
 - **An amount no longer folds across two lines.** Folding is the right failure
   for an identifier — an account id or a display name ending in a masked last
