@@ -448,14 +448,25 @@ def _unmask_or_hide_substitution(match: re.Match[str]) -> str:
     return "SUBST"
 
 
+def _optional_segment(match: re.Match[str]) -> str:
+    """`[--yes]` keeps its option; any other bracket is an optional positional.
+
+    Click's own usage line (`moneybin profile create [OPTIONS] NAME`, as the
+    generated reference prints it) spells its options as `[OPTIONS]`, which
+    names no positional at all.
+    """
+    inner = match.group(1)
+    if inner.startswith("-"):
+        return inner
+    return "" if inner == "OPTIONS" else "<optional>"
+
+
 def _invocations(code: str) -> list[list[str]]:
     """Every `moneybin …` token list found in one line of code."""
     code = _TRAILING_COMMENT.sub(r"\1", code)
     code = _COMMAND_SUBSTITUTION.sub(_unmask_or_hide_substitution, code)
     code = _ANGLE_PLACEHOLDER.sub(lambda m: m.group(0).replace(" ", "_"), code)
-    code = _OPTIONAL_SEGMENT.sub(
-        lambda m: m.group(1) if m.group(1).startswith("-") else "<optional>", code
-    )
+    code = _OPTIONAL_SEGMENT.sub(_optional_segment, code)
     found: list[list[str]] = []
     for match in _INVOCATION_START.finditer(code):
         rest = code[match.end() :]
@@ -912,6 +923,17 @@ def test_resolve_invocation_bracketed_bogus_option(_fixture_cli: click.Group) ->
     assert _resolve_invocation(command, _fixture_cli, runnable=False) is not None
 
 
+def test_invocations_drop_click_usage_options_placeholder(
+    _fixture_cli: click.Group,
+) -> None:
+    """Click's `[OPTIONS]` names no positional; `[--yes]` still keeps its option."""
+    (command,) = _invocations("moneybin create [OPTIONS] NAME [AMOUNT]")
+    assert command == ["create", "NAME", "<optional>"]
+    assert _resolve_invocation(command, _fixture_cli, runnable=False) is None
+    (flagged,) = _invocations("moneybin commit [--yes]")
+    assert flagged == ["commit", "--yes"]
+
+
 def test_resolve_invocation_root_dash_h_unregistered(_fixture_cli: click.Group) -> None:
     (command,) = _invocations("moneybin -h")
     assert _resolve_invocation(command, _fixture_cli, runnable=True) is not None
@@ -972,6 +994,28 @@ def test_full_pipeline_scopes_fenced_block_vs_inline_mention(
     ]
     assert inline_problems == [None]
     assert fenced_problems and all(problem is not None for problem in fenced_problems)
+
+
+# ---------------------------------------------------------------------------
+# Generated reference pages match the code they are rendered from
+# ---------------------------------------------------------------------------
+
+
+def test_generated_references_are_current() -> None:
+    """`docs/reference/cli/`, `mcp-tools.md`, and `configuration.md` are current.
+
+    scripts/generate_reference_docs.py renders them from the command tree,
+    the MCP server's tool list, and the settings model; a change to any of those
+    that leaves the pages stale fails here. Run `make generate-docs` and
+    commit the result.
+    """
+    from scripts.generate_reference_docs import stale_pages
+
+    stale = stale_pages()
+    assert not stale, (
+        "Generated reference pages are stale; run `make generate-docs` and "
+        "commit the result:\n" + "\n".join(str(page) for page in stale)
+    )
 
 
 # ---------------------------------------------------------------------------
