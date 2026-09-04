@@ -62,41 +62,63 @@ signal back:
    by hand if discovered; false positives are a source of guard fatigue that
    erodes trust in the whole check.
 
-2. **sqlglot parses the candidate; the parse tree, not a keyword list, decides
-   what counts as a table reference.** A round-3 review found two gaps in an
-   earlier regex-and-keyword-list version of this check: a quoted identifier
+2. **sqlglot's parse tree, not a hand-maintained keyword list, decides what
+   counts as a table reference — for everything sqlglot's DuckDB grammar can
+   represent.** A round-3 review found two gaps in the earlier
+   regex-and-keyword-list version of this check: a quoted identifier
    (``FROM "core"."fct_transactions"``) doesn't match a bare-identifier
    regex, and a clause word missing from the hand-maintained keyword list
    (``COPY``, ``DESCRIBE``) let a real reference through uncaught — the
    generator of an endless "you missed one" series, not a one-off miss.
    Parsing with ``sqlglot.parse(text, dialect="duckdb",
    error_level=ErrorLevel.IGNORE)`` and walking ``find_all(exp.Table)``
-   removes the keyword list entirely: quoting, and every clause that can
-   introduce a table (``FROM``, ``JOIN``, ``COPY``, ``DESCRIBE``, ``DROP``,
-   ``TRUNCATE TABLE``, ``UPDATE``, ``INSERT INTO``, ...), are handled by
-   DuckDB's grammar, not by an enumeration this file has to keep current.
-   The alias false-positive (``FROM raw.tabular_accounts AS raw`` making a
-   later ``raw.account_id`` look like a table) disappears structurally too:
+   handles quoting and every clause that can introduce a table (``FROM``,
+   ``JOIN``, ``COPY``, ``DESCRIBE``, ``DROP``, ``TRUNCATE TABLE``,
+   ``UPDATE``, ``INSERT INTO``, ...) structurally, via DuckDB's grammar
+   rather than an enumeration this file has to keep current. The alias
+   false-positive (``FROM raw.tabular_accounts AS raw`` making a later
+   ``raw.account_id`` look like a table) disappears structurally too:
    sqlglot parses ``raw.account_id`` to a ``Column`` node, never a
-   ``Table``, so there is no keyword gate left to get wrong. Measured
-   before choosing this: a strict ``parse_one`` over every one of the 654
-   candidate literals in this tree (2026-09) succeeds only 21% of the time —
-   most candidate literals are f-string SQL whose ``TABLE.full_name``
-   interpolation was stripped by ``_literal_text`` above, leaving a hole
-   exactly where a table name would sit (``CREATE OR REPLACE VIEW  AS
-   ...``), which a strict parser rejects. The tolerant ``ErrorLevel.IGNORE``
-   parse used here recovers all but ~4% of those, and — the number that
-   actually matters — every literal that contains a genuine schema-qualified
-   reference in this tree parses successfully and resolves to the same
-   ``(file, table)`` violation set the old regex found, with the keyword
-   list deleted. ``exp.Table`` nodes with an **empty name** are excluded
-   (``if not table.db or not table.name``) rather than the regex's implicit
-   floor of ``[a-z][a-z0-9_]+`` after a schema: an interpolation hole (``DROP
-   VIEW IF EXISTS raw.;``) and DuckDB's own ``CREATE SCHEMA IF NOT EXISTS
-   seeds`` (which sqlglot represents as a ``Table`` with the schema name in
-   ``db`` and an empty ``name``) both produce that shape, and neither is a
-   table reference — filtered by the general rule, not by naming either
-   literal in an allowlist.
+   ``Table``. Measured before choosing this: a strict ``parse_one`` over
+   every one of the 654 candidate literals in this tree (2026-09) succeeds
+   only 21% of the time — most candidate literals are f-string SQL whose
+   ``TABLE.full_name`` interpolation was stripped by ``_literal_text``
+   above, leaving a hole exactly where a table name would sit (``CREATE OR
+   REPLACE VIEW  AS ...``), which a strict parser rejects. The tolerant
+   ``ErrorLevel.IGNORE`` parse used here recovers all but ~4% of those, and
+   — the number that actually matters — every literal that contains a
+   genuine schema-qualified reference in this tree parses successfully.
+   ``exp.Table`` nodes with an **empty name** are excluded (``if not
+   table.db or not table.name``) rather than the regex's implicit floor of
+   ``[a-z][a-z0-9_]+`` after a schema: an interpolation hole (``DROP VIEW IF
+   EXISTS raw.;``) and DuckDB's own ``CREATE SCHEMA IF NOT EXISTS seeds``
+   (which sqlglot represents as a ``Table`` with the schema name in ``db``
+   and an empty ``name``) both produce that shape, and neither is a table
+   reference — filtered by the general rule, not by naming either literal in
+   an allowlist.
+
+   **The ``exp.Command`` bucket is the exception, and it is handled, not
+   ignored.** sqlglot lowers any statement its DuckDB grammar cannot fully
+   parse to ``exp.Command`` with the payload left entirely unparsed —
+   DuckDB's ``EXPLAIN`` / ``EXPLAIN ANALYZE`` have no sqlglot node and
+   always land here (see ``.claude/references/guard-design.md`` and
+   ``src/moneybin/privacy/sql_query.py``'s ``is_metadata_query``: "sqlglot
+   lowers EXPLAIN to the same exp.Command it uses for syntax it cannot
+   parse"). ``find_all(exp.Table)`` on a ``Command`` always returns
+   nothing — an UNEXAMINED payload, not an absence of tables — so a first
+   version of this rewrite silently dropped coverage the old regex had:
+   ``db.execute("EXPLAIN SELECT * FROM core.fct_transactions")`` (an
+   ordinary query-plan diagnostic, not evasion — squarely inside the Threat
+   model above) went from caught to missed. The fix treats **any**
+   ``exp.Command`` — not just the ones whose payload happens to start with
+   ``EXPLAIN`` — as a signal that the payload needs a fallback pass, not as
+   a signal that no tables exist: `_fallback_regex_tables` re-runs the
+   pre-round-3 keyword/regex matcher on that one statement's own
+   reconstructed text. This is the sole remaining use of that matcher in
+   this file — it is a narrow backstop for the fraction of statements
+   sqlglot's DuckDB grammar cannot represent at all, not the primary path,
+   and it carries the same bounded false-positive exposure the old
+   regex-only design had (documented on ``_fallback_regex_tables`` itself).
 
 3. **Function-scoped name binding, with module-level fallback.** A candidate
    name is resolved within the module or function/method body that binds it
@@ -139,6 +161,7 @@ Exemptions:
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -166,6 +189,56 @@ _SCHEMA_NAMES = (
     "seeds",
     "synthetic",
 )
+
+# Fallback matcher for the ``exp.Command`` catch-all — NOT the primary
+# matcher. sqlglot lowers any statement it cannot fully parse for the target
+# dialect to ``exp.Command``, with the payload left as an unparsed string
+# (documented in ``.claude/references/guard-design.md`` and
+# ``src/moneybin/privacy/sql_query.py``'s ``is_metadata_query`` docstring —
+# the identical trap in a sibling guard: "sqlglot lowers EXPLAIN to the same
+# exp.Command it uses for syntax it cannot parse"). DuckDB's ``EXPLAIN`` /
+# ``EXPLAIN ANALYZE`` have no sqlglot node and always land here —
+# ``find_all(exp.Table)`` on a ``Command`` returns nothing, which is an
+# UNEXAMINED payload, not an absence of tables. This regex/keyword list
+# exists ONLY as a bounded backstop for the fraction of statements sqlglot's
+# DuckDB grammar cannot represent at all (see ``_tables_in_text``) — it is
+# not the primary matcher (module docstring point 2 uses the parse tree for
+# everything sqlglot understands), so a future reader should not mistake it
+# for the main path again.
+_FALLBACK_TABLE_KEYWORDS = (
+    "FROM",
+    "JOIN",
+    "INTO",
+    "UPDATE",
+    "TABLE",
+    "VIEW",
+    "EXISTS",
+    "REFERENCES",
+    "TRUNCATE",
+)
+_FALLBACK_SCHEMA_TABLE_PATTERN = re.compile(
+    r"\b(" + "|".join(_FALLBACK_TABLE_KEYWORDS) + r")\s+"
+    r"(" + "|".join(_SCHEMA_NAMES) + r")\.([a-z][a-z0-9_]+)\b",
+    re.IGNORECASE,
+)
+
+
+def _fallback_regex_tables(text: str) -> list[tuple[str, str]]:
+    """Regex-based table matching for a statement sqlglot could not parse.
+
+    Only called for ``exp.Command`` nodes (see ``_tables_in_text``) — never
+    as the primary matcher. Shares the same false-positive exposure the
+    original regex-only design had (an aliased-to-schema-name column
+    reference, a SQL comment mentioning a table in prose, a quoted
+    identifier not matching) — acceptable here because the statements that
+    reach this path are the ones sqlglot's DuckDB grammar cannot represent
+    at all, a narrow, bounded fallback rather than the file's main path.
+    """
+    found: list[tuple[str, str]] = []
+    for match in _FALLBACK_SCHEMA_TABLE_PATTERN.finditer(text):
+        found.append((match.group(1).upper(), f"{match.group(2)}.{match.group(3)}"))
+    return found
+
 
 # Allowlist entries are (file_relpath, clause_type, "schema.table",
 # occurrence) 4-tuples. `file_relpath` is relative to src/moneybin/ for
@@ -495,6 +568,26 @@ def _tables_in_text(text: str) -> list[tuple[str, str]]:
     module docstring point 2 for the two shapes (an interpolation hole; a
     bare ``CREATE SCHEMA`` statement) that produce a schema-only `exp.Table`
     with no real table name, which is not a table reference.
+
+    An ``exp.Command`` node is sqlglot's catch-all for a statement it could
+    not fully parse for the ``duckdb`` dialect (DuckDB's ``EXPLAIN`` /
+    ``EXPLAIN ANALYZE`` are the known members today; the set is a moving
+    target across sqlglot versions, not a fixed list — matched by node type,
+    never by scraping the "Falling back to parsing as a 'Command'" warning
+    sqlglot logs). Its payload is left completely unparsed, so
+    ``find_all(exp.Table)`` on it always returns nothing regardless of what
+    the payload actually contains — an UNEXAMINED payload, not an absence of
+    tables (see ``.claude/references/guard-design.md`` and
+    ``src/moneybin/privacy/sql_query.py``'s ``is_metadata_query`` docstring
+    for the identical trap in a sibling guard). Silently treating "no tables
+    found" as "no tables present" here would be a coverage regression versus
+    the pre-sqlglot regex, which matched ``EXPLAIN``'s ``FROM
+    schema.table`` textually with no parse step to fail. `_fallback_regex_tables`
+    runs on exactly this bucket — every ``exp.Command``, regardless of which
+    unsupported construct produced it — using the statement's own
+    reconstructed SQL text (``statement.sql(dialect="duckdb")``) so a
+    fallback triggered by one statement in a multi-statement literal never
+    re-scans a sibling statement sqlglot parsed successfully.
     """
     try:
         statements = sqlglot.parse(
@@ -506,6 +599,9 @@ def _tables_in_text(text: str) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     for statement in statements:
         if statement is None:
+            continue
+        if isinstance(statement, exp.Command):
+            found.extend(_fallback_regex_tables(statement.sql(dialect="duckdb")))
             continue
         for table in statement.find_all(exp.Table):
             schema = table.db.lower()
@@ -748,6 +844,38 @@ def test_create_schema_statement_is_not_a_false_positive(tmp_path: Path) -> None
     """
     source = 'db.execute("CREATE SCHEMA IF NOT EXISTS seeds")\n'
     assert _scan_source(tmp_path, source) == []
+
+
+def test_explain_statement_is_flagged(tmp_path: Path) -> None:
+    """`EXPLAIN SELECT ...` is a violation — the exp.Command coverage regression.
+
+    sqlglot has no DuckDB `EXPLAIN` node, so the whole statement lowers to
+    `exp.Command` with its payload left unparsed — `find_all(exp.Table)`
+    finds nothing on it regardless of what the payload contains. The
+    sqlglot-primary rewrite silently dropped this (the pre-round-3 regex
+    matched `FROM schema.table` textually with no parse step to fail);
+    `_fallback_regex_tables` closes it by re-running that matcher on any
+    `exp.Command` node's own text.
+    """
+    source = 'db.execute("EXPLAIN SELECT * FROM core.fct_transactions")\n'
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
+
+
+def test_explain_analyze_statement_is_flagged(tmp_path: Path) -> None:
+    """`EXPLAIN ANALYZE SELECT ...` is a violation too — same `exp.Command` bucket."""
+    source = 'db.execute("EXPLAIN ANALYZE SELECT * FROM core.fct_transactions")\n'
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
+
+
+def test_normal_parse_does_not_use_the_command_fallback(tmp_path: Path) -> None:
+    """A statement sqlglot parses normally never reaches the exp.Command fallback.
+
+    Positive control for the previous two tests: proves the fallback is
+    scoped to the unparsed-payload bucket and does not fire — or change the
+    result — for ordinary, fully-parseable SQL.
+    """
+    source = 'db.execute("SELECT * FROM core.fct_transactions")\n'
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
 
 
 def test_keyword_gate_excludes_sql_comment_prose(tmp_path: Path) -> None:
