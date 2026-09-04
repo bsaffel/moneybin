@@ -800,6 +800,34 @@ class _FakeContext:
         return self.frames.pop(0)
 
 
+def test_deleted_account_method_uses_audit_freshness() -> None:
+    context = _FakeContext(
+        pd.DataFrame(
+            columns=t.cast(
+                t.Any,
+                ["account_id", "default_cost_basis_method", "method_updated_at"],
+            )
+        ),
+        pd.DataFrame({
+            "target_id": ["acct-eur"],
+            "mutation_updated_at": [str(T5)],
+        }),
+    )
+    methods, updated_at = sqlmesh_loader._load_account_methods(  # pyright: ignore[reportPrivateUsage]
+        t.cast(t.Any, context)
+    )
+
+    result = sqlmesh_loader._derive_currency_accounting(  # pyright: ignore[reportPrivateUsage]
+        (_conversion(updated_at=T1),),
+        (),
+        methods,
+        account_method_updated_at=updated_at,
+    )
+
+    assert result.lots[0].cost_basis_method == "fifo"
+    assert result.lots[0].updated_at == T5
+
+
 def test_materialized_accounting_reads_follow_registered_table_refs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -813,6 +841,8 @@ def test_materialized_accounting_reads_follow_registered_table_refs(
         sqlmesh_loader, "FCT_INVESTMENT_TRANSACTIONS", investments, raising=False
     )
     context = _FakeContext(
+        pd.DataFrame(),
+        pd.DataFrame(),
         pd.DataFrame(),
         pd.DataFrame(),
         pd.DataFrame(),
@@ -891,8 +921,9 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
         pd.DataFrame(),
         pd.DataFrame(),
         pd.DataFrame(),
+        pd.DataFrame(),
     )
-    accounting_context = _FakeContext(*(pd.DataFrame() for _ in range(7)))
+    accounting_context = _FakeContext(*(pd.DataFrame() for _ in range(9)))
 
     assert sqlmesh_loader.load_conversion_rows(t.cast(t.Any, conversion_context)) == []
     assert sqlmesh_loader.load_currency_accounting(
@@ -923,6 +954,7 @@ def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -
     context = _FakeContext(
         pd.DataFrame(),
         pd.DataFrame({"home_currency": ["USD"], "profile_updated_at": [str(T1)]}),
+        pd.DataFrame(columns=t.cast(t.Any, ["target_id", "mutation_updated_at"])),
         pd.DataFrame(
             columns=t.cast(
                 t.Any,
@@ -943,7 +975,7 @@ def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -
             "source_type": ["frankfurter"],
             "loaded_at": [str(T2)],
         }),
-        pd.DataFrame(columns=t.cast(t.Any, ["target_id", "rate_changed_at"])),
+        pd.DataFrame(columns=t.cast(t.Any, ["target_id", "mutation_updated_at"])),
         pd.DataFrame({
             "investment_transaction_id": ["security-sale-1"],
             "account_id": ["acct-eur"],
@@ -958,6 +990,7 @@ def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -
             "default_cost_basis_method": [None],
             "method_updated_at": [str(T4)],
         }),
+        pd.DataFrame(columns=t.cast(t.Any, ["target_id", "mutation_updated_at"])),
     )
 
     result = sqlmesh_loader.load_currency_accounting(t.cast(t.Any, context))
@@ -1025,7 +1058,9 @@ class _RoutingContext:
                 )
             )
         if "from app.audit_log" in normalized:
-            return pd.DataFrame(columns=t.cast(t.Any, ["target_id", "rate_changed_at"]))
+            return pd.DataFrame(
+                columns=t.cast(t.Any, ["target_id", "mutation_updated_at"])
+            )
         if "from core.fct_investment_transactions" in normalized:
             return pd.DataFrame(
                 columns=t.cast(

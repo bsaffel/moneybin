@@ -715,7 +715,10 @@ Numbered, testable. Tagged by phase.
     this bridge and its downstream FX-accounting models before the mutation surface
     reports success. Removing an exchange-rate override also advances affected row
     freshness through its audit event, even when valuation falls back to an older
-    provider rate. A cache-only loader adapts completed conversions and eligible
+    provider rate. The same audit watermark preserves freshness when undo deletes
+    or restores Home-currency and cost-basis settings, and Account timestamps cover
+    inherited Currency clears on both conversion legs and Security sales. A
+    cache-only loader adapts completed conversions and eligible
     foreign-Security sale proceeds to the unchanged investments cost-basis engine,
     producing `core.fct_currency_lots` and `core.fct_realized_fx_gains`; unsupported
     methods and missing Home currency still preserve known quantities while basis

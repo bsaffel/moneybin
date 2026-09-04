@@ -460,16 +460,8 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
             debit.loaded_at,
             credit.loaded_at,
             md.decided_at,
-            CASE
-              WHEN NOT canonical_debit.currency_code IS NULL
-              THEN COALESCE(canonical_debit.updated_at, debit.loaded_at)
-              ELSE debit.loaded_at
-            END,
-            CASE
-              WHEN NOT canonical_credit.currency_code IS NULL
-              THEN COALESCE(canonical_credit.updated_at, credit.loaded_at)
-              ELSE credit.loaded_at
-            END
+            COALESCE(canonical_debit.updated_at, debit.loaded_at),
+            COALESCE(canonical_credit.updated_at, credit.loaded_at)
           )::VARCHAR AS candidate_updated_at
         FROM {bridge} AS bt
         JOIN {match_decisions} AS md
@@ -563,6 +555,26 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
     ]
 
 
+def _load_app_mutation_watermarks(
+    context: ExecutionContext, target_table: str
+) -> dict[str, datetime]:
+    audit_log = AUDIT_LOG.full_name
+    frame = context.fetchdf(
+        f"""
+        SELECT target_id, MAX(occurred_at)::VARCHAR AS mutation_updated_at
+        FROM {audit_log}
+        WHERE target_schema = 'app' AND target_table = '{target_table}'
+        GROUP BY target_id
+        """  # noqa: S608  # TableRef and target table are code-supplied
+    )
+    return {
+        target_id: changed_at
+        for record in _records(frame)
+        if (target_id := _opt_str(record["target_id"])) is not None
+        and (changed_at := _opt_timestamp(record["mutation_updated_at"])) is not None
+    }
+
+
 def _load_home_currency(
     context: ExecutionContext,
 ) -> tuple[str | None, datetime | None]:
@@ -576,11 +588,14 @@ def _load_home_currency(
         """  # noqa: S608  # registered physical table name, not user input
     )
     records = _records(frame)
+    changed_at = _load_app_mutation_watermarks(context, "profile_settings").get(
+        "profile"
+    )
     if not records:
-        return None, None
+        return None, changed_at
     return (
         _opt_str(records[0]["home_currency"]),
-        _opt_timestamp(records[0]["profile_updated_at"]),
+        _latest(_opt_timestamp(records[0]["profile_updated_at"]), changed_at),
     )
 
 
@@ -589,7 +604,6 @@ def _load_stored_rates(
 ) -> t.Callable[[str, str, date], _RateResolution]:
     override_table = EXCHANGE_RATE_OVERRIDES.full_name
     rates_table = EXCHANGE_RATES.full_name
-    audit_log = AUDIT_LOG.full_name
     override_frame = context.fetchdf(
         f"""
         SELECT from_currency, to_currency, rate_date::VARCHAR AS rate_date,
@@ -605,14 +619,8 @@ def _load_stored_rates(
         FROM {rates_table}
         """  # noqa: S608  # registered physical table name, not user input
     )
-    watermark_frame = context.fetchdf(
-        f"""
-        SELECT target_id, MAX(occurred_at)::VARCHAR AS rate_changed_at
-        FROM {audit_log}
-        WHERE target_schema = 'app'
-          AND target_table = 'exchange_rate_overrides'
-        GROUP BY target_id
-        """  # noqa: S608  # registered physical table name, not user input
+    mutation_watermarks_by_id = _load_app_mutation_watermarks(
+        context, "exchange_rate_overrides"
     )
 
     overrides: dict[tuple[str, str, date], _StoredRate] = {}
@@ -657,11 +665,7 @@ def _load_stored_rates(
             provider_rates[key] = candidate
 
     mutation_watermarks: dict[tuple[str, str, date], datetime] = {}
-    for record in _records(watermark_frame):
-        target_id = _opt_str(record["target_id"])
-        changed_at = _opt_timestamp(record["rate_changed_at"])
-        if target_id is None or changed_at is None:
-            continue
+    for target_id, changed_at in mutation_watermarks_by_id.items():
         parts = target_id.split("|")
         if len(parts) != 3 or not all(_valid_currency(part) for part in parts[:2]):
             continue
@@ -1278,6 +1282,12 @@ def _load_account_methods(
         for record in _records(frame)
         if (timestamp := _opt_timestamp(record["method_updated_at"])) is not None
     }
+    for account_id, changed_at in _load_app_mutation_watermarks(
+        context, "account_settings"
+    ).items():
+        latest = _latest(updated_at.get(account_id), changed_at)
+        if latest is not None:
+            updated_at[account_id] = latest
     return methods, updated_at
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import typing as t
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pandas as pd
@@ -180,7 +180,7 @@ def _provider_rates(*rows: Mapping[str, object]) -> pd.DataFrame:
 def _rate_watermarks(*rows: Mapping[str, object]) -> pd.DataFrame:
     return pd.DataFrame(
         rows,
-        columns=t.cast(t.Any, ("target_id", "rate_changed_at")),
+        columns=t.cast(t.Any, ("target_id", "mutation_updated_at")),
     )
 
 
@@ -199,6 +199,7 @@ def _context(
         missing if missing is not None else _frame(),
         single if single is not None else _frame(),
         _profile(home_currency),
+        pd.DataFrame(columns=t.cast(t.Any, ("target_id", "mutation_updated_at"))),
         overrides if overrides is not None else _overrides(),
         provider_rates if provider_rates is not None else _provider_rates(),
         rate_watermarks if rate_watermarks is not None else _rate_watermarks(),
@@ -359,6 +360,41 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     assert cleared.from_currency is None
     assert cleared.coverage_reason == "unknown_currency"
     assert str(cleared.updated_at) == "2026-03-20 09:00:00"
+
+    db.execute(
+        """
+        UPDATE core.fct_transactions
+           SET currency_code = NULL,
+               updated_at = '2026-03-21 09:00:00'::TIMESTAMP
+         WHERE transaction_id = 'txn-linked-in'
+        """
+    )
+
+    cleared_linked = {
+        row.source_shape: row
+        for row in module.load_conversion_rows(t.cast(t.Any, _DatabaseContext(db)))
+    }["linked_two_row"]
+    assert cleared_linked.to_currency is None
+    assert cleared_linked.coverage_reason == "unknown_currency"
+    assert str(cleared_linked.updated_at) == "2026-03-21 09:00:00"
+
+
+def test_missing_home_currency_uses_profile_audit_freshness() -> None:
+    module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
+    context = _FakeContext(
+        pd.DataFrame(columns=t.cast(t.Any, ["home_currency", "profile_updated_at"])),
+        pd.DataFrame({
+            "target_id": ["profile"],
+            "mutation_updated_at": ["2026-03-22 09:00:00"],
+        }),
+    )
+
+    home_currency, updated_at = module._load_home_currency(  # pyright: ignore[reportPrivateUsage]
+        t.cast(t.Any, context)
+    )
+
+    assert home_currency is None
+    assert updated_at == datetime(2026, 3, 22, 9)
 
 
 @pytest.mark.parametrize(
