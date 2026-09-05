@@ -282,6 +282,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **`reports merchants` and `reports large-transactions` run again.** Both
+  failed on every profile with "The report's query could not run against the
+  current schema", and the `reports` MCP tool failed the same way for
+  `core:merchants` and `core:large_transactions`: DuckDB rewrites their
+  `ROW_NUMBER() … <= n` filter into a top-N and pushes it through the recursive
+  match-group CTE behind `core.bridge_transfers`, where the plan fails. The
+  filter is now spelled `BETWEEN 1 AND n`, and the scenario suite executes
+  every built-in report over the real views so a runner shape that only fails
+  there cannot reach `main` green. (#539)
+
 - **A missing or locked keychain entry no longer prints a stack trace.**
   `moneybin db info`, `db unlock` and the DuckDB init-script builder read the
   encryption key directly, and the secret-store exceptions had no branch in the
