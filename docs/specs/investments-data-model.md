@@ -547,8 +547,11 @@ zero-and-refill pairs (which destroy holding-period continuity):
 as **decomposed leg pairs sharing an `event_group_id`** — paired out/in legs
 carrying a group identifier, with basis derived from the exchange ratio:
 
-This describes the ledger representation and pre-M1J.7 Source-group
-provenance, not a compound shape the M1J.7 matcher supports.
+This describes the ledger representation and pre-M1J.7 Source-group provenance,
+not a compound shape the M1J.7 matcher supports. After slice 1, CLI and MCP
+cannot author a two-security action until a future interface can submit and
+validate the complete compound event atomically. Existing grouped rows retain
+their Source group as provenance and remain atomic but match-ineligible.
 
 - **Merger / share-class conversion**: `transfer_out` of the old security +
   `transfer_in` of the new, basis carried via `--basis`, holding period via
@@ -570,12 +573,9 @@ derived lots and 1099-B therefore never depend on the order events were recorded
 
 Before M1J.7, manual entry accepted separate legs linked by caller-authored
 `--event-group`; importer children automate the decomposition in their staging
-models. M1J.7 supersedes that manual workflow: after slice 1, a two-security
-manual action is unavailable until a future interface can submit and validate
-the complete compound event atomically. Existing rows retain their Source group
-as provenance, while the Golden `event_group_id` remains the durable ledger
-identity. No dedicated `exchange`/`spin_off` enum values exist until real import
-experience demands them.
+models. M1J.7 supersedes that manual workflow. The Golden `event_group_id`
+becomes the durable ledger identity. No dedicated `exchange`/`spin_off` enum
+values exist until real import experience demands them.
 
 M1J.7 may match ordinary `transfer_in` or `transfer_out` observations only as
 same-direction one-leg events across distinct sources. It does not infer an
