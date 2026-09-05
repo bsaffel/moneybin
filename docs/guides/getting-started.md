@@ -100,7 +100,7 @@ Merchant linking complete: 0 linked automatically, 0 sent for review.
 ✅ Core tables rebuilt
 ```
 
-In order: the file's rows landed untouched in `raw.ofx_*`; the transforms rebuilt the canonical `core.*` tables that every report and query reads; matching looked for an existing account the new one duplicates (none, on a first import); categorization ran with nothing to apply yet (step 7). The 23 imported rows are the 20 transactions plus the institution, the account, and the closing balance the file carries.
+In order: the file's rows landed untouched in `raw.ofx_*`; the transforms rebuilt the canonical `core.*` tables the built-in reports read (`sql query` and a saved report can also read `raw`, `prep`, and `app` directly); matching looked for an existing account the new one duplicates (none, on a first import); categorization ran with nothing to apply yet (step 7). The 23 imported rows are the 20 transactions plus the institution, the account, and the closing balance the file carries.
 
 Imports are idempotent: the import log refuses a file it has already seen (`--force` overrides), and source ids plus content matching keep an overlapping month from double-counting. `import revert` undoes one batch.
 

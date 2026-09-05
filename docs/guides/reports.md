@@ -277,7 +277,7 @@ Empty on the demo, because drift needs an assertion: a balance you typed from a 
 
 `reports list` prints the whole catalog — name, id, tier, parameters, description. Tiers are `builtin` (the eight above, ids prefixed `core:`), `extension` (reports a MoneyBin extension package registers), and `user` (yours, prefixed `user:`). `--tier` filters, `--include-archived` adds saved reports you have archived.
 
-`reports run HANDLE` executes any of them by id or name, with `--param key=value` for each parameter and `--limit` for a row cap. It prints the report's rows and nothing else, so the dedicated command is the better read when one exists:
+`reports run HANDLE` executes any of them by id or name, with `--param key=value` for each parameter and `--limit` for a row cap. It prints the rows through the shared renderer — default columns, the footer, and the `💡` hints — without the dedicated command's own layout, such as `networth`'s headline block or `spending`'s chosen comparison column, so the dedicated command is the better read when one exists:
 
 ```console
 $ uv run moneybin reports run core:networth
