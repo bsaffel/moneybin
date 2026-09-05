@@ -708,12 +708,12 @@ All commands under a top-level `investments` group (promoting the placeholder
 moneybin investments add --account <id|name> --security <ticker|name> \
     --type buy --date 2024-01-15 --quantity 10 --price 150.00 \
     [--subtype qualified] [--fees 4.95] [--currency USD] \
-    [--event-group <id>] [--notes "..."]
+    [--notes "..."]
 ```
-- Records one event in `raw.manual_investment_transactions`; resolves
-  `--security` via the resolution chain, prompting to create a catalog entry if
-  unknown. `--event-group` links legs of one economic event (merger pair,
-  spin-off legs). Omitting `--currency` stores no currency and
+- Records one singleton event in `raw.manual_investment_transactions`, except
+  for the complete reinvest request below; resolves `--security` via the
+  resolution chain, prompting to create a catalog entry if unknown. Omitting
+  `--currency` stores no currency and
   `core.fct_investment_transactions` inherits the account's, never a blind
   `'USD'` (multi-currency.md Requirement 3).
 - **Reinvest convenience:** `--type reinvest` records the acquisition leg AND
@@ -722,13 +722,14 @@ moneybin investments add --account <id|name> --security <ticker|name> \
   minted `event_group_id` — one command, two ledger rows, mirroring how brokers
   and Plaid report the event.
 
-> **M1J.7 pre-launch amendment:** delivery removes the caller-authored
-> `--event-group` option and MCP `event_group_id` input. A reinvest request is a
-> complete whole event and MoneyBin mints its Source group internally; other
-> supported manual entries are singletons. A future compound manual shape must
-> be submitted and validated atomically rather than assembled by reusing a
-> string across calls. The manual write surface remains create-only in M1J.7;
-> manual event correction is a separate future contract, not part of matching.
+> **M1J.7 pre-launch amendment:** the pre-M1J.7 surface accepted a
+> caller-authored `--event-group` option and MCP `event_group_id` input; M1J.7
+> removes both. A reinvest request is a complete whole event and MoneyBin mints
+> its Source group internally; other supported manual entries are singletons. A
+> future compound manual shape must be submitted and validated atomically rather
+> than assembled by reusing a string across calls. The manual write surface
+> remains create-only in M1J.7; manual event correction is a separate future
+> contract, not part of matching.
 
 ```
 moneybin investments list [--account <id|name>] [--security <ticker|name>] \
