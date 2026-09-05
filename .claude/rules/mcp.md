@@ -29,8 +29,9 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
 
 1. **Import-first, not ledger-first.** No general-purpose `add_transaction` tool. Transactions come from sources (files, connectors). Corrections and annotations are metadata on source-imported records, not counter-entries.
 2. **Privacy by architecture.** MoneyBin uses four sensitivity tiers (`low`,
-   `medium`, `high`, `critical`). Static tools derive their maximum tier from
-   the typed response payload; projection-varying tools opt into dynamic
+   `medium`, `high`, `critical`). Static tools derive a floor tier from the
+   typed response payload, which a call may raise but never lower — the same
+   way `discloses=` folds in below; projection-varying tools opt into dynamic
    classification and declare a maximum. A tool that shows the caller
    classified data *outside* that payload — in practice, the text of a
    confirmation elicitation — declares it with `discloses=Tier.X`, which is
