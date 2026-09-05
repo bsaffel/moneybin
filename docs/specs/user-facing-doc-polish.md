@@ -185,7 +185,7 @@ another hand pass is not.
 **Generated references.** `scripts/generate_reference_docs.py` renders
 `docs/reference/cli/` (one page per top-level command plus an index, from the
 Typer command tree), `docs/reference/mcp-tools.md` (from the MCP surface
-snapshot plus each tool's registered maximum sensitivity), and
+snapshot plus each tool's registered sensitivity), and
 `docs/reference/configuration.md` (from `MoneyBinSettings`). `make
 generate-docs` rewrites them, and `test_generated_references_are_current`
 fails while a checked-in page differs from the render. The CLI reference
