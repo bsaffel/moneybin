@@ -256,7 +256,7 @@ _INTERPOLATED_CLAUSE_TYPE = "INTERPOLATED"
 # and the match must consume the WHOLE string (`fullmatch`, not `search`) since
 # there is no surrounding SQL for a partial match to be extracted from.
 _TABLE_ARG_PATTERN = re.compile(
-    r"(" + "|".join(_SCHEMA_NAMES) + r")\.([a-z][a-z0-9_]+)",
+    r"\"?(" + "|".join(_SCHEMA_NAMES) + r")\"?\.\"?([a-z][a-z0-9_]+)\"?",
     re.IGNORECASE,
 )
 
@@ -656,19 +656,40 @@ def _locally_bound_names(
     them from extraction and excluding them from *shadowing* are different
     decisions, and only the first was ever intended.
 
-    `global`/`nonlocal` need no special case, and adding one is wrong. A bare
-    `global query` binds nothing, so the name is not in this set anyway and
-    already falls through to the module literal — correct, since that is what
-    executes. But `global query` FOLLOWED BY `query = build()` rebinds the
-    module name at runtime, so the module's literal is no longer what runs;
-    the assignment puts the name in this set and shadowing is again correct.
-    Subtracting declared names broke exactly that second case, and no test
-    could red on it because the first case reaches the same answer by a
-    different route.
+    `global`/`nonlocal` names are the one place this needs flow sensitivity,
+    because they are the one place an assignment does NOT make the name the
+    scope's own. Three cases, and only a definite overwrite may shadow:
+
+      - bare `global query` — binds nothing; the module literal is what
+        executes, so the name must fall through.
+      - `global query` then `query = build()` at function-body level — the
+        module binding is definitely replaced before the sink, so shadowing
+        is right.
+      - `global query` then `if cond: query = build()` — the module literal
+        still executes whenever `cond` is false. Shadowing here is a SILENT
+        false negative, and this scanner is flow-insensitive everywhere else
+        (see `_record_literal_binding` on stale bindings), so it takes the
+        same trade it takes there: keep the visible false positive.
+
+    A local name needs none of this. Any assignment makes it local for the
+    whole function body, so a conditionally-assigned local simply cannot hold
+    a module literal — `UnboundLocalError` is the alternative, not fallback.
     """
     bound: set[str] = set(_parameter_names(node))
+    declared_outer: set[str] = set()
+    # Assignment targets at function-body level — not nested in an `if`,
+    # loop or `try` — are the ones that definitely run before any sink.
+    definitely_rebound: set[str] = set()
+    for body_node in node.body:
+        if isinstance(body_node, ast.Assign):
+            for target in body_node.targets:
+                definitely_rebound |= _target_names(target)
+        elif isinstance(body_node, (ast.AnnAssign, ast.AugAssign)):
+            definitely_rebound |= _target_names(body_node.target)
     for scope_node in nodes:
-        if isinstance(scope_node, ast.Assign):
+        if isinstance(scope_node, (ast.Global, ast.Nonlocal)):
+            declared_outer.update(scope_node.names)
+        elif isinstance(scope_node, ast.Assign):
             for target in scope_node.targets:
                 bound |= _target_names(target)
         elif isinstance(scope_node, (ast.AnnAssign, ast.AugAssign)):
@@ -684,6 +705,18 @@ def _locally_bound_names(
         elif isinstance(scope_node, ast.ExceptHandler):
             if scope_node.name is not None:
                 bound.add(scope_node.name)
+        elif isinstance(
+            scope_node,
+            (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp),
+        ):
+            # A comprehension has its own scope, so its target is not bound in
+            # the enclosing function — but a sink INSIDE the comprehension
+            # (`[db.execute(q) for q in rows]`) sees it, and this scanner does
+            # not model comprehension scopes separately. Recording the target
+            # here is what stops such a name resolving to a same-named module
+            # literal it can never hold.
+            for generator in scope_node.generators:
+                bound |= _target_names(generator.target)
         elif isinstance(scope_node, (ast.Import, ast.ImportFrom)):
             for alias in scope_node.names:
                 bound.add(alias.asname or alias.name.split(".")[0])
@@ -691,7 +724,7 @@ def _locally_bound_names(
             scope_node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
         ):
             bound.add(scope_node.name)
-    return frozenset(bound)
+    return frozenset(bound - (declared_outer - definitely_rebound))
 
 
 def _parameter_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
@@ -2100,6 +2133,92 @@ def test_global_rebinding_shadows_the_module_literal(tmp_path: Path) -> None:
         "def f(db):\n"
         "    global query\n"
         "    query = build()\n"
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == []
+
+
+def test_quoted_table_name_spliced_into_sql_is_flagged(tmp_path: Path) -> None:
+    """Quoting is a property of every identifier, on this path too.
+
+    `table = '"core"."fct_transactions"'` spliced into an f-string reaches
+    the same table as the unquoted spelling. The structural fallback pattern
+    has accepted optional quotes since round 3; the bare-identifier matcher
+    added in round 5 did not, so the two spellings behaved differently
+    depending only on which matcher saw them.
+    """
+    source = (
+        "def f(db):\n"
+        '    table = \'"core"."fct_transactions"\'\n'
+        '    db.execute(f"SELECT * FROM {table}")\n'
+    )
+    assert _scan_source(tmp_path, source) == [
+        (2, "INTERPOLATED", "core.fct_transactions")
+    ]
+
+
+def test_comprehension_target_does_not_resolve_to_a_module_literal(
+    tmp_path: Path,
+) -> None:
+    """A comprehension binds its own target, so a sink inside it must see that.
+
+    `[db.execute(query) for query in rows]` iterates `rows`; `query` never
+    holds the module-level literal. A comprehension has its own scope in
+    Python 3, so the name is not bound in the enclosing function — but this
+    scanner does not model comprehension scopes separately, and without
+    recording the target the name fell through to the module and reported a
+    table the code cannot touch.
+    """
+    source = (
+        'query = "SELECT * FROM core.foo"\n'
+        "\n"
+        "def f(db, rows):\n"
+        "    return [db.execute(query) for query in rows]\n"
+    )
+    assert _scan_source(tmp_path, source) == []
+
+
+def test_conditionally_rebound_global_still_reports_the_module_literal(
+    tmp_path: Path,
+) -> None:
+    """A `global` rebound only on one branch leaves the literal live.
+
+    `global query` then `if cond: query = build()` still executes the
+    module literal whenever `cond` is false. Treating any assignment as
+    shadowing made that a SILENT false negative — the failure direction this
+    file refuses everywhere else (see `_record_literal_binding` on stale
+    bindings). Only a definite, function-body-level overwrite may shadow a
+    globally declared name.
+    """
+    source = (
+        'query = "SELECT * FROM core.foo"\n'
+        "\n"
+        "def f(db, cond):\n"
+        "    global query\n"
+        "    if cond:\n"
+        "        query = build()\n"
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
+
+
+def test_conditionally_assigned_local_does_not_report_the_module_literal(
+    tmp_path: Path,
+) -> None:
+    """The same shape without `global` is the opposite answer, and must stay so.
+
+    Any assignment makes a name local for the whole function body, so a
+    conditionally-assigned local cannot hold the module literal —
+    `UnboundLocalError` is the alternative, not module fallback. Paired with
+    the test above so the `global` carve-out cannot be widened to every
+    conditional assignment.
+    """
+    source = (
+        'query = "SELECT * FROM core.foo"\n'
+        "\n"
+        "def f(db, cond):\n"
+        "    if cond:\n"
+        "        query = build()\n"
         "    db.execute(query)\n"
     )
     assert _scan_source(tmp_path, source) == []
