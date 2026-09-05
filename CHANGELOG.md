@@ -289,6 +289,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **Curation no longer disappears when a transaction is re-keyed.** A
+  transaction's canonical id is derived from its dedup group's most stable
+  member, so it changes when a steadier source backfills the same transaction —
+  or when a pending Plaid transaction posts under a fresh id. The forwarding map
+  that exists to keep the old id resolvable was built but never written to, so a
+  category, note, tag or split attached before the change was left pointing at an
+  id that no longer existed. On one profile, two merges orphaned 33 rows this
+  way. Accepting a merge, and the matcher run that follows a sync, now record the
+  old → new pointer and move the curation onto the surviving transaction, so the
+  annotation stays with the transaction it describes and `moneybin doctor` stops
+  reporting the orphans. Successive re-keys chain rather than collide, and an
+  already-annotated survivor keeps whichever categorization was authored with
+  more authority — a manual edit is never displaced by an automatic one. The
+  repair also runs from the other direction, for the case where the id changes
+  because rows *went away*: reverting the import that supplied a merged
+  transaction, or an ordinary Plaid sync removing one, hands the transaction back
+  to a surviving source and its annotations follow. Where the trail is genuinely
+  ambiguous — every id the transaction ever used is gone, or several are still in
+  use — the rows are left where they are and `moneybin doctor` reports them
+  rather than the guess being made for you. Undoing a merge
+  (`moneybin transactions matches undo`) puts every annotation back on the
+  transaction it was written against, including a category or a tag that the
+  merge had to delete because the two halves each carried one — so the merge
+  stays as reversible as it is advertised to be. The old → new pointer itself
+  stays: anything still holding the superseded id keeps resolving through it.
+  Splits get the same treatment for a
+  second reason: when both halves of a merge were already split, each allocation
+  stays where it is, because a survivor holding both would publish twice the
+  transaction's amount to every spending report and deleting either side would
+  discard a split you entered. `moneybin doctor` reports the splits left behind.
+  (#532)
 - **`reports merchants` and `reports large-transactions` run again.** Both
   failed on every profile with "The report's query could not run against the
   current schema", and the `reports` MCP tool failed the same way for

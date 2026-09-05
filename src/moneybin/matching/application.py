@@ -8,6 +8,11 @@ from typing import TYPE_CHECKING, Literal
 
 from moneybin.database import Database
 from moneybin.errors import exception_origin
+from moneybin.matching.aliasing import (
+    AliasForwardResult,
+    forward_rekeyed_transaction_ids,
+    record_committed_alias_forwarding,
+)
 from moneybin.matching.persistence import get_match_decision, get_match_statuses
 from moneybin.matching.reconciliation import (
     record_dedup_retirements,
@@ -39,6 +44,11 @@ class MatchApplicationEffects:
 
     changes: tuple[MatchStatusChange, ...]
     reconciliation_reversals: int | None
+    # An accepted dedup merge can re-anchor the group and change its canonical
+    # transaction_id (ADR-015). Carried here rather than counted at write time
+    # for the same reason as the reversals: nothing is durable until the owner
+    # commits.
+    alias_forwarding: AliasForwardResult = AliasForwardResult()
 
     def __post_init__(self) -> None:
         """Reject inconsistent effects while the owner's transaction is active."""
@@ -176,9 +186,13 @@ class MatchDecisionApplication:
             self._requested.append((match_id, "accepted", "pending", True))
 
     def finalize(self) -> MatchApplicationEffects:
-        """Run reconciliation and return immutable transaction-local facts."""
+        """Run reconciliation and alias forwarding; return transaction-local facts."""
         self._ensure_open()
-        needs_reconciliation = any(
+        # An acceptance is what collapses rows together, so it is the trigger for
+        # both follow-ups: reconciliation retires transfers the collapse
+        # invalidated, and alias forwarding records the canonical ids it re-keyed.
+        # A rejection changes neither.
+        accepted_something = any(
             changed and status == "accepted"
             for _, status, _, changed in self._requested
         )
@@ -189,8 +203,20 @@ class MatchDecisionApplication:
                 actor=self._actor,
                 in_outer_txn=True,
             )
-            if needs_reconciliation
+            if accepted_something
             else None
+        )
+        # After the reconciliation, not before: it can reverse a row this
+        # application just accepted, and aliasing a merge that did not survive
+        # the transaction would append a forwarding pointer to an id that never
+        # went away — and the alias map is append-only, so it could not be taken
+        # back.
+        alias_forwarding = (
+            forward_rekeyed_transaction_ids(
+                self._db, actor=self._actor, in_outer_txn=True
+            )
+            if accepted_something
+            else AliasForwardResult()
         )
         statuses = get_match_statuses(
             self._db, [match_id for match_id, _, _, _ in self._requested]
@@ -209,6 +235,7 @@ class MatchDecisionApplication:
         return MatchApplicationEffects(
             changes=changes,
             reconciliation_reversals=reversals,
+            alias_forwarding=alias_forwarding,
         )
 
     def _ensure_open(self) -> None:
@@ -220,6 +247,7 @@ def record_committed_match_effects(effects: MatchApplicationEffects) -> None:
     """Record committed reconciliation metrics without risking committed work."""
     try:
         record_dedup_retirements(effects.reconciliation_reversals or 0)
+        record_committed_alias_forwarding(effects.alias_forwarding)
     except Exception as exc:  # noqa: BLE001  # metrics must not escape post-commit
         logger.warning(
             f"Could not record committed matching metric at {exception_origin(exc)}"

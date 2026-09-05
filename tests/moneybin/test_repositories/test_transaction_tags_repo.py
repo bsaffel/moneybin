@@ -100,3 +100,64 @@ class TestRenameRow:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# repoint_transaction — the audit shape a dedup re-key leaves behind
+# ---------------------------------------------------------------------------
+
+
+def test_repoint_audits_the_departure_on_the_old_key(db: Database) -> None:
+    """A moved tag names both composite keys, so the cascade check sees it."""
+    repo = TransactionTagsRepo(db)
+    repo.add(transaction_id="txn_old", tag="work", actor="cli")
+
+    events = repo.repoint_transaction(
+        old_transaction_id="txn_old",
+        new_transaction_id="txn_new",
+        actor="system",
+    )
+
+    assert [
+        (e.target_id, e.before_value is None, e.after_value is None) for e in events
+    ] == [("txn_old:work", False, True), ("txn_new:work", True, False)]
+
+
+def test_repoint_is_reversible_event_by_event(db: Database) -> None:
+    """Replaying the events in reverse write order restores the original row."""
+    repo = TransactionTagsRepo(db)
+    repo.add(transaction_id="txn_old", tag="work", actor="cli")
+    events = repo.repoint_transaction(
+        old_transaction_id="txn_old",
+        new_transaction_id="txn_new",
+        actor="system",
+    )
+
+    for event in reversed(events):
+        repo.undo_event(event, actor="cli")
+
+    assert db.execute(
+        "SELECT transaction_id, tag FROM app.transaction_tags"
+    ).fetchall() == [("txn_old", "work")]
+
+
+def test_repoint_of_a_colliding_tag_still_audits_only_the_old_key(
+    db: Database,
+) -> None:
+    """The destination already carries the tag, so the superseded row is deleted."""
+    repo = TransactionTagsRepo(db)
+    repo.add(transaction_id="txn_old", tag="work", actor="cli")
+    repo.add(transaction_id="txn_new", tag="work", actor="cli")
+
+    events = repo.repoint_transaction(
+        old_transaction_id="txn_old",
+        new_transaction_id="txn_new",
+        actor="system",
+    )
+
+    assert [(e.target_id, e.after_value is None) for e in events] == [
+        ("txn_old:work", True)
+    ]
+    assert db.execute(
+        "SELECT transaction_id, tag FROM app.transaction_tags"
+    ).fetchall() == [("txn_new", "work")]

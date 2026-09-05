@@ -34,6 +34,7 @@ from moneybin.repositories.tabular_formats_repo import TabularFormatsRepo
 from moneybin.repositories.transaction_categories_repo import (
     TransactionCategoriesRepo,
 )
+from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
 from moneybin.repositories.user_categories_repo import UserCategoriesRepo
 from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
 from moneybin.services.doctor_service import (
@@ -373,6 +374,57 @@ def test_transaction_categories_fk_passes_when_all_resolve(db: Database) -> None
     assert result.status == "pass"
 
 
+def _insert_split(repo: TransactionSplitsRepo, *, split_id: str, txn: str) -> None:
+    repo.insert(
+        split_id=split_id,
+        transaction_id=txn,
+        amount=Decimal("-5.00"),
+        category="Dining",
+        subcategory=None,
+        category_id=None,
+        note=None,
+        ord=0,
+        actor="cli",
+    )
+
+
+def test_transaction_splits_fk_flags_orphan(db: Database) -> None:
+    """A split left on a re-keyed id would otherwise be invisible.
+
+    ``repoint_transaction`` deliberately leaves an allocation where it is when
+    the surviving transaction is already split, so this is the only surface
+    that reports it.
+    """
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.fct_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, source_type) "
+        "VALUES ('t_ok', 'a1', DATE '2026-01-01', -5.00, 'csv')"
+    )
+    repo = TransactionSplitsRepo(db)
+    _insert_split(repo, split_id="s_ok00000001", txn="t_ok")
+    _insert_split(repo, split_id="s_orphan0001", txn="t_orphan")
+
+    result = DoctorService(db)._run_transaction_splits_fk()
+
+    assert result.status == "fail"
+    assert result.affected_ids == ["s_orphan0001"]
+
+
+def test_transaction_splits_fk_passes_when_all_resolve(db: Database) -> None:
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.fct_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, source_type) "
+        "VALUES ('t_ok', 'a1', DATE '2026-01-01', -5.00, 'csv')"
+    )
+    _insert_split(TransactionSplitsRepo(db), split_id="s_ok00000001", txn="t_ok")
+
+    result = DoctorService(db)._run_transaction_splits_fk()
+
+    assert result.status == "pass"
+
+
 def _insert_match(
     repo: MatchDecisionsRepo,
     *,
@@ -543,6 +595,7 @@ def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
     assert "app_proposed_rules_rule_fk" in names
     assert "app_audit_coverage_transaction_categories" in names
     assert "app_transaction_categories_fk" in names
+    assert "app_transaction_splits_fk" in names
     assert "app_audit_coverage_account_settings" in names
     assert "app_audit_coverage_balance_assertions" in names
     assert "app_audit_coverage_budgets" in names

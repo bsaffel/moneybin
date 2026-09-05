@@ -434,3 +434,128 @@ class TransactionCategoriesRepo(BaseRepo):
                 if event is not None:
                     events.append(event)
             return events
+
+    def repoint_transaction(
+        self,
+        *,
+        old_transaction_id: str,
+        new_transaction_id: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> tuple[AuditEvent, ...]:
+        """Move a categorization off a superseded ``transaction_id`` onto its successor.
+
+        Called when a dedup merge or a Plaid pending→posted transition re-keys the
+        canonical transaction (ADR-015); left behind, the row references an id
+        absent from ``core.fct_transactions`` and the ``app_transaction_categories_fk``
+        invariant fails.
+
+        ``transaction_id`` is the whole primary key, so when both sides were
+        categorized only one row can survive. The winner is decided by the same
+        ``SOURCE_PRIORITY`` ladder ``upsert_guarded`` enforces — a merge must not
+        let a lower-authority categorization displace a higher one, and must not
+        drop the user's edit in favour of the anchor's provider default.
+
+        Because ``transaction_id`` is the whole primary key, a move is audited
+        as a delete on the old id plus an insert on the new one rather than as
+        one update — the audit target is the row identity, and the cascade check
+        that guards undo can only see a change on a key it is named on.
+
+        **A tie moves the superseded row**, matching ``upsert_guarded``, whose
+        guard admits an incoming write of equal authority. Two ``user`` edits on
+        the two halves of a merge are both the user's, and neither the id nor
+        the ladder ranks one above the other; taking the incoming one keeps the
+        two write paths answering a tie the same way, which is the property that
+        matters when the alternative is a second rule to remember.
+        """
+        # Deferred import: the ``services.categorization`` package's __init__
+        # imports the applier, which imports this repo — a module-level import
+        # would cycle. The ladder is the table's write contract, so reusing it
+        # keeps the merge tiebreak and the upsert guard from drifting apart.
+        from moneybin.services.categorization._shared import (  # noqa: PLC0415
+            SOURCE_PRIORITY,
+        )
+
+        def rank(row: dict[str, Any]) -> int:
+            # An unknown method sorts last: it cannot outrank a declared one.
+            return SOURCE_PRIORITY.get(
+                str(row["categorized_by"]), len(SOURCE_PRIORITY) + 1
+            )
+
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before_old = self._fetch_row(old_transaction_id)
+            if before_old is None:
+                return ()
+            events: list[AuditEvent] = []
+            before_new = self._fetch_row(new_transaction_id)
+            if before_new is not None:
+                if rank(before_new) < rank(before_old):
+                    # The surviving id already holds the more authoritative row;
+                    # the superseded one is dropped rather than moved.
+                    self._db.execute(
+                        f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef + parameterized value
+                        f"WHERE transaction_id = ?",
+                        [old_transaction_id],
+                    )
+                    return (
+                        self._emit_audit(
+                            action="category.repoint_transaction",
+                            target=(*self._audit_target, old_transaction_id),
+                            before=self._serialize_for_audit(before_old),
+                            after=None,
+                            actor=actor,
+                            parent_audit_id=parent_audit_id,
+                        ),
+                    )
+                self._db.execute(
+                    f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef + parameterized value
+                    f"WHERE transaction_id = ?",
+                    [new_transaction_id],
+                )
+                events.append(
+                    self._emit_audit(
+                        action="category.repoint_transaction",
+                        target=(*self._audit_target, new_transaction_id),
+                        before=self._serialize_for_audit(before_new),
+                        after=None,
+                        actor=actor,
+                        parent_audit_id=parent_audit_id,
+                    )
+                )
+            self._db.execute(
+                f"UPDATE {TRANSACTION_CATEGORIES.full_name} SET transaction_id = ? "  # noqa: S608  # TableRef + parameterized values
+                f"WHERE transaction_id = ?",
+                [new_transaction_id, old_transaction_id],
+            )
+            # Two row-grain events, not one. ``transaction_id`` IS the primary
+            # key, so the move vacates one row identity and creates another, and
+            # ``UndoService._cascade_blockers`` joins the audit log on exact
+            # ``target_id``: an event naming only the survivor is invisible from
+            # the superseded id's side, so undoing the edit that wrote the row
+            # would delete by the old id, match nothing, and report success while
+            # the moved row stands. Undo replays an operation in reverse write
+            # order, so the arrival is reversed before the departure is restored.
+            events.append(
+                self._emit_audit(
+                    action="category.repoint_transaction",
+                    target=(*self._audit_target, old_transaction_id),
+                    before=self._serialize_for_audit(before_old),
+                    after=None,
+                    actor=actor,
+                    parent_audit_id=parent_audit_id,
+                )
+            )
+            events.append(
+                self._emit_audit(
+                    action="category.repoint_transaction",
+                    target=(*self._audit_target, new_transaction_id),
+                    before=None,
+                    after=self._serialize_for_audit(
+                        self._fetch_row(new_transaction_id)
+                    ),
+                    actor=actor,
+                    parent_audit_id=parent_audit_id,
+                )
+            )
+            return tuple(events)
