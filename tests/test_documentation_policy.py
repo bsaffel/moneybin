@@ -25,7 +25,6 @@ import re
 import shlex
 import shutil
 import subprocess  # noqa: S404 -- the policy test queries local Git metadata
-from collections.abc import Collection
 from pathlib import Path
 from typing import NamedTuple
 
@@ -326,7 +325,6 @@ _TERMINATORS = {"|", "||", "&&", ";", ">", ">>", "2>", "<"}
 # `2>&1`, `>/dev/null`, a trailing `&`. Not `<`: that opens a placeholder.
 _REDIRECTION = re.compile(r"^(\d*>|&>|&$)")
 _ELISIONS = {"...", "…"}
-_FLAG_SPAN = re.compile(r"-{1,2}[A-Za-z]")  # `-y, --yes`, not a lone `-` cell
 _COMMAND_SUBSTITUTION = re.compile(r"\$\((?P<inner>[^()]*)\)")
 _SUBSTITUTED_INVOCATION = re.compile(r"^\s*moneybin(?:\s|$)")
 _ANGLE_PLACEHOLDER = re.compile(r"<[^<>]*>")
@@ -361,15 +359,8 @@ def _user_facing_documents() -> list[Path]:
     return [document for document in documents if document.exists()]
 
 
-def _inline_spans(
-    prose: list[tuple[int, str]], top_level: Collection[str]
-) -> list[tuple[int, str]]:
-    """Inline code spans in one run of prose, each on the line it opens.
-
-    With ``top_level`` (the CLI reference), a table row whose first span starts
-    with a top-level command is read as `moneybin …`, and the row's flag spans
-    (`-y, --yes`) are appended so the flags column is checked as well.
-    """
+def _inline_spans(prose: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    """Inline code spans in one run of prose, each on the line it opens."""
     if not prose:
         return []
     first, joined = prose[0][0], "\n".join(line for _, line in prose)
@@ -377,20 +368,11 @@ def _inline_spans(
     for match in _INLINE_CODE.finditer(joined):
         number = first + joined.count("\n", 0, match.start())
         span = " ".join(match.group(1).split())
-        line = prose[number - first][1]
-        line_start = joined.rfind("\n", 0, match.start()) + 1
-        first_in_row = "`" not in joined[line_start : match.start()]
-        words = span.split(maxsplit=1)
-        if top_level and line.lstrip().startswith("|") and first_in_row:
-            if words and words[0] in top_level:
-                row_spans = [" ".join(s.split()) for s in _INLINE_CODE.findall(line)]
-                flags = [s for s in row_spans[1:] if _FLAG_SPAN.match(s)]
-                span = " ".join(["moneybin", span, *flags])
         spans.append((number, span))
     return spans
 
 
-def _code_lines(text: str, top_level: Collection[str] = ()) -> list[_CodeLine]:
+def _code_lines(text: str) -> list[_CodeLine]:
     """Return one `_CodeLine` per fenced-block line and inline code span."""
     lines: list[_CodeLine] = []
     prose: list[tuple[int, str]] = []
@@ -399,10 +381,7 @@ def _code_lines(text: str, top_level: Collection[str] = ()) -> list[_CodeLine]:
     for number, line in enumerate(text.splitlines(), start=1):
         match = _FENCE.match(line.strip())
         if match and (fence is None or line.strip().startswith(fence)):
-            lines += (
-                _CodeLine(n, c, runnable=False)
-                for n, c in _inline_spans(prose, top_level)
-            )
+            lines += (_CodeLine(n, c, runnable=False) for n, c in _inline_spans(prose))
             prose = []
             if fence:
                 fence = None
@@ -415,9 +394,7 @@ def _code_lines(text: str, top_level: Collection[str] = ()) -> list[_CodeLine]:
                 lines.append(_CodeLine(number, line, runnable=True))
         else:
             prose.append((number, line))
-    lines += (
-        _CodeLine(n, c, runnable=False) for n, c in _inline_spans(prose, top_level)
-    )
+    lines += (_CodeLine(n, c, runnable=False) for n, c in _inline_spans(prose))
     return lines
 
 
@@ -591,7 +568,7 @@ def _resolve_invocation(
             ):
                 return f"`{' '.join(path)}` option `{name}` requires a value"
             following = tokens[index] if index < len(tokens) else ""
-            # A bare value-taking option in a flags column (`--pattern`,
+            # A bare value-taking option in an inline mention (`--pattern`,
             # `--match-type {exact,contains,regex}`) must not swallow the next
             # flag; a negative number (`--amount -12.50`) is still a value. A
             # *runnable* transcript gets no such benefit of the doubt: Click
@@ -686,11 +663,9 @@ def test_public_docs_cli_invocations_resolve() -> None:
     subcommand, a required option, and a required positional (including a
     required variadic) actually being present, and a value-taking option
     greedily consuming the next token exactly as Click does; an inline span
-    or table row names a command and is exempt from those four. A row of the CLI
-    reference tables whose first code span starts with a top-level command is
-    read as `moneybin …` with the row's flag spans appended, so the flags
-    column is checked too. A line that must show a wrong invocation on
-    purpose (an error example) carries ``<!-- cli-invocation-ok: <reason> -->``.
+    or table row names a command and is exempt from those four. A line that
+    must show a wrong invocation on purpose (an error example) carries
+    ``<!-- cli-invocation-ok: <reason> -->``.
     """
     from typer.main import get_command
 
@@ -706,8 +681,7 @@ def test_public_docs_cli_invocations_resolve() -> None:
             for number, line in enumerate(text.splitlines(), start=1)
             if _CLI_INVOCATION_MARKER in line
         }
-        top_level = root.commands if document.name == "cli-reference.md" else ()
-        for entry in _join_continuations(_code_lines(text, top_level)):
+        for entry in _join_continuations(_code_lines(text)):
             if entry.number in allowed_lines:
                 continue
             for tokens in _invocations(entry.code):
@@ -948,23 +922,6 @@ def test_code_lines_reads_soft_wrapped_span(_fixture_cli: click.Group) -> None:
     assert (
         _resolve_invocation(command, _fixture_cli, runnable=entry.runnable) is not None
     )
-
-
-def test_code_lines_reference_row_checks_flags_column(
-    _fixture_cli: click.Group,
-) -> None:
-    """A CLI-reference-table row reads its flags column as part of the invocation.
-
-    The row's second span (`--bogus`, not first-in-row) surfaces as its own
-    non-invocation entry alongside the enriched one — harmless, since it
-    contains no `moneybin` for `_invocations` to find.
-    """
-    text = "| `create <name>` | Create a thing. | `--bogus` |"
-    entries = _code_lines(text, top_level=_fixture_cli.commands)
-    commands = [tokens for entry in entries for tokens in _invocations(entry.code)]
-    assert commands == [["create", "<name>", "--bogus"]]
-    (command,) = commands
-    assert _resolve_invocation(command, _fixture_cli, runnable=False) is not None
 
 
 def test_full_pipeline_scopes_fenced_block_vs_inline_mention(
