@@ -144,6 +144,9 @@ FCT_SECURITY_PRICES = TableRef("core", "fct_security_prices", audience="interfac
 # directly, so it carries no schema-catalog examples.
 EXCHANGE_RATES = TableRef("raw", "exchange_rates")
 EXCHANGE_RATE_OVERRIDES = TableRef("app", "exchange_rate_overrides")
+BRIDGE_CURRENCY_CONVERSIONS = TableRef("core", "bridge_currency_conversions")
+FCT_CURRENCY_LOTS = TableRef("core", "fct_currency_lots")
+FCT_REALIZED_FX_GAINS = TableRef("core", "fct_realized_fx_gains")
 
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")

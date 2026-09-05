@@ -2,6 +2,11 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from moneybin import error_codes
+from moneybin.errors import UserError
+from moneybin.matching.engine import MatchResult, MatchRunError
 from moneybin.services.matching_service import MatchingService
 
 
@@ -32,6 +37,99 @@ def test_auto_accept_transfers_passed_through() -> None:
     ):
         MatchingService(db).run(auto_accept_transfers=True)
     matcher_cls.return_value.run.assert_called_once_with(auto_accept_transfers=True)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [MatchResult(transfers_retired=1), MatchResult(accepted_transfers=1)],
+)
+def test_run_restates_fx_after_committed_transfer_changes(result: MatchResult) -> None:
+    """A clean matcher run restates FX after accepting or retiring a transfer."""
+    db = MagicMock()
+    with (
+        patch("moneybin.services.matching_service.TransactionMatcher") as matcher_cls,
+        patch("moneybin.services.matching_service.seed_source_priority"),
+        patch(
+            "moneybin.services.fx_accounting_refresh."
+            "restate_fx_accounting_after_match_run"
+        ) as restate,
+    ):
+        matcher_cls.return_value.run.return_value = result
+
+        assert MatchingService(db).run(auto_accept_transfers=True) is result
+
+    restate.assert_called_once_with(db, result)
+
+
+def test_run_restates_fx_after_partial_transfer_failure() -> None:
+    """A failed matcher run restates FX when its partial effects committed."""
+    db = MagicMock()
+    partial = MatchResult(transfers_retired=1)
+    failure = MatchRunError(RuntimeError("tier 4 boom"), partial=partial)
+    with (
+        patch("moneybin.services.matching_service.TransactionMatcher") as matcher_cls,
+        patch("moneybin.services.matching_service.seed_source_priority"),
+        patch(
+            "moneybin.services.fx_accounting_refresh."
+            "restate_fx_accounting_after_match_run"
+        ) as restate,
+    ):
+        matcher_cls.return_value.run.side_effect = failure
+
+        with pytest.raises(MatchRunError) as caught:
+            MatchingService(db).run()
+
+    assert caught.value is failure
+    restate.assert_called_once_with(db, partial)
+
+
+def test_run_preserves_partial_outcome_when_restatement_also_fails() -> None:
+    """A dual failure keeps committed counts and both underlying failures."""
+    db = MagicMock()
+    partial = MatchResult(transfers_retired=1)
+    match_failure = RuntimeError("tier 4 boom")
+    failure = MatchRunError(match_failure, partial=partial)
+    restatement_failure = UserError(
+        "FX restatement failed", code=error_codes.REFRESH_MODEL_FAILED
+    )
+    with (
+        patch("moneybin.services.matching_service.TransactionMatcher") as matcher_cls,
+        patch("moneybin.services.matching_service.seed_source_priority"),
+        patch(
+            "moneybin.services.fx_accounting_refresh."
+            "restate_fx_accounting_after_match_run",
+            side_effect=restatement_failure,
+        ),
+    ):
+        matcher_cls.return_value.run.side_effect = failure
+
+        with pytest.raises(MatchRunError) as caught:
+            MatchingService(db).run()
+
+    assert caught.value is failure
+    assert caught.value.partial is partial
+    assert caught.value.cause is match_failure
+    assert caught.value.restatement_error is restatement_failure
+    assert caught.value.__cause__ is restatement_failure
+
+
+def test_run_skips_fx_restatement_without_transfer_changes() -> None:
+    """Dedup-only matcher effects do not rebuild FX accounting."""
+    db = MagicMock()
+    result = MatchResult(auto_merged=1)
+    with (
+        patch("moneybin.services.matching_service.TransactionMatcher") as matcher_cls,
+        patch("moneybin.services.matching_service.seed_source_priority"),
+        patch(
+            "moneybin.services.fx_accounting_refresh."
+            "restate_fx_accounting_after_match_run"
+        ) as restate,
+    ):
+        matcher_cls.return_value.run.return_value = result
+
+        assert MatchingService(db).run() is result
+
+    restate.assert_called_once_with(db, result)
 
 
 def test_uses_default_settings_when_omitted() -> None:

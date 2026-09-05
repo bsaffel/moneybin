@@ -9,6 +9,8 @@ real repos (no mocks). Operations are built by wrapping repo calls in
 from __future__ import annotations
 
 import json
+from datetime import date
+from decimal import Decimal
 
 import pytest
 
@@ -18,7 +20,10 @@ from moneybin.errors import UserError
 from moneybin.metrics.registry import ACCOUNT_LINK_REVIEW_PENDING
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.repositories.base import BaseRepo
+from moneybin.repositories.exchange_rate_repo import ExchangeRateOverridesRepo
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
 from moneybin.services.account_links_service import AccountLinksService
@@ -136,6 +141,144 @@ class TestUndo:
         notes = db.execute("SELECT COUNT(*) FROM app.transaction_notes").fetchone()
         tags = db.execute("SELECT COUNT(*) FROM app.transaction_tags").fetchone()
         assert notes == (1,) and tags == (1,)
+
+    def test_fx_input_undo_triggers_one_post_commit_restatement(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        create_core_tables(db)
+        _insert_dim_account(db, "acct-fx", "FX Account")
+        restated: list[tuple[Database, bool, str]] = []
+
+        def record_restatement(
+            target_db: Database,
+            *,
+            account_currency_changed: bool = False,
+            committed_change: str = "setting",
+        ) -> None:
+            restated.append((target_db, account_currency_changed, committed_change))
+
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            record_restatement,
+        )
+        with operation() as op:
+            AccountSettingsRepo(db).set(
+                account_id="acct-fx",
+                display_name=None,
+                official_name=None,
+                last_four=None,
+                account_subtype=None,
+                holder_category=None,
+                currency_code="EUR",
+                credit_limit=None,
+                archived=False,
+                include_in_net_worth=True,
+                default_cost_basis_method="average",
+                actor="test",
+            )
+            ExchangeRateOverridesRepo(db).set(
+                "EUR",
+                "USD",
+                date(2026, 3, 1),
+                rate=Decimal("1.50000000"),
+                note=None,
+                actor="test",
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        assert restated == [(db, True, "undo")]
+
+    def test_transfer_decision_undo_triggers_post_commit_fx_restatement(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        event = MatchDecisionsRepo(db).insert(
+            match_id="transfer-to-undo",
+            source_transaction_id_a="out",
+            source_type_a="manual",
+            source_origin_a="user",
+            source_transaction_id_b="in",
+            source_type_b="manual",
+            source_origin_b="user",
+            account_id="acct-a",
+            account_id_b="acct-b",
+            confidence_score=1.0,
+            match_signals={},
+            match_tier=None,
+            match_type="transfer",
+            match_status="accepted",
+            decided_by="user",
+            actor="test",
+        )
+        restated: list[tuple[Database, str]] = []
+
+        def record_restatement(
+            target_db: Database,
+            *,
+            account_currency_changed: bool = False,
+            committed_change: str = "setting",
+        ) -> None:
+            assert account_currency_changed is False
+            restated.append((target_db, committed_change))
+
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            record_restatement,
+        )
+
+        UndoService(db).undo(event.operation_id, actor="test")
+
+        assert restated == [(db, "undo")]
+
+    def test_transfer_endpoint_undo_restates_from_account_root(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        MatchDecisionsRepo(db).insert(
+            match_id="transfer-to-repoint",
+            source_transaction_id_a="out",
+            source_type_a="manual",
+            source_origin_a="user",
+            source_transaction_id_b="in",
+            source_type_b="manual",
+            source_origin_b="user",
+            account_id="acct-a",
+            account_id_b="acct-b",
+            confidence_score=1.0,
+            match_signals={},
+            match_tier=None,
+            match_type="transfer",
+            match_status="accepted",
+            decided_by="user",
+            actor="test",
+        )
+        with operation() as repoint_operation_id:
+            MatchDecisionsRepo(db).repoint_account(
+                from_account_id="acct-a",
+                to_account_id="acct-c",
+                actor="test",
+            )
+        restated: list[tuple[Database, bool, str]] = []
+
+        def record_restatement(
+            target_db: Database,
+            *,
+            account_currency_changed: bool = False,
+            committed_change: str = "setting",
+        ) -> None:
+            restated.append((
+                target_db,
+                account_currency_changed,
+                committed_change,
+            ))
+
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            record_restatement,
+        )
+
+        UndoService(db).undo(repoint_operation_id, actor="test")
+
+        assert restated == [(db, True, "undo")]
 
     def test_not_found_raises(self, db: Database) -> None:
         with pytest.raises(UserError) as exc:

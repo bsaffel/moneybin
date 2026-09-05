@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # this key set equals `raw_tables_read_by_models()`, so a new raw table wired
 # into a model fails loudly here rather than going silently unwatched.
 _RAW_LANDING_COLUMNS: dict[str, str] = {
+    "exchange_rates": "loaded_at",
     "ofx_accounts": "loaded_at",
     "ofx_balances": "loaded_at",
     "ofx_institutions": "loaded_at",
@@ -407,6 +408,56 @@ class TransformService:
                 # patterns, not arbitrary paths.
                 logger.warning(
                     f"Could not record the transform duration: {type(exc).__name__}"
+                )
+
+    def restate_models(self, models: Collection[str]) -> ApplyResult:
+        """Rebuild named models and their downstream dependents."""
+        requested = list(dict.fromkeys(models))
+        if not requested:
+            return ApplyResult(applied=True, duration_seconds=0.0)
+
+        logger.info(f"Restating {len(requested)} transform model(s)")
+        t0 = time.monotonic()
+        try:
+            try:
+                with sqlmesh_context(self._db) as ctx:
+                    ctx.plan(
+                        restate_models=requested,
+                        auto_apply=True,
+                        no_prompts=True,
+                    )
+                refresh_views(self._db)
+            except Exception as e:  # noqa: BLE001 — match apply()'s safe result contract
+                elapsed = time.monotonic() - t0
+                error_type = type(e).__name__
+                logger.warning(
+                    f"Transform restatement failed after {elapsed:.2f}s: "
+                    f"{error_type}: {e}",
+                    exc_info=True,
+                )
+                return ApplyResult(
+                    applied=False, duration_seconds=elapsed, error=error_type
+                )
+
+            try:
+                self._db.checkpoint("post_transform")
+            except Exception as e:  # noqa: BLE001 — committed restatement remains valid
+                logger.warning(
+                    f"post_transform checkpoint failed after restatement: "
+                    f"{type(e).__name__}"
+                )
+
+            elapsed = time.monotonic() - t0
+            logger.info(f"Transform restatement completed in {elapsed:.2f}s")
+            return ApplyResult(applied=True, duration_seconds=elapsed)
+        finally:
+            try:
+                SQLMESH_RUN_DURATION_SECONDS.labels(model="transform_restate").observe(
+                    time.monotonic() - t0
+                )
+            except Exception as exc:  # noqa: BLE001 — telemetry cannot undo a restatement
+                logger.warning(
+                    f"Could not record the restatement duration: {type(exc).__name__}"
                 )
 
     def freshness(self) -> TransformFreshness:

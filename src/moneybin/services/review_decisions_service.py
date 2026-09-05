@@ -528,6 +528,11 @@ class ReviewDecisionsService:
             self._db.rollback()
             raise
         record_committed_match_effects(effects)
+        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+            restate_fx_accounting_after_match_effects,
+        )
+
+        restate_fx_accounting_after_match_effects(self._db, effects)
         if touched_merchant_ids:
             category_service.record_committed_review_merchants(
                 created_merchant_ids=tuple(created_merchant_ids),

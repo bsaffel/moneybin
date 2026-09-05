@@ -141,6 +141,55 @@ def _undo_action(
     )
 
 
+def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool]:
+    """Return whether undo changed FX inputs and whether Account currency changed."""
+    needs_restatement = False
+    account_currency_changed = False
+    for event in events:
+        if event.target_schema != "app":
+            continue
+        if event.target_table in {"exchange_rate_overrides", "profile_settings"}:
+            needs_restatement = True
+            continue
+        if event.target_table == "match_decisions":
+            before = event.before_value or {}
+            after = event.after_value or {}
+            before_is_accepted_transfer = (
+                before.get("match_type") == "transfer"
+                and before.get("match_status") == "accepted"
+                and before.get("reversed_at") is None
+            )
+            after_is_accepted_transfer = (
+                after.get("match_type") == "transfer"
+                and after.get("match_status") == "accepted"
+                and after.get("reversed_at") is None
+            )
+            if before_is_accepted_transfer != after_is_accepted_transfer:
+                needs_restatement = True
+            before_endpoints = (before.get("account_id"), before.get("account_id_b"))
+            after_endpoints = (after.get("account_id"), after.get("account_id_b"))
+            if (
+                before_is_accepted_transfer
+                and after_is_accepted_transfer
+                and before_endpoints != after_endpoints
+            ):
+                needs_restatement = True
+                account_currency_changed = True
+            continue
+        if event.target_table != "account_settings":
+            continue
+        before = event.before_value or {}
+        after = event.after_value or {}
+        if before.get("currency_code") != after.get("currency_code"):
+            needs_restatement = True
+            account_currency_changed = True
+        if before.get("default_cost_basis_method") != after.get(
+            "default_cost_basis_method"
+        ):
+            needs_restatement = True
+    return needs_restatement, account_currency_changed
+
+
 class UndoService:
     """Reverse, list, and inspect audited operations."""
 
@@ -266,6 +315,19 @@ class UndoService:
             f"audit_undo undone_op={operation_id} undo_op={undo_op} "
             f"rows={len(undone)} actor={actor}"
         )
+        needs_fx_restatement, account_currency_changed = _fx_restatement_requirement(
+            undone
+        )
+        if needs_fx_restatement:
+            from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+                restate_fx_accounting,
+            )
+
+            restate_fx_accounting(
+                self._db,
+                account_currency_changed=account_currency_changed,
+                committed_change="undo",
+            )
         return UndoResult(
             undo_operation_id=undo_op,
             undone_operation_id=operation_id,

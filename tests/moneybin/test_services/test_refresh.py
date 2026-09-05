@@ -373,14 +373,10 @@ def test_identity_can_run_surgically(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
-def test_rates_run_last_because_nothing_downstream_reads_them(
+def test_rates_run_after_transform_when_no_new_rates_need_consuming(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The pairs and dates to fetch come from core.*, so transform must run first.
-
-    Nothing in the cascade consumes the rates, so the step goes last: a provider
-    outage then costs the run nothing that had already succeeded.
-    """
+    """Rate planning needs Core rows, and a no-op backfill needs no second apply."""
     calls: list[str] = []
     patch_all_refresh_stages(monkeypatch, calls)
 
@@ -388,6 +384,64 @@ def test_rates_run_last_because_nothing_downstream_reads_them(
 
     assert calls.index("rates") > calls.index("transform")
     assert calls[-1] == "rates"
+
+
+@pytest.mark.unit
+def test_refresh_rebuilds_transforms_after_writing_rates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fetched rate affects FX accounting before the same refresh succeeds."""
+    calls: list[str] = []
+    patch_all_refresh_stages(monkeypatch, calls)
+
+    def _rates(_db: Database) -> tuple[RateBackfillResult, None]:
+        calls.append("rates")
+        return RateBackfillResult(rates_written=1, pairs_failed=()), None
+
+    monkeypatch.setattr("moneybin.orchestration.refresh._run_rates_step", _rates)
+
+    result = refresh(MagicMock())
+
+    assert result.applied is True
+    assert calls == [
+        "gsheet",
+        "match",
+        "transform",
+        "categorize",
+        "identity",
+        "rates",
+        "transform",
+    ]
+
+
+@pytest.mark.unit
+def test_refresh_surfaces_failure_while_consuming_written_rates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed rate-consumption rebuild must not report the refresh applied."""
+    calls: list[str] = []
+    patch_all_refresh_stages(monkeypatch, calls)
+    transform = MagicMock()
+    transform.apply.side_effect = [
+        _make_apply_result(),
+        ApplyResult(applied=False, duration_seconds=2.0, error="SecondPassError"),
+    ]
+    monkeypatch.setattr(
+        "moneybin.orchestration.refresh.TransformService",
+        MagicMock(return_value=transform),
+    )
+
+    def _rates(_db: Database) -> tuple[RateBackfillResult, None]:
+        return RateBackfillResult(rates_written=1, pairs_failed=()), None
+
+    monkeypatch.setattr("moneybin.orchestration.refresh._run_rates_step", _rates)
+
+    result = refresh(MagicMock())
+
+    assert result.applied is False
+    assert result.error == "SecondPassError"
+    assert result.duration_seconds == 3.0
+    assert result.rate_backfill == RateBackfillResult(rates_written=1, pairs_failed=())
 
 
 @pytest.mark.unit

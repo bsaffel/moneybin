@@ -10,11 +10,12 @@ under test.
 
 import hashlib
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
 
+from moneybin.investments import cost_basis as cost_basis_module
 from moneybin.investments.cost_basis import (
     AVERAGE_ELIGIBLE_SECURITY_TYPES,
     DEFAULT_COST_BASIS_METHOD,
@@ -63,6 +64,7 @@ def _event(
     amount: Decimal | None = None,
     fees: Decimal | None = None,
     currency_code: str | None = "USD",
+    updated_at: datetime | None = None,
 ) -> LedgerEvent:
     return LedgerEvent(
         investment_transaction_id=txn_id,
@@ -76,6 +78,7 @@ def _event(
         amount=amount,
         fees=fees,
         currency_code=currency_code,
+        updated_at=updated_at,
     )
 
 
@@ -387,6 +390,590 @@ def test_transfer_in_carries_original_date_and_basis_transfer_out_no_gains() -> 
     # transfer_out of 4 of 10 consumes lots without proceeds.
     assert lot.remaining_quantity == D("6")
     assert lot.cost_basis_remaining == D("3000.00")
+
+
+def test_paired_transfer_moves_fifo_basis_without_gain() -> None:
+    events = [
+        _event(
+            "buy-old",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "buy-new",
+            event_type="buy",
+            trade_date=date(2024, 1, 2),
+            quantity=D("10"),
+            amount=D("-150.00"),
+        ),
+        _event(
+            "transfer-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-15"),
+            amount=None,
+        ),
+        _event(
+            "transfer-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("15"),
+            amount=None,
+        ),
+        _event(
+            "destination-sale",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            account_id="acct2",
+            quantity=D("-5"),
+            amount=D("75.00"),
+        ),
+    ]
+    pair = cost_basis_module.PairedTransfer(
+        transfer_id="transfer-1",
+        source_transaction_id="transfer-out",
+        destination_transaction_id="transfer-in",
+    )
+
+    lots, gains = compute_lots_and_gains(
+        events,
+        method_for=_fifo,
+        selections_for=_no_selections,
+        paired_transfers=[pair],
+    )
+
+    assert [gain.disposal_txn_id for gain in gains] == ["destination-sale"]
+    assert gains[0].cost_basis == D("50.00")
+    assert gains[0].gain_loss == D("25.00")
+
+    source_open = [
+        lot for lot in lots if lot.account_id == "acct1" and lot.remaining_quantity > 0
+    ]
+    destination_open = [
+        lot for lot in lots if lot.account_id == "acct2" and lot.remaining_quantity > 0
+    ]
+    assert sum((lot.cost_basis_remaining for lot in source_open), D("0")) == D("75.00")
+    assert sum((lot.cost_basis_remaining for lot in destination_open), D("0")) == D(
+        "125.00"
+    )
+    assert gains[0].cost_basis + sum(
+        (lot.cost_basis_remaining for lot in source_open), D("0")
+    ) + sum((lot.cost_basis_remaining for lot in destination_open), D("0")) == D(
+        "250.00"
+    )
+
+    moved_old = next(
+        lot
+        for lot in lots
+        if lot.account_id == "acct2" and lot.source_transaction_id == "buy-old"
+    )
+    assert moved_old.acquisition_date == date(2024, 1, 1)
+    assert moved_old.acquisition_type == "transfer"
+    assert moved_old.source_transfer_id == "transfer-1"
+
+
+def test_same_day_paired_transfers_are_atomic_and_dependency_ordered() -> None:
+    events = [
+        _event(
+            "origin",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "same-day-buy",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("5"),
+            amount=D("-75.00"),
+        ),
+        _event(
+            "a-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 1, 31),
+            quantity=D("-15"),
+        ),
+        _event(
+            "a-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("15"),
+        ),
+        _event(
+            "b-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("-15"),
+        ),
+        _event(
+            "b-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct3",
+            quantity=D("15"),
+        ),
+        _event(
+            "same-day-sale",
+            event_type="sell",
+            trade_date=date(2024, 2, 1),
+            account_id="acct3",
+            quantity=D("-5"),
+            amount=D("60.00"),
+        ),
+    ]
+    pairs = [
+        cost_basis_module.PairedTransfer("z-upstream", "a-out", "a-in"),
+        cost_basis_module.PairedTransfer("a-downstream", "b-out", "b-in"),
+    ]
+
+    lots, gains = compute_lots_and_gains(
+        events,
+        method_for=_fifo,
+        selections_for=_no_selections,
+        paired_transfers=pairs,
+    )
+
+    destination_lots = [lot for lot in lots if lot.account_id == "acct3"]
+    assert sum((lot.original_quantity for lot in destination_lots), D("0")) == D("15")
+    assert sum((lot.cost_basis_total for lot in destination_lots), D("0")) == D(
+        "175.00"
+    )
+    assert {lot.source_transfer_id for lot in destination_lots} == {"a-downstream"}
+    assert {lot.source_transaction_id for lot in destination_lots} == {
+        "origin",
+        "same-day-buy",
+    }
+    assert [gain.disposal_txn_id for gain in gains] == ["same-day-sale"]
+    assert gains[0].cost_basis == D("50.00")
+    assert gains[0].gain_loss == D("10.00")
+
+
+def test_same_day_transfer_cycle_precedes_its_outgoing_dependent() -> None:
+    events = [
+        _event(
+            "origin",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "ab-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-10"),
+        ),
+        _event(
+            "ab-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("10"),
+        ),
+        _event(
+            "ba-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("-5"),
+        ),
+        _event(
+            "ba-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            quantity=D("5"),
+        ),
+        _event(
+            "bc-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("-5"),
+        ),
+        _event(
+            "bc-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct3",
+            quantity=D("5"),
+        ),
+    ]
+    pairs = [
+        cost_basis_module.PairedTransfer("m-ab", "ab-out", "ab-in"),
+        cost_basis_module.PairedTransfer("z-ba", "ba-out", "ba-in"),
+        cost_basis_module.PairedTransfer("a-bc", "bc-out", "bc-in"),
+    ]
+
+    lots, gains = compute_lots_and_gains(
+        events,
+        method_for=_fifo,
+        selections_for=_no_selections,
+        paired_transfers=pairs,
+    )
+
+    destination_lots = [lot for lot in lots if lot.account_id == "acct3"]
+    assert gains == []
+    assert sum((lot.remaining_quantity for lot in destination_lots), D("0")) == D("5")
+    assert sum((lot.cost_basis_remaining for lot in destination_lots), D("0")) == D(
+        "50.00"
+    )
+    assert all(not lot.basis_incomplete for lot in destination_lots)
+    assert {lot.source_transfer_id for lot in destination_lots} == {"a-bc"}
+
+
+def test_same_day_transfer_cycle_uses_deterministic_transfer_id_order() -> None:
+    events = [
+        _event(
+            "origin",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "ab-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-10"),
+        ),
+        _event(
+            "ab-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("10"),
+        ),
+        _event(
+            "ba-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("-10"),
+        ),
+        _event(
+            "ba-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+        ),
+    ]
+    pairs = [
+        cost_basis_module.PairedTransfer("z-ba", "ba-out", "ba-in"),
+        cost_basis_module.PairedTransfer("a-ab", "ab-out", "ab-in"),
+    ]
+
+    lots, gains = compute_lots_and_gains(
+        events,
+        method_for=_fifo,
+        selections_for=_no_selections,
+        paired_transfers=pairs,
+    )
+
+    source_lots = [
+        lot for lot in lots if lot.account_id == "acct1" and lot.remaining_quantity > 0
+    ]
+    assert gains == []
+    assert sum((lot.remaining_quantity for lot in source_lots), D("0")) == D("10")
+    assert sum((lot.cost_basis_remaining for lot in source_lots), D("0")) == D("100.00")
+    assert all(not lot.basis_incomplete for lot in source_lots)
+
+
+def test_split_transfers_reconverge_as_distinct_lots() -> None:
+    events = [
+        _event(
+            "origin",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "first-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-5"),
+        ),
+        _event(
+            "first-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("5"),
+        ),
+        _event(
+            "second-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 2),
+            quantity=D("-5"),
+        ),
+        _event(
+            "second-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 2),
+            account_id="acct2",
+            quantity=D("5"),
+        ),
+        _event(
+            "final-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 3, 1),
+            account_id="acct2",
+            quantity=D("-10"),
+        ),
+        _event(
+            "final-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 3, 1),
+            account_id="acct3",
+            quantity=D("10"),
+        ),
+    ]
+    pairs = [
+        cost_basis_module.PairedTransfer("first", "first-out", "first-in"),
+        cost_basis_module.PairedTransfer("second", "second-out", "second-in"),
+        cost_basis_module.PairedTransfer("final", "final-out", "final-in"),
+    ]
+
+    lots, gains = compute_lots_and_gains(
+        events,
+        method_for=_fifo,
+        selections_for=_no_selections,
+        paired_transfers=pairs,
+    )
+
+    final_lots = [lot for lot in lots if lot.account_id == "acct3"]
+    assert gains == []
+    assert len(final_lots) == 2
+    assert len({lot.lot_id for lot in final_lots}) == 2
+    assert sum((lot.original_quantity for lot in final_lots), D("0")) == D("10")
+    assert sum((lot.cost_basis_total for lot in final_lots), D("0")) == D("100.00")
+
+
+def test_underfunded_paired_transfer_moves_known_basis_and_marks_remainder() -> None:
+    events = [
+        _event(
+            "origin",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("5"),
+            amount=D("-50.00"),
+        ),
+        _event(
+            "out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-10"),
+        ),
+        _event(
+            "in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("10"),
+        ),
+    ]
+
+    lots, gains = compute_lots_and_gains(
+        events,
+        method_for=_fifo,
+        selections_for=_no_selections,
+        paired_transfers=[cost_basis_module.PairedTransfer("pair", "out", "in")],
+    )
+
+    assert gains == []
+    destination_lots = [lot for lot in lots if lot.account_id == "acct2"]
+    assert [lot.original_quantity for lot in destination_lots] == [D("5"), D("5")]
+    known = next(lot for lot in destination_lots if not lot.basis_incomplete)
+    unknown = next(lot for lot in destination_lots if lot.basis_incomplete)
+    assert known.cost_basis_total == D("50.00")
+    assert known.source_transaction_id == "origin"
+    assert unknown.cost_basis_total == D("0.00")
+    assert unknown.acquisition_date == date(2024, 2, 1)
+    assert unknown.source_transaction_id == "in"
+
+
+def test_paired_transfer_moves_average_cost_between_account_pools() -> None:
+    events = [
+        _event(
+            "source-old",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "source-new",
+            event_type="buy",
+            trade_date=date(2024, 1, 2),
+            quantity=D("10"),
+            amount=D("-300.00"),
+        ),
+        _event(
+            "destination-buy",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            account_id="acct2",
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-10"),
+        ),
+        _event(
+            "in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("10"),
+        ),
+        _event(
+            "sale",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            account_id="acct2",
+            quantity=D("-10"),
+            amount=D("250.00"),
+        ),
+    ]
+
+    lots, gains = compute_lots_and_gains(
+        events,
+        method_for=_average,
+        selections_for=_no_selections,
+        paired_transfers=[cost_basis_module.PairedTransfer("pair", "out", "in")],
+    )
+
+    assert sum((gain.cost_basis for gain in gains), D("0")) == D("150.00")
+    source_open_basis = sum(
+        (
+            lot.cost_basis_remaining
+            for lot in lots
+            if lot.account_id == "acct1" and lot.remaining_quantity > 0
+        ),
+        D("0"),
+    )
+    destination_open_basis = sum(
+        (
+            lot.cost_basis_remaining
+            for lot in lots
+            if lot.account_id == "acct2" and lot.remaining_quantity > 0
+        ),
+        D("0"),
+    )
+    assert source_open_basis == D("200.00")
+    assert destination_open_basis == D("150.00")
+    assert source_open_basis + destination_open_basis + gains[0].cost_basis == D(
+        "500.00"
+    )
+
+
+@pytest.mark.parametrize(
+    ("event_type", "quantity", "amount"),
+    [("split", D("2"), None), ("return_of_capital", None, D("10.00"))],
+)
+def test_empty_average_pool_action_does_not_timestamp_later_lot(
+    event_type: str,
+    quantity: Decimal | None,
+    amount: Decimal | None,
+) -> None:
+    events = [
+        _event(
+            "old-buy",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+            updated_at=datetime(2026, 1, 1),
+        ),
+        _event(
+            "full-sale",
+            event_type="sell",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-10"),
+            amount=D("100.00"),
+            updated_at=datetime(2026, 2, 1),
+        ),
+        _event(
+            "empty-action",
+            event_type=event_type,
+            trade_date=date(2024, 2, 15),
+            quantity=quantity,
+            amount=amount,
+            updated_at=datetime(2026, 5, 1),
+        ),
+        _event(
+            "new-buy",
+            event_type="buy",
+            trade_date=date(2024, 3, 1),
+            quantity=D("10"),
+            amount=D("-200.00"),
+            updated_at=datetime(2026, 3, 1),
+        ),
+    ]
+
+    lots, _gains = _run(events, method_for=_average)
+
+    new_lot = next(lot for lot in lots if lot.source_transaction_id == "new-buy")
+    assert new_lot.updated_at == datetime(2026, 3, 1)
+
+
+@pytest.mark.parametrize(
+    ("source_method", "expected_origin"),
+    [("hifo", "high-basis"), ("specific", "oldest")],
+)
+def test_paired_transfer_uses_source_election_for_quantity_order(
+    source_method: str, expected_origin: str
+) -> None:
+    events = [
+        _event(
+            "oldest",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("5"),
+            amount=D("-50.00"),
+        ),
+        _event(
+            "high-basis",
+            event_type="buy",
+            trade_date=date(2024, 1, 2),
+            quantity=D("5"),
+            amount=D("-150.00"),
+        ),
+        _event(
+            "out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-5"),
+        ),
+        _event(
+            "in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("5"),
+        ),
+    ]
+
+    lots, _gains = compute_lots_and_gains(
+        events,
+        method_for=lambda account_id, _security_id: (
+            source_method if account_id == "acct1" else "fifo"
+        ),
+        selections_for=_no_selections,
+        paired_transfers=[cost_basis_module.PairedTransfer("pair", "out", "in")],
+    )
+
+    moved = next(lot for lot in lots if lot.account_id == "acct2")
+    assert moved.source_transaction_id == expected_origin
 
 
 def test_transfer_in_without_original_date_uses_trade_date() -> None:
@@ -1727,6 +2314,31 @@ def test_average_pool_dilution_by_incomplete_transfer_in_flags_every_slice() -> 
     assert total_cost_basis == D("100.00")  # only the buy's basis, pool-averaged
     for lot in lots:
         assert lot.remaining_quantity == D("0")
+
+
+def test_average_contaminated_pool_marks_every_open_lot_incomplete() -> None:
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "ti",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=None,
+        ),
+    ]
+
+    lots, gains = _run(events, method_for=_average)
+
+    assert gains == []
+    assert [lot.basis_incomplete for lot in lots] == [True, True]
+    assert sum((lot.cost_basis_remaining for lot in lots), D("0")) == D("100.00")
 
 
 def test_average_pool_incompleteness_clears_after_full_drain() -> None:

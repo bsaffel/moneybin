@@ -14,6 +14,8 @@ SELECT
   t.category AS plaid_category,
   TRIM(t.original_description) AS original_description,
   t.iso_currency_code,
+  t.to_currency,
+  t.to_amount,
   t.authorized_date,
   t.pending_transaction_id,
   t.payment_channel,

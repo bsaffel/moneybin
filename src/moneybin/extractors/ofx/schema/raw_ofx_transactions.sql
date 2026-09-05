@@ -16,5 +16,7 @@ CREATE TABLE IF NOT EXISTS raw.ofx_transactions (
     source_origin VARCHAR, -- Institution slug derived from <FI><ORG> or filename heuristic; NULL for legacy rows
     currency_code VARCHAR, -- OFX CURDEF, verbatim (e.g. USD); NULL if the source statement lacked one
     fitid_repaired BOOLEAN DEFAULT FALSE, -- TRUE when the extractor rewrote source_transaction_id to break a FITID collision; the only proof staging may use to retire the id this row superseded
+    to_amount DECIMAL(18, 2), -- Received-leg amount for a source-provided single-row currency conversion; NULL when absent
+    to_currency VARCHAR, -- Received-leg currency for a source-provided single-row currency conversion; NULL when absent
     PRIMARY KEY (source_transaction_id, account_id, source_file)
 );

@@ -43,6 +43,7 @@ class ProfileSettingsService:
             ProfileSettingsRepo,
         )
 
+        self._db = db
         self._repo = ProfileSettingsRepo(db, audit=audit)
 
     def get_settings(self) -> ProfileSettings:
@@ -65,3 +66,8 @@ class ProfileSettingsService:
                 "such as USD, EUR, or GBP.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             ) from exc
+        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+            restate_fx_accounting,
+        )
+
+        restate_fx_accounting(self._db)

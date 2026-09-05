@@ -196,6 +196,8 @@ SELECT
   u.location_latitude,
   u.location_longitude,
   u.currency_code,
+  u.to_currency,
+  u.to_amount,
   u.source_type,
   u.source_origin,
   u.source_file,

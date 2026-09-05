@@ -349,6 +349,89 @@ CREATE TABLE IF NOT EXISTS core.fct_realized_gains (
 );
 """
 
+# M1K.3 Currency-accounting Core tables — SQLMesh Python FULL-kind tables in
+# production. Column shapes mirror the fixed public schemas in multi-currency.md.
+CORE_BRIDGE_CURRENCY_CONVERSIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS core.bridge_currency_conversions (
+    conversion_id VARCHAR,
+    transfer_pair_id VARCHAR,
+    from_transaction_id VARCHAR,
+    to_transaction_id VARCHAR,
+    from_account_id VARCHAR,
+    to_account_id VARCHAR,
+    from_source_transaction_id VARCHAR,
+    to_source_transaction_id VARCHAR,
+    source_shape VARCHAR,
+    from_currency VARCHAR,
+    to_currency VARCHAR,
+    home_currency VARCHAR,
+    valuation_source_type VARCHAR,
+    from_source_type VARCHAR,
+    from_source_origin VARCHAR,
+    to_source_type VARCHAR,
+    to_source_origin VARCHAR,
+    coverage_status VARCHAR,
+    coverage_reason VARCHAR,
+    from_amount DECIMAL(18, 2),
+    to_amount DECIMAL(18, 2),
+    executed_rate DECIMAL(18, 8),
+    home_value DECIMAL(18, 2),
+    valuation_rate DECIMAL(18, 8),
+    from_date DATE,
+    to_date DATE,
+    valuation_rate_date DATE,
+    updated_at TIMESTAMP
+);
+"""
+
+CORE_FCT_CURRENCY_LOTS_DDL = """\
+CREATE TABLE IF NOT EXISTS core.fct_currency_lots (
+    currency_lot_id VARCHAR,
+    account_id VARCHAR,
+    source_conversion_id VARCHAR,
+    source_investment_transaction_id VARCHAR,
+    source_transfer_id VARCHAR,
+    currency_code VARCHAR,
+    acquisition_type VARCHAR,
+    cost_basis_method VARCHAR,
+    home_currency VARCHAR,
+    coverage_status VARCHAR,
+    coverage_reason VARCHAR,
+    original_quantity DECIMAL(18, 2),
+    remaining_quantity DECIMAL(18, 2),
+    cost_basis_total DECIMAL(18, 2),
+    cost_basis_remaining DECIMAL(18, 2),
+    basis_incomplete BOOLEAN,
+    acquisition_date DATE,
+    updated_at TIMESTAMP
+);
+"""
+
+CORE_FCT_REALIZED_FX_GAINS_DDL = """\
+CREATE TABLE IF NOT EXISTS core.fct_realized_fx_gains (
+    realized_fx_gain_id VARCHAR,
+    account_id VARCHAR,
+    conversion_id VARCHAR,
+    currency_lot_id VARCHAR,
+    currency_code VARCHAR,
+    home_currency VARCHAR,
+    cost_basis_method VARCHAR,
+    valuation_source_type VARCHAR,
+    coverage_status VARCHAR,
+    coverage_reason VARCHAR,
+    disposed_amount DECIMAL(18, 2),
+    proceeds DECIMAL(18, 2),
+    cost_basis DECIMAL(18, 2),
+    gain_loss DECIMAL(18, 2),
+    fee_amount DECIMAL(18, 2),
+    valuation_rate DECIMAL(18, 8),
+    acquisition_date DATE,
+    disposal_date DATE,
+    valuation_rate_date DATE,
+    updated_at TIMESTAMP
+);
+"""
+
 # core.dim_holdings — SQLMesh-managed view in production (aggregates open
 # lots per account/security). Column shape mirrors dim_holdings.sql's
 # final SELECT; stubbed standalone (not derived from fct_investment_lots)
@@ -436,6 +519,9 @@ def create_core_dim_stub_views(db: Database) -> None:
     db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
     db.execute(CORE_FCT_INVESTMENT_LOTS_DDL)
     db.execute(CORE_FCT_REALIZED_GAINS_DDL)
+    db.execute(CORE_BRIDGE_CURRENCY_CONVERSIONS_DDL)
+    db.execute(CORE_FCT_CURRENCY_LOTS_DDL)
+    db.execute(CORE_FCT_REALIZED_FX_GAINS_DDL)
     db.execute(CORE_DIM_HOLDINGS_STUB_DDL)
     db.execute(CORE_FCT_SECURITY_PRICES_DDL)
     db.execute(CORE_UNCATEGORIZED_QUEUE_STUB_DDL)

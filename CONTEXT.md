@@ -158,6 +158,19 @@ response with no rate to apply comes back split by currency rather than
 converted.
 _Avoid_: target currency, converted currency, view currency
 
+**Currency conversion**:
+One economic event that exchanges an actual amount in one currency for an
+actual amount in another. An accepted Transfer Decision may supply its two-row
+identity, but the Currency conversion owns the executed terms; a reference rate
+may value it and never replaces those terms.
+_Avoid_: FX transfer, exchange pair, converted transaction
+
+**Currency lot**:
+One acquisition of currency held in an Account, carrying its Home-currency cost
+basis until that currency is disposed. It is not a Security or a Lot of a
+Security.
+_Avoid_: cash lot, Security lot, currency Security
+
 **Category**:
 One node of MoneyBin's spending taxonomy, referenced by id. The taxonomy ships
 with a default set and the user may add to it.

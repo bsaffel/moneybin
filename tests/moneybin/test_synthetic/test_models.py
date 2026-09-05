@@ -175,6 +175,31 @@ class TestPersonaConfig:
         })
         assert config.amount == "statement_balance"
 
+    def test_transfer_received_amount_defaults_to_none(self) -> None:
+        config = TransferConfig.model_validate({
+            "from": "Checking",
+            "to": "Savings",
+            "amount": 100.0,
+            "schedule": "monthly",
+            "day_of_month": 5,
+        })
+
+        assert config.received_amount is None
+
+    @pytest.mark.parametrize("received_amount", [0, -1])
+    def test_transfer_received_amount_must_be_positive(
+        self, received_amount: int
+    ) -> None:
+        with pytest.raises(ValueError):
+            TransferConfig.model_validate({
+                "from": "Checking",
+                "to": "Savings",
+                "amount": 100.0,
+                "received_amount": received_amount,
+                "schedule": "monthly",
+                "day_of_month": 5,
+            })
+
     def test_recurring_amount_can_be_distribution(
         self, minimal_persona_dict: dict[str, Any]
     ) -> None:
@@ -255,13 +280,7 @@ class TestPersonaConfig:
     def test_cross_currency_transfer_rejected(
         self, minimal_persona_dict: dict[str, Any]
     ) -> None:
-        """`TransferGenerator` moves one magnitude to both sides without converting.
-
-        Each side then inherits its own account's currency, so an unconverted
-        100 USD outflow lands as a +100 EUR inflow — balances and any ground
-        truth derived from them are silently wrong. Reject until M1K.3 gives the
-        generator a conversion.
-        """
+        """A cross-currency transfer cannot infer its received amount."""
         minimal_persona_dict["accounts"].append({
             "name": "Eurozone Savings",
             "type": "savings",
@@ -280,6 +299,57 @@ class TestPersonaConfig:
             }
         ]
         with pytest.raises(ValueError, match="cross-currency transfer"):
+            PersonaConfig.model_validate(minimal_persona_dict)
+
+    def test_cross_currency_transfer_with_received_amount_allowed(
+        self, minimal_persona_dict: dict[str, Any]
+    ) -> None:
+        minimal_persona_dict["accounts"].append({
+            "name": "Eurozone Savings",
+            "type": "savings",
+            "source_type": "ofx",
+            "institution": "Test Bank EU",
+            "opening_balance": 500.00,
+            "currency_code": "EUR",
+        })
+        minimal_persona_dict["transfers"] = [
+            {
+                "from": "Checking",
+                "to": "Eurozone Savings",
+                "amount": 100.0,
+                "received_amount": 90.0,
+                "schedule": "monthly",
+                "day_of_month": 5,
+            }
+        ]
+
+        persona = PersonaConfig.model_validate(minimal_persona_dict)
+
+        assert persona.transfers[0].received_amount == 90.0
+
+    def test_cross_currency_statement_balance_rejected(
+        self, minimal_persona_dict: dict[str, Any]
+    ) -> None:
+        minimal_persona_dict["accounts"].append({
+            "name": "Eurozone Savings",
+            "type": "savings",
+            "source_type": "ofx",
+            "institution": "Test Bank EU",
+            "opening_balance": 500.00,
+            "currency_code": "EUR",
+        })
+        minimal_persona_dict["transfers"] = [
+            {
+                "from": "Checking",
+                "to": "Eurozone Savings",
+                "amount": "statement_balance",
+                "received_amount": 90.0,
+                "schedule": "monthly",
+                "day_of_month": 5,
+            }
+        ]
+
+        with pytest.raises(ValueError, match="statement_balance"):
             PersonaConfig.model_validate(minimal_persona_dict)
 
     def test_same_currency_transfer_still_allowed(
@@ -427,10 +497,9 @@ class TestYAMLDataLoading:
     def test_every_spending_account_is_funded(self) -> None:
         """An account that only spends drifts to a large negative balance.
 
-        The generator does no conversion, so a multi-currency persona cannot
-        fund a foreign account by transfer — each one needs income in its own
-        currency or the demo's headline shows a checking account thousands
-        below zero.
+        Explicit cross-currency transfers can fund their target account, but an
+        account with neither income nor an inbound transfer can still drift
+        thousands below zero and make the demo position unrealistic.
         """
         for persona_name in self.PERSONAS:
             persona = load_persona(persona_name)

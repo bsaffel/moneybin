@@ -60,6 +60,35 @@ class TestTransferPipeline:
         assert "date_distance" in signals
         assert "keyword" in signals
 
+    def test_auto_accept_counts_committed_transfers_separately(
+        self, db: Database
+    ) -> None:
+        """The run result distinguishes accepted Transfers from dedup merges."""
+        _setup_tables(db)
+        _insert(
+            db,
+            "csv_chk1",
+            "checking",
+            "2026-03-15",
+            "-500.00",
+            "ONLINE TRANSFER TO SAV",
+        )
+        _insert(
+            db,
+            "csv_sav1",
+            "savings",
+            "2026-03-15",
+            "500.00",
+            "TRANSFER FROM CHK",
+        )
+
+        result = TransactionMatcher(
+            db, MatchingSettings(), table="main._test_unioned"
+        ).run(auto_accept_transfers=True)
+
+        assert result.auto_merged == 1
+        assert result.accepted_transfers == 1
+
     def test_cross_institution_ach_with_date_offset(self, db: Database) -> None:
         """Cross-institution ACH with 2-day offset, different descriptions."""
         _setup_tables(db)

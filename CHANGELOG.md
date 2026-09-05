@@ -399,6 +399,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 
 ### Added
+- **A Core accounting foundation for realized foreign-exchange gains.** Trusted
+  accepted Transfer Decisions and the reserved single-row conversion shape now
+  produce auditable Currency lots and realized gains through the existing
+  cost-basis engine. The public report and deliberate EUR/USD statement tie-out
+  remain in progress.
 - **Three references are generated from the code and pinned by a test.**
   `make generate-docs` renders `docs/reference/cli/` (one page per top-level
   command plus an index) from the Typer command tree,

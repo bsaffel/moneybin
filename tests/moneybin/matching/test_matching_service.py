@@ -20,7 +20,13 @@ from tests.moneybin.test_mcp.schema_assertions import (
 )
 
 
-def _seed(db: Database, match_id: str, status: MatchStatus) -> None:
+def _seed(
+    db: Database,
+    match_id: str,
+    status: MatchStatus,
+    *,
+    match_type: str = "dedup",
+) -> None:
     MatchDecisionsRepo(db).insert(
         match_id=match_id,
         source_transaction_id_a="a1",
@@ -33,6 +39,8 @@ def _seed(db: Database, match_id: str, status: MatchStatus) -> None:
         confidence_score=0.9,
         match_signals={},
         match_tier="3",
+        match_type=match_type,
+        account_id_b="acct2" if match_type == "transfer" else None,
         match_status=status,
         decided_by="matcher",
         actor="system",
@@ -114,6 +122,65 @@ def test_set_status_accepts_pending(db: Database) -> None:
     _seed(db, "m1", "pending")
     MatchingService(db).set_status("m1", status="accepted")
     assert _status_of(db, "m1") == "accepted"
+
+
+def test_accepting_transfer_restates_fx_accounting(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed(db, "fx-transfer", "pending", match_type="transfer")
+    restated: list[Database] = []
+
+    def record_restatement(target_db: Database, **_kwargs: object) -> None:
+        restated.append(target_db)
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        record_restatement,
+    )
+
+    MatchingService(db).set_status("fx-transfer", status="accepted")
+
+    assert restated == [db]
+
+
+def test_rejecting_transfer_does_not_restate_fx_accounting(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed(db, "rejected-fx-transfer", "pending", match_type="transfer")
+    restated: list[Database] = []
+
+    def record_restatement(target_db: Database, **_kwargs: object) -> None:
+        restated.append(target_db)
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        record_restatement,
+    )
+
+    MatchingService(db).set_status("rejected-fx-transfer", status="rejected")
+
+    assert restated == []
+
+
+def test_reversing_transfer_restates_fx_accounting_as_committed_undo(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed(db, "reversed-fx-transfer", "accepted", match_type="transfer")
+    restated: list[tuple[Database, str]] = []
+
+    def record_restatement(
+        target_db: Database, *, committed_change: str = "setting"
+    ) -> None:
+        restated.append((target_db, committed_change))
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        record_restatement,
+    )
+
+    MatchingService(db).undo("reversed-fx-transfer")
+
+    assert restated == [(db, "undo")]
 
 
 def test_set_status_rejects_pending(db: Database) -> None:
@@ -249,6 +316,25 @@ def test_accept_all_pending_accepts_and_counts(db: Database) -> None:
     assert outcome.reversed_by_reconciliation == 0
     assert _status_of(db, "q1") == "accepted"
     assert MatchingService(db).get_pending() == []
+
+
+def test_accept_all_pending_restates_when_it_accepts_a_transfer(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed(db, "bulk-fx-transfer", "pending", match_type="transfer")
+    restated: list[Database] = []
+
+    def record_restatement(target_db: Database, **_kwargs: object) -> None:
+        restated.append(target_db)
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        record_restatement,
+    )
+
+    MatchingService(db).accept_all_pending(match_type="transfer")
+
+    assert restated == [db]
 
 
 def test_set_status_application_effects_match_persisted_outcome(db: Database) -> None:

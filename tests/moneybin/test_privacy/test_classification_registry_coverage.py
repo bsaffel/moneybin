@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
-from moneybin.privacy.taxonomy import CLASSIFICATION
+from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from tests.moneybin.price_model_helpers import close_source_ctes
 
 pytestmark = pytest.mark.unit
@@ -63,6 +63,86 @@ def test_classification_registry_has_no_stale_app_or_core_columns(
         "CLASSIFICATION contains stale columns not present in the catalog:\n"
         f"{_format_columns(stale)}"
     )
+
+
+def test_currency_accounting_columns_have_exact_privacy_classes() -> None:
+    """The three public M1K.3 schemas use the approved existing classes."""
+    expected = {
+        ("core", "bridge_currency_conversions"): {
+            "conversion_id": DataClass.RECORD_ID,
+            "source_shape": DataClass.TXN_TYPE,
+            "transfer_pair_id": DataClass.RECORD_ID,
+            "from_transaction_id": DataClass.RECORD_ID,
+            "to_transaction_id": DataClass.RECORD_ID,
+            "from_account_id": DataClass.RECORD_ID,
+            "to_account_id": DataClass.RECORD_ID,
+            "from_date": DataClass.TXN_DATE,
+            "to_date": DataClass.TXN_DATE,
+            "from_amount": DataClass.TXN_AMOUNT,
+            "from_currency": DataClass.CURRENCY,
+            "to_amount": DataClass.TXN_AMOUNT,
+            "to_currency": DataClass.CURRENCY,
+            "executed_rate": DataClass.AGGREGATE,
+            "home_currency": DataClass.CURRENCY,
+            "home_value": DataClass.BALANCE,
+            "valuation_rate": DataClass.AGGREGATE,
+            "valuation_rate_date": DataClass.TXN_DATE,
+            "valuation_source_type": DataClass.TXN_TYPE,
+            "from_source_type": DataClass.TXN_TYPE,
+            "from_source_origin": DataClass.TXN_TYPE,
+            "from_source_transaction_id": DataClass.RECORD_ID,
+            "to_source_type": DataClass.TXN_TYPE,
+            "to_source_origin": DataClass.TXN_TYPE,
+            "to_source_transaction_id": DataClass.RECORD_ID,
+            "coverage_status": DataClass.TXN_TYPE,
+            "coverage_reason": DataClass.TXN_TYPE,
+            "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        },
+        ("core", "fct_currency_lots"): {
+            "currency_lot_id": DataClass.RECORD_ID,
+            "account_id": DataClass.RECORD_ID,
+            "currency_code": DataClass.CURRENCY,
+            "acquisition_date": DataClass.TXN_DATE,
+            "acquisition_type": DataClass.TXN_TYPE,
+            "original_quantity": DataClass.TXN_AMOUNT,
+            "remaining_quantity": DataClass.TXN_AMOUNT,
+            "cost_basis_total": DataClass.BALANCE,
+            "cost_basis_remaining": DataClass.BALANCE,
+            "cost_basis_method": DataClass.TXN_TYPE,
+            "home_currency": DataClass.CURRENCY,
+            "source_conversion_id": DataClass.RECORD_ID,
+            "source_investment_transaction_id": DataClass.RECORD_ID,
+            "source_transfer_id": DataClass.RECORD_ID,
+            "basis_incomplete": DataClass.TXN_TYPE,
+            "coverage_status": DataClass.TXN_TYPE,
+            "coverage_reason": DataClass.TXN_TYPE,
+            "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        },
+        ("core", "fct_realized_fx_gains"): {
+            "realized_fx_gain_id": DataClass.RECORD_ID,
+            "account_id": DataClass.RECORD_ID,
+            "conversion_id": DataClass.RECORD_ID,
+            "currency_lot_id": DataClass.RECORD_ID,
+            "currency_code": DataClass.CURRENCY,
+            "home_currency": DataClass.CURRENCY,
+            "acquisition_date": DataClass.TXN_DATE,
+            "disposal_date": DataClass.TXN_DATE,
+            "disposed_amount": DataClass.TXN_AMOUNT,
+            "proceeds": DataClass.BALANCE,
+            "cost_basis": DataClass.BALANCE,
+            "gain_loss": DataClass.BALANCE,
+            "fee_amount": DataClass.TXN_AMOUNT,
+            "cost_basis_method": DataClass.TXN_TYPE,
+            "valuation_rate": DataClass.AGGREGATE,
+            "valuation_rate_date": DataClass.TXN_DATE,
+            "valuation_source_type": DataClass.TXN_TYPE,
+            "coverage_status": DataClass.TXN_TYPE,
+            "coverage_reason": DataClass.TXN_TYPE,
+            "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        },
+    }
+
+    assert {key: CLASSIFICATION[key] for key in expected} == expected
 
 
 # Each resolved column of core.fct_security_prices, mapped to the column each

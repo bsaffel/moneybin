@@ -7,6 +7,8 @@ Adding a new metric: define it here, then record it manually at the call
 site that matters (e.g. ``CATEGORIZATION_AUTO_RATE.set(0.78)``).
 """
 
+from collections.abc import Iterable
+
 from prometheus_client import Counter, Gauge, Histogram
 
 # ── Import pipeline ──────────────────────────────────────────────────────────
@@ -240,6 +242,46 @@ SQLMESH_RUN_DURATION_SECONDS = Histogram(
     "Duration of SQLMesh model runs in seconds",
     ["model"],
 )
+
+_FX_ACCOUNTING_GRAINS = (
+    "conversion",
+    "currency_lot",
+    "realized_fx_gain",
+)
+_FX_ACCOUNTING_REASONS = (
+    "complete",
+    "incomplete_shape",
+    "missing_leg",
+    "unknown_currency",
+    "missing_home_currency",
+    "missing_valuation_rate",
+    "negative_inventory",
+    "incomplete_history",
+    "unsupported_method",
+)
+
+FX_ACCOUNTING_ROWS = Gauge(
+    "moneybin_fx_accounting_rows",
+    "Current derived FX accounting rows by grain and coverage reason.",
+    ["grain", "coverage_reason"],
+)
+
+
+def set_fx_accounting_rows(grain: str, coverage_reasons: Iterable[str | None]) -> None:
+    """Replace one FX accounting grain's bounded coverage counts."""
+    if grain not in _FX_ACCOUNTING_GRAINS:
+        raise ValueError(f"Unknown FX accounting grain: {grain}")
+
+    reasons = tuple(reason or "complete" for reason in coverage_reasons)
+    unknown_reasons = set(reasons).difference(_FX_ACCOUNTING_REASONS)
+    if unknown_reasons:
+        raise ValueError("Unknown FX accounting coverage reason")
+
+    for reason in _FX_ACCOUNTING_REASONS:
+        FX_ACCOUNTING_ROWS.labels(grain=grain, coverage_reason=reason).set(
+            reasons.count(reason)
+        )
+
 
 # ── Export delivery ──────────────────────────────────────────────────────────
 

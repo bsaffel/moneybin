@@ -186,7 +186,7 @@ class CurrencyService:
             FX_RATE_RESOLUTION_TOTAL.labels(outcome=_outcome_for(source)).inc()
             return ResolvedRate(base, quote, on, on, rate, source)
 
-        published = _last_publication_day(on)
+        published = last_publication_day(on)
         if published != on:
             stored = self._stored_rate(base, quote, published)
             if stored is not None:
@@ -195,14 +195,14 @@ class CurrencyService:
                 return ResolvedRate(base, quote, on, published, rate, source)
 
         # Known gap: `_store` files the row under the day the provider PUBLISHED,
-        # so a weekday holiday — which `_last_publication_day` deliberately does
+        # so a weekday holiday — which `last_publication_day` deliberately does
         # not hop — misses both lookups above on every later call. The same
         # question re-fetches, and offline it fails outright even though its
         # answer is on disk under another date. Closing it needs a stored
         # requested-to-published mapping; do NOT close it by widening the lookup
         # to the nearest earlier stored day, which would answer an ordinary
         # Tuesday with Monday's rate as if it were Tuesday's (Requirement 12,
-        # and `_last_publication_day`'s docstring).
+        # and `last_publication_day`'s docstring).
         observation = self._fetch(base, quote, on)
         self._store(observation)
 
@@ -322,9 +322,15 @@ class CurrencyService:
             # audit before/after image, so one oversized string is stored
             # repeatedly rather than once.
             validate_note_text(note)
-        return ExchangeRateOverridesRepo(self._db).set(
+        event = ExchangeRateOverridesRepo(self._db).set(
             base, quote, on, rate=rate, note=note, actor=self._actor
         )
+        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+            restate_fx_accounting,
+        )
+
+        restate_fx_accounting(self._db)
+        return event
 
     def delete_override(self, from_currency: str, to_currency: str, on: date) -> bool:
         """Remove one override, returning ``True`` if a row was actually deleted.
@@ -339,7 +345,14 @@ class CurrencyService:
             on,
             actor=self._actor,
         )
-        return event is not None
+        if event is None:
+            return False
+        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+            restate_fx_accounting,
+        )
+
+        restate_fx_accounting(self._db)
+        return True
 
     # -------------------------------- storage --------------------------------
 
@@ -755,7 +768,7 @@ def _outcome_for(source: str) -> str:
     return "override" if source == OVERRIDE_SOURCE else "cached"
 
 
-def _last_publication_day(day: date) -> date:
+def last_publication_day(day: date) -> date:
     """The Friday a weekend resolves back to; the day itself on a weekday.
 
     Only the weekend is treated as a certainty, and that is the whole point. A

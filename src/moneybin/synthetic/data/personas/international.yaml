@@ -1,9 +1,10 @@
-# Every amount below is denominated in its own account's currency — the
-# generator does no conversion. AED is deliberately outside Frankfurter's
-# 30-currency set, so the UAE account exercises the unpriced-pair path that a
-# wholly ECB-covered persona would never reach. The non-USD accounts span both
-# source types on purpose: OFX and tabular write currency to different tables,
-# so a persona weighted to one would leave the other's threading unproven.
+# Every amount below is denominated in its own account's currency. Two explicit
+# USD/EUR transfers provide executed conversion terms; no rate is inferred. AED
+# is deliberately outside Frankfurter's 30-currency set, so the UAE account
+# exercises the unpriced-pair path that a wholly ECB-covered persona would never
+# reach. The non-USD accounts span both source types on purpose: OFX and tabular
+# write currency to different tables, so a persona weighted to one would leave
+# the other's threading unproven.
 persona: international
 profile: eve
 description: "Multi-bank across countries, five currencies, ~690 txns/yr"
@@ -40,10 +41,10 @@ accounts:
     institution: "Chase Bank"
     opening_balance: 3800.00
 
-# Every account that spends is funded in its own currency. The generator does
-# no conversion and this persona has no transfers, so an unfunded account can
-# only drift toward a large negative balance — a checking account thousands
-# below zero is not a position any demo should show.
+# Every account that spends has a funding source. Cross-currency transfers move
+# only their explicit sent and received amounts, so an account without income or
+# an inbound transfer can still drift thousands below zero — not a position any
+# demo should show.
 income:
   - type: salary
     account: "Eurozone Checking"
@@ -80,6 +81,24 @@ income:
     annual_raise_pct: 2.0
     description_template: "ACH CREDIT {employer}"
     employer: "Redwood Editorial LLC"
+
+# The earlier USD acquisition fixes a $100 basis for 90 EUR. The later partial
+# disposal returns $55 for 45 EUR, realizing exactly $5 under FIFO each month.
+transfers:
+  - from: "US Checking"
+    to: "Eurozone Checking"
+    amount: 100.00
+    received_amount: 90.00
+    schedule: monthly
+    day_of_month: 5
+    description_template: "USD TO EUR"
+  - from: "Eurozone Checking"
+    to: "US Checking"
+    amount: 45.00
+    received_amount: 55.00
+    schedule: monthly
+    day_of_month: 20
+    description_template: "EUR TO USD"
 
 recurring:
   - category: housing
