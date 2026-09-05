@@ -157,8 +157,10 @@ SEED_PRICE_SOURCE_MAP = TableRef("seeds", "price_source_map")
 INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")
 INT_TRANSACTIONS_MATCHED = TableRef("prep", "int_transactions__matched")
 INT_TRANSACTIONS_MERGED = TableRef("prep", "int_transactions__merged")
+STG_PLAID_ACCOUNTS = TableRef("prep", "stg_plaid__accounts")
 STG_PLAID_TRANSACTIONS = TableRef("prep", "stg_plaid__transactions")
 STG_SECURITY_PRICES = TableRef("prep", "stg_security_prices")
+STG_TABULAR_ACCOUNTS = TableRef("prep", "stg_tabular__accounts")
 
 # -- Meta schema (cross-source provenance + lineage) --
 FCT_TRANSACTION_PROVENANCE = TableRef("meta", "fct_transaction_provenance")

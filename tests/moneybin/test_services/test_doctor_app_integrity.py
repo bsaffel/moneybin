@@ -37,6 +37,7 @@ from moneybin.repositories.transaction_categories_repo import (
 from moneybin.repositories.user_categories_repo import UserCategoriesRepo
 from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
 from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
+from moneybin.services.account_service import CLEAR, AccountService
 from moneybin.services.doctor_service import (
     _BALANCE_ASSERTIONS_PK_EXPR,
     _SECURITY_PRICE_OVERRIDES_PK_EXPR,
@@ -568,6 +569,34 @@ def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _seed_source_account(
+    db: Database,
+    account_id: str,
+    *,
+    account_label: str | None,
+    source: str = "tabular",
+    extracted_at: str = "2026-01-01 00:00:00",
+) -> None:
+    """Stand in for the ``prep.stg_*__accounts`` view the transform builds.
+
+    Only the three columns the reserved-label check reads: the two staging
+    models that carry an ``account_label`` at all are the only rungs whose text
+    a person wrote, and both project it beside the ``account_id`` and
+    ``extracted_at`` that ``dim_accounts``' merge resolves it by.
+    """
+    for name in ("stg_tabular__accounts", "stg_plaid__accounts"):
+        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+        db.execute(
+            f"CREATE TABLE IF NOT EXISTS prep.{name} "  # noqa: S608  # fixed test fixture names
+            "(account_id TEXT, account_label TEXT, extracted_at TIMESTAMP)"
+        )
+    db.execute(
+        f"INSERT INTO prep.stg_{source}__accounts "  # noqa: S608  # fixed test fixture names
+        "(account_id, account_label, extracted_at) VALUES (?, ?, ?)",
+        [account_id, account_label, extracted_at],
+    )
+
+
 def _upsert_settings(
     repo: AccountSettingsRepo, account_id: str, display_name: str = "Checking"
 ) -> None:
@@ -753,12 +782,7 @@ def test_dim_accounts_reserved_display_name_flags_a_source_label(
     account` is promoted as a human-authored name. Nothing is written to
     `app.*` on that path, so the sibling check above cannot see it.
     """
-    create_core_tables(db)
-    db.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
-        "(account_id, display_name, display_name_is_user_set) "
-        "VALUES ('acct_src', 'unnamed account', TRUE)"
-    )
+    _seed_source_account(db, "acct_src", account_label="unnamed account")
     result = DoctorService(db)._run_dim_accounts_reserved_display_name()
     assert result.status == "fail"
     assert result.affected_ids == ["acct_src"]
@@ -770,16 +794,13 @@ def test_dim_accounts_reserved_display_name_ignores_the_generated_terminal(
 ) -> None:
     """The ladder's own terminal arm is the sentinel, not a defect.
 
-    An account nothing could name carries the byte-exact label with
-    `display_name_is_user_set = FALSE`. Reporting it would fail the check on
-    every profile holding one bare import.
+    `dim_accounts.sql` filters both account_label arms with a byte-exact
+    `<> 'Unnamed account'`, so a source label spelled that way is never
+    promoted and the account falls through to the generated terminal.
+    Reporting it would fail the check on every profile holding one bare
+    import.
     """
-    create_core_tables(db)
-    db.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
-        "(account_id, display_name, display_name_is_user_set) "
-        f"VALUES ('acct_terminal', '{UNNAMED_ACCOUNT_LABEL}', FALSE)"
-    )
+    _seed_source_account(db, "acct_terminal", account_label=UNNAMED_ACCOUNT_LABEL)
     result = DoctorService(db)._run_dim_accounts_reserved_display_name()
     assert result.status == "pass"
     assert result.affected_ids == []
@@ -791,20 +812,76 @@ def test_dim_accounts_reserved_display_name_leaves_the_override_to_its_sibling(
     """One account, one report: an app override is the sibling check's finding.
 
     Both checks would otherwise name the same account with the same remedy,
-    which reads as two defects.
+    which reads as two defects. The source label folds too, so only the
+    override's presence keeps this one quiet.
     """
-    create_core_tables(db)
+    _seed_source_account(db, "acct_both", account_label="unnamed account")
     _upsert_settings(
         AccountSettingsRepo(db), "acct_both", display_name=UNNAMED_ACCOUNT_LABEL
-    )
-    db.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
-        "(account_id, display_name, display_name_is_user_set) "
-        f"VALUES ('acct_both', '{UNNAMED_ACCOUNT_LABEL}', TRUE)"
     )
     assert DoctorService(db)._run_dim_accounts_reserved_display_name().status == "pass"
     settings_result = DoctorService(db)._run_account_settings_reserved_display_name()
     assert settings_result.affected_ids == ["acct_both"]
+
+
+def test_dim_accounts_reserved_display_name_follows_the_dim_recency_merge(
+    db: Database,
+) -> None:
+    """Only the label the dim will actually promote counts as the defect.
+
+    `dim_accounts.sql` resolves account_label with `ARG_MAX(account_label,
+    extracted_at)` across every contributing source, so a reserved spelling a
+    later import already replaced never reaches `display_name`. A check that
+    scanned all source rows instead would report an account whose name is
+    already fine, and no rename could clear it.
+    """
+    _seed_source_account(
+        db, "acct_renamed", account_label="unnamed account", extracted_at="2026-01-01"
+    )
+    _seed_source_account(
+        db,
+        "acct_renamed",
+        account_label="Vacation Fund",
+        source="plaid",
+        extracted_at="2026-06-01",
+    )
+    result = DoctorService(db)._run_dim_accounts_reserved_display_name()
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+def test_dim_accounts_reserved_display_name_passes_after_the_override_is_cleared(
+    db: Database,
+) -> None:
+    """The prescribed remedy must not re-fail the check that prescribed it.
+
+    `--clear-display-name` writes `app.account_settings` and nothing else, and
+    `core.dim_accounts` is `kind FULL` — a materialized snapshot that keeps the
+    reserved name and `display_name_is_user_set = TRUE` until the next refresh.
+    Reading provenance off that snapshot while reading the override live reports
+    the account the user just fixed as a source-authored collision, so `system
+    doctor` stays red for doing exactly what it asked.
+    """
+    create_core_tables(db)
+    _seed_source_account(db, "acct_cleared", account_label="Vacation Fund")
+    db.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "(account_id, display_name, display_name_is_user_set) "
+        "VALUES ('acct_cleared', 'unnamed account', TRUE)"
+    )
+    # The legacy row the sibling check exists for: stored before either write
+    # guard shipped, so it goes in through the repo, which validates shapes but
+    # no vocabulary.
+    _upsert_settings(
+        AccountSettingsRepo(db), "acct_cleared", display_name="unnamed account"
+    )
+    AccountService(db).settings_update("acct_cleared", actor="cli", display_name=CLEAR)
+    assert (
+        DoctorService(db)._run_account_settings_reserved_display_name().status == "pass"
+    )
+    result = DoctorService(db)._run_dim_accounts_reserved_display_name()
+    assert result.status == "pass"
+    assert result.affected_ids == []
 
 
 def test_balance_assertions_account_fk_flags_orphan(db: Database) -> None:

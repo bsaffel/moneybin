@@ -65,7 +65,9 @@ from moneybin.tables import (
     SECURITY_LINKS,
     SECURITY_PRICE_OVERRIDES,
     SECURITY_PRICES,
+    STG_PLAID_ACCOUNTS,
     STG_SECURITY_PRICES,
+    STG_TABULAR_ACCOUNTS,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
@@ -1883,6 +1885,28 @@ class DoctorService:
         reported by the sibling check is not reported twice. Remediation is the
         same rename: the override outranks the source label.
 
+        **The source label is read from ``prep``, never from the dim's own
+        snapshot.** ``core.dim_accounts`` is ``kind FULL`` — materialized, and
+        stale between refreshes — while ``app.account_settings`` is live, so
+        reading provenance from one and the override from the other reports a
+        state that never existed. ``--clear-display-name`` is the case that
+        proves it: ``AccountService.settings_update`` writes ``app.*`` alone, so
+        the moment a user clears a historically reserved override the dim row
+        still carries that override's text with ``display_name_is_user_set =
+        TRUE``, and the cleared row reads back as a source-authored collision.
+        The check the user just satisfied would fail them for satisfying it.
+        The two staging models that carry an ``account_label`` are views over
+        ``raw``, so the label they report is the one the next refresh will
+        promote, whatever ``app.*`` does in between.
+
+        ``ARG_MAX(account_label, extracted_at)`` mirrors the merge in
+        ``dim_accounts.sql`` rather than scanning every source row: an account
+        named twice keeps the newer spelling, so an older reserved label that
+        a later import already replaced is not a defect and must not be
+        reported as one. The byte-exact ``UNNAMED_ACCOUNT_LABEL`` is excluded
+        for the same reason the model excludes it — that rung is never
+        promoted, so it collides with nothing.
+
         Detection only. Teaching the model to reject the fold would change
         ``core.dim_accounts.display_name`` for rows that already have it, which
         is a core-schema change, not a doctor check.
@@ -1891,16 +1915,32 @@ class DoctorService:
         try:
             rows = self._db.execute(
                 f"""
-                SELECT d.account_id, d.display_name
-                FROM {DIM_ACCOUNTS.full_name} AS d
+                WITH source_labels AS (
+                    SELECT account_id, account_label, extracted_at
+                    FROM {STG_TABULAR_ACCOUNTS.full_name}
+                    UNION ALL
+                    SELECT account_id, account_label, extracted_at
+                    FROM {STG_PLAID_ACCOUNTS.full_name}
+                ), winning AS (
+                    SELECT
+                        account_id,
+                        ARG_MAX(account_label, extracted_at) FILTER(WHERE
+                          NOT account_label IS NULL) AS account_label
+                    FROM source_labels
+                    GROUP BY account_id
+                )
+                SELECT w.account_id, w.account_label
+                FROM winning AS w
                 LEFT JOIN {ACCOUNT_SETTINGS.full_name} AS s
-                  ON s.account_id = d.account_id
-                WHERE d.display_name_is_user_set
+                  ON s.account_id = w.account_id
+                WHERE NOT w.account_label IS NULL
+                  AND w.account_label <> ?
                   AND s.display_name IS NULL
-                ORDER BY d.account_id
-                """  # noqa: S608  # TableRef constants, no user input
+                ORDER BY w.account_id
+                """,  # noqa: S608  # TableRef constants; the label is a bound parameter
+                [UNNAMED_ACCOUNT_LABEL],
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core may not be built yet
+        except Exception as e:  # noqa: BLE001 — prep may not be built yet
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1909,8 +1949,8 @@ class DoctorService:
             )
         affected = [
             str(account_id)
-            for account_id, display_name in rows
-            if is_reserved_account_name(display_name)
+            for account_id, account_label in rows
+            if is_reserved_account_name(account_label)
         ]
         if affected:
             return InvariantResult(
