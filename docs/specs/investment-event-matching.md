@@ -684,6 +684,23 @@ observation snapshot. An active Golden event exists because it has active
 membership, and its source values remain in Raw. This avoids parallel sources
 of truth for event existence or source evidence.
 
+### `core.fct_investment_transactions` projection
+
+M1J.7 replaces the existing direct staging union with one row per active Golden
+leg. The Core model starts from active `app.investment_event_members`, joins
+each member through its comparison adapter to the exact immutable observation
+revision named by membership (or to the exact opening-lot reconstruction
+revision), and reads bound Account, Security, and effective currency from that
+membership. It applies explicit field resolutions, then the deterministic
+default and representative-source rules, to collapse corresponding source legs
+into one Golden leg. Only active membership projects; historical, retired, and
+newer unreviewed revisions reserved by an accepted or stale Match do not.
+
+Staging views remain the source-normalization and comparison inputs. They are
+not unioned directly into the final Core ledger after M1J.7, because doing so
+would publish one row per observation and bypass the reviewed Golden membership
+that owns `event_group_id` and `investment_transaction_id`.
+
 ### `core.alias_investment_event_ids`
 
 A derived resolver exposes every currently or formerly published Golden
@@ -932,6 +949,25 @@ choice for every material field conflict. Missing, unknown, duplicate, or stale
 ids fail the request. Reject forbids field choices. A Proposal with no material
 field conflicts accepts with an empty choice set. This keeps CLI and MCP
 semantics identical without adding one tool per command.
+
+An MCP investment-Match acceptance is human-bound, not merely agent-submitted.
+If any item in a `reviews_decide` batch accepts an `investment_match`, the tool
+preflights the complete atomic batch and uses MCP Elicitation to show the human
+the exact decisions, selected fields, proposed Golden projection, superseded
+components, current before-state, and downstream curation and lot impact. The
+prompt is classified up to Tier HIGH because it may disclose transaction
+amounts and other financial fields. Human acceptance ratifies that exact batch;
+the service recomputes the same payload binding inside the write transaction,
+and any proposal, choice, topology, dependency, or impact drift fails with no
+write.
+
+This branch is prompt-only. It neither accepts nor issues a
+`confirmation_token`, because returning a token to the calling agent would let
+that agent confirm its own ledger-changing proposal. A client without
+Elicitation receives `mutation_confirmation_required` with the equivalent CLI
+command. Human decline or timeout also writes nothing. Reject-only batches need
+no prompt; a mixed batch containing an investment-Match acceptance prompts for
+and binds the entire atomic batch rather than partially applying other items.
 
 The CLI returns usage error 2 when `--field-choice` lacks both
 `--type investment-matches` and exactly one `--confirm`, including any use with
@@ -1386,6 +1422,12 @@ fixtures and expected Golden-ledger outcomes.
   invariant validation. CLI usage tests prove `field-choice` outside exactly one
   investment-match confirmation, and `confirm-all` for investment matches or all
   queues, fail with exit 2 before any partial decision.
+- MCP confirmation tests proving an investment-Match acceptance succeeds only
+  after a capable client's human Elicitation accepts the exact bound batch;
+  decline, timeout, a non-eliciting client, a supplied token, or any binding
+  drift writes nothing. Reject-only batches do not prompt, while a mixed atomic
+  batch prompts for every item together and cannot partially apply. Schema and
+  privacy tests declare the prompt's dynamic disclosure up to Tier HIGH.
 - Property or invariant tests proving a source event has at most one active
   Golden membership and every accepted multi-leg event is complete.
 - Real mixed-history validation before any guard or auto-accept promotion.
@@ -1422,10 +1464,13 @@ accepted contract and must be reconciled to it before delivery begins.
 4. **Golden materialization.** Add stable event and leg identities, Source-event
    and opening-lot-reconstruction membership, the two derived Core id
    resolvers, field resolution, exact provenance, `projection_changed_at`, and
-   the pre-match input-view bootstrap and dependent rebuild. Perform the
+   the pre-match input-view bootstrap and dependent rebuild. Replace the direct
+   staging union with the active-membership Core projection. Perform the
    pre-launch Golden-id hard cut, preserving existing source-group references
    only as provenance. Enable acceptance after
-   validating the complete Golden event and every lot-selection mapping, then
+   validating the complete Golden event and every lot-selection mapping and,
+   for MCP, receiving prompt-only human Elicitation bound to the exact complete
+   batch. Then
    commit its decision, exact revision membership, field resolutions, and
    complete remapped selection sets in one transaction. Undo restores those
    selection sets from the same audit chain and blocks on later overlapping

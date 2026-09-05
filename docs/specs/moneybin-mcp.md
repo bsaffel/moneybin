@@ -23,8 +23,14 @@ registry.
 > it adds no tool. Delivery slice 2 adds `investment_match` to the
 > `refresh_run.steps` enum and `investment_matches` to the `reviews.kind` enum.
 > Delivery slice 3 adds the `investment_match` discriminator to the
-> `reviews_decide.decisions` item union. Until those slices land, these are
-> planned enum extensions, not claims about the live 50-tool schema.
+> `reviews_decide.decisions` item union. Slice 4 enables acceptance only through
+> prompt-only human Elicitation bound to the exact complete batch; it accepts
+> and issues no fallback token, refuses non-eliciting clients with
+> `mutation_confirmation_required` naming the CLI, and declares the prompt's
+> dynamic disclosure up to Tier HIGH. Reject-only batches do not prompt; a
+> mixed batch containing an investment-Match acceptance ratifies or rejects the
+> entire atomic batch. Until those slices land, these are planned extensions,
+> not claims about the live 50-tool schema.
 
 ## Standard registry
 

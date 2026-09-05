@@ -70,8 +70,8 @@ Related specs:
    adopt-on-strong-signal / propose-on-fuzzy ladder — purely additive to the schema
    fixed here.
 4. **Investment-transaction ledger in `core.fct_investment_transactions`.** One row
-   per investment event. The only authored/ingested surface; everything else derives
-   from it.
+   per Golden leg; every leg of the same whole event shares `event_group_id`.
+   It is the canonical consumer surface, and everything else derives from it.
 5. **Closed `type` taxonomy** (one-way-door enum), mapped from OFX `<INVTRANLIST>` and
    Plaid (see [Plaid Investments Readiness](#plaid-investments-readiness)) so
    importers slot in cleanly — fourteen values: `buy`, `sell`, `reinvest`,
@@ -112,18 +112,17 @@ Related specs:
    OFX, and means income reports sum income-typed rows only — reinvested income can
    never double-count or silently vanish.
 7. **Manual entry via raw, per-provider raw tables.** Manual entry writes
-   `raw.manual_investment_transactions` (mirroring `raw.manual_transactions`) →
-   `prep.stg_manual__investment_transactions` → `core.fct_investment_transactions`,
-   following the CLI-imperative / MCP-declarative-set pattern from
-   `transaction-curation.md`. Importer children add their own provider-shaped raw
-   tables (`raw.plaid_investment_transactions`, `raw.ofx_investment_transactions`)
-   plus staging models, unioned at the core boundary — the same per-provider
-   pattern as the cash-transaction pipeline (`stg_plaid__transactions` et al.) and
-   the max-data-capture posture, since provider rows carry fields (Plaid
-   `subtype`, `institution_security_id`, dual currency codes) a shared generic
-   table would flatten. With one source in v1, `core.fct_investment_transactions`
-   selects from the single staging model; the union arrives with the second source
-   (the same extension pattern as `core.dim_securities`).
+   `raw.manual_investment_transactions` (mirroring `raw.manual_transactions`) and
+   each importer writes its own provider-shaped Raw table
+   (`raw.plaid_investment_transactions`, `raw.ofx_investment_transactions`) plus
+   staging model. This preserves fields (Plaid `subtype`,
+   `institution_security_id`, dual currency codes) that a shared generic table
+   would flatten. Before M1J.7, `core.fct_investment_transactions` directly
+   unions those staging rows. M1J.7 replaces that projection: staging feeds
+   source-event comparison and membership registration, while Core projects
+   only active Golden membership joined to the exact source revisions it names.
+   Corresponding manual and provider observations therefore produce one Golden
+   leg, not duplicate Core rows.
 8. **Derived lots in `core.fct_investment_lots`** (Invariant 8). Each acquisition
    opens a lot; disposals consume lots per the elected method. Each lot carries a
    stable content-hash `lot_id` so specific-ID overrides can reference it.
@@ -281,10 +280,18 @@ FROM app.securities
 
 ### SQLMesh model: `core.fct_investment_transactions` (TABLE)
 
-The canonical ledger. v1 selects from `prep.stg_manual__investment_transactions`
-(rows arrive with resolved IDs and canonical taxonomy — see Requirement 7);
-importer children add their staging models to a union here, where their raw type
-strings map to the taxonomy and unresolved security refs run the resolution chain.
+The canonical ledger. Before M1J.7 it selects directly from the manual and
+importer staging models. M1J.7 replaces that union with a projection at one row
+per active Golden leg (`investment_transaction_id`). The model starts from
+active `app.investment_event_members`, joins each source member through its
+adapter to the exact immutable observation revision named by membership (or to
+the exact opening-lot reconstruction revision), and uses the membership's bound
+Account, Security, and effective currency. It then applies explicit field
+resolutions and the deterministic default and representative-source rules to
+collapse corresponding source legs into one row. Historical or retired
+membership never projects. Staging remains an input to comparison and
+registration, but after M1J.7 it is never directly unioned into this final
+ledger.
 
 ```
 Columns:
@@ -648,7 +655,10 @@ provider-identifier resolution rung all exist because of this validation.
 > reshape. Short/margin accounting stays future work.
 
 > **Amended 2026-09-05** (M1J.7 design): M1J.7 supersedes the earlier
-> staging-content-hash refinement for `event_group_id`. Pre-M1J.7 manual entry
+> "no `core` migration" and direct-staging-union assumptions as well as the
+> staging-content-hash refinement for `event_group_id`. Its Core schema remains
+> provider-neutral, but its row-production path changes to the active-membership
+> projection defined above. Pre-M1J.7 manual entry
 > may retain an authored source-group reference in Raw as provenance, while
 > Plaid staging leaves `event_group_id` NULL because the aggregator supplies no
 > trustworthy group reference. M1J.7 removes caller-authored grouping from
@@ -1024,7 +1034,9 @@ output schema, so this spec does not freeze a JSON response object.
 
 - **External price feeds, manual overrides, and daily valuation history** — Pillar C.2/C.3 (`investments-price-feeds.md`); broker-carried close valuation shipped in C.1.
 - **Holdings in net worth** — Pillar D (`investments-net-worth.md`).
-- **Plaid / OFX import** — separate children; each adds its own provider-shaped raw table + staging model into the core union (Requirement 7).
+- **Plaid / OFX import** — separate children; each adds its own provider-shaped
+  Raw table and staging model as comparison and membership-registration input
+  (Requirement 7), not a direct post-M1J.7 Core union.
 - **Options, margin, short positions, derivatives** — future.
 - **Wash sales, Schedule D, qualified-dividend logic** — the `us_tax` package.
 - **IRS election-policy enforcement** — v1 mirrors the broker.

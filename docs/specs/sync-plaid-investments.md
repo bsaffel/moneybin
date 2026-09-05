@@ -150,12 +150,20 @@ reach the ledger, everything downstream is existing machinery.
     Plaid sale realizes an oversold zero-basis phantom gain. See
     [Opening-lot bootstrap](#opening-lot-bootstrap).
 
-### M1J.7 raw-observation amendment
+### M1J.7 raw-observation and Core-projection amendment
 
-Requirement 2 describes the implemented ingestion contract. M1J.7 supersedes
-only the `raw.plaid_investment_transactions` current-row behavior when
-investment event matching begins; the holdings and holding-lot tables remain
-immutable point-in-time snapshots under their existing keys.
+Requirement 2 describes the implemented ingestion contract. Within Raw, M1J.7
+supersedes only the `raw.plaid_investment_transactions` current-row behavior
+when investment event matching begins; the holdings and holding-lot tables
+remain immutable point-in-time snapshots under their existing keys.
+
+M1J.7 also supersedes this spec's direct `UNION ALL` into
+`core.fct_investment_transactions`. Plaid staging becomes normalized comparison
+and membership-registration input. The final Core ledger instead starts from
+active Golden membership, joins the exact Plaid observation or opening-lot
+reconstruction revision named there, and collapses corresponding source legs
+under the matching spec's field-selection rules. The provider columns and
+downstream cost-basis contract remain unchanged.
 
 M1J.7 slice 1 migrates each existing investment transaction row into its first
 append-only observation revision and first delivery receipt. The revision grain becomes
@@ -1140,6 +1148,10 @@ exact for held shares and flagged only where genuinely unrecoverable.
 
 ## Core integration
 
+This section records the integration shipped before M1J.7. The amendment above
+replaces only the transaction ledger's direct-union row-production path; the
+other models and provider-fidelity columns remain current.
+
 | Core model | Change |
 |---|---|
 | `core.dim_securities` | **None** (stays a catalog view over `app.securities`). The v1 model's `-- Future: UNION ALL resolved securities from prep.stg_plaid__securities` comment is superseded — minting puts every synced security *in* the catalog, so a union would double-count. Update the comment in place. |
@@ -1147,7 +1159,8 @@ exact for held shares and flagged only where genuinely unrecoverable.
 | `core.dim_holdings` | **New nullable reconciliation columns** — `provider_reported_quantity`, `provider_reported_cost_basis`, `provider_reported_value`, `provider_reported_as_of` (= the joined snapshot's `extracted_at`) — LEFT JOINed from `prep.stg_plaid__investment_holdings` **bounded to each item's newest *snapshot***, never "latest row per position" or "latest holdings_date". Which snapshot is newest comes from `prep.stg_plaid__investment_holdings_snapshots` ranked by `(extracted_at DESC, ingestion_sequence DESC)` per `source_origin`, **not** from the holdings rows themselves — a pull that returns zero positions writes no holdings rows, so a row-derived newest snapshot cannot see it and would keep serving the last non-empty one (see that table). Because the join scopes to one whole snapshot, a position present in an earlier snapshot but omitted from the newest full snapshot — even one pulled the same UTC day, and including the empty snapshot of a fully-liquidated item — has no row in it and correctly shows NULL `provider_reported_*` (itself the reconciliation signal against a nonzero ledger position), instead of a stale survivor masquerading as current. Column comments mark all four explicitly non-authoritative. |
 | `core.fct_investment_lots` / `core.fct_realized_gains` | **No changes.** Derived from the unioned ledger; Plaid rows flow through the existing four-method engine automatically. |
 
-**Cross-source dedup is out of scope here (deferred, with a guard).** The
+**Cross-source dedup was out of scope for this shipped child (deferred, with a
+guard).** Before M1J.7, the
 `UNION ALL` above places manual and Plaid rows side by side. If a user recorded
 buys/sells manually and *later* connects Plaid on the same account, both copies
 reach the ledger and the engine double-counts lots and gains — there is no
@@ -1229,7 +1242,7 @@ data still loads.
 |---|---|
 | `stg_plaid__investment_transactions` | Sign flip (`2145.50` → `-2145.50`; quantity untouched); fee-convention handling per the validated branch (+ drift-guard fires on a row reconciling under neither); `trade_date` prefers `transaction_datetime` with `trade_date_basis='explicit'` and otherwise uses posting date with `trade_date_basis='posting_fallback'`; lifecycle exclusion; `provider_type`/`provider_subtype` string passthrough; canonical id resolution; Plaid `event_group_id` remains NULL pending M1J.7. |
 | `stg_plaid__securities` / `__investment_holdings` | Currency `COALESCE`; MIC → `exchange`; defensive type mapping; both-id resolution on holdings. |
-| Core union | Plaid rows in `fct_investment_transactions` with correct sign + provider columns; manual rows carry NULL provider columns; Plaid buys/sells produce lots and realized gains through the **unmodified** engine; `dim_holdings` reconciliation columns join only each account's newest snapshot — a position absent from it (sold elsewhere, broker stopped reporting) shows NULL `provider_reported_*`, and manual-only positions stay NULL throughout. |
+| Pre-M1J.7 Core union | Plaid rows in `fct_investment_transactions` with correct sign + provider columns; manual rows carry NULL provider columns; Plaid buys/sells produce lots and realized gains through the **unmodified** engine; `dim_holdings` reconciliation columns join only each account's newest snapshot — a position absent from it (sold elsewhere, broker stopped reporting) shows NULL `provider_reported_*`, and manual-only positions stay NULL throughout. M1J.7 replaces the direct union with active-membership projection and owns its tests. |
 | Reinvest pairing | Shipped behavior: separately delivered Plaid legs retain NULL source grouping while their independent lot and income effects remain intact; whole-event matching is tested by M1J.7. |
 | Basis-unknown transfer | An in-window `transfer_in`/`stock distribution` with Plaid `amount = 0` maps to `amount = NULL` (not 0) → the engine opens a `basis_incomplete` lot. Staging does **not** borrow basis from `Holding.tax_lots[]` for an individual in-window transfer (those lots describe the whole position and carry no transaction link) — per-lot basis is exercised only by the opening-lot bootstrap row below. |
 | Split normalization | A `transfer/split` share-delta converts to the multiplier `M` from the pre-split running position; every open lot scales by `M`, `cost_basis_total` preserved; an underivable pre-split position routes the split to review, not a corrupted lot. |
@@ -1277,7 +1290,7 @@ transactions), which also seed the golden files.
 
 | File | Change |
 |---|---|
-| `src/moneybin/sqlmesh/models/core/fct_investment_transactions.sql` | Plaid transaction CTE **and** `stg_plaid__opening_lots` CTE, both `UNION ALL`'d; `provider_type`/`provider_subtype` columns |
+| `src/moneybin/sqlmesh/models/core/fct_investment_transactions.sql` | Shipped pre-M1J.7: Plaid transaction CTE **and** `stg_plaid__opening_lots` CTE, both `UNION ALL`'d, plus `provider_type`/`provider_subtype` columns. M1J.7 replaces the direct union with active-membership projection while retaining the columns. |
 | `src/moneybin/sqlmesh/models/core/dim_holdings.sql` | Reconciliation columns (LEFT JOIN latest snapshot) |
 | `src/moneybin/sqlmesh/models/core/dim_securities.sql` | Supersede the union comment (no structural change) |
 | `src/moneybin/repositories/securities_repo.py` | Add `created_by` to the repo's column list so mint/refresh writes go through `SecuritiesRepo` (Invariant 10 — the only `app.securities` write path); the resolver's "never touch `created_by='user'` rows" rule is enforced here, not in the service |
