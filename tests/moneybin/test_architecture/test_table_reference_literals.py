@@ -572,10 +572,10 @@ def _direct_scope_nodes(root: ast.AST) -> list[ast.AST]:
     return nodes
 
 
-def _parameter_default_literals(
+def _parameter_default_bindings(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> _ScopeLiterals:
-    """Literal defaults bound to their parameter names.
+) -> tuple[_ScopeLiterals, _ScopeAliases]:
+    """Defaults bound to their parameter names, as literals and as aliases.
 
     A default is the one part of a parameter that is statically known: it IS
     the runtime value on every call that omits the argument, and both halves
@@ -584,6 +584,12 @@ def _parameter_default_literals(
     disclaims, and treating the whole parameter as opaque (which is right for
     what a caller passes) would hide a hardcoded query sitting in plain sight
     in the signature.
+
+    A default naming a module constant (`def f(db, query=QUERY)`) is the same
+    fact one indirection out, so it is recorded as an ALIAS and resolved by
+    the existing name-to-name machinery. Without that it read as a parameter
+    with no binding at all, which the shadowing rule then treats as opaque —
+    so the module constant it plainly names became unreachable.
     """
     args = node.args
     positional = [*args.posonlyargs, *args.args]
@@ -603,8 +609,12 @@ def _parameter_default_literals(
         *zip(args.kwonlyargs, args.kw_defaults, strict=True),
     ]
     literals: _ScopeLiterals = {}
+    aliases: _ScopeAliases = {}
     for arg, default in pairs:
         if default is None:
+            continue
+        if isinstance(default, ast.Name):
+            aliases.setdefault(arg.arg, []).append(default.id)
             continue
         text = _literal_text(default)
         if text is not None:
@@ -613,7 +623,7 @@ def _parameter_default_literals(
                 text,
                 _embedded_names(default),
             ))
-    return literals
+    return literals, aliases
 
 
 def _parameter_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
@@ -1060,8 +1070,11 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
                 local_table_arg_scanned,
             ) = _collect_scope(_direct_scope_nodes(node))
             local_parameters = _parameter_names(node)
-            for name, entries in _parameter_default_literals(node).items():
+            default_literals, default_aliases = _parameter_default_bindings(node)
+            for name, entries in default_literals.items():
                 local_literals.setdefault(name, []).extend(entries)
+            for name, alias_targets in default_aliases.items():
+                local_aliases.setdefault(name, []).extend(alias_targets)
             all_scanned.extend(local_scanned)
             all_scanned.extend(
                 _resolve_worklist(
@@ -1834,3 +1847,23 @@ def test_string_backed_target_beside_a_real_table_is_flagged(
         (1, "FROM", "core.foo"),
         (1, "UNION", "app.bar"),
     ]
+
+
+def test_parameter_default_naming_a_module_constant_reaches_execute(
+    tmp_path: Path,
+) -> None:
+    """A default that names a module constant is the same fact one hop out.
+
+    `QUERY = "..."` then `def f(db, query=QUERY)` executes that constant on
+    every call omitting the argument. Recording only *literal* defaults left
+    this parameter looking unbound, and the shadowing rule then treated it as
+    opaque — so the constant it plainly names became unreachable, a strictly
+    worse outcome than before parameters were modelled at all.
+    """
+    source = (
+        'QUERY = "SELECT * FROM core.foo"\n'
+        "\n"
+        "def f(db, query=QUERY):\n"
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
