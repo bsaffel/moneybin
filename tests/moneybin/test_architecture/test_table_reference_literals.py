@@ -1007,7 +1007,23 @@ def _tables_in_text(text: str) -> list[tuple[str, str]]:
         # literal and the hardcoded `app.bar` passed. Naming the rule beats
         # enumerating the shapes that violate it.
         for literal in statement.find_all(exp.Literal):
-            if not literal.is_string or not isinstance(literal.parent, exp.Func):
+            # `exp.Anonymous`, not `exp.Func`. sqlglot gives a typed node to
+            # every function it models — `concat` parses to `exp.Concat`,
+            # `regexp_matches` to `exp.RegexpLike` — and those are scalar
+            # functions whose string arguments are data. It falls back to
+            # `Anonymous` precisely for the engine-specific functions it does
+            # not model, which is where DuckDB's relation-naming ones live
+            # (`query_table`, `table_info`, `storage_info`). Scanning every
+            # `exp.Func` reported `SELECT concat('core.foo', x) FROM
+            # app.merchants` as a hardcoded table.
+            #
+            # A proxy rather than a proof: an unmodelled DuckDB scalar
+            # function taking a schema-shaped string would still be scanned.
+            # That direction is a false positive — visible in CI and
+            # answerable with an allowlist entry — where the alternative
+            # (naming the relation functions explicitly) fails silently the
+            # first time DuckDB adds one.
+            if not literal.is_string or not isinstance(literal.parent, exp.Anonymous):
                 continue
             statement_found.extend(
                 _fallback_regex_tables(literal.this, type(statement).__name__.upper())
@@ -1867,3 +1883,45 @@ def test_parameter_default_naming_a_module_constant_reaches_execute(
         "    db.execute(query)\n"
     )
     assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
+
+
+def test_scalar_function_string_argument_is_not_reported_as_a_table(
+    tmp_path: Path,
+) -> None:
+    """A string argument to a modelled scalar function is data.
+
+    `concat('core.foo', x)` builds a string; it does not read `core.foo`.
+    sqlglot parses it to a typed `exp.Concat`, which is what separates it
+    from the engine-specific relation functions that fall back to
+    `exp.Anonymous`. Scanning every `exp.Func` reported this alongside the
+    real `app.merchants`, failing CI on a correct query.
+    """
+    source = "db.execute(\"SELECT concat('core.foo', x) FROM app.merchants\")\n"
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "app.merchants")]
+
+
+def test_scalar_function_string_argument_with_no_table_is_not_reported(
+    tmp_path: Path,
+) -> None:
+    """The same rule with no real table present, so nothing masks the result.
+
+    This shape predates the `exp.Func` widening — it was reported under the
+    projection carve-out too, because the literal's parent was the function
+    rather than the projection. Pinned separately from the case above so a
+    future narrowing cannot fix one and silently reintroduce the other.
+    """
+    source = "db.execute(\"SELECT regexp_matches(x, 'core.foo')\")\n"
+    assert _scan_source(tmp_path, source) == []
+
+
+def test_relation_naming_function_argument_is_still_reported(
+    tmp_path: Path,
+) -> None:
+    """The inverse half: narrowing to `Anonymous` must not disarm the fix.
+
+    `query_table` is unmodelled by sqlglot and so parses to `exp.Anonymous`,
+    which is exactly the class the scan keeps. Paired with the two tests
+    above — narrowing is only safe when both directions are pinned.
+    """
+    source = "db.execute(\"SELECT * FROM query_table('app.bar')\")\n"
+    assert _scan_source(tmp_path, source) == [(1, "SELECT", "app.bar")]
