@@ -565,7 +565,15 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
         FROM {merged} AS single_row
         LEFT JOIN {accounts} AS sent_account
           ON single_row.account_id = sent_account.account_id
-        WHERE NOT single_row.to_amount IS NULL OR NOT single_row.to_currency IS NULL
+        LEFT JOIN {bridge} AS linked_transfer
+          ON single_row.transaction_id IN (
+            linked_transfer.debit_transaction_id,
+            linked_transfer.credit_transaction_id
+          )
+        WHERE (
+          NOT single_row.to_amount IS NULL OR NOT single_row.to_currency IS NULL
+        )
+          AND linked_transfer.transfer_id IS NULL
         """  # noqa: S608  # table name resolved by SQLMesh, not user input
     )
     return [

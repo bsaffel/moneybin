@@ -230,6 +230,56 @@ class TestUndo:
 
         assert restated == [(db, "undo")]
 
+    def test_transfer_endpoint_undo_restates_from_account_root(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        MatchDecisionsRepo(db).insert(
+            match_id="transfer-to-repoint",
+            source_transaction_id_a="out",
+            source_type_a="manual",
+            source_origin_a="user",
+            source_transaction_id_b="in",
+            source_type_b="manual",
+            source_origin_b="user",
+            account_id="acct-a",
+            account_id_b="acct-b",
+            confidence_score=1.0,
+            match_signals={},
+            match_tier=None,
+            match_type="transfer",
+            match_status="accepted",
+            decided_by="user",
+            actor="test",
+        )
+        with operation() as repoint_operation_id:
+            MatchDecisionsRepo(db).repoint_account(
+                from_account_id="acct-a",
+                to_account_id="acct-c",
+                actor="test",
+            )
+        restated: list[tuple[Database, bool, str]] = []
+
+        def record_restatement(
+            target_db: Database,
+            *,
+            account_currency_changed: bool = False,
+            committed_change: str = "setting",
+        ) -> None:
+            restated.append((
+                target_db,
+                account_currency_changed,
+                committed_change,
+            ))
+
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            record_restatement,
+        )
+
+        UndoService(db).undo(repoint_operation_id, actor="test")
+
+        assert restated == [(db, True, "undo")]
+
     def test_not_found_raises(self, db: Database) -> None:
         with pytest.raises(UserError) as exc:
             UndoService(db).undo("op_does_not_exist", actor="cli")

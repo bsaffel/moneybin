@@ -166,6 +166,13 @@ def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool]:
             )
             if before_is_accepted_transfer != after_is_accepted_transfer:
                 needs_restatement = True
+            before_endpoints = (before.get("account_id"), before.get("account_id_b"))
+            after_endpoints = (after.get("account_id"), after.get("account_id_b"))
+            if (
+                before_is_accepted_transfer or after_is_accepted_transfer
+            ) and before_endpoints != after_endpoints:
+                needs_restatement = True
+                account_currency_changed = True
             continue
         if event.target_table != "account_settings":
             continue

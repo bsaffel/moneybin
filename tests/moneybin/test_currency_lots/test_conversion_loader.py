@@ -433,6 +433,29 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     assert missing.coverage_reason == "missing_leg"
     assert str(missing.updated_at) == "2026-03-23 09:00:00"
 
+    db.execute(
+        """
+        UPDATE prep.int_transactions__merged
+           SET conversion_from_date = transaction_date,
+               conversion_from_amount = amount,
+               conversion_from_currency = 'USD',
+               to_amount = 95.00,
+               to_currency = 'EUR',
+               conversion_source_type = 'manual',
+               conversion_source_origin = 'user',
+               conversion_source_transaction_id = 'native-linked-out'
+         WHERE transaction_id = 'txn-linked-out'
+        """
+    )
+
+    overlapping = [
+        row
+        for row in module.load_conversion_rows(t.cast(t.Any, _DatabaseContext(db)))
+        if row.from_transaction_id == "txn-linked-out"
+    ]
+    assert len(overlapping) == 1
+    assert overlapping[0].source_shape == "linked_two_row"
+
 
 def test_missing_home_currency_uses_profile_audit_freshness() -> None:
     module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
