@@ -407,13 +407,14 @@ canonical id to its survivor. It stales pending Proposals because the candidate
 graph may change, but an accepted Match remains accepted: the identity decision
 itself establishes equivalence, while exact source evidence and event membership
 are unchanged. Before the new alias route becomes visible, that audited
-transaction advances `projection_changed_at` for every affected active
-membership because live canonical ids in the Golden projection may change. A
-rebind, unlink, or split that changes an observation's identity equivalence
-class is different: it atomically stales affected pending and accepted or
-multi-source Matches before the new mapping becomes visible. The prior bound
-identity remains resolvable for the last-reviewed projection until a replacement
-Match is accepted or reversed.
+transaction replaces each affected active membership with a dependency-only
+successor revision whose bound Account or Security id is the equivalent
+survivor, and records `projection_changed_at`; it does not reread Raw through a
+live resolver during Golden projection. A rebind, unlink, or split that changes
+an observation's identity equivalence class is different: it atomically stales
+affected pending and accepted or multi-source Matches before the new mapping
+becomes visible. The immutable membership binding preserves the prior reviewed
+identity for projection until a replacement Match is accepted or reversed.
 
 The same pre-publication transaction handles every affected standalone
 membership. When the proposed identity change still yields one complete event
@@ -463,22 +464,34 @@ accepted membership rather than deleting its history. Historical membership
 retains observation versions, prior Golden ids, and source-group references as
 provenance.
 
+Each membership revision also stores the exact projection binding:
+`bound_account_id`, `bound_security_id`, `bound_effective_currency`, whether
+that currency was source-supplied or Account-inherited, and the accepted Link,
+merge, or Account-currency dependency generation that produced each bound
+value. Initial standalone registration and acceptance persist these values
+before publishing the Golden projection. Golden models read the bound values
+from active membership; they never recompute Account, Security, or inherited
+currency from current Raw-to-canonical routing. The binding on an accepted or
+stale Match is therefore its immutable last-reviewed projection input.
+
 Every projection-affecting membership transition records one
 `projection_changed_at` value on the history rows it activates or retires. The
 value is written in the same transaction as a membership registration,
 replacement, reversal, reconstruction advance, or reconstruction retirement.
-The same watermark advances on affected active membership rows, without
-changing their decision or evidence, when a canonical dependency changes the
-live Golden projection without a membership transition. This includes an
-equivalence merge that changes Account or Security alias routing and a canonical
-Account-currency correction used by an unreviewed standalone or opening-lot
-membership. The audited identity or Account update and the watermark advance
-commit in one transaction before the new dependency is visible. An accepted or
-multi-source Match retains its exact reviewed effective currency when an Account
-currency changes; that operation stales the Match but does not advance the
-watermark until replacement or reversal changes the projection. Planning,
-rejection, and any other stale transition that deliberately retains the
-last-reviewed projection do not write it.
+A projection-affecting canonical dependency change is also a membership
+transition: the audited operation retires the affected active row and activates
+a dependency-only successor with updated bound values and the same Golden ids,
+source evidence, and decision. This applies to an equivalence merge and to a
+canonical Account-currency correction used by an unreviewed standalone or
+opening-lot membership. The dependency change, successor binding, and watermark
+commit in one transaction before the new dependency is visible. A
+non-equivalent identity change or Account-currency change affecting an accepted
+or multi-source Match instead stales the Match while retaining its immutable
+reviewed bindings; it does not write `projection_changed_at` until replacement
+or reversal changes the projection. Planning, rejection, and any other stale
+transition that deliberately retains the last-reviewed projection do not write
+it. No dependency mapping may publish while an affected active membership lacks
+the bound values required to reproduce its prior projection.
 
 An opening-lot reconstruction uses the stable key `(plaid, source_origin,
 source_account_key, source_security_key, first_snapshot_source_file, lot_key)`.
@@ -614,9 +627,10 @@ contributing source row, including observations whose value was not selected.
 
 ### Source correction lifecycle
 
-Golden projection reads the exact observation versions named by active
-membership, never whichever revision happens to be latest in staging. A source
-correction therefore cannot silently change a reviewed Golden field.
+Golden projection reads the exact observation versions and canonical dependency
+values bound by active membership, never whichever revision or Raw-to-canonical
+resolution happens to be current elsewhere. A source correction or dependency
+change therefore cannot silently change a reviewed Golden field.
 
 M1J.7 covers delivered aggregator revisions. It does not support Plaid
 cancellation, retraction, or disappearance: the Plaid comparison adapter
@@ -879,7 +893,7 @@ fixtures and expected Golden-ledger outcomes.
 | Revisions | Identical aggregator re-delivery reuses a version and per-job receipt while preserving its first-ingestion sequence; A→B→A content reuses the immutable A revision but a new receipt makes A current while retaining B in history, including when two jobs share an extraction timestamp; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
 | Opening lots | A reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
-| Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency; an equivalence merge follows aliases, stales pending Proposals only, and advances projection freshness for affected active membership before the route is visible; an Account-currency correction likewise advances freshness for affected unreviewed projection while an accepted or multi-source Match retains reviewed currency and stales; before a non-equivalent rebind, unlink, or split becomes visible, pending and accepted or multi-source Matches stale while a structurally unchanged standalone membership advances with stable Golden ids and a now-unresolved or structurally changed standalone retires; Raw remains unchanged |
+| Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; every active membership stores exact bound Account, Security, effective-currency, and dependency-generation values that Golden projection reads instead of live Raw routing; omitted source currency inherits the canonical account currency; an equivalence merge activates a dependency-only successor binding with stable Golden ids and projection freshness before the route is visible; an Account-currency correction does likewise for affected unreviewed projection while an accepted or multi-source Match retains reviewed bindings and stales; before a non-equivalent rebind, unlink, or split becomes visible, pending and accepted or multi-source Matches stale while a structurally unchanged standalone membership advances with stable Golden ids and a now-unresolved or structurally changed standalone retires; Raw remains unchanged |
 | Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; consolidation-retired event and leg ids forward through the two derived Core views, ids retired without a successor return a terminal `retired` status and null active id, and undo reactivates prior ids as self-maps |
 | Splits | Normalized contract fixtures pass for supported comparison adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
@@ -928,8 +942,8 @@ fixtures and expected Golden-ledger outcomes.
   not produce Proposals, while validated multi-leg observations remain one
   Source event.
 - DuckDB repository tests for atomic membership, rejection suppression, field
-  resolutions, observation-version binding, projection-change timestamps, audit
-  records, and reversal.
+  resolutions, observation-version and canonical-dependency bindings,
+  projection-change timestamps, audit records, and reversal.
 - Raw-loader tests proving identical Plaid re-delivery is idempotent and a
   changed match-relevant or Golden-projected value appends a new observation
   revision. A→B→A across three sync jobs writes three delivery receipts, reuses
@@ -994,10 +1008,12 @@ fixtures and expected Golden-ledger outcomes.
 - Identity-dependency tests proving an equivalence merge follows aliases
   without staling accepted Matches, a non-equivalent rebind, unlink, or split
   stales affected Matches before its mapping becomes visible, and neither path
-  rewrites Raw. They also prove equivalence alias publication and unreviewed
-  Account-currency projection changes advance the shared freshness watermark in
-  the same transaction, while an accepted or multi-source currency change
-  retains reviewed projection and stales without a watermark advance.
+  rewrites Raw. They also prove every active membership can reproduce its bound
+  Account, Security, and effective currency without live Raw routing;
+  equivalence alias publication and unreviewed Account-currency changes activate
+  dependency-only successor bindings and advance the shared freshness watermark
+  in the same transaction, while an accepted or multi-source change retains its
+  immutable reviewed binding and stales without a watermark advance.
 - Standalone-identity tests proving a non-equivalent rebind, unlink, or split
   atomically replaces or retires affected membership before mapping publication,
   records projection freshness, preserves Golden ids only for unambiguous

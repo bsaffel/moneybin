@@ -403,16 +403,16 @@ CREATE SEQUENCE IF NOT EXISTS raw.plaid_investment_transaction_receipt_sequence
 
 /* One idempotent occurrence per delivered Plaid transaction and sync job. */
 CREATE TABLE IF NOT EXISTS raw.plaid_investment_transaction_receipts (
-    investment_transaction_id VARCHAR NOT NULL,
-    observation_version VARCHAR NOT NULL,
-    source_file VARCHAR NOT NULL,
-    source_type VARCHAR NOT NULL DEFAULT 'plaid',
-    source_origin VARCHAR NOT NULL,
-    extracted_at TIMESTAMP NOT NULL,
-    loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    investment_transaction_id VARCHAR NOT NULL, -- Plaid investment_transaction_id; stable row identity and PK
+    source_origin VARCHAR NOT NULL,              -- Plaid item_id; stable connection identity and PK
+    source_file VARCHAR NOT NULL,                -- Logical sync_{job_id}; idempotent delivery identity and PK
+    observation_version VARCHAR NOT NULL,        -- Exact immutable transaction revision delivered by this job
+    source_type VARCHAR NOT NULL DEFAULT 'plaid', -- Always 'plaid' for this table
+    extracted_at TIMESTAMP NOT NULL,             -- Server metadata.synced_at for this delivery
+    loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Local receipt insertion time
     ingestion_sequence BIGINT NOT NULL DEFAULT nextval(
         'raw.plaid_investment_transaction_receipt_sequence'
-    ),
+    ),                                           -- Local monotonic tie-breaker, preserved on replay
     PRIMARY KEY (investment_transaction_id, source_origin, source_file)
 );
 ```
