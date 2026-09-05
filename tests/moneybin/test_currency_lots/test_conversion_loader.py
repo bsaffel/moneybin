@@ -637,14 +637,59 @@ def test_accepted_decision_missing_from_transfer_bridge_stays_inspectable() -> N
     assert row.executed_rate is None
 
 
-@pytest.mark.parametrize("missing_field", ["to_amount", "to_currency"])
-def test_single_row_with_one_received_field_is_incomplete_shape(
-    missing_field: str,
-) -> None:
-    row = _load(_context(single=_frame(_single(**{missing_field: None}))))[0]
+def test_single_row_without_received_amount_is_incomplete_shape() -> None:
+    row = _load(_context(single=_frame(_single(to_amount=None))))[0]
 
     assert row.coverage_status == "incomplete"
     assert row.coverage_reason == "incomplete_shape"
+
+
+@pytest.mark.parametrize("unknown_currency", [None, "EURO"])
+def test_single_row_unknown_received_currency_preserves_known_disposal(
+    unknown_currency: str | None,
+) -> None:
+    rows = _load(
+        _context(
+            single=_frame(
+                _single(
+                    from_transaction_id="txn-acquire",
+                    from_date="2026-03-15",
+                    to_date="2026-03-15",
+                    from_amount="-100.00",
+                    from_currency="USD",
+                    to_amount="80.00",
+                    to_currency="EUR",
+                    from_source_transaction_id="native-acquire",
+                    to_source_transaction_id="native-acquire",
+                    candidate_updated_at="2026-03-15 14:00:00",
+                ),
+                _single(
+                    from_transaction_id="txn-dispose",
+                    from_amount="-20.00",
+                    from_currency="EUR",
+                    to_amount="30.00",
+                    to_currency=unknown_currency,
+                    from_source_transaction_id="native-dispose",
+                    to_source_transaction_id="native-dispose",
+                ),
+            )
+        )
+    )
+
+    disposal = next(row for row in rows if row.from_transaction_id == "txn-dispose")
+    assert disposal.coverage_reason == "unknown_currency"
+
+    module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
+    result = module.derive_currency_accounting(rows, (), {})
+
+    assert len(result.lots) == 1
+    assert result.lots[0].remaining_quantity == Decimal("60.00")
+    assert len(result.gains) == 1
+    assert result.gains[0].disposed_amount == Decimal("20.00")
+    assert result.gains[0].proceeds is None
+    assert result.gains[0].cost_basis is None
+    assert result.gains[0].gain_loss is None
+    assert result.gains[0].coverage_reason == "unknown_currency"
 
 
 def test_unknown_currency_precedes_missing_home_currency() -> None:

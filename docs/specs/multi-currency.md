@@ -730,7 +730,9 @@ Numbered, testable. Tagged by phase.
     and provenance but expose NULL basis and gain/loss; the engine's zero-basis
     fallback is never published as a trustworthy FX result. The same rule applies
     to unmatched or unsupported same-currency Transfer quantity: it remains visible
-    as an incomplete Currency lot, never a zero-basis acquisition.
+    as an incomplete Currency lot, never a zero-basis acquisition. When only one
+    conversion leg has a valid Currency, that leg still changes its known quantity
+    while remaining uncovered with `unknown_currency`; the invalid leg is omitted.
 23. **Foundation boundary and observability.** The first delivery slice produces
     the Core conversion, Currency-lot, and realized-FX rows. It adds no CLI command,
     MCP tool, report, Provider parsing, or mutable App table. A bounded

@@ -346,10 +346,6 @@ def _derive_conversion(
                 candidate.to_amount,
             )
         )
-        or (
-            candidate.source_shape == "single_row"
-            and (candidate.to_amount is None or candidate.to_currency is None)
-        )
         or not valid_terms
     )
     unknown_currency = not _valid_currency(
@@ -875,38 +871,31 @@ def _event(
 def _conversion_events(
     conversion: CurrencyConversionRow,
 ) -> list[tuple[LedgerEvent, _EventMetadata]]:
-    quantity_only_reasons = {"missing_home_currency", "missing_valuation_rate"}
+    quantity_only_reasons = {
+        "missing_home_currency",
+        "missing_valuation_rate",
+        "unknown_currency",
+    }
     if (
         conversion.coverage_status != "complete"
         and conversion.coverage_reason not in quantity_only_reasons
     ):
         return []
-    required = (
-        conversion.from_account_id,
-        conversion.to_account_id,
-        conversion.from_date,
-        conversion.to_date,
-        conversion.from_amount,
-        conversion.from_currency,
-        conversion.to_amount,
-        conversion.to_currency,
-    )
-    if any(value is None for value in required):
-        return []
-
-    from_account_id = t.cast("str", conversion.from_account_id)
-    to_account_id = t.cast("str", conversion.to_account_id)
-    from_date = t.cast("date", conversion.from_date)
-    to_date = t.cast("date", conversion.to_date)
-    from_amount = t.cast("Decimal", conversion.from_amount)
-    from_currency = t.cast("str", conversion.from_currency)
-    to_amount = t.cast("Decimal", conversion.to_amount)
-    to_currency = t.cast("str", conversion.to_currency)
     home_currency = conversion.home_currency
     home_value = conversion.home_value
     events: list[tuple[LedgerEvent, _EventMetadata]] = []
 
-    if from_currency != home_currency:
+    if (
+        conversion.from_account_id is not None
+        and conversion.from_date is not None
+        and conversion.from_amount is not None
+        and _valid_currency(conversion.from_currency)
+        and conversion.from_currency != home_currency
+    ):
+        from_account_id = conversion.from_account_id
+        from_date = conversion.from_date
+        from_amount = conversion.from_amount
+        from_currency = conversion.from_currency
         event = _event(
             f"{conversion.conversion_id}:dispose",
             account_id=from_account_id,
@@ -936,7 +925,17 @@ def _conversion_events(
             ),
         ))
 
-    if to_currency != home_currency:
+    if (
+        conversion.to_account_id is not None
+        and conversion.to_date is not None
+        and conversion.to_amount is not None
+        and _valid_currency(conversion.to_currency)
+        and conversion.to_currency != home_currency
+    ):
+        to_account_id = conversion.to_account_id
+        to_date = conversion.to_date
+        to_amount = conversion.to_amount
+        to_currency = conversion.to_currency
         event = _event(
             f"{conversion.conversion_id}:acquire",
             account_id=to_account_id,

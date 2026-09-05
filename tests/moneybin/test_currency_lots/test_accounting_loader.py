@@ -1049,6 +1049,74 @@ def test_missing_home_currency_retains_both_quantity_movements() -> None:
     }
 
 
+@pytest.mark.parametrize("unknown_currency", [None, "EURO"])
+def test_unknown_received_currency_preserves_known_disposal_quantity(
+    unknown_currency: str | None,
+) -> None:
+    acquisition = _conversion()
+    disposal = _conversion(
+        conversion_id="fxc_unknown_received_currency",
+        from_account_id="acct-eur",
+        to_account_id="acct-unknown",
+        from_date=date(2026, 2, 1),
+        to_date=date(2026, 2, 1),
+        from_amount=D("20.00"),
+        from_currency="EUR",
+        to_amount=D("30.00"),
+        to_currency=unknown_currency,
+        home_value=None,
+        valuation_rate=None,
+        valuation_rate_date=None,
+        valuation_source_type=None,
+        coverage_status="incomplete",
+        coverage_reason="unknown_currency",
+        updated_at=T2,
+    )
+
+    result = _derive(acquisition, disposal)
+
+    assert len(result.lots) == 1
+    assert result.lots[0].currency_code == "EUR"
+    assert result.lots[0].remaining_quantity == D("60.00")
+    assert len(result.gains) == 1
+    assert result.gains[0].disposed_amount == D("20.00")
+    assert result.gains[0].proceeds is None
+    assert result.gains[0].cost_basis is None
+    assert result.gains[0].gain_loss is None
+    assert result.gains[0].coverage_reason == "unknown_currency"
+
+
+@pytest.mark.parametrize("unknown_currency", [None, "EURO"])
+def test_unknown_sent_currency_preserves_known_acquisition_quantity(
+    unknown_currency: str | None,
+) -> None:
+    acquisition = _conversion(
+        from_account_id="acct-unknown",
+        to_account_id="acct-eur",
+        from_amount=D("100.00"),
+        from_currency=unknown_currency,
+        to_amount=D("80.00"),
+        to_currency="EUR",
+        home_value=None,
+        valuation_rate=None,
+        valuation_rate_date=None,
+        valuation_source_type=None,
+        coverage_status="incomplete",
+        coverage_reason="unknown_currency",
+    )
+
+    result = _derive(acquisition)
+
+    assert result.gains == ()
+    assert len(result.lots) == 1
+    assert result.lots[0].currency_code == "EUR"
+    assert result.lots[0].original_quantity == D("80.00")
+    assert result.lots[0].remaining_quantity == D("80.00")
+    assert result.lots[0].cost_basis_total is None
+    assert result.lots[0].cost_basis_remaining is None
+    assert result.lots[0].coverage_reason == "unknown_currency"
+
+
 @pytest.mark.parametrize(
     ("currency", "home", "reason"),
     [
