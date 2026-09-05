@@ -33,8 +33,10 @@ review-first launch posture:
    reviewed decisions.
 3. `event_group_id` becomes the stable MoneyBin-owned identity of a Golden
    investment event. A singleton transaction is a one-leg event.
-4. Matching is atomic at the event boundary. MoneyBin never accepts only part
-   of a reinvestment, transfer, or other multi-leg event.
+4. Matching is atomic at each adapter-validated Source-event boundary. MoneyBin
+   never accepts only part of such an event. M1J.7's only compound Source shape
+   is reinvest; supported `transfer_in` and `transfer_out` observations remain
+   one-leg events.
 5. Every candidate remains pending until a person accepts or rejects it in the
    first production release. The engine may label a candidate `auto_eligible`
    for measurement, but that label has no mutation authority.
@@ -59,10 +61,10 @@ wrong ledger, but it also hides legitimate non-overlapping history.
 Cash matching cannot simply absorb this problem. Cash candidates are primarily
 row or graph relationships; an investment event may contain several
 semantically linked legs whose quantities, cash effects, fees, dates, and
-accounts must agree as one unit. Treating those legs independently could keep
-the dividend from one source and the reinvestment purchase from another, or
-accept one side of a transfer without the other. Either result creates a
-plausible but incorrect tax ledger.
+accounts must agree as one unit. Treating legs that an adapter has validated as
+one Source event independently could keep the dividend from one source and the
+reinvestment purchase from another. That creates a plausible but incorrect tax
+ledger.
 
 ## Goals
 
@@ -93,6 +95,10 @@ plausible but incorrect tax ledger.
   cancellation-to-original relationship.
 - Repairing incomplete aggregator history, inventing missing event legs, or
   synthesizing a transfer counterpart.
+- Inferring that separate `transfer_in` and `transfer_out` observations compose
+  one internal transfer, or constructing merger, spin-off, or trade compounds.
+  Those shapes require an atomic manual interface and a validated comparison-
+  adapter contract in a later increment.
 - Changing tax-lot policy, cost-basis elections, or wash-sale handling.
 - Replacing the visible-collision guard as part of the matcher launch.
 - Providing a partial-acceptance escape hatch for a multi-leg event.
@@ -200,6 +206,14 @@ observation identities. A missing leg or any alternative pairing leaves the
 observations as singletons, so they cannot partially match a manual reinvest
 event.
 
+M1J.7 treats ordinary normalized `transfer_in` and `transfer_out` observations
+as one-leg Source events. A Proposal may compare a manual and aggregator event
+only when their normalized transfer direction is the same. The adapters never
+infer that independently observed in/out legs form one internal transfer and
+never synthesize a missing counterpart. Plaid merger, spin-off, and trade legs
+remain singleton evidence but are marked as an unsupported compound shape, so
+they cannot enter either a compound Proposal or a partial one-leg match.
+
 Each event header carries:
 
 - `source_type` and `source_origin`;
@@ -258,7 +272,9 @@ A candidate is ineligible unless all applicable legs agree on:
 - effective currency for every compared monetary field; and
 - an event shape supported by both comparison adapters.
 
-A transfer compares the entire account pair, direction, security, and quantity.
+A supported one-leg transfer compares direction, Account, Security, effective
+currency, and quantity. M1J.7 does not infer an account pair from separate
+transfer observations.
 A missing or unresolved identity routes to its existing account- or
 security-identity review; the event matcher does not guess it.
 
@@ -300,7 +316,7 @@ These thresholds admit review candidates; they do not authorize acceptance.
 
 | Evidence | Candidate threshold |
 |---|---|
-| Buy, sell, or reinvest date | Same date or within 5 calendar days across trade and settlement dates |
+| Buy, sell, or reinvest date | Same date or within 5 calendar days across trade and settlement dates; the 3-day rule in Source event construction is the earlier Plaid-internal reinvest-leg pairing window, not this cross-source candidate window |
 | Dividend, interest, or fee date | Same date or within 3 calendar days |
 | Transfer date | Same date or within 7 calendar days |
 | Quantity | Exact at 10 decimal places, or difference no greater than `max(0.000001, abs(quantity) * 0.00000001)` |
@@ -319,6 +335,9 @@ The planner assigns source events, not individual legs. An accepted Proposal
 must satisfy all of these invariants:
 
 - each source event belongs to at most one active Golden event;
+- every Proposal contains at least two Source events, and no two share the same
+  `(source_type, source_origin)`; multiple validated legs inside one Source
+  event do not count as multiple sources;
 - every leg of every source event moves together;
 - the proposed leg correspondence is total for the supported event shape;
 - competing assignments remain visible rather than being broken by arbitrary
@@ -331,7 +350,8 @@ assignment remains competing and cannot be accepted until the ambiguity is
 resolved.
 
 Every planned Proposal records a versioned fingerprint over its exact
-observation versions, normalized members, and match-relevant fields. It also
+observation versions, normalized members, source-diversity tuples, and
+match-relevant fields. It also
 records a content-derived candidate-graph fingerprint for the connected
 candidate component containing those members. That graph fingerprint covers
 every candidate node and edge in the component, their relevant observation
@@ -781,8 +801,9 @@ fixtures and expected Golden-ledger outcomes.
 | Simple events | Exact and fuzzy buy, sell, dividend, interest, and fee matches; legitimate unmatched neighbors remain separate |
 | Dates | Same date and both sides of every type-specific boundary; trade date matched to settlement date |
 | Precision | Exact decimal normalization plus inside/outside quantity, amount, fee, and price thresholds |
-| Reinvestment | Manual and Plaid two-leg shapes match only when the Plaid comparison adapter finds one normalized `reinvest` acquisition and an income leg using the explicit `dividend` to `dividend`, `interest` to `interest`, or `capital_gain` to `capital_gain_distribution` compatibility mapping within 3 calendar days, with one complete unambiguous cash/fee-reconciled pairing; both legs move atomically, while a missing or multiply paired leg remains singleton and is not accepted |
-| Transfers | Both account directions and quantities agree; one-sided or mismatched transfers remain ineligible |
+| Reinvestment | Manual and Plaid two-leg shapes match only when the Plaid comparison adapter finds one normalized `reinvest` acquisition and an income leg using the explicit `dividend` to `dividend`, `interest` to `interest`, or `capital_gain` to `capital_gain_distribution` compatibility mapping within 3 calendar days, with one complete unambiguous cash/fee-reconciled pairing; a 4-day Plaid-internal pair remains singleton, while already-constructed manual and Plaid Source events may cross-source match at 4 or 5 days but not 6; both legs move atomically, and a missing or multiply paired leg is not accepted |
+| Transfers | Same-direction one-leg manual and Plaid `transfer_in` or `transfer_out` events match only when Account, Security, effective currency, quantity, and the 7-day candidate window agree; opposing legs are never inferred as an internal-transfer pair, and merger, spin-off, or trade legs remain ineligible for partial matching |
+| Source diversity | A manual-to-Plaid or other distinct-origin Proposal may be eligible; two manual/user events or two events from one Plaid connection never consolidate through this review matcher, while multiple legs already validated inside one Source event remain atomic |
 | Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; manual correction is unavailable in M1J.7 |
@@ -821,7 +842,16 @@ fixtures and expected Golden-ledger outcomes.
   `dividend` to `dividend`, `interest` to `interest`, or `capital_gain` to
   `capital_gain_distribution` compatibility mapping inside the 3-calendar-day
   and cash/fee thresholds, and leaves missing, mistyped, out-of-window, or
-  multiply paired observations as singletons.
+  multiply paired observations as singletons. A 4-day Plaid-internal pair stays
+  singleton, while already-constructed cross-source reinvest events match at 4
+  and 5 days but not 6.
+- Transfer tests proving same-direction one-leg events match only across
+  distinct Source tuples with Account, Security, currency, quantity, and date
+  agreement; no in/out counterpart is inferred; and merger, spin-off, and trade
+  legs cannot enter a partial Proposal.
+- Source-diversity tests proving same-manual and same-Plaid-origin duplicates do
+  not produce Proposals, while validated multi-leg observations remain one
+  Source event.
 - DuckDB repository tests for atomic membership, rejection suppression, field
   resolutions, observation-version binding, projection-change timestamps, audit
   records, and reversal.
@@ -944,4 +974,6 @@ accepted contract and must be reconciled to it before delivery begins.
 - Event shapes not represented by the current ledger taxonomy.
 - Manual investment-event correction and its distinct whole-event interface.
 - Compound manual event shapes beyond the atomic reinvest operation.
+- Compound internal-transfer, merger, spin-off, and trade construction or
+  matching.
 - Plaid investment cancellation, retraction, and removal ingestion.

@@ -111,8 +111,11 @@ reach the ledger, everything downstream is existing machinery.
    staging model leaves `event_group_id` NULL. An unpaired reinvest row still
    opens its lot and the income row still counts as income; only the linkage is
    absent. [`investment-event-matching.md`](investment-event-matching.md)
-   supersedes the unimplemented content-hash proposal with review-first,
-   whole-event comparison and a MoneyBin-owned Golden `event_group_id`.
+   supersedes the unimplemented content-hash proposal with a validated
+   two-leg reinvest comparison shape and a MoneyBin-owned Golden
+   `event_group_id`. Ordinary transfers remain one-leg Source events;
+   compound internal transfers, mergers, spin-offs, and trades are not
+   constructed in M1J.7.
 9. **Derived models untouched.** `core.fct_investment_lots`,
    `core.fct_realized_gains`, and `core.dim_holdings`'s ledger-derived columns
    need no changes — they rebuild from the unioned ledger automatically. After
@@ -753,7 +756,7 @@ The heaviest view in this spec. In order:
    | cash/withdrawal | `withdrawal` | NULL security |
    | transfer/{transfer, send} | `transfer_in`/`transfer_out` (security present) or `deposit`/`withdrawal` (cash-only) | direction by sign — `quantity` when a security is present (falling back to the amount sign only when `quantity = 0`, since Plaid never sends NULL for that field), the Plaid `amount` sign alone for cash-only. A cash-only transfer is a cash movement, not a share movement, so it takes the cash vocabulary instead of leaving a NULL-security `transfer_in`/`transfer_out` |
    | transfer/split | `split` | **quantity must be converted to a multiplier** — see the split-normalization note below; a raw passthrough corrupts every lot |
-   | transfer/{merger, spin off, trade} | decomposed leg pairs | Plaid delivers each leg as its own row; staging never fabricates or groups a leg, and M1J.7 owns later whole-event matching under review |
+   | transfer/{merger, spin off, trade} | decomposed leg observations | Plaid delivers each leg as its own row; staging never fabricates or groups a leg, and M1J.7 marks the unsupported compound shape ineligible so it cannot match partially |
    | transfer/{adjustment}, fee/adjustment, loan payment, rebalance | `other` | |
 
    **`other`-quantity guard.** Every row explicitly mapped to `other` (option
@@ -867,8 +870,11 @@ The heaviest view in this spec. In order:
    The rows retain their effects independently: the acquisition opens its lot,
    income counts once, and an unmatched `transfer_in` opens a
    `basis_incomplete` lot under the established incomplete-basis machinery.
-   M1J.7 compares and groups these rows as whole source events under review,
-   then projects the MoneyBin-owned Golden `event_group_id` downstream.
+   M1J.7 constructs only the validated reinvest pair. Ordinary transfer rows
+   remain one-leg Source events eligible only for same-direction cross-source
+   comparison; merger, spin-off, and trade legs remain ineligible so they
+   cannot match partially. Accepted events project the MoneyBin-owned Golden
+   `event_group_id` downstream.
 
 ### `prep.stg_plaid__investment_holdings`
 
@@ -1282,9 +1288,10 @@ contract above is its specification.
   contradiction falls to review.
 - **Plaid grouping remains NULL in staging.** Plaid exposes no reliable
   pairing identifier, and a content hash over mutable financial fields would
-  confuse source-event evidence with Golden identity. M1J.7 now owns grouping:
-  it compares whole events under review and persists a stable MoneyBin-owned
-  `event_group_id` outside Plaid staging.
+  confuse source-event evidence with Golden identity. M1J.7 owns Golden
+  grouping outside Plaid staging: it constructs only the validated reinvest
+  pair, keeps ordinary transfers as one-leg Source events, and leaves compound
+  internal transfers and corporate actions unsupported.
 - **Taxonomy as an explicit staging `CASE`.** Versioned with the model, exact,
   and testable row-by-row; no seed-table indirection for a mapping that changes
   only when Plaid's enum does.
@@ -1307,16 +1314,17 @@ contract above is its specification.
 
 ## Open questions
 
-- **Reinvest / corporate-action pairing — moved to M1J.7.** Plaid exposes no
-  explicit pairing identifier. Plaid staging therefore stays NULL-grouped;
-  the review-first event matcher owns multi-signal comparison, whole-event
-  assignment, and the Golden identity rather than synthesizing a source
-  grouping key here.
+- **Reinvest pairing moved to M1J.7; compound corporate actions deferred.**
+  Plaid exposes no explicit pairing identifier. Plaid staging therefore stays
+  NULL-grouped. The review-first matcher constructs only a validated reinvest
+  pair, treats ordinary transfers as one-leg Source events, and leaves
+  internal-transfer, merger, spin-off, and trade construction for a later
+  atomic manual interface and comparison-adapter contract.
 - **Fee inclusion in Plaid `amount`.** Plaid's API reference does not state
   whether `InvestmentTransaction.amount` includes `fees`, and ships no worked
-  sample (verified 2026-07-10). The same Sandbox golden capture that settles
-  the pairing key must assert `|amount|` against `quantity × price ± fees`
-  and settle the convention; staging § step 5 specifies both branches, so the
+  sample (verified 2026-07-10). A Sandbox golden capture must assert `|amount|`
+  against `quantity × price ± fees` and settle the convention; staging § step 5
+  specifies both branches, so the
   answer selects a branch rather than reopening design. Institution-level
   variance, if the goldens reveal it, escalates this from a constant to a
   per-row reconciliation rule — surface to review if so.

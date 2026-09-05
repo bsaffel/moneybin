@@ -547,6 +547,9 @@ zero-and-refill pairs (which destroy holding-period continuity):
 as **decomposed leg pairs sharing an `event_group_id`** — paired out/in legs
 carrying a group identifier, with basis derived from the exchange ratio:
 
+This describes the ledger representation and pre-M1J.7 Source-group
+provenance, not a compound shape the M1J.7 matcher supports.
+
 - **Merger / share-class conversion**: `transfer_out` of the old security +
   `transfer_in` of the new, basis carried via `--basis`, holding period via
   `--acquired` (per-lot when granularity is known, aggregate otherwise).
@@ -573,6 +576,12 @@ the complete compound event atomically. Existing rows retain their Source group
 as provenance, while the Golden `event_group_id` remains the durable ledger
 identity. No dedicated `exchange`/`spin_off` enum values exist until real import
 experience demands them.
+
+M1J.7 may match ordinary `transfer_in` or `transfer_out` observations only as
+same-direction one-leg events across distinct sources. It does not infer an
+internal-transfer pair. Plaid merger, spin-off, and trade legs remain
+NULL-grouped and ineligible for matching so a compound action cannot be
+partially consolidated.
 
 ### Oversold lots and incomplete acquisitions
 
@@ -660,9 +669,9 @@ Plaid's 6 types × 48 subtypes map onto the taxonomy with no residue beyond
 | fee/return of principal | `return_of_capital` | |
 | cash/{contribution, deposit} | `deposit` | NULL security |
 | cash/withdrawal | `withdrawal` | NULL security |
-| transfer/{transfer, send} | `transfer_in`/`transfer_out` | direction by sign |
+| transfer/{transfer, send} | `transfer_in`/`transfer_out` | direction by sign; remains a one-leg Source event that M1J.7 may compare only to the same direction across another source |
 | transfer/split | `split` | |
-| transfer/{merger, spin off, trade} | decomposed leg observations | staging keeps `event_group_id` NULL; M1J.7 owns whole-event construction and review |
+| transfer/{merger, spin off, trade} | decomposed leg observations | staging keeps `event_group_id` NULL; M1J.7 does not construct the compound action and marks its legs ineligible so they cannot match partially |
 | transfer/{adjustment}, fee/adjustment, loan payment, rebalance | `other` | |
 | cancel (no subtype), cash/{pending credit, pending debit}, transfer/request | **excluded at staging** | cancellation/pending lifecycle is sync-child territory; `cancel_transaction_id` is a deprecated dead field — never build on it |
 
