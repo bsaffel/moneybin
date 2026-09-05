@@ -150,7 +150,7 @@ Using profile: personal
 61 invariants checked across 20 transactions — 60 passing, 1 warn, 0 skipped
 ```
 
-The one warning is expected on a first import and is step 7. The `💡` lines under a doctor check or a report name the MCP tool call an assistant would make next, with the equivalent flag on each command's [reference page](../reference/cli/README.md); elsewhere a `💡` line is a plain hint, such as the command to run next.
+The one warning is expected on a first import and is step 7. The `💡` lines under a doctor check or a report name the MCP tool call an assistant would make next, with the equivalent flag on each command's [reference page](../reference/cli/README.md); the one exception is a report that masked one of its columns, which points at `moneybin reports explain` instead, and elsewhere a `💡` line is a plain hint, such as the command to run next.
 
 ## 6. First reports
 
