@@ -49,6 +49,11 @@ The global `--profile` flag provides ephemeral override without changing the def
 
 Individual commands (`transactions matches run`, `transactions categorize rules apply`, `transform apply`) exist for configuration, troubleshooting, and power-user control — not as steps in a manual pipeline. The user-intent umbrella is `moneybin refresh` (CLI peer of MCP `refresh_run`, per PR #173); `refresh --step transform` maps to `refresh_run(steps=["transform"])`.
 
+M1J.7 delivery slice 2 keeps that umbrella: it adds the selectable
+`investment_match` refresh step, and `investments matches run` maps to the same
+operation as MCP `refresh_run` with `steps` set to `investment_match`. Selecting
+`transform` runs investment matching first as a transitive prerequisite.
+
 ### Entity groups own their workflows and aggregations
 
 Top-level groups represent **entities** (`accounts`, `transactions`) or **cross-cutting concerns** (`reports`, `import`, `sync`, `export`, infrastructure). Per-instance workflows and aggregations live *under* their entity, not as siblings. This applies uniformly across CLI, MCP, and HTTP.
@@ -187,9 +192,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |         [--purge]                        Drops the seed view + deletes raw rows.
 |         [--yes / -y]                     Required for --purge in non-TTY contexts.
 |
-+-- refresh                        -- Run gsheet -> match -> transform -> categorize -> identity -> rates
++-- refresh                        -- Run gsheet -> match -> investment_match -> transform -> categorize -> identity -> rates (M1J.7)
 |         [--step STEP]              Subset of canonical steps; repeatable.
-|                                    Choices: match, transform, categorize, identity, rates.
+|                                    Current choices: match, transform, categorize, identity, rates.
+|                                    M1J.7 slice 2 adds: investment_match.
 |                                    Default: full cascade. Steps execute in canonical
 |                                    order regardless of flag order. `--step transform`
 |                                    is the granular form formerly exposed as the
@@ -719,7 +725,7 @@ System:         system (status, doctor, audit)
 Privacy:        privacy (redaction testing); synthetic (testing data generation)
 Data in:        import, sync
 Data out:       export
-Pipeline:       refresh (gsheet -> match -> transform -> categorize -> identity)
+Pipeline:       refresh (gsheet -> match -> investment_match -> transform -> categorize -> identity after M1J.7 slice 2)
 Mutation:       budget (target management; the vs-actual `reports budget` read command is de-registered pending the reports.budget view)
 Operational:    logs, stats
 Ad-hoc query:   sql (privacy-safe SQL; raw operator access is db query/shell/ui)
@@ -774,6 +780,7 @@ selectors to preserve bounded agent context.
 | Locate an accepted match operation | `transactions matches history` | `system_audit(view="history", ...)` or `system_audit(view="events", ...)` | `GET /transactions/matches` |
 | Undo a match | `transactions matches undo <match_id>` | `system_audit_undo(operation_id=<operation_id>)` after locating the audit operation | `POST /transactions/matches/{match_id}/undo` |
 | Run matching | `transactions matches run` | `refresh_run(steps=["match"])` | `POST /refresh/match` |
+| Run investment matching after M1J.7 slice 2 | `investments matches run` | `refresh_run`, with `steps` set to `investment_match` | `POST /refresh/investment-match` (after M1J.7 slice 2) |
 | Spending report | `reports spending` | `reports(report_id="core:spending")` | `GET /reports/spending` |
 
 ### Pluralization
@@ -1027,6 +1034,7 @@ ADR-016 and the archived MCP catalog. Current sibling mappings are:
 | `transactions categorize pending` | `reviews(kind="categorization", status="pending")` |
 | `categories list`, `merchants list` | `taxonomy(view=...)` |
 | `transactions matches run` | `refresh_run(steps=["match"])` |
+| `investments matches run` | `refresh_run`, with `steps` set to `investment_match` after M1J.7 slice 2 |
 | `transform apply` | `refresh_run(steps=["transform"])` |
 
 ## Migration Table (v0 → v1, historical)

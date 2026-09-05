@@ -19,6 +19,13 @@ catalog is archived at
 Future MCP capabilities remain unnamed until admission through the bounded
 registry.
 
+> **M1J.7 staged amendment:** investment-event matching reuses this registry;
+> it adds no tool. Delivery slice 2 adds `investment_match` to the
+> `refresh_run.steps` enum and `investment_matches` to the `reviews.kind` enum.
+> Delivery slice 3 adds the `investment_match` discriminator to the
+> `reviews_decide.decisions` item union. Until those slices land, these are
+> planned enum extensions, not claims about the live 50-tool schema.
+
 ## Standard registry
 
 The 13 user-facing domains below group 17 literal tool-name prefixes. A prefix
@@ -229,8 +236,12 @@ and confirmation contracts.
   configured TTL. Its `readOnlyHint=false` annotation reflects that retained
   state even though it does not commit ledger rows.
 - `refresh_run` owns the bounded derived-state workflow. Its `steps` vocabulary
-  is `gsheet`, `match`, `transform`, `categorize`, `identity`, `rates`, executed
-  in that canonical order. `rates` caches the reference rates the profile's own
+  is currently `gsheet`, `match`, `transform`, `categorize`, `identity`,
+  `rates`, executed in that canonical order. M1J.7 slice 2 inserts
+  `investment_match` after `match` and before `transform`; selecting only that
+  value in `refresh_run.steps` plans pending investment reviews, while selecting
+  `transform` runs that prerequisite transitively. `rates`
+  caches the reference rates the profile's own
   transactions, balances and holdings imply; it runs last because nothing
   downstream consumes it, and it reports `rates_written` plus any
   `rate_pairs_failed` (retried next run), `rate_pairs_unsupported` (never

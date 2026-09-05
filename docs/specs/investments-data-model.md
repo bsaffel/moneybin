@@ -628,21 +628,8 @@ provider-identifier resolution rung all exist because of this validation.
 > only; no rename/retype. The child also supersedes the `dim_securities`
 > "Future: UNION ALL from staging" comment — its resolver mints synced
 > securities into `app.securities` (merchant precedent), so the dim stays a
-> catalog view. M1J.7 supersedes the earlier staging-content-hash refinement
-> for `event_group_id`: pre-M1J.7 manual entry may retain an authored
-> source-group reference in Raw as provenance, while Plaid staging leaves
-> `event_group_id` NULL because the aggregator supplies no trustworthy group
-> reference. M1J.7 removes caller-authored grouping from public writes,
-> constructs Source events only from validated complete shapes or evidence,
-> and persists MoneyBin-owned Golden `event_group_id` and
-> `investment_transaction_id` values in app membership; staging never
-> synthesizes those identities from mutable financial fields. Pre-M1J.7
-> source-derived transaction ids remain provenance and do not become Golden
-> resolver inputs. For a multi-source Golden leg, the singular source and
-> provider columns copy together from one deterministic representative member;
-> complete contributor attribution remains in source-row provenance.
-> Finally, the Taxonomy
-> mapping table below is **one subtype short**: `stock distribution`
+> catalog view. Finally, the Taxonomy mapping table below is **one subtype
+> short**: `stock distribution`
 > (`InvestmentTransactionSubtype.STOCK_DISTRIBUTION`, verified in the Plaid
 > Python SDK 2026-07-10) is a real security-bearing inflow the "48 subtypes,
 > no residue" count missed. It maps to `transfer_in` (opens a lot; the child
@@ -654,6 +641,20 @@ provider-identifier resolution rung all exist because of this validation.
 > oversold phantom gain. This *does* change two rows in the table below — the sole such
 > change, made because the original mapping was a latent correctness bug, not a
 > reshape. Short/margin accounting stays future work.
+
+> **Amended 2026-09-05** (M1J.7 design): M1J.7 supersedes the earlier
+> staging-content-hash refinement for `event_group_id`. Pre-M1J.7 manual entry
+> may retain an authored source-group reference in Raw as provenance, while
+> Plaid staging leaves `event_group_id` NULL because the aggregator supplies no
+> trustworthy group reference. M1J.7 removes caller-authored grouping from
+> public writes, constructs Source events only from validated complete shapes
+> or evidence, and persists MoneyBin-owned Golden `event_group_id` and
+> `investment_transaction_id` values in app membership; staging never
+> synthesizes those identities from mutable financial fields. Pre-M1J.7
+> source-derived transaction ids remain provenance and do not become Golden
+> resolver inputs. For a multi-source Golden leg, the singular source and
+> provider columns copy together from one deterministic representative member;
+> complete contributor attribution remains in source-row provenance.
 
 ### Taxonomy mapping (Plaid type/subtype → ours)
 

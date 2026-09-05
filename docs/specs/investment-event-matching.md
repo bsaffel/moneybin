@@ -365,16 +365,23 @@ These thresholds admit review candidates; they do not authorize acceptance.
 | Buy, sell, or reinvest date | Same date or within 5 calendar days across trade and settlement dates; the 3-day rule in Source event construction is the earlier Plaid-internal reinvest-leg pairing window, not this cross-source candidate window |
 | Dividend, interest, capital-gain-distribution, return-of-capital, or fee date | Same date or within 3 calendar days |
 | Security-transfer, deposit, or withdrawal date | Same date or within 7 calendar days |
-| Quantity | Exact at 10 decimal places, or difference no greater than `max(0.000001, abs(quantity) * 0.00000001)` |
+| Quantity | Exact at 10 decimal places, or difference no greater than `max(0.000001, max(abs(left_quantity), abs(right_quantity)) * 0.00000001)` |
 | Amount | Difference no greater than `0.01` after sign normalization |
 | Fees | Gross/net reconciliation differs by no more than `0.01` |
-| Price | Difference no greater than `max(0.01, abs(price) * 0.0001)`, or the quantity/cash equation reconciles within `0.01` |
+| Price | Difference no greater than `max(0.01, max(abs(left_price), abs(right_price)) * 0.0001)`, or the quantity/cash equation reconciles within `0.01` |
 | Correction or reversal | Comparison-adapter-delivered and validated native relationship, or remembered relationship, only |
 | Split | Same date, exact normalized ratio, and supported comparison adapters only |
 | Other or unpaired reinvest | Ineligible |
 
 The scenario suite owns the boundary examples for every threshold. A threshold
 change is a behavior change and must update those examples.
+
+Relative thresholds always use the symmetric maximum absolute magnitude of the
+two normalized values, never a designated source side. When both values are
+zero, their difference is exactly zero; for zero-versus-nonzero and other
+near-zero comparisons, the absolute floor in the formula controls eligibility.
+The same scale and zero behavior apply when deciding whether a field difference
+requires an explicit choice, so input order cannot change either outcome.
 
 The same date and numeric thresholds define field-choice materiality. A
 normalized difference within its applicable threshold takes the deterministic
@@ -844,6 +851,12 @@ effect. For every material field conflict it also shows one opaque,
 Proposal-issued conflict id and the allowed choice ids. `history` shows
 accepted, rejected, stale, and reversed decisions.
 
+The CLI `run` command and MCP `refresh_run` with its M1J.7 `steps` value
+`investment_match` invoke the same bounded planner step and return its counts
+and pending-review summary. Selecting `transform` still runs
+`investment_match` transitively. Inspection then uses `reviews` with its M1J.7
+`kind` value `investment_matches`; no separate MCP planning tool is added.
+
 ### Decision and undo
 
 Investment matching joins the existing cross-domain review surface:
@@ -1094,7 +1107,7 @@ fixtures and expected Golden-ledger outcomes.
 |---|---|
 | Simple events | Exact and fuzzy buy, sell, dividend, interest, capital-gain-distribution, return-of-capital, fee, deposit, and withdrawal matches; `other` and an unpaired `reinvest` leg remain ineligible; legitimate unmatched neighbors remain separate |
 | Dates | Same date and both sides of every type-specific boundary; trade date matched to settlement date |
-| Precision | Exact decimal normalization plus inside/outside quantity, amount, fee, and price thresholds |
+| Precision | Exact decimal normalization plus inside/outside quantity, amount, fee, and price thresholds; swapping the two source events preserves quantity/price eligibility and field-choice materiality, including both-zero and zero-versus-nonzero cases |
 | Reinvestment | Manual and Plaid two-leg shapes match only when the Plaid comparison adapter finds one normalized `reinvest` acquisition and an income leg using the explicit `dividend` to `dividend`, `interest` to `interest`, or `capital_gain` to `capital_gain_distribution` compatibility mapping within 3 calendar days, with one complete unambiguous cash/fee-reconciled pairing; a 4-day Plaid-internal pair remains singleton, while already-constructed manual and Plaid Source events may cross-source match at 4 or 5 days but not 6; both legs move atomically, and a missing or multiply paired leg is not accepted |
 | Transfers | Same-direction one-leg manual and Plaid `transfer_in` or `transfer_out` events match only when Account, Security, effective currency, quantity, and the 7-day candidate window agree; when manual supplies `original_acquisition_date` or basis and Plaid has `NULL`, the present manual value and its exact provenance project instead of being erased; opposing legs are never inferred as an internal-transfer pair, and merger, spin-off, or trade legs remain ineligible for partial matching |
 | Source diversity | A manual-to-Plaid or other distinct-origin Proposal may be eligible; two manual/user events or two events from one Plaid connection never consolidate through this review matcher, while multiple legs already validated inside one Source event remain atomic |
@@ -1122,7 +1135,10 @@ fixtures and expected Golden-ledger outcomes.
 - Pure normalization, eligibility, and tolerance tests for every ledger event
   type, including explicit ineligibility for `other` and an unpaired `reinvest`,
   proving each within-tolerance boundary takes the aggregator default and each
-  beyond-tolerance native or ratified candidate requires a field choice. Field
+  beyond-tolerance native or ratified candidate requires a field choice.
+  Quantity and price cases prove that swapping left and right produces identical
+  eligibility and materiality at the relative boundary, both zero, and
+  zero-versus-nonzero. Field
   choice tests also prove present `qualified`/`non_qualified` and
   `short_term`/`long_term` disagreements always require a choice, while a
   present tax-character subtype outranks a missing one. Trade-date tests prove
