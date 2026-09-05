@@ -269,6 +269,23 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     (`matches_auto_merged`, `transfers_retired`) are the disclosable half and
     are unaffected.
 
+    **M1J.7 extension.** Investment-event planning follows the same explicit
+    per-stage result rule without overloading cash `matching_error`. It adds
+    integer `investment_matches_pending_unique`,
+    `investment_matches_pending_competing`, `investment_matches_suppressed`,
+    and `investment_matches_stale` counts, boolean
+    `investment_matching_skipped`, and nullable DESCRIPTION-classified
+    `investment_matching_error` to `RefreshResult`, `RefreshRunPayload`, and
+    the shared embedded-refresh outcome. Counts are zero when unrequested,
+    skipped, failed, or clean with no results; the requested steps, skipped
+    flag, and sanitized error distinguish those states. A pending result links
+    to `reviews` with status `pending` and the planned M1J.7 kind value
+    `investment_matches`. On skip or error, an expanded requested set containing
+    `transform` retries `refresh_run` scoped to `transform`; every other set
+    retries it scoped to `investment_match`, including when another
+    non-transform step was selected too. A failed transitive prerequisite
+    prevents the dependent apply without populating SQLMesh's `error` field.
+
 10. **Matches MCP workflow.** Four workflow operations over the pair-decision
     model (`app.match_decisions`, one row per proposed pair keyed by `match_id`)
     use three existing standard tools: `refresh_run`, `reviews`, and

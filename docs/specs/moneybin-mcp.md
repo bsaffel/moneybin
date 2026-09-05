@@ -23,14 +23,16 @@ registry.
 > it adds no tool. Delivery slice 2 adds `investment_match` to the
 > `refresh_run.steps` enum and `investment_matches` to the `reviews.kind` enum.
 > Delivery slice 3 adds the `investment_match` discriminator to the
-> `reviews_decide.decisions` item union. Slice 4 enables acceptance only through
-> prompt-only human Elicitation bound to the exact complete batch; it accepts
-> and issues no fallback token, refuses non-eliciting clients with
+> `reviews_decide.decisions` item union and requires prompt-only human
+> Elicitation bound to the exact complete batch for both accept and reject. It
+> accepts and issues no fallback token, refuses non-eliciting clients with
 > `mutation_confirmation_required` naming the CLI, and declares the prompt's
-> dynamic disclosure up to Tier HIGH. Reject-only batches do not prompt; a
-> mixed batch containing an investment-Match acceptance ratifies or rejects the
-> entire atomic batch. Until those slices land, these are planned extensions,
-> not claims about the live 50-tool schema.
+> dynamic disclosure up to Tier HIGH. A mixed batch containing any
+> investment-Match decision ratifies or rejects the entire atomic batch. Slice
+> 4 enables acceptance through that same gate. Slice 3 also adds the six stable
+> investment-planner result fields and recovery behavior defined in the owning
+> matching spec to direct and embedded refresh payloads. Until those slices
+> land, these are planned extensions, not claims about the live 50-tool schema.
 
 ## Standard registry
 
@@ -247,7 +249,21 @@ and confirmation contracts.
   `investment_match` after `match` and before `transform`; selecting only that
   value in `refresh_run.steps` plans pending investment reviews, while selecting
   `transform` runs that planner transitively and then invokes non-selectable
-  membership reconciliation before rebuilding the Golden ledger. `rates`
+  membership reconciliation before rebuilding the Golden ledger. Slice 3 adds
+  `investment_matches_pending_unique`,
+  `investment_matches_pending_competing`, `investment_matches_suppressed`,
+  `investment_matches_stale`, `investment_matching_skipped`, and
+  `investment_matching_error` to `RefreshRunPayload` and every shared
+  embedded-refresh payload. The four counts are stable integer keys; the first
+  two plus an action directing `reviews` to status `pending` and the planned
+  M1J.7 kind value `investment_matches` are the pending summary. Callers read
+  the skipped flag and nullable sanitized error before interpreting zeros. If
+  the expanded requested set contains `transform`, the failure retries
+  `refresh_run` scoped to `transform`; otherwise it retries `refresh_run`
+  scoped to the M1J.7 `investment_match` value, including when another
+  non-transform step was requested alongside it. A failed transitive planner
+  prerequisite prevents SQLMesh apply without overloading its `error` field or
+  cash matching's `matching_error`. `rates`
   caches the reference rates the profile's own
   transactions, balances and holdings imply; it runs last because nothing
   downstream consumes it, and it reports `rates_written` plus any

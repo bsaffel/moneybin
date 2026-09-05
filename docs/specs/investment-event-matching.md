@@ -909,12 +909,48 @@ Proposal-issued conflict id and the allowed choice ids. `history` shows
 accepted, rejected, stale, and reversed decisions.
 
 The CLI `run` command and MCP `refresh_run` with its M1J.7 `steps` value
-`investment_match` invoke the same bounded planner step and return its counts
-and pending-review summary. Selecting `transform` still runs that planner
-transitively, then invokes the non-selectable membership-reconciliation
-prerequisite before rebuilding the Golden ledger and its dependents. Inspection
-uses `reviews` with its M1J.7 `kind` value `investment_matches`; no separate MCP
-planning or reconciliation tool is added.
+`investment_match` invoke the same bounded planner step. M1J.7 extends
+`RefreshResult`, `RefreshRunPayload`, and the shared embedded-refresh outcome
+with these stable fields:
+
+| Field | Contract |
+|---|---|
+| `investment_matches_pending_unique` | Integer count of newly persisted or still-current unique pending Proposals observed by this run |
+| `investment_matches_pending_competing` | Integer count of newly persisted or still-current competing pending Proposals observed by this run |
+| `investment_matches_suppressed` | Integer count of otherwise-feasible relationships excluded by current rejection constraints during this run |
+| `investment_matches_stale` | Integer count of Proposals transitioned to `stale` during this run |
+| `investment_matching_skipped` | `true` only when the step was requested but comparison inputs were unavailable, so no candidate set was examined |
+| `investment_matching_error` | Nullable sanitized description of a real planner/bootstrap crash; `null` on a clean run or expected input-unavailable skip |
+
+All four counts are zero when the step was not requested, was skipped, or
+failed. A requested clean run that finds nothing also returns zero, so callers
+must read `investment_matching_skipped` and `investment_matching_error` before
+claiming that no candidate exists; the requested `steps` distinguish a clean
+zero from a step that was not selected. Any nonzero pending count adds an action
+directing the client to `reviews` with status `pending` and the planned M1J.7
+kind value `investment_matches`; the two pending counts plus that action are the
+public pending-review summary, with no parallel summary object.
+
+An input-unavailable skip or real error adds a retry `RecoveryAction`. If the
+expanded requested step set contains `transform`, including the default/full
+and embedded sync/import refreshes, the action retries `refresh_run` scoped to
+`transform` so the sole prerequisite-aware route reruns planning, membership
+reconciliation, and the dependent rebuild. Otherwise it retries `refresh_run`
+scoped to only the planned M1J.7 `investment_match` step, even when another
+non-transform step was requested alongside it. A requested planner
+failure prevents reconciliation and transform, returns `applied=false` and
+`duration_seconds=null` when SQLMesh was not attempted, and does not overload
+the SQLMesh-only `error` or cash-only `matching_error` fields. The shared
+adapter carries the six fields and recovery action unchanged through
+`sync_pull`, `import_files`, and `import_inbox_sync`.
+Counts, the skipped flag, and pending action are Tier LOW; the sanitized error
+is DESCRIPTION-classified Tier MEDIUM.
+
+Selecting `transform` still runs that planner transitively, then invokes the
+non-selectable membership-reconciliation prerequisite before rebuilding the
+Golden ledger and its dependents. Inspection uses `reviews` with its M1J.7
+`kind` value `investment_matches`; no separate MCP planning or reconciliation
+tool is added.
 
 ### Decision and undo
 
@@ -950,24 +986,27 @@ ids fail the request. Reject forbids field choices. A Proposal with no material
 field conflicts accepts with an empty choice set. This keeps CLI and MCP
 semantics identical without adding one tool per command.
 
-An MCP investment-Match acceptance is human-bound, not merely agent-submitted.
-If any item in a `reviews_decide` batch accepts an `investment_match`, the tool
+An MCP investment-Match decision is human-bound, not merely agent-submitted.
+If any item in a `reviews_decide` batch decides an `investment_match`, the tool
 preflights the complete atomic batch and uses MCP Elicitation to show the human
-the exact decisions, selected fields, proposed Golden projection, superseded
-components, current before-state, and downstream curation and lot impact. The
-prompt is classified up to Tier HIGH because it may disclose transaction
-amounts and other financial fields. Human acceptance ratifies that exact batch;
-the service recomputes the same payload binding inside the write transaction,
-and any proposal, choice, topology, dependency, or impact drift fails with no
-write.
+the exact decisions and current Proposal evidence. For acceptance it also shows
+selected fields, proposed Golden projection, superseded components, current
+before-state, and downstream curation and lot impact; for rejection it shows
+the exact relationship and unchanged-superset suppression scope. The prompt is
+classified up to Tier HIGH because it may disclose transaction amounts and
+other financial fields. The human's response ratifies that exact batch; the
+service recomputes the same payload binding inside the write transaction, and
+any proposal, choice, topology, dependency, suppression scope, or impact drift
+fails with no write.
 
 This branch is prompt-only. It neither accepts nor issues a
 `confirmation_token`, because returning a token to the calling agent would let
 that agent confirm its own ledger-changing proposal. A client without
 Elicitation receives `mutation_confirmation_required` with the equivalent CLI
 command. Human decline or timeout also writes nothing. Reject-only batches need
-no prompt; a mixed batch containing an investment-Match acceptance prompts for
-and binds the entire atomic batch rather than partially applying other items.
+a prompt just like accepts; any batch containing an investment-Match decision
+prompts for and binds the entire atomic batch rather than partially applying
+other items.
 
 The CLI returns usage error 2 when `--field-choice` lacks both
 `--type investment-matches` and exactly one `--confirm`, including any use with
@@ -1422,12 +1461,21 @@ fixtures and expected Golden-ledger outcomes.
   invariant validation. CLI usage tests prove `field-choice` outside exactly one
   investment-match confirmation, and `confirm-all` for investment matches or all
   queues, fail with exit 2 before any partial decision.
-- MCP confirmation tests proving an investment-Match acceptance succeeds only
-  after a capable client's human Elicitation accepts the exact bound batch;
+- MCP confirmation tests proving an investment-Match acceptance or rejection
+  succeeds only after a capable client's human Elicitation accepts the exact
+  bound batch;
   decline, timeout, a non-eliciting client, a supplied token, or any binding
-  drift writes nothing. Reject-only batches do not prompt, while a mixed atomic
-  batch prompts for every item together and cannot partially apply. Schema and
-  privacy tests declare the prompt's dynamic disclosure up to Tier HIGH.
+  drift writes nothing. Rejection prompts bind the exact negative constraint
+  and unchanged-superset suppression scope; a mixed atomic batch prompts for
+  every item together and cannot partially apply. Schema and privacy tests
+  declare the prompt's dynamic disclosure up to Tier HIGH.
+- Refresh-result tests proving every investment planner field above is emitted
+  on direct and embedded refresh surfaces with identical names and zero/null
+  semantics; skip and sanitized-error states never masquerade as a clean zero,
+  a pending result links to `reviews`, and investment-match-only,
+  investment-match-plus-non-transform, and transform-containing failures
+  receive the correct single-step retry without overloading `error` or
+  `matching_error`.
 - Property or invariant tests proving a source event has at most one active
   Golden membership and every accepted multi-leg event is complete.
 - Real mixed-history validation before any guard or auto-accept promotion.
@@ -1459,8 +1507,11 @@ accepted contract and must be reconciled to it before delivery begins.
    Core ledger or recording a human decision.
 3. **Decision workflow.** Extend that lifecycle with audited rejection and its
    suppression constraint; add identical CLI/MCP field-choice request
-   validation, decision audit integration, and metrics. Acceptance remains
-   unavailable until slice 4 can apply the whole transition atomically.
+   validation, prompt-only human Elicitation for every MCP investment-Match
+   decision, decision audit integration, and metrics. Add the exact planner
+   result, skip, error, pending action, and recovery fields to direct and
+   embedded refresh payloads. Acceptance remains unavailable until slice 4 can
+   apply the whole transition atomically.
 4. **Golden materialization.** Add stable event and leg identities, Source-event
    and opening-lot-reconstruction membership, the two derived Core id
    resolvers, field resolution, exact provenance, `projection_changed_at`, and
