@@ -572,6 +572,50 @@ def _direct_scope_nodes(root: ast.AST) -> list[ast.AST]:
     return nodes
 
 
+def _parameter_default_literals(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> _ScopeLiterals:
+    """Literal defaults bound to their parameter names.
+
+    A default is the one part of a parameter that is statically known: it IS
+    the runtime value on every call that omits the argument, and both halves
+    — the literal and the name it binds — sit in this same `FunctionDef`. So
+    it needs none of the interprocedural tracing the module docstring
+    disclaims, and treating the whole parameter as opaque (which is right for
+    what a caller passes) would hide a hardcoded query sitting in plain sight
+    in the signature.
+    """
+    args = node.args
+    positional = [*args.posonlyargs, *args.args]
+    # `defaults` right-aligns against the positional parameters; `kw_defaults`
+    # is 1:1 with `kwonlyargs` and holds None where a keyword-only parameter
+    # has no default.
+    pairs: list[tuple[ast.arg, ast.expr | None]] = [
+        # Both zips are exactly aligned by construction — the slice takes
+        # precisely `len(defaults)` parameters, and the AST grammar makes
+        # `kw_defaults` 1:1 with `kwonlyargs` — so `strict` asserts that
+        # rather than silently truncating if either ever stops holding.
+        *zip(
+            positional[len(positional) - len(args.defaults) :],
+            args.defaults,
+            strict=True,
+        ),
+        *zip(args.kwonlyargs, args.kw_defaults, strict=True),
+    ]
+    literals: _ScopeLiterals = {}
+    for arg, default in pairs:
+        if default is None:
+            continue
+        text = _literal_text(default)
+        if text is not None:
+            literals.setdefault(arg.arg, []).append((
+                default.lineno,
+                text,
+                _embedded_names(default),
+            ))
+    return literals
+
+
 def _parameter_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
     """Every name this function binds as a parameter, in all five arg forms."""
     args = node.args
@@ -936,27 +980,28 @@ def _tables_in_text(text: str) -> list[tuple[str, str]]:
                 type(clause_node).__name__.upper(),
                 f"{schema}.{name}",
             ))
-        if not statement_found:
-            for literal in statement.find_all(exp.Literal):
-                if not literal.is_string:
-                    continue
-                # A string sitting directly in a projection is a selected
-                # VALUE, not a table target — `SELECT 'core.fct_transactions'`
-                # returns that text, it does not read that table. This
-                # fallback exists for a table name passed as a function
-                # ARGUMENT (`PRAGMA table_info('core.foo')`, parent
-                # `exp.Anonymous`); a projection literal is the one position
-                # where a schema-shaped string is data by construction.
-                # Stated as a position rule rather than a statement-form
-                # allowlist, for the round-4 reason: an allowlist of forms
-                # goes stale the moment a form is added.
-                if isinstance(literal.parent, exp.Select):
-                    continue
-                statement_found.extend(
-                    _fallback_regex_tables(
-                        literal.this, type(statement).__name__.upper()
-                    )
-                )
+        # A table name also reaches execution as a string ARGUMENT to a
+        # function — `PRAGMA table_info('core.foo')`,
+        # `query_table('app.bar')`. Position is the entire rule: a string in
+        # a function-argument slot can name a table, a string anywhere else
+        # is data. `UPDATE app.merchants SET note = 'see core.fct'` (parent
+        # `exp.EQ`) and `SELECT 'core.fct'` (parent `exp.Select`) are both
+        # data by construction and stay invisible.
+        #
+        # This one rule replaced two narrower mechanisms: an "only when the
+        # structural walk came back empty" gate, and a projection carve-out
+        # bolted onto it. Between them they still missed a string-backed
+        # target sharing a statement with an ordinary table — finding
+        # `core.foo` in `... FROM core.foo UNION ALL ... query_table(
+        # 'app.bar')` made the walk non-empty, so the gate skipped every
+        # literal and the hardcoded `app.bar` passed. Naming the rule beats
+        # enumerating the shapes that violate it.
+        for literal in statement.find_all(exp.Literal):
+            if not literal.is_string or not isinstance(literal.parent, exp.Func):
+                continue
+            statement_found.extend(
+                _fallback_regex_tables(literal.this, type(statement).__name__.upper())
+            )
         found.extend(statement_found)
     return found
 
@@ -1015,6 +1060,8 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
                 local_table_arg_scanned,
             ) = _collect_scope(_direct_scope_nodes(node))
             local_parameters = _parameter_names(node)
+            for name, entries in _parameter_default_literals(node).items():
+                local_literals.setdefault(name, []).extend(entries)
             all_scanned.extend(local_scanned)
             all_scanned.extend(
                 _resolve_worklist(
@@ -1720,3 +1767,70 @@ def test_module_constant_still_resolves_when_no_parameter_shadows_it(
     """
     source = 'query = "SELECT * FROM core.foo"\n\ndef f(db):\n    db.execute(query)\n'
     assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
+
+
+def test_parameter_literal_default_reaches_execute(tmp_path: Path) -> None:
+    """A hardcoded query in a parameter's default is the runtime value.
+
+    `def f(db, query="SELECT * FROM core.fct_transactions")` executes that
+    exact text on every call that omits the argument. Both the literal and
+    the name it binds sit in the same `FunctionDef`, so no call-site tracing
+    is needed — this is squarely inside the guard's scope, and treating the
+    whole parameter as opaque would hide a hardcoded table in plain sight in
+    the signature.
+    """
+    source = (
+        'def f(db, query="SELECT * FROM core.fct_transactions"):\n'
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
+
+
+def test_keyword_only_parameter_literal_default_reaches_execute(
+    tmp_path: Path,
+) -> None:
+    """`kw_defaults` aligns 1:1 with `kwonlyargs`, unlike right-aligned `defaults`.
+
+    Two different alignment rules; a fix that handled only the positional one
+    would leave this half silently uncovered.
+    """
+    source = (
+        'def f(db, *, query="SELECT * FROM app.merchants"):\n    db.execute(query)\n'
+    )
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "app.merchants")]
+
+
+def test_parameter_without_a_default_still_shadows_a_module_constant(
+    tmp_path: Path,
+) -> None:
+    """Binding defaults must not undo the round-8 shadowing rule.
+
+    A parameter with no default still holds whatever the caller passed, so it
+    must not resolve to a same-named module literal. Paired with the two
+    tests above: defaults are scanned, bare parameters stay opaque.
+    """
+    source = (
+        'query = "SELECT * FROM core.foo"\n\ndef f(db, query):\n    db.execute(query)\n'
+    )
+    assert _scan_source(tmp_path, source) == []
+
+
+def test_string_backed_target_beside_a_real_table_is_flagged(
+    tmp_path: Path,
+) -> None:
+    """A function-argument table name is found even when a real table is present.
+
+    `SELECT * FROM core.foo UNION ALL SELECT * FROM query_table('app.bar')`
+    executes in the locked DuckDB version. The earlier "only when the
+    structural walk came back empty" gate skipped every literal as soon as
+    `core.foo` was found, so the hardcoded `app.bar` passed. Position, not
+    emptiness, is what separates a table-naming string from data.
+    """
+    source = (
+        'db.execute("SELECT * FROM core.foo '
+        "UNION ALL SELECT * FROM query_table('app.bar')\")\n"
+    )
+    assert _scan_source(tmp_path, source) == [
+        (1, "FROM", "core.foo"),
+        (1, "UNION", "app.bar"),
+    ]
