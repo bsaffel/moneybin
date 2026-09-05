@@ -511,6 +511,153 @@ def test_transform_moves_same_currency_basis_and_realizes_only_on_later_disposal
 
 
 @pytest.mark.slow
+def test_cross_currency_reversal_advances_both_position_watermarks(
+    db: Database,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO app.profile_settings (home_currency, updated_at)
+        VALUES ('USD', '2025-12-01 09:00:00'::TIMESTAMP)
+        """
+    )
+    _insert_conversion(
+        db,
+        source_id="acquire-eur",
+        account_id="acct-eur-source",
+        txn_date="2026-01-01",
+        amount="-100.00",
+        currency="USD",
+        created_at="2026-01-01 09:00:00",
+        to_amount="80.00",
+        to_currency="EUR",
+    )
+    _insert_conversion(
+        db,
+        source_id="acquire-gbp",
+        account_id="acct-gbp-destination",
+        txn_date="2026-01-01",
+        amount="-60.00",
+        currency="USD",
+        created_at="2026-01-01 10:00:00",
+        to_amount="50.00",
+        to_currency="GBP",
+    )
+    _insert_conversion(
+        db,
+        source_id="cross-eur-out",
+        account_id="acct-eur-source",
+        txn_date="2026-02-01",
+        amount="-20.00",
+        currency="EUR",
+        created_at="2026-02-01 09:00:00",
+    )
+    _insert_conversion(
+        db,
+        source_id="cross-gbp-in",
+        account_id="acct-gbp-destination",
+        txn_date="2026-02-01",
+        amount="30.00",
+        currency="GBP",
+        created_at="2026-02-01 10:00:00",
+    )
+    db.execute(
+        """
+        INSERT INTO raw.exchange_rates (
+            from_currency, to_currency, rate_date, rate, source_type, loaded_at
+        ) VALUES (
+            'GBP', 'USD', '2026-02-01'::DATE, 2.00000000,
+            'frankfurter', '2026-02-02 12:00:00'::TIMESTAMP
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, account_id_b, confidence_score, match_type,
+            match_status, decided_by, decided_at
+        ) VALUES (
+            'match-cross-currency', 'cross-eur-out', 'manual', 'user',
+            'cross-gbp-in', 'manual', 'user', 'acct-eur-source',
+            'acct-gbp-destination', 1.0000, 'transfer', 'accepted', 'user',
+            '2026-02-01 11:00:00'::TIMESTAMP
+        )
+        """
+    )
+
+    result = TransformService(db).apply()
+    assert result.applied, f"transform apply failed: {result.error}"
+    cross_conversion = db.execute(
+        """
+        SELECT conversion_id
+        FROM core.bridge_currency_conversions
+        WHERE transfer_pair_id = 'match-cross-currency'
+        """
+    ).fetchone()
+    assert cross_conversion is not None
+    assert db.execute(
+        """
+        SELECT account_id, SUM(remaining_quantity)
+        FROM core.fct_currency_lots
+        WHERE account_id IN ('acct-eur-source', 'acct-gbp-destination')
+        GROUP BY account_id
+        ORDER BY account_id
+        """
+    ).fetchall() == [
+        ("acct-eur-source", Decimal("60.00")),
+        ("acct-gbp-destination", Decimal("80.00")),
+    ]
+
+    MatchDecisionsRepo(db).reverse(
+        "match-cross-currency",
+        reversed_by="user",
+        actor="test",
+    )
+    reversal_timestamp = db.execute(
+        """
+        SELECT MAX(occurred_at)
+        FROM app.audit_log
+        WHERE target_table = 'match_decisions'
+          AND target_id = 'match-cross-currency'
+        """
+    ).fetchone()
+    assert reversal_timestamp is not None
+    reapplied = TransformService(db).apply()
+    assert reapplied.applied, f"transform apply failed: {reapplied.error}"
+
+    assert db.execute(
+        """
+        SELECT remaining_quantity, updated_at
+        FROM core.fct_currency_lots
+        WHERE account_id = 'acct-eur-source'
+        """
+    ).fetchone() == (Decimal("80.00"), reversal_timestamp[0])
+    assert db.execute(
+        """
+        SELECT remaining_quantity, updated_at
+        FROM core.fct_currency_lots
+        WHERE account_id = 'acct-gbp-destination'
+        """
+    ).fetchone() == (Decimal("50.00"), reversal_timestamp[0])
+    assert db.execute(
+        """
+        SELECT COUNT(*)
+        FROM core.bridge_currency_conversions
+        WHERE transfer_pair_id = 'match-cross-currency'
+        """
+    ).fetchone() == (0,)
+    assert db.execute(
+        """
+        SELECT COUNT(*)
+        FROM core.fct_currency_lots
+        WHERE source_conversion_id = ?
+        """,
+        [cross_conversion[0]],
+    ).fetchone() == (0,)
+
+
+@pytest.mark.slow
 def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
     db: Database,
 ) -> None:
@@ -724,6 +871,27 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
         ).fetchall()
     }
     assert gains == {
+        "rfx_5a53faa90f87a546": (
+            "acct-incomplete",
+            "fxc_ba4a7ca07e3d4d8e",
+            None,
+            "EUR",
+            "USD",
+            date(2026, 5, 1),
+            date(2026, 5, 1),
+            Decimal("10.00"),
+            None,
+            None,
+            None,
+            Decimal("0.00"),
+            "fifo",
+            None,
+            None,
+            None,
+            "incomplete",
+            "incomplete_shape",
+            datetime(2026, 5, 1, 10, 0, 0),
+        ),
         "rfx_a3f769064fbf488d": (
             "acct-eur-fifo",
             "fxc_b57f91bede719d3c",
@@ -800,6 +968,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
     assert _metric("conversion", "incomplete_shape") == 1
     assert _metric("currency_lot", "complete") == 5
     assert _metric("realized_fx_gain", "complete") == 3
+    assert _metric("realized_fx_gain", "incomplete_shape") == 1
 
     first_ids = {
         "conversion": tuple(
@@ -812,7 +981,13 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             ).fetchall()
         ),
         "currency_lot": tuple(sorted(lots)),
-        "realized_fx_gain": tuple(sorted(gains)),
+        "realized_fx_gain": tuple(
+            row[0]
+            for row in db.execute(
+                "SELECT realized_fx_gain_id FROM core.fct_realized_fx_gains "
+                "WHERE coverage_status = 'complete' ORDER BY realized_fx_gain_id"
+            ).fetchall()
+        ),
     }
     db.execute(
         "DELETE FROM raw.manual_transactions "
@@ -840,7 +1015,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             row[0]
             for row in db.execute(
                 "SELECT realized_fx_gain_id FROM core.fct_realized_fx_gains "
-                "ORDER BY realized_fx_gain_id"
+                "WHERE coverage_status = 'complete' ORDER BY realized_fx_gain_id"
             ).fetchall()
         ),
     }
@@ -849,6 +1024,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
     assert _metric("conversion", "complete") == 6
     assert _metric("currency_lot", "complete") == 5
     assert _metric("realized_fx_gain", "complete") == 3
+    assert _metric("realized_fx_gain", "incomplete_shape") == 0
 
     override_event = CurrencyService(db, actor="test").set_override(
         "EUR",

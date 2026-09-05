@@ -227,6 +227,16 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         """
+        CREATE OR REPLACE TABLE prep.int_transactions__matched (
+            transaction_id VARCHAR,
+            source_transaction_id VARCHAR,
+            source_type VARCHAR,
+            account_id VARCHAR
+        )
+        """
+    )
+    db.execute(
+        """
         CREATE OR REPLACE TABLE prep.int_transactions__merged (
             transaction_id VARCHAR,
             account_id VARCHAR,
@@ -287,7 +297,20 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
             ('txn-single', 'acct-eur', '2026-03-17'::DATE, -80.00,
              NULL, '2026-03-17'::DATE, -80.00, NULL, 100.00, 'USD',
              'manual', 'user', 'native-single',
-             '2026-03-17 12:00:00'::TIMESTAMP)
+             '2026-03-17 12:00:00'::TIMESTAMP),
+            ('txn-missing-out', 'acct-eur', '2026-03-18'::DATE, -20.00,
+             'EUR', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+             '2026-03-18 12:00:00'::TIMESTAMP),
+            ('txn-missing-in', 'acct-gbp', '2026-03-18'::DATE, 30.00,
+             'GBP', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+             '2026-03-18 13:00:00'::TIMESTAMP)
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO prep.int_transactions__matched VALUES
+            ('txn-missing-out', 'native-missing-out', 'manual', 'acct-eur'),
+            ('txn-missing-in', 'native-missing-in', 'manual', 'acct-gbp')
         """
     )
     db.execute(
@@ -310,7 +333,9 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
         INSERT INTO core.fct_transactions VALUES
             ('txn-linked-out', 'USD', '2026-03-18 09:00:00'::TIMESTAMP),
             ('txn-linked-in', 'EUR', '2026-03-18 10:00:00'::TIMESTAMP),
-            ('txn-single', 'EUR', '2026-03-19 09:00:00'::TIMESTAMP)
+            ('txn-single', 'EUR', '2026-03-19 09:00:00'::TIMESTAMP),
+            ('txn-missing-out', 'EUR', '2026-03-18 12:00:00'::TIMESTAMP),
+            ('txn-missing-in', 'GBP', '2026-03-18 13:00:00'::TIMESTAMP)
         """
     )
     db.execute(
@@ -404,12 +429,19 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
             source_transaction_id_b, source_type_b, source_origin_b,
             account_id, account_id_b, match_type, match_status, decided_by,
             decided_at
-        ) VALUES (
-            'decision-missing', 'native-missing-out', 'manual', 'user',
-            'native-missing-in', 'manual', 'user', 'acct-usd', 'acct-eur',
-            'transfer', 'accepted', 'user',
-            '2026-03-16 14:00:00'::TIMESTAMP
-        )
+        ) VALUES
+            (
+                'decision-missing-debit', 'native-missing-out', 'manual', 'user',
+                'native-absent-in', 'manual', 'user', 'acct-eur', 'acct-absent',
+                'transfer', 'accepted', 'user',
+                '2026-03-16 14:00:00'::TIMESTAMP
+            ),
+            (
+                'decision-missing-credit', 'native-absent-out', 'manual', 'user',
+                'native-missing-in', 'manual', 'user', 'acct-absent', 'acct-gbp',
+                'transfer', 'accepted', 'user',
+                '2026-03-16 15:00:00'::TIMESTAMP
+            )
         """
     )
     db.execute(
@@ -418,20 +450,98 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
             audit_id, occurred_at, actor, action, target_schema, target_table,
             target_id, operation_id
         ) VALUES (
-            'audit-decision-missing', '2026-03-23 09:00:00'::TIMESTAMP,
+            'audit-decision-missing-debit', '2026-03-23 09:00:00'::TIMESTAMP,
             'system', 'match.restore', 'app', 'match_decisions',
-            'decision-missing', 'op-decision-missing'
+            'decision-missing-debit', 'op-decision-missing-debit'
         )
         """
     )
 
-    missing = next(
+    missing_debit = next(
         row
         for row in module.load_conversion_rows(t.cast(t.Any, _DatabaseContext(db)))
-        if row.transfer_pair_id == "decision-missing"
+        if row.transfer_pair_id == "decision-missing-debit"
     )
-    assert missing.coverage_reason == "missing_leg"
-    assert str(missing.updated_at) == "2026-03-23 09:00:00"
+    assert (
+        missing_debit.from_transaction_id,
+        missing_debit.from_account_id,
+        missing_debit.from_date,
+        missing_debit.from_amount,
+        missing_debit.from_currency,
+    ) == (
+        "txn-missing-out",
+        "acct-eur",
+        date(2026, 3, 18),
+        Decimal("20.00"),
+        "EUR",
+    )
+    assert (
+        missing_debit.to_transaction_id,
+        missing_debit.to_account_id,
+        missing_debit.to_date,
+        missing_debit.to_amount,
+        missing_debit.to_currency,
+    ) == (None, None, None, None, None)
+    assert missing_debit.coverage_reason == "missing_leg"
+    assert str(missing_debit.updated_at) == "2026-03-23 09:00:00"
+
+    missing_credit = next(
+        row
+        for row in module.load_conversion_rows(t.cast(t.Any, _DatabaseContext(db)))
+        if row.transfer_pair_id == "decision-missing-credit"
+    )
+    assert (
+        missing_credit.from_transaction_id,
+        missing_credit.from_account_id,
+        missing_credit.from_date,
+        missing_credit.from_amount,
+        missing_credit.from_currency,
+    ) == (None, None, None, None, None)
+    assert (
+        missing_credit.to_transaction_id,
+        missing_credit.to_account_id,
+        missing_credit.to_date,
+        missing_credit.to_amount,
+        missing_credit.to_currency,
+    ) == (
+        "txn-missing-in",
+        "acct-gbp",
+        date(2026, 3, 18),
+        Decimal("30.00"),
+        "GBP",
+    )
+    assert missing_credit.coverage_reason == "missing_leg"
+
+    debit_accounting = module.derive_currency_accounting((missing_debit,), (), {})
+    assert len(debit_accounting.gains) == 1
+    assert debit_accounting.gains[0].disposed_amount == Decimal("20.00")
+    assert debit_accounting.gains[0].coverage_reason == "missing_leg"
+    credit_accounting = module.derive_currency_accounting((missing_credit,), (), {})
+    assert len(credit_accounting.lots) == 1
+    assert credit_accounting.lots[0].remaining_quantity == Decimal("30.00")
+    assert credit_accounting.lots[0].coverage_reason == "missing_leg"
+
+    db.execute(
+        """
+        UPDATE prep.int_transactions__merged
+           SET conversion_from_date = transaction_date,
+               conversion_from_amount = amount,
+               conversion_from_currency = 'EUR',
+               to_amount = 25.00,
+               to_currency = 'USD',
+               conversion_source_type = 'manual',
+               conversion_source_origin = 'user',
+               conversion_source_transaction_id = 'native-missing-out'
+         WHERE transaction_id = 'txn-missing-out'
+        """
+    )
+    overlapping_partial = [
+        row
+        for row in module.load_conversion_rows(t.cast(t.Any, _DatabaseContext(db)))
+        if row.from_transaction_id == "txn-missing-out"
+    ]
+    assert len(overlapping_partial) == 1
+    assert overlapping_partial[0].source_shape == "linked_two_row"
 
     db.execute(
         """
@@ -588,6 +698,8 @@ def test_positive_sent_amount_is_incomplete_shape() -> None:
 
     assert row.coverage_status == "incomplete"
     assert row.coverage_reason == "incomplete_shape"
+    assert row.from_amount is None
+    assert row.to_amount == Decimal("90.00")
     assert row.executed_rate is None
 
 
@@ -597,6 +709,8 @@ def test_nonpositive_received_amount_is_incomplete_shape(to_amount: str) -> None
 
     assert row.coverage_status == "incomplete"
     assert row.coverage_reason == "incomplete_shape"
+    assert row.from_amount == Decimal("100.00")
+    assert row.to_amount is None
     assert row.executed_rate is None
 
 
@@ -607,6 +721,8 @@ def test_reversed_transfer_terms_are_incomplete_shape() -> None:
 
     assert row.coverage_status == "incomplete"
     assert row.coverage_reason == "incomplete_shape"
+    assert row.from_amount is None
+    assert row.to_amount is None
     assert row.executed_rate is None
 
 
@@ -638,10 +754,50 @@ def test_accepted_decision_missing_from_transfer_bridge_stays_inspectable() -> N
 
 
 def test_single_row_without_received_amount_is_incomplete_shape() -> None:
-    row = _load(_context(single=_frame(_single(to_amount=None))))[0]
+    rows = _load(
+        _context(
+            single=_frame(
+                _single(
+                    from_transaction_id="txn-acquire",
+                    from_date="2026-03-15",
+                    to_date="2026-03-15",
+                    from_amount="-100.00",
+                    from_currency="USD",
+                    to_amount="80.00",
+                    to_currency="EUR",
+                    from_source_transaction_id="native-acquire",
+                    to_source_transaction_id="native-acquire",
+                    candidate_updated_at="2026-03-15 14:00:00",
+                ),
+                _single(
+                    from_transaction_id="txn-dispose",
+                    from_amount="-20.00",
+                    from_currency="EUR",
+                    to_amount=None,
+                    to_currency="USD",
+                    from_source_transaction_id="native-dispose",
+                    to_source_transaction_id="native-dispose",
+                ),
+            )
+        )
+    )
+
+    row = next(row for row in rows if row.from_transaction_id == "txn-dispose")
 
     assert row.coverage_status == "incomplete"
     assert row.coverage_reason == "incomplete_shape"
+
+    module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
+    result = module.derive_currency_accounting(rows, (), {})
+
+    assert len(result.lots) == 1
+    assert result.lots[0].remaining_quantity == Decimal("60.00")
+    assert len(result.gains) == 1
+    assert result.gains[0].disposed_amount == Decimal("20.00")
+    assert result.gains[0].proceeds is None
+    assert result.gains[0].cost_basis is None
+    assert result.gains[0].gain_loss is None
+    assert result.gains[0].coverage_reason == "incomplete_shape"
 
 
 @pytest.mark.parametrize("unknown_currency", [None, "EURO"])

@@ -698,7 +698,9 @@ Numbered, testable. Tagged by phase.
     movement id while preserving the original acquisition provenance.
     Reversing or deleting an accepted Transfer advances both affected
     Account/Currency positions through its audit snapshot without treating the
-    inactive evidence as a movement.
+    inactive evidence as a movement. An accepted cross-currency decision uses the
+    same audit-only freshness rule for each independently resolvable leg under that
+    leg's own Account/Currency key.
 
     A paired Transfer is atomic on the later of its two posting dates. Same-day
     acquisitions precede it and same-day ordinary disposals follow it; multiple
@@ -730,9 +732,11 @@ Numbered, testable. Tagged by phase.
     and provenance but expose NULL basis and gain/loss; the engine's zero-basis
     fallback is never published as a trustworthy FX result. The same rule applies
     to unmatched or unsupported same-currency Transfer quantity: it remains visible
-    as an incomplete Currency lot, never a zero-basis acquisition. When only one
-    conversion leg has a valid Currency, that leg still changes its known quantity
-    while remaining uncovered with `unknown_currency`; the invalid leg is omitted.
+    as an incomplete Currency lot, never a zero-basis acquisition. Any conversion
+    leg with a known Account, date, valid direction and amount, and valid Currency
+    still changes its quantity when the opposite amount, Currency, or canonical leg
+    is missing. The leg remains uncovered with `incomplete_shape`, `missing_leg`, or
+    `unknown_currency` as applicable; an invalid or absent leg is omitted.
 23. **Foundation boundary and observability.** The first delivery slice produces
     the Core conversion, Currency-lot, and realized-FX rows. It adds no CLI command,
     MCP tool, report, Provider parsing, or mutable App table. A bounded

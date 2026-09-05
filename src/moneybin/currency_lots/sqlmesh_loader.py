@@ -327,12 +327,9 @@ def _derive_conversion(
     missing_leg = candidate.source_shape == "linked_two_row" and (
         candidate.from_transaction_id is None or candidate.to_transaction_id is None
     )
-    valid_terms = (
-        candidate.from_amount is not None
-        and candidate.from_amount < 0
-        and candidate.to_amount is not None
-        and candidate.to_amount > 0
-    )
+    valid_from_amount = candidate.from_amount is not None and candidate.from_amount < 0
+    valid_to_amount = candidate.to_amount is not None and candidate.to_amount > 0
+    valid_terms = valid_from_amount and valid_to_amount
     incomplete_shape = (
         any(
             value is None
@@ -371,9 +368,9 @@ def _derive_conversion(
         reason = "missing_home_currency"
 
     from_amount = (
-        abs(candidate.from_amount) if candidate.from_amount is not None else None
+        abs(t.cast("Decimal", candidate.from_amount)) if valid_from_amount else None
     )
-    to_amount = abs(candidate.to_amount) if candidate.to_amount is not None else None
+    to_amount = abs(t.cast("Decimal", candidate.to_amount)) if valid_to_amount else None
     executed_rate: Decimal | None = None
     if valid_terms:
         complete_from_amount = t.cast("Decimal", from_amount)
@@ -450,6 +447,7 @@ def _derive_conversion(
 
 def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
     bridge = context.resolve_table(BRIDGE_TRANSFERS.full_name)
+    matched = context.resolve_table(INT_TRANSACTIONS_MATCHED.full_name)
     merged = context.resolve_table(INT_TRANSACTIONS_MERGED.full_name)
     match_decisions = MATCH_DECISIONS.full_name
     audit_log = AUDIT_LOG.full_name
@@ -509,32 +507,57 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
     )
     missing = context.fetchdf(
         f"""
+        WITH matched_ids AS (
+          SELECT source_transaction_id, source_type, account_id,
+                 MAX(transaction_id) AS transaction_id
+          FROM {matched}
+          GROUP BY source_transaction_id, source_type, account_id
+        )
         SELECT
           'linked_two_row' AS source_shape,
           md.match_id AS transfer_pair_id,
-          NULL::VARCHAR AS from_transaction_id,
-          NULL::VARCHAR AS to_transaction_id,
-          NULL::VARCHAR AS from_account_id,
-          NULL::VARCHAR AS to_account_id,
-          NULL::VARCHAR AS from_date,
-          NULL::VARCHAR AS to_date,
-          NULL::VARCHAR AS from_amount,
-          NULL::VARCHAR AS from_currency,
-          NULL::VARCHAR AS to_amount,
-          NULL::VARCHAR AS to_currency,
+          debit.transaction_id AS from_transaction_id,
+          credit.transaction_id AS to_transaction_id,
+          debit.account_id AS from_account_id,
+          credit.account_id AS to_account_id,
+          debit.transaction_date::VARCHAR AS from_date,
+          credit.transaction_date::VARCHAR AS to_date,
+          debit.amount::VARCHAR AS from_amount,
+          canonical_debit.currency_code AS from_currency,
+          credit.amount::VARCHAR AS to_amount,
+          canonical_credit.currency_code AS to_currency,
           md.source_type_a AS from_source_type,
           md.source_origin_a AS from_source_origin,
           md.source_transaction_id_a AS from_source_transaction_id,
           md.source_type_b AS to_source_type,
           md.source_origin_b AS to_source_origin,
           md.source_transaction_id_b AS to_source_transaction_id,
-          COALESCE(
-            decision_audit.mutation_updated_at,
-            md.decided_at
+          GREATEST(
+            COALESCE(decision_audit.mutation_updated_at, md.decided_at),
+            COALESCE(debit.loaded_at, md.decided_at),
+            COALESCE(credit.loaded_at, md.decided_at),
+            COALESCE(canonical_debit.updated_at, md.decided_at),
+            COALESCE(canonical_credit.updated_at, md.decided_at)
           )::VARCHAR AS candidate_updated_at
         FROM {match_decisions} AS md
         LEFT JOIN {bridge} AS bt
           ON md.match_id = bt.transfer_id
+        LEFT JOIN matched_ids AS debit_id
+          ON md.source_transaction_id_a = debit_id.source_transaction_id
+         AND md.source_type_a = debit_id.source_type
+         AND md.account_id = debit_id.account_id
+        LEFT JOIN matched_ids AS credit_id
+          ON md.source_transaction_id_b = credit_id.source_transaction_id
+         AND md.source_type_b = credit_id.source_type
+         AND md.account_id_b = credit_id.account_id
+        LEFT JOIN {merged} AS debit
+          ON debit_id.transaction_id = debit.transaction_id
+        LEFT JOIN {merged} AS credit
+          ON credit_id.transaction_id = credit.transaction_id
+        LEFT JOIN {transactions} AS canonical_debit
+          ON debit.transaction_id = canonical_debit.transaction_id
+        LEFT JOIN {transactions} AS canonical_credit
+          ON credit.transaction_id = canonical_credit.transaction_id
         LEFT JOIN (
           SELECT target_id, MAX(occurred_at) AS mutation_updated_at
           FROM {audit_log}
@@ -551,6 +574,32 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
     )
     single = context.fetchdf(
         f"""
+        WITH matched_ids AS (
+          SELECT source_transaction_id, source_type, account_id,
+                 MAX(transaction_id) AS transaction_id
+          FROM {matched}
+          GROUP BY source_transaction_id, source_type, account_id
+        ), active_decision_transactions AS (
+          SELECT debit.transaction_id
+          FROM {match_decisions} AS md
+          JOIN matched_ids AS debit
+            ON md.source_transaction_id_a = debit.source_transaction_id
+           AND md.source_type_a = debit.source_type
+           AND md.account_id = debit.account_id
+          WHERE md.match_type = 'transfer'
+            AND md.match_status = 'accepted'
+            AND md.reversed_at IS NULL
+          UNION
+          SELECT credit.transaction_id
+          FROM {match_decisions} AS md
+          JOIN matched_ids AS credit
+            ON md.source_transaction_id_b = credit.source_transaction_id
+           AND md.source_type_b = credit.source_type
+           AND md.account_id_b = credit.account_id
+          WHERE md.match_type = 'transfer'
+            AND md.match_status = 'accepted'
+            AND md.reversed_at IS NULL
+        )
         SELECT
           'single_row' AS source_shape,
           NULL::VARCHAR AS transfer_pair_id,
@@ -589,10 +638,13 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
             linked_transfer.debit_transaction_id,
             linked_transfer.credit_transaction_id
           )
+        LEFT JOIN active_decision_transactions AS linked_decision
+          ON single_row.transaction_id = linked_decision.transaction_id
         WHERE (
           NOT single_row.to_amount IS NULL OR NOT single_row.to_currency IS NULL
         )
           AND linked_transfer.transfer_id IS NULL
+          AND linked_decision.transaction_id IS NULL
         """  # noqa: S608  # table name resolved by SQLMesh, not user input
     )
     return [
@@ -872,6 +924,8 @@ def _conversion_events(
     conversion: CurrencyConversionRow,
 ) -> list[tuple[LedgerEvent, _EventMetadata]]:
     quantity_only_reasons = {
+        "incomplete_shape",
+        "missing_leg",
         "missing_home_currency",
         "missing_valuation_rate",
         "unknown_currency",
@@ -1581,34 +1635,69 @@ def _load_transfer_position_watermarks(
                  MAX(transaction_id) AS transaction_id
           FROM {matched}
           GROUP BY source_transaction_id, source_type, account_id
-        ), valid_transfers AS (
+        ), resolved_decisions AS (
           SELECT active.occurred_at,
                  debit.account_id AS source_account_id,
+                 debit.transaction_date AS source_date,
+                 debit.amount AS source_amount,
+                 debit.currency_code AS source_currency_code,
                  credit.account_id AS destination_account_id,
-                 debit.currency_code
+                 credit.transaction_date AS destination_date,
+                 credit.amount AS destination_amount,
+                 credit.currency_code AS destination_currency_code,
+                 COALESCE(
+                   debit.amount < 0 AND debit.transaction_date IS NOT NULL,
+                   FALSE
+                 ) AS source_valid,
+                 COALESCE(
+                   credit.amount > 0 AND credit.transaction_date IS NOT NULL,
+                   FALSE
+                 ) AS destination_valid
           FROM active_transfers AS active
-          JOIN matched_ids AS debit_id
+          LEFT JOIN matched_ids AS debit_id
             ON active.source_transaction_id_a = debit_id.source_transaction_id
            AND active.source_type_a = debit_id.source_type
            AND active.account_id = debit_id.account_id
-          JOIN matched_ids AS credit_id
+          LEFT JOIN {transactions} AS debit
+            ON debit_id.transaction_id = debit.transaction_id
+          LEFT JOIN matched_ids AS credit_id
             ON active.source_transaction_id_b = credit_id.source_transaction_id
            AND active.source_type_b = credit_id.source_type
            AND active.account_id_b = credit_id.account_id
-          JOIN {transactions} AS debit
-            ON debit_id.transaction_id = debit.transaction_id
-          JOIN {transactions} AS credit
+          LEFT JOIN {transactions} AS credit
             ON credit_id.transaction_id = credit.transaction_id
-          WHERE debit.currency_code = credit.currency_code
-            AND debit.amount < 0
-            AND credit.amount > 0
-            AND debit.amount + credit.amount = 0
+        ), classified_decisions AS (
+          SELECT *,
+                 source_currency_code IS DISTINCT FROM destination_currency_code
+                   AS currencies_differ,
+                 COALESCE(
+                   source_currency_code = destination_currency_code
+                   AND source_amount + destination_amount = 0,
+                   FALSE
+                 ) AS exact_same_currency_transfer
+          FROM resolved_decisions
         ), positions AS (
-          SELECT occurred_at, source_account_id AS account_id, currency_code
-          FROM valid_transfers
+          SELECT occurred_at,
+                 source_account_id AS account_id,
+                 source_currency_code AS currency_code
+          FROM classified_decisions
+          WHERE source_valid
+            AND (
+              NOT destination_valid
+              OR currencies_differ
+              OR exact_same_currency_transfer
+            )
           UNION ALL
-          SELECT occurred_at, destination_account_id AS account_id, currency_code
-          FROM valid_transfers
+          SELECT occurred_at,
+                 destination_account_id AS account_id,
+                 destination_currency_code AS currency_code
+          FROM classified_decisions
+          WHERE destination_valid
+            AND (
+              NOT source_valid
+              OR currencies_differ
+              OR exact_same_currency_transfer
+            )
         )
         SELECT account_id, currency_code,
                MAX(occurred_at)::VARCHAR AS transfer_updated_at

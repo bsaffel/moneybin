@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 import typing as t
 from collections.abc import Mapping
 from datetime import date, datetime
@@ -13,6 +14,7 @@ import pandas as pd
 import pytest
 
 from moneybin.currency_lots import sqlmesh_loader
+from moneybin.database import Database
 from moneybin.tables import TableRef
 
 pytestmark = pytest.mark.unit
@@ -1184,6 +1186,17 @@ class _FakeContext:
         return self.frames.pop(0)
 
 
+class _DatabaseContext:
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    def resolve_table(self, name: str) -> str:
+        return name
+
+    def fetchdf(self, sql: str) -> pd.DataFrame:
+        return self.db.execute(sql).fetchdf()
+
+
 def test_same_currency_transfer_loader_reads_exact_foreign_bridge_rows() -> None:
     context = _FakeContext(
         pd.DataFrame({
@@ -1231,7 +1244,9 @@ def test_same_currency_transfer_loader_reads_exact_foreign_bridge_rows() -> None
     assert "http" not in query
 
 
-def test_transfer_position_watermarks_use_both_active_audit_snapshots() -> None:
+def test_transfer_position_watermarks_use_both_snapshots_and_endpoint_currencies() -> (
+    None
+):
     context = _FakeContext(
         pd.DataFrame({
             "account_id": ["acct-eur", "acct-eur-2"],
@@ -1252,7 +1267,82 @@ def test_transfer_position_watermarks_use_both_active_audit_snapshots() -> None:
     assert "before_value as decision" in query
     assert "after_value as decision" in query
     assert "$.match_status') = 'accepted'" in query
-    assert query.count("from valid_transfers") == 2
+    assert "debit.currency_code as source_currency_code" in query
+    assert "credit.currency_code as destination_currency_code" in query
+    assert "source_currency_code is distinct from destination_currency_code" in query
+    assert "exact_same_currency_transfer" in query
+
+
+def test_transfer_position_watermarks_exclude_unequal_same_currency_decision(
+    db: Database,
+) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        """
+        CREATE OR REPLACE TABLE prep.int_transactions__matched (
+            transaction_id VARCHAR,
+            source_transaction_id VARCHAR,
+            source_type VARCHAR,
+            account_id VARCHAR
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE OR REPLACE TABLE core.fct_transactions (
+            transaction_id VARCHAR,
+            account_id VARCHAR,
+            transaction_date DATE,
+            amount DECIMAL(18, 2),
+            currency_code VARCHAR
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO prep.int_transactions__matched VALUES
+            ('txn-out', 'source-out', 'manual', 'acct-source'),
+            ('txn-in', 'source-in', 'manual', 'acct-destination')
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions VALUES
+            ('txn-out', 'acct-source', '2026-03-01'::DATE, -20.00, 'EUR'),
+            ('txn-in', 'acct-destination', '2026-03-01'::DATE, 25.00, 'EUR')
+        """
+    )
+    before = {
+        "source_transaction_id_a": "source-out",
+        "source_type_a": "manual",
+        "account_id": "acct-source",
+        "source_transaction_id_b": "source-in",
+        "source_type_b": "manual",
+        "account_id_b": "acct-destination",
+        "match_type": "transfer",
+        "match_status": "accepted",
+        "reversed_at": None,
+    }
+    after = {**before, "reversed_at": "2026-03-02T00:00:00"}
+    db.execute(
+        """
+        INSERT INTO app.audit_log (
+            audit_id, occurred_at, actor, action, target_schema, target_table,
+            target_id, before_value, after_value, operation_id
+        ) VALUES (
+            'audit-unequal', '2026-03-02 00:00:00'::TIMESTAMP,
+            'test', 'match.reverse', 'app', 'match_decisions',
+            'unequal-same-currency', ?::JSON, ?::JSON, 'op-unequal'
+        )
+        """,
+        [json.dumps(before), json.dumps(after)],
+    )
+
+    watermarks = sqlmesh_loader._load_transfer_position_watermarks(  # pyright: ignore[reportPrivateUsage]
+        t.cast(t.Any, _DatabaseContext(db))
+    )
+
+    assert watermarks == {}
 
 
 def test_deleted_account_method_uses_audit_freshness() -> None:

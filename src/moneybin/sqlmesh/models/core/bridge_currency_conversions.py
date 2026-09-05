@@ -25,6 +25,7 @@ from moneybin.metrics.registry import set_fx_accounting_rows
         "core.bridge_transfers",
         "core.dim_accounts",
         "core.fct_transactions",
+        "prep.int_transactions__matched",
         "prep.int_transactions__merged",
         "raw.exchange_rates",
     },
