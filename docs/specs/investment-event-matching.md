@@ -392,7 +392,12 @@ Its revision digests the reconstruction-algorithm version, exact retained first
 snapshot receipt/holding/lot inputs, exact in-window transaction observation
 revisions used to calculate the gap, and canonical-identity dependencies that
 affect Golden projection. Provenance exposes those inputs and the algorithm
-version.
+version. Gap calculation resolves every in-window transaction through active
+membership rather than latest staging. When a correction stales an accepted or
+multi-source Match, the reconstruction therefore continues using that Match's
+last-reviewed transaction revision. Only replacement acceptance or reversal
+changes the selected transaction inputs and atomically advances the
+reconstruction revision.
 
 An opening-lot reconstruction never becomes a Proposal or cross-source Match.
 When its inputs change, active membership advances atomically to the new
@@ -724,11 +729,11 @@ fixtures and expected Golden-ledger outcomes.
 | Precision | Exact decimal normalization plus inside/outside quantity, amount, fee, and price thresholds |
 | Reinvestment | Manual and aggregator multi-leg shapes; income and acquisition move atomically; a missing leg is not accepted |
 | Transfers | Both account directions and quantities agree; one-sided or mismatched transfers remain ineligible |
-| Repetition | Unique two-to-two assignment of identical same-day trades; ambiguous one-to-two assignment remains competing; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
+| Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; manual correction is unavailable in M1J.7 |
 | Revisions | Identical aggregator re-delivery reuses a version; an unreviewed aggregator singleton advances without rotating Golden ids; changed accepted or multi-source evidence stales without silently changing Golden fields |
-| Opening lots | A reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
+| Opening lots | A reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
 | Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency; an equivalence merge follows aliases and stales pending Proposals only, while a non-equivalent rebind, unlink, or split atomically stales pending and accepted or multi-source Matches before the new mapping is visible; Raw remains unchanged |
 | Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; later retired event and leg ids resolve through the two derived Core views; undo reactivates prior ids as self-maps |
@@ -747,8 +752,10 @@ fixtures and expected Golden-ledger outcomes.
 - Currency tests for explicit values, account inheritance, unknown or
   contradictory effective currency, and account-currency changes that stale a
   Proposal.
-- Pure global-assignment tests, including competing and repeated-event graphs
-  and an equally plausible event arriving after Proposal planning.
+- Pure global-assignment tests, including repeated-event graphs with
+  non-arbitrary distinguishing evidence, genuinely indistinguishable two-to-two
+  and one-to-two graphs, and an equally plausible event arriving after Proposal
+  planning.
 - DuckDB repository tests for atomic membership, rejection suppression, field
   resolutions, observation-version binding, projection-change timestamps, audit
   records, and reversal.
@@ -766,8 +773,10 @@ fixtures and expected Golden-ledger outcomes.
 - Opening-lot reconstruction tests proving stable-key identity, exact-input and
   algorithm-version provenance, revision advance, retirement, stable surviving
   lot ids when canonical identity and acquisition inputs are unchanged, audited
-  complete-selection remap after a canonical identity rekey, and non-current
-  output for an impossible stored selection.
+  complete-selection remap after a canonical identity rekey, accepted-Match
+  correction using last-reviewed transaction revisions for gap quantity and
+  basis until replacement or reversal, and non-current output for an impossible
+  stored selection.
 - Core id-resolution tests proving current and retired event and leg ids resolve
   from membership history, and accept followed by undo makes reactivated ids
   self-resolve without stale forwarding.
