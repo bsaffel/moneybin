@@ -51,8 +51,10 @@ Individual commands (`transactions matches run`, `transactions categorize rules 
 
 M1J.7 delivery slice 2 keeps that umbrella: it adds the selectable
 `investment_match` refresh step, and `investments matches run` maps to the same
-operation as MCP `refresh_run` with `steps` set to `investment_match`. Selecting
-`transform` runs investment matching first as a transitive prerequisite.
+proposal-only operation as MCP `refresh_run` with `steps` set to
+`investment_match`. Selecting `transform` runs that planner and then the
+non-selectable membership-reconciliation prerequisite before rebuilding the
+Golden ledger and its dependents.
 
 ### Entity groups own their workflows and aggregations
 

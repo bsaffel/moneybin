@@ -240,7 +240,8 @@ and confirmation contracts.
   `rates`, executed in that canonical order. M1J.7 slice 2 inserts
   `investment_match` after `match` and before `transform`; selecting only that
   value in `refresh_run.steps` plans pending investment reviews, while selecting
-  `transform` runs that prerequisite transitively. `rates`
+  `transform` runs that planner transitively and then invokes non-selectable
+  membership reconciliation before rebuilding the Golden ledger. `rates`
   caches the reference rates the profile's own
   transactions, balances and holdings imply; it runs last because nothing
   downstream consumes it, and it reports `rates_written` plus any

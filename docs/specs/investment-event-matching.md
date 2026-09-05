@@ -862,9 +862,11 @@ accepted, rejected, stale, and reversed decisions.
 
 The CLI `run` command and MCP `refresh_run` with its M1J.7 `steps` value
 `investment_match` invoke the same bounded planner step and return its counts
-and pending-review summary. Selecting `transform` still runs
-`investment_match` transitively. Inspection then uses `reviews` with its M1J.7
-`kind` value `investment_matches`; no separate MCP planning tool is added.
+and pending-review summary. Selecting `transform` still runs that planner
+transitively, then invokes the non-selectable membership-reconciliation
+prerequisite before rebuilding the Golden ledger and its dependents. Inspection
+uses `reviews` with its M1J.7 `kind` value `investment_matches`; no separate MCP
+planning or reconciliation tool is added.
 
 ### Decision and undo
 
@@ -988,36 +990,40 @@ and dependent curation or returns a blocking error without writing. Generic
 
 ### Refresh and failure semantics
 
-The refresh registry gains an `investment_match` step after source staging and
-identity resolution but before the Golden investment ledger and its dependent
-models. Before that step, SQLMesh performs a narrow pre-match bootstrap of only
-the comparison and opening-lot input views, plus dependencies required to
-evaluate them. This bootstrap creates those inputs for a fresh profile and
-applies newly added input-view models, but it cannot select the Golden ledger or
-any dependent model. Its SQLMesh executions therefore do not acknowledge
-Golden-ledger freshness or clear the stale-read guard.
+The refresh registry gains a selectable `investment_match` planner step after
+source staging and identity resolution. Before planning or membership
+reconciliation, SQLMesh performs a narrow pre-match bootstrap of only the
+comparison and opening-lot input views, plus dependencies required to evaluate
+them. This bootstrap creates those inputs for a fresh profile and applies newly
+added input-view models, but it cannot select the Golden ledger or any dependent
+model. Its SQLMesh executions therefore do not acknowledge Golden-ledger
+freshness or clear the stale-read guard.
 
-Planning is safe to repeat. Unlike existing best-effort enrichment stages,
-`investment_match` is a fail-closed prerequisite to the dependent transform: it
-must process every ledger-projectable Source event and opening-lot membership
-before returning success. Processing registers, advances, or retires membership,
-including for Source events ineligible to enter a Proposal, except that a
-current Source event containing a stable source-row identity reserved by an
-active accepted or stale Match is verified as held and cannot register or
-project standalone. Any bootstrap or `investment_match` error prevents the full
+Planning is safe to repeat and changes no Golden membership. A full transform
+also invokes a non-selectable membership-reconciliation prerequisite after the
+planner and before the Golden ledger. Unlike existing best-effort enrichment
+stages, reconciliation is fail-closed: it must process every ledger-projectable
+Source event and opening-lot membership before returning success. Processing
+registers, advances, or retires membership, including for Source events
+ineligible to enter a Proposal, except that a current Source event containing a
+stable source-row identity reserved by an active accepted or stale Match is
+verified as held and cannot register or project standalone. Any bootstrap,
+planner, or reconciliation error in the full-transform route prevents
 `TransformService.apply` from running, so SQLMesh cannot acknowledge Raw or App
 inputs that membership did not process. A later refresh retries from durable Raw
 evidence and membership history.
 
-The refresh selector treats the pre-match bootstrap and `investment_match` as
-transitive dependencies of `transform`: every transform request, including
-`moneybin refresh --step transform` and `refresh_run(steps=["transform"])`, runs
-them first. No CLI, MCP, or internal caller can request the dependent transform
-while skipping those prerequisites. The prerequisite-aware refresh path becomes
-the sole production entry point for a full transform: the existing transform
-CLI, MCP schema-drift self-heal, and import-service shim delegate to it rather
-than calling `TransformService.apply` directly. `TransformService.apply` remains
-the orchestrator's lower-level full SQLMesh boundary, not a separately callable
+The refresh selector treats the pre-match bootstrap, `investment_match`
+planner, and membership reconciliation as transitive dependencies of
+`transform`: every transform request, including `moneybin refresh --step
+transform` and `refresh_run(steps=["transform"])`, runs them first. Only the
+planner is selectable on its own; no CLI, MCP, or internal caller can request
+the dependent transform while skipping membership reconciliation. The
+prerequisite-aware refresh path becomes the sole production entry point for a
+full transform: the existing transform CLI, MCP schema-drift self-heal, and
+import-service shim delegate to it rather than calling `TransformService.apply`
+directly. `TransformService.apply` remains the orchestrator's lower-level full
+SQLMesh boundary, not a separately callable
 full-transform workflow.
 
 Investment-event membership is a materialization input. Transform freshness is
@@ -1303,11 +1309,13 @@ fixtures and expected Golden-ledger outcomes.
   model rebuilds successfully, while status, recovery, audit, provenance, and
   unrelated reads remain available.
 - Refresh-orchestration tests proving match-ineligible but ledger-projectable
-  Source events still register as standalone membership, and any
-  `investment_match` error prevents the
-  dependent transform and SQLMesh timestamp advancement, and proving a direct
-  transform-only selector expands the dependency so a later retry completes
-  membership processing before rebuilding.
+  Source events still register as standalone membership only during the
+  full-transform reconciliation prerequisite; a standalone `investment_match`
+  planner run changes no Golden membership; and any planner or reconciliation
+  error in the full-transform route prevents the dependent transform and
+  SQLMesh timestamp advancement. A direct transform-only selector expands both
+  dependencies so a later retry completes planning and membership processing
+  before rebuilding.
 - Bootstrap tests proving a fresh profile and a newly added comparison-input
   model create only the required pre-match views before membership processing,
   never execute a Golden or dependent model, and cannot clear dependent
