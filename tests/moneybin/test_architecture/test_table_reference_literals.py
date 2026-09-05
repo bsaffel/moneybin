@@ -252,7 +252,8 @@ _TABLE_ARG_CLAUSE_TYPE = "TABLE_ARG"
 # and the match must consume the WHOLE string (`fullmatch`, not `search`) since
 # there is no surrounding SQL for a partial match to be extracted from.
 _TABLE_ARG_PATTERN = re.compile(
-    r"(" + "|".join(_SCHEMA_NAMES) + r")\.([a-z][a-z0-9_]+)"
+    r"(" + "|".join(_SCHEMA_NAMES) + r")\.([a-z][a-z0-9_]+)",
+    re.IGNORECASE,
 )
 
 
@@ -261,9 +262,15 @@ def _table_arg_match(text: str) -> str | None:
 
     Used for `TABLE_ARG_METHOD_NAMES` sinks only — see that constant's
     comment for why this does NOT go through `_tables_in_text`/sqlglot.
+
+    Case-insensitive, reporting the lowercased pair, for the same two reasons
+    the structural path lowercases at `exp.Table`: DuckDB resolves unquoted
+    identifiers case-insensitively, so `"RAW.foo"` writes the same table as
+    `"raw.foo"` and must not evade the guard; and reporting the source
+    spelling would split one table across two `TABLE_LITERAL_ALLOWLIST` keys.
     """
     match = _TABLE_ARG_PATTERN.fullmatch(text.strip())
-    return f"{match.group(1)}.{match.group(2)}" if match else None
+    return f"{match.group(1).lower()}.{match.group(2).lower()}" if match else None
 
 
 # Fallback matcher for text sqlglot's structural walk can't see into — NOT
@@ -734,6 +741,12 @@ def _collect_scope(
                 )
                 if isinstance(arg, ast.Name):
                     table_arg_seed_names.add(arg.id)
+                elif isinstance(arg, ast.NamedExpr):
+                    # `db.ingest_dataframe(table := "raw.foo", df)` — the same
+                    # shape the execute loop above handles, seeded the same
+                    # way. Leaving it out would put two behaviours on one
+                    # syntax depending only on which sink it reached.
+                    table_arg_seed_names.add(arg.target.id)
                 elif arg is not None:
                     text = _literal_text(arg)
                     if text is not None:
@@ -1513,3 +1526,28 @@ def test_walrus_used_directly_as_call_argument_is_flagged(tmp_path: Path) -> Non
     """
     source = 'db.execute(query := "SELECT * FROM core.fct_transactions")\n'
     assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
+
+
+def test_ingest_dataframe_uppercase_schema_is_flagged(tmp_path: Path) -> None:
+    """An uppercase spelling reaches the same DuckDB table, so it must not evade.
+
+    DuckDB resolves unquoted identifiers case-insensitively — `"RAW.Foo"`
+    writes exactly what `"raw.foo"` writes. The structural path already
+    lowercases at `exp.Table`; a case-sensitive matcher here would have left
+    the new sink with an evasion its sibling does not have. The reported
+    table is lowercased for the same reason, so one table cannot occupy two
+    `TABLE_LITERAL_ALLOWLIST` keys depending on how it was typed.
+    """
+    source = 'db.ingest_dataframe("RAW.New_Table", df)\n'
+    assert _scan_source(tmp_path, source) == [(1, "TABLE_ARG", "raw.new_table")]
+
+
+def test_ingest_dataframe_walrus_argument_is_flagged(tmp_path: Path) -> None:
+    """A walrus bound inline as the table argument is seeded like a bare name.
+
+    The execute sink grew `ast.NamedExpr` handling in the same round; without
+    the matching branch here, one syntax would behave two ways depending only
+    on which sink it reached.
+    """
+    source = 'db.ingest_dataframe(table := "raw.foo", df)\n'
+    assert _scan_source(tmp_path, source) == [(1, "TABLE_ARG", "raw.foo")]
