@@ -184,17 +184,29 @@ class MatchingService:
         ``"cli"``/``"mcp"``; defaults to ``"system"`` for automated callers).
         """
         seed_source_priority(self._db, self._settings)
-        result = TransactionMatcher(self._db, self._settings, actor=actor).run(
-            auto_accept_transfers=auto_accept_transfers
-        )
         # The run's own auto-accepted merges re-key transactions, and so does a
         # sync that landed a posted row for a pending one Plaid has removed —
         # neither passes through `MatchDecisionApplication`, so the forwarding is
         # invoked here. It commits on its own; a matcher run opens no transaction.
-        record_committed_alias_forwarding(
-            forward_rekeyed_transaction_ids(self._db, actor=actor)
-        )
-        return result
+        #
+        # In `finally` because a matcher run that raises still leaves durable
+        # writes: it opens no transaction around itself, so each dedup tier's
+        # accepted decisions are committed by the time a later reconciliation or
+        # Tier-4 step raises `MatchRunError` (see `MatchRunError`'s docstring).
+        # Those decisions re-key immediately -- every model between them and
+        # `core.fct_transactions` is a VIEW -- and `refresh()` records the error
+        # as a step failure and carries on, so skipping the forwarding here
+        # leaves the user a red `app_transaction_categories_fk` and vanished
+        # notes, tags and splits until some later run happens to succeed. The
+        # pass is idempotent, so running it on the way out of a failure is safe.
+        try:
+            return TransactionMatcher(self._db, self._settings, actor=actor).run(
+                auto_accept_transfers=auto_accept_transfers
+            )
+        finally:
+            record_committed_alias_forwarding(
+                forward_rekeyed_transaction_ids(self._db, actor=actor)
+            )
 
     def seed_priority(self) -> None:
         """Seed ``app.seed_source_priority`` from current MatchingSettings.

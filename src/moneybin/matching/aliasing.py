@@ -24,6 +24,19 @@ resolution in each of those places — several mechanisms for one fact, and the
 old rows stay orphaned in the table meanwhile. Moving the rows once, at the
 moment the id changes, leaves exactly one id in play everywhere downstream.
 
+**A second pass heals what the first cannot see.** The derivation above builds
+its candidate set from source rows that are still present, so it says nothing
+about a re-key caused by rows *disappearing*. Delete the anchor's source rows —
+``ImportService.revert_confirmed`` drops an import's raw rows while the accepted
+``app.match_decisions`` row survives (``REVERT_TABLES`` lists raw tables only),
+and ``PlaidExtractor.handle_removed_transactions`` deletes rows on an ordinary
+sync — and the merge group re-anchors to a surviving member, flipping the
+canonical id back to one that already forwards away. The curation is then
+stranded on an id present in no view, and the append-only map cannot be
+corrected. :func:`_heal_stranded_curation` repairs that from the orphan side:
+it walks the alias map *undirected* to find every id that has ever named the
+transaction, and moves the curation onto the one that is live.
+
 Decision history is deliberately *not* forwarded. ``app.categorization_decisions``
 keys its ``decision_id`` on ``(transaction_id, attempt_number)`` and
 ``app.audit_log`` records the id as it stood; both describe what happened, and
@@ -36,6 +49,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from moneybin.database import Database
 from moneybin.errors import exception_origin
@@ -45,9 +59,15 @@ from moneybin.metrics.registry import (
 )
 from moneybin.services.mutation_context import operation
 from moneybin.tables import (
+    FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
+    TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
+    TRANSACTION_NOTES,
+    TRANSACTION_SPLITS,
+    TRANSACTION_TAGS,
+    TableRef,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,6 +145,64 @@ ORDER BY old_id
 """  # noqa: S608  # TableRef constants and code-supplied column expressions only
 
 
+# Curation stranded on an id no view serves, and the live id to move it to.
+#
+# The alias map is walked as an UNDIRECTED graph: a re-anchor can hand an id
+# back, so the live id is as often the stranded id's predecessor as its
+# successor, and only the connected component answers "which ids have ever
+# named this transaction". `UNION` (not `UNION ALL`) in the recursive term is
+# the visited set -- it terminates at the fixpoint, so a cycle cannot hang the
+# walk. `core.fct_transactions` is the liveness oracle deliberately: it is what
+# `app_transaction_categories_fk` anti-joins, so a component this query calls
+# live is one the doctor will too.
+#
+# A component with no live member produces no row here at all (the JOIN drops
+# it), which is the "leave it alone" case; `live_count` distinguishes the other
+# one, where several ids in the component are live and nothing says which the
+# curation belongs to.
+_STRANDED_CURATION_SQL = f"""
+WITH RECURSIVE curated AS (
+  SELECT DISTINCT transaction_id FROM {TRANSACTION_CATEGORIES.full_name}
+  UNION
+  SELECT DISTINCT transaction_id FROM {TRANSACTION_NOTES.full_name}
+  UNION
+  SELECT DISTINCT transaction_id FROM {TRANSACTION_TAGS.full_name}
+  UNION
+  SELECT DISTINCT transaction_id FROM {TRANSACTION_SPLITS.full_name}
+), live AS (
+  -- Materialized once and anti-joined, never correlated: core.fct_transactions
+  -- is the whole merge/dedup/categorization pipeline, and a per-row subquery
+  -- over it is O(N x view). Same reason the doctor's FK invariant does this.
+  SELECT DISTINCT transaction_id FROM {FCT_TRANSACTIONS.full_name}
+), stranded AS (
+  SELECT c.transaction_id
+  FROM curated AS c
+  LEFT JOIN live AS l ON l.transaction_id = c.transaction_id
+  WHERE l.transaction_id IS NULL
+), edges AS (
+  SELECT old_transaction_id AS src, new_transaction_id AS dst
+  FROM {TRANSACTION_ID_ALIASES.full_name}
+  UNION ALL
+  SELECT new_transaction_id AS src, old_transaction_id AS dst
+  FROM {TRANSACTION_ID_ALIASES.full_name}
+), component AS (
+  SELECT transaction_id AS stranded_id, transaction_id AS member FROM stranded
+  UNION
+  SELECT c.stranded_id, e.dst
+  FROM component AS c
+  JOIN edges AS e ON e.src = c.member
+)
+SELECT
+  c.stranded_id,
+  MIN(c.member) AS live_id,
+  COUNT(*) AS live_count
+FROM component AS c
+JOIN live AS l ON l.transaction_id = c.member
+GROUP BY c.stranded_id
+ORDER BY c.stranded_id
+"""  # noqa: S608  # TableRef constants only
+
+
 @dataclass(frozen=True, slots=True)
 class AliasForwardResult:
     """What one forwarding pass wrote, for the caller to report after it commits."""
@@ -151,7 +229,7 @@ def forward_rekeyed_transaction_ids(
     written outlives the rollback that takes it back. Pass the result to
     :func:`record_committed_alias_forwarding` once the commit lands.
     """
-    if not _staging_views_exist(db):
+    if not _relations_exist(db, INT_TRANSACTIONS_MATCHED, INT_TRANSACTIONS_UNIONED):
         # A first load precedes the SQLMesh apply that builds these views. That
         # is a precondition, not a failure — and the catalog is asked rather than
         # the view, because a failed statement poisons a caller's transaction.
@@ -195,21 +273,17 @@ def record_committed_alias_forwarding(result: AliasForwardResult) -> None:
         )
 
 
-def _staging_views_exist(db: Database) -> bool:
-    """Whether both staging relations the derivation reads are in the catalog."""
+def _relations_exist(db: Database, *refs: TableRef) -> bool:
+    """Whether every named relation (view or table) is in the catalog."""
+    pairs = ", ".join("(?, ?)" for _ in refs)
     row = db.execute(
-        """
+        f"""
         SELECT COUNT(*) FROM information_schema.tables
-        WHERE (table_schema, table_name) IN ((?, ?), (?, ?))
-        """,
-        [
-            INT_TRANSACTIONS_MATCHED.schema,
-            INT_TRANSACTIONS_MATCHED.name,
-            INT_TRANSACTIONS_UNIONED.schema,
-            INT_TRANSACTIONS_UNIONED.name,
-        ],
+        WHERE (table_schema, table_name) IN ({pairs})
+        """,  # noqa: S608  # `pairs` is placeholders; every value is parameterized
+        [value for ref in refs for value in (ref.schema, ref.name)],
     ).fetchone()
-    return bool(row) and int(row[0]) == 2
+    return bool(row) and int(row[0]) == len(refs)
 
 
 def _forward(db: Database, *, actor: str) -> AliasForwardResult:
@@ -234,9 +308,6 @@ def _forward(db: Database, *, actor: str) -> AliasForwardResult:
     )
 
     rows = db.execute(_PENDING_ALIASES_SQL).fetchall()
-    if not rows:
-        return AliasForwardResult()
-
     aliases = TransactionIdAliasesRepo(db)
     curation = (
         TransactionCategoriesRepo(db),
@@ -265,6 +336,57 @@ def _forward(db: Database, *, actor: str) -> AliasForwardResult:
                 )
             )
         logger.debug(f"Forwarded transaction id ({cause}): {old_id} -> {new_id}")
+
+    # Second pass, deliberately after the derivation: the ids it just moved
+    # curation onto are live, so they are not stranded and this finds nothing
+    # extra to do for them.
+    forwarded += _heal_stranded_curation(db, curation, actor=actor)
     return AliasForwardResult(
         aliases_written=len(rows), curation_rows_forwarded=forwarded
     )
+
+
+def _heal_stranded_curation(
+    db: Database, curation: tuple[Any, ...], *, actor: str
+) -> int:
+    """Move curation off an id no view serves onto the live id of its component.
+
+    Appends no alias row. The map is append-only and already records how the id
+    got here; what went wrong is only that the curation stopped tracking the
+    canonical id, so only the curation moves. Idempotent for the same reason a
+    repointed row is no longer stranded.
+    """
+    if not _relations_exist(db, FCT_TRANSACTIONS, TRANSACTION_ID_ALIASES):
+        # A first load precedes the transform that builds the fact view, and the
+        # catalog is asked rather than the view for the same reason the
+        # derivation asks it: a failed statement poisons a caller's transaction.
+        logger.debug(
+            "Stranded-curation repair skipped: the fact view or alias map is absent"
+        )
+        return 0
+
+    forwarded = 0
+    for stranded_id, live_id, live_count in db.execute(
+        _STRANDED_CURATION_SQL
+    ).fetchall():
+        if int(live_count) != 1:
+            # Several ids in the component are live, so the transaction the
+            # curation was written against split back apart. Guessing one would
+            # move a user's edit onto a transaction they never edited; the
+            # doctor's FK invariant reports it instead.
+            logger.debug(
+                f"Stranded curation left in place: {stranded_id} resolves to "
+                f"{live_count} live transaction ids"
+            )
+            continue
+        for repo in curation:
+            forwarded += len(
+                repo.repoint_transaction(
+                    old_transaction_id=str(stranded_id),
+                    new_transaction_id=str(live_id),
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+            )
+        logger.debug(f"Healed stranded curation: {stranded_id} -> {live_id}")
+    return forwarded

@@ -294,7 +294,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   annotation stays with the transaction it describes and `moneybin doctor` stops
   reporting the orphans. Successive re-keys chain rather than collide, and an
   already-annotated survivor keeps whichever categorization was authored with
-  more authority — a manual edit is never displaced by an automatic one. (#532)
+  more authority — a manual edit is never displaced by an automatic one. The
+  repair also runs from the other direction, for the case where the id changes
+  because rows *went away*: reverting the import that supplied a merged
+  transaction, or an ordinary Plaid sync removing one, hands the transaction back
+  to a surviving source and its annotations follow. Where the trail is genuinely
+  ambiguous — every id the transaction ever used is gone, or several are still in
+  use — the rows are left where they are and `moneybin doctor` reports them
+  rather than the guess being made for you. (#532)
 
 - **A missing or locked keychain entry no longer prints a stack trace.**
   `moneybin db info`, `db unlock` and the DuckDB init-script builder read the
