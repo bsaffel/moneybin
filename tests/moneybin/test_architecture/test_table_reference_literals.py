@@ -247,6 +247,10 @@ _SCHEMA_NAMES = (
 # member is ever added.
 _TABLE_ARG_CLAUSE_TYPE = "TABLE_ARG"
 
+# The clause_type reported when a resolved name holds a bare `schema.table`
+# fragment rather than whole SQL — see the gated fallback in `_scan_file`.
+_INTERPOLATED_CLAUSE_TYPE = "INTERPOLATED"
+
 # `ingest_dataframe`'s `table` argument is a bare `schema.table` string, not
 # SQL — quoting doesn't apply the way it does in `_FALLBACK_SCHEMA_TABLE_PATTERN`,
 # and the match must consume the WHOLE string (`fullmatch`, not `search`) since
@@ -1005,6 +1009,26 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
     for lineno, text in all_scanned:
         for clause, table in _tables_in_text(text):
             violations.append((lineno, clause, table))
+        # A resolved name need not hold whole SQL. Factoring out just the table
+        # name — `t = "core.fct_transactions"; db.execute(f"SELECT * FROM {t}")`
+        # — leaves a bare dotted identifier, which sqlglot parses as a column
+        # reference and never as an `exp.Table`, so the hardcoded name reached
+        # execution through an ordinary refactor with nothing reported. The
+        # CTE-splice case this worklist was built for survived only because
+        # that fragment is itself a complete `FROM ...` clause.
+        #
+        # `_table_arg_match` uses `fullmatch`, and that is the whole narrowing:
+        # a text this matches is a bare identifier, which the structural walk
+        # above necessarily found nothing in, so the two cannot both fire. An
+        # explicit "only when the structural walk came back empty" gate was
+        # written here first and removed — it was unreachable, and a guard no
+        # mutation can red is worse than none. Widening this to `search` would
+        # break that property and double-report every table in real SQL, which
+        # is what `test_bare_fragment_fallback_does_not_fire_when_real_sql_
+        # parses` pins.
+        interpolated = _table_arg_match(text)
+        if interpolated is not None:
+            violations.append((lineno, _INTERPOLATED_CLAUSE_TYPE, interpolated))
     for lineno, text in all_table_arg_scanned:
         table = _table_arg_match(text)
         if table is not None:
@@ -1551,3 +1575,57 @@ def test_ingest_dataframe_walrus_argument_is_flagged(tmp_path: Path) -> None:
     """
     source = 'db.ingest_dataframe(table := "raw.foo", df)\n'
     assert _scan_source(tmp_path, source) == [(1, "TABLE_ARG", "raw.foo")]
+
+
+def test_table_name_factored_into_a_variable_and_spliced_is_flagged(
+    tmp_path: Path,
+) -> None:
+    """Factoring out just the table name must not evade the guard.
+
+    `t = "core.fct_transactions"; db.execute(f"SELECT * FROM {t}")` is an
+    ordinary refactor, not a contrived shape. The embedded name resolves
+    correctly, but its value is a bare dotted identifier that sqlglot parses
+    as a column reference — never an `exp.Table` — so the hardcoded name
+    reached execution with nothing reported. The CTE-splice case this
+    worklist was built for survived only because that fragment happens to be
+    a complete `FROM ...` clause.
+    """
+    source = (
+        "def f(db):\n"
+        '    table = "core.fct_transactions"\n'
+        '    db.execute(f"SELECT * FROM {table}")\n'
+    )
+    assert _scan_source(tmp_path, source) == [
+        (2, "INTERPOLATED", "core.fct_transactions")
+    ]
+
+
+def test_table_name_spliced_into_a_non_select_statement_is_flagged(
+    tmp_path: Path,
+) -> None:
+    """The bare-fragment fallback is not SELECT-specific."""
+    source = (
+        "def f(db):\n"
+        '    table = "app.merchants"\n'
+        '    db.execute(f"UPDATE {table} SET note = NULL")\n'
+    )
+    assert _scan_source(tmp_path, source) == [(2, "INTERPOLATED", "app.merchants")]
+
+
+def test_bare_fragment_fallback_does_not_fire_when_real_sql_parses(
+    tmp_path: Path,
+) -> None:
+    """The fallback stays gated on an empty structural walk.
+
+    A resolved name holding whole SQL that mentions a second table inside a
+    string literal must still report only the real table. Without the gate,
+    the fallback would re-scan the same text and could report the quoted one
+    as well — the same narrowing `test_literal_argument_fallback_does_not_
+    fire_when_a_real_table_exists` pins for the PRAGMA path.
+    """
+    source = (
+        "def f(db):\n"
+        "    query = \"UPDATE app.merchants SET note = 'see core.fct_transactions'\"\n"
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(2, "UPDATE", "app.merchants")]
