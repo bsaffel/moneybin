@@ -576,18 +576,26 @@ When a source row receives a new revision:
 
 - an affected pending Proposal becomes `stale`, and the planner may issue a new
   Proposal over the latest revisions;
-- an active standalone membership not governed by an accepted Match advances
-  atomically to the latest revision while retaining its Golden event and leg
-  ids; this creates neither a Proposal nor a second active membership;
+- before an active standalone membership not governed by an accepted Match
+  advances, the same transaction reconstructs every affected comparison-adapter
+  Source event from current revisions. It retains the Golden event and leg ids
+  only when reconstruction yields the same source-event key and the same
+  complete, unambiguous source-row-to-semantic-leg correspondence. Otherwise it
+  retires every affected standalone membership and registers the reconstructed
+  Source event or events through the normal identity rules. A structurally
+  changed event or leg mints new ids; prior ids remain resolver-visible as
+  retired or forwarded only when an active successor exists;
 - any accepted or multi-source membership becomes stale and untrusted, but
   continues to project the last-reviewed exact revisions until a person accepts
   a replacement or reverses the Match; and
 - the visible-collision guard remains active and review surfaces identify the
   changed source row without exposing its financial values in logs.
 
-If the advancing singleton participated in a pending Proposal, that Proposal
-still becomes stale; a later planning pass may issue a replacement over its new
-revision. Historical membership retains the prior exact revision.
+This reconstruction never infers a transfer counterpart: ordinary `transfer_in`
+and `transfer_out` observations remain one-leg Source events. If an advancing
+event participated in a pending Proposal, that Proposal still becomes stale; a
+later planning pass may issue a replacement over its new revision. Historical
+membership retains the prior exact revision.
 
 Acceptance of the replacement atomically installs the new exact membership and
 field resolutions. Reversal restores the prior exact membership and its field
@@ -622,20 +630,21 @@ moneybin review --type investment-matches --reject <review-id>
 moneybin system audit undo <operation-id>
 ```
 
-MCP reuses `reviews`, `reviews_decide`, and `system_audit_undo`. The read queue
-uses `reviews(kind="investment_matches", ...)`. Decisions add an
-`investment_match` variant to the existing discriminated item union and retain
-the existing batch envelope:
+M1J.7 reuses the existing MCP tools `reviews`, `reviews_decide`, and
+`system_audit_undo`. It extends the `reviews` kind enum with
+`investment_matches` and the `reviews_decide` item union with the
+`investment_match` discriminator while retaining the existing batch envelope.
+The new decision-item shape is:
 
-```text
-reviews_decide(decisions=[{
+```json
+{
   "kind": "investment_match",
   "decision_id": "<review-id>",
   "decision": "accept",
   "field_choices": [
     {"conflict_id": "<conflict-id>", "choice_id": "<choice-id>"}
   ]
-}])
+}
 ```
 
 The CLI flag is repeatable. Accept requires exactly one currently allowed
@@ -807,7 +816,7 @@ fixtures and expected Golden-ledger outcomes.
 | Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; manual correction is unavailable in M1J.7 |
-| Revisions | Identical aggregator re-delivery reuses a version; an unreviewed aggregator singleton advances without rotating Golden ids; changed accepted or multi-source evidence stales without silently changing Golden fields |
+| Revisions | Identical aggregator re-delivery reuses a version; an unreviewed Plaid reinvest whose revised leg retains the same unique partner advances with stable Golden ids, while a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
 | Opening lots | A reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
 | Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency; an equivalence merge follows aliases and stales pending Proposals only; before a non-equivalent rebind, unlink, or split becomes visible, pending and accepted or multi-source Matches stale while a structurally unchanged standalone membership advances with stable Golden ids and a now-unresolved or structurally changed standalone retires; Raw remains unchanged |
@@ -863,9 +872,14 @@ fixtures and expected Golden-ledger outcomes.
   pre-M1J.7 group hints do not group observations.
 - SQLMesh tests for comparison views, Golden projection, provenance, and stable
   identities.
-- Membership tests proving an unreviewed aggregator singleton advances to one
-  active latest revision with stable Golden ids while preserving its prior
-  history.
+- Membership tests proving an unreviewed adapter event advances to one active
+  latest revision with stable Golden ids only when its source-event key and
+  complete source-row-to-semantic-leg correspondence are unchanged. Plaid
+  reinvest fixtures cover loss and switching of a unique partner, including the
+  displaced former partner, and assert normal identity retirement or forwarding,
+  no reused id for a changed semantic leg, and one active membership per rebuilt
+  Source event. Accepted and multi-source controls instead stale and retain their
+  last-reviewed exact revisions.
 - Opening-lot reconstruction tests proving stable-key identity, exact-input and
   algorithm-version provenance, revision advance, retirement, stable surviving
   lot ids when canonical identity and acquisition inputs are unchanged, audited
