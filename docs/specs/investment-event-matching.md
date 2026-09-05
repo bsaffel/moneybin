@@ -355,6 +355,11 @@ normalized difference within its applicable threshold takes the deterministic
 aggregator default. A difference beyond that threshold is a material field
 conflict and requires an explicit choice when a validated native relationship
 or prior ratified membership otherwise keeps the Source events eligible.
+Tax-character subtype disagreements are categorical material field conflicts:
+`qualified` versus `non_qualified` on a dividend and `short_term` versus
+`long_term` on a capital-gain distribution always require an explicit choice
+when both values are present. A missing tax-character subtype remains absence,
+so the present-over-missing rule applies.
 Account, Security, effective currency, normalized event shape, and semantic leg
 roles are eligibility or structural conditions, not field-choice conflicts.
 
@@ -557,9 +562,10 @@ instead of producing a mapping.
 
 Both resolvers derive from the same active and historical membership authority.
 No separately mutable investment alias table, validity flag, or deactivation
-write exists. Reversal reactivates prior membership, so its resurrected ids
-naturally self-resolve and superseded forwarding disappears from the current
-view.
+write exists. Reversal activates reconstructed current standalone successor
+memberships with the former Golden ids when the mapping remains valid; it never
+reactivates a historical row verbatim. Those successor ids naturally self-resolve
+and superseded forwarding disappears from the current view.
 
 ### `app.investment_match_field_resolutions`
 
@@ -608,12 +614,14 @@ Golden fields follow this order:
    present value; a nullable field remains `NULL` only when every eligible exact
    revision has `NULL`, unless explicit curation deliberately clears it;
 4. require an explicit field choice for a normalized date or numeric difference
-   beyond its applicable tolerance; and
+   beyond its applicable tolerance, or for conflicting present tax-character
+   subtypes; and
 5. otherwise choose field provenance through the deterministic source
    precedence below.
 
 Objective fields include dates, quantities, prices, amounts, fees, currencies,
-and aggregator-native references. For a field with no explicit resolution,
+tax-character subtype, and aggregator-native references. For a field with no
+explicit resolution,
 prefer a present aggregator value over a present manual value, then use the
 lexicographically smallest
 `(source_type, source_origin, native_reference)` as the final tie-breaker. The
@@ -673,9 +681,16 @@ later planning pass may issue a replacement over its new revision. Historical
 membership retains the prior exact revision.
 
 Acceptance of the replacement atomically installs the new exact membership and
-field resolutions. Reversal restores the prior exact membership and its field
-resolutions. No accepted membership ever advances merely because ingestion
-observed a newer revision.
+field resolutions. Reversal never restores a historical membership row
+verbatim. It reconstructs every separated Source event from current exact
+revisions and canonical dependencies and applies the same current-membership
+restoration rule as audit undo: complete one-to-one semantic correspondence and
+curation remapping activate successor standalone memberships with the former
+Golden ids and current bindings; any unresolved or ambiguous current state
+blocks the entire reversal. The accepted membership and its field resolutions
+retire only when all successors and restored curation can commit atomically. No
+accepted membership ever advances merely because ingestion observed a newer
+revision.
 
 ## Review and operation surfaces
 
@@ -908,7 +923,7 @@ fixtures and expected Golden-ledger outcomes.
 | Source diversity | A manual-to-Plaid or other distinct-origin Proposal may be eligible; two manual/user events or two events from one Plaid connection never consolidate through this review matcher, while multiple legs already validated inside one Source event remain atomic |
 | Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
-| Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; manual correction is unavailable in M1J.7 |
+| Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; after evidence or identity changes, reversal activates current-revision/current-dependency standalone successor memberships or blocks atomically rather than restoring obsolete rows; manual correction is unavailable in M1J.7 |
 | Revisions | Identical aggregator re-delivery reuses a version and per-job receipt while preserving its first-ingestion sequence; A→B→A content reuses the immutable A revision but a new receipt makes A current while retaining B in history, including when two jobs share an extraction timestamp; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
 | Opening lots | The retained first holdings snapshot is chosen by `(extracted_at ASC, ingestion_sequence ASC)`, so two pulls with the same extraction timestamp cannot rotate `first_snapshot_source_file`; a reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
@@ -918,7 +933,7 @@ fixtures and expected Golden-ledger outcomes.
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
 | Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
 | Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo; undo restores against newly bound current-dependency successor memberships rather than obsolete historical bindings; multiple collections converging on one disposal write once only when their complete remapped sets are identical, otherwise acceptance blocks; ambiguous current membership or curation remapping blocks undo, and later overlapping curation blocks undo |
-| Field choices | A date or numeric difference at its tolerance takes the deterministic aggregator default, while an otherwise-eligible native or ratified candidate beyond tolerance requires a choice; missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
+| Field choices | A date or numeric difference at its tolerance takes the deterministic aggregator default, while an otherwise-eligible native or ratified candidate beyond tolerance requires a choice; present `qualified` versus `non_qualified` dividend subtypes and `short_term` versus `long_term` capital-gain-distribution subtypes always require a choice; missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
 | Field provenance | Explicit curation outranks the default; otherwise present values outrank missing values, aggregator beats manual, and the stable source tuple breaks an aggregator tie, so a basis-bearing manual transfer is not erased by aggregator `NULL` and differing descriptions from two Plaid origins plus input reordering produce one unchanged value and exact provenance without affecting assignment |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
 | Recovery | A fresh profile and a newly added comparison-input model bootstrap only pre-match views before membership; bootstrap or membership failure prevents the dependent transform and its SQLMesh acknowledgement; committed decision plus crash or failed rebuild remains pending in transform freshness and every dependent read until a successful rebuild |
@@ -929,7 +944,10 @@ fixtures and expected Golden-ledger outcomes.
 
 - Pure normalization and tolerance tests for every supported event type,
   proving each within-tolerance boundary takes the aggregator default and each
-  beyond-tolerance native or ratified candidate requires a field choice.
+  beyond-tolerance native or ratified candidate requires a field choice. Field
+  choice tests also prove present `qualified`/`non_qualified` and
+  `short_term`/`long_term` disagreements always require a choice, while a
+  present tax-character subtype outranks a missing one.
 - Currency tests for explicit values, account inheritance, unknown or
   contradictory effective currency, and account-currency changes that stale a
   Proposal.
@@ -991,6 +1009,9 @@ fixtures and expected Golden-ledger outcomes.
   identity retirement or forwarding, no reused id for a changed semantic leg,
   and one active membership per rebuilt Source event. Accepted and multi-source
   controls instead stale and retain their last-reviewed exact revisions.
+  Reversal after an observation or canonical-dependency change activates only
+  reconstructed current successors or blocks atomically without retiring the
+  accepted membership.
 - Opening-lot reconstruction tests proving stable-key identity, exact-input and
   algorithm-version provenance, revision advance, retirement, stable surviving
   lot ids when canonical identity and acquisition inputs are unchanged, audited
