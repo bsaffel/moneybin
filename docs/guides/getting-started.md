@@ -72,7 +72,7 @@ Profile: personal (active)
     home_currency: (not set)
 ```
 
-`--profile personal` on any single command does the same job for one invocation. `home_currency` stays unset until you choose one — MoneyBin never assumes USD — and a single-currency profile never needs it; the [reports guide](reports.md#one-display-currency) says when it matters. Everything else about profiles — several of them, moving one between machines, deleting one — is in the [profiles guide](profiles.md).
+`--profile personal` on any single command does the same job for one invocation. `home_currency` stays unset until you choose one — MoneyBin never assumes USD — and a profile that only ever reads in its own currency never needs it; the [reports guide](reports.md#one-display-currency) says when it matters. Everything else about profiles — several of them, moving one between machines, deleting one — is in the [profiles guide](profiles.md).
 
 ## 4. Import your first file
 
