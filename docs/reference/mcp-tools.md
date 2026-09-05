@@ -560,7 +560,7 @@ Access: write, idempotent. Maximum sensitivity: `low`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `decisions` | array of one of `categorization`, `match`, `auto_rule` |  | required |
+| `decisions` | array of one of `categorization`, `match`, `auto_rule`, `rule_conflict` |  | required |
 
 #### Variants of `decisions`
 
@@ -597,6 +597,22 @@ Accept or reject one auto-generated categorization-rule proposal.
 | `decision_id` | string |  | required; min length 1; max length 64 |
 | `decision` | one of `accept`, `reject` |  | required |
 | `allow_broad` | boolean | `false` | must be `false` when `decision` is `reject` |
+
+##### `rule_conflict`
+
+Resolve one categorization-rule conflict.
+
+Not an accept/reject axis: two active rules claim the same matcher, so the
+caller says which one survives. ``replace`` supersedes the existing rule
+with the proposal, ``reprioritize`` activates the proposal beside it at an
+explicit priority, ``cancel`` leaves live state alone.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `rule_conflict` |  | required |
+| `decision_id` | string |  | required; min length 1; max length 64 |
+| `decision` | one of `replace`, `reprioritize`, `cancel` |  | required |
+| `priority` | integer |  | ≥ 0; ≤ 10000; required when `decision` is `reprioritize`; forbidden when `decision` is `replace` or `cancel` |
 
 ### sql_query
 
