@@ -858,7 +858,9 @@ The heaviest view in this spec. In order:
    whether `M` is derivable at all from the row alone.
 
 4. **Map dates:** `trade_date = COALESCE(transaction_datetime::DATE,
-   transaction_date)`; `settlement_date = transaction_date`. Plaid's `date`
+   transaction_date)`; `settlement_date = transaction_date`; and
+   `trade_date_basis = CASE WHEN transaction_datetime IS NOT NULL THEN
+   'explicit' ELSE 'posting_fallback' END`. Plaid's `date`
    is the **posting date** ("typically the settlement date"), not the trade
    date; `transaction_datetime` (trade-initiation timestamp, returned by
    select institutions) is preferred when present. Field names verified against
@@ -1221,7 +1223,7 @@ data still loads.
 
 | Test area | What's tested |
 |---|---|
-| `stg_plaid__investment_transactions` | Sign flip (`2145.50` → `-2145.50`; quantity untouched); fee-convention handling per the validated branch (+ drift-guard fires on a row reconciling under neither); `trade_date` prefers `transaction_datetime`, falls back to posting date; lifecycle exclusion; `provider_type`/`provider_subtype` string passthrough; canonical id resolution; Plaid `event_group_id` remains NULL pending M1J.7. |
+| `stg_plaid__investment_transactions` | Sign flip (`2145.50` → `-2145.50`; quantity untouched); fee-convention handling per the validated branch (+ drift-guard fires on a row reconciling under neither); `trade_date` prefers `transaction_datetime` with `trade_date_basis='explicit'` and otherwise uses posting date with `trade_date_basis='posting_fallback'`; lifecycle exclusion; `provider_type`/`provider_subtype` string passthrough; canonical id resolution; Plaid `event_group_id` remains NULL pending M1J.7. |
 | `stg_plaid__securities` / `__investment_holdings` | Currency `COALESCE`; MIC → `exchange`; defensive type mapping; both-id resolution on holdings. |
 | Core union | Plaid rows in `fct_investment_transactions` with correct sign + provider columns; manual rows carry NULL provider columns; Plaid buys/sells produce lots and realized gains through the **unmodified** engine; `dim_holdings` reconciliation columns join only each account's newest snapshot — a position absent from it (sold elsewhere, broker stopped reporting) shows NULL `provider_reported_*`, and manual-only positions stay NULL throughout. |
 | Reinvest pairing | Shipped behavior: separately delivered Plaid legs retain NULL source grouping while their independent lot and income effects remain intact; whole-event matching is tested by M1J.7. |
