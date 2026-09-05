@@ -63,6 +63,7 @@ _SCHEMAS = {
         ("account_id", "VARCHAR"),
         ("source_conversion_id", "VARCHAR"),
         ("source_investment_transaction_id", "VARCHAR"),
+        ("source_transfer_id", "VARCHAR"),
         ("currency_code", "VARCHAR"),
         ("acquisition_type", "VARCHAR"),
         ("cost_basis_method", "VARCHAR"),
@@ -328,6 +329,148 @@ def test_empty_transform_materializes_exact_currency_accounting_schemas(
 
     for grain in ("conversion", "currency_lot", "realized_fx_gain"):
         assert [_metric(grain, reason) for reason in _REASONS] == [0.0] * 9
+
+
+@pytest.mark.slow
+def test_transform_moves_same_currency_basis_and_realizes_only_on_later_disposal(
+    db: Database,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO app.profile_settings (home_currency, updated_at)
+        VALUES ('USD', '2025-12-01 09:00:00'::TIMESTAMP)
+        """
+    )
+    for source_id, account_id, txn_date, amount, currency, created_at in (
+        (
+            "acquire-usd-out",
+            "acct-usd",
+            "2026-01-01",
+            "-100.00",
+            "USD",
+            "2026-01-01 09:00:00",
+        ),
+        (
+            "acquire-eur-in",
+            "acct-eur-source",
+            "2026-01-01",
+            "80.00",
+            "EUR",
+            "2026-01-01 10:00:00",
+        ),
+        (
+            "move-eur-out",
+            "acct-eur-source",
+            "2026-02-01",
+            "-40.00",
+            "EUR",
+            "2026-02-01 09:00:00",
+        ),
+        (
+            "move-eur-in",
+            "acct-eur-destination",
+            "2026-02-01",
+            "40.00",
+            "EUR",
+            "2026-02-01 10:00:00",
+        ),
+    ):
+        _insert_conversion(
+            db,
+            source_id=source_id,
+            account_id=account_id,
+            txn_date=txn_date,
+            amount=amount,
+            currency=currency,
+            created_at=created_at,
+        )
+    _insert_conversion(
+        db,
+        source_id="dispose-eur",
+        account_id="acct-eur-destination",
+        txn_date="2026-03-01",
+        amount="-20.00",
+        currency="EUR",
+        created_at="2026-03-01 10:00:00",
+        to_amount="30.00",
+        to_currency="USD",
+    )
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, account_id_b, confidence_score, match_type,
+            match_status, decided_by, decided_at
+        ) VALUES
+            (
+                'match-acquisition', 'acquire-usd-out', 'manual', 'user',
+                'acquire-eur-in', 'manual', 'user', 'acct-usd',
+                'acct-eur-source', 1.0000, 'transfer', 'accepted', 'user',
+                '2026-01-01 11:00:00'::TIMESTAMP
+            ),
+            (
+                'match-movement', 'move-eur-out', 'manual', 'user',
+                'move-eur-in', 'manual', 'user', 'acct-eur-source',
+                'acct-eur-destination', 1.0000, 'transfer', 'accepted', 'user',
+                '2026-02-01 11:00:00'::TIMESTAMP
+            )
+        """
+    )
+
+    result = TransformService(db).apply()
+
+    assert result.applied, f"transform apply failed: {result.error}"
+    acquisition_conversion_id = db.execute(
+        """
+        SELECT conversion_id
+        FROM core.bridge_currency_conversions
+        WHERE transfer_pair_id = 'match-acquisition'
+        """
+    ).fetchone()
+    assert acquisition_conversion_id is not None
+    assert db.execute(
+        """
+        SELECT COUNT(*)
+        FROM core.bridge_currency_conversions
+        WHERE transfer_pair_id = 'match-movement'
+        """
+    ).fetchone() == (0,)
+    moved = db.execute(
+        """
+        SELECT acquisition_type, source_transfer_id, source_conversion_id,
+               original_quantity, remaining_quantity, cost_basis_total,
+               cost_basis_remaining, coverage_status, coverage_reason
+        FROM core.fct_currency_lots
+        WHERE account_id = 'acct-eur-destination'
+        """
+    ).fetchone()
+    assert moved == (
+        "transfer",
+        "match-movement",
+        acquisition_conversion_id[0],
+        Decimal("40.00"),
+        Decimal("20.00"),
+        Decimal("50.00"),
+        Decimal("25.00"),
+        "complete",
+        None,
+    )
+    assert db.execute(
+        """
+        SELECT disposed_amount, proceeds, cost_basis, gain_loss,
+               coverage_status, coverage_reason
+        FROM core.fct_realized_fx_gains
+        WHERE account_id = 'acct-eur-destination'
+        """
+    ).fetchone() == (
+        Decimal("20.00"),
+        Decimal("30.00"),
+        Decimal("25.00"),
+        Decimal("5.00"),
+        "complete",
+        None,
+    )
 
 
 @pytest.mark.slow

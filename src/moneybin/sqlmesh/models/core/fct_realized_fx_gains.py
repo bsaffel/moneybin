@@ -23,7 +23,9 @@ from moneybin.metrics.registry import set_fx_accounting_rows
     kind="FULL",
     depends_on={
         "core.bridge_currency_conversions",
+        "core.bridge_transfers",
         "core.fct_investment_transactions",
+        "core.fct_transactions",
     },
     columns={
         "realized_fx_gain_id": "VARCHAR",
