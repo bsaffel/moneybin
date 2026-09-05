@@ -106,8 +106,9 @@ home-currency default falls back quietly, so a profile that has set one is not
 warned on every report it cannot price.
 
 Nothing converted is stored. The original amount and its currency stay
-untouched in every table, and a converted figure is recomputed on each read —
-so the original reading is always one command away, with the flag omitted.
+untouched in every table, and a converted figure is recomputed on each read;
+on a profile whose home currency converts them, `moneybin sql query` over the
+`reports.*` view returns the stored figures.
 `moneybin reports networth` prints one position per currency, and a single
 combined position once conversion has priced them into the same one.
 

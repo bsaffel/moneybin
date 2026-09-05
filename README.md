@@ -161,6 +161,7 @@ use it before migrating.
 
 - [What works today](docs/features.md) — the shipped capability boundary
 - [Data import](docs/guides/data-import.md) — files, Plaid, Sheets, migrations
+- [Reports](docs/guides/reports.md) — the eight built-ins with their output, saved reports, one display currency
 - [MCP server](docs/guides/mcp-server.md) — tool catalog, envelope, redaction
 - [Database and security](docs/guides/database-security.md) — encryption, backups, profiles
 - [Architecture](docs/architecture.md) — the data layers and the contracts they keep

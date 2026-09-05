@@ -137,7 +137,7 @@ Listed 1 accounts
 └─────────────────────────────┴──────────────┴──────────────┴────────────┘
 ```
 
-The display name is institution, account type, and last four; the account number itself appears only as those four digits on every surface. `accounts set 35aaf6929c62 --display-name "Everyday checking"` renames it, and the twelve-character `account_id` is what every other command and the MCP tools take as a reference.
+The display name is institution, account type, and last four. The account-number and routing fields themselves leave the process as those four digits in every MCP response and every `--output json` result, because masking follows a field's declared class. Two things that rule does not cover: the operator commands `moneybin db query`, `db shell`, and `db ui`, which print the raw columns behind a banner saying so, and a number that rides inside a description, a note, or an import sample, which travels under that field's own class and is not scrubbed. `sql_query` reads of the `raw` and `prep` schemas fall back to a value scan that catches an unbroken run of eight or more digits and misses shorter or hyphenated ones. [What the AI provider sees](what-the-ai-sees.md#not-masked-stated-plainly) states each case. `accounts set 35aaf6929c62 --display-name "Everyday checking"` renames it, and the twelve-character `account_id` is what every other command and the MCP tools take as a reference.
 
 `system doctor` runs the integrity checks and says what to do about each warning:
 

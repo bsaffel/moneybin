@@ -404,7 +404,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   per-currency segmentation, `list` / `run` / `explain`, the JSON envelope,
   the saved-report lifecycle, the `--display-currency` fallback, the
   `reports` MCP tool, and `export report`. Both are linked from the docs
-  index, the features page, the CLI reference, and the README. (#542)
+  index and the README; the reports guide is linked from the features page
+  and the CLI reference as well. (#542)
 - **Three references are generated from the code and pinned by a test.**
   `make generate-docs` renders `docs/reference/cli/` (one page per top-level
   command plus an index) from the Typer command tree,
