@@ -66,6 +66,12 @@ DEGRADED_UNRESOLVABLE_QUERY: Final = "unresolvable_query"
 #: a renamed ``DataClass`` or a retired parameter type.
 DEGRADED_UNREADABLE_ROW: Final = "unreadable_row"
 
+#: Leading token on ``degraded_reason`` when undecided duplicate-match proposals
+#: leave both rows of a pair in the ledger, so a total over them is provisional
+#: (issue #409). Attached by the catalog to every report downstream of
+#: ``core.fct_transactions``, packaged or saved.
+DEGRADED_PENDING_DEDUP: Final = "pending_dedup_decisions"
+
 
 @dataclass(frozen=True, slots=True)
 class DynamicReport:

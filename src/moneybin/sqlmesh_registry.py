@@ -13,6 +13,7 @@ design does not permit under the MCP timeout guard.
 
 from __future__ import annotations
 
+import ast
 import logging
 import re
 from dataclasses import dataclass
@@ -46,6 +47,33 @@ _PY_MODEL_NAME = re.compile(
 # *adds* a table, which fails the scan-set guard loudly and visibly. Missing
 # a real reference is the silent direction, so the pattern errs wide.
 _RAW_TABLE_REF = re.compile(r"\braw\.([a-z_][a-z0-9_]*)", re.IGNORECASE)
+# Any `<schema>.<table>` reference in a model file, schema-anchored so an
+# `alias.column` never matches.
+_RELATION_REF = re.compile(
+    r"\b(raw|prep|core|app|meta|seeds|synthetic|reports)\.([a-z_][a-z0-9_]*)",
+    re.IGNORECASE,
+)
+# Comments are stripped before the relation scan, unlike `_RAW_TABLE_REF` above.
+# That scan feeds a CI completeness guard, where an extra table costs a
+# reviewer's attention; this one feeds a user-facing `degraded_reason` with no
+# review step, and the convention here is prose that cross-references
+# `schema.table` freely — `bridge_merchant_entities.sql` names
+# `core.fct_transactions` in an FK comment while reading
+# `prep.int_transactions__merged`. `test_model_reads_match_the_dependencies_
+# sqlmesh_parses` holds the result to SQLMesh's own parse of the same files.
+_SQL_COMMENT = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)
+# `kind <KIND>` inside the `MODEL (` header, read off the comment-stripped text.
+_SQL_MODEL_KIND = re.compile(
+    r"\bMODEL\s*\(.*?\bkind\s+([a-z_]+)", re.IGNORECASE | re.DOTALL
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelNode:
+    """One registered model's place in the dependency graph."""
+
+    reads: frozenset[str]
+    kind: str
 
 
 @lru_cache(maxsize=1)
@@ -96,6 +124,123 @@ def raw_tables_read_by_models() -> frozenset[str]:
             m.group(1).lower() for m in _RAW_TABLE_REF.finditer(path.read_text())
         )
     return frozenset(names)
+
+
+def _sql_model_node(text: str) -> tuple[str, _ModelNode] | None:
+    """One ``.sql`` model's name, reads and kind, read off its source."""
+    match = _SQL_MODEL_NAME.search(text)
+    if match is None:
+        return None
+    name = match.group(1).lower()
+    body = _SQL_COMMENT.sub(" ", text)
+    reads = frozenset(
+        f"{m.group(1)}.{m.group(2)}".lower() for m in _RELATION_REF.finditer(body)
+    ) - {name}
+    kind = _SQL_MODEL_KIND.search(body)
+    return name, _ModelNode(reads, kind.group(1).upper() if kind else "")
+
+
+def _python_model_node(text: str) -> tuple[str, _ModelNode] | None:
+    """One ``.py`` model's name, declared ``depends_on`` and kind.
+
+    A Python model's reads live inside ``context.fetchdf()`` SQL strings that
+    SQLMesh itself cannot see, so its ``depends_on=`` declaration is the only
+    statement of them there is — and the same one SQLMesh orders the graph by.
+    """
+    for node in ast.walk(ast.parse(text)):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "model"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            continue
+        name = str(node.args[0].value).lower()
+        kind, reads = "", set[str]()
+        for keyword in node.keywords:
+            if keyword.arg == "kind" and isinstance(keyword.value, ast.Constant):
+                kind = str(keyword.value.value).upper()
+            elif keyword.arg == "depends_on" and isinstance(
+                keyword.value, ast.Set | ast.List | ast.Tuple
+            ):
+                reads = {
+                    str(element.value).lower()
+                    for element in keyword.value.elts
+                    if isinstance(element, ast.Constant)
+                }
+        if not reads:
+            # An undeclared read *shrinks* the downstream set, which is the
+            # direction that silently drops a caveat rather than over-warning.
+            logger.warning(
+                f"Python model {name} declares no depends_on; anything it reads "
+                "is missing from the dependency graph"
+            )
+        return name, _ModelNode(frozenset(reads) - {name}, kind)
+    return None
+
+
+@lru_cache(maxsize=1)
+def _model_graph() -> dict[str, _ModelNode]:
+    """Every registered model's declared reads and kind, keyed by model name."""
+    graph: dict[str, _ModelNode] = {}
+    for path in sorted(_MODELS_DIR.rglob("*.sql")):
+        parsed = _sql_model_node(path.read_text())
+        if parsed is not None:
+            graph[parsed[0]] = parsed[1]
+    for path in sorted(_MODELS_DIR.rglob("*.py")):
+        parsed = _python_model_node(path.read_text())
+        if parsed is not None:
+            graph[parsed[0]] = parsed[1]
+    return graph
+
+
+def _relations_read_by_model() -> dict[str, frozenset[str]]:
+    """Each registered model's own ``schema.table`` read set, keyed by model."""
+    return {name: node.reads for name, node in _model_graph().items()}
+
+
+@lru_cache(maxsize=8)
+def relations_downstream_of(relation: str) -> frozenset[str]:
+    """``relation`` plus every registered model that reads it, transitively."""
+    downstream = {relation.lower()}
+    reads = _relations_read_by_model()
+    grew = True
+    while grew:
+        grew = False
+        for name, read_set in reads.items():
+            if name not in downstream and read_set & downstream:
+                downstream.add(name)
+                grew = True
+    return frozenset(downstream)
+
+
+@lru_cache(maxsize=8)
+def relations_upstream_of(relation: str) -> frozenset[str]:
+    """``relation`` plus every relation it is built from, transitively."""
+    upstream = {relation.lower()}
+    reads = _relations_read_by_model()
+    frontier = [relation.lower()]
+    while frontier:
+        for read in reads.get(frontier.pop(), frozenset()):
+            if read not in upstream:
+                upstream.add(read)
+                frontier.append(read)
+    return frozenset(upstream)
+
+
+@lru_cache(maxsize=1)
+def materialized_model_names() -> frozenset[str]:
+    """Models SQLMesh writes as tables, reached by a write only on a refresh.
+
+    Everything else here is ``kind VIEW``, recomputed on read. The symbolic
+    kinds a freshness scan has to exclude (``EXTERNAL``, ``EMBEDDED``) are
+    declared in ``external_models.yaml``, not under ``models/``, so nothing in
+    this set is symbolic.
+    """
+    return frozenset(
+        name for name, node in _model_graph().items() if node.kind != "VIEW"
+    )
 
 
 @dataclass(frozen=True, slots=True)

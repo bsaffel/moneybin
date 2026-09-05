@@ -18,7 +18,11 @@ from pydantic import JsonValue
 from moneybin.database import Database, DatabaseNotInitializedError
 from moneybin.mcp.tools.reports import reports
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
-from moneybin.reports._framework.catalog import ReportCatalog, ServiceReportSpec
+from moneybin.reports._framework.catalog import (
+    DEGRADED_PENDING_DEDUP,
+    ReportCatalog,
+    ServiceReportSpec,
+)
 from moneybin.reports._framework.contract import (
     OutputColumn,
     ParamSpec,
@@ -32,8 +36,9 @@ from moneybin.reports._framework.execute import (
 )
 from moneybin.reports._framework.registry import register_generic_reports_tool
 from moneybin.services.currency_service import ResolvedRate
+from moneybin.services.matching_service import PENDING_MATCHES_HINT
 from tests.database_mocks import without_a_profile
-from tests.moneybin.db_helpers import create_core_tables_raw
+from tests.moneybin.db_helpers import create_core_tables_raw, seed_pending_dedup_pair
 
 _SEMANTICS = ReportSemantics(
     unit="currency",
@@ -264,6 +269,47 @@ async def test_reports_run_of_a_drifted_saved_report_says_so_in_the_envelope(
     assert response.summary.degraded_reason is not None
     assert response.summary.degraded_reason.startswith(DEGRADED_STALE_CLASSIFICATION)
     assert [row["account_id"] for row in response.data.rows] == ["*****"]
+
+
+@pytest.mark.unit
+async def test_reports_marks_a_total_provisional_while_a_duplicate_pair_is_undecided(
+    db: Database,
+) -> None:
+    """Issue #409: the agent reading the number is the one owed the caveat.
+
+    Dedup escalates a low-confidence duplicate to the review queue rather than
+    merging it, so both rows stay in ``core.fct_transactions`` and every total
+    covering them is overstated. ``summary.degraded_reason`` carries the caveat,
+    ``actions`` the CLI hint, and ``recovery_actions`` the queue an agent can
+    read and decide without parsing that hint.
+    """
+    from moneybin.services.user_reports_service import UserReportsService
+
+    create_core_tables_raw(db.conn)
+    seed_pending_dedup_pair(db)
+    UserReportsService(db).create(
+        name="my_total",
+        query_sql="SELECT SUM(amount) AS total FROM core.fct_transactions",
+        actor="cli",
+    )
+
+    with (
+        patch(
+            "moneybin.mcp.tools.reports.get_database",
+            return_value=_database_context(db),
+        ),
+        patch("moneybin.mcp.tools.reports.get_max_rows", return_value=50),
+        patch("moneybin.mcp.decorator.write_privacy_event"),
+    ):
+        response = await reports(report_id="my_total")
+
+    assert response.error is None
+    assert response.summary.degraded is True
+    assert response.summary.degraded_reason is not None
+    assert response.summary.degraded_reason.startswith(f"{DEGRADED_PENDING_DEDUP}: 1 ")
+    assert PENDING_MATCHES_HINT in response.actions
+    assert response.recovery_actions is not None
+    assert [action.tool for action in response.recovery_actions] == ["reviews"]
 
 
 @pytest.mark.unit

@@ -289,6 +289,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **A total inflated by an undecided duplicate pair now says so.** Cross-source
+  dedup escalates a low-confidence duplicate to the review queue instead of
+  merging it silently — the right call — but both rows stay in
+  `core.fct_transactions` while the pair is undecided, so every total covering
+  them counted the payment twice and nothing marked the number provisional.
+  Every report downstream of the transactions fact — packaged, saved, or the
+  durable artifact an export writes — now carries the count of undecided
+  duplicate matches in `summary.degraded_reason` (prefixed
+  `pending_dedup_decisions:`, the same discriminator the stale-classification
+  warning uses) and names the review surface that clears it: `moneybin review
+  --type matches` in `actions` for the CLI, and a `reviews` recovery action an
+  agent can call from MCP. The count is profile-wide rather than scoped to the
+  rows on screen: a report returns aggregates, so which transactions it summed
+  is not recoverable from its result, and warning wider is the safe direction
+  of that imprecision. Deciding a pair rewrites `app.match_decisions` and
+  nothing else, so a report reading through a materialized model — net worth
+  and balance drift, both fed by the `kind="FULL"` `core.fct_balances_daily` —
+  keeps the doubled figure and the caveat until a refresh rebuilds it, and
+  points at `refresh_run` rather than the review queue. (#534)
+
 - **A missing or locked keychain entry no longer prints a stack trace.**
   `moneybin db info`, `db unlock` and the DuckDB init-script builder read the
   encryption key directly, and the secret-store exceptions had no branch in the
