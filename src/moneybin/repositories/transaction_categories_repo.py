@@ -457,6 +457,11 @@ class TransactionCategoriesRepo(BaseRepo):
         let a lower-authority categorization displace a higher one, and must not
         drop the user's edit in favour of the anchor's provider default.
 
+        Because ``transaction_id`` is the whole primary key, a move is audited
+        as a delete on the old id plus an insert on the new one rather than as
+        one update — the audit target is the row identity, and the cascade check
+        that guards undo can only see a change on a key it is named on.
+
         **A tie moves the superseded row**, matching ``upsert_guarded``, whose
         guard admits an incoming write of equal authority. Two ``user`` edits on
         the two halves of a merge are both the user's, and neither the id nor
@@ -523,11 +528,29 @@ class TransactionCategoriesRepo(BaseRepo):
                 f"WHERE transaction_id = ?",
                 [new_transaction_id, old_transaction_id],
             )
+            # Two row-grain events, not one. ``transaction_id`` IS the primary
+            # key, so the move vacates one row identity and creates another, and
+            # ``UndoService._cascade_blockers`` joins the audit log on exact
+            # ``target_id``: an event naming only the survivor is invisible from
+            # the superseded id's side, so undoing the edit that wrote the row
+            # would delete by the old id, match nothing, and report success while
+            # the moved row stands. Undo replays an operation in reverse write
+            # order, so the arrival is reversed before the departure is restored.
+            events.append(
+                self._emit_audit(
+                    action="category.repoint_transaction",
+                    target=(*self._audit_target, old_transaction_id),
+                    before=self._serialize_for_audit(before_old),
+                    after=None,
+                    actor=actor,
+                    parent_audit_id=parent_audit_id,
+                )
+            )
             events.append(
                 self._emit_audit(
                     action="category.repoint_transaction",
                     target=(*self._audit_target, new_transaction_id),
-                    before=self._serialize_for_audit(before_old),
+                    before=None,
                     after=self._serialize_for_audit(
                         self._fetch_row(new_transaction_id)
                     ),

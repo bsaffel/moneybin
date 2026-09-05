@@ -433,3 +433,102 @@ def test_set_rolls_back_when_audit_raises(db: Database) -> None:
         "SELECT 1 FROM app.transaction_categories WHERE transaction_id = 'ghost'"
     ).fetchall()
     assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# repoint_transaction — the audit shape a dedup re-key leaves behind
+# ---------------------------------------------------------------------------
+
+
+def test_repoint_audits_the_departure_on_the_old_id(db: Database) -> None:
+    """Both keys are named, so the move is visible from the superseded id.
+
+    ``UndoService._cascade_blockers`` joins on exact ``target_id``: an event
+    naming only the survivor would let an undo of the original ``category.set``
+    delete by the old id, match nothing, and report success.
+    """
+    repo = TransactionCategoriesRepo(db)
+    repo.set(
+        "txn_old",
+        category="Dining",
+        subcategory="Coffee",
+        category_id=None,
+        categorized_by="user",
+        actor="cli",
+    )
+
+    events = repo.repoint_transaction(
+        old_transaction_id="txn_old",
+        new_transaction_id="txn_new",
+        actor="system",
+    )
+
+    assert [
+        (e.target_id, e.before_value is None, e.after_value is None) for e in events
+    ] == [
+        ("txn_old", False, True),
+        ("txn_new", True, False),
+    ]
+
+
+def test_repoint_is_reversible_event_by_event(db: Database) -> None:
+    """Replaying the events in reverse write order restores the original row."""
+    repo = TransactionCategoriesRepo(db)
+    repo.set(
+        "txn_old",
+        category="Dining",
+        subcategory="Coffee",
+        category_id=None,
+        categorized_by="user",
+        actor="cli",
+    )
+    events = repo.repoint_transaction(
+        old_transaction_id="txn_old",
+        new_transaction_id="txn_new",
+        actor="system",
+    )
+
+    for event in reversed(events):
+        repo.undo_event(event, actor="cli")
+
+    assert db.execute(
+        "SELECT transaction_id, category, subcategory, categorized_by "
+        "FROM app.transaction_categories"
+    ).fetchall() == [("txn_old", "Dining", "Coffee", "user")]
+
+
+def test_repoint_onto_a_categorized_destination_is_reversible(db: Database) -> None:
+    """The tie-moves branch drops the destination row; undo restores both."""
+    repo = TransactionCategoriesRepo(db)
+    repo.set(
+        "txn_old",
+        category="Dining",
+        subcategory="Coffee",
+        category_id=None,
+        categorized_by="user",
+        actor="cli",
+    )
+    repo.set(
+        "txn_new",
+        category="Shopping",
+        subcategory=None,
+        category_id=None,
+        categorized_by="user",
+        actor="cli",
+    )
+    events = repo.repoint_transaction(
+        old_transaction_id="txn_old",
+        new_transaction_id="txn_new",
+        actor="system",
+    )
+    assert db.execute(
+        "SELECT transaction_id, category FROM app.transaction_categories"
+    ).fetchall() == [("txn_new", "Dining")]
+
+    for event in reversed(events):
+        repo.undo_event(event, actor="cli")
+
+    assert db.execute(
+        "SELECT transaction_id, category FROM app.transaction_categories "
+        "ORDER BY transaction_id"
+    ).fetchall() == [("txn_new", "Shopping"), ("txn_old", "Dining")]

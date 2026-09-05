@@ -66,6 +66,7 @@ from moneybin.tables import (
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
     TRANSACTION_NOTES,
+    TRANSACTION_SPLITS,
     TRANSACTION_TAGS,
     USER_CATEGORIES,
     USER_MERCHANTS,
@@ -499,6 +500,7 @@ class DoctorService:
             self._run_user_merchants_orphans(),
             self._run_proposed_rules_rule_fk(),
             self._run_transaction_categories_fk(),
+            self._run_transaction_splits_fk(),
             self._run_account_settings_account_fk(),
             self._run_balance_assertions_account_fk(),
             self._run_budgets_category_fk(),
@@ -1707,6 +1709,54 @@ class DoctorService:
                 status="fail",
                 detail=(
                     f"{len(affected)} transaction_categories row(s) reference a "
+                    "transaction_id absent from core.fct_transactions"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_transaction_splits_fk(self) -> InvariantResult:
+        """Flag ``transaction_splits`` rows with no ``core.fct_transactions`` row.
+
+        Same anti-join as ``app_transaction_categories_fk``, and it exists for
+        the same reason plus one of its own:
+        ``TransactionSplitsRepo.repoint_transaction`` deliberately leaves an
+        allocation on a superseded id when the surviving transaction is already
+        split, because moving it would publish double the real amount through
+        ``core.fct_transaction_lines``. That refusal is the right call and it is
+        invisible everywhere else — this is where the user is told the splits
+        exist. Skipped before the first transform builds ``core.fct_transactions``.
+        """
+        name = "app_transaction_splits_fk"
+        try:
+            rows = self._db.execute(
+                f"""
+                -- Anti-join against a once-materialized id set, NOT a correlated
+                -- NOT EXISTS — core.fct_transactions is an expensive view; see
+                -- _run_transaction_categories_fk for the full reasoning.
+                SELECT s.split_id
+                FROM {TRANSACTION_SPLITS.full_name} s
+                LEFT JOIN (
+                    SELECT DISTINCT transaction_id FROM {FCT_TRANSACTIONS.full_name}
+                ) t ON t.transaction_id = s.transaction_id
+                WHERE t.transaction_id IS NULL
+                ORDER BY s.split_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core.fct_transactions may not exist yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"FK check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} transaction_splits row(s) reference a "
                     "transaction_id absent from core.fct_transactions"
                 ),
                 affected_ids=affected,

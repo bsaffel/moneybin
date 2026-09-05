@@ -724,3 +724,167 @@ class TestHealingSkipsBeforeTheFactViewExists:
         assert _curation_ids(db) == dict.fromkeys(
             _CURATION_TABLES, ["deadbeefdeadbeef"]
         )
+
+
+# --------------------------------------------------------------------------
+# Split-collision helpers — the fact view's split expansion is the consumer
+# that turns a merged allocation into double-counted money.
+# --------------------------------------------------------------------------
+
+
+def _add_split(
+    db: Database, transaction_id: str, *, split_id: str, amount: str
+) -> None:
+    """Attach one split covering ``amount`` to ``transaction_id``."""
+    TransactionSplitsRepo(db).insert(
+        split_id=split_id,
+        transaction_id=transaction_id,
+        amount=Decimal(amount),
+        category="Food & Drink",
+        subcategory="Coffee",
+        category_id=None,
+        note=None,
+        ord=0,
+        actor="cli",
+    )
+
+
+def _splits_by_transaction(db: Database) -> dict[str, list[str]]:
+    """Every split id currently attached to each transaction id."""
+    grouped: dict[str, list[str]] = {}
+    for transaction_id, split_id in db.execute(
+        "SELECT transaction_id, split_id FROM app.transaction_splits "
+        "ORDER BY transaction_id, split_id"
+    ).fetchall():
+        grouped.setdefault(str(transaction_id), []).append(str(split_id))
+    return grouped
+
+
+def _build_transaction_lines_view(db: Database) -> None:
+    """Add the shipped split-expansion view on top of the fact model."""
+    db.execute(
+        "CREATE OR REPLACE VIEW core.fct_transaction_lines AS\n"  # noqa: S608  # model body read from the repo file
+        f"{_model_body('core', 'fct_transaction_lines')}"
+    )
+
+
+def _published_line_total(db: Database) -> Decimal:
+    """What ``core.fct_transaction_lines`` publishes as the sum of every line."""
+    row = db.execute(
+        "SELECT COALESCE(SUM(line_amount), 0) FROM core.fct_transaction_lines"
+    ).fetchone()
+    assert row is not None
+    return Decimal(str(row[0]))
+
+
+def _splits_fk_status(db: Database) -> str:
+    """The doctor's verdict on ``app_transaction_splits_fk``."""
+    return DoctorService(db)._run_transaction_splits_fk().status  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+class TestSplitsAreNeverMovedOntoAnAlreadySplitTransaction:
+    """Two complete allocations must never become one transaction's union.
+
+    ``core.fct_transaction_lines`` drops the whole-transaction row as soon as a
+    transaction has any split, so a union of two full allocations publishes
+    double the real amount to every spending report. Moving nothing is the only
+    option that neither double-counts nor destroys a curation the user entered.
+    """
+
+    @pytest.mark.unit
+    def test_both_sides_fully_split_leaves_the_superseded_allocation_in_place(
+        self, pipeline_db: Database
+    ) -> None:
+        """The survivor keeps exactly its own splits; the merge publishes -12.34."""
+        csv_id = _load_csv_row(pipeline_db, transaction_id="csv_1234", import_id="imp1")
+        _add_split(pipeline_db, csv_id, split_id="splitcsv0001", amount="-12.34")
+        ofx_id = _load_ofx_row(
+            pipeline_db, source_transaction_id="ofx_5678", import_id="imp2"
+        )
+        _add_split(pipeline_db, ofx_id, split_id="splitofx0001", amount="-12.34")
+        _build_transaction_lines_view(pipeline_db)
+
+        _accept_dedup(
+            pipeline_db,
+            match_id="match0000001",
+            side_a=("csv", "csv_1234"),
+            side_b=("ofx", "ofx_5678"),
+        )
+
+        assert _live_ids(pipeline_db) == {ofx_id}, "the OFX row anchors the group"
+        # One transaction of -12.34 exists; the ledger must publish -12.34, not
+        # the -24.68 a unioned pair of complete allocations would.
+        assert _published_line_total(pipeline_db) == Decimal("-12.34")
+        assert _splits_by_transaction(pipeline_db) == {
+            csv_id: ["splitcsv0001"],
+            ofx_id: ["splitofx0001"],
+        }
+        # The refused split now sits on an id core.fct_transactions does not
+        # carry — invisible unless the doctor reports it.
+        assert _splits_fk_status(pipeline_db) == "fail"
+
+    @pytest.mark.unit
+    def test_an_unsplit_destination_still_receives_the_move(
+        self, pipeline_db: Database
+    ) -> None:
+        """Guard against over-correction: the ordinary forward still happens."""
+        csv_id = _load_csv_row(pipeline_db, transaction_id="csv_1234", import_id="imp1")
+        _add_split(pipeline_db, csv_id, split_id="splitcsv0001", amount="-12.34")
+        ofx_id = _load_ofx_row(
+            pipeline_db, source_transaction_id="ofx_5678", import_id="imp2"
+        )
+        _build_transaction_lines_view(pipeline_db)
+
+        _accept_dedup(
+            pipeline_db,
+            match_id="match0000002",
+            side_a=("csv", "csv_1234"),
+            side_b=("ofx", "ofx_5678"),
+        )
+
+        assert _splits_by_transaction(pipeline_db) == {ofx_id: ["splitcsv0001"]}
+        assert _published_line_total(pipeline_db) == Decimal("-12.34")
+        assert _splits_fk_status(pipeline_db) == "pass"
+
+    @pytest.mark.unit
+    def test_the_heal_pass_inherits_the_refusal(self, pipeline_db: Database) -> None:
+        """A deliberately stranded split must not be moved later by the self-heal.
+
+        The heal pass calls the same repo method, so it can re-introduce the
+        double-count on its own schedule if the refusal lives only in the
+        forwarding derivation. Here the user re-splits the live transaction
+        while a split sits stranded on the superseded id; every other kind of
+        curation heals and the split alone stays put.
+        """
+        csv_id = _load_csv_row(pipeline_db, transaction_id="csv_1234", import_id="imp1")
+        _curate(pipeline_db, csv_id)
+        ofx_id = _load_ofx_row(
+            pipeline_db, source_transaction_id="ofx_5678", import_id="imp2"
+        )
+        _accept_dedup(
+            pipeline_db,
+            match_id="match0000003",
+            side_a=("csv", "csv_1234"),
+            side_b=("ofx", "ofx_5678"),
+        )
+        assert _splits_by_transaction(pipeline_db) == {ofx_id: ["split0001000"]}
+
+        # Reverting the anchor's import re-anchors the group onto the CSV row,
+        # stranding every curation on the OFX id the map already forwards to.
+        ImportService(pipeline_db).revert_confirmed("imp2", verify=lambda _plan: None)
+        assert _live_ids(pipeline_db) == {csv_id}
+        # The user splits the live transaction while the old allocation is
+        # stranded, so the heal's destination is already fully allocated.
+        _add_split(pipeline_db, csv_id, split_id="splitlive001", amount="-12.34")
+        _build_transaction_lines_view(pipeline_db)
+
+        MatchingService(pipeline_db).run(actor="system")
+
+        assert _curation_ids(pipeline_db)["transaction_categories"] == [csv_id]
+        assert _curation_ids(pipeline_db)["transaction_notes"] == [csv_id]
+        assert _curation_ids(pipeline_db)["transaction_tags"] == [csv_id]
+        assert _splits_by_transaction(pipeline_db) == {
+            csv_id: ["splitlive001"],
+            ofx_id: ["split0001000"],
+        }
+        assert _published_line_total(pipeline_db) == Decimal("-12.34")

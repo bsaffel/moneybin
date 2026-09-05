@@ -57,6 +57,7 @@ from moneybin.metrics.registry import (
     TRANSACTION_CURATION_FORWARDED_TOTAL,
     TRANSACTION_ID_ALIASES_WRITTEN_TOTAL,
 )
+from moneybin.services.audit_service import AuditEvent
 from moneybin.services.mutation_context import operation
 from moneybin.tables import (
     FCT_TRANSACTIONS,
@@ -324,7 +325,7 @@ def _forward(db: Database, *, actor: str) -> AliasForwardResult:
             in_outer_txn=True,
         )
         for repo in curation:
-            forwarded += len(
+            forwarded += _rows_landed(
                 repo.repoint_transaction(
                     old_transaction_id=str(old_id),
                     new_transaction_id=str(new_id),
@@ -344,6 +345,19 @@ def _forward(db: Database, *, actor: str) -> AliasForwardResult:
     return AliasForwardResult(
         aliases_written=len(rows), curation_rows_forwarded=forwarded
     )
+
+
+def _rows_landed(events: tuple[AuditEvent, ...]) -> int:
+    """How many curation rows a repoint actually left on the new id.
+
+    Not ``len(events)``: a repoint emits an event per row *identity* it changed,
+    and several of those record a departure rather than an arrival — a
+    superseded categorization dropped for a more authoritative one, a duplicate
+    tag collapsed, and the delete half of a primary-key move. Counting arrivals
+    keeps the counter answering the question its name asks, which is how much of
+    the user's curation rode along.
+    """
+    return sum(1 for event in events if event.after_value is not None)
 
 
 def _heal_stranded_curation(
@@ -380,7 +394,7 @@ def _heal_stranded_curation(
             )
             continue
         for repo in curation:
-            forwarded += len(
+            forwarded += _rows_landed(
                 repo.repoint_transaction(
                     old_transaction_id=str(stranded_id),
                     new_transaction_id=str(live_id),

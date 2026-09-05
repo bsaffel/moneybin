@@ -25,8 +25,11 @@ from typing import Any
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import SQLMESH_ROOT, Database
+from moneybin.errors import UserError
 from moneybin.matching.persistence import get_match_decision
+from moneybin.metrics.registry import TRANSACTION_CURATION_FORWARDED_TOTAL
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.repositories.transaction_categories_repo import TransactionCategoriesRepo
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
@@ -195,6 +198,11 @@ def _aliases(db: Database) -> dict[str, str]:
             "FROM app.transaction_id_aliases"
         ).fetchall()
     }
+
+
+def _forwarded_count() -> float:
+    """Read the committed curation-forwarding counter."""
+    return TRANSACTION_CURATION_FORWARDED_TOTAL._value.get()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # no public counter getter
 
 
 def _canonical_ids(db: Database) -> set[str]:
@@ -519,6 +527,40 @@ class TestPendingPostedRekeyForwardsCuration:
         }
 
     @pytest.mark.unit
+    def test_the_forwarded_counter_counts_curation_rows_not_audit_events(
+        self, matched_db: Database
+    ) -> None:
+        """``_curate`` writes four rows, so one re-key forwards exactly four.
+
+        A repoint emits an event per row *identity* it changes, and a
+        primary-key move changes two — the counter answers "how much of the
+        user's curation rode along", so it must not follow the event count.
+        """
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="plaid_pend_1234",
+            source_type="plaid",
+            source_file="plaid_sync",
+        )
+        _curate(matched_db, _canonical_id("plaid", "plaid_pend_1234"))
+        matched_db.execute(
+            "DELETE FROM prep.int_transactions__unioned "
+            "WHERE source_transaction_id = 'plaid_pend_1234'"
+        )
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="plaid_post_5678",
+            source_type="plaid",
+            source_file="plaid_sync",
+            pending_transaction_id="plaid_pend_1234",
+        )
+        before = _forwarded_count()
+
+        MatchingService(matched_db).run(actor="system")
+
+        assert _forwarded_count() - before == 4.0
+
+    @pytest.mark.unit
     def test_a_still_live_pending_row_is_not_aliased_away(
         self, matched_db: Database
     ) -> None:
@@ -766,3 +808,177 @@ class TestForwardingIsIdempotentAndConflictSafe:
         )
 
         assert _curation_ids(matched_db)["transaction_tags"] == [new_id]
+
+
+def _operation_of(db: Database, action: str) -> str:
+    """The single operation id that emitted ``action``."""
+    rows = db.execute(
+        "SELECT DISTINCT operation_id FROM app.audit_log WHERE action = ?",
+        [action],
+    ).fetchall()
+    assert len(rows) == 1, f"expected exactly one {action} operation, found {rows}"
+    return str(rows[0][0])
+
+
+def _merge_the_csv_row_onto_an_ofx_anchor(db: Database, *, match_id: str) -> str:
+    """Land the OFX twin, propose the pair, confirm it; return the surviving id."""
+    _insert_source_row(
+        db,
+        source_transaction_id="ofx_5678",
+        source_type="ofx",
+        source_file="statement.qfx",
+    )
+    _seed_pending_dedup(db, match_id=match_id)
+    MatchingService(db).set_status(match_id, status="accepted", actor="cli")
+    return _canonical_id("ofx", "ofx_5678")
+
+
+class TestARepointBlocksUndoOfTheEditItMoved:
+    """The row moved, so undoing the edit that wrote it must refuse, not no-op.
+
+    ``UndoService._cascade_blockers`` joins the audit log on exact
+    ``(target_schema, target_table, target_id)``. When a repoint names only the
+    surviving id, the move is invisible from the superseded id's side: the
+    original edit reports ``can_undo=True``, its undo deletes by the old id,
+    matches zero rows, and reports success while the moved row stands. The
+    documented walk is "undo the blocker, then the original undoes cleanly" —
+    which requires the repoint to *be* a blocker.
+    """
+
+    @pytest.mark.unit
+    def test_undoing_the_original_categorization_is_blocked_by_the_repoint(
+        self, matched_db: Database
+    ) -> None:
+        """``transaction_categories`` keys its audit on the transaction id itself."""
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="csv_1234",
+            source_type="tabular",
+            source_file="export.csv",
+        )
+        old_id = _canonical_id("tabular", "csv_1234")
+        with operation() as edit_op:
+            TransactionCategoriesRepo(matched_db).set(
+                old_id,
+                category="Food & Drink",
+                subcategory="Coffee",
+                category_id=None,
+                categorized_by="user",
+                actor="cli",
+            )
+
+        new_id = _merge_the_csv_row_onto_an_ofx_anchor(
+            matched_db, match_id="match0000020"
+        )
+        repoint_op = _operation_of(matched_db, "category.repoint_transaction")
+
+        detail = UndoService(matched_db).get(edit_op)
+        assert detail.undo_blocked_by == [repoint_op]
+        assert detail.can_undo is False
+
+        with pytest.raises(UserError) as excinfo:
+            UndoService(matched_db).undo(edit_op, actor="cli")
+        assert excinfo.value.code == error_codes.UNDO_CASCADE_BLOCKED
+        assert _curation_ids(matched_db)["transaction_categories"] == [new_id], (
+            "the refusal must leave the moved row exactly where the repoint put it"
+        )
+
+    @pytest.mark.unit
+    def test_undoing_the_original_tag_is_blocked_by_the_repoint(
+        self, matched_db: Database
+    ) -> None:
+        """The non-colliding tag branch keys its audit on ``transaction_id:tag``.
+
+        Its colliding branch already audits the *old* key, so only the branch
+        that moves the row can hide from the cascade check.
+        """
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="csv_1234",
+            source_type="tabular",
+            source_file="export.csv",
+        )
+        old_id = _canonical_id("tabular", "csv_1234")
+        with operation() as edit_op:
+            TransactionTagsRepo(matched_db).add(
+                transaction_id=old_id, tag="work", actor="cli"
+            )
+
+        new_id = _merge_the_csv_row_onto_an_ofx_anchor(
+            matched_db, match_id="match0000021"
+        )
+        repoint_op = _operation_of(matched_db, "tag.repoint_transaction")
+
+        detail = UndoService(matched_db).get(edit_op)
+        assert detail.undo_blocked_by == [repoint_op]
+        assert detail.can_undo is False
+
+        with pytest.raises(UserError) as excinfo:
+            UndoService(matched_db).undo(edit_op, actor="cli")
+        assert excinfo.value.code == error_codes.UNDO_CASCADE_BLOCKED
+        assert _curation_ids(matched_db)["transaction_tags"] == [new_id]
+
+    @pytest.mark.unit
+    def test_a_repointed_note_already_blocks_its_own_undo(
+        self, matched_db: Database
+    ) -> None:
+        """``note_id`` survives the move, so the cascade check already sees it."""
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="csv_1234",
+            source_type="tabular",
+            source_file="export.csv",
+        )
+        old_id = _canonical_id("tabular", "csv_1234")
+        with operation() as edit_op:
+            TransactionNotesRepo(matched_db).add(
+                transaction_id=old_id,
+                note_id="note00000001",
+                text="reimbursable",
+                actor="cli",
+            )
+
+        new_id = _merge_the_csv_row_onto_an_ofx_anchor(
+            matched_db, match_id="match0000022"
+        )
+        repoint_op = _operation_of(matched_db, "note.repoint_transaction")
+
+        detail = UndoService(matched_db).get(edit_op)
+        assert detail.undo_blocked_by == [repoint_op]
+        assert detail.can_undo is False
+        assert _curation_ids(matched_db)["transaction_notes"] == [new_id]
+
+    @pytest.mark.unit
+    def test_a_repointed_split_already_blocks_its_own_undo(
+        self, matched_db: Database
+    ) -> None:
+        """``split_id`` survives the move, so the cascade check already sees it."""
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="csv_1234",
+            source_type="tabular",
+            source_file="export.csv",
+        )
+        old_id = _canonical_id("tabular", "csv_1234")
+        with operation() as edit_op:
+            TransactionSplitsRepo(matched_db).insert(
+                split_id="split0000001",
+                transaction_id=old_id,
+                amount=Decimal("-12.34"),
+                category="Food & Drink",
+                subcategory="Coffee",
+                category_id=None,
+                note=None,
+                ord=0,
+                actor="cli",
+            )
+
+        new_id = _merge_the_csv_row_onto_an_ofx_anchor(
+            matched_db, match_id="match0000023"
+        )
+        repoint_op = _operation_of(matched_db, "split.repoint_transaction")
+
+        detail = UndoService(matched_db).get(edit_op)
+        assert detail.undo_blocked_by == [repoint_op]
+        assert detail.can_undo is False
+        assert _curation_ids(matched_db)["transaction_splits"] == [new_id]

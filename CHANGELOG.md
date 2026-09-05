@@ -301,7 +301,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to a surviving source and its annotations follow. Where the trail is genuinely
   ambiguous — every id the transaction ever used is gone, or several are still in
   use — the rows are left where they are and `moneybin doctor` reports them
-  rather than the guess being made for you. (#532)
+  rather than the guess being made for you. Splits get the same treatment for a
+  second reason: when both halves of a merge were already split, each allocation
+  stays where it is, because a survivor holding both would publish twice the
+  transaction's amount to every spending report and deleting either side would
+  discard a split you entered. `moneybin doctor` reports the splits left behind.
+  (#532)
 
 - **A missing or locked keychain entry no longer prints a stack trace.**
   `moneybin db info`, `db unlock` and the DuckDB init-script builder read the
