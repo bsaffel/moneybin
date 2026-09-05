@@ -62,7 +62,7 @@ Running MoneyBin unattended — cron, containers, more than one machine.
 
 - **[Setting up Claude Desktop](guides/setting-up-claude-desktop.md)** — The end-user happy path: install, one `moneybin mcp install` command, restart, ask a first question.
 - **[MCP server](guides/mcp-server.md)** — The builder doc: tool catalog, response envelope, sensitivity tiers, action-hint chaining, latency and cost guidance for planning tool budgets, and the [seven registered prompts](guides/mcp-server.md#prompts).
-- **[MCP tool reference](reference/mcp-tools.md)** — Every registered tool's description, parameters, annotations, and maximum sensitivity; generated from the tool list the server hands a connecting client.
+- **[MCP tool reference](reference/mcp-tools.md)** — Every registered tool's description, parameters, annotations, and declared sensitivity; generated from the tool list the server hands a connecting client.
 - **[MCP clients](guides/mcp-clients.md)** — Per-client setup for the eight clients MoneyBin is tested against, plus why ChatGPT on the web cannot connect yet.
 - **Extending the server** — [CONTRIBUTING § Adding a new MCP tool](../CONTRIBUTING.md#adding-a-new-mcp-tool) carries the recipe: service, decorator, CLI peer, tests.
 
