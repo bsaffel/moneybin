@@ -685,6 +685,71 @@ def test_mcp_page_renders_conditional_must_be_const() -> None:
     )
 
 
+def test_mcp_page_renders_a_conditional_keyed_on_another_field_being_set() -> None:
+    """An ``if`` testing presence rather than a constant renders as "is set".
+
+    The category/subcategory rule is shaped this way — a subcategory is only
+    meaningful under a parent — so the condition is "the other field was
+    supplied", which no ``const`` can express.
+    """
+    surface: dict[str, Any] = {
+        "tool_count": 1,
+        "tools": [
+            {
+                "name": "widget_label_set",
+                "definition": {
+                    "description": "Label one widget.",
+                    "annotations": {"readOnlyHint": False},
+                    "inputSchema": {
+                        "properties": {
+                            "target": {
+                                "oneOf": [
+                                    {
+                                        "description": "A labelled target.",
+                                        "properties": {
+                                            "kind": {
+                                                "const": "label",
+                                                "type": "string",
+                                            },
+                                            "category": {"type": "string"},
+                                            "subcategory": {"type": "string"},
+                                        },
+                                        "required": ["kind"],
+                                        "type": "object",
+                                        "allOf": [
+                                            {
+                                                "if": {
+                                                    "properties": {
+                                                        "subcategory": {
+                                                            "not": {"type": "null"}
+                                                        }
+                                                    },
+                                                    "required": ["subcategory"],
+                                                },
+                                                "then": {
+                                                    "required": ["category"],
+                                                    "properties": {
+                                                        "category": {
+                                                            "not": {"type": "null"}
+                                                        }
+                                                    },
+                                                },
+                                            }
+                                        ],
+                                    },
+                                ]
+                            },
+                        },
+                        "type": "object",
+                    },
+                },
+            },
+        ],
+    }
+    page = render_mcp_tools(surface, {"widget_label_set": ("low", False)})
+    assert "| `category` | string |  | required when `subcategory` is set |" in page
+
+
 def test_mcp_page_conditional_tripwire_raises_on_unrecognized_if() -> None:
     """An ``if`` outside the closed vocabulary fails loudly, naming param and variant."""
     surface: dict[str, Any] = {

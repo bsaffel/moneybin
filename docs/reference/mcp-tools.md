@@ -750,7 +750,7 @@ Declare one merchant mapping's target state.
 | `raw_pattern` | string |  | min length 1; max length 500; required when `state` is `present`; forbidden when `state` is `absent` |
 | `canonical_name` | string |  | min length 1; max length 200; required when `state` is `present`; forbidden when `state` is `absent` |
 | `match_type` | one of `exact`, `contains`, `regex` |  | forbidden when `state` is `absent` |
-| `category` | string |  | min length 1; max length 100; forbidden when `state` is `absent` |
+| `category` | string |  | min length 1; max length 100; forbidden when `state` is `absent`; required when `subcategory` is set |
 | `subcategory` | string |  | min length 1; max length 100; forbidden when `state` is `absent` |
 
 ### transactions
