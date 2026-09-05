@@ -13,7 +13,7 @@ admission record, byte evidence, and promotion gates live in
 [`mcp-tool-surface-scaling.md`](../specs/mcp-tool-surface-scaling.md). For
 client installation and local-data handling, use
 [`mcp-clients.md`](mcp-clients.md). Every tool's client-visible definition —
-description, parameters, annotations, and maximum sensitivity — is generated
+description, parameters, annotations, and declared sensitivity — is generated
 from the code into the [MCP tool reference](../reference/mcp-tools.md).
 
 ## Connect and orient
