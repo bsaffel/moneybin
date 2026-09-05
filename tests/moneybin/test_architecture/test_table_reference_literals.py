@@ -23,7 +23,9 @@ its residual ticket (MB-160) named this limit explicitly. **A finding is in
 scope only if it describes a plausible accidental shape** — a bypass a
 contributor could trigger by ordinary refactoring, not one requiring them to
 choose evasion. Round 3 findings (quoted identifiers, ``COPY``/``DESCRIBE``,
-name-to-name assignment — see below) all clear that bar; a fourth round
+name-to-name assignment — see below) all clear that bar, and so do round 4's
+(``SHOW``/``PRAGMA``, the f-string interpolation-hole misparse, stale
+literal bindings — see module docstring points 1-2 below); a fifth round
 proposing runtime string construction or similar would not, and should be
 declined rather than patched.
 
@@ -82,9 +84,18 @@ signal back:
    ``Table``. Measured before choosing this: a strict ``parse_one`` over
    every one of the 654 candidate literals in this tree (2026-09) succeeds
    only 21% of the time — most candidate literals are f-string SQL whose
-   ``TABLE.full_name`` interpolation was stripped by ``_literal_text``
-   above, leaving a hole exactly where a table name would sit (``CREATE OR
-   REPLACE VIEW  AS ...``), which a strict parser rejects. The tolerant
+   ``TABLE.full_name`` interpolation, at the time of that measurement, was
+   stripped by ``_literal_text`` to an empty string, leaving a hole exactly
+   where a table name would sit (``CREATE OR REPLACE VIEW  AS ...``), which
+   a strict parser rejects. (``_literal_text`` now substitutes a neutral
+   placeholder identifier for that hole instead of dropping it — see
+   finding B in that function's own docstring — for an unrelated reason:
+   an empty hole can splice the literal segments on either side of it into
+   a *different*, still tolerantly-parseable statement that hides an
+   adjacent hardcoded reference. This 2026-09 measurement predates that
+   change and is not re-derived here; the placeholder only shrinks the set
+   of fragments a strict parser would reject, so the case for the tolerant
+   parse below stands either way.) The tolerant
    ``ErrorLevel.IGNORE`` parse used here recovers all but ~4% of those, and
    — the number that actually matters — every literal that contains a
    genuine schema-qualified reference in this tree parses successfully.
@@ -119,6 +130,31 @@ signal back:
    sqlglot's DuckDB grammar cannot represent at all, not the primary path,
    and it carries the same bounded false-positive exposure the old
    regex-only design had (documented on ``_fallback_regex_tables`` itself).
+
+   **Round 4 found the ``exp.Command`` fix was still verb-specific, just at
+   a different granularity.** ``db.execute("SHOW app.foo")`` lands in the
+   same ``exp.Command`` bucket as ``EXPLAIN``, but the keyword-anchored
+   fallback regex required a clause word (``FROM``, ``JOIN``, ...)
+   immediately before the schema-qualified name — ``SHOW`` isn't one, and
+   there is no other keyword in ``SHOW app.foo`` for it to anchor on, so
+   the literal passed uncaught. Patching in ``SHOW`` would only repeat the
+   round-3 COPY/DESCRIBE pattern: fix the symptom, leave the next verb
+   open. The actual fix drops the keyword requirement — the rule is
+   ``<known-schema>.<identifier>`` IS a table reference regardless of what
+   verb (if any) precedes it, with ``_SCHEMA_NAMES`` (not a keyword list)
+   doing the real gating. A second, structurally different gap surfaced
+   alongside it: ``db.execute("PRAGMA table_info('core.fct_transactions')")``
+   parses successfully (it is NOT an ``exp.Command``), but the target sits
+   inside a quoted string-literal *argument* — an ``exp.Literal``, not a
+   ``Table`` — so ``find_all(exp.Table)`` structurally cannot see it no
+   matter what keyword logic wraps it. `_tables_in_text` closes this by
+   additionally scanning a parsed statement's own string-literal arguments
+   with the same (now keyword-optional) fallback regex, but ONLY when that
+   statement's structural table search came up empty — never against the
+   statement's full reconstructed text, which is what keeps a `-- schema.table`
+   SQL comment (never represented as an `exp.Literal`, even though sqlglot
+   round-trips it back into reconstructed SQL as `/* ... */`) from becoming
+   a new false positive.
 
 3. **Function-scoped name binding, with module-level fallback.** A candidate
    name is resolved within the module or function/method body that binds it
@@ -190,21 +226,26 @@ _SCHEMA_NAMES = (
     "synthetic",
 )
 
-# Fallback matcher for the ``exp.Command`` catch-all — NOT the primary
-# matcher. sqlglot lowers any statement it cannot fully parse for the target
-# dialect to ``exp.Command``, with the payload left as an unparsed string
-# (documented in ``.claude/references/guard-design.md`` and
-# ``src/moneybin/privacy/sql_query.py``'s ``is_metadata_query`` docstring —
-# the identical trap in a sibling guard: "sqlglot lowers EXPLAIN to the same
-# exp.Command it uses for syntax it cannot parse"). DuckDB's ``EXPLAIN`` /
-# ``EXPLAIN ANALYZE`` have no sqlglot node and always land here —
-# ``find_all(exp.Table)`` on a ``Command`` returns nothing, which is an
-# UNEXAMINED payload, not an absence of tables. This regex/keyword list
-# exists ONLY as a bounded backstop for the fraction of statements sqlglot's
-# DuckDB grammar cannot represent at all (see ``_tables_in_text``) — it is
-# not the primary matcher (module docstring point 2 uses the parse tree for
-# everything sqlglot understands), so a future reader should not mistake it
-# for the main path again.
+# Fallback matcher for text sqlglot's structural walk can't see into — NOT
+# the primary matcher. Two round-4 findings share one root cause a
+# keyword-by-keyword patch (COPY, then DESCRIBE, then EXPLAIN) would never
+# close: ``SHOW app.foo`` lowers to an unparsed ``exp.Command`` whose payload
+# this regex used to require a clause keyword (``FROM``, ``JOIN``, ...)
+# immediately before a schema-qualified name — ``SHOW`` isn't one of them, so
+# the reference slipped through; ``PRAGMA table_info('core.fct_transactions')``
+# parses just fine, but the target sits inside a quoted string-literal
+# *argument*, a shape ``find_all(exp.Table)`` never walks into regardless of
+# what clause keyword (if any) sits nearby. The fix is the same for both: the
+# rule is ``<known-schema>.<identifier>`` IS a table reference regardless of
+# what verb precedes it — ``_SCHEMA_NAMES`` (not a keyword list) is what
+# keeps the match from firing on arbitrary dotted attribute access, so the
+# keyword requirement was never doing the gating work. The keyword group
+# below is now OPTIONAL: it still reports a real clause word when one
+# happens to precede the match (e.g. the ``FROM`` inside ``EXPLAIN SELECT *
+# FROM core.fct_transactions``, which existing tests pin), but a match no
+# longer requires one. See ``_tables_in_text`` for the two call sites this
+# feeds — the ``exp.Command`` payload text, and (new) each string-literal
+# argument of a statement sqlglot parsed but found no real table in.
 _FALLBACK_TABLE_KEYWORDS = (
     "FROM",
     "JOIN",
@@ -223,28 +264,36 @@ _FALLBACK_TABLE_KEYWORDS = (
 # exposes `Table.db`/`.name`); the fallback has to state the rule itself, or
 # the two matchers in this file would disagree about what an identifier is.
 _FALLBACK_SCHEMA_TABLE_PATTERN = re.compile(
-    r"\b(" + "|".join(_FALLBACK_TABLE_KEYWORDS) + r")\s+"
+    r"(?:\b(" + "|".join(_FALLBACK_TABLE_KEYWORDS) + r")\s+)?"
     r"\"?(" + "|".join(_SCHEMA_NAMES) + r")\"?\.\"?([a-z][a-z0-9_]+)\b\"?",
     re.IGNORECASE,
 )
 
 
-def _fallback_regex_tables(text: str) -> list[tuple[str, str]]:
-    """Regex-based table matching for a statement sqlglot could not parse.
+def _fallback_regex_tables(text: str, default_clause: str) -> list[tuple[str, str]]:
+    """Regex-based table matching for text sqlglot's structural walk can't see into.
 
-    Only called for ``exp.Command`` nodes (see ``_tables_in_text``) — never
-    as the primary matcher. Shares the same false-positive exposure the
-    original regex-only design had (an aliased-to-schema-name column
-    reference, a SQL comment mentioning a table in prose) — acceptable here
-    because the statements that reach this path are the ones sqlglot's DuckDB
-    grammar cannot represent at all, a narrow, bounded fallback rather than
-    the file's main path. Quoted identifiers are *not* in that exposure list:
-    the pattern handles them, so an `EXPLAIN` (which always lands here) does
-    not silently reopen the quoting hole the parse path closed.
+    Called from two bounded contexts in ``_tables_in_text`` — never as the
+    primary matcher — an ``exp.Command`` node's own reconstructed SQL text,
+    or a single string-literal argument of a statement sqlglot otherwise
+    parsed successfully. `default_clause` is the `clause_type` reported when
+    no ``_FALLBACK_TABLE_KEYWORDS`` word immediately precedes the match (the
+    normal case for a literal-argument scan, and for a Command payload like
+    ``SHOW app.foo`` that has no clause keyword at all): the caller passes
+    the statement's own verb/node-type name, so the report still says
+    *something* structurally derived rather than a hardcoded label. Shares
+    the same false-positive exposure the original regex-only design had (an
+    aliased-to-schema-name column reference, a SQL comment mentioning a
+    table in prose) — acceptable here because both call sites are narrow,
+    bounded fallbacks for text sqlglot's own parse tree can't structurally
+    resolve, not the file's main path. Quoted identifiers are *not* in that
+    exposure list: the pattern handles them, so neither call site silently
+    reopens the quoting hole the parse path closed.
     """
     found: list[tuple[str, str]] = []
     for match in _FALLBACK_SCHEMA_TABLE_PATTERN.finditer(text):
-        found.append((match.group(1).upper(), f"{match.group(2)}.{match.group(3)}"))
+        clause = match.group(1).upper() if match.group(1) else default_clause
+        found.append((clause, f"{match.group(2)}.{match.group(3)}"))
     return found
 
 
@@ -302,21 +351,52 @@ TABLE_LITERAL_ALLOWLIST: frozenset[tuple[str, str, str, int]] = frozenset({
 })
 
 
+# Placeholder substituted for each f-string interpolation hole in
+# `_literal_text` — see that function's docstring. Two properties keep it
+# from becoming a false-positive source of its own:
+#   1. It cannot appear as the SCHEMA half of a match: `_SCHEMA_NAMES` is a
+#      closed, known list and this identifier isn't a member of it.
+#   2. A dynamic TABLE name IS a realistic shape it must not be mistaken
+#      for one of (`f"DROP VIEW IF EXISTS raw.{view_name}"` — a real
+#      pattern in this tree, e.g. `connection_service.py`'s
+#      `gsheet_{alias}` view drop): `_tables_in_text` explicitly excludes
+#      an `exp.Table` whose `name` exactly equals this placeholder, the
+#      same way it excludes an empty name. The leading underscore is a
+#      second, independent line of defense for the OTHER fallback path —
+#      `_FALLBACK_SCHEMA_TABLE_PATTERN`'s table-name group is
+#      `[a-z][a-z0-9_]+`, which never matches a leading `_`, so this value
+#      can't slip through the regex-based fallback either.
+_INTERPOLATION_PLACEHOLDER = "_mb_ph"
+
+
 def _literal_text(node: ast.expr) -> str | None:
     """Static string content of a Constant or JoinedStr (f-string) node.
 
-    For a JoinedStr, only the literal (non-interpolated) segments are
-    returned — an embedded ``{TABLE.full_name}`` expression contributes
-    nothing, which is correct: a query built that way has no hardcoded
-    schema.table text in its static shape.
+    For a JoinedStr, each interpolation hole (``{TABLE.full_name}``, etc.)
+    is replaced with a neutral placeholder identifier
+    (``_INTERPOLATION_PLACEHOLDER``) rather than dropped. Dropping it is
+    NOT equivalent to "no hardcoded schema.table text in its static shape"
+    — it can splice the literal segments on either side of the hole into a
+    *different*, still tolerantly-parseable statement that hides an
+    adjacent hardcoded reference. Concretely: ``f"UPDATE {TARGET.full_name}
+    SET x = 1 FROM core.fct_transactions"`` naively stripped becomes
+    ``"UPDATE  SET x = 1 FROM core.fct_transactions"`` — sqlglot's tolerant
+    parser doesn't reject this, it MISPARSES it (the bare ``SET`` token
+    after two spaces becomes the ``UPDATE`` target's table name, consuming
+    the parse before it reaches the real ``FROM`` clause), so
+    ``find_all(exp.Table)`` never sees the hardcoded
+    ``core.fct_transactions`` at all. A placeholder identifier keeps the
+    clause boundary (`UPDATE <something> SET ...`) syntactically intact, so
+    the parser reaches the real ``FROM core.fct_transactions`` unharmed.
     """
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.JoinedStr):
         return "".join(
             v.value
-            for v in node.values
             if isinstance(v, ast.Constant) and isinstance(v.value, str)
+            else _INTERPOLATION_PLACEHOLDER
+            for v in node.values
         )
     return None
 
@@ -344,7 +424,31 @@ def _record_literal_binding(
     value: ast.expr,
     lineno: int,
 ) -> None:
-    """Record `name`'s literal text (if any) as a candidate reaching execute()."""
+    """Record `name`'s literal text (if any) as a candidate reaching execute().
+
+    Flow-insensitive by construction: every binding is APPENDED to
+    `name`'s list — never replaced — so if `execute()` is later seeded
+    with `name` (module docstring point 1's worklist), ALL literals ever
+    bound to `name` in this scope are reported, including one a later,
+    non-literal rebind superseded:
+
+        if cond:
+            query = "SELECT * FROM core.x"   # still flagged even if cond
+                                               # is always False at runtime
+        else:
+            query = build()
+        db.execute(query)
+
+    This is a deliberate, NOT a fixable, false-positive: a bounded,
+    flow-insensitive scan cannot tell a superseding rebind (dead code, safe
+    to drop) apart from a branch (both live, must keep). Clearing on rebind
+    would silently turn the branch case into a false NEGATIVE — a rebind
+    that looks identical in the AST but is reached at runtime — which is
+    strictly worse for a guard than an occasional false positive. The
+    remedy for a genuine false positive from this shape is the existing
+    `TABLE_LITERAL_ALLOWLIST`, the same escape hatch every other accepted
+    false-positive class in this file uses.
+    """
     text = _literal_text(value)
     if text is not None:
         var_literals.setdefault(name, []).append((lineno, text, _embedded_names(value)))
@@ -383,13 +487,28 @@ def _direct_scope_nodes(root: ast.AST) -> list[ast.AST]:
     """All descendant nodes of `root`, not descending into a nested function.
 
     A nested ``ast.FunctionDef``/``ast.AsyncFunctionDef`` is itself included
-    (so a decorator or default-argument literal is still visible to this
-    scope) but its own body is NOT descended into here — that subtree is a
-    separate scope, walked independently by ``_scan_file``. Everything else
-    (``if``/``for``/``with``/``try``/class bodies, comprehensions) is not a
-    distinct variable scope in this heuristic and is walked through, mirroring
-    Python's actual scoping rule that only ``def``/``lambda`` introduce a new
-    local namespace.
+    in the returned list (so the traversal below knows to stop there) but
+    its own body is NOT descended into here — that subtree is a separate
+    scope, walked independently by ``_scan_file``. Including the bare
+    ``FunctionDef``/``AsyncFunctionDef`` node contributes nothing to
+    ``_collect_scope``'s OWN scan of *this* list: every check there
+    (``isinstance(node, (ast.Assign, ...))``, ``isinstance(node, ast.Call)``)
+    matches a specific statement/expression shape, and none matches a bare
+    ``FunctionDef`` node — it is inert filler in this scope's binding
+    collection, not a carrier of the nested function's decorator or
+    default-argument literals. Those DO still get scanned, but through a
+    different path than "included here": ``_scan_file``'s own
+    ``ast.walk(tree)`` reaches that same node independently of this
+    function's choice not to descend into it, and when it does,
+    ``_direct_scope_nodes(node)`` is called with the ``FunctionDef`` node
+    itself as `root` — whose *direct children* (via
+    ``ast.iter_child_nodes``) include its `decorator_list` and argument
+    defaults, so those literals surface as part of the function's OWN
+    scope, not the enclosing one. Everything else (``if``/``for``/``with``/
+    ``try``/class bodies, comprehensions) is not a distinct variable scope
+    in this heuristic and is walked through, mirroring Python's actual
+    scoping rule that only ``def``/``lambda`` introduce a new local
+    namespace.
     """
     nodes: list[ast.AST] = []
     stack = list(ast.iter_child_nodes(root))
@@ -457,6 +576,14 @@ def _collect_scope(
         `_literal_text` only extracts Constant/JoinedStr — a destructured
         Tuple/List RHS is silently not unpacked. Noted as a residual gap
         on the existing Assign handler, not a new node type to enumerate.
+      - ast.Attribute assignment targets (`self.query = "..."`,
+        `Cls.QUERY = "..."`): every `isinstance(target, ast.Name)` guard
+        above only matches a bare local name, so an attribute target is
+        silently skipped rather than recorded under some other name — this
+        is the same file-local-heuristic limit as a helper function's
+        return value (module docstring point 1): tracking an attribute
+        write would require knowing whether every later read of that
+        attribute, from anywhere, reaches this one.
     """
     var_literals: _ScopeLiterals = {}
     var_aliases: _ScopeAliases = {}
@@ -575,17 +702,27 @@ def _tables_in_text(text: str) -> list[tuple[str, str]]:
     A table needs a non-empty `db` AND a non-empty `name` to count — see
     module docstring point 2 for the two shapes (an interpolation hole; a
     bare ``CREATE SCHEMA`` statement) that produce a schema-only `exp.Table`
-    with no real table name, which is not a table reference.
+    with no real table name, which is not a table reference. A `name`
+    exactly equal to `_INTERPOLATION_PLACEHOLDER` is excluded the same way:
+    `_literal_text`'s placeholder keeps a genuinely dynamic identifier
+    non-empty (so the surrounding SQL still parses — see that function's
+    own docstring), which reopens exactly the interpolation-hole problem
+    the empty-name check exists for unless this exclusion mirrors it —
+    ``f"DROP VIEW IF EXISTS raw.{view_name}"`` becomes ``raw._mb_ph`` after
+    substitution: a hardcoded schema prefixed to a fully dynamic name, not
+    a hardcoded schema.table reference, and this is a real, live shape in
+    this tree (``connection_service.py``'s ``gsheet_{alias}`` view drop).
 
     An ``exp.Command`` node is sqlglot's catch-all for a statement it could
     not fully parse for the ``duckdb`` dialect (DuckDB's ``EXPLAIN`` /
-    ``EXPLAIN ANALYZE`` are the known members today; the set is a moving
-    target across sqlglot versions, not a fixed list — matched by node type,
-    never by scraping the "Falling back to parsing as a 'Command'" warning
-    sqlglot logs). Its payload is left completely unparsed, so
-    ``find_all(exp.Table)`` on it always returns nothing regardless of what
-    the payload actually contains — an UNEXAMINED payload, not an absence of
-    tables (see ``.claude/references/guard-design.md`` and
+    ``EXPLAIN ANALYZE`` / ``SHOW`` are the known members today; the set is a
+    moving target across sqlglot versions, not a fixed list — matched by
+    node type, never by scraping the "Falling back to parsing as a
+    'Command'" warning sqlglot logs). Its payload is left completely
+    unparsed, so ``find_all(exp.Table)`` on it always returns nothing
+    regardless of what the payload actually contains — an UNEXAMINED
+    payload, not an absence of tables (see
+    ``.claude/references/guard-design.md`` and
     ``src/moneybin/privacy/sql_query.py``'s ``is_metadata_query`` docstring
     for the identical trap in a sibling guard). Silently treating "no tables
     found" as "no tables present" here would be a coverage regression versus
@@ -596,6 +733,27 @@ def _tables_in_text(text: str) -> list[tuple[str, str]]:
     reconstructed SQL text (``statement.sql(dialect="duckdb")``) so a
     fallback triggered by one statement in a multi-statement literal never
     re-scans a sibling statement sqlglot parsed successfully.
+
+    A statement sqlglot DOES fully parse can still hide a schema-qualified
+    reference from ``find_all(exp.Table)``: ``PRAGMA
+    table_info('core.fct_transactions')`` (round-4 finding 2) parses to an
+    ``exp.Pragma`` with the target as a quoted string ``exp.Literal``
+    argument, not a `Table` — structurally invisible to the walk above no
+    matter how it's filtered. When that walk finds NO real table for a
+    parsed (non-Command) statement, this function additionally scans that
+    statement's own string-literal arguments (``find_all(exp.Literal)``,
+    ``literal.is_string``) with the same fallback regex — never the
+    statement's full reconstructed text, which is what keeps a `-- schema.table`
+    comment out of this net even though sqlglot round-trips such a comment
+    back into the reconstructed SQL as `/* ... */` (see
+    ``test_keyword_gate_excludes_sql_comment_prose``): a SQL comment is
+    never represented as an `exp.Literal` node, so it is structurally
+    invisible to `find_all(exp.Literal)` regardless of what the regex
+    itself would match. This literal-argument scan only runs when the
+    statement's structural table search came up empty — a statement with a
+    real target (`UPDATE app.merchants SET note = '...core.foo...' ...`)
+    is not also re-scanned for a coincidental schema-shaped substring in an
+    unrelated string literal.
     """
     try:
         statements = sqlglot.parse(
@@ -609,15 +767,41 @@ def _tables_in_text(text: str) -> list[tuple[str, str]]:
         if statement is None:
             continue
         if isinstance(statement, exp.Command):
-            found.extend(_fallback_regex_tables(statement.sql(dialect="duckdb")))
+            default_clause = (
+                statement.this if isinstance(statement.this, str) else "COMMAND"
+            )
+            found.extend(
+                _fallback_regex_tables(
+                    statement.sql(dialect="duckdb"), default_clause.upper()
+                )
+            )
             continue
+        statement_found: list[tuple[str, str]] = []
         for table in statement.find_all(exp.Table):
             schema = table.db.lower()
             name = table.name.lower()
-            if not schema or not name or schema not in _SCHEMA_NAMES:
+            if (
+                not schema
+                or not name
+                or schema not in _SCHEMA_NAMES
+                or name == _INTERPOLATION_PLACEHOLDER
+            ):
                 continue
             clause_node = table.parent if table.parent is not None else statement
-            found.append((type(clause_node).__name__.upper(), f"{schema}.{name}"))
+            statement_found.append((
+                type(clause_node).__name__.upper(),
+                f"{schema}.{name}",
+            ))
+        if not statement_found:
+            for literal in statement.find_all(exp.Literal):
+                if not literal.is_string:
+                    continue
+                statement_found.extend(
+                    _fallback_regex_tables(
+                        literal.this, type(statement).__name__.upper()
+                    )
+                )
+        found.extend(statement_found)
     return found
 
 
@@ -629,6 +813,16 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
     for names it doesn't bind locally. Returned in source order (sorted by
     lineno) so a caller can assign stable per-(clause, table) occurrence
     indices — see TABLE_LITERAL_ALLOWLIST's key-shape comment.
+
+    `lineno` is the enclosing string literal's own ``ast.Constant``/
+    ``ast.JoinedStr`` node's ``.lineno`` — for a multi-line triple-quoted
+    string, that is the line the literal's OPENING quote sits on, not the
+    line where the matched clause's text physically appears inside it (a
+    ``FROM core.fct_transactions`` clause ten lines into a long triple-
+    quoted query reports the string's start line, not line-plus-ten).
+    Sqlglot's own line/column info for the match inside the parsed fragment
+    is not surfaced here — the goal is "which literal", not "which
+    character".
     """
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -906,6 +1100,66 @@ def test_normal_parse_does_not_use_the_command_fallback(tmp_path: Path) -> None:
     assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
 
 
+def test_show_statement_is_flagged(tmp_path: Path) -> None:
+    """`SHOW schema.table` is a violation (round-4 finding 1).
+
+    `SHOW app.foo` has no sqlglot DuckDB node at all — it lowers to an
+    unparsed `exp.Command`, same bucket as `EXPLAIN`. The pre-fix fallback
+    regex required a clause keyword (`FROM`, `JOIN`, ...) immediately
+    before a schema-qualified name; `SHOW` isn't one, and there is no other
+    keyword in this statement for it to anchor on, so the whole hardcoded
+    reference passed uncaught. The keyword is now optional, so the bare
+    schema-qualified shape matches on its own; `default_clause` falls back
+    to the Command's own verb (`SHOW`) since no keyword precedes the match.
+    """
+    source = 'db.execute("SHOW app.foo")\n'
+    assert _scan_source(tmp_path, source) == [(1, "SHOW", "app.foo")]
+
+
+def test_pragma_table_info_statement_is_flagged(tmp_path: Path) -> None:
+    """`PRAGMA table_info('schema.table')` is a violation (round-4 finding 2).
+
+    Unlike `SHOW`, `PRAGMA` is NOT an `exp.Command` — sqlglot parses it
+    fully to an `exp.Pragma` node. The schema-qualified target lives inside
+    a quoted string-literal *argument*, which `find_all(exp.Table)` never
+    walks into no matter how it's filtered. `_tables_in_text` closes this
+    by falling back to scanning the statement's own string-literal
+    arguments once its structural table search comes up empty.
+    """
+    source = "db.execute(\"PRAGMA table_info('core.fct_transactions')\")\n"
+    assert _scan_source(tmp_path, source) == [(1, "PRAGMA", "core.fct_transactions")]
+
+
+def test_pragma_storage_info_statement_is_flagged(tmp_path: Path) -> None:
+    """`PRAGMA storage_info(...)` is flagged too — same exp.Literal shape, a different pragma name.
+
+    Proves the fix is verb-agnostic (matches module docstring point 2's
+    round-4 addendum) rather than a `table_info`-specific patch.
+    """
+    source = "db.execute(\"PRAGMA storage_info('core.fct_transactions')\")\n"
+    assert _scan_source(tmp_path, source) == [(1, "PRAGMA", "core.fct_transactions")]
+
+
+def test_literal_argument_fallback_does_not_fire_when_a_real_table_exists(
+    tmp_path: Path,
+) -> None:
+    """The literal-argument fallback (round-4 finding 2) only fires when the structural scan found nothing.
+
+    An `UPDATE` with a genuine target table also carries an unrelated
+    string literal that coincidentally looks like a schema-qualified name
+    (`'see core.fct_transactions'` in a `SET` value). That literal must NOT
+    also be scanned and flagged a second time — the fallback is scoped to
+    statements with zero real structural matches, not layered on top of a
+    successful one.
+    """
+    source = (
+        "def f(db):\n"
+        '    db.execute("UPDATE app.merchants SET note = '
+        "'see core.fct_transactions' WHERE id = 1\")\n"
+    )
+    assert _scan_source(tmp_path, source) == [(2, "UPDATE", "app.merchants")]
+
+
 def test_keyword_gate_excludes_sql_comment_prose(tmp_path: Path) -> None:
     """A schema.table mentioned in a SQL comment, not after a clause keyword, is not flagged."""
     source = 'db.execute("-- core.fct_transactions is expensive\\nSELECT 1")\n'
@@ -1010,3 +1264,28 @@ def test_augassign_does_not_alias_its_rhs_name(tmp_path: Path) -> None:
         "    db.execute(x)\n"
     )
     assert _scan_source(tmp_path, source) == []
+
+
+def test_fstring_interpolation_placeholder_does_not_hide_adjacent_literal(
+    tmp_path: Path,
+) -> None:
+    """An f-string mixing a TableRef interpolation with an accidental literal is still caught (round-4 finding B).
+
+    Naively dropping the interpolation hole (the pre-fix `_literal_text`
+    behavior) turns
+    ``f"UPDATE {target.full_name} SET x = 1 FROM core.fct_transactions"``
+    into ``"UPDATE  SET x = 1 FROM core.fct_transactions"`` — sqlglot's
+    tolerant parser doesn't reject this, it MISPARSES it: the bare `SET`
+    token after the double space becomes the `UPDATE` target's table name,
+    and the parse never reaches the real `FROM core.fct_transactions`
+    clause, so `find_all(exp.Table)` finds nothing. `_literal_text` now
+    substitutes a neutral placeholder identifier for the hole instead,
+    which keeps the `UPDATE <target> SET ...` clause boundary intact so the
+    parser reaches the hardcoded `FROM` target unharmed.
+    """
+    source = (
+        "def f(db, target):\n"
+        '    db.execute(f"UPDATE {target.full_name} SET x = 1 '
+        'FROM core.fct_transactions")\n'
+    )
+    assert _scan_source(tmp_path, source) == [(2, "FROM", "core.fct_transactions")]
