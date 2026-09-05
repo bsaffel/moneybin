@@ -699,7 +699,8 @@ Numbered, testable. Tagged by phase.
 
     A paired Transfer is atomic on the later of its two posting dates. Same-day
     acquisitions precede it and same-day ordinary disposals follow it; multiple
-    Transfers at the same time sort by Transfer id. When the source has less
+    Transfers at the same time apply dependency-first so A→B precedes B→C, then
+    use Transfer id as the deterministic tie-break. When the source has less
     attributable inventory than the amount received, known slices still move and
     the unmatched destination remainder is a `transfer` acquisition with
     `coverage_reason='incomplete_history'` and NULL basis. No basis is invented and

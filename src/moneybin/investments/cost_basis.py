@@ -923,6 +923,84 @@ def _add_lot_to_state(state: _GroupState, lot: Lot) -> None:
     state.pool.updated_at = _latest_timestamp(state.pool.updated_at, lot.updated_at)
 
 
+def _same_day_transfer_ranks(
+    pairs: Sequence[tuple[PairedTransfer, LedgerEvent, LedgerEvent]],
+) -> dict[tuple[date, str], int]:
+    """Order same-day transfers upstream-first, then by stable Transfer id."""
+    by_date: dict[date, list[tuple[PairedTransfer, LedgerEvent, LedgerEvent]]] = {}
+    for pair, source, destination in pairs:
+        by_date.setdefault(max(source.trade_date, destination.trade_date), []).append((
+            pair,
+            source,
+            destination,
+        ))
+
+    ranks: dict[tuple[date, str], int] = {}
+    for effective_date, dated_pairs in by_date.items():
+        dependencies = {
+            pair.transfer_id: {
+                upstream.transfer_id
+                for upstream, upstream_source, upstream_destination in dated_pairs
+                if upstream.transfer_id != pair.transfer_id
+                and upstream_destination.account_id == source.account_id
+                and upstream_source.security_id == source.security_id
+            }
+            for pair, source, _destination in dated_pairs
+        }
+        ordered: list[str] = []
+        while dependencies:
+            ready = sorted(
+                transfer_id
+                for transfer_id, upstream_ids in dependencies.items()
+                if not upstream_ids
+            )
+            if ready:
+                next_ids = ready[:1]
+            else:
+                reachability: dict[str, set[str]] = {}
+                for transfer_id in dependencies:
+                    reachable: set[str] = set()
+                    pending = list(dependencies[transfer_id])
+                    while pending:
+                        upstream_id = pending.pop()
+                        if upstream_id in reachable:
+                            continue
+                        reachable.add(upstream_id)
+                        pending.extend(dependencies[upstream_id])
+                    reachability[transfer_id] = reachable
+
+                cycle_components = {
+                    frozenset(
+                        candidate_id
+                        for candidate_id in dependencies
+                        if candidate_id in reachability[transfer_id]
+                        and transfer_id in reachability[candidate_id]
+                    )
+                    for transfer_id in dependencies
+                    if transfer_id in reachability[transfer_id]
+                }
+                ready_components = [
+                    component
+                    for component in cycle_components
+                    if not set().union(
+                        *(dependencies[transfer_id] for transfer_id in component)
+                    )
+                    - component
+                ]
+                next_ids = sorted(min(ready_components, key=lambda ids: sorted(ids)))
+
+            ordered.extend(next_ids)
+            for transfer_id in next_ids:
+                del dependencies[transfer_id]
+            for upstream_ids in dependencies.values():
+                upstream_ids.difference_update(next_ids)
+        ranks.update({
+            (effective_date, transfer_id): rank
+            for rank, transfer_id in enumerate(ordered)
+        })
+    return ranks
+
+
 def _compute_paired_groups(
     events: Sequence[LedgerEvent],
     *,
@@ -960,6 +1038,7 @@ def _compute_paired_groups(
         tuple[
             date,
             int,
+            int,
             str,
             LedgerEvent | tuple[PairedTransfer, LedgerEvent, LedgerEvent],
         ]
@@ -973,17 +1052,21 @@ def _compute_paired_groups(
         timeline.append((
             event.trade_date,
             order,
+            0,
             event.investment_transaction_id,
             event,
         ))
+    transfer_ranks = _same_day_transfer_ranks(valid_pairs)
     for pair, source, destination in valid_pairs:
+        effective_date = max(source.trade_date, destination.trade_date)
         timeline.append((
-            max(source.trade_date, destination.trade_date),
+            effective_date,
             2,
+            transfer_ranks[(effective_date, pair.transfer_id)],
             pair.transfer_id,
             (pair, source, destination),
         ))
-    timeline.sort(key=lambda item: item[:3])
+    timeline.sort(key=lambda item: item[:4])
 
     states: dict[tuple[str, str], _GroupState] = {}
 
@@ -999,7 +1082,7 @@ def _compute_paired_groups(
         return states[key]
 
     all_gains: list[RealizedGain] = []
-    for event_date, _order, _event_id, item in timeline:
+    for event_date, _order, _transfer_rank, _event_id, item in timeline:
         if isinstance(item, LedgerEvent):
             security_id = item.security_id
             if security_id is None:

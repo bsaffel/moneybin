@@ -390,6 +390,7 @@ CREATE TABLE IF NOT EXISTS core.fct_currency_lots (
     account_id VARCHAR,
     source_conversion_id VARCHAR,
     source_investment_transaction_id VARCHAR,
+    source_transfer_id VARCHAR,
     currency_code VARCHAR,
     acquisition_type VARCHAR,
     cost_basis_method VARCHAR,

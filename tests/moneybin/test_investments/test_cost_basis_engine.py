@@ -475,7 +475,7 @@ def test_paired_transfer_moves_fifo_basis_without_gain() -> None:
     assert moved_old.source_transfer_id == "transfer-1"
 
 
-def test_same_day_paired_transfers_are_atomic_and_ordered_by_transfer_id() -> None:
+def test_same_day_paired_transfers_are_atomic_and_dependency_ordered() -> None:
     events = [
         _event(
             "origin",
@@ -528,8 +528,8 @@ def test_same_day_paired_transfers_are_atomic_and_ordered_by_transfer_id() -> No
         ),
     ]
     pairs = [
-        cost_basis_module.PairedTransfer("a-transfer", "a-out", "a-in"),
-        cost_basis_module.PairedTransfer("b-transfer", "b-out", "b-in"),
+        cost_basis_module.PairedTransfer("z-upstream", "a-out", "a-in"),
+        cost_basis_module.PairedTransfer("a-downstream", "b-out", "b-in"),
     ]
 
     lots, gains = compute_lots_and_gains(
@@ -544,7 +544,7 @@ def test_same_day_paired_transfers_are_atomic_and_ordered_by_transfer_id() -> No
     assert sum((lot.cost_basis_total for lot in destination_lots), D("0")) == D(
         "175.00"
     )
-    assert {lot.source_transfer_id for lot in destination_lots} == {"b-transfer"}
+    assert {lot.source_transfer_id for lot in destination_lots} == {"a-downstream"}
     assert {lot.source_transaction_id for lot in destination_lots} == {
         "origin",
         "same-day-buy",
@@ -552,6 +552,136 @@ def test_same_day_paired_transfers_are_atomic_and_ordered_by_transfer_id() -> No
     assert [gain.disposal_txn_id for gain in gains] == ["same-day-sale"]
     assert gains[0].cost_basis == D("50.00")
     assert gains[0].gain_loss == D("10.00")
+
+
+def test_same_day_transfer_cycle_precedes_its_outgoing_dependent() -> None:
+    events = [
+        _event(
+            "origin",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "ab-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-10"),
+        ),
+        _event(
+            "ab-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("10"),
+        ),
+        _event(
+            "ba-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("-5"),
+        ),
+        _event(
+            "ba-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            quantity=D("5"),
+        ),
+        _event(
+            "bc-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("-5"),
+        ),
+        _event(
+            "bc-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct3",
+            quantity=D("5"),
+        ),
+    ]
+    pairs = [
+        cost_basis_module.PairedTransfer("m-ab", "ab-out", "ab-in"),
+        cost_basis_module.PairedTransfer("z-ba", "ba-out", "ba-in"),
+        cost_basis_module.PairedTransfer("a-bc", "bc-out", "bc-in"),
+    ]
+
+    lots, gains = compute_lots_and_gains(
+        events,
+        method_for=_fifo,
+        selections_for=_no_selections,
+        paired_transfers=pairs,
+    )
+
+    destination_lots = [lot for lot in lots if lot.account_id == "acct3"]
+    assert gains == []
+    assert sum((lot.remaining_quantity for lot in destination_lots), D("0")) == D("5")
+    assert sum((lot.cost_basis_remaining for lot in destination_lots), D("0")) == D(
+        "50.00"
+    )
+    assert all(not lot.basis_incomplete for lot in destination_lots)
+    assert {lot.source_transfer_id for lot in destination_lots} == {"a-bc"}
+
+
+def test_same_day_transfer_cycle_uses_deterministic_transfer_id_order() -> None:
+    events = [
+        _event(
+            "origin",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "ab-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-10"),
+        ),
+        _event(
+            "ab-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("10"),
+        ),
+        _event(
+            "ba-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("-10"),
+        ),
+        _event(
+            "ba-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+        ),
+    ]
+    pairs = [
+        cost_basis_module.PairedTransfer("z-ba", "ba-out", "ba-in"),
+        cost_basis_module.PairedTransfer("a-ab", "ab-out", "ab-in"),
+    ]
+
+    lots, gains = compute_lots_and_gains(
+        events,
+        method_for=_fifo,
+        selections_for=_no_selections,
+        paired_transfers=pairs,
+    )
+
+    source_lots = [
+        lot for lot in lots if lot.account_id == "acct1" and lot.remaining_quantity > 0
+    ]
+    assert gains == []
+    assert sum((lot.remaining_quantity for lot in source_lots), D("0")) == D("10")
+    assert sum((lot.cost_basis_remaining for lot in source_lots), D("0")) == D("100.00")
+    assert all(not lot.basis_incomplete for lot in source_lots)
 
 
 def test_split_transfers_reconverge_as_distinct_lots() -> None:

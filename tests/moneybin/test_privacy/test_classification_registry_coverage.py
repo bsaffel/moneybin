@@ -112,6 +112,7 @@ def test_currency_accounting_columns_have_exact_privacy_classes() -> None:
             "home_currency": DataClass.CURRENCY,
             "source_conversion_id": DataClass.RECORD_ID,
             "source_investment_transaction_id": DataClass.RECORD_ID,
+            "source_transfer_id": DataClass.RECORD_ID,
             "basis_incomplete": DataClass.TXN_TYPE,
             "coverage_status": DataClass.TXN_TYPE,
             "coverage_reason": DataClass.TXN_TYPE,
