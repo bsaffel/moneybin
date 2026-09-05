@@ -572,6 +572,16 @@ def _direct_scope_nodes(root: ast.AST) -> list[ast.AST]:
     return nodes
 
 
+def _parameter_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
+    """Every name this function binds as a parameter, in all five arg forms."""
+    args = node.args
+    names = {arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
+    for optional in (args.vararg, args.kwarg):
+        if optional is not None:
+            names.add(optional.arg)
+    return frozenset(names)
+
+
 def _collect_scope(
     nodes: list[ast.AST],
 ) -> tuple[
@@ -772,6 +782,7 @@ def _resolve_worklist(
     local_aliases: _ScopeAliases,
     fallback_literals: _ScopeLiterals,
     fallback_aliases: _ScopeAliases,
+    local_parameters: frozenset[str] = frozenset(),
 ) -> list[tuple[int, str]]:
     """Fixed-point worklist: resolve seed names to their literal text.
 
@@ -781,6 +792,11 @@ def _resolve_worklist(
     docstring point 3; this is one "local binding shadows the module scope"
     decision covering both dicts, not two independent ones, so a name bound
     locally only as an alias still doesn't see a same-named module literal.
+    `local_parameters` is that same decision for a name this scope binds as a
+    PARAMETER: it holds no literal and no alias, but it is unambiguously a
+    local binding, so falling through to a same-named module constant would
+    resolve a name to text it can never hold. What the caller actually passes
+    is out of scope by the module docstring's interprocedural disclaimer.
     A name "reaches" execute() directly, transitively through an f-string
     interpolation inside another reaching literal (docstring point 1), or
     transitively through a chain of plain-name aliases of any length
@@ -794,7 +810,9 @@ def _resolve_worklist(
         if name in visited:
             continue
         visited.add(name)
-        is_local = name in local_literals or name in local_aliases
+        is_local = (
+            name in local_literals or name in local_aliases or name in local_parameters
+        )
         literal_entries = (
             local_literals.get(name, [])
             if is_local
@@ -922,6 +940,18 @@ def _tables_in_text(text: str) -> list[tuple[str, str]]:
             for literal in statement.find_all(exp.Literal):
                 if not literal.is_string:
                     continue
+                # A string sitting directly in a projection is a selected
+                # VALUE, not a table target — `SELECT 'core.fct_transactions'`
+                # returns that text, it does not read that table. This
+                # fallback exists for a table name passed as a function
+                # ARGUMENT (`PRAGMA table_info('core.foo')`, parent
+                # `exp.Anonymous`); a projection literal is the one position
+                # where a schema-shaped string is data by construction.
+                # Stated as a position rule rather than a statement-form
+                # allowlist, for the round-4 reason: an allowlist of forms
+                # goes stale the moment a form is added.
+                if isinstance(literal.parent, exp.Select):
+                    continue
                 statement_found.extend(
                     _fallback_regex_tables(
                         literal.this, type(statement).__name__.upper()
@@ -984,6 +1014,7 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
                 local_table_arg_seeds,
                 local_table_arg_scanned,
             ) = _collect_scope(_direct_scope_nodes(node))
+            local_parameters = _parameter_names(node)
             all_scanned.extend(local_scanned)
             all_scanned.extend(
                 _resolve_worklist(
@@ -992,6 +1023,7 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
                     local_aliases,
                     module_literals,
                     module_aliases,
+                    local_parameters,
                 )
             )
             all_table_arg_scanned.extend(local_table_arg_scanned)
@@ -1002,6 +1034,7 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
                     local_aliases,
                     module_literals,
                     module_aliases,
+                    local_parameters,
                 )
             )
 
@@ -1629,3 +1662,61 @@ def test_bare_fragment_fallback_does_not_fire_when_real_sql_parses(
         "    db.execute(query)\n"
     )
     assert _scan_source(tmp_path, source) == [(2, "UPDATE", "app.merchants")]
+
+
+def test_selected_string_value_is_not_reported_as_a_table(tmp_path: Path) -> None:
+    """A schema-shaped string in a projection is data, not a table target.
+
+    `SELECT 'core.fct_transactions'` returns that text; it does not read that
+    table. The literal fallback exists for a table name passed as a function
+    ARGUMENT (`PRAGMA table_info(...)`), and with no real table in the
+    statement the structural walk is empty, so without a position rule the
+    fallback would report a legitimate query and force a misleading allowlist
+    entry onto it.
+    """
+    source = "db.execute(\"SELECT 'core.fct_transactions'\")\n"
+    assert _scan_source(tmp_path, source) == []
+
+
+def test_pragma_literal_still_reported_after_the_projection_carve_out(
+    tmp_path: Path,
+) -> None:
+    """The projection carve-out must not disarm the case the fallback exists for.
+
+    Paired with the test above: one asserts the fallback stays silent on a
+    projection literal, this one asserts it still fires on a function-argument
+    literal. Narrowing by position is only safe if both halves hold.
+    """
+    source = "db.execute(\"PRAGMA table_info('core.fct_transactions')\")\n"
+    assert _scan_source(tmp_path, source) == [(1, "PRAGMA", "core.fct_transactions")]
+
+
+def test_parameter_shadows_a_same_named_module_constant(tmp_path: Path) -> None:
+    """A parameter is a local binding and must not resolve to a module literal.
+
+    `query = "SELECT * FROM core.foo"` at module scope, then
+    `def f(db, query): db.execute(query)` — the parameter holds whatever the
+    caller passed, never the module constant. Resolving it to that constant
+    reports a table the function may never touch, failing CI on correct code.
+    A parameter carries no literal and no alias, so the existing
+    "local binding shadows the module scope" rule did not cover it even
+    though it is the clearest local binding there is.
+    """
+    source = (
+        'query = "SELECT * FROM core.foo"\n\ndef f(db, query):\n    db.execute(query)\n'
+    )
+    assert _scan_source(tmp_path, source) == []
+
+
+def test_module_constant_still_resolves_when_no_parameter_shadows_it(
+    tmp_path: Path,
+) -> None:
+    """The shadowing carve-out must not disarm ordinary module-scope fallback.
+
+    Same module constant, but the function takes no same-named parameter, so
+    the name still resolves through to the module literal and is reported.
+    Without this pairing, the test above would pass just as well if parameter
+    handling had silently disabled module fallback altogether.
+    """
+    source = 'query = "SELECT * FROM core.foo"\n\ndef f(db):\n    db.execute(query)\n'
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
