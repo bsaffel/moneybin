@@ -297,7 +297,7 @@ Using profile: demo
 💡 Run accounts(include_closed=True) to inspect closed or excluded accounts
 ```
 
-`reports explain HANDLE` runs nothing. It prints the report's description, every output column with its privacy class and where it comes from, the tables it reads, and the SQL in bound and template form:
+`reports explain HANDLE` runs nothing. It prints the report's description, every output column with its privacy class and where it comes from, the tables it reads, and, for a report that is a `SELECT`, the SQL in bound and template form. `core:networth` and `core:networth_history` are executed by a service rather than a query, so for those two it prints the lineage and a `service_backed` line where the SQL would be:
 
 ```console
 $ uv run moneybin reports explain core:spending
@@ -379,7 +379,7 @@ $ uv run moneybin reports run core:recurring --param status=all --limit 2 --outp
 }
 ```
 
-`has_more` says the `--limit` cut the result, and while it is true `total_count` is a lower bound rather than the total: execution fetches one row past the cap and reports that, so the `3` above means at least three — the uncapped `--status all` run earlier on this page shows nine — and the exact count means running the report again without a cap. Every column carries a privacy class — what it reveals: a merchant, an amount, an account id — that decides what is masked when the value leaves the machine through MCP or an export; `sensitivity` is the highest class among the returned columns, and the [MCP server guide](mcp-server.md) says what the server does with it. `display_currency` names the currency the amounts are in, and a converted read adds `applied_rates` and, when a row could not be priced, `degraded_reason`. The `💡` lines become `actions`. The envelope's full contract is in the [CLI reference](cli-reference.md#output-envelopes).
+`has_more` says the `--limit` cut the result, and while it is true `total_count` is a lower bound rather than the total: execution fetches one row past the cap and reports that, so the `3` above means at least three — the uncapped `--status all` run earlier on this page shows nine — and the exact count means a `--limit` above it (`reports run` caps at 1,000,000 rows even with no flag) or a `COUNT(*)` through `moneybin sql query`. Every column carries a privacy class — what it reveals: a merchant, an amount, an account id — that decides what is masked when the value leaves the machine through MCP or an export; `sensitivity` is the highest class among the returned columns, and the [MCP server guide](mcp-server.md) says what the server does with it. `display_currency` names the currency the amounts are in, and a converted read adds `applied_rates` and, when a row could not be priced, `degraded_reason`. The `💡` lines become `actions`. The envelope's full contract is in the [CLI reference](cli-reference.md#output-envelopes).
 
 ## Save your own report
 

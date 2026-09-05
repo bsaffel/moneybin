@@ -39,7 +39,7 @@ Getting data in and learning the command surface. Allow 30–60 minutes includin
 Working with data that is already loaded — categorizing it, understanding the pipeline that produced it, querying it directly.
 
 - **[Categorization](guides/categorization.md)** — Rule engine, merchant normalization, bulk edits, auto-rule learning, source precedence, and [carrying curated categories across from another tool](guides/categorization.md#migrating-curated-categories).
-- **[Reports](guides/reports.md)** — The eight built-in reports with their real output, `--wide` and JSON, saving your own SQL as a report, and reading everything in one currency.
+- **[Reports](guides/reports.md)** — The eight built-in reports with their real output, `--wide` and JSON, saving your own SQL as a report, and which reports `--display-currency` can price into one currency.
 - **[Data pipeline](guides/data-pipeline.md)** — How files become canonical tables: the raw / prep / core / app / reports layers, and where consumers should read from.
 - **[Direct SQL access](guides/sql-access.md)** — Open the encrypted DuckDB file from the DuckDB CLI, a UI, or your own scripts.
 - **[Export](guides/cli-reference.md#export)** — Publish the 13-table canonical bundle as CSV, Parquet, or XLSX to a local file or a Google Sheet.

@@ -207,7 +207,7 @@ Using profile: personal
 Three ways to raise coverage, in the order most people use them:
 
 1. **Rules.** `transactions categorize rules create` matches description text to a category and applies on the next refresh; a rule outranks every automated source.
-2. **An assistant proposes, you commit.** Through MCP, `transactions_categorize_assist` hands the model the merchant text of uncategorized rows — description and memo in full, with embedded account numbers masked, and no amounts, dates, or account ids — and `transactions_categorize_commit` writes what you approve.
+2. **An assistant proposes, you commit.** Through MCP, `transactions_categorize_assist` hands the model the merchant text of uncategorized rows and nothing else — no amounts, dates, or account ids — after a scrub that drops emails, phone-shaped numbers, dates, `#`-prefixed and starred tokens, city and state suffixes, the recipient after a P2P `TO` or `FROM`, standalone runs of three to five digits, and a trailing reference number. A run of six or more digits in the middle of a description reaches the model as written unless it happens to be phone-shaped; the [what the AI provider sees](what-the-ai-sees.md#not-masked-stated-plainly) guide is the full statement. `transactions_categorize_commit` writes what you approve.
 3. **Auto-rule learning.** Your own edits become proposed rules; accept them and the next import categorizes itself.
 
 The [categorization guide](categorization.md) has the precedence ladder, the bulk-commit hazard, and the migration path for categories curated in another tool.
