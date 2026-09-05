@@ -518,8 +518,9 @@ semantic homes are fixed.
 
 ### `app.investment_match_decisions`
 
-One audited Proposal decision with status `pending`, `accepted`, `rejected`,
-`stale`, or `reversed`. It stores the Proposal identity, algorithm version,
+One durable Proposal lifecycle row with status `pending`, `accepted`, `rejected`,
+`stale`, or `reversed`. Human decision transitions are audited. The row stores
+the Proposal identity, algorithm version,
 source-event keys, exact observation versions, normalized fingerprint,
 candidate-graph fingerprint, confidence band, evidence summary, timestamps, and
 actor. The normalized fingerprint is the relationship fingerprint defined
@@ -541,6 +542,14 @@ unchanged rejected relationship fingerprint remains excluded even when an
 unrelated graph alternative changes. A changed member identity, exact revision,
 canonical dependency, normalized evidence, or algorithm version produces a new
 relationship fingerprint that may be proposed again.
+
+Slice 2 creates this table and its repository and persists planner-owned
+`pending` rows plus `stale` transitions, so bounded planning and inspection
+survive the process that produced them. Those writes are not human decisions
+and change no Golden membership. Slice 3 adds audited rejection and its negative
+assignment constraint plus decision-request validation. Slice 4 enables the
+audited `accepted` and `reversed` transitions only with their atomic Golden
+membership changes.
 
 `competing` is not a sixth status. A competing Proposal is stored as `pending`.
 The planner derives `is_competing` from the same constrained connected-component
@@ -1355,12 +1364,13 @@ accepted contract and must be reconciled to it before delivery begins.
    before any later slice relies on that guard.
 2. **Review-only planner.** Add whole-event assignment, versioned fingerprints,
    canonical-identity dependency tuples, competing detection, Proposal-issued
-   conflict and choice ids, and pending Proposals without changing the core
-   ledger.
-3. **Decision workflow.** Persist pending, rejected, and stale lifecycle state
-   plus rejection suppression; add identical CLI/MCP field-choice request
-   validation, audit integration, and metrics. Acceptance remains unavailable
-   until slice 4 can apply the whole transition atomically.
+   conflict and choice ids, and the dedicated repository that persists
+   planner-owned pending Proposals and stale transitions without changing the
+   Core ledger or recording a human decision.
+3. **Decision workflow.** Extend that lifecycle with audited rejection and its
+   suppression constraint; add identical CLI/MCP field-choice request
+   validation, decision audit integration, and metrics. Acceptance remains
+   unavailable until slice 4 can apply the whole transition atomically.
 4. **Golden materialization.** Add stable event and leg identities, Source-event
    and opening-lot-reconstruction membership, the two derived Core id
    resolvers, field resolution, exact provenance, `projection_changed_at`, and
