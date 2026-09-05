@@ -75,7 +75,7 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 
 Eight registered report routes back both the CLI and MCP surfaces, and you can
 save your own beside them (below). Six use SQL runners over curated `reports.*`
-views; the two net-worth routes are service-backed and share `reports.net_worth`. Reports accept date-range filters (`--from-month` / `--to-month` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
+views; the two net-worth routes are service-backed and share `reports.net_worth`. Reports accept date-range filters (`--from-month` / `--to-month` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [Reports guide](guides/reports.md) · [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
 
 The six SQL-runner routes use declarative `@report` definitions; the two service-backed net-worth routes keep their specialized execution path. The shared catalog derives parameters and masking without adding MCP tool slots. See [Extensibility](#extensibility).
 

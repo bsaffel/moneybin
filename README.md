@@ -144,7 +144,9 @@ uv run moneybin reports spending
 ```
 
 Imports are idempotent — re-import an overlapping month and source IDs plus
-content matching keep the count right. Coming from Tiller, Mint, or YNAB, the
+content matching keep the count right. The [getting-started
+guide](docs/guides/getting-started.md) walks this path with a transcript at
+every step. Coming from Tiller, Mint, or YNAB, the
 [data import guide](docs/guides/data-import.md) has a migration path per tool,
 and documents how to revert a batch.
 
