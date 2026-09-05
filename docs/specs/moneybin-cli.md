@@ -206,7 +206,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |     [--confirm <id>]                  Non-interactive: confirm one review item by ID
 |     [--reject <id>]                   Non-interactive: reject one review item by ID
 |     [--field-choice <conflict-id>=<choice-id>]  Repeatable; investment-matches confirm only
-|     [--confirm-all]                   Non-interactive: confirm all eligible items in scope
+|     [--confirm-all]                   Non-interactive: confirm all items in an eligible --type scope
 |     [--limit N]                       Cap items per session (applies to --interactive)
 |     [--output text|json] [-q]
 |   Aggregates matches_pending + investment_matches_pending + categorize_pending +
@@ -369,7 +369,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     [--confirm <id>]                  Non-interactive: confirm one review item by ID
 |   |     [--reject <id>]                   Non-interactive: reject one review item by ID
 |   |     [--field-choice <conflict-id>=<choice-id>]  Repeatable; investment-matches confirm only
-|   |     [--confirm-all]                   Non-interactive: confirm all items in scope
+|   |     [--confirm-all]                   Non-interactive: confirm all items in an eligible --type scope
 |   |     [--limit N]                       Cap items per session
 |   |   Note: --confirm/--reject are defined for --type matches and investment-matches;
 |   |         --confirm-all with investment-matches or all exits 2, as does --field-choice

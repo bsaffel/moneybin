@@ -417,6 +417,20 @@ must satisfy all of these invariants:
   row order; and
 - repeated identical events are solved globally, not greedily.
 
+A feasible global assignment is a set of eligible Proposals, after applying
+current rejected-relationship constraints, whose Source-event sets are pairwise
+disjoint; every unselected Source event remains standalone. A Proposal's
+confidence band is the weakest pairwise relationship band among all of its
+member pairs. The planner lexicographically maximizes
+`(assigned_source_event_count, non_fuzzy_assigned_event_count,
+native_assigned_event_count)`, where each assigned Source event contributes once
+to the band of its selected Proposal and `non_fuzzy` means Native or exact. This
+chooses coverage first, then minimizes Source events assigned through constrained
+fuzzy evidence, then prefers Native over exact evidence. It applies no
+group-count, identifier, row-order, or other structural tie-breaker. Distinct
+feasible assignments attaining that lexicographically maximal vector are
+equally optimal and therefore competing.
+
 An unambiguous two-by-two set of same-day trades may produce two Proposals when
 the total assignment is unique. A one-to-two or otherwise equally valid
 assignment remains competing and cannot be accepted until the ambiguity is
@@ -523,11 +537,11 @@ relationship fingerprint that may be proposed again.
 
 `competing` is not a sixth status. A competing Proposal is stored as `pending`.
 The planner derives `is_competing` from the same constrained connected-component
-solve used for assignment: it is true when more than one equally optimal
-feasible global assignment gives any Source event in that Proposal a different
-relationship. The pending read and planner metric use that one derivation; a
-candidate-graph change stales the Proposal before a later solve can change the
-classification.
+solve used for assignment: it is true when more than one feasible global
+assignment attains the lexicographically maximal objective vector and gives any
+Source event in that Proposal a different relationship. The pending read and
+planner metric use that one derivation; a candidate-graph change stales the
+Proposal before a later solve can change the classification.
 
 ### `app.investment_event_members`
 
@@ -1066,7 +1080,7 @@ fixtures and expected Golden-ledger outcomes.
 | Reinvestment | Manual and Plaid two-leg shapes match only when the Plaid comparison adapter finds one normalized `reinvest` acquisition and an income leg using the explicit `dividend` to `dividend`, `interest` to `interest`, or `capital_gain` to `capital_gain_distribution` compatibility mapping within 3 calendar days, with one complete unambiguous cash/fee-reconciled pairing; a 4-day Plaid-internal pair remains singleton, while already-constructed manual and Plaid Source events may cross-source match at 4 or 5 days but not 6; both legs move atomically, and a missing or multiply paired leg is not accepted |
 | Transfers | Same-direction one-leg manual and Plaid `transfer_in` or `transfer_out` events match only when Account, Security, effective currency, quantity, and the 7-day candidate window agree; when manual supplies `original_acquisition_date` or basis and Plaid has `NULL`, the present manual value and its exact provenance project instead of being erased; opposing legs are never inferred as an internal-transfer pair, and merger, spin-off, or trade legs remain ineligible for partial matching |
 | Source diversity | A manual-to-Plaid or other distinct-origin Proposal may be eligible; two manual/user events or two events from one Plaid connection never consolidate through this review matcher, while multiple legs already validated inside one Source event remain atomic |
-| Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing pending Proposals under the canonical connected-component derivation; rejecting exact relationship A-C in an A-B/A-C competition excludes A-C and every larger Proposal whose induced A-C relationship fingerprint is unchanged, including A-B-C, so replanning may make A-B unique, while rejecting A-B-C does not reject any internal pair; the unchanged rejection stays effective if an unrelated alternative changes and changed revisions, dependencies, evidence, or algorithm version may produce a reviewable relationship; undoing the rejection restores the assignment space and stales affected pending Proposals; three otherwise-identical events whose endpoint dates exceed the applicable band cannot form one N-way Proposal through a chain of individually eligible neighbor edges; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
+| Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing pending Proposals under the canonical connected-component derivation; coverage wins before confidence, so a feasible three-event fuzzy Proposal outranks a Native pair plus one standalone, while equal-coverage quality prefers two exact pairs over one Native and one fuzzy pair; distinct assignments attaining the same maximal objective vector remain competing without an identifier or row-order tie-break, while equal lower-scoring vectors beneath one unique maximum do not create competition; an N-way Proposal takes its weakest pairwise band; rejecting exact relationship A-C in an A-B/A-C competition excludes A-C and every larger Proposal whose induced A-C relationship fingerprint is unchanged, including A-B-C, so replanning may make A-B unique, while rejecting A-B-C does not reject any internal pair; the unchanged rejection stays effective if an unrelated alternative changes and changed revisions, dependencies, evidence, or algorithm version may produce a reviewable relationship; undoing the rejection restores the assignment space and stales affected pending Proposals; three otherwise-identical events whose endpoint dates exceed the applicable band cannot form one N-way Proposal through a chain of individually eligible neighbor edges; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; when a correction splits a Source event held by a stale accepted Match, its reconstructed current events may support replacement planning but remain reserved from standalone projection, so old and new revisions never project together; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; after evidence or identity changes, replacement or reversal atomically releases reservations and installs current successor membership or blocks rather than restoring obsolete rows; reversal remains available when event shape or semantic correspondence changed by minting new standalone ids where required, leaving the retired combined Match id terminal rather than ambiguously forwarding it; manual correction is unavailable in M1J.7 |
 | Revisions | Identical aggregator re-delivery reuses a version and per-job receipt while preserving its first-ingestion sequence; A→B→A content reuses the immutable A revision but a new receipt makes A current while retaining B in history, including when two jobs share an extraction timestamp; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
@@ -1104,9 +1118,13 @@ fixtures and expected Golden-ledger outcomes.
   Proposal.
 - Pure global-assignment tests, including repeated-event graphs with
   non-arbitrary distinguishing evidence, genuinely indistinguishable two-to-two
-  and one-to-two graphs, an N-way chain whose endpoint pair is outside the
-  applicable threshold, and an equally plausible event arriving after Proposal
-  planning. Rejection tests prove the exact rejected relationship is removed
+  and one-to-two graphs, coverage-first cardinality against a stronger smaller
+  assignment, two exact pairs against an equal-coverage Native-plus-fuzzy
+  assignment, equal maximal objective vectors, equal lower-scoring vectors under
+  one unique maximum, an N-way Proposal whose weakest pair sets its band, an
+  N-way chain whose endpoint pair is outside the applicable threshold, and an
+  equally plausible event arriving after Proposal planning. Rejection tests
+  prove the exact rejected relationship is removed
   before solving, every Proposal containing that complete member set with the
   same induced relationship fingerprint is also removed, an N-way rejection
   does not decompose into pairwise
