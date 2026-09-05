@@ -626,138 +626,6 @@ def _parameter_default_bindings(
     return literals, aliases
 
 
-def _target_names(target: ast.expr) -> set[str]:
-    """Every name a binding target binds, unwrapping tuple/list/starred forms."""
-    if isinstance(target, ast.Name):
-        return {target.id}
-    if isinstance(target, ast.Starred):
-        return _target_names(target.value)
-    if isinstance(target, (ast.Tuple, ast.List)):
-        return {name for element in target.elts for name in _target_names(element)}
-    # ast.Attribute / ast.Subscript bind no bare local name.
-    return set()
-
-
-def _locally_bound_names(
-    nodes: list[ast.AST], node: ast.FunctionDef | ast.AsyncFunctionDef
-) -> frozenset[str]:
-    """Every name this scope binds, by ANY means — not just trackable ones.
-
-    Separate from the literal/alias maps on purpose. Those answer "what text
-    does this name hold"; this answers "is this name this scope's at all".
-    Conflating them is what made a local name bound to something untrackable
-    — a call result, a loop variable, a `with` or `except` target, a
-    destructured element, an import alias — fall through to a same-named
-    module literal and get reported with the MODULE's table. "We cannot see
-    what it holds" is not "it holds the module constant".
-
-    The CONSCIOUSLY EXCLUDED list in `_collect_scope` is still right about
-    every one of these: none carries a literal worth extracting. Excluding
-    them from extraction and excluding them from *shadowing* are different
-    decisions, and only the first was ever intended.
-
-    `global`/`nonlocal` names are the one place this needs flow sensitivity,
-    because they are the one place an assignment does NOT make the name the
-    scope's own. Three cases, and only a definite overwrite may shadow:
-
-      - bare `global query` — binds nothing; the module literal is what
-        executes, so the name must fall through.
-      - `global query` then `query = build()` at function-body level — the
-        module binding is definitely replaced before the sink, so shadowing
-        is right.
-      - `global query` then `if cond: query = build()` — the module literal
-        still executes whenever `cond` is false. Shadowing here is a SILENT
-        false negative, and this scanner is flow-insensitive everywhere else
-        (see `_record_literal_binding` on stale bindings), so it takes the
-        same trade it takes there: keep the visible false positive.
-
-    A local name needs none of this. Any assignment makes it local for the
-    whole function body, so a conditionally-assigned local simply cannot hold
-    a module literal — `UnboundLocalError` is the alternative, not fallback.
-    """
-    bound: set[str] = set(_parameter_names(node))
-    declared_outer: set[str] = set()
-    # Assignment targets at function-body level — not nested in an `if`,
-    # loop or `try` — are the ones that definitely run before any sink.
-    definitely_rebound: set[str] = set()
-    for body_node in node.body:
-        if isinstance(body_node, ast.Assign):
-            for target in body_node.targets:
-                definitely_rebound |= _target_names(target)
-        elif isinstance(body_node, (ast.AnnAssign, ast.AugAssign)):
-            definitely_rebound |= _target_names(body_node.target)
-        elif isinstance(body_node, (ast.With, ast.AsyncWith)):
-            # `with cm as query:` at body level rebinds before any later
-            # sink just as an assignment does. A `for` target does NOT
-            # qualify — an empty iterable leaves the outer binding intact.
-            for item in body_node.items:
-                if item.optional_vars is not None:
-                    definitely_rebound |= _target_names(item.optional_vars)
-    for scope_node in nodes:
-        if isinstance(scope_node, (ast.Global, ast.Nonlocal)):
-            declared_outer.update(scope_node.names)
-        elif isinstance(scope_node, ast.Assign):
-            for target in scope_node.targets:
-                bound |= _target_names(target)
-        elif isinstance(scope_node, (ast.AnnAssign, ast.AugAssign)):
-            bound |= _target_names(scope_node.target)
-        elif isinstance(scope_node, ast.NamedExpr):
-            bound |= _target_names(scope_node.target)
-        elif isinstance(scope_node, (ast.For, ast.AsyncFor)):
-            bound |= _target_names(scope_node.target)
-        elif isinstance(scope_node, (ast.With, ast.AsyncWith)):
-            for item in scope_node.items:
-                if item.optional_vars is not None:
-                    bound |= _target_names(item.optional_vars)
-        elif isinstance(scope_node, ast.Match):
-            # Structural pattern matching binds through the PATTERN, not a
-            # target expression — `case {"q": query}`, `case str() as query`,
-            # `case [*rest]`. Every capture is a `MatchAs`/`MatchStar` `name`
-            # or a `MatchMapping` `rest`, at any nesting depth, so walk the
-            # pattern rather than enumerate its shapes.
-            for match_case in scope_node.cases:
-                for pattern_node in ast.walk(match_case.pattern):
-                    if isinstance(pattern_node, (ast.MatchAs, ast.MatchStar)):
-                        if pattern_node.name is not None:
-                            bound.add(pattern_node.name)
-                    elif isinstance(pattern_node, ast.MatchMapping):
-                        if pattern_node.rest is not None:
-                            bound.add(pattern_node.rest)
-        elif isinstance(scope_node, ast.ExceptHandler):
-            if scope_node.name is not None:
-                bound.add(scope_node.name)
-        elif isinstance(
-            scope_node,
-            (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp),
-        ):
-            # A comprehension has its own scope, so its target is not bound in
-            # the enclosing function — but a sink INSIDE the comprehension
-            # (`[db.execute(q) for q in rows]`) sees it, and this scanner does
-            # not model comprehension scopes separately. Recording the target
-            # here is what stops such a name resolving to a same-named module
-            # literal it can never hold.
-            for generator in scope_node.generators:
-                bound |= _target_names(generator.target)
-        elif isinstance(scope_node, (ast.Import, ast.ImportFrom)):
-            for alias in scope_node.names:
-                bound.add(alias.asname or alias.name.split(".")[0])
-        elif isinstance(
-            scope_node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-        ):
-            bound.add(scope_node.name)
-    return frozenset(bound - (declared_outer - definitely_rebound))
-
-
-def _parameter_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
-    """Every name this function binds as a parameter, in all five arg forms."""
-    args = node.args
-    names = {arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
-    for optional in (args.vararg, args.kwarg):
-        if optional is not None:
-            names.add(optional.arg)
-    return frozenset(names)
-
-
 def _collect_scope(
     nodes: list[ast.AST],
 ) -> tuple[
@@ -834,14 +702,12 @@ def _collect_scope(
         docstring point 1). NOT their defaults: a default IS the runtime
         value whenever the argument is omitted, and both it and the name
         it binds sit in the same FunctionDef, so
-        `_parameter_default_bindings` tracks a literal default and a
-        module-constant-aliased one.
+        `_parameter_default_bindings` tracks a literal default.
 
-        Note the difference between this list and shadowing. Every entry
-        here is excluded from LITERAL EXTRACTION, which is right — none
-        carries text worth reading. None is excluded from binding the
-        name: `_locally_bound_names` records all of them so a local name
-        cannot resolve to a same-named module literal.
+        Shadowing is no longer a question this file answers. Resolution is
+        same-scope only (see `_resolve_worklist`), so a name bound by any
+        of these means simply resolves to nothing — there is no other
+        scope for it to fall through to.
       - ast.Global / ast.Nonlocal: declarations with no value to record.
       - Tuple/list-destructured Assign (`a, b = "core.x", "core.y"`):
         still an ast.Assign node (no separate node type), but
@@ -963,28 +829,33 @@ def _collect_scope(
 
 def _resolve_worklist(
     seed_names: set[str],
-    local_literals: _ScopeLiterals,
-    local_aliases: _ScopeAliases,
-    fallback_literals: _ScopeLiterals,
-    fallback_aliases: _ScopeAliases,
-    local_bound_names: frozenset[str] = frozenset(),
+    scope_literals: _ScopeLiterals,
+    scope_aliases: _ScopeAliases,
 ) -> list[tuple[int, str]]:
     """Fixed-point worklist: resolve seed names to their literal text.
 
-    Checks `local_literals`/`local_aliases` (this scope) first; a name with
-    NEITHER a local literal NOR a local alias falls back to
-    `fallback_literals`/`fallback_aliases` (the module scope) — module
-    docstring point 3; this is one "local binding shadows the module scope"
-    decision covering both dicts, not two independent ones, so a name bound
-    locally only as an alias still doesn't see a same-named module literal.
-    `local_bound_names` is that same decision for every name this scope binds
-    by a means that carries no trackable text — a parameter, a call result, a
-    loop or `with` or `except` target, a destructured element, an import
-    alias. Each is unambiguously a local binding, so falling through to a
-    same-named module constant resolves the name to text it can never hold
-    and reports the MODULE's table. "We cannot see what it holds" is not
-    "it holds the module constant". What such a name actually receives is out
-    of scope by the module docstring's interprocedural disclaimer.
+    **Same scope only. A name this scope does not bind to a visible literal
+    is opaque, and an opaque name is never reported.**
+
+    That is a deliberate boundary, not an oversight, and it replaced a
+    module-fallback model that tried to resolve a function-local name against
+    a same-named module constant. Deciding when that fallback was legitimate
+    turned out to require real Python scope and flow analysis — which binder
+    forms make a name local (parameters, loop and `with` and `except`
+    targets, destructuring, imports, `match` captures), whether a `global`
+    rebinding is definite, whether it precedes the sink, and whether `lambda`
+    and class bodies are scopes. Six consecutive review rounds found defects
+    in that machinery and none of them ever found a hardcoded table in the
+    actual codebase; the whole-tree scan has returned the same three
+    allowlisted results throughout.
+
+    The cost is named rather than hidden: a hardcoded query held in a
+    module-level constant and executed inside a function is no longer
+    reported. That is a real gap, and it fails SILENTLY, which this file
+    otherwise refuses. It is accepted here because the alternative — a
+    half-accurate scope model — fails silently too, in ways nobody can
+    enumerate, while also failing loudly on correct code.
+
     A name "reaches" execute() directly, transitively through an f-string
     interpolation inside another reaching literal (docstring point 1), or
     transitively through a chain of plain-name aliases of any length
@@ -998,21 +869,10 @@ def _resolve_worklist(
         if name in visited:
             continue
         visited.add(name)
-        is_local = (
-            name in local_literals or name in local_aliases or name in local_bound_names
-        )
-        literal_entries = (
-            local_literals.get(name, [])
-            if is_local
-            else fallback_literals.get(name, [])
-        )
-        alias_entries = (
-            local_aliases.get(name, []) if is_local else fallback_aliases.get(name, [])
-        )
-        for lineno, text, embedded in literal_entries:
+        for lineno, text, embedded in scope_literals.get(name, []):
             scanned.append((lineno, text))
             worklist.extend(embedded - visited)
-        worklist.extend(set(alias_entries) - visited)
+        worklist.extend(set(scope_aliases.get(name, [])) - visited)
     return scanned
 
 
@@ -1199,14 +1059,10 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
         all_table_arg_scanned,
     ) = _collect_scope(_direct_scope_nodes(tree))
     all_scanned = list(all_scanned)
-    all_scanned.extend(
-        _resolve_worklist(module_seeds, module_literals, module_aliases, {}, {})
-    )
+    all_scanned.extend(_resolve_worklist(module_seeds, module_literals, module_aliases))
     all_table_arg_scanned = list(all_table_arg_scanned)
     all_table_arg_scanned.extend(
-        _resolve_worklist(
-            module_table_arg_seeds, module_literals, module_aliases, {}, {}
-        )
+        _resolve_worklist(module_table_arg_seeds, module_literals, module_aliases)
     )
 
     for node in ast.walk(tree):
@@ -1219,7 +1075,6 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
                 local_table_arg_seeds,
                 local_table_arg_scanned,
             ) = _collect_scope(_direct_scope_nodes(node))
-            local_bound_names = _locally_bound_names(_direct_scope_nodes(node), node)
             default_literals, default_aliases = _parameter_default_bindings(node)
             for name, entries in default_literals.items():
                 local_literals.setdefault(name, []).extend(entries)
@@ -1227,25 +1082,11 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
                 local_aliases.setdefault(name, []).extend(alias_targets)
             all_scanned.extend(local_scanned)
             all_scanned.extend(
-                _resolve_worklist(
-                    local_seeds,
-                    local_literals,
-                    local_aliases,
-                    module_literals,
-                    module_aliases,
-                    local_bound_names,
-                )
+                _resolve_worklist(local_seeds, local_literals, local_aliases)
             )
             all_table_arg_scanned.extend(local_table_arg_scanned)
             all_table_arg_scanned.extend(
-                _resolve_worklist(
-                    local_table_arg_seeds,
-                    local_literals,
-                    local_aliases,
-                    module_literals,
-                    module_aliases,
-                    local_bound_names,
-                )
+                _resolve_worklist(local_table_arg_seeds, local_literals, local_aliases)
             )
 
     violations: list[tuple[int, str, str]] = []
@@ -1591,22 +1432,6 @@ def test_sql_method_is_a_recognized_sink(tmp_path: Path) -> None:
     assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
 
 
-def test_cte_splice_transitively_reaches_execute(tmp_path: Path) -> None:
-    """A module-level literal spliced via f-string into a method's query is traced.
-
-    Mirrors ``_NEWEST_HOLDINGS_SNAPSHOT_CTE`` in ``doctor_service.py``
-    (module docstring point 1): a module-level fragment assigned once, then
-    interpolated into a query built inside a function.
-    """
-    source = (
-        '_CTE = "SELECT * FROM core.fct_transactions"\n'
-        "\n\n"
-        "def f(db):\n"
-        '    db.execute(f"WITH x AS ({_CTE}) SELECT 1")\n'
-    )
-    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
-
-
 def test_local_binding_reaches_execute_within_its_own_function(tmp_path: Path) -> None:
     """A literal assigned and used within one function is caught (positive control)."""
     source = (
@@ -1918,20 +1743,6 @@ def test_parameter_shadows_a_same_named_module_constant(tmp_path: Path) -> None:
     assert _scan_source(tmp_path, source) == []
 
 
-def test_module_constant_still_resolves_when_no_parameter_shadows_it(
-    tmp_path: Path,
-) -> None:
-    """The shadowing carve-out must not disarm ordinary module-scope fallback.
-
-    Same module constant, but the function takes no same-named parameter, so
-    the name still resolves through to the module literal and is reported.
-    Without this pairing, the test above would pass just as well if parameter
-    handling had silently disabled module fallback altogether.
-    """
-    source = 'query = "SELECT * FROM core.foo"\n\ndef f(db):\n    db.execute(query)\n'
-    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
-
-
 def test_parameter_literal_default_reaches_execute(tmp_path: Path) -> None:
     """A hardcoded query in a parameter's default is the runtime value.
 
@@ -1963,21 +1774,6 @@ def test_keyword_only_parameter_literal_default_reaches_execute(
     assert _scan_source(tmp_path, source) == [(1, "FROM", "app.merchants")]
 
 
-def test_parameter_without_a_default_still_shadows_a_module_constant(
-    tmp_path: Path,
-) -> None:
-    """Binding defaults must not undo the round-8 shadowing rule.
-
-    A parameter with no default still holds whatever the caller passed, so it
-    must not resolve to a same-named module literal. Paired with the two
-    tests above: defaults are scanned, bare parameters stay opaque.
-    """
-    source = (
-        'query = "SELECT * FROM core.foo"\n\ndef f(db, query):\n    db.execute(query)\n'
-    )
-    assert _scan_source(tmp_path, source) == []
-
-
 def test_string_backed_target_beside_a_real_table_is_flagged(
     tmp_path: Path,
 ) -> None:
@@ -1997,26 +1793,6 @@ def test_string_backed_target_beside_a_real_table_is_flagged(
         (1, "FROM", "core.foo"),
         (1, "UNION", "app.bar"),
     ]
-
-
-def test_parameter_default_naming_a_module_constant_reaches_execute(
-    tmp_path: Path,
-) -> None:
-    """A default that names a module constant is the same fact one hop out.
-
-    `QUERY = "..."` then `def f(db, query=QUERY)` executes that constant on
-    every call omitting the argument. Recording only *literal* defaults left
-    this parameter looking unbound, and the shadowing rule then treated it as
-    opaque — so the constant it plainly names became unreachable, a strictly
-    worse outcome than before parameters were modelled at all.
-    """
-    source = (
-        'QUERY = "SELECT * FROM core.foo"\n'
-        "\n"
-        "def f(db, query=QUERY):\n"
-        "    db.execute(query)\n"
-    )
-    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
 
 
 def test_scalar_function_string_argument_is_not_reported_as_a_table(
@@ -2061,104 +1837,6 @@ def test_relation_naming_function_argument_is_still_reported(
     assert _scan_source(tmp_path, source) == [(1, "SELECT", "app.bar")]
 
 
-@pytest.mark.parametrize(
-    ("label", "binder"),
-    [
-        ("call_result", "    query = build()\n"),
-        ("for_target", "    for query in rows:\n        pass\n"),
-        ("with_target", "    with rows as query:\n        pass\n"),
-        ("destructured", "    query, _other = rows\n"),
-        (
-            "except_target",
-            "    try:\n        pass\n    except Exception as query:\n        pass\n",
-        ),
-        ("import_alias", "    import os as query\n"),
-    ],
-)
-def test_any_local_binding_shadows_a_same_named_module_literal(
-    tmp_path: Path, label: str, binder: str
-) -> None:
-    """A local name bound by ANY means must not resolve to a module literal.
-
-    Each of these binds `query` to something the scanner cannot read — a
-    call result, an iterable element, a context manager, a destructured
-    element, an exception, a module. None carries extractable text, and the
-    CONSCIOUSLY EXCLUDED list is right to skip them for literal extraction.
-    But skipping them for *shadowing* too meant the name fell through to the
-    module-level `query` and was reported with the MODULE's table, failing
-    CI on code that never touches it. "We cannot see what it holds" is not
-    "it holds the module constant".
-
-    Parametrized rather than written six times because the rule is one rule;
-    six near-identical tests would invite fixing one binder and calling it
-    done, which is precisely how the parameter case shipped alone.
-    """
-    source = (
-        'query = "SELECT * FROM core.foo"\n'  # noqa: S608  # fixture, never executed
-        "\n"
-        "def f(db, rows):\n"
-        f"{binder}"
-        "    db.execute(query)\n"
-    )
-    assert _scan_source(tmp_path, source) == [], label
-
-
-def test_module_literal_still_resolves_without_a_local_binding(
-    tmp_path: Path,
-) -> None:
-    """The inverse: no local binder, so the module literal is still reported.
-
-    Without this, the parametrized test above would pass just as well if
-    module fallback had been disabled outright.
-    """
-    source = 'query = "SELECT * FROM core.foo"\n\ndef f(db):\n    db.execute(query)\n'
-    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
-
-
-def test_global_declaration_does_not_shadow_the_module_literal(
-    tmp_path: Path,
-) -> None:
-    """`global` deliberately re-points at the module binding, so it must resolve.
-
-    The one case where falling through is correct: a `global` statement is an
-    explicit instruction that this name IS the module's. Treating every
-    `Global`/`Nonlocal` name as a local binder would have silently blinded
-    the guard to a real hardcoded query.
-    """
-    source = (
-        'query = "SELECT * FROM core.foo"\n'
-        "\n"
-        "def f(db):\n"
-        "    global query\n"
-        "    db.execute(query)\n"
-    )
-    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
-
-
-def test_global_rebinding_shadows_the_module_literal(tmp_path: Path) -> None:
-    """`global` plus an assignment rebinds the module name — the literal is gone.
-
-    `global query` then `query = build()` replaces the module-level value at
-    runtime, so `db.execute(query)` never runs the original literal and
-    reporting it is a false positive. Paired with
-    `test_global_declaration_does_not_shadow_the_module_literal`, where the
-    bare declaration DOES resolve because nothing rebinds it. The two
-    together are why `global` needs no special case: an earlier version
-    subtracted declared names and got this one wrong, and no test could red
-    on it because the bare-declaration case reaches the right answer by a
-    different route.
-    """
-    source = (
-        'query = "SELECT * FROM core.foo"\n'
-        "\n"
-        "def f(db):\n"
-        "    global query\n"
-        "    query = build()\n"
-        "    db.execute(query)\n"
-    )
-    assert _scan_source(tmp_path, source) == []
-
-
 def test_quoted_table_name_spliced_into_sql_is_flagged(tmp_path: Path) -> None:
     """Quoting is a property of every identifier, on this path too.
 
@@ -2178,159 +1856,61 @@ def test_quoted_table_name_spliced_into_sql_is_flagged(tmp_path: Path) -> None:
     ]
 
 
-def test_comprehension_target_does_not_resolve_to_a_module_literal(
-    tmp_path: Path,
-) -> None:
-    """A comprehension binds its own target, so a sink inside it must see that.
-
-    `[db.execute(query) for query in rows]` iterates `rows`; `query` never
-    holds the module-level literal. A comprehension has its own scope in
-    Python 3, so the name is not bound in the enclosing function — but this
-    scanner does not model comprehension scopes separately, and without
-    recording the target the name fell through to the module and reported a
-    table the code cannot touch.
-    """
-    source = (
-        'query = "SELECT * FROM core.foo"\n'
-        "\n"
-        "def f(db, rows):\n"
-        "    return [db.execute(query) for query in rows]\n"
-    )
-    assert _scan_source(tmp_path, source) == []
-
-
-def test_conditionally_rebound_global_still_reports_the_module_literal(
-    tmp_path: Path,
-) -> None:
-    """A `global` rebound only on one branch leaves the literal live.
-
-    `global query` then `if cond: query = build()` still executes the
-    module literal whenever `cond` is false. Treating any assignment as
-    shadowing made that a SILENT false negative — the failure direction this
-    file refuses everywhere else (see `_record_literal_binding` on stale
-    bindings). Only a definite, function-body-level overwrite may shadow a
-    globally declared name.
-    """
-    source = (
-        'query = "SELECT * FROM core.foo"\n'
-        "\n"
-        "def f(db, cond):\n"
-        "    global query\n"
-        "    if cond:\n"
-        "        query = build()\n"
-        "    db.execute(query)\n"
-    )
-    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
-
-
-def test_conditionally_assigned_local_does_not_report_the_module_literal(
-    tmp_path: Path,
-) -> None:
-    """The same shape without `global` is the opposite answer, and must stay so.
-
-    Any assignment makes a name local for the whole function body, so a
-    conditionally-assigned local cannot hold the module literal —
-    `UnboundLocalError` is the alternative, not module fallback. Paired with
-    the test above so the `global` carve-out cannot be widened to every
-    conditional assignment.
-    """
-    source = (
-        'query = "SELECT * FROM core.foo"\n'
-        "\n"
-        "def f(db, cond):\n"
-        "    if cond:\n"
-        "        query = build()\n"
-        "    db.execute(query)\n"
-    )
-    assert _scan_source(tmp_path, source) == []
-
-
 @pytest.mark.parametrize(
-    ("label", "pattern"),
+    ("label", "body"),
     [
-        ("mapping_capture", '        case {"q": query}:\n'),
-        ("as_capture", "        case str() as query:\n"),
-        ("star_capture", "        case [_, *query]:\n"),
+        ("plain_use", "    db.execute(QUERY)\n"),
+        ("via_alias", "    sql = QUERY\n    db.execute(sql)\n"),
+        ("via_fstring", '    db.execute(f"{QUERY} LIMIT 1")\n'),
+        ("via_default", "    pass\n"),
     ],
 )
-def test_match_capture_shadows_a_same_named_module_literal(
-    tmp_path: Path, label: str, pattern: str
+def test_module_constant_used_inside_a_function_is_deliberately_not_reported(
+    tmp_path: Path, label: str, body: str
 ) -> None:
-    """Structural pattern matching binds names, and those bindings are local.
+    """The accepted cost of same-scope-only resolution — recorded, not hidden.
 
-    `match` binds through the PATTERN rather than a target expression, so it
-    matched none of the enumerated binder shapes and every capture named
-    `query` resolved to the module literal instead. Found by auditing the
-    binder enumeration against the language rather than by waiting for the
-    shape to be reported — the same under-enumeration as the round-11
-    parameter case, one category further out.
+    Resolution does not cross scopes (see `_resolve_worklist`), so a
+    hardcoded query held in a module-level constant and executed inside a
+    function is NOT reported, by any of these routes. That is a real gap and
+    it fails silently, which this file otherwise refuses.
+
+    It replaced a module-fallback model that had to decide when a
+    function-local name legitimately referred to a same-named module
+    constant. Answering that needed real scope and flow analysis — which
+    binder forms make a name local, whether a `global` rebinding is definite
+    and whether it precedes the sink, whether `lambda` and class bodies are
+    scopes. Six consecutive review rounds found defects in that machinery,
+    and across every one of them the whole-tree scan returned the same three
+    allowlisted results: it never once found a hardcoded table in the real
+    codebase, while repeatedly reporting correct code.
+
+    This test exists so the tradeoff is a decision someone can find and
+    revisit, rather than a silence nobody knows is there. If module-level
+    constants become a real hardcoding route, the answer is a separate
+    mechanism aimed at that — not a return to same-name fallback.
     """
     source = (
-        'query = "SELECT * FROM core.foo"\n'  # noqa: S608  # fixture, never executed
+        'QUERY = "SELECT * FROM core.fct_transactions"\n'  # noqa: S608  # fixture
         "\n"
-        "def f(db, v):\n"
-        "    match v:\n"
-        f"{pattern}"
-        "            db.execute(query)\n"
+        "def f(db):\n"
+        f"{body}"
     )
     assert _scan_source(tmp_path, source) == [], label
 
 
-def test_match_without_a_capture_still_resolves_the_module_literal(
+def test_module_constant_used_at_module_scope_is_still_reported(
     tmp_path: Path,
 ) -> None:
-    """A `case` binding nothing must not suppress the module literal.
+    """Same-scope resolution still works — the boundary is scopes, not constants.
 
-    Control for the three above: walking a pattern for captures must find
-    none here, so the name still resolves. Without this, treating every
-    `ast.Match` as binding would pass those tests just as well.
+    Control for the test above: the identical constant executed at module
+    scope resolves and is reported. Without this, the parametrized test
+    would pass just as well if constant tracking had been removed entirely
+    rather than narrowed to one scope.
     """
     source = (
-        'query = "SELECT * FROM core.foo"\n'
-        "\n"
-        "def f(db, v):\n"
-        "    match v:\n"
-        "        case 1:\n"
-        "            db.execute(query)\n"
+        'QUERY = "SELECT * FROM core.fct_transactions"\n'  # noqa: S608  # fixture
+        "db.execute(QUERY)\n"
     )
-    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
-
-
-def test_global_rebound_by_a_body_level_with_is_a_definite_overwrite(
-    tmp_path: Path,
-) -> None:
-    """`with cm as query:` at body level rebinds before any later sink.
-
-    Definiteness is about whether the binding is guaranteed to run, not
-    about which statement performs it — an assignment and a body-level
-    `with` are equally certain.
-    """
-    source = (
-        'query = "SELECT * FROM core.foo"\n'
-        "\n"
-        "def f(db, cm):\n"
-        "    global query\n"
-        "    with cm as query:\n"
-        "        pass\n"
-        "    db.execute(query)\n"
-    )
-    assert _scan_source(tmp_path, source) == []
-
-
-def test_global_rebound_by_a_loop_target_is_not_definite(tmp_path: Path) -> None:
-    """A `for` target is NOT a definite overwrite — an empty iterable skips it.
-
-    Paired with the `with` test above to pin where the line falls. Treating
-    every body-level binder as definite would silence the module literal
-    here, where an empty `rows` leaves it live and executing.
-    """
-    source = (
-        'query = "SELECT * FROM core.foo"\n'
-        "\n"
-        "def f(db, rows):\n"
-        "    global query\n"
-        "    for query in rows:\n"
-        "        pass\n"
-        "    db.execute(query)\n"
-    )
-    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
