@@ -42,9 +42,9 @@ review-first launch posture:
    first production release. The engine may label a candidate `auto_eligible`
    for measurement, but that label has no mutation authority.
 6. Membership binds exact Raw observation revisions or exact opening-lot
-   reconstruction inputs. Proposal-issued field choices, rejected fingerprints,
-   provenance, Core id resolution, and audited curation remaps are durable and
-   reversible.
+   reconstruction inputs. Proposal-issued field choices, rejected relationship
+   constraints, provenance, Core id resolution, and audited curation remaps are
+   durable and reversible.
 7. The existing visible-collision guard remains in force until a separate
    promotion proves that matched history is safe enough to replace it.
 
@@ -432,12 +432,13 @@ from its existing durable decision row. Its relationship fingerprint covers the
 complete rejected Source-event set, exact observation versions, canonical
 dependency tuple, normalized evidence, and algorithm version, but excludes
 unrelated alternatives in the connected component. Planning and acceptance
-remove that exact set from feasible assignments before solving globally. A
-rejection therefore prunes the rejected A↔C assignment from an A↔B/A↔C
-competition, allowing a newly planned A↔B Proposal to become unique; it does not
-assert that every pair inside a rejected N-way set is independently false.
-Changed evidence, dependencies, or algorithm version produce a different
-relationship fingerprint and may be reviewed again. Audit undo of the rejection
+exclude a feasible Proposal when it contains the rejected Source-event set and
+the relationship fingerprint induced over that subset equals the rejected
+fingerprint. A rejection therefore prunes both A↔C and A↔B↔C after A↔C was
+rejected, allowing a newly planned A↔B Proposal to become unique. Rejecting
+A↔B↔C does not independently reject A↔B, A↔C, or B↔C. Changed exact revisions,
+canonical dependencies, normalized evidence, or algorithm version change the
+induced fingerprint and may be reviewed again. Audit undo of the rejection
 removes the constraint and stales affected pending Proposals.
 
 Acceptance rereads the latest inputs, reconstructs that connected candidate
@@ -514,6 +515,14 @@ unchanged rejected relationship fingerprint remains excluded even when an
 unrelated graph alternative changes. A changed member identity, exact revision,
 canonical dependency, normalized evidence, or algorithm version produces a new
 relationship fingerprint that may be proposed again.
+
+`competing` is not a sixth status. A competing Proposal is stored as `pending`.
+The planner derives `is_competing` from the same constrained connected-component
+solve used for assignment: it is true when more than one equally optimal
+feasible global assignment gives any Source event in that Proposal a different
+relationship. The pending read and planner metric use that one derivation; a
+candidate-graph change stales the Proposal before a later solve can change the
+classification.
 
 ### `app.investment_event_members`
 
@@ -973,9 +982,10 @@ both histories, so they remain explicitly untrusted for that Account until the
 person selects one history. M1J.7 materialization alone does not remove the
 warning or make the remaining unmatched history trustworthy.
 
-During initial rollout, a pending, competing, stale, unsupported, or otherwise
-ambiguous event risk keeps that warning active. Accepting one Match does not
-establish that every remaining row is safe.
+During initial rollout, a pending Proposal, including one with
+`is_competing=true`, or a stale, unsupported, or otherwise ambiguous event risk
+keeps that warning active. Accepting one Match does not establish that every
+remaining row is safe.
 
 The shipped overlap detector currently observes Plaid investment transactions,
 but bootstrap opening lots can also enter Core from Plaid holdings. That is an
@@ -1002,7 +1012,7 @@ Metrics use bounded, non-sensitive labels and are added to
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `moneybin_investment_match_proposals_total` | Counter | `band`, `outcome` | Planned, pending, suppressed, competing, or stale Proposals |
+| `moneybin_investment_match_proposals_total` | Counter | `band`, `outcome` | Planner dispositions: `pending_unique`, `pending_competing`, `suppressed`, or `stale`; both pending outcomes persist `status='pending'`, and `pending_competing` uses the canonical `is_competing` derivation |
 | `moneybin_investment_match_decisions_total` | Counter | `decision`, `auto_eligible` | Accepted, rejected, or reversed decisions after commit |
 | `moneybin_investment_match_events_total` | Counter | `event_type`, `outcome` | Whole events materialized or left under the visible-collision guard |
 | `moneybin_investment_match_rebuild_total` | Counter | `outcome` | Successful or failed dependent rebuilds |
@@ -1035,7 +1045,7 @@ fixtures and expected Golden-ledger outcomes.
 | Reinvestment | Manual and Plaid two-leg shapes match only when the Plaid comparison adapter finds one normalized `reinvest` acquisition and an income leg using the explicit `dividend` to `dividend`, `interest` to `interest`, or `capital_gain` to `capital_gain_distribution` compatibility mapping within 3 calendar days, with one complete unambiguous cash/fee-reconciled pairing; a 4-day Plaid-internal pair remains singleton, while already-constructed manual and Plaid Source events may cross-source match at 4 or 5 days but not 6; both legs move atomically, and a missing or multiply paired leg is not accepted |
 | Transfers | Same-direction one-leg manual and Plaid `transfer_in` or `transfer_out` events match only when Account, Security, effective currency, quantity, and the 7-day candidate window agree; when manual supplies `original_acquisition_date` or basis and Plaid has `NULL`, the present manual value and its exact provenance project instead of being erased; opposing legs are never inferred as an internal-transfer pair, and merger, spin-off, or trade legs remain ineligible for partial matching |
 | Source diversity | A manual-to-Plaid or other distinct-origin Proposal may be eligible; two manual/user events or two events from one Plaid connection never consolidate through this review matcher, while multiple legs already validated inside one Source event remain atomic |
-| Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing; rejecting exact relationship A-C in an A-B/A-C competition removes only A-C from the feasible assignments and replanning may make A-B unique, while the unchanged rejection stays effective if an unrelated alternative changes and changed evidence may produce a reviewable relationship; undoing the rejection restores the assignment space and stales affected pending Proposals; three otherwise-identical events whose endpoint dates exceed the applicable band cannot form one N-way Proposal through a chain of individually eligible neighbor edges; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
+| Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing pending Proposals under the canonical connected-component derivation; rejecting exact relationship A-C in an A-B/A-C competition excludes A-C and every larger Proposal whose induced A-C relationship fingerprint is unchanged, including A-B-C, so replanning may make A-B unique, while rejecting A-B-C does not reject any internal pair; the unchanged rejection stays effective if an unrelated alternative changes and changed revisions, dependencies, evidence, or algorithm version may produce a reviewable relationship; undoing the rejection restores the assignment space and stales affected pending Proposals; three otherwise-identical events whose endpoint dates exceed the applicable band cannot form one N-way Proposal through a chain of individually eligible neighbor edges; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; when a correction splits a Source event held by a stale accepted Match, its reconstructed current events may support replacement planning but remain reserved from standalone projection, so old and new revisions never project together; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; after evidence or identity changes, replacement or reversal atomically releases reservations and installs current successor membership or blocks rather than restoring obsolete rows; reversal remains available when event shape or semantic correspondence changed by minting new standalone ids where required, leaving the retired combined Match id terminal rather than ambiguously forwarding it; manual correction is unavailable in M1J.7 |
 | Revisions | Identical aggregator re-delivery reuses a version and per-job receipt while preserving its first-ingestion sequence; A→B→A content reuses the immutable A revision but a new receipt makes A current while retaining B in history, including when two jobs share an extraction timestamp; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
@@ -1075,12 +1085,16 @@ fixtures and expected Golden-ledger outcomes.
   and one-to-two graphs, an N-way chain whose endpoint pair is outside the
   applicable threshold, and an equally plausible event arriving after Proposal
   planning. Rejection tests prove the exact rejected relationship is removed
-  before solving, is not reproposed when unrelated alternatives change, lets a
-  remaining assignment become uniquely reviewable with a changed graph
-  fingerprint, does not decompose an N-way rejection into pairwise exclusions,
-  permits changed evidence to produce a new relationship fingerprint, and on
-  audit undo restores the assignment space while staling affected pending
-  Proposals.
+  before solving, every Proposal containing that complete member set with the
+  same induced relationship fingerprint is also removed, an N-way rejection
+  does not decompose into pairwise
+  exclusions, an unchanged rejection is not reproposed when unrelated
+  alternatives change, a remaining assignment becomes uniquely reviewable with
+  a changed graph fingerprint, changed evidence produces a new relationship
+  fingerprint, and audit undo restores the assignment space while staling
+  affected pending Proposals. Competing tests prove both ambiguous assignments
+  persist as `pending` and the planner metric and pending read derive the same
+  `is_competing` value from the constrained connected-component solve.
 - Proposal-measurement tests proving `auto_eligible` is recorded at planning,
   is true only for a unique mutually eligible Proposal whose every member pair
   has Native or exact evidence and no material field choices, is false for

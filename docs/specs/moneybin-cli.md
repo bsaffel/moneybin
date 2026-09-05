@@ -200,20 +200,27 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |         [--output json] [-q]
 |
 +-- review                         -- What needs my attention? Pending counts across all review queues.
-|     [--type all|matches|categorize|account-links|merchant-links|security-links]   Default all
+|     [--type all|matches|investment-matches|categorize|account-links|merchant-links|security-links]   Default all
 |     [--status]                        Counts — the default; the flag states it explicitly
 |     [--interactive]                   Walk the queue item by item (not yet built)
-|     [--confirm <id>]                  Non-interactive: confirm one match by ID
-|     [--reject <id>]                   Non-interactive: reject one match by ID
-|     [--confirm-all]                   Non-interactive: confirm all items in scope
+|     [--confirm <id>]                  Non-interactive: confirm one review item by ID
+|     [--reject <id>]                   Non-interactive: reject one review item by ID
+|     [--field-choice <conflict-id>=<choice-id>]  Repeatable; investment-matches confirm only
+|     [--confirm-all]                   Non-interactive: confirm all eligible items in scope
 |     [--limit N]                       Cap items per session (applies to --interactive)
 |     [--output text|json] [-q]
-|   Aggregates matches_pending + categorize_pending + account_links_pending + merchant_links_pending
-|   + security_links_pending in one sweep. Counts are what a bare invocation prints; drill into
+|   Aggregates matches_pending + investment_matches_pending + categorize_pending +
+|   account_links_pending + merchant_links_pending + security_links_pending in one sweep.
+|   Counts are what a bare invocation prints; drill into
 |   `accounts links pending`, `merchants links pending`, `investments securities links pending`,
-|   `transactions matches pending`, or `transactions categorize pending` for queue contents.
-|   `--status`, `--interactive`, and the decision flags are mutually exclusive; passing two is a
-|   usage error (exit 2) rather than a silent pick.
+|   `investments matches pending`, `transactions matches pending`, or
+|   `transactions categorize pending` for queue contents.
+|   At most one explicit primary action among `--status`, `--interactive`, `--confirm`,
+|   `--reject`, and `--confirm-all` may be supplied; passing two is a usage error (exit 2),
+|   while omitting all of them selects the default status/counts read. `--field-choice` is a
+|   modifier, not a primary action, and accompanies exactly one `--confirm`; `--confirm-all`
+|   is unavailable for `investment-matches` because each Proposal requires review and may
+|   carry proposal-issued choices.
 |
 +-- accounts
 |   +-- list                       -- List accounts [--include-archived] [--type TYPE]
@@ -270,6 +277,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- lots [--open|--all]        -- Tax lots with remaining quantity + basis
 |   |   +-- select <disposal_id> --lot <lot_id>:<qty> [--lot ...]  -- Replace lot selection (declarative set; multi-lot)
 |   +-- gains                      -- Realized gain/loss (the 1099-B surface)
+|   +-- matches                    -- Review-first cross-source investment-event matching (M1J.7)
+|   |   +-- run                    -- Plan current whole-event candidates; never accepts automatically
+|   |   +-- pending                -- Show pending Proposals, choices, alternatives, and expected effects
+|   |   +-- history                -- Show accepted, rejected, stale, and reversed decisions
 |   +-- prices                     -- Market prices for held securities (Pillar C.2)
 |   |   +-- pull [--security REF]... [--since DATE] [--refresh]
 |   |   |         Refresh stored closes for held positions from the configured feeds.
@@ -349,16 +360,18 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- create                     -- Create a manual transaction
 |   +-- audit                      -- Audit one transaction's curation history (notes, tags, splits)
 |   +-- review                     -- DEPRECATED: use `moneybin review` (removed after one minor release)
-|   |                                  Unified review queue (matches + categorize + account-links + merchant-links + security-links)
-|   |     [--type all|matches|categorize|account-links|merchant-links|security-links]   Default all
+|   |                                  Unified review queue (matches + investment-matches + categorize + account-links + merchant-links + security-links)
+|   |     [--type all|matches|investment-matches|categorize|account-links|merchant-links|security-links]   Default all
 |   |     [--status]                        Counts — the default; the flag states it explicitly
 |   |     [--interactive]                   Walk the queue item by item (not yet built)
-|   |     [--confirm <id>]                  Non-interactive: confirm one match or categorize item by ID
-|   |     [--reject <id>]                   Non-interactive: reject one match by ID
+|   |     [--confirm <id>]                  Non-interactive: confirm one review item by ID
+|   |     [--reject <id>]                   Non-interactive: reject one review item by ID
+|   |     [--field-choice <conflict-id>=<choice-id>]  Repeatable; investment-matches confirm only
 |   |     [--confirm-all]                   Non-interactive: confirm all items in scope
 |   |     [--limit N]                       Cap items per session
-|   |   Note: --confirm/--reject/--confirm-all are fully implemented for --type matches.
-|   |         --type categorize review is not yet wired (stub); categorize items use
+|   |   Note: --confirm/--reject are defined for --type matches and investment-matches;
+|   |         --confirm-all is unavailable for investment-matches. --type categorize review
+|   |         is not yet wired (stub); categorize items use
 |   |         transactions categorize commit instead.
 |   +-- matches                    -- Transfer detection + dedup workflow (no review — see the top-level `review`)
 |   |   +-- list [--type dedup|transfer] [--limit N] [-o json|text]
@@ -755,6 +768,9 @@ selectors to preserve bounded agent context.
 | Net worth now | `reports networth` | `reports(report_id="core:networth")` | `GET /reports/networth` |
 | Pending matches | `transactions matches pending` | `reviews(kind="matches", status="pending")` | `GET /transactions/matches/pending` |
 | Match history | `transactions matches history` | `reviews(kind="matches", status="history")` | `GET /transactions/matches` |
+| Pending investment matches | `investments matches pending` | `reviews(kind="investment_matches", status="pending")` | Not exposed in M1J.7 |
+| Investment match history | `investments matches history` | `reviews(kind="investment_matches", status="history")` | Not exposed in M1J.7 |
+| Decide an investment match | `review --type investment-matches --confirm/--reject` | `reviews_decide(decisions=[{"kind":"investment_match", "decision_id":"<id>", "decision":"accept|reject", "field_choices":[...]}])` (`field_choices` omitted on reject) | Not exposed in M1J.7 |
 | Locate an accepted match operation | `transactions matches history` | `system_audit(view="history", ...)` or `system_audit(view="events", ...)` | `GET /transactions/matches` |
 | Undo a match | `transactions matches undo <match_id>` | `system_audit_undo(operation_id=<operation_id>)` after locating the audit operation | `POST /transactions/matches/{match_id}/undo` |
 | Run matching | `transactions matches run` | `refresh_run(steps=["match"])` | `POST /refresh/match` |
@@ -1008,6 +1024,8 @@ ADR-016 and the archived MCP catalog. Current sibling mappings are:
 | `accounts balance show/history/list/reconcile` | `accounts_balances(view=..., reference=...)` |
 | `reports *` | `reports(report_id=..., parameters=...)` |
 | `transactions matches pending/history` | `reviews(kind="matches", status=...)` |
+| `investments matches pending/history` | `reviews(kind="investment_matches", status=...)` |
+| `review --type investment-matches --confirm/--reject` | `reviews_decide(decisions=[{"kind":"investment_match", "decision_id":"<id>", "decision":"accept|reject", "field_choices":[...]}])`; omit `field_choices` on reject |
 | `transactions categorize pending` | `reviews(kind="categorization", status="pending")` |
 | `categories list`, `merchants list` | `taxonomy(view=...)` |
 | `transactions matches run` | `refresh_run(steps=["match"])` |

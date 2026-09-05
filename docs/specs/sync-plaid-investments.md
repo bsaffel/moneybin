@@ -61,6 +61,9 @@ reach the ledger, everything downstream is existing machinery.
    sync job that re-delivers the same row **replaces** it rather than
    duplicating it (overlapping date-range pulls are Plaid's normal investments
    behavior), with `source_file = sync_{job_id}` kept only as lineage. The
+   [M1J.7 raw-observation amendment](#m1j7-raw-observation-amendment)
+   supersedes that transaction-table replacement rule with append-only content
+   revisions and separate delivery receipts.
    **snapshot** pair (`raw.plaid_investment_holdings`,
    `raw.plaid_investment_holding_lots`) still scopes by `source_origin` (like all
    Plaid raw tables) **and** additionally makes `source_file` *part of the PK*:
