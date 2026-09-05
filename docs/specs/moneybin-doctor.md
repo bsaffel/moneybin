@@ -139,13 +139,31 @@ tell which repair applies.
 
 The check reads the RAW tables rather than the ledger, so it still fires before
 a first transform has run — the point at which the withhold does not yet exist.
-Its recipe emits the two exits as `RecoveryAction`s: `import_revert` (drop the
-imported batch, if the connector is the ledger to keep) and `sync_disconnect`
-(drop the duplicate connection, if the file import is). They are alternatives,
-not a sequence, and neither carries its identifying argument — the check knows
-account ids and neither an `import_id` nor an institution, so each names its
-missing argument in the rationale at `confidence: suggested`, which is the shape
-`RecoveryAction` prescribes for a value unknown at construction time.
+Its recipe emits exactly one `RecoveryAction`, `import_revert`, because that is
+the only remedy MoneyBin can run: `REVERT_TABLES['manual']` covers
+`raw.manual_investment_transactions`, so reverting the batch deletes those rows
+and leaves the account with one ledger. `sync_disconnect` is deliberately **not**
+offered beside it. It is a remote operation — `SyncService.disconnect_confirmed`
+calls `client.disconnect` and deletes nothing locally, as its own confirmation
+says ("Previously pulled local rows remain") — and this check joins exactly
+those retained rows, as does `core.dim_holdings`'s `source_overlap_accounts`.
+Following it would cost the user their connection permanently and leave the
+check failing and the holdings withheld, which is worse than no suggestion: a
+`RecoveryAction` is a claim that running it fixes the failure. The fact still
+reaches the user, in the remedy's rationale and this check's `detail`, because
+someone whose file import is the ledger they want will reach for a disconnect
+on their own.
+
+**Open gap:** there is no local counterpart for the synced feed —
+`raw.plaid_investment_transactions` carries no `import_id` and no tool deletes
+it — so a user who wants to keep the file import and drop the connector has no
+remedy today. Closing it needs a way to remove locally-retained rows for one
+connection.
+
+The remedy does not carry its identifying argument: the check knows account ids
+and not an `import_id`, so it names the missing argument in the rationale at
+`confidence: suggested`, which is the shape `RecoveryAction` prescribes for a
+value unknown at construction time.
 
 **The phantom check depends on `raw.plaid_investment_holdings_snapshots`.** Holdings *rows* cannot distinguish "this item reported and holds nothing" from "this item never reported" — an item whose pull returns an empty holdings array writes no rows at all, so a newest-snapshot join keyed on those rows silently keeps the last non-empty snapshot from an earlier pull. That reads a fully-liquidated broker as still holding its old positions: the largest possible net-worth overstatement, and precisely the phantom this check exists to catch. The receipt is written per (item, pull) **even when zero positions come back**, and both `core.dim_holdings` and this check derive "newest snapshot" from it.
 

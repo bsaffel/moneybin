@@ -28,7 +28,7 @@
    a different remedy — the four withhold clauses each say one position's share count
    is wrong and want it reconciled, while this says the account has two ledgers
    interleaved and wants one of the two feeds removed (moneybin system doctor's
-   investment_source_overlap check fails on it and names both exits). Overloading one
+   investment_source_overlap check fails on it and names the remedy). Overloading one
    status would leave the reader unable to tell which repair applies. It takes
    precedence over 'withheld': a quantity mismatch measured against a double-counted
    ledger is a symptom, not the fault to report.
@@ -278,9 +278,19 @@ WITH positions AS (
      Joined into the withheld CTE below as its own flag rather than added as a fifth
      clause: those four all describe one position's own quantity and this describes the
      account's ledger, and their remedies have nothing in common — those want a share
-     count reconciled, this wants a whole feed removed. */
+     count reconciled, this wants a whole feed removed.
+
+     It carries a timestamp beside the flag because the final updated_at has to fold
+     this input too. The flag is ACCOUNT-scoped, so a second-source event recorded
+     against security B moves security A from 'valued' to 'source_overlap' while none
+     of A's own lots, price, or snapshot timestamps change; a watermark built only
+     from position-scoped inputs would report A as unchanged and an incremental
+     consumer reading it would keep serving the pre-flip figure. The MAX is taken over
+     exactly the rows the HAVING counts, so the timestamp and the flag can never
+     describe different sets. */
   SELECT
-    account_id
+    account_id,
+    MAX(updated_at) AS overlap_observed_at /* Freshness of the account-level overlap input; folded into every affected row's updated_at below */
   FROM core.fct_investment_transactions
   WHERE
     COALESCE(subtype, '') <> 'opening_bootstrap'
@@ -362,7 +372,8 @@ WITH positions AS (
     OR (
       pos.currency_count = 1 AND pos.unknown_currency_lots > 0
     ) AS is_withheld,
-    NOT so.account_id IS NULL AS is_source_overlap
+    NOT so.account_id IS NULL AS is_source_overlap,
+    so.overlap_observed_at AS source_overlap_at
   FROM positions AS pos
   LEFT JOIN provider_reported AS pr
     ON pr.account_id = pos.account_id AND pr.security_id = pos.security_id
@@ -453,8 +464,9 @@ SELECT
   GREATEST(
     p.updated_at,
     COALESCE(lp.price_updated_at, p.updated_at),
-    COALESCE(psf.newest_snapshot_at, p.updated_at)
-  ) AS updated_at /* Latest of all per-row input timestamps: the MAX over the position's open lots, the resolved close's freshness (market_value advances when a newer close lands), and — for a broker-reported position — the newest snapshot receipt's time (valuation_status flips to 'withheld' when a fresh pull contradicts or omits the position). The snapshot term keys on the position, not the account, so a purely manual holding in a covered account is not advanced by an unrelated pull; and it uses the snapshot RECEIPT (not the per-position claim), so a pull that DROPS a position still advances its watermark. COALESCE folds the LEFT-JOINed price and snapshot timestamps only when present, so an unpriced, manual position falls back to the lot timestamp. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
+    COALESCE(psf.newest_snapshot_at, p.updated_at),
+    COALESCE(wh.source_overlap_at, p.updated_at)
+  ) AS updated_at /* Latest of all per-row input timestamps: the MAX over the position's open lots, the resolved close's freshness (market_value advances when a newer close lands), for a broker-reported position the newest snapshot receipt's time (valuation_status flips to 'withheld' when a fresh pull contradicts or omits the position), and for a position in a mixed-source account the newest ledger row behind that overlap (valuation_status flips to 'source_overlap'). The snapshot term keys on the position, not the account, so a purely manual holding in a covered account is not advanced by an unrelated pull; and it uses the snapshot RECEIPT (not the per-position claim), so a pull that DROPS a position still advances its watermark. The overlap term is the one deliberately ACCOUNT-scoped input: the flag it tracks is account-scoped too, so a second-source event on security B flips security A's status without touching any of A's position-scoped timestamps, and folding only those would report A unchanged. It reaches only overlapping accounts — source_overlap_accounts holds no others, so a single-source position joins to NULL and keeps its own watermark. COALESCE folds the LEFT-JOINed price, snapshot and overlap timestamps only when present, so an unpriced, manual, single-source position falls back to the lot timestamp. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
 FROM positions AS p
 LEFT JOIN provider_reported AS pr
   ON pr.account_id = p.account_id AND pr.security_id = p.security_id

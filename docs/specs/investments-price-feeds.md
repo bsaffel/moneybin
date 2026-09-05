@@ -838,8 +838,9 @@ telling them what to do about it.
 
 `source_overlap` is the only one whose remedy is outside the pipeline entirely,
 and the only one a `system doctor` check `fail`s on
-(`investment_source_overlap`, whose recipe names `import_revert` and
-`sync_disconnect` as the two exits). It is also the only one keyed on the
+(`investment_source_overlap`, whose recipe names `import_revert` — the one
+remedy that removes a feed; a disconnect keeps the rows already pulled). It is
+also the only one keyed on the
 ACCOUNT rather than the position: it withholds every position in the account,
 because the double-count reaches all of them.
 

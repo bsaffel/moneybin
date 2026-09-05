@@ -1511,16 +1511,18 @@ def _insert_event(
     security_id: str | None = "sec_1",
     trade_date: date = date(2024, 1, 15),
     type_: str = "buy",
+    subtype: str | None = None,
     quantity: Decimal | None = Decimal("10"),
     amount: Decimal | None = Decimal("-1500.00"),
     currency_code: str | None = "USD",
+    source_type: str = "manual",
 ) -> None:
     db.conn.execute(
         """
         INSERT INTO core.fct_investment_transactions
             (investment_transaction_id, account_id, security_id, trade_date,
-             type, quantity, amount, currency_code)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             type, subtype, quantity, amount, currency_code, source_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,  # noqa: S608  # test fixture insert, static SQL
         [
             investment_transaction_id,
@@ -1528,10 +1530,37 @@ def _insert_event(
             security_id,
             trade_date,
             type_,
+            subtype,
             quantity,
             amount,
             currency_code,
+            source_type,
         ],
+    )
+
+
+def _seed_two_source_ledger(
+    db: Database, *, account_id: str = "acct_brokerage"
+) -> None:
+    """Give one account an investment ledger from two sources at once.
+
+    The state ``core.dim_holdings``'s ``source_overlap_accounts`` keys on:
+    more than one ``source_type`` among the account's non-bootstrap ledger
+    rows. Seeded on the ledger rather than on a lot or a gain because that is
+    where the fault lives — the derived rows carry no marker of their own, which
+    is why the ledger has to be consulted at read time.
+    """
+    _insert_event(
+        db,
+        investment_transaction_id=f"{account_id}_manual_buy",
+        account_id=account_id,
+        source_type="manual",
+    )
+    _insert_event(
+        db,
+        investment_transaction_id=f"{account_id}_plaid_buy",
+        account_id=account_id,
+        source_type="plaid",
     )
 
 
@@ -2595,6 +2624,84 @@ class TestLots:
         result = db_service(db).lots()
         assert result.warnings == []
 
+    def test_source_overlap_degrades_the_lots_read(self, db: Database) -> None:
+        """Lots derived from two interleaved ledgers say so on the envelope.
+
+        ``dim_holdings`` withholds a market value for exactly this account, and
+        the holdings response points the caller here for per-lot basis. Without
+        this, the caller lands on the double-counted quantities and basis with
+        nothing marking them — a correctly-withheld figure traded for an
+        uncaveated wrong one.
+        """
+        _seed_read_fixtures(db)
+        _seed_two_source_ledger(db)
+        _insert_lot(db, lot_id="lot_1")
+
+        result = db_service(db).lots()
+
+        assert result.degraded_reason is not None
+        assert result.degraded_reason.startswith("investment_source_overlap:")
+        assert "1 lot(s)" in result.degraded_reason
+        assert result.degraded_reason in result.warnings
+
+    def test_a_single_source_ledger_does_not_degrade_the_lots_read(
+        self, db: Database
+    ) -> None:
+        """One source is one ledger: the flag must mean something when set."""
+        _seed_read_fixtures(db)
+        _insert_event(db, investment_transaction_id="only_buy", source_type="plaid")
+        _insert_lot(db, lot_id="lot_1")
+
+        result = db_service(db).lots()
+
+        assert result.degraded_reason is None
+        assert result.warnings == []
+
+    def test_lots_from_an_unaffected_account_are_not_degraded(
+        self, db: Database
+    ) -> None:
+        """The flag is scoped to the rows returned, not to the database.
+
+        The overlap is account-scoped, so a read filtered to a clean account
+        carries no double-counted row and must not inherit another account's
+        fault — a `degraded` that rides along on every read is one no consumer
+        can act on.
+        """
+        _seed_read_fixtures(db)
+        _seed_two_source_ledger(db, account_id="acct_brokerage")
+        _insert_lot(db, lot_id="lot_roth", account_id="acct_roth")
+
+        result = db_service(db).lots(account_ref="acct_roth")
+
+        assert [r.lot_id for r in result.rows] == ["lot_roth"]
+        assert result.degraded_reason is None
+
+    def test_an_opening_bootstrap_is_not_a_second_source_ledger(
+        self, db: Database
+    ) -> None:
+        """A reconstructed pre-window lot re-reports nothing, so it overlaps nothing.
+
+        ``prep.int_plaid__opening_positions`` synthesizes a plaid-sourced
+        ``transfer_in`` for the gap the in-window transactions leave. Counting
+        its source_type would degrade every broker-covered account that also
+        holds a manual entry — and would disagree with ``dim_holdings``, whose
+        CTE excludes the same subtype.
+        """
+        _seed_read_fixtures(db)
+        _insert_event(db, investment_transaction_id="manual_buy", source_type="manual")
+        _insert_event(
+            db,
+            investment_transaction_id="bootstrap",
+            source_type="plaid",
+            type_="transfer_in",
+            subtype="opening_bootstrap",
+        )
+        _insert_lot(db, lot_id="lot_1")
+
+        result = db_service(db).lots()
+
+        assert result.degraded_reason is None
+
 
 class TestUnknownCurrencyIsNotRenderedAsText:
     """An unknown currency reaches every read surface as None, never "None".
@@ -2705,6 +2812,37 @@ class TestGains:
         _seed_read_fixtures(db)
         with pytest.raises(UserError):
             db_service(db).gains(account_ref="does-not-exist")
+
+    def test_source_overlap_degrades_the_gains_read(self, db: Database) -> None:
+        """Realized gains from two interleaved ledgers are double-counted too.
+
+        Proceeds, basis and gain all come off the same ledger the holdings
+        withhold exists to contain, and this is the surface a user files taxes
+        from — the last place a wrong figure should arrive uncaveated.
+        """
+        _seed_read_fixtures(db)
+        _seed_two_source_ledger(db)
+        _insert_gain(db, realized_gain_id="gain_1")
+
+        result = db_service(db).gains()
+
+        assert result.degraded_reason is not None
+        assert result.degraded_reason.startswith("investment_source_overlap:")
+        assert "1 realized-gain row(s)" in result.degraded_reason
+        assert result.degraded_reason in result.warnings
+
+    def test_a_single_source_ledger_does_not_degrade_the_gains_read(
+        self, db: Database
+    ) -> None:
+        """One source is one ledger: the flag must mean something when set."""
+        _seed_read_fixtures(db)
+        _insert_event(db, investment_transaction_id="only_buy", source_type="plaid")
+        _insert_gain(db, realized_gain_id="gain_1")
+
+        result = db_service(db).gains()
+
+        assert result.degraded_reason is None
+        assert result.warnings == []
 
 
 def db_service(db: Database) -> InvestmentService:

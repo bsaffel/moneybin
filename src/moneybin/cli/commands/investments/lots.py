@@ -118,6 +118,13 @@ def investments_lots_list(
     both. ``--wide`` shows every declared column: the currency, the cost-basis
     method, and ``state`` — which under the default ``--open`` reads ``open``
     on every row.
+
+    Lots in an account whose investment ledger arrives from two sources at once
+    double-count, because the two ledgers interleave rather than merge. The
+    command says so on stderr and ``-q`` does not silence it — unlike the
+    incomplete-basis note, which has a per-row marker to fall back on — and
+    under ``--output json`` it rides ``summary.degraded_reason``, the same code
+    the holdings read uses.
     """
     with handle_cli_errors(
         cli_actor="investments_lots_list", payload_type=InvestmentLotsPayload
@@ -131,7 +138,11 @@ def investments_lots_list(
         # BALANCE (HIGH) fields; render_or_json derives the tier from the
         # typed payload's Annotated metadata — identical to the MCP tool.
         render_or_json(
-            build_envelope(data=InvestmentLotsPayload.from_result(result)),
+            build_envelope(
+                data=InvestmentLotsPayload.from_result(result),
+                degraded=result.degraded_reason is not None,
+                degraded_reason=result.degraded_reason,
+            ),
             output,
             cli_actor="investments_lots_list",
         )
@@ -154,7 +165,17 @@ def investments_lots_list(
             total_columns=view.total,
         )
     for w in result.warnings:
-        render_note(f"⚠️  {w}", quiet=quiet, warn=True)
+        # `-q` drops status lines, not disclosures about the figures. The
+        # basis-incomplete warning is droppable because the default view keeps
+        # a per-row `⚠️ basis_incomplete` marker; a source overlap has no such
+        # fallback here — `investments holdings` leans on its `status` column
+        # and this table has none — so silencing it would leave a doubled
+        # quantity and basis on screen with nothing saying so.
+        render_note(
+            f"⚠️  {w}",
+            quiet=quiet and w != result.degraded_reason,
+            warn=True,
+        )
 
 
 def _parse_lot_selection(entry: str) -> tuple[str, Decimal]:

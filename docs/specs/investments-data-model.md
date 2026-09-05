@@ -378,7 +378,7 @@ Columns:
   price_source      VARCHAR          -- Which source supplied the close (see core.fct_security_prices); NULL when no close resolved
   days_since_observed INT            -- Calendar days between price_date and today; 0 on a same-day close; NULL when no close resolved
   valuation_status  VARCHAR          -- valued | carried_forward | unpriced | withheld | source_overlap
-  updated_at        TIMESTAMP        -- Row freshness
+  updated_at        TIMESTAMP        -- Row freshness; folds the position's lots, its close, its broker snapshot receipt, and — for a mixed-source account — the ledger rows behind the overlap, so a status flip caused by a sibling position still advances it
 ```
 
 > **Unrealized gain/loss** arrived with Pillar C phase C.1
@@ -392,8 +392,13 @@ Columns:
 > rather than zero, so a total never silently absorbs a position it could not
 > value. `source_overlap` is kept distinct from `withheld` because its remedy is
 > outside the pipeline: `system doctor`'s `investment_source_overlap` check
-> fails on it, and only reverting the redundant import batch or disconnecting
-> the duplicate sync connection clears it. External feeds and manual overrides (C.2) and the daily valued series
+> fails on it, and only reverting the redundant import batch clears it —
+> disconnecting the connector stops future pulls but keeps the rows already
+> pulled. `core.fct_investment_lots` and `core.fct_realized_gains` derive from
+> the same interleaved ledger, so the `lots` and `gains` reads set
+> `summary.degraded_reason` with the same `investment_source_overlap:` code
+> rather than answering with a double-counted figure.
+> External feeds and manual overrides (C.2) and the daily valued series
 > `core.fct_holdings_daily` (C.3) remain designed.
 
 ## Cost-Basis Engine

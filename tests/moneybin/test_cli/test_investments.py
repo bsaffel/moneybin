@@ -890,6 +890,34 @@ class TestHoldingsAndGains:
         assert "💱" not in result.stdout
 
     @pytest.mark.unit
+    def test_gains_json_degrades_on_a_source_overlap(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """Realized gains double-count too, on the surface taxes are filed from."""
+        _seed_two_source_ledger(db)
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id,
+                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                 cost_basis, gain_loss, term, cost_basis_method,
+                 basis_incomplete, currency_code)
+            VALUES ('gain_1', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a', 5,
+                    '2024-01-01', '2024-06-12', 950.00, 750.00, 200.00, 'long',
+                    'fifo', false, 'USD')
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        result = runner.invoke(app, ["investments", "gains", "--output", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["summary"]["degraded"] is True
+        assert payload["summary"]["degraded_reason"].startswith(
+            "investment_source_overlap:"
+        )
+
+    @pytest.mark.unit
     def test_gains_json_reports_basis_incomplete_warning(
         self, runner: CliRunner, db: Database
     ) -> None:
@@ -1075,6 +1103,30 @@ class TestHoldingsAndGains:
 # ---------------------------------------------------------------------------
 
 
+def _seed_two_source_ledger(
+    db: Database, *, account_id: str = "acct_brokerage"
+) -> None:
+    """Give one account an investment ledger arriving from two sources at once.
+
+    Seeded on the ledger because that is where the fault lives:
+    ``core.fct_investment_lots`` and ``core.fct_realized_gains`` carry no
+    status column of their own, so both reads consult the ledger to learn that
+    the rows they just returned double-count.
+    """
+    db.conn.executemany(
+        """
+        INSERT INTO core.fct_investment_transactions
+            (investment_transaction_id, account_id, security_id, trade_date,
+             type, quantity, amount, currency_code, source_type)
+        VALUES (?, ?, 'sec_1', '2024-01-15', 'buy', 10, -1500.00, 'USD', ?)
+        """,  # noqa: S608  # test fixture insert, static SQL
+        [
+            ["evt_manual", account_id, "manual"],
+            ["evt_plaid", account_id, "plaid"],
+        ],
+    )
+
+
 class TestLotsList:
     """Tests for `investments lots list`."""
 
@@ -1127,6 +1179,37 @@ class TestLotsList:
             "lot_open",
             "lot_closed",
         }
+
+    @pytest.mark.unit
+    def test_lots_json_degrades_on_a_source_overlap(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """The lots read carries the same machine-readable state holdings does.
+
+        A caller scripting the CLI is as entitled to branch on "these lots
+        double-count" as an agent driving MCP — both surfaces read one service.
+        """
+        _seed_two_source_ledger(db)
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open)
+            VALUES ('lot_open', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
+                    10, 10, 1500.00, 1500.00, 'fifo', 'USD', true)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        result = runner.invoke(app, ["investments", "lots", "list", "--output", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["summary"]["degraded"] is True
+        assert payload["summary"]["degraded_reason"].startswith(
+            "investment_source_overlap:"
+        )
 
     @pytest.mark.unit
     def test_lots_json_reports_basis_incomplete_warning(
@@ -1199,6 +1282,41 @@ class TestLotsList:
         assert "basis_incomplete" in result.stdout
         # The warning is the suppressed half — that is the point of `-q`.
         assert "incomplete" not in result.stderr
+
+    @pytest.mark.unit
+    def test_lots_list_discloses_a_source_overlap_even_under_quiet(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """Double-counted lots may not print as though they were right.
+
+        `-q` drops status lines, not disclosures about the figures — the rule
+        `investments gains` follows for an incomplete basis. This table cannot
+        fall back the way the other two do: `investments holdings` keeps a
+        `status` column that reads `source_overlap` under `-q`, and the
+        basis-incomplete case here has its own per-row marker. A source overlap
+        has neither, so silencing the line leaves a doubled quantity and basis
+        on screen with nothing at all saying so.
+        """
+        _seed_two_source_ledger(db)
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES ('lot_overlap', 'acct_brokerage', 'sec_1', '2024-01-15',
+                    'buy', 10, 10, 1500.00, 1500.00, 'fifo', 'USD', true, true)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+
+        result = runner.invoke(app, ["investments", "lots", "list", "-q"])
+
+        assert result.exit_code == 0, result.output
+        assert "investment_source_overlap" in result.stderr
+        # The basis-incomplete warning stays suppressed — it has the per-row
+        # marker to fall back on, which is why `-q` may drop it.
+        assert "incomplete cost basis" not in result.stderr
 
     @pytest.mark.unit
     def test_lots_list_reaches_the_currency_through_wide(

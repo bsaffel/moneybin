@@ -1044,6 +1044,12 @@ class DoctorService:
         says so out loud and blocks the release gate, and it reads the RAW
         tables rather than the ledger so it still fires before a first
         transform — the point at which the withhold does not yet exist.
+
+        Reverting the imported batch is the only remedy MoneyBin can run
+        today. Disconnecting the connector is a remote operation that leaves
+        every row it already pulled — the rows this very query reads — so it
+        stops the feed growing without clearing the check. The recipe says so
+        rather than offering it (``audits/recipes/investment_source_overlap``).
         """
         name = "investment_source_overlap"
         try:
@@ -1077,9 +1083,11 @@ class DoctorService:
                     "gains double-count and cost basis mixes two accountings; "
                     "core.dim_holdings withholds every figure for these "
                     "positions (valuation_status 'source_overlap') until one "
-                    "source is left. Revert the redundant import batch, or "
-                    "disconnect the duplicate sync connection (investment dedup "
-                    "across sources is a future matching child)"
+                    "source is left. Revert the redundant import batch to "
+                    "clear it; disconnecting the connector stops future pulls "
+                    "but keeps the rows already pulled, so it does not "
+                    "(investment dedup across sources is a future matching "
+                    "child)"
                 ),
                 affected_ids=[str(r[0]) for r in rows],
             )

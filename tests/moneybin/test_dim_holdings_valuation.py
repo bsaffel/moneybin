@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
+from moneybin.services.investment_service import InvestmentService
 
 pytestmark = pytest.mark.integration
 
@@ -87,6 +88,12 @@ def _seed_security(db: Database, *, security_id: str = _DEFAULT_SECURITY_ID) -> 
 
 _POSITION_TRADE_DATE = date(2026, 1, 5)
 
+# The two fixture timestamps behind the overlap-watermark case. Spelled here as
+# constants because the assertion is an equality against them, not a comparison
+# against whatever the model happened to produce.
+_OVERLAP_HELD_LOT_AT = "2026-01-06 09:00:00"
+_OVERLAP_SECOND_SOURCE_AT = "2026-02-10 09:00:00"
+
 
 def _seed_position(
     db: Database,
@@ -100,6 +107,7 @@ def _seed_position(
     quantity: str = "10",
     amount: str | None = "-1000.00",
     transaction_type: str = "buy",
+    created_at: str | None = None,
 ) -> None:
     """A MANUAL position: 10 units at 100.00, cost basis 1000.00, in account acc_1.
 
@@ -117,9 +125,10 @@ def _seed_position(
         INSERT INTO raw.manual_investment_transactions (
             source_transaction_id, import_id, account_id, security_id,
             security_ref, type, trade_date, quantity, price, amount, fees, created_by,
-            investment_transaction_id, currency_code
+            investment_transaction_id, currency_code, created_at
         ) VALUES (?, ?, ?, ?, 'VTI', ?,
-                  ?::DATE, ?, ?, ?, 0.00, 'test', ?, ?)
+                  ?::DATE, ?, ?, ?, 0.00, 'test', ?, ?,
+                  COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
         """,  # noqa: S608  # test fixture, not executing user SQL
         [
             transaction_id,
@@ -133,6 +142,7 @@ def _seed_position(
             amount,
             transaction_id,
             currency_code,
+            created_at,
         ],
     )
 
@@ -240,6 +250,7 @@ def _seed_plaid_buy(
     source_origin: str = "item_1",
     trade_date: date = _POSITION_TRADE_DATE,
     quantity: str = "10",
+    loaded_at: str | None = None,
 ) -> None:
     """A Plaid buy that REACHES the ledger, on the canonical account id.
 
@@ -266,7 +277,7 @@ def _seed_plaid_buy(
             source_file, source_type, source_origin, extracted_at, loaded_at
         ) VALUES (?, ?, ?, 'buy', 'buy', ?,
                   ?, 100.00, 1000.00, 0.00, 'USD', 'sync_test', 'plaid', ?,
-                  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                  CURRENT_TIMESTAMP, COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
         """,  # noqa: S608  # test fixture, not executing user SQL
         [
             f"itx_buy_{account_id}",
@@ -275,6 +286,7 @@ def _seed_plaid_buy(
             trade_date,
             quantity,
             source_origin,
+            loaded_at,
         ],
     )
 
@@ -798,6 +810,46 @@ def valuation_cases_template(
         account_id=account("plaid_only"),
         security_id=security("plaid_only"),
         source_origin=origin("plaid_only"),
+    )
+
+    # The watermark case: ONE account, TWO securities. The held security's own
+    # inputs (its lot; it has no price and no snapshot) are older than the
+    # SECOND security's plaid event, and that event is what flips the held
+    # security's status. A watermark folding only position-scoped timestamps
+    # would leave the held row reading as unchanged.
+    _seed_position(
+        db,
+        account_id=account("overlap_watermark"),
+        security_id=security("overlap_watermark"),
+        transaction_id=f"{origin('overlap_watermark')}_buy",
+        price=None,
+        created_at=_OVERLAP_HELD_LOT_AT,
+    )
+    _seed_security(db, security_id=security("overlap_watermark_b"))
+    _seed_price(
+        db,
+        security_id=security("overlap_watermark_b"),
+        price_date=anchor,
+        close="120.00",
+    )
+    _seed_plaid_buy(
+        db,
+        account_id=account("overlap_watermark"),
+        security_id=security("overlap_watermark_b"),
+        source_origin=origin("overlap_watermark"),
+        loaded_at=_OVERLAP_SECOND_SOURCE_AT,
+    )
+
+    # Its unaffected twin: one account, one source, one pinned input and no
+    # price or snapshot — so its watermark is exactly its lot's, and inheriting
+    # the overlap account's newer timestamp would be visible immediately.
+    _seed_position(
+        db,
+        account_id=account("clean_watermark"),
+        security_id=security("clean_watermark"),
+        transaction_id=f"{origin('clean_watermark')}_buy",
+        price=None,
+        created_at=_OVERLAP_HELD_LOT_AT,
     )
 
     mixed_security = security("mixed_currency")
@@ -1580,3 +1632,127 @@ def test_an_opening_bootstrap_is_not_a_second_source_ledger(
 
     *_, status = _holding(db, account_id)
     assert status != "source_overlap"
+
+
+@pytest.mark.slow
+def test_an_overlap_flip_advances_the_row_watermark(
+    valuation_cases: _ValuationCases,
+) -> None:
+    """A status change caused by a sibling position still moves updated_at.
+
+    The overlap flag is ACCOUNT-scoped, so a second-source event recorded
+    against security B flips security A from a valued row to ``source_overlap``
+    while none of A's own lots, price, or snapshot timestamps move. A watermark
+    folding only position-scoped inputs would report A as unchanged, and an
+    incremental consumer querying by the documented row watermark — the
+    contract ``core-updated-at-convention.md`` sets and this model's own column
+    comment repeats — would keep serving the pre-flip figure.
+
+    The held security here has no price and no broker snapshot, so the only
+    other candidate timestamps are its own lot's and the account-level overlap
+    input's. The equality below can therefore only hold if the overlap input is
+    folded in.
+    """
+    db = valuation_cases.db
+    account_id = _case_account("overlap_watermark")
+    held = _case_security("overlap_watermark")
+
+    row = db.execute(
+        """
+        SELECT updated_at, valuation_status
+        FROM core.dim_holdings
+        WHERE account_id = ? AND security_id = ?
+        """,
+        [account_id, held],
+    ).fetchone()
+    assert row is not None, "the held position produced no dim_holdings row"
+    updated_at, status = row
+
+    lot_row = db.execute(
+        """
+        SELECT MAX(updated_at)
+        FROM core.fct_investment_lots
+        WHERE account_id = ? AND security_id = ?
+        """,
+        [account_id, held],
+    ).fetchone()
+    assert lot_row is not None
+
+    # Preconditions: the scenario really is "the row's own inputs did not move".
+    assert status == "source_overlap", "the sibling event did not flip this row"
+    assert lot_row[0] == datetime.fromisoformat(_OVERLAP_HELD_LOT_AT), (
+        "fixture no longer pins the held position's own freshness"
+    )
+    assert datetime.fromisoformat(_OVERLAP_HELD_LOT_AT) < datetime.fromisoformat(
+        _OVERLAP_SECOND_SOURCE_AT
+    ), "the second-source event must be the newer input for this to prove anything"
+
+    assert updated_at == datetime.fromisoformat(_OVERLAP_SECOND_SOURCE_AT)
+
+
+@pytest.mark.slow
+def test_a_single_source_row_keeps_its_own_watermark(
+    valuation_cases: _ValuationCases,
+) -> None:
+    """The overlap term contributes only where the overlap exists.
+
+    ``source_overlap_accounts`` holds only overlapping accounts, so a
+    single-source position LEFT JOINs to nothing and falls back to its own
+    inputs. Without that scoping every row in the database would inherit
+    whatever the freshest overlapping ledger row happened to be — a watermark
+    that advances on an unrelated account's fault is as useless as one that
+    misses its own.
+
+    This position has no price and no snapshot, so its lot's pinned timestamp
+    is the whole answer.
+    """
+    db = valuation_cases.db
+
+    row = db.execute(
+        "SELECT updated_at FROM core.dim_holdings WHERE account_id = ?",
+        [_case_account("clean_watermark")],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == datetime.fromisoformat(_OVERLAP_HELD_LOT_AT)
+
+
+@pytest.mark.slow
+def test_both_overlap_implementations_agree_on_the_same_ledger(
+    valuation_cases: _ValuationCases,
+) -> None:
+    """One overlap predicate, two implementations, the same verdict.
+
+    ``core.dim_holdings`` decides the withhold in SQL. ``InvestmentService``
+    re-derives the same account set in Python for the ``lots`` and ``gains``
+    reads, because those two models carry no status column of their own — a
+    row-level trust marker across the three derived investment models is a
+    separate design decision. Two implementations of one predicate drift, and
+    the load-bearing half is the exclusion nobody would guess: an
+    ``opening_bootstrap`` row is MoneyBin's own reconstruction of a pre-window
+    position, not a second observation, and must not count on either side.
+
+    Compared over the accounts ``dim_holdings`` can speak for. Its grain is
+    OPEN positions, so the Python set is legitimately the wider of the two —
+    that is why the gains surface reads the ledger rather than this view.
+
+    Reaches for the private helper deliberately: the claim under test is that
+    two *implementations* agree, and the fixture accounts carry no
+    ``core.dim_accounts`` rows, so the public reads cannot resolve them.
+    """
+    db = valuation_cases.db
+
+    holdings_rows = db.execute(
+        "SELECT account_id, valuation_status FROM core.dim_holdings"
+    ).fetchall()
+    sql_side = {str(r[0]) for r in holdings_rows if r[1] == "source_overlap"}
+    open_accounts = {str(r[0]) for r in holdings_rows}
+    python_side = InvestmentService(db)._source_overlap_accounts()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # the claim under test is that two implementations agree
+
+    # Preconditions: both sides really evaluated something, and the fixture
+    # holds accounts of each verdict — a green comparison of two empty sets
+    # would prove nothing.
+    assert _case_account("source_overlap") in sql_side
+    assert _case_account("bootstrap_only") in open_accounts
+    assert _case_account("plaid_only") in open_accounts
+
+    assert open_accounts & python_side == sql_side

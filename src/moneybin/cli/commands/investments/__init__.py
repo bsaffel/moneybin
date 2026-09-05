@@ -504,6 +504,10 @@ def investments_gains(
     ``-q`` does not silence it: the gain shown for such a row is a conservative
     figure rather than the whole one, which qualifies the answer rather than
     commenting on the run.
+
+    Rows in an account whose investment ledger arrives from two sources at once
+    double-count outright — proceeds, basis and gain alike. That is disclosed
+    the same way, and under ``--output json`` in ``summary.degraded_reason``.
     """
     with handle_cli_errors(
         cli_actor="investments_gains", payload_type=InvestmentGainsPayload
@@ -521,7 +525,11 @@ def investments_gains(
         # (HIGH) fields; render_or_json derives the tier from the typed
         # payload's Annotated metadata — identical to the MCP tool.
         render_or_json(
-            build_envelope(data=InvestmentGainsPayload.from_result(result)),
+            build_envelope(
+                data=InvestmentGainsPayload.from_result(result),
+                degraded=result.degraded_reason is not None,
+                degraded_reason=result.degraded_reason,
+            ),
             output,
             cli_actor="investments_gains",
         )
@@ -544,10 +552,11 @@ def investments_gains(
             total_columns=view.total,
         )
     for w in result.warnings:
-        # Not gated on `quiet`. `gains` raises exactly one warning — that some
-        # row's cost basis is incomplete — and that is a disclosure about the
-        # figures rather than a status line about the run: `-q` output would
-        # otherwise show a conservative gain as an authoritative one. The
+        # Not gated on `quiet`. Both warnings `gains` can raise — that some
+        # row's cost basis is incomplete, and that the account's ledger arrives
+        # from two sources at once — are disclosures about the figures rather
+        # than status lines about the run: `-q` output would otherwise show a
+        # conservative or a double-counted gain as an authoritative one. The
         # `note` column names which rows, but only under `--wide`, because a
         # seventh column does not fit 80 columns. `investments lots list` meets
         # the same requirement with its marker in the default view instead.

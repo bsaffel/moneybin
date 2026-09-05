@@ -1417,10 +1417,11 @@ def test_source_overlap_fails(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
     assert result.status == "fail"
     assert result.affected_ids == ["ACC1"]
     assert result.recovery_actions is not None
-    assert [a.tool for a in result.recovery_actions] == [
-        "import_revert",
-        "sync_disconnect",
-    ]
+    # Only the action that can actually leave one ledger behind. A disconnect
+    # is a remote-only operation — the rows it already pulled stay local, and
+    # this check reads exactly those rows — so offering it would hand the user
+    # a permanent disconnection and an unchanged failure.
+    assert [a.tool for a in result.recovery_actions] == ["import_revert"]
 
 
 @pytest.mark.unit
