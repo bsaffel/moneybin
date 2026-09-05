@@ -170,13 +170,15 @@ class TestV055BackfillBlankMerchantCategories:
         run_migration(v055_db, migrate)
         assert _category_row(v055_db, PADDED_TXN) == ("  Gas  ", None)
 
-    def test_touched_merchant_gets_a_fresh_updated_at(self, v055_db: Database) -> None:
-        """``core.dim_merchants`` reads this column straight through.
+    def test_repaired_merchant_keeps_its_updated_at(self, v055_db: Database) -> None:
+        """A migration must not restamp the rows it repairs.
 
-        The convention is that an ``app`` table exposing ``updated_at`` has it
-        refreshed on every UPDATE. This migration is a service-external write
-        that changes row content, so without the bump the dim reports a stale
-        timestamp for precisely the rows whose category just changed.
+        ``updated_at`` means "set on UPDATE by service writes", and
+        ``DoctorService._run_app_audit_coverage`` flags a row whose watermark is
+        recent with no paired ``app.audit_log`` row — so a bump here would make
+        ``doctor`` report every row this migration fixes as an unaudited
+        mutation. No migration before this pair bumps it either, and nothing
+        reads the column for staleness: ``dim_merchants`` only projects it.
         """
         before = v055_db.execute(
             "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
@@ -191,10 +193,11 @@ class TestV055BackfillBlankMerchantCategories:
             [BLANK_CATEGORY_MERCHANT],
         ).fetchone()
         assert after is not None
-        assert after[0] > before[0]
+        assert after[0] == before[0]
+        assert _merchant_pair(v055_db, BLANK_CATEGORY_MERCHANT) == (None, None)
 
     def test_untouched_merchant_keeps_its_updated_at(self, v055_db: Database) -> None:
-        """The bump rides the same ``WHERE``, so a normal row is not restamped."""
+        """A row the migration never matched is likewise left alone."""
         before = v055_db.execute(
             "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
             [NORMAL_MERCHANT],

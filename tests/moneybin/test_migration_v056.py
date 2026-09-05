@@ -43,6 +43,7 @@ RULE_NORMAL = "rul-normal0001"
 
 PROPOSED_BLANK_TEXT = "prp-blanktext1"
 PROPOSED_ON_BLANK = "prp-onblank001"
+PROPOSED_APPROVED_ON_DELETED_RULE = "prp-onrule0001"
 PROPOSED_NORMAL = "prp-normal0001"
 
 SOURCE_MAP_ON_BLANK = ("plaid", "BLANK_CODE")
@@ -93,6 +94,7 @@ _PROPOSED_COLUMNS = (
     "category",
     "subcategory",
     "category_id",
+    "rule_id",
 )
 _SOURCE_MAP_COLUMNS = ("source_type", "source_category_code", "category_id")
 
@@ -209,9 +211,25 @@ def v056_db(db: Database) -> Database:
         "proposed_rules",
         _PROPOSED_COLUMNS,
         [
-            (PROPOSED_BLANK_TEXT, "BLANKCO", "   ", None, BLANK_CATEGORY_ID),
-            (PROPOSED_ON_BLANK, "ONBLANK", "Food", None, BLANK_SUBCATEGORY_ID),
-            (PROPOSED_NORMAL, "NORMALCO", "Food & Drink", "Coffee", NORMAL_CATEGORY_ID),
+            (PROPOSED_BLANK_TEXT, "BLANKCO", "   ", None, BLANK_CATEGORY_ID, None),
+            (PROPOSED_ON_BLANK, "ONBLANK", "Food", None, BLANK_SUBCATEGORY_ID, None),
+            # Approved, and linked to a rule step 1 deletes for its blank text.
+            (
+                PROPOSED_APPROVED_ON_DELETED_RULE,
+                "BLANKCO",
+                "Food & Drink",
+                "Coffee",
+                NORMAL_CATEGORY_ID,
+                RULE_BLANK_TEXT,
+            ),
+            (
+                PROPOSED_NORMAL,
+                "NORMALCO",
+                "Food & Drink",
+                "Coffee",
+                NORMAL_CATEGORY_ID,
+                RULE_NORMAL,
+            ),
         ],
     )
     insert_rows(
@@ -319,8 +337,15 @@ class TestV056ClearBlankTaxonomyReferences:
         run_migration(v056_db, migrate)
         assert _merchant_category_id(v056_db, MERCHANT_UNRESOLVED) is None
 
-    def test_touched_merchant_gets_a_fresh_updated_at(self, v056_db: Database) -> None:
-        """``core.dim_merchants`` reads ``updated_at`` straight through."""
+    def test_repaired_merchant_keeps_its_updated_at(self, v056_db: Database) -> None:
+        """A migration must not restamp the rows it repairs.
+
+        ``updated_at`` means "set on UPDATE by service writes", and
+        ``DoctorService._run_app_audit_coverage`` flags a row whose watermark is
+        recent with no paired ``app.audit_log`` row — so a bump here would make
+        ``doctor`` report every row this migration fixes as an unaudited
+        mutation. No migration before this pair bumps it either.
+        """
         before = v056_db.execute(
             "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
             [MERCHANT_ON_BLANK],
@@ -334,10 +359,11 @@ class TestV056ClearBlankTaxonomyReferences:
             [MERCHANT_ON_BLANK],
         ).fetchone()
         assert after is not None
-        assert after[0] > before[0]
+        assert after[0] == before[0]
+        assert _merchant_category_id(v056_db, MERCHANT_ON_BLANK) is None
 
     def test_untouched_merchant_keeps_its_updated_at(self, v056_db: Database) -> None:
-        """The bump rides the same ``WHERE``, so a good row is not restamped."""
+        """A row the migration never matched is likewise left alone."""
         before = v056_db.execute(
             "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
             [MERCHANT_ON_NORMAL],
@@ -530,6 +556,42 @@ class TestV056RemovesTheBlankTaxonomyRows:
             """
         ).fetchone()
         assert dangling == (0,)
+
+    def test_no_proposal_is_left_pointing_at_a_deleted_rule(
+        self, v056_db: Database
+    ) -> None:
+        """Deleting a rule has to clear the proposals that approved into it.
+
+        ``proposed_rules.rule_id`` is the approval link, and
+        ``doctor``'s ``_check_orphaned_proposed_rule_refs`` exists to report
+        one that no longer resolves — the same dangling shape
+        ``test_no_reference_is_left_dangling`` covers for ``category_id``, on
+        the other foreign key this migration can break.
+        """
+        run_migration(v056_db, migrate)
+        orphaned = v056_db.execute(
+            """
+            SELECT COUNT(*)
+            FROM app.proposed_rules p
+            WHERE p.rule_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM app.categorization_rules r
+                  WHERE r.rule_id = p.rule_id
+              )
+            """
+        ).fetchone()
+        assert orphaned == (0,)
+
+    def test_a_proposal_on_a_surviving_rule_keeps_its_link(
+        self, v056_db: Database
+    ) -> None:
+        """Only the proposals whose rule went away are unlinked."""
+        run_migration(v056_db, migrate)
+        linked = v056_db.execute(
+            "SELECT rule_id FROM app.proposed_rules WHERE proposed_rule_id = ?",
+            [PROPOSED_NORMAL],
+        ).fetchone()
+        assert linked == (RULE_NORMAL,)
 
     def test_sweep_is_idempotent(self, v056_db: Database) -> None:
         run_migration(v056_db, migrate)

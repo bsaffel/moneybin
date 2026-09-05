@@ -1,5 +1,5 @@
 {
-  "sha256": "412015654078666d05f58f00987d82a2456a85bda071396301c9d88ede1b019f",
+  "sha256": "89abdc65beaace34f4602d5032db6c7f283408cdefaa9c79e04442c0efbe4537",
   "tool_count": 50,
   "tools": [
     {
@@ -3934,9 +3934,6 @@
                       {
                         "if": {
                           "properties": {
-                            "state": {
-                              "const": "present"
-                            },
                             "subcategory": {
                               "not": {
                                 "type": "null"
@@ -3944,7 +3941,6 @@
                             }
                           },
                           "required": [
-                            "state",
                             "subcategory"
                           ]
                         },
@@ -4081,11 +4077,11 @@
         "name": "taxonomy_set"
       },
       "description_bytes": 205,
-      "input_schema_bytes": 3293,
+      "input_schema_bytes": 3257,
       "name": "taxonomy_set",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 3688
+      "total_bytes": 3652
     },
     {
       "annotation_bytes": 89,
@@ -5118,5 +5114,5 @@
       "total_bytes": 568
     }
   ],
-  "total_bytes": 60083
+  "total_bytes": 60047
 }

@@ -319,7 +319,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   real category was stored against a `NULL` category_id. The import path stops
   producing one too: a category blanked on the way in takes its subcategory
   with it, while a blank subcategory under a real category still nulls only
-  itself. (#517)
+  itself. `docs/reference/mcp-tools.md` states the rule as well, so an agent
+  reading the reference learns it before calling rather than as a refusal.
+  (#517)
 
 - **`merchants create --default-category "   "` is refused rather than
   stored.** A merchant's stored default is copied verbatim into a

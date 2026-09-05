@@ -452,17 +452,22 @@ class MerchantStateRequest(_StrictRequest):
                     "subcategory",
                 ),
             ),
-            # The same conditional SplitTarget advertises, on the same pair.
-            # `_conditional_schema_branch` keys its `if` on one field equalling
-            # a constant, and this one keys on a field being present and
-            # non-null, so it is spelled out the way SplitTarget spells it.
+            # The same conditional SplitTarget advertises, on the same pair,
+            # spelled the same way. `_conditional_schema_branch` keys its `if`
+            # on one field equalling a constant, and this one keys on a field
+            # being present and non-null, so it is written out.
+            #
+            # It does not also test `state`, because the `absent` branch above
+            # already forbids `subcategory` outright: under `absent` a document
+            # carrying the key is invalid whether or not this branch fires, so
+            # naming `state` here would narrow the `if` without narrowing what
+            # validates. It would also cost the reference renderer, which
+            # documents a variant conditional only when its `if` tests a single
+            # property.
             {
                 "if": {
-                    "properties": {
-                        "state": {"const": "present"},
-                        "subcategory": {"not": {"type": "null"}},
-                    },
-                    "required": ["state", "subcategory"],
+                    "properties": {"subcategory": {"not": {"type": "null"}}},
+                    "required": ["subcategory"],
                 },
                 "then": {
                     "properties": {"category": {"not": {"type": "null"}}},

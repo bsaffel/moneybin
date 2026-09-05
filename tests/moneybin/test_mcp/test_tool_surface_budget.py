@@ -185,13 +185,17 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # would have the agent retry a merge with a token, read the refusal as a
     # bug, and route around the confirmation this exists to enforce.
     "identity_links_decide": (3_497, 5_762),
-    # Grew 208 bytes advertising the rule its model validator already enforced:
+    # Grew 172 bytes advertising the rule its model validator already enforced:
     # a merchant subcategory requires a category. `SplitTarget` has carried the
     # same conditional in its JSON schema all along, so a client that validates
     # before calling saw the constraint for splits and not for merchants, and
     # could build a payload the schema promised was valid and the server then
     # refused.
-    "taxonomy_set": (3_688, 3_223),
+    #
+    # 36 of those bytes came back when the condition dropped its redundant
+    # `state` test: the `absent` branch already forbids `subcategory`, so
+    # naming `state` narrowed the `if` without narrowing what validates.
+    "taxonomy_set": (3_652, 3_223),
     "privacy_consent_set": (1_217, 2_188),
 }
 

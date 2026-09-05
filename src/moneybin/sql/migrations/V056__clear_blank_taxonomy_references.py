@@ -48,8 +48,24 @@ used only where no repair exists:
 - ``category_source_map.category_id`` is ``NOT NULL``, so a mapping onto a
   removed category cannot hold the absent value.
 
+**Deleting a rule unlinks its proposals.** ``proposed_rules.rule_id`` records
+which rule a proposal was approved into, and doctor's
+``_check_orphaned_proposed_rule_refs`` reports one that no longer resolves. A
+rule deleted for its blank category would leave exactly that, so the link is
+cleared first. The proposal is kept — it is sound, and only reverts to "not
+approved into a live rule".
+
+**No ``updated_at`` bump.** Every migration before this pair leaves the column
+alone, and it means "set on UPDATE by service writes". Bumping it also walks
+each repaired row into ``DoctorService._run_app_audit_coverage``, which flags a
+row whose watermark is recent with no paired ``app.audit_log`` row — so a fresh
+timestamp makes ``doctor`` report every row this migration fixes as an
+unaudited mutation. Nothing reads the column for staleness: ``dim_merchants``
+only projects it.
+
 **Order matters.** The reference clears read ``app.user_categories`` to find
-the blank ids, so the taxonomy rows themselves are deleted last. Running the
+the blank ids, so the taxonomy rows themselves are deleted last, and the
+proposal unlink precedes the rule delete that would orphan it. Running the
 whole body twice is a no-op: after the first pass no blank row remains, so
 every ``IN`` subquery is empty.
 
@@ -91,19 +107,24 @@ _UNREPAIRABLE_TEXT_TABLES = ("budgets", "categorization_rules", "proposed_rules"
 #: reach. ``budgets`` has no subcategory column.
 _BLANK_SUBCATEGORY_TABLES = ("categorization_rules", "proposed_rules")
 
-#: Nullable ``category_id`` references, flagged with whether the table exposes
-#: an ``updated_at`` to refresh. A row whose content changes without its
-#: timestamp moving reports stale for exactly the rows just repaired.
+#: Tables whose nullable ``category_id`` is cleared rather than cascaded.
+#:
+#: ``updated_at`` is deliberately NOT bumped on the ones that have it. Every
+#: migration before this pair leaves it alone, and the column means "set on
+#: UPDATE by service writes" — a migration is not one. Bumping it also walks a
+#: repaired row into ``DoctorService._run_app_audit_coverage``, which flags a
+#: row whose watermark is recent with no paired ``app.audit_log`` row, so a
+#: fresh timestamp would make ``doctor`` report every row this fixes as an
+#: unaudited mutation. Nothing reads the column for staleness; ``dim_merchants``
+#: only projects it.
 _NULLABLE_REFERENCES = (
-    ("user_merchants", True),
-    ("transaction_splits", False),
-    ("transaction_categories", False),
-    ("budgets", True),
-    ("categorization_rules", True),
-    ("proposed_rules", False),
+    "user_merchants",
+    "transaction_splits",
+    "transaction_categories",
+    "budgets",
+    "categorization_rules",
+    "proposed_rules",
 )
-
-_TOUCH = ",\n            updated_at = CURRENT_TIMESTAMP"
 
 
 def migrate(conn: object) -> None:
@@ -113,7 +134,25 @@ def migrate(conn: object) -> None:
         "app.user_categories rows, then delete those rows"
     )
 
-    # 1. Rows whose own NOT NULL category snapshot is blank. These name nothing
+    # 1. A rule about to go in step 2 may be the one a proposal approved into.
+    #    `proposed_rules.rule_id` is that approval link, and doctor's
+    #    `_check_orphaned_proposed_rule_refs` reports one that no longer
+    #    resolves — so unlink first. The proposal itself is sound and is kept;
+    #    it simply reverts to "not approved into a live rule".
+    conn.execute(  # type: ignore[union-attr]
+        """
+        UPDATE app.proposed_rules
+        SET rule_id = NULL
+        WHERE rule_id IN (
+            SELECT rule_id
+            FROM app.categorization_rules
+            WHERE REGEXP_FULL_MATCH(category, ?)
+        )
+        """,
+        [_BLANK],
+    )
+
+    # 2. Rows whose own NOT NULL category snapshot is blank. These name nothing
     #    and no UPDATE repairs them, so deletion is the only available repair.
     for table in _UNREPAIRABLE_TEXT_TABLES:
         conn.execute(  # type: ignore[union-attr]
@@ -121,7 +160,7 @@ def migrate(conn: object) -> None:
             [_BLANK],
         )
 
-    # 2. A blank subcategory under a real category is nulled, not deleted — the
+    # 3. A blank subcategory under a real category is nulled, not deleted — the
     #    row itself is sound. Same rule V054 and V055 apply to their tables.
     for table in _BLANK_SUBCATEGORY_TABLES:
         conn.execute(  # type: ignore[union-attr]
@@ -133,19 +172,19 @@ def migrate(conn: object) -> None:
             [_BLANK],
         )
 
-    # 3. Clear the canonical reference wherever the column can hold NULL, so the
+    # 4. Clear the canonical reference wherever the column can hold NULL, so the
     #    row survives with its default simply absent.
-    for table, has_updated_at in _NULLABLE_REFERENCES:
+    for table in _NULLABLE_REFERENCES:
         conn.execute(  # type: ignore[union-attr]
             f"""
             UPDATE app.{table}
-            SET category_id = NULL{_TOUCH if has_updated_at else ""}
+            SET category_id = NULL
             WHERE category_id IN ({_UNUSABLE_TAXONOMY_IDS})
             """,  # noqa: S608  # module-level constants, not user input
             [_BLANK, _BLANK],
         )
 
-    # 4. category_source_map.category_id is NOT NULL, so a mapping onto a
+    # 5. category_source_map.category_id is NOT NULL, so a mapping onto a
     #    removed category cannot hold the absent value and the mapping goes.
     conn.execute(  # type: ignore[union-attr]
         f"""
@@ -155,7 +194,7 @@ def migrate(conn: object) -> None:
         [_BLANK, _BLANK],
     )
 
-    # 5. Last, once nothing points at them: a category that renders as an empty
+    # 6. Last, once nothing points at them: a category that renders as an empty
     #    name and that resolve_category_id can never usefully match.
     conn.execute(  # type: ignore[union-attr]
         """
