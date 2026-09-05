@@ -606,11 +606,12 @@ not issue raw writes against these protected tables.
 
 ### Identity
 
-On first observation, MoneyBin mints a truncated UUID `event_group_id` that is
-independent of source row ids and values, then persists it with the standalone
-membership. M1J.7 is a pre-launch hard cut: there are no legacy Golden ids or
-consumers to preserve. Existing Raw and staging `event_group_id` values remain
-source-group references in provenance, while every migrated source event
+On first observation, MoneyBin mints a UUID4 `event_group_id` truncated to 12
+hex characters that is independent of source row ids and values, then persists
+it with the standalone membership. M1J.7 is a pre-launch hard cut: there are no
+legacy Golden ids or consumers to preserve. Existing Raw and staging
+`event_group_id` values remain source-group references in provenance, while
+every migrated source event
 receives a newly minted MoneyBin-owned Golden id. Core exposes only the Golden
 id after migration; no compatibility alias is created for a pre-M1J.7
 source-group reference.
