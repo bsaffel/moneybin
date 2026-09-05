@@ -186,7 +186,7 @@ Using profile: demo
 5 of 13 columns shown — --wide for all
 ```
 
-A row is a merchant whose charges land at a steady interval; `cadence` names the interval, `confidence` (a `--wide` column, 0 to 1) says how steady, and `--min-confidence` filters on it, `0.5` by default. `annualized_cost` is the average charge scaled to a year. `(uncategorized)` collects recurring charges with no merchant match. There is no "mark as cancelled" yet; a cancelled subscription goes inactive on its own two intervals after its last charge.
+A row is a merchant whose charges land at a steady interval; `cadence` names the interval, `confidence` (a `--wide` column, 0 to 1) says how steady, and `--min-confidence` filters on it, `0.5` by default. `annualized_cost` is the average charge scaled to a year. `(uncategorized)` collects recurring charges with no merchant match. There is no "mark as cancelled" yet; a cancelled subscription goes inactive on its own once its last charge is more than 60 days or two intervals old, whichever is longer.
 
 ### Merchants
 
@@ -269,7 +269,7 @@ Empty on the demo, because drift needs an assertion: a balance you typed from a 
 - **Default columns.** A text table shows the columns that answer the question; the footer (`5 of 12 columns shown — --wide for all`) counts the rest. `--wide` renders all of them, JSON always carries all of them.
 - **Signs.** `spending`, `merchants`, and `recurring` report outflow as positive absolute amounts. `cashflow`, `large-transactions`, and every transaction listing are signed: negative is money out.
 - **Currency.** Every row carries a `currency_code`, and a report never blends currencies into one figure. A multi-currency profile gets its rows interleaved per currency, best-ranked first within each, so a capped result holds every currency that fits inside the cap — a `--limit` smaller than the number of currencies still drops some, and `summary.has_more` is the signal that later pages may carry currencies the first did not. See [One display currency](#one-display-currency).
-- **The `💡` lines.** Each one is the MCP tool call an assistant would make next, written out so you can read it as the CLI's own next move — the parameter it names is the flag of the same name on the reference page.
+- **The `💡` lines.** Each one is the MCP tool call an assistant would make next, written out so you can read it as the CLI's own next move. The parameter it names maps to a flag on the dedicated command, not always under the same name (`from_date` is `--from`), and the [reference page](../reference/cli/reports.md) lists each command's flags.
 - **Freshness.** Every report reads views over the canonical tables, so it reflects the last import or `moneybin refresh` the moment that finishes; nothing is cached between runs.
 - **Rows, not aggregates.** When the question is "show me the transactions", `moneybin transactions list` filters by `--account`, `--from`/`--to`, `--category`, `--amount-min`/`--amount-max`, and `--description`, and `moneybin sql query` takes any read-only SQL.
 
