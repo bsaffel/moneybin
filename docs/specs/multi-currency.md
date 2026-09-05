@@ -696,6 +696,9 @@ Numbered, testable. Tagged by phase.
     governs later disposal. `source_transfer_id` records the accepted Transfer that
     placed the lot in its current Account; a later Transfer replaces this immediate
     movement id while preserving the original acquisition provenance.
+    Reversing or deleting an accepted Transfer advances both affected
+    Account/Currency positions through its audit snapshot without treating the
+    inactive evidence as a movement.
 
     A paired Transfer is atomic on the later of its two posting dates. Same-day
     acquisitions precede it and same-day ordinary disposals follow it; multiple
@@ -708,6 +711,8 @@ Numbered, testable. Tagged by phase.
     uses the engine's HIFO ordering and specific identification uses its existing
     deterministic FIFO fallback when no Currency-lot selections exist; affected
     source and destination slices expose NULL basis with `unsupported_method`.
+    Unsupported elections never turn either Transfer leg into a realized-gain
+    placeholder; only a later Currency disposal can realize gain.
     Home-currency Transfers remain outside Currency-lot accounting.
 21. **Decimal throughout.** All amounts and rates are `DECIMAL`, never `FLOAT`
     (`DECIMAL(18,2)` amounts; `DECIMAL(18,8)` rates per the `database.md` precision

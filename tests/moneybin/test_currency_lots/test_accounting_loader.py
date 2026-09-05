@@ -289,9 +289,28 @@ def test_same_currency_transfer_preserves_unsupported_source_coverage(
     assert transferred.coverage_reason == "unsupported_method"
     assert transferred.cost_basis_total is None
     assert transferred.cost_basis_remaining is None
+    assert len(result.gains) == 1
+    assert result.gains[0].conversion_id == "fxc_destination_disposal"
     assert result.gains[0].coverage_reason == "unsupported_method"
     assert result.gains[0].cost_basis is None
     assert result.gains[0].gain_loss is None
+
+
+@pytest.mark.parametrize(
+    ("account_id", "method"),
+    [("acct-eur", "hifo"), ("acct-eur-2", "specific")],
+)
+def test_same_currency_transfer_with_unsupported_method_does_not_realize_gain(
+    account_id: str,
+    method: str,
+) -> None:
+    result = _derive(
+        _conversion(),
+        transfers=(_transfer(),),
+        methods={account_id: method},
+    )
+
+    assert result.gains == ()
 
 
 def test_underfunded_currency_transfer_keeps_known_slice_and_unknown_remainder() -> (
@@ -1144,6 +1163,30 @@ def test_same_currency_transfer_loader_reads_exact_foreign_bridge_rows() -> None
     assert "http" not in query
 
 
+def test_transfer_position_watermarks_use_both_active_audit_snapshots() -> None:
+    context = _FakeContext(
+        pd.DataFrame({
+            "account_id": ["acct-eur", "acct-eur-2"],
+            "currency_code": ["EUR", "EUR"],
+            "transfer_updated_at": [str(T4), str(T5)],
+        })
+    )
+
+    watermarks = sqlmesh_loader._load_transfer_position_watermarks(  # pyright: ignore[reportPrivateUsage]
+        t.cast(t.Any, context)
+    )
+
+    assert watermarks == {
+        ("acct-eur", "EUR"): T4,
+        ("acct-eur-2", "EUR"): T5,
+    }
+    query = context.queries[0].lower()
+    assert "before_value as decision" in query
+    assert "after_value as decision" in query
+    assert "$.match_status') = 'accepted'" in query
+    assert query.count("from valid_transfers") == 2
+
+
 def test_deleted_account_method_uses_audit_freshness() -> None:
     context = _FakeContext(
         pd.DataFrame(
@@ -1185,6 +1228,7 @@ def test_materialized_accounting_reads_follow_registered_table_refs(
         sqlmesh_loader, "FCT_INVESTMENT_TRANSACTIONS", investments, raising=False
     )
     context = _FakeContext(
+        pd.DataFrame(),
         pd.DataFrame(),
         pd.DataFrame(),
         pd.DataFrame(),
@@ -1246,6 +1290,7 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
         for name, table in (
             ("BRIDGE_TRANSFERS", "trusted_transfers"),
             ("DIM_ACCOUNTS", "canonical_accounts"),
+            ("INT_TRANSACTIONS_MATCHED", "matched_transactions"),
             ("INT_TRANSACTIONS_MERGED", "merged_transactions"),
             ("MATCH_DECISIONS", "trusted_decisions"),
             ("PROFILE_SETTINGS", "profile_config"),
@@ -1268,7 +1313,7 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
         pd.DataFrame(),
         pd.DataFrame(),
     )
-    accounting_context = _FakeContext(*(pd.DataFrame() for _ in range(10)))
+    accounting_context = _FakeContext(*(pd.DataFrame() for _ in range(11)))
 
     assert sqlmesh_loader.load_conversion_rows(t.cast(t.Any, conversion_context)) == []
     assert sqlmesh_loader.load_currency_accounting(
@@ -1287,6 +1332,7 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
     model_refs = {
         refs["BRIDGE_TRANSFERS"].full_name,
         refs["DIM_ACCOUNTS"].full_name,
+        refs["INT_TRANSACTIONS_MATCHED"].full_name,
         refs["INT_TRANSACTIONS_MERGED"].full_name,
     }
     physical_refs = expected - model_refs
@@ -1336,6 +1382,7 @@ def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -
             "method_updated_at": [str(T4)],
         }),
         pd.DataFrame(columns=t.cast(t.Any, ["target_id", "mutation_updated_at"])),
+        pd.DataFrame(),
         pd.DataFrame(),
     )
 

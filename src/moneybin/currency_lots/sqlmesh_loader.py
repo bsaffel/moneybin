@@ -33,6 +33,7 @@ from moneybin.tables import (
     EXCHANGE_RATES,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
+    INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_MERGED,
     MATCH_DECISIONS,
     PROFILE_SETTINGS,
@@ -1098,6 +1099,7 @@ def _derive_currency_accounting(
     *,
     transfers: Sequence[CurrencyTransfer] = (),
     account_method_updated_at: Mapping[str, datetime],
+    position_updated_at: Mapping[tuple[str, str], datetime] | None = None,
 ) -> CurrencyAccountingResult:
     event_rows: list[tuple[LedgerEvent, _EventMetadata]] = []
     engine_transfers: list[PairedTransfer] = []
@@ -1188,6 +1190,9 @@ def _derive_currency_accounting(
         )
 
     group_updated_at: dict[tuple[str, str | None], datetime] = {}
+    for (account_id, currency_code), updated_at in (position_updated_at or {}).items():
+        position_key: tuple[str, str | None] = (account_id, currency_code)
+        group_updated_at[position_key] = updated_at
     for _event_row, metadata in event_rows:
         key = (metadata.account_id, metadata.currency_code)
         updated_at = _latest(
@@ -1355,7 +1360,7 @@ def _derive_currency_accounting(
 
     for event, metadata in event_rows:
         method = _method(event.account_id, account_methods)
-        if event.type == "buy" or method in {"fifo", "average"}:
+        if event.type != "sell" or method in {"fifo", "average"}:
             continue
         gains.append(
             _incomplete_gain(
@@ -1536,6 +1541,94 @@ def _load_same_currency_transfers(
     return transfers
 
 
+def _load_transfer_position_watermarks(
+    context: ExecutionContext,
+) -> dict[tuple[str, str], datetime]:
+    """Load position freshness from audited active Transfer snapshots."""
+    matched = context.resolve_table(INT_TRANSACTIONS_MATCHED.full_name)
+    transactions = context.resolve_table(FCT_TRANSACTIONS.full_name)
+    audit_log = AUDIT_LOG.full_name
+    frame = context.fetchdf(
+        f"""
+        WITH decision_snapshots AS (
+          SELECT occurred_at, before_value AS decision
+          FROM {audit_log}
+          WHERE target_schema = 'app'
+            AND target_table = 'match_decisions'
+          UNION ALL
+          SELECT occurred_at, after_value AS decision
+          FROM {audit_log}
+          WHERE target_schema = 'app'
+            AND target_table = 'match_decisions'
+        ), active_transfers AS (
+          SELECT occurred_at,
+                 JSON_EXTRACT_STRING(
+                   decision, '$.source_transaction_id_a'
+                 ) AS source_transaction_id_a,
+                 JSON_EXTRACT_STRING(decision, '$.source_type_a') AS source_type_a,
+                 JSON_EXTRACT_STRING(decision, '$.account_id') AS account_id,
+                 JSON_EXTRACT_STRING(
+                   decision, '$.source_transaction_id_b'
+                 ) AS source_transaction_id_b,
+                 JSON_EXTRACT_STRING(decision, '$.source_type_b') AS source_type_b,
+                 JSON_EXTRACT_STRING(decision, '$.account_id_b') AS account_id_b
+          FROM decision_snapshots
+          WHERE decision IS NOT NULL
+            AND JSON_EXTRACT_STRING(decision, '$.match_type') = 'transfer'
+            AND JSON_EXTRACT_STRING(decision, '$.match_status') = 'accepted'
+            AND JSON_EXTRACT_STRING(decision, '$.reversed_at') IS NULL
+        ), matched_ids AS (
+          SELECT source_transaction_id, source_type, account_id,
+                 MAX(transaction_id) AS transaction_id
+          FROM {matched}
+          GROUP BY source_transaction_id, source_type, account_id
+        ), valid_transfers AS (
+          SELECT active.occurred_at,
+                 debit.account_id AS source_account_id,
+                 credit.account_id AS destination_account_id,
+                 debit.currency_code
+          FROM active_transfers AS active
+          JOIN matched_ids AS debit_id
+            ON active.source_transaction_id_a = debit_id.source_transaction_id
+           AND active.source_type_a = debit_id.source_type
+           AND active.account_id = debit_id.account_id
+          JOIN matched_ids AS credit_id
+            ON active.source_transaction_id_b = credit_id.source_transaction_id
+           AND active.source_type_b = credit_id.source_type
+           AND active.account_id_b = credit_id.account_id
+          JOIN {transactions} AS debit
+            ON debit_id.transaction_id = debit.transaction_id
+          JOIN {transactions} AS credit
+            ON credit_id.transaction_id = credit.transaction_id
+          WHERE debit.currency_code = credit.currency_code
+            AND debit.amount < 0
+            AND credit.amount > 0
+            AND debit.amount + credit.amount = 0
+        ), positions AS (
+          SELECT occurred_at, source_account_id AS account_id, currency_code
+          FROM valid_transfers
+          UNION ALL
+          SELECT occurred_at, destination_account_id AS account_id, currency_code
+          FROM valid_transfers
+        )
+        SELECT account_id, currency_code,
+               MAX(occurred_at)::VARCHAR AS transfer_updated_at
+        FROM positions
+        GROUP BY account_id, currency_code
+        """  # noqa: S608  # registered/resolved table names, not user input
+    )
+    watermarks: dict[tuple[str, str], datetime] = {}
+    for record in _records(frame):
+        account_id = _opt_str(record["account_id"])
+        currency_code = _opt_str(record["currency_code"])
+        updated_at = _opt_timestamp(record["transfer_updated_at"])
+        if account_id is None or not _valid_currency(currency_code):
+            continue
+        if updated_at is not None:
+            watermarks[(account_id, currency_code)] = updated_at
+    return watermarks
+
+
 def _load_account_methods(
     context: ExecutionContext,
 ) -> tuple[dict[str, str | None], dict[str, datetime]]:
@@ -1584,10 +1677,12 @@ def load_currency_accounting(
         home_currency=home_currency,
         home_updated_at=home_updated_at,
     )
+    position_updated_at = _load_transfer_position_watermarks(context)
     return _derive_currency_accounting(
         conversions,
         sales,
         account_methods,
         transfers=transfers,
         account_method_updated_at=account_method_updated_at,
+        position_updated_at=position_updated_at,
     )

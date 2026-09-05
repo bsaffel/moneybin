@@ -9,6 +9,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.metrics import registry as metrics_registry
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.currency_service import CurrencyService
 from moneybin.services.transform_service import TransformService
 from moneybin.services.undo_service import UndoService
@@ -471,6 +472,42 @@ def test_transform_moves_same_currency_basis_and_realizes_only_on_later_disposal
         "complete",
         None,
     )
+
+    MatchDecisionsRepo(db).reverse(
+        "match-movement",
+        reversed_by="user",
+        actor="test",
+    )
+    reversal_timestamp = db.execute(
+        """
+        SELECT MAX(occurred_at)
+        FROM app.audit_log
+        WHERE target_table = 'match_decisions'
+          AND target_id = 'match-movement'
+        """
+    ).fetchone()
+    assert reversal_timestamp is not None
+    reapplied = TransformService(db).apply()
+    assert reapplied.applied, f"transform apply failed: {reapplied.error}"
+    restored = db.execute(
+        """
+        SELECT remaining_quantity, cost_basis_remaining, updated_at
+        FROM core.fct_currency_lots
+        WHERE account_id = 'acct-eur-source'
+        """
+    ).fetchone()
+    assert restored == (
+        Decimal("80.00"),
+        Decimal("100.00"),
+        reversal_timestamp[0],
+    )
+    assert db.execute(
+        """
+        SELECT COUNT(*)
+        FROM core.fct_currency_lots
+        WHERE source_transfer_id = 'match-movement'
+        """
+    ).fetchone() == (0,)
 
 
 @pytest.mark.slow

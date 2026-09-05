@@ -26,6 +26,7 @@ from moneybin.metrics.registry import set_fx_accounting_rows
         "core.bridge_transfers",
         "core.fct_investment_transactions",
         "core.fct_transactions",
+        "prep.int_transactions__matched",
     },
     columns={
         "currency_lot_id": "VARCHAR",
