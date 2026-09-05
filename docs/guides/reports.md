@@ -379,33 +379,33 @@ $ uv run moneybin reports run core:recurring --param status=all --limit 2 --outp
 }
 ```
 
-`has_more` says the `--limit` cut the result. Every column carries a privacy class — what it reveals: a merchant, an amount, an account id — that decides what is masked when the value leaves the machine through MCP or an export; `sensitivity` is the highest class among the returned columns, and the [MCP server guide](mcp-server.md) says what the server does with it. `display_currency` names the currency the amounts are in, and a converted read adds `applied_rates` and, when a row could not be priced, `degraded_reason`. The `💡` lines become `actions`. The envelope's full contract is in the [CLI reference](cli-reference.md#output-envelopes).
+`has_more` says the `--limit` cut the result, and while it is true `total_count` is a lower bound rather than the total: execution fetches one row past the cap and reports that, so the `3` above means at least three — the uncapped `--status all` run earlier on this page shows nine — and the exact count means running the report again without a cap. Every column carries a privacy class — what it reveals: a merchant, an amount, an account id — that decides what is masked when the value leaves the machine through MCP or an export; `sensitivity` is the highest class among the returned columns, and the [MCP server guide](mcp-server.md) says what the server does with it. `display_currency` names the currency the amounts are in, and a converted read adds `applied_rates` and, when a row could not be priced, `degraded_reason`. The `💡` lines become `actions`. The envelope's full contract is in the [CLI reference](cli-reference.md#output-envelopes).
 
 ## Save your own report
 
 A saved report is a read-only `SELECT` stored in the profile, with typed parameters, run and exported through the same catalog as the built-ins. Write `$name` where a value goes and declare it with `--param name:type` (`str`, `int`, `float`, `bool`, `date`, or `decimal`), optionally with a default (`name:type=value`); a parameter with no default is required:
 
 ```console
-$ uv run moneybin reports create coffee --sql "SELECT merchant_name, SUM(amount) AS spend FROM core.fct_transactions WHERE category = \$category GROUP BY merchant_name ORDER BY spend LIMIT 5" --param category:str --description "Top merchants in one category"
+$ uv run moneybin reports create coffee --sql "SELECT merchant_name, currency_code, SUM(amount) AS spend FROM core.fct_transactions WHERE category = \$category GROUP BY merchant_name, currency_code QUALIFY ROW_NUMBER() OVER (PARTITION BY currency_code ORDER BY spend) BETWEEN 1 AND 5 ORDER BY currency_code, spend" --param category:str --description "Top merchants in one category"
 Using profile: demo
-user_report.create report_id=user:rbb1cf146d366 outcome=saved
-✅ Saved coffee (user:rbb1cf146d366)
+user_report.create report_id=user:r6ebf7dcd4ba6 outcome=saved
+✅ Saved coffee (user:r6ebf7dcd4ba6)
 ```
 
-`--sql-file` takes the query from a file instead. Run it by name:
+`currency_code` sits in the grouping key and the rank is taken within it, so a profile holding two currencies gets a top five per currency rather than one sum across both. Saving a report derives its privacy classes and checks nothing about its arithmetic, so keeping currencies apart in your own SQL is on you; the built-ins do it this same way. `--sql-file` takes the query from a file instead. Run it by name:
 
 ```console
 $ uv run moneybin reports run coffee --param "category=Food & Drink"
 Using profile: demo
-┏━━━━━━━━━━━━━━━┳━━━━━━━━━━┓
-┃ merchant_name ┃ spend    ┃
-┡━━━━━━━━━━━━━━━╇━━━━━━━━━━┩
-│ Costco        │ -6441.18 │
-│ Trader Joe's  │ -3260.58 │
-│ Kroger        │ -2842.24 │
-│ Instacart     │ -2391.18 │
-│ Whole Foods   │ -2329.06 │
-└───────────────┴──────────┘
+┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━┓
+┃ merchant_name ┃ currency_code ┃ spend    ┃
+┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━┩
+│ Costco        │ USD           │ -6441.18 │
+│ Trader Joe's  │ USD           │ -3260.58 │
+│ Kroger        │ USD           │ -2842.24 │
+│ Instacart     │ USD           │ -2391.18 │
+│ Whole Foods   │ USD           │ -2329.06 │
+└───────────────┴───────────────┴──────────┘
 ```
 
 You never declare privacy classes. MoneyBin derives them from the SQL at save time — a column read from `core.fct_transactions.merchant_name` is a `merchant_name`, a sum over `amount` is a `txn_amount` — and stores them, so a saved report masks exactly as a built-in does on every surface:
@@ -413,24 +413,25 @@ You never declare privacy classes. MoneyBin derives them from the SQL at save ti
 ```console
 $ uv run moneybin reports explain coffee --param "category=Food & Drink"
 Using profile: demo
-user:rbb1cf146d366  (user)
+user:r6ebf7dcd4ba6  (user)
 Top merchants in one category
 ┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ column        ┃ class         ┃ origin   ┃ upstream                            ┃
 ┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
 │ merchant_name │ merchant_name │ upstream │ core.fct_transactions.merchant_name │
+│ currency_code │ currency      │ upstream │ core.fct_transactions.currency_code │
 │ spend         │ txn_amount    │ computed │ -                                   │
 └───────────────┴───────────────┴──────────┴─────────────────────────────────────┘
 Reads: core.fct_transactions
 Graduation: eligible
-Updated: 2026-09-04 22:01:49.065924
-Fingerprint: ff5ecbc86481148c0aeac3581dcb902efe6dfc82836af0d57f2ef402bc946e3b
+Updated: 2026-09-05 00:14:05.940839
+Fingerprint: a5ff30ae3f62c0dd6368d61fbc135744746672b11e247952a2d8abfba8b35a71
 
 SQL:
-SELECT merchant_name, SUM(amount) AS spend FROM core.fct_transactions WHERE category = 'Food & Drink' GROUP BY merchant_name ORDER BY spend LIMIT 5
+SELECT merchant_name, currency_code, SUM(amount) AS spend FROM core.fct_transactions WHERE category = 'Food & Drink' GROUP BY merchant_name, currency_code QUALIFY ROW_NUMBER() OVER (PARTITION BY currency_code ORDER BY spend) BETWEEN 1 AND 5 ORDER BY currency_code, spend
 
 Template:
-SELECT merchant_name, SUM(amount) AS spend FROM core.fct_transactions WHERE category = $category GROUP BY merchant_name ORDER BY spend LIMIT 5
+SELECT merchant_name, currency_code, SUM(amount) AS spend FROM core.fct_transactions WHERE category = $category GROUP BY merchant_name, currency_code QUALIFY ROW_NUMBER() OVER (PARTITION BY currency_code ORDER BY spend) BETWEEN 1 AND 5 ORDER BY currency_code, spend
 ```
 
 A report may read `raw.*` or `prep.*` too, but those schemas declare classes for few columns, so masking there falls back to scanning values by shape — an account number of fewer than eight digits passes through. Keep saved reports on `core.*` and `reports.*` unless you have read [what the AI provider sees](what-the-ai-sees.md). When a derived class is stricter than the column deserves, `reports reclassify` lowers it for one column, with a `--reason`, and the change is audited.
@@ -443,23 +444,23 @@ Using profile: demo
 ┏━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ name   ┃ report_id          ┃ tier ┃ parameters ┃ description                   ┃
 ┡━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ coffee │ user:rbb1cf146d366 │ user │ category   │ Top merchants in one category │
+│ coffee │ user:r6ebf7dcd4ba6 │ user │ category   │ Top merchants in one category │
 └────────┴────────────────────┴──────┴────────────┴───────────────────────────────┘
 $ uv run moneybin reports set coffee --archive
 Using profile: demo
-user_report.set report_id=user:rbb1cf146d366 fields=1 outcome=updated
-✅ Updated coffee (user:rbb1cf146d366)
+user_report.set report_id=user:r6ebf7dcd4ba6 fields=1 outcome=updated
+✅ Updated coffee (user:r6ebf7dcd4ba6)
 $ uv run moneybin reports list --include-archived --tier user
 Using profile: demo
 ┏━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ name   ┃ report_id          ┃ tier            ┃ parameters ┃ description                   ┃
 ┡━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ coffee │ user:rbb1cf146d366 │ user [archived] │ category   │ Top merchants in one category │
+│ coffee │ user:r6ebf7dcd4ba6 │ user [archived] │ category   │ Top merchants in one category │
 └────────┴────────────────────┴─────────────────┴────────────┴───────────────────────────────┘
 $ uv run moneybin reports delete coffee --yes
 Using profile: demo
-user_report.delete report_id=user:rbb1cf146d366 outcome=removed
-✅ Deleted coffee (user:rbb1cf146d366)
+user_report.delete report_id=user:r6ebf7dcd4ba6 outcome=removed
+✅ Deleted coffee (user:r6ebf7dcd4ba6)
 ```
 
 `reports set` also renames (`--name`), re-describes, and replaces the SQL or the parameters, re-deriving the privacy classes when it does. `--restore` unarchives. A delete is audited; `system audit undo` brings the report back.

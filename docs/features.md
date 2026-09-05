@@ -107,8 +107,8 @@ warned on every report it cannot price.
 
 Nothing converted is stored. The original amount and its currency stay
 untouched in every table, and a converted figure is recomputed on each read;
-on a profile whose home currency converts them, `moneybin sql query` over the
-`reports.*` view returns the stored figures.
+on a profile with a home currency, `moneybin sql query` over the `reports.*`
+view returns the stored, unconverted figures.
 `moneybin reports networth` prints one position per currency, and a single
 combined position once conversion has priced them into the same one.
 
