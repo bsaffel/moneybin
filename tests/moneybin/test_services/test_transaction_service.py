@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.protocol.write_contracts import (
@@ -19,7 +20,7 @@ from moneybin.protocol.write_contracts import (
     TagRename,
     TagsSet,
 )
-from moneybin.services._validators import InvalidSlugError
+from moneybin.services._validators import CATEGORY_NAME_MAX_LEN, InvalidSlugError
 from moneybin.services.audit_service import AuditService
 from moneybin.services.transaction_service import (
     ManualBatchResult,
@@ -542,6 +543,128 @@ class TestAnnotationBatches:
         ).fetchone()
         assert row == ("FND",)
 
+    @pytest.mark.unit
+    def test_set_splits_refuses_a_blank_category(
+        self, transaction_db: Database
+    ) -> None:
+        """The granular arm takes untyped dicts, so Pydantic never sees them.
+
+        ``SplitsSet`` reaches ``_prepare_splits_set`` through ``SplitTarget``,
+        which already refuses a whitespace-only category. ``set_splits`` reaches
+        the same code from ``list[dict[str, Any]]`` and validated only
+        ``amount``, so the guard that existed on one arm was absent on the
+        other.
+        """
+        with pytest.raises(UserError, match=r"splits\[0\]\.category must be non-empty"):
+            TransactionService(transaction_db).set_splits(
+                "T1",
+                [{"amount": Decimal("-50"), "category": "   "}],
+                actor="cli",
+            )
+
+    @pytest.mark.unit
+    def test_set_splits_refuses_a_blank_subcategory(
+        self, transaction_db: Database
+    ) -> None:
+        """`subcategory` is the same column class and takes the same rule.
+
+        Staging nulls a blank one out alongside `category`, and V054 backfills
+        both, so a blank reaching the write path would be the one place the
+        three disagree. The message names `subcategory`, not `category` — a
+        caller told the wrong field name looks at the wrong flag.
+        """
+        with pytest.raises(
+            UserError, match=r"splits\[0\]\.subcategory must be non-empty"
+        ):
+            TransactionService(transaction_db).set_splits(
+                "T1",
+                [{"amount": Decimal("-50"), "category": "Food", "subcategory": " "}],
+                actor="cli",
+            )
+
+    @pytest.mark.unit
+    def test_set_splits_refuses_a_non_string_category(
+        self, transaction_db: Database
+    ) -> None:
+        """A wrong-typed category is a bad request, not an internal error.
+
+        The granular arm builds its targets from `list[dict[str, Any]]` and
+        already type-checks `amount` before use; `category` reached
+        `validate_category_text` unchecked, where `.strip()` raised
+        `AttributeError` — a crash rather than the refusal the caller can act
+        on. The message names the offending index the way the sibling `amount`
+        check does, so a caller with several splits knows which one to fix.
+        """
+        with pytest.raises(
+            UserError, match=r"splits\[0\]\.category must be str"
+        ) as exc:
+            TransactionService(transaction_db).set_splits(
+                "T1",
+                [{"amount": Decimal("-50"), "category": 123}],
+                actor="cli",
+            )
+        assert exc.value.code == error_codes.TRANSACTION_INVALID_INPUT
+
+    @pytest.mark.unit
+    def test_set_splits_refuses_an_over_long_category(
+        self, transaction_db: Database
+    ) -> None:
+        """The length half of `validate_category_text`, on the granular arm.
+
+        `CATEGORY_NAME_MAX_LEN` matches the MCP `CategoryName` field, so the
+        two paths agree on the ceiling as well as on blank. Only the blank
+        branch was exercised before, so a regression that dropped or
+        mis-compared this branch would have passed the suite.
+        """
+        with pytest.raises(
+            UserError,
+            match=rf"splits\[0\]\.category exceeds {CATEGORY_NAME_MAX_LEN} chars",
+        ):
+            TransactionService(transaction_db).set_splits(
+                "T1",
+                [
+                    {
+                        "amount": Decimal("-50"),
+                        "category": "x" * (CATEGORY_NAME_MAX_LEN + 1),
+                    }
+                ],
+                actor="cli",
+            )
+
+    @pytest.mark.unit
+    def test_set_splits_refuses_a_subcategory_without_a_category(
+        self, transaction_db: Database
+    ) -> None:
+        """A subcategory is a child of a category, on every surface.
+
+        `write_contracts.SplitTarget._validate_category_hierarchy` refuses this
+        on MCP, and V054 now cascades the same rule onto legacy rows — so the
+        granular arm was the one place the pair could still be written.
+        """
+        with pytest.raises(
+            UserError, match=r"splits\[0\]\.subcategory requires a category"
+        ):
+            TransactionService(transaction_db).set_splits(
+                "T1",
+                [{"amount": Decimal("-50"), "subcategory": "Coffee"}],
+                actor="cli",
+            )
+
+    @pytest.mark.unit
+    def test_set_splits_keeps_a_category_at_the_limit(
+        self, transaction_db: Database
+    ) -> None:
+        """The boundary's other side: exactly the limit is allowed.
+
+        Without this, `>` could become `>=` and the refusal test above would
+        still pass.
+        """
+        TransactionService(transaction_db).set_splits(
+            "T1",
+            [{"amount": Decimal("-50"), "category": "x" * CATEGORY_NAME_MAX_LEN}],
+            actor="cli",
+        )
+
 
 class TestNotes:
     """Tests for TransactionService note operations (multi-note shape)."""
@@ -963,6 +1086,95 @@ class TestSplits:
         assert [s.ord for s in splits] == [0, 1, 2]
 
     @pytest.mark.unit
+    def test_add_split_refuses_a_blank_category(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        """A category of spaces is refused here as it already is over MCP.
+
+        ``write_contracts._reject_whitespace_only`` refuses one on the typed
+        path; ``add_split`` took it. Stored, it blocks the inheritance in
+        ``core.fct_transaction_lines`` (``COALESCE(s.category, t.category)``
+        reads ``'  '`` as present) and renders as a blank cell, so the split
+        counts under no category while claiming to have one.
+        """
+        with pytest.raises(UserError, match="category must be non-empty") as exc:
+            txn_service.add_split(
+                sample_transaction_id, Decimal("-30.00"), category="   ", actor="cli"
+            )
+        assert exc.value.code == error_codes.TRANSACTION_INVALID_INPUT
+
+    @pytest.mark.unit
+    def test_add_split_refuses_a_blank_subcategory(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        """The same rule on the other half of the pair `add_split` accepts.
+
+        Named `subcategory`, since `--subcategory "   "` refused as "category"
+        points the caller at the flag they got right.
+        """
+        with pytest.raises(UserError, match="subcategory must be non-empty"):
+            txn_service.add_split(
+                sample_transaction_id,
+                Decimal("-30.00"),
+                category="Gas",
+                subcategory="   ",
+                actor="cli",
+            )
+
+    @pytest.mark.unit
+    def test_add_split_refuses_an_over_long_category(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        """`add_split` had no length check at all before this PR."""
+        with pytest.raises(
+            UserError, match=f"category exceeds {CATEGORY_NAME_MAX_LEN} chars"
+        ):
+            txn_service.add_split(
+                sample_transaction_id,
+                Decimal("-30.00"),
+                category="x" * (CATEGORY_NAME_MAX_LEN + 1),
+                actor="cli",
+            )
+
+    @pytest.mark.unit
+    def test_add_split_refuses_a_subcategory_without_a_category(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        """The same hierarchy rule MCP's `SplitTarget` already enforces."""
+        with pytest.raises(UserError, match="subcategory requires a category"):
+            txn_service.add_split(
+                sample_transaction_id,
+                Decimal("-30.00"),
+                subcategory="Coffee",
+                actor="cli",
+            )
+
+    @pytest.mark.unit
+    def test_add_split_keeps_a_category_at_the_limit(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        """The boundary's other side, so `>` cannot silently become `>=`."""
+        split = txn_service.add_split(
+            sample_transaction_id,
+            Decimal("-30.00"),
+            category="x" * CATEGORY_NAME_MAX_LEN,
+            actor="cli",
+        )
+
+        assert split.category == "x" * CATEGORY_NAME_MAX_LEN
+
+    @pytest.mark.unit
+    def test_add_split_keeps_a_category_a_person_wrote(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        """The restraint half: only blank is refused."""
+        split = txn_service.add_split(
+            sample_transaction_id, Decimal("-30.00"), category="Gas", actor="cli"
+        )
+
+        assert split.category == "Gas"
+
+    @pytest.mark.unit
     def test_add_split_emits_audit(
         self,
         txn_service: TransactionService,
@@ -1120,7 +1332,7 @@ class TestSplits:
         txn_service.add_split(
             sample_transaction_id, Decimal("-10.00"), category="Keep", actor="cli"
         )
-        with pytest.raises(ValueError):
+        with pytest.raises(UserError):
             txn_service.set_splits(
                 sample_transaction_id,
                 [
@@ -1138,12 +1350,26 @@ class TestSplits:
         txn_service: TransactionService,
         sample_transaction_id: str,
     ) -> None:
+        """The untyped-dict arm quantizes amounts and ignores keys it invents.
+
+        Both halves are the adapter's actual contract: a legacy caller may hand
+        over more precision than the column holds, and may carry keys this
+        service never had a field for. Neither is an error.
+
+        This used to pass ``subcategory`` with no ``category`` to exercise the
+        unknown-key half, which incidentally pinned an orphan as an accepted
+        state. It is not one — ``resolve_category_id`` cannot resolve a lone
+        subcategory to a ``category_id``, so the row would store a label the FK
+        disagrees with. ``test_set_splits_refuses_a_subcategory_without_a_category``
+        now covers the refusal; this test keeps only what it was named for.
+        """
         result = txn_service.set_splits(
             sample_transaction_id,
             [
                 {
                     "amount": Decimal("0.001"),
-                    "subcategory": "orphan-child",
+                    "category": "Legacy",
+                    "subcategory": "Adapter",
                     "legacy_extra": "ignored",
                 }
             ],
@@ -1152,8 +1378,8 @@ class TestSplits:
 
         assert len(result) == 1
         assert result[0].amount == Decimal("0.00")
-        assert result[0].category is None
-        assert result[0].subcategory == "orphan-child"
+        assert result[0].category == "Legacy"
+        assert result[0].subcategory == "Adapter"
 
     @pytest.mark.unit
     def test_set_splits_reinserts_identical_state_with_new_ids_and_audits(
@@ -1494,6 +1720,65 @@ class TestManualEntry:
         assert log_count[0] == 0
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("category", "subcategory", "field"),
+        [
+            (None, "Coffee", "subcategory"),
+            # Names `category`, not `subcategory`: the blank category is now
+            # refused on its own terms before the pair rule is reached, so the
+            # message points at the field the caller actually got wrong.
+            ("   ", "Coffee", "category"),
+            ("Food", "   ", "subcategory"),
+            ("x" * 101, None, "category"),
+            ("Food", "x" * 101, "subcategory"),
+        ],
+    )
+    def test_create_manual_batch_refuses_an_unusable_category_pair(
+        self,
+        transaction_db: Database,
+        category: str | None,
+        subcategory: str | None,
+        field: str,
+    ) -> None:
+        """`transactions create` takes the same pair rules as a split.
+
+        Each of these reached a write and reported success. The first two put
+        a subcategory on a transaction with no category to hang it off: the
+        ``cat_entries`` filter gates on ``category`` alone, so the entry was
+        dropped whole and the subcategory vanished without a word. The third
+        passed that filter and reached ``set_category_in_active_txn``, which
+        validates nothing, storing the blank against a NULL ``category_id``.
+
+        The last two are the length cap. Narrowing this check to preserve the
+        blank-category skip is what dropped it: with ``validate_category_text``
+        no longer reached for ``category``, an over-long one flowed to the
+        write and landed in ``app.transaction_categories.category``, an
+        unbounded ``VARCHAR`` with no CHECK, while ``add_split`` and
+        ``create_merchant_core`` refused the identical string.
+
+        A blank category with no subcategory is refused too, by
+        ``test_create_manual_batch_refuses_blank_category_string``. It stores
+        nothing wrong, so it was long treated as a harmless skip; what that
+        cost was consistency, since ``splits add`` and ``create_merchant_core``
+        refuse the identical string. ``None`` remains the way to say a
+        transaction is uncategorized.
+        """
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        with pytest.raises(UserError, match=rf"entries\[0\]\.{field}") as exc:
+            service.create_manual_batch(
+                [self._entry(category=category, subcategory=subcategory)],
+                actor="cli",
+            )
+        assert exc.value.code == error_codes.TRANSACTION_INVALID_INPUT
+        # Validation runs before any insert, so the batch leaves no trace.
+        raw_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM raw.manual_transactions"
+        ).fetchone()
+        assert raw_count is not None
+        assert raw_count[0] == 0
+
+    @pytest.mark.unit
     def test_create_manual_batch_rejects_size_zero(
         self, transaction_db: Database
     ) -> None:
@@ -1585,12 +1870,41 @@ class TestManualEntry:
         assert cat_set is not None and cat_set[0] == 0
 
     @pytest.mark.unit
-    def test_create_manual_batch_skips_blank_category_string(
+    def test_create_manual_batch_refuses_blank_category_string(
         self, transaction_db: Database
     ) -> None:
+        """The last surface that absorbed a blank category now reports it.
+
+        Storing nothing wrong is not the same as behaving the same way: an
+        identical blank is refused by ``splits add`` and ``merchants create``,
+        so absorbing it here left one input with two answers depending on which
+        command a user reached for. The whole batch is refused before any
+        insert, so nothing lands half-written.
+        """
         self._seed_account(transaction_db)
         service = TransactionService(transaction_db)
-        result = service.create_manual_batch([self._entry(category="   ")], actor="cli")
+        with pytest.raises(UserError, match=r"entries\[0\]\.category") as exc:
+            service.create_manual_batch([self._entry(category="   ")], actor="cli")
+        assert exc.value.code == error_codes.TRANSACTION_INVALID_INPUT
+        raw_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM raw.manual_transactions"
+        ).fetchone()
+        assert raw_count is not None
+        assert raw_count[0] == 0
+
+    @pytest.mark.unit
+    def test_create_manual_batch_still_accepts_an_absent_category(
+        self, transaction_db: Database
+    ) -> None:
+        """Refusing a blank must not turn "no category" into an error.
+
+        ``None`` is the legitimate way to say a transaction is uncategorized,
+        and it stays a skip: the row is created and no categorization row is
+        written for it.
+        """
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        result = service.create_manual_batch([self._entry()], actor="cli")
         cat_count = transaction_db.conn.execute(
             "SELECT COUNT(*) FROM app.transaction_categories WHERE transaction_id = ?",
             [result.results[0].transaction_id],

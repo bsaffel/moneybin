@@ -3,6 +3,36 @@ MODEL (
   kind VIEW
 );
 
+/* category and subcategory are nulled out when blank for the reason
+   stg_plaid__accounts states for its own free-text columns, and the reason
+   currency below already is: '' passes a NULL check while rendering as a
+   malformed label. Here the NULL check that matters is
+   core.uncategorized_queue's `category IS NULL` — a category of spaces hides a
+   transaction nobody ever categorized from the queue built to surface it.
+
+   These two use a regex rather than the bare TRIM their siblings use, because
+   they are the only staging columns with a Python-side counterpart that has to
+   agree with them: services._validators.validate_category_text refuses on
+   str.strip(). The class is defined to equal str.strip() exactly — \p{Z} every
+   Unicode space separator, \s the C0 whitespace RE2 includes, \x0B the vertical
+   tab it excludes, and \x1C-\x1F\x85 the information separators and NEXT LINE.
+   Do not maintain it by appending the character that last leaked;
+   test_blank_whitespace_definition.py enumerates all 29 codepoints
+   str.isspace() accepts, fails naming any the class misses, and holds all three
+   copies of it (both staging models and V054) identical. Bare TRIM is not a
+   substitute in either direction: it strips the space separators but leaves
+   every control character, so a tab survives it.
+
+   A blanked category then takes its subcategory with it, in the projection
+   below. Nulling the two independently manufactures an orphan the write path
+   forbids: a subcategory is a child of a category here, so resolve_category_id
+   short-circuits on a NULL category and no lone subcategory can ever resolve
+   to a category_id. core.fct_transaction_lines coalesces the two columns
+   independently, so the orphan would render this row's subcategory beside the
+   *parent transaction's* category — a pair nobody chose. The cascade runs one
+   way only: a blank subcategory under a real category nulls just itself,
+   because a top-level category is a legitimate state (17 of the seeded
+   categories are exactly that). */
 WITH ranked AS (
   SELECT
     transaction_id,
@@ -14,8 +44,14 @@ WITH ranked AS (
     original_date_str,
     TRIM(description) AS description,
     TRIM(memo) AS memo,
-    category,
-    subcategory,
+    NULLIF(
+      REGEXP_REPLACE(category, '^[\p{Z}\s\x0B\x1C-\x1F\x85]+|[\p{Z}\s\x0B\x1C-\x1F\x85]+$', '', 'g'),
+      ''
+    ) AS category,
+    NULLIF(
+      REGEXP_REPLACE(subcategory, '^[\p{Z}\s\x0B\x1C-\x1F\x85]+|[\p{Z}\s\x0B\x1C-\x1F\x85]+$', '', 'g'),
+      ''
+    ) AS subcategory,
     transaction_type,
     status,
     check_number,
@@ -53,7 +89,7 @@ SELECT
   ranked.description,
   ranked.memo,
   ranked.category,
-  ranked.subcategory,
+  CASE WHEN ranked.category IS NULL THEN NULL ELSE ranked.subcategory END AS subcategory, /* a blanked category takes its subcategory with it; see the header */
   ranked.transaction_type,
   ranked.status,
   ranked.check_number,

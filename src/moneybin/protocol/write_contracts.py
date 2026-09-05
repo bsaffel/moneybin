@@ -452,6 +452,28 @@ class MerchantStateRequest(_StrictRequest):
                     "subcategory",
                 ),
             ),
+            # The same conditional SplitTarget advertises, on the same pair,
+            # spelled the same way. `_conditional_schema_branch` keys its `if`
+            # on one field equalling a constant, and this one keys on a field
+            # being present and non-null, so it is written out.
+            #
+            # It does not also test `state`, because the `absent` branch above
+            # already forbids `subcategory` outright: under `absent` a document
+            # carrying the key is invalid whether or not this branch fires, so
+            # naming `state` here would narrow the `if` without narrowing what
+            # validates. It would also cost the reference renderer, which
+            # documents a variant conditional only when its `if` tests a single
+            # property.
+            {
+                "if": {
+                    "properties": {"subcategory": {"not": {"type": "null"}}},
+                    "required": ["subcategory"],
+                },
+                "then": {
+                    "properties": {"category": {"not": {"type": "null"}}},
+                    "required": ["category"],
+                },
+            },
         )
     )
 
@@ -476,6 +498,13 @@ class MerchantStateRequest(_StrictRequest):
         if self.state == "present":
             if self.raw_pattern is None or self.canonical_name is None:
                 raise ValueError("Present requires raw_pattern and canonical_name")
+            # A merchant's default mapping is the same (category, subcategory)
+            # pair a split carries, so it takes the same rule SplitTarget
+            # enforces above. The service refuses it too; this puts the
+            # refusal at the boundary, where the agent can read which field
+            # is wrong before a write is attempted.
+            if self.subcategory is not None and self.category is None:
+                raise ValueError("Merchant subcategory requires category")
             return self
         if self.merchant_id is None:
             raise ValueError("Absent requires merchant_id")

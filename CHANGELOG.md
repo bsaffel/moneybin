@@ -298,6 +298,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   secret or absent keyring backend reports `infra_setup_required` naming the
   command that stores it. (#522)
 
+- **A category of spaces no longer counts as a category.** An imported
+  transaction whose category cell held only whitespace was hidden from
+  `core.uncategorized_queue` (which selects `WHERE category IS NULL`) while
+  claiming to carry a category; `category` and `subcategory` now arrive `NULL`
+  from every source when blank. Blank means what the write path means by it —
+  a non-breaking space pasted from a spreadsheet and an ideographic space
+  typed in CJK input both count — while a padded `'  Groceries  '` still
+  arrives as `Groceries`. (#517)
+
+- **`transactions splits add --category "   "` is refused rather than
+  stored.** MCP already refused a whitespace-only category while the CLI
+  stored it; both now refuse, naming the field — `subcategory must be
+  non-empty`, or `splits[2].subcategory …` when setting a batch — so a caller
+  is pointed at the flag they got wrong. A split already carrying one is
+  backfilled to `NULL` on the next migration, and a blanked category takes its
+  subcategory with it, since a subcategory without its category would render
+  under the parent transaction's instead. (#517)
+
+- **A subcategory with no category is refused everywhere, not just on MCP.**
+  A subcategory is a child of a category here, so a lone one never resolves to
+  a `category_id` and renders under the parent transaction's category instead
+  — `splits add`, `splits set`, `transactions create`, and merchant creation
+  now refuse it the way MCP's split contract always has. Manual entry was the
+  quietest of them: a lone subcategory was dropped from the batch without a
+  word and the call still reported success, and a blank subcategory beside a
+  real category was stored against a `NULL` category_id. The import path stops
+  producing one too: a category blanked on the way in takes its subcategory
+  with it, while a blank subcategory under a real category still nulls only
+  itself. `docs/reference/mcp-tools.md` states the rule as well, so an agent
+  reading the reference learns it before calling rather than as a refusal.
+  (#517)
+
+- **`merchants create --default-category "   "` is refused rather than
+  stored.** A merchant's stored default is copied verbatim into a
+  transaction's category by the auto-categorization sweep, which skipped only
+  a missing value, so whitespace reached `core.fct_transactions` through the
+  one write path the earlier sweep left open. It now takes the same blank-text
+  and hierarchy rules a split takes, and a merchant already holding a blank
+  default is backfilled to `NULL` on the next migration — along with the blank
+  categories it already copied, so those transactions return to the
+  uncategorized queue instead of staying hidden. (#517)
+
+- **`categories create "   "` and `budgets set --category "   "` are refused
+  rather than stored.** The taxonomy is the one surface that stores a category
+  instead of a reference to one, so a blank name reached `categories list` and
+  gave category resolution a row nothing can usefully match; a blank budget
+  category stored a target reporting against nothing. Both now take the same
+  blank-text and length rules every other category write takes. (#517)
+
+- **`transactions create --category "   "` is refused rather than absorbed.**
+  It stored nothing wrong — the row simply landed uncategorized — but
+  `splits add` and `merchants create` refuse the identical string, so one
+  input had two answers depending on which command you reached for. Passing no
+  category at all remains the way to create an uncategorized transaction.
+  (#517)
+
+- **A blank category is removed from the taxonomy, along with everything
+  pointing at it.** The backfills above null a category's display snapshot,
+  but `category_id` is the canonical reference and every reader prefers it — a
+  split, merchant or categorization still pointing at a blank taxonomy row
+  rendered the whitespace anyway, and would have kept doing so once the
+  snapshot columns are dropped. The next migration clears those references
+  across all seven tables that carry one, then deletes the blank categories
+  themselves, so an empty-named category no longer appears in
+  `categories list`. Rows that merely *referenced* one keep their data and
+  lose only the unusable default; a budget or rule whose own category text was
+  blank named nothing and is removed. (#517)
+
+- **A rejected category reports a write error, not an infrastructure one.**
+  `transactions splits add`, `splits set` and merchant creation classified a
+  blank, over-long, or wrong-typed category as `infra_invalid_input`, so a
+  script or agent branching on the error family read bad user input as a
+  broken system. Splits now report `transaction_invalid_input` and merchant
+  writes `mutation_invalid_input`. (#517)
+
 - **A Plaid transaction's `category` no longer holds Plaid's own category
   code.** `prep.int_transactions__unioned` had aliased the raw
   personal-finance-category code into `category`, so one column mixed
