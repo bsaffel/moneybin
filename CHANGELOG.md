@@ -296,7 +296,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   agent can call from MCP. The count is profile-wide rather than scoped to the
   rows on screen: a report returns aggregates, so which transactions it summed
   is not recoverable from its result, and warning wider is the safe direction
-  of that imprecision. (#534)
+  of that imprecision. Deciding a pair rewrites `app.match_decisions` and
+  nothing else, so a report reading through a materialized model — net worth
+  and balance drift, both fed by the `kind="FULL"` `core.fct_balances_daily` —
+  keeps the doubled figure and the caveat until a refresh rebuilds it, and
+  points at `refresh_run` rather than the review queue. (#534)
 
 - **A missing or locked keychain entry no longer prints a stack trace.**
   `moneybin db info`, `db unlock` and the DuckDB init-script builder read the

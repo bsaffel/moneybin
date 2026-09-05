@@ -10,6 +10,7 @@ from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Final, Literal, cast, get_args, get_origin
 
@@ -22,7 +23,10 @@ from moneybin.database import (
     get_database,
 )
 from moneybin.errors import RecoveryAction, UserError
-from moneybin.matching.persistence import count_pending_matches
+from moneybin.matching.persistence import (
+    count_matches_settled_since,
+    count_pending_matches,
+)
 from moneybin.metrics.registry import USER_REPORT_RUNS_TOTAL
 from moneybin.privacy.payloads.reports import (
     ReportCatalogEntry,
@@ -58,8 +62,12 @@ from moneybin.services.currency_service import (
     build_cache_only_currency_service,
     require_currency,
 )
-from moneybin.sqlmesh_registry import relations_downstream_of
-from moneybin.tables import FCT_TRANSACTIONS
+from moneybin.sqlmesh_registry import (
+    materialized_model_names,
+    relations_downstream_of,
+    relations_upstream_of,
+)
+from moneybin.tables import FCT_TRANSACTIONS, MODEL_FRESHNESS
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +115,8 @@ def merged_degraded_reason(*reasons: str | None) -> str | None:
     return "; ".join(stated) if stated else None
 
 
-#: The MCP half of the pending-duplicate next step: the queue an agent can read
-#: and decide without parsing the CLI hint beside it.
+#: The MCP half of the undecided-duplicate next step: the queue an agent can
+#: read and decide without parsing the CLI hint beside it.
 _PENDING_DEDUP_RECOVERY: Final = RecoveryAction(
     tool="reviews",
     arguments={"kind": "matches", "status": "pending"},
@@ -121,27 +129,141 @@ _PENDING_DEDUP_RECOVERY: Final = RecoveryAction(
     idempotent=True,
 )
 
+#: The decided half. `reviews_decide` writes `app.match_decisions` and nothing
+#: else, so a `kind="FULL"` model between the decision and the report keeps
+#: serving the doubled rows until a refresh rebuilds it.
+_STALE_DEDUP_RECOVERY: Final = RecoveryAction(
+    tool="refresh_run",
+    arguments={},
+    rationale=(
+        "Duplicate matches were decided after the tables this report reads were "
+        "last built; refresh_run rebuilds them so the merge reaches the total."
+    ),
+    confidence="suggested",
+    idempotent=True,
+)
 
-def _reads_transactions(provenance: Iterable[str]) -> bool:
-    """Whether any relation a report reads is fed by ``core.fct_transactions``."""
-    downstream = relations_downstream_of(FCT_TRANSACTIONS.full_name)
-    return any(relation.lower() in downstream for relation in provenance)
+#: Printed beside the caveat when a rebuild, not a review, is what is owed.
+#: `test_stale_dedup_hint_names_a_runnable_command` executes what this
+#: advertises, for the reason `PENDING_MATCHES_HINT` carries the same guard.
+STALE_DEDUP_HINT: Final = (
+    "Use refresh_run (CLI: 'moneybin refresh') to rebuild derived tables "
+    "against the duplicate decisions already made"
+)
 
 
-def pending_dedup_reason(db: Database) -> str | None:
-    """The caveat a total over an undecided duplicate pair owes its reader (#409).
+@dataclass(frozen=True, slots=True)
+class DedupCaveat:
+    """What a report owes its reader about duplicate pairs it may double-count."""
 
-    Counted per profile, not per row: a report returns aggregates, so which
-    transactions it summed is not recoverable from its result, and warning wider
-    is the safe direction of that imprecision.
+    reason: str
+    actions: tuple[str, ...]
+    recovery_actions: tuple[RecoveryAction, ...]
+
+
+def _unrebuilt_models_read(provenance: Iterable[str]) -> frozenset[str]:
+    """Models this report reads that hold rows until a refresh rewrites them.
+
+    Every hop from ``app.match_decisions`` to ``core.fct_transactions`` is
+    ``kind VIEW``, so deciding a pair collapses it on read and those reports owe
+    no caveat once the queue is empty. ``core.fct_balances_daily`` is
+    ``kind="FULL"``, so ``reports.net_worth`` and ``reports.balance_drift`` keep
+    the doubled balance until the next transform. Answered per report rather
+    than per profile, so a view-only total is not warned about a decision it
+    already reflects.
     """
-    pending = count_pending_matches(db, match_type="dedup")
-    if pending == 0:
+    downstream = relations_downstream_of(FCT_TRANSACTIONS.full_name)
+    materialized = materialized_model_names()
+    return frozenset(
+        model
+        for relation in provenance
+        for model in relations_upstream_of(relation.lower())
+        if model in downstream and model in materialized
+    )
+
+
+def _last_rebuilt_at(db: Database, models: Iterable[str]) -> datetime | None:
+    """When the least-recently-rebuilt of ``models`` last ran, else ``None``.
+
+    ``None`` means "no usable stamp" — the freshness view is absent, or a model
+    has never been backfilled — and every caller reads it as "nothing can be
+    assumed rebuilt", which is the fail-closed direction for a caveat.
+    """
+    names = sorted(models)
+    placeholders = ", ".join("?" for _ in names)
+    try:
+        row = db.execute(
+            f"""
+            SELECT
+                (MIN(last_executed_at) AT TIME ZONE 'UTC'),
+                COUNT(*) FILTER (WHERE last_executed_at IS NOT NULL)
+            FROM {MODEL_FRESHNESS.full_name}
+            WHERE LOWER(model_name) IN ({placeholders})
+            """,  # noqa: S608  # TableRef constant; names are `?` placeholders
+            names,
+        ).fetchone()
+    except Exception:  # noqa: BLE001 — the view is absent until the first apply
         return None
-    verb = "match leaves its" if pending == 1 else "matches leave their"
-    return (
-        f"{DEGRADED_PENDING_DEDUP}: {pending} undecided duplicate {verb} "
-        "transactions unmerged, so totals over them are provisional"
+    if row is None or row[0] is None or row[1] != len(names):
+        return None
+    return row[0]
+
+
+def pending_dedup_caveat(db: Database, provenance: Iterable[str]) -> DedupCaveat | None:
+    """The caveat a total over a duplicate pair owes its reader (#409).
+
+    Two ways a pair is still doubled here, and the second is why leaving the
+    review queue is not enough: an *undecided* pair keeps both rows everywhere,
+    and a *decided* one keeps them inside any materialized model built before
+    the decision. Counted per profile, not per row — a report returns
+    aggregates, so which transactions it summed is not recoverable from its
+    result, and warning wider is the safe direction of that imprecision.
+    """
+    relations = tuple(provenance)
+    downstream = relations_downstream_of(FCT_TRANSACTIONS.full_name)
+    if not any(relation.lower() in downstream for relation in relations):
+        return None
+    pending = count_pending_matches(db, match_type="dedup")
+    unrebuilt = _unrebuilt_models_read(relations)
+    unreflected = (
+        count_matches_settled_since(
+            db, _last_rebuilt_at(db, unrebuilt), match_type="dedup"
+        )
+        if unrebuilt
+        else 0
+    )
+    if not pending and not unreflected:
+        return None
+    clauses: list[str] = []
+    actions: list[str] = []
+    recovery: list[RecoveryAction] = []
+    if pending:
+        verb = "match leaves its" if pending == 1 else "matches leave their"
+        clauses.append(f"{pending} undecided duplicate {verb} transactions unmerged")
+        # The CLI half is `PENDING_MATCHES_HINT` verbatim, so it cannot drift
+        # from the command a test executes; imported inside the function because
+        # the service module drags the matching engine into every catalog import.
+        from moneybin.services.matching_service import (  # noqa: PLC0415
+            PENDING_MATCHES_HINT,
+        )
+
+        actions.append(PENDING_MATCHES_HINT)
+        recovery.append(_PENDING_DEDUP_RECOVERY)
+    if unreflected:
+        verb = "match is" if unreflected == 1 else "matches are"
+        clauses.append(
+            f"{unreflected} decided duplicate {verb} not yet rebuilt into the "
+            "tables this report reads"
+        )
+        actions.append(STALE_DEDUP_HINT)
+        recovery.append(_STALE_DEDUP_RECOVERY)
+    return DedupCaveat(
+        reason=(
+            f"{DEGRADED_PENDING_DEDUP}: {', and '.join(clauses)}, so totals over "
+            "them are provisional"
+        ),
+        actions=tuple(actions),
+        recovery_actions=tuple(recovery),
     )
 
 
@@ -413,30 +535,21 @@ class ReportCatalog:
             USER_REPORT_RUNS_TOTAL.labels(tier=tier, outcome="error").inc()
             raise
         USER_REPORT_RUNS_TOTAL.labels(tier=tier, outcome="ok").inc()
-        if _reads_transactions(execution.provenance):
-            # Attached beneath every reading surface, so an export inherits the
-            # caveat without asking for it (#409).
-            reason = pending_dedup_reason(db)
-            if reason is not None:
-                # The CLI half is `PENDING_MATCHES_HINT` verbatim, so it cannot
-                # drift from the command a test executes; imported here because
-                # the service module drags the matching engine into every catalog
-                # import.
-                from moneybin.services.matching_service import (  # noqa: PLC0415
-                    PENDING_MATCHES_HINT,
-                )
-
-                execution = replace(
-                    execution,
-                    degraded_reason=merged_degraded_reason(
-                        execution.degraded_reason, reason
-                    ),
-                    actions=[*execution.actions, PENDING_MATCHES_HINT],
-                    recovery_actions=(
-                        *execution.recovery_actions,
-                        _PENDING_DEDUP_RECOVERY,
-                    ),
-                )
+        # Attached beneath every reading surface, so an export inherits the
+        # caveat without asking for it (#409).
+        caveat = pending_dedup_caveat(db, execution.provenance)
+        if caveat is not None:
+            execution = replace(
+                execution,
+                degraded_reason=merged_degraded_reason(
+                    execution.degraded_reason, caveat.reason
+                ),
+                actions=[*execution.actions, *caveat.actions],
+                recovery_actions=(
+                    *execution.recovery_actions,
+                    *caveat.recovery_actions,
+                ),
+            )
         if defer_truncation:
             execution = replace(execution, pending_limit=limit)
         return spec, execution

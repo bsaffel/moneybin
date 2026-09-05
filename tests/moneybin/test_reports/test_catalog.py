@@ -5,26 +5,31 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import re
+import shlex
 import typing
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import partial
 from typing import Literal, cast
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 import typer
 from pydantic import JsonValue
 from pytest_mock import MockerFixture
 
+from moneybin.cli.main import app as cli_app
 from moneybin.database import (
     Database,
     DatabaseKeyError,
     DatabaseNotInitializedError,
 )
 from moneybin.errors import UserError
+from moneybin.matching.persistence import count_pending_matches
 from moneybin.privacy.payloads.networth import (
     NetWorthAccountRow,
     NetWorthCurrencySegment,
@@ -42,6 +47,7 @@ from moneybin.protocol.envelope import PayloadEncoder
 from moneybin.reports._framework import registry
 from moneybin.reports._framework.catalog import (
     DEGRADED_PENDING_DEDUP,
+    STALE_DEDUP_HINT,
     ReportCatalog,
     ServiceReportSpec,
     catalog_classes_returned,
@@ -75,10 +81,18 @@ from moneybin.reports.service_reports import (
     NETWORTH_HISTORY_REPORT,
     NETWORTH_REPORT,
 )
-from moneybin.services.matching_service import PENDING_MATCHES_HINT
-from moneybin.tables import FCT_TRANSACTIONS, MATCH_DECISIONS, TableRef
+from moneybin.services.matching_service import (
+    PENDING_MATCHES_HINT,
+    MatchingService,
+)
+from moneybin.tables import (
+    FCT_TRANSACTIONS,
+    MATCH_DECISIONS,
+    MODEL_FRESHNESS,
+    TableRef,
+)
 from tests.database_mocks import without_a_profile
-from tests.moneybin.db_helpers import seed_pending_dedup_pair
+from tests.moneybin.db_helpers import record_model_execution, seed_pending_dedup_pair
 
 _SEMANTICS = ReportSemantics(
     unit="count",
@@ -876,12 +890,17 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
     assert result.total_count == 2
     envelope = result.to_envelope().to_dict()
     assert envelope["summary"]["display_currency"] == "USD"
-    # Net worth is downstream of the transactions fact, so the framework's one
-    # read of its own — the pending-duplicate count — runs, and `without_a_profile`
-    # answers it with no row. The report's rows still never come from SQL here.
-    (count_read,) = db.execute.call_args_list
-    assert MATCH_DECISIONS.full_name in count_read.args[0]
-    assert count_read.args[1] == ["dedup"]
+    # Net worth is downstream of the transactions fact and reads it through a
+    # materialized model, so the framework's own reads run: the pending count,
+    # the model's rebuild stamp, and the decided-since count. `without_a_profile`
+    # answers each with no row. The report's rows still never come from SQL here.
+    pending_read, freshness_read, settled_read = db.execute.call_args_list
+    assert MATCH_DECISIONS.full_name in pending_read.args[0]
+    assert pending_read.args[1] == ["dedup"]
+    assert MODEL_FRESHNESS.full_name in freshness_read.args[0]
+    assert freshness_read.args[1] == ["core.fct_balances_daily"]
+    assert MATCH_DECISIONS.full_name in settled_read.args[0]
+    assert settled_read.args[1] == ["dedup"]
 
 
 def test_networth_account_id_parameter_metadata_preserves_opaque_ids(
@@ -1735,3 +1754,119 @@ def test_a_report_reading_nothing_downstream_of_transactions_is_not_marked(
 
     assert not result.degraded
     assert result.actions == []
+
+
+def _naive_utc(offset: timedelta) -> datetime:
+    """``meta.model_freshness`` stores naive UTC; fixtures must match it."""
+    return datetime.now(UTC).replace(tzinfo=None) + offset
+
+
+def test_a_total_stays_provisional_until_the_materialization_rebuilds(
+    saved_db: Database,
+) -> None:
+    """A decided duplicate is still doubled inside a FULL model built before it.
+
+    ``core.fct_balances_daily`` is ``kind="FULL"``, so accepting a dedup rewrites
+    ``app.match_decisions`` and nothing else — ``reports.net_worth`` keeps
+    serving the pre-decision balance until the next transform. Drives the real
+    sequence: decide through ``MatchingService.set_status`` (what
+    ``reviews_decide`` calls), then read the report with no rebuild in between.
+    """
+    seed_pending_dedup_pair(saved_db)
+    record_model_execution(
+        saved_db, "core.fct_balances_daily", _naive_utc(-timedelta(hours=1))
+    )
+    MatchingService(saved_db).set_status(
+        "match00000001", status="accepted", decided_by="user", actor="test"
+    )
+
+    result = ReportCatalog((
+        _transaction_total_report(("reports.net_worth",)),
+    )).execute(saved_db, report_id="core:summary", parameters={}, limit=100)
+
+    assert count_pending_matches(saved_db, match_type="dedup") == 0, (
+        "the decision must actually have left the pending queue, or this test "
+        "passes on the caveat the pending count already produced"
+    )
+    assert result.degraded
+    assert result.degraded_reason is not None
+    assert result.degraded_reason.startswith(f"{DEGRADED_PENDING_DEDUP}: ")
+    assert [action.tool for action in result.recovery_actions] == ["refresh_run"]
+
+
+def test_a_rebuilt_materialization_clears_the_provisional_marking(
+    saved_db: Database,
+) -> None:
+    """Once the FULL model is rebuilt past the decision, the number is final."""
+    seed_pending_dedup_pair(saved_db)
+    MatchingService(saved_db).set_status(
+        "match00000001", status="accepted", decided_by="user", actor="test"
+    )
+    record_model_execution(
+        saved_db, "core.fct_balances_daily", _naive_utc(timedelta(hours=1))
+    )
+
+    result = ReportCatalog((
+        _transaction_total_report(("reports.net_worth",)),
+    )).execute(saved_db, report_id="core:summary", parameters={}, limit=100)
+
+    assert not result.degraded
+    assert result.degraded_reason is None
+    assert result.recovery_actions == ()
+
+
+def test_a_decision_clears_the_marking_at_once_on_a_view_only_report(
+    saved_db: Database,
+) -> None:
+    """Nothing between ``app.match_decisions`` and this report holds rows.
+
+    ``prep.int_transactions__matched`` through ``core.fct_transactions`` is
+    every-hop ``kind VIEW``, so the collapse resolves on read and a decided pair
+    owes no caveat here — the precision that keeps the disclosure meaningful
+    where it does apply.
+    """
+    seed_pending_dedup_pair(saved_db)
+    record_model_execution(
+        saved_db, "core.fct_balances_daily", _naive_utc(-timedelta(hours=1))
+    )
+    MatchingService(saved_db).set_status(
+        "match00000001", status="accepted", decided_by="user", actor="test"
+    )
+
+    result = ReportCatalog((
+        _transaction_total_report((FCT_TRANSACTIONS.full_name,)),
+    )).execute(saved_db, report_id="core:summary", parameters={}, limit=100)
+
+    assert not result.degraded
+    assert result.degraded_reason is None
+    assert result.actions == []
+
+
+def test_stale_dedup_hint_names_a_runnable_command() -> None:
+    """A caveat printing an unrunnable command is worse than no caveat.
+
+    Extracted from the constant rather than restated, so editing the hint fails
+    here instead of in a user's terminal — the same guard
+    ``PENDING_MATCHES_HINT`` carries after three surfaces once published one
+    invalid invocation between them. ``moneybin refresh`` is a leaf command, so
+    a stale ``refresh run`` spelling exits 2 on the extra argument.
+    """
+    invocation = re.search(r"'moneybin ([^']+)'", STALE_DEDUP_HINT)
+    assert invocation, f"no `moneybin` command found in {STALE_DEDUP_HINT!r}"
+
+    # Resolved through the command tree rather than invoked: appending `--help`
+    # would short-circuit before argument parsing, so `refresh run --help`
+    # exits 0 on a leaf command that accepts no `run`.
+    command: click.Command = typer.main.get_command(cli_app)
+    context = click.Context(command)
+    for token in shlex.split(invocation.group(1)):
+        assert isinstance(command, click.Group), (
+            f"the hint prints `moneybin {invocation.group(1)}`, which passes "
+            f"{token!r} to a leaf command that takes no argument"
+        )
+        resolved = command.get_command(context, token)
+        assert resolved is not None, (
+            f"the hint prints `moneybin {invocation.group(1)}`, and {token!r} "
+            "is not a registered command"
+        )
+        command = resolved

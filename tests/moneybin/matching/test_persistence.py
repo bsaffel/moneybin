@@ -8,10 +8,15 @@ sets up rows via the repo and exercises the read projections in
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from moneybin.database import Database
 from moneybin.matching.persistence import (
     MatchStatus,
+    count_matches_settled_since,
+    count_pending_matches,
     get_active_dedup_edges,
     get_active_matches,
     get_match_decision,
@@ -226,3 +231,52 @@ class TestGetMatchLog:
         transfer_log = get_match_log(db, match_type="transfer")
         assert len(transfer_log) == 1
         assert transfer_log[0]["match_type"] == "transfer"
+
+
+class TestCountPendingMatches:
+    """Tests for count_pending_matches."""
+
+    def test_counts_pending_only(self, db: Database) -> None:
+        _create_test_match(db, status="pending", stid_a="p1", stid_b="p2")
+        _create_test_match(db, status="accepted", stid_a="a1", stid_b="a2")
+
+        assert count_pending_matches(db) == 1
+
+    def test_rejects_an_unknown_match_type(self, db: Database) -> None:
+        """Its two siblings in this module raise; the count query must agree."""
+        with pytest.raises(ValueError, match="Invalid match_type"):
+            count_pending_matches(db, match_type="not_a_type")
+
+
+class TestCountMatchesSettledSince:
+    """Tests for count_matches_settled_since."""
+
+    def test_counts_a_decision_made_after_the_cutoff(self, db: Database) -> None:
+        _create_test_match(db, status="accepted", stid_a="a1", stid_b="a2")
+        before = datetime.now(UTC) - timedelta(hours=1)
+
+        assert count_matches_settled_since(db, before) == 1
+
+    def test_excludes_a_decision_made_before_the_cutoff(self, db: Database) -> None:
+        _create_test_match(db, status="accepted", stid_a="a1", stid_b="a2")
+        after = datetime.now(UTC) + timedelta(hours=1)
+
+        assert count_matches_settled_since(db, after) == 0
+
+    def test_excludes_pending_rows(self, db: Database) -> None:
+        """A pending row carries a `decided_at` from its insert, not a decision."""
+        _create_test_match(db, status="pending", stid_a="p1", stid_b="p2")
+        before = datetime.now(UTC) - timedelta(hours=1)
+
+        assert count_matches_settled_since(db, before) == 0
+
+    def test_a_none_cutoff_counts_every_settled_decision(self, db: Database) -> None:
+        """No known rebuild stamp means no decision can be assumed reflected."""
+        _create_test_match(db, status="accepted", stid_a="a1", stid_b="a2")
+        _create_test_match(db, status="pending", stid_a="p1", stid_b="p2")
+
+        assert count_matches_settled_since(db, None) == 1
+
+    def test_rejects_an_unknown_match_type(self, db: Database) -> None:
+        with pytest.raises(ValueError, match="Invalid match_type"):
+            count_matches_settled_since(db, None, match_type="not_a_type")

@@ -12,6 +12,11 @@ import duckdb
 
 from moneybin.database import SQLMESH_ROOT, Database
 
+_MODEL_FRESHNESS_DDL = (
+    "meta.model_freshness (model_name VARCHAR, last_changed_at TIMESTAMP, "
+    "last_applied_at TIMESTAMP, last_executed_at TIMESTAMP, model_kind VARCHAR)"
+)
+
 
 def record_sqlmesh_apply(db: Database, when: datetime) -> None:
     """Stamp every model as executed at ``when``, read as UTC.
@@ -30,15 +35,29 @@ def record_sqlmesh_apply(db: Database, when: datetime) -> None:
     describe the same instants on any machine.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS meta")
-    db.execute(
-        "CREATE OR REPLACE TABLE meta.model_freshness "
-        "(model_name VARCHAR, last_changed_at TIMESTAMP, "
-        "last_applied_at TIMESTAMP, last_executed_at TIMESTAMP, "
-        "model_kind VARCHAR)"
-    )
+    db.execute(f"CREATE OR REPLACE TABLE {_MODEL_FRESHNESS_DDL}")
     db.execute(
         "INSERT INTO meta.model_freshness VALUES ('core.dim_accounts', ?, ?, ?, 'FULL')",
         [when, when, when],
+    )
+
+
+def record_model_execution(
+    db: Database, model_name: str, when: datetime, *, model_kind: str = "FULL"
+) -> None:
+    """Stamp one model's last successful backfill, leaving its siblings alone.
+
+    ``record_sqlmesh_apply`` answers "the whole warehouse was refreshed"; this
+    answers "this one model was rebuilt at this instant", which is what a
+    per-report staleness check reads. ``when`` is naive UTC, as
+    ``meta.model_freshness`` stores it.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS meta")
+    db.execute(f"CREATE TABLE IF NOT EXISTS {_MODEL_FRESHNESS_DDL}")
+    db.execute("DELETE FROM meta.model_freshness WHERE model_name = ?", [model_name])
+    db.execute(
+        "INSERT INTO meta.model_freshness VALUES (?, ?, ?, ?, ?)",
+        [model_name, when, when, when, model_kind],
     )
 
 

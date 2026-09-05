@@ -9,6 +9,7 @@ projections the matcher and CLI consume.
 
 import logging
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any, Literal, get_args
 
 import duckdb
@@ -110,8 +111,43 @@ def count_pending_matches(db: Database, *, match_type: str | None = None) -> int
     where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
     params: list[Any] = []
     if match_type is not None:
+        if match_type not in VALID_MATCH_TYPES:
+            raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
         params.append(match_type)
+    return _count(db, where, params)
+
+
+def count_matches_settled_since(
+    db: Database, since: datetime | None, *, match_type: str | None = None
+) -> int:
+    """Decisions accepted, rejected or reversed after ``since``.
+
+    The complement of :func:`count_pending_matches` for a reader that has to
+    know whether a *materialized* model still holds pre-decision rows: leaving
+    ``pending`` does not rewrite a ``kind="FULL"`` table, only the next refresh
+    does. ``since`` is the model's last rebuild, aware or naive UTC; ``None``
+    means no rebuild stamp is available, so no decision can be assumed
+    reflected and every settled one counts.
+    """
+    where = "WHERE match_status <> 'pending'"
+    params: list[Any] = []
+    if since is not None:
+        # `decided_at`/`reversed_at` are naive local (a `CURRENT_TIMESTAMP`
+        # cast into a TIMESTAMP column); the rebuild stamp is UTC. Cast both to
+        # instants rather than comparing wall clocks an offset apart.
+        where += " AND COALESCE(reversed_at, decided_at)::TIMESTAMPTZ > ?"
+        params.append(since)
+    if match_type is not None:
+        if match_type not in VALID_MATCH_TYPES:
+            raise ValueError(f"Invalid match_type: {match_type!r}")
+        where += " AND match_type = ?"
+        params.append(match_type)
+    return _count(db, where, params)
+
+
+def _count(db: Database, where: str, params: list[Any]) -> int:
+    """Run one counting projection over the match-decision queue."""
     try:
         row = db.execute(
             f"""

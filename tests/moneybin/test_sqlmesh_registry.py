@@ -11,9 +11,11 @@ from moneybin.database import Database
 from moneybin.errors import UserError, classify_user_error
 from moneybin.seeds import INIT_CREATED_MODELS
 from moneybin.sqlmesh_registry import (
+    materialized_model_names,
     model_presence,
     registered_model_names,
     relations_downstream_of,
+    relations_upstream_of,
 )
 
 
@@ -165,3 +167,100 @@ def test_relations_downstream_of_follows_model_reads_transitively() -> None:
     assert "reports.net_worth" in downstream  # via core.fct_balances_daily
     assert "raw.plaid_transactions" not in downstream  # upstream of the fact
     assert "reports.no_such_model" not in downstream
+
+
+def test_relations_downstream_of_ignores_a_schema_reference_in_prose() -> None:
+    """A `schema.table` named only in a comment is documentation, not a read.
+
+    ``core/bridge_merchant_entities.sql`` carries ``/* FK to
+    core.fct_transactions.transaction_id */`` while its real ``FROM`` is
+    ``prep.int_transactions__merged``; ``core/dim_accounts.sql`` names its
+    downstream neighbours the same way. A text scan turned both into reverse
+    edges, which marked a report reading either one provisional whenever any
+    dedup was undecided.
+    """
+    downstream = relations_downstream_of("core.fct_transactions")
+
+    assert "core.bridge_merchant_entities" not in downstream
+    assert "core.dim_accounts" not in downstream
+    assert "prep.int_transactions__merged" not in downstream  # upstream of the fact
+
+
+def test_relations_upstream_of_walks_the_other_direction() -> None:
+    """The report side of the same graph: what a relation is built from."""
+    upstream = relations_upstream_of("reports.net_worth")
+
+    assert "reports.net_worth" in upstream
+    assert "core.fct_balances_daily" in upstream  # read directly
+    assert "core.fct_transactions" in upstream  # via daily balances
+    assert "reports.cash_flow" not in upstream
+
+
+def test_materialized_model_names_names_the_tables_a_refresh_rebuilds() -> None:
+    """A VIEW recomputes on read; a FULL model holds its rows until a refresh."""
+    materialized = materialized_model_names()
+
+    assert "core.fct_balances_daily" in materialized  # kind="FULL"
+    assert "core.fct_transactions" not in materialized  # kind VIEW
+    assert "reports.net_worth" not in materialized  # kind VIEW
+
+
+def test_model_reads_match_the_dependencies_sqlmesh_parses() -> None:
+    """The scan is pinned to SQLMesh's own answer, not to its own regex.
+
+    ``relations_downstream_of`` feeds a user-facing ``degraded_reason`` with no
+    review step in between, so an over-inclusive edge is a wrong caveat and a
+    missing one is a silent stale total. SQLMesh resolves the same files
+    connectionlessly (the ``report_class_derivation`` precedent), so CI can
+    hold the cheap runtime scan to the expensive parser's answer.
+    """
+    from sqlmesh.core.dialect import parse as sqlmesh_parse
+    from sqlmesh.core.model import load_sql_based_model
+
+    from moneybin.sqlmesh_registry import (
+        _MODELS_DIR,  # pyright: ignore[reportPrivateUsage]  # the scan under test
+        _relations_read_by_model,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    scanned = _relations_read_by_model()
+    for path in sorted(_MODELS_DIR.rglob("*.sql")):
+        model = load_sql_based_model(
+            sqlmesh_parse(path.read_text(), default_dialect="duckdb"),
+            path=path,
+            dialect="duckdb",
+        )
+        name = model.name.lower()
+        parsed = {
+            dep.replace('"', "").lower()
+            for dep in model.depends_on
+            # SQLMesh's own state schema backs meta.model_freshness; it is not a
+            # project relation and no report is ever downstream of it.
+            if not dep.replace('"', "").lower().startswith("sqlmesh.")
+        }
+        assert scanned.get(name, frozenset()) == parsed, (
+            f"{name}: scan says {sorted(scanned.get(name, frozenset()))}, "
+            f"SQLMesh parses {sorted(parsed)}"
+        )
+
+
+def test_every_python_model_declares_what_it_reads() -> None:
+    """A Python model's ``depends_on`` is the only read set anything can see.
+
+    Its SQL lives in ``context.fetchdf()`` strings SQLMesh cannot parse, so an
+    omitted declaration silently *shrinks* the dependency graph — the direction
+    that drops a caveat rather than over-warning, and the one the SQL pinning
+    test above cannot reach.
+    """
+    from moneybin.sqlmesh_registry import (
+        _MODELS_DIR,  # pyright: ignore[reportPrivateUsage]  # the scan under test
+        _python_model_node,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    parsed = [
+        node
+        for path in sorted(_MODELS_DIR.rglob("*.py"))
+        for node in [_python_model_node(path.read_text())]
+        if node is not None
+    ]
+    assert parsed, "no Python models resolved; the scan found nothing to check"
+    assert [name for name, node in parsed if not node.reads] == []
