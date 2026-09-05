@@ -338,6 +338,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   category stored a target reporting against nothing. Both now take the same
   blank-text and length rules every other category write takes. (#517)
 
+- **`transactions create --category "   "` is refused rather than absorbed.**
+  It stored nothing wrong — the row simply landed uncategorized — but
+  `splits add` and `merchants create` refuse the identical string, so one
+  input had two answers depending on which command you reached for. Passing no
+  category at all remains the way to create an uncategorized transaction.
+  (#517)
+
+- **A blank category is removed from the taxonomy, along with everything
+  pointing at it.** The backfills above null a category's display snapshot,
+  but `category_id` is the canonical reference and every reader prefers it — a
+  split, merchant or categorization still pointing at a blank taxonomy row
+  rendered the whitespace anyway, and would have kept doing so once the
+  snapshot columns are dropped. The next migration clears those references
+  across all seven tables that carry one, then deletes the blank categories
+  themselves, so an empty-named category no longer appears in
+  `categories list`. Rows that merely *referenced* one keep their data and
+  lose only the unusable default; a budget or rule whose own category text was
+  blank named nothing and is removed. (#517)
+
 - **A rejected category reports a write error, not an infrastructure one.**
   `transactions splits add`, `splits set` and merchant creation classified a
   blank, over-long, or wrong-typed category as `infra_invalid_input`, so a

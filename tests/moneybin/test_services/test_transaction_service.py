@@ -1724,7 +1724,10 @@ class TestManualEntry:
         ("category", "subcategory", "field"),
         [
             (None, "Coffee", "subcategory"),
-            ("   ", "Coffee", "subcategory"),
+            # Names `category`, not `subcategory`: the blank category is now
+            # refused on its own terms before the pair rule is reached, so the
+            # message points at the field the caller actually got wrong.
+            ("   ", "Coffee", "category"),
             ("Food", "   ", "subcategory"),
             ("x" * 101, None, "category"),
             ("Food", "x" * 101, "subcategory"),
@@ -1753,10 +1756,12 @@ class TestManualEntry:
         unbounded ``VARCHAR`` with no CHECK, while ``add_split`` and
         ``create_merchant_core`` refused the identical string.
 
-        A blank category with no subcategory is deliberately *not* here. It
-        stores nothing wrong — the row simply lands uncategorized, which is
-        the correct end state — so it stays the skip it has always been, and
-        ``test_create_manual_batch_skips_blank_category_string`` still pins it.
+        A blank category with no subcategory is refused too, by
+        ``test_create_manual_batch_refuses_blank_category_string``. It stores
+        nothing wrong, so it was long treated as a harmless skip; what that
+        cost was consistency, since ``splits add`` and ``create_merchant_core``
+        refuse the identical string. ``None`` remains the way to say a
+        transaction is uncategorized.
         """
         self._seed_account(transaction_db)
         service = TransactionService(transaction_db)
@@ -1865,12 +1870,41 @@ class TestManualEntry:
         assert cat_set is not None and cat_set[0] == 0
 
     @pytest.mark.unit
-    def test_create_manual_batch_skips_blank_category_string(
+    def test_create_manual_batch_refuses_blank_category_string(
         self, transaction_db: Database
     ) -> None:
+        """The last surface that absorbed a blank category now reports it.
+
+        Storing nothing wrong is not the same as behaving the same way: an
+        identical blank is refused by ``splits add`` and ``merchants create``,
+        so absorbing it here left one input with two answers depending on which
+        command a user reached for. The whole batch is refused before any
+        insert, so nothing lands half-written.
+        """
         self._seed_account(transaction_db)
         service = TransactionService(transaction_db)
-        result = service.create_manual_batch([self._entry(category="   ")], actor="cli")
+        with pytest.raises(UserError, match=r"entries\[0\]\.category") as exc:
+            service.create_manual_batch([self._entry(category="   ")], actor="cli")
+        assert exc.value.code == error_codes.TRANSACTION_INVALID_INPUT
+        raw_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM raw.manual_transactions"
+        ).fetchone()
+        assert raw_count is not None
+        assert raw_count[0] == 0
+
+    @pytest.mark.unit
+    def test_create_manual_batch_still_accepts_an_absent_category(
+        self, transaction_db: Database
+    ) -> None:
+        """Refusing a blank must not turn "no category" into an error.
+
+        ``None`` is the legitimate way to say a transaction is uncategorized,
+        and it stays a skip: the row is created and no categorization row is
+        written for it.
+        """
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        result = service.create_manual_batch([self._entry()], actor="cli")
         cat_count = transaction_db.conn.execute(
             "SELECT COUNT(*) FROM app.transaction_categories WHERE transaction_id = ?",
             [result.results[0].transaction_id],

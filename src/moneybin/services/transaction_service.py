@@ -1316,25 +1316,18 @@ class TransactionService:
                     code=error_codes.TRANSACTION_INVALID_INPUT,
                 )
         try:
-            # A blank category counts as absent, which is what the
-            # `cat_entries` filter below has always done with one. The pair
-            # rule then applies to what is left, so a subcategory hanging off
-            # a blank category is refused for the same reason one hanging off
-            # a missing category is: nothing resolves it, and the filter would
-            # drop it without saying so. A blank category on its own stays a
-            # skip — the row lands uncategorized, which is the right end state.
-            effective_category = category if (category or "").strip() else None
-            # Non-blank by construction, so this enforces only the length cap
-            # — the half of `validate_category_text` the skip above must not
-            # cost us. Without it an over-long category reached
-            # `app.transaction_categories.category`, an unbounded VARCHAR with
-            # no CHECK, while the sibling write surfaces refused the same
-            # string.
-            if effective_category is not None:
-                validate_category_text(effective_category, "category")
+            # A supplied blank is refused rather than absorbed. It stores
+            # nothing wrong on its own — the row lands uncategorized, which is
+            # the right end state — but `add_split` and `create_merchant_core`
+            # refuse the identical string, so absorbing it here gave one input
+            # two answers depending on which command the user reached for.
+            # `None` remains how a caller says "uncategorized"; the
+            # `cat_entries` filter below still skips it.
+            if category is not None:
+                validate_category_text(category, "category")
             if subcategory is not None:
                 validate_category_text(subcategory, "subcategory")
-            validate_category_hierarchy(effective_category, subcategory, "subcategory")
+            validate_category_hierarchy(category, subcategory, "subcategory")
         except ValueError as e:
             raise UserError(
                 f"entries[{idx}].{e}",

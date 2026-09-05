@@ -1,9 +1,10 @@
 """The SQL blank test means exactly what Python's ``str.strip()`` means.
 
-Four sites carry the same character class: the two staging models that null
-a blank category out on import, and V054 and V055, which backfill the same
-rule onto stored splits, merchant defaults, and the categorizations a blank
-merchant default produced. They exist because ``validate_category_text``
+Five sites carry the same character class: the two staging models that null
+a blank category out on import, and V054, V055 and V056, which backfill the
+same rule onto stored splits, merchant defaults, the categorizations a blank
+merchant default produced, and the canonical ``category_id`` references that
+outlive all three snapshots. They exist because ``validate_category_text``
 refuses a blank on the write path using ``str.strip()`` — if the SQL class and
 ``str.strip()`` disagree on any character, a value the validator calls blank
 survives import as a non-NULL category and stays hidden from
@@ -16,7 +17,7 @@ because a list can only ever be patched by the character that just leaked.
 Enumerating every codepoint Python calls whitespace makes the next omission
 fail here instead of in review.
 
-Each site is read from its own source text rather than imported, so all four
+Each site is read from its own source text rather than imported, so all five
 are checked the same way and a copy that drifts is named by the failure.
 
 These tests open a bare in-memory ``duckdb.connect()`` instead of going through
@@ -38,18 +39,43 @@ import duckdb
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_SITES = (
-    _REPO_ROOT / "src/moneybin/sqlmesh/models/prep/stg_tabular__transactions.sql",
-    _REPO_ROOT / "src/moneybin/sqlmesh/models/prep/stg_manual__transactions.sql",
-    _REPO_ROOT / "src/moneybin/sql/migrations/V054__backfill_blank_split_categories.py",
-    _REPO_ROOT
-    / "src/moneybin/sql/migrations/V055__backfill_blank_merchant_categories.py",
-)
 
 #: The character class each site uses to decide "entirely whitespace". Matches
 #: the staging models' REGEXP_REPLACE anchor and the migrations' _BLANK
 #: constant alike.
 _CLASS_IN_SOURCE = re.compile(r"(\[\\p\{Z\}[^\]]*\])")
+
+#: Where a copy of the rule can legitimately live.
+_SEARCH_ROOTS = (
+    _REPO_ROOT / "src/moneybin/sqlmesh/models/prep",
+    _REPO_ROOT / "src/moneybin/sql/migrations",
+)
+
+#: A hand-listed site set has the same defect as a hand-listed character set:
+#: it cannot fail for the copy nobody added to it. A fifth site arrived while
+#: this PR was in review and had to be remembered into the list by hand — so
+#: the sites are discovered by the class they carry, and a new copy is covered
+#: the moment it is written.
+_KNOWN_SITE_COUNT = 5
+
+
+def _discover_sites() -> tuple[Path, ...]:
+    """Every source under the search roots carrying a blank character class."""
+    found = tuple(
+        path
+        for root in _SEARCH_ROOTS
+        for path in sorted(root.rglob("*"))
+        if path.suffix in {".py", ".sql"} and _CLASS_IN_SOURCE.search(path.read_text())
+    )
+    # A glob that silently matches nothing would make every assertion below
+    # vacuously true, so the floor is asserted rather than assumed.
+    assert len(found) >= _KNOWN_SITE_COUNT, (
+        f"expected at least {_KNOWN_SITE_COUNT} sites, found {[p.name for p in found]}"
+    )
+    return found
+
+
+_SITES = _discover_sites()
 
 
 def _python_whitespace() -> list[int]:
