@@ -283,7 +283,7 @@ strings map to the taxonomy and unresolved security refs run the resolution chai
 
 ```
 Columns:
-  investment_transaction_id  VARCHAR          -- Canonical ID (source-provided or content hash)
+  investment_transaction_id  VARCHAR          -- MoneyBin-owned UUID4-derived 12-hex Golden leg ID
   account_id                 VARCHAR          -- FK to core.dim_accounts
   security_id                VARCHAR          -- FK to core.dim_securities; NULL for cash-only events (deposit, withdrawal, account fee, cash interest)
   trade_date                 DATE             -- Trade date; drives holding-period classification
@@ -297,8 +297,10 @@ Columns:
   amount                     DECIMAL(18,2)    -- Signed cash effect: − out (buy), + in (sell/dividend)
   fees                       DECIMAL(18,2)    -- Fee/commission component folded into basis
   currency_code              VARCHAR          -- Denominating currency; no FX in v1
-  source_type                VARCHAR          -- Origin tag (manual | ofx | plaid)
-  source_origin              VARCHAR          -- Institution/connection scope
+  source_type                VARCHAR          -- Singleton source or deterministic representative (manual | ofx | plaid)
+  source_origin              VARCHAR          -- Singleton or representative institution/connection scope
+  provider_type              VARCHAR          -- Exact provider type from the same source member; nullable
+  provider_subtype           VARCHAR          -- Exact provider subtype from the same source member; nullable
   description                VARCHAR          -- Free-text description
   updated_at                 TIMESTAMP        -- Row freshness per core-updated-at-convention
 ```
@@ -632,8 +634,13 @@ provider-identifier resolution rung all exist because of this validation.
 > `event_group_id` NULL because the aggregator supplies no trustworthy group
 > reference. M1J.7 removes caller-authored grouping from public writes,
 > constructs Source events only from validated complete shapes or evidence,
-> and persists a MoneyBin-owned Golden `event_group_id` in app membership;
-> staging never synthesizes that identity from mutable financial fields.
+> and persists MoneyBin-owned Golden `event_group_id` and
+> `investment_transaction_id` values in app membership; staging never
+> synthesizes those identities from mutable financial fields. Pre-M1J.7
+> source-derived transaction ids remain provenance and do not become Golden
+> resolver inputs. For a multi-source Golden leg, the singular source and
+> provider columns copy together from one deterministic representative member;
+> complete contributor attribution remains in source-row provenance.
 > Finally, the Taxonomy
 > mapping table below is **one subtype short**: `stock distribution`
 > (`InvestmentTransactionSubtype.STOCK_DISTRIBUTION`, verified in the Plaid

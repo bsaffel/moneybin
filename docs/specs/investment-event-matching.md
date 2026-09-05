@@ -684,27 +684,32 @@ not issue raw writes against these protected tables.
 
 On first observation, MoneyBin mints a UUID4 `event_group_id` truncated to 12
 hex characters that is independent of source row ids and values, then persists
-it with the standalone membership. M1J.7 is a pre-launch hard cut: there are no
-legacy Golden ids or consumers to preserve. Existing Raw and staging
-`event_group_id` values remain source-group references in provenance, while
-every migrated source event
-receives a newly minted MoneyBin-owned Golden id. Core exposes only the Golden
-id after migration; no compatibility alias is created for a pre-M1J.7
-source-group reference.
+it with the standalone membership. MoneyBin also mints one UUID4
+`investment_transaction_id`, truncated to 12 hex characters, for each semantic
+leg and persists it with that membership. Both ids are independent of
+source-native ids and values. M1J.7 is a pre-launch hard cut: there are no legacy
+Golden ids or consumers to preserve. Its migration registers every existing
+Source event through this same path. Existing Raw and staging `event_group_id`
+values and pre-M1J.7 source-derived transaction ids remain provenance, not
+Golden ids or resolver inputs. Core exposes only the newly minted Golden ids
+after migration; no compatibility alias is created for a pre-M1J.7 source id.
 
 When acceptance joins existing Golden events, the oldest established Golden
 event identity remains canonical, with the opaque id as the deterministic
 tie-breaker. The two Core id resolvers derive the current resolution outcome for
 every post-M1J.7 retired Golden event or leg id from membership history, with
-forwarding only when an active successor exists. Golden leg ids follow the
-corresponding established semantic leg where one exists. Adding a third
-observation to an existing event therefore changes neither the event id nor its
-leg ids.
+forwarding only when an active successor exists. For each complete semantic-leg
+correspondence, the oldest already-published Golden leg id remains canonical;
+every losing post-M1J.7 Golden leg id forwards to it. Adding a third observation
+to an existing event therefore changes neither the event id nor its leg ids.
 
 A change to leg count or complete semantic leg correspondence stales the
 existing decision. The system does not silently repurpose a leg id for a
-different semantic role. When an accepted Match replaces previously published
-source-derived transaction ids, the derived Core resolver preserves continuity.
+different semantic role. A changed or unmatched semantic leg receives a newly
+minted Golden leg id. Acceptance and migration repoint every complete stored lot
+selection through the same semantic-leg mapping or block atomically when the
+mapping is incomplete or ambiguous; pre-M1J.7 source-derived transaction ids do
+not receive compatibility forwarding.
 
 ### Field fidelity
 
@@ -748,6 +753,19 @@ material field conflict because they are not accounting evidence.
 Every Golden field exposes provenance to its chosen source observation or
 explicit resolution. Event membership provenance separately retains every
 contributing source row, including observations whose value was not selected.
+
+For a singleton Golden leg, `source_type`, `source_origin`, `provider_type`, and
+`provider_subtype` retain that member's exact metadata. For a multi-source
+Golden leg, those four columns are representative-source metadata, not the
+complete contributing set. Select one active member using the field-default
+source precedence as if every member value were present: aggregator before
+manual, then the lexicographically smallest stable
+`(source_type, source_origin, native_reference)`. Copy all four values together
+from that member's exact revision; never select them independently or by
+processing order. The provider fields are therefore `NULL` when manual is the
+representative. Source-scoped Core reads mean representative source.
+Any-contributor and reconciliation reads use source-row provenance, which
+exposes every member's source tuple and exact observation version.
 
 ### Source correction lifecycle
 
@@ -1087,13 +1105,13 @@ fixtures and expected Golden-ledger outcomes.
 | Opening lots | The retained first holdings snapshot is chosen independently for each `(source_account_key, source_origin)` by `(extracted_at ASC, ingestion_sequence ASC)`, so two pulls with the same extraction timestamp cannot rotate `first_snapshot_source_file` and an account first appearing in a later pull is not joined to an earlier file that lacks it; a reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; a complete pre-M1J.7 manual merger, spin-off, or other unsupported compound group remains atomic but match-ineligible, while every member of an incomplete or ambiguous shared group remains separately projectable but match-ineligible so no legacy relationship is partially consolidated; a lone unused hint remains singleton provenance |
 | Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; every active membership stores exact bound Account, Security, effective-currency, and dependency-generation values that Golden projection reads instead of live Raw routing; omitted source currency inherits the canonical account currency; an equivalence merge activates a dependency-only successor binding with stable Golden ids and projection freshness before the route is visible; an Account-currency correction does likewise for affected unreviewed projection while an accepted or multi-source Match retains reviewed bindings and stales; before a non-equivalent rebind, unlink, or split becomes visible, pending and accepted or multi-source Matches stale while a structurally unchanged standalone membership advances with stable Golden ids and a now-unresolved or structurally changed standalone retires; Raw remains unchanged |
-| Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; consolidation-retired event and leg ids forward through the two derived Core views, ids retired without a successor return a terminal `retired` status and null active id, and undo reactivates prior ids only through new successor memberships rebound to current exact revisions and canonical dependencies; unresolved or ambiguous current bindings block undo |
+| Identity migration | Pre-M1J.7 source-group references and source-derived transaction ids remain provenance while every event and semantic leg receives a new Golden id; consolidation-retired post-M1J.7 event and leg ids forward through the two derived Core views, ids retired without a successor return a terminal `retired` status and null active id, and undo reactivates prior ids only through new successor memberships rebound to current exact revisions and canonical dependencies; complete lot selections repoint through unambiguous semantic-leg correspondence while incomplete or ambiguous mappings block atomically; unresolved or ambiguous current bindings block undo |
 | Splits | Normalized contract fixtures pass for supported comparison adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
 | Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
 | Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo; undo of a third-source acceptance restores the complete prior topology, including its accepted two-source component and the removed source's appropriate standalone component, under each component's current lifecycle rather than decomposing everything into standalones; multiple collections converging on one disposal write once only when their complete remapped sets are identical, otherwise acceptance blocks; ambiguous current membership, dependency, decision linkage, or curation remapping blocks undo, and later overlapping curation blocks undo |
 | Field choices | Candidate date bands do not become silent tax-lot field tolerances: any two present unequal explicit `trade_date` values require a choice, while an explicit date outranks a posting fallback within the candidate threshold and two fallbacks retain the ordinary threshold rule; an otherwise-eligible native or ratified candidate beyond tolerance requires a choice; any two present unequal `original_acquisition_date` values require a choice while present still outranks missing; present `qualified` versus `non_qualified` dividend subtypes and `short_term` versus `long_term` capital-gain-distribution subtypes always require a choice; if individually within-tolerance accounting-field defaults combine incoherently, the participating fields expose observed-value choices and a pending Proposal exists only when at least one complete choice combination validates; missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; CLI rejects `field-choice` outside one investment-match confirmation and rejects `confirm-all` for investment matches or all queues with exit 2; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
-| Field provenance | Explicit curation outranks the default; otherwise present values outrank missing values, an explicit trade date outranks a posting fallback, aggregator beats manual, and the stable source tuple breaks an aggregator tie, so a basis-bearing manual transfer is not erased by aggregator `NULL`, a manual actual trade date is not displaced by Plaid's posting fallback, and differing descriptions from two Plaid origins plus input reordering produce one unchanged value and exact provenance without affecting assignment |
+| Field provenance | Explicit curation outranks the default; otherwise present values outrank missing values, an explicit trade date outranks a posting fallback, aggregator beats manual, and the stable source tuple breaks an aggregator tie, so a basis-bearing manual transfer is not erased by aggregator `NULL`, a manual actual trade date is not displaced by Plaid's posting fallback, and differing descriptions from two Plaid origins plus input reordering produce one unchanged value and exact provenance without affecting assignment; a singleton retains exact source/provider metadata, while manual-plus-Plaid and two-aggregator-origin Matches copy all four representative-source fields from one deterministic member regardless of field choices or input order and source-row provenance recovers every contributor |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
 | Recovery | A fresh profile and a newly added comparison-input model bootstrap only pre-match views before membership; bootstrap or membership failure prevents the dependent transform and its SQLMesh acknowledgement; committed decision plus crash or failed rebuild remains pending in transform freshness and every dependent read until a successful rebuild |
 | Guard coverage | Manual history overlapping Plaid transactions or holdings-derived bootstrap rows emits the same visible warning and doctor finding |
@@ -1194,7 +1212,11 @@ fixtures and expected Golden-ledger outcomes.
   missing values, and otherwise aggregator-over-manual plus the stable source
   tuple selects one exact value and provenance across multiple aggregator
   origins, differing descriptions, input reordering, and an added observation
-  without changing assignment.
+  without changing assignment. Representative-source tests prove a singleton
+  retains its exact source/provider metadata; manual-plus-Plaid and two-origin
+  aggregator Matches copy all four fields from one deterministic member; field
+  choices and input order cannot change that member; and source-row provenance
+  recovers every contributor and exact observation version.
 - Full-event projection tests proving incoherent within-tolerance defaults issue
   existing conflict ids for every participating accounting field with multiple
   observed values, at least one complete offered choice combination validates,
@@ -1225,8 +1247,11 @@ fixtures and expected Golden-ledger outcomes.
   `ingestion_sequence` keeps the first-snapshot key and evidence stable, while
   same-job replay preserves its sequence.
 - Core id-resolution tests proving current ids self-resolve,
-  consolidation-retired event and leg ids forward, terminally retired ids return
-  `retired` with a null active id, and accept followed by undo creates
+  first registration and the pre-launch migration mint MoneyBin-owned event and
+  semantic-leg ids independently of source ids and values, consolidation-retired
+  post-M1J.7 event and leg ids forward, changed semantic legs mint new ids,
+  terminally retired ids return `retired` with a null active id, and accept
+  followed by undo creates
   current-dependency successor membership whose restored ids self-resolve
   without stale forwarding. A non-equivalent identity change after acceptance
   proves undo never republishes the obsolete binding and blocks when current
