@@ -20,6 +20,10 @@ from moneybin.metrics.registry import (
     PROFILE_CURRENCIES,
     UNKNOWN_CURRENCY_ROWS,
 )
+from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
+    is_reserved_account_name,
+)
 from moneybin.sqlmesh_registry import model_presence
 from moneybin.staleness import (
     SECURITY_TYPE_STALENESS_DAYS,
@@ -61,7 +65,9 @@ from moneybin.tables import (
     SECURITY_LINKS,
     SECURITY_PRICE_OVERRIDES,
     SECURITY_PRICES,
+    STG_PLAID_ACCOUNTS,
     STG_SECURITY_PRICES,
+    STG_TABULAR_ACCOUNTS,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
@@ -280,6 +286,7 @@ class DoctorService:
             unproposed_duplicates,
             categorization,
             currency_integrity,
+            self._run_dim_accounts_reserved_display_name(),
             *app_integrity,
             orphan_app_state,
             *investment_checks,
@@ -500,6 +507,7 @@ class DoctorService:
             self._run_proposed_rules_rule_fk(),
             self._run_transaction_categories_fk(),
             self._run_account_settings_account_fk(),
+            self._run_account_settings_reserved_display_name(),
             self._run_balance_assertions_account_fk(),
             self._run_budgets_category_fk(),
             self._run_match_decisions_account_fk(),
@@ -1799,6 +1807,162 @@ class DoctorService:
                 detail=(
                     f"{len(affected)} account_settings row(s) reference an "
                     "account_id absent from core.dim_accounts"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_account_settings_reserved_display_name(self) -> InvariantResult:
+        """Flag ``account_settings.display_name`` rows folding onto the reserved label.
+
+        Every write path refuses a ``display_name`` that
+        ``is_reserved_account_name`` folds onto ``UNNAMED_ACCOUNT_LABEL`` (a
+        case variant, padding, a doubled space, an NFKC-equivalent), because
+        ``core.dim_accounts`` shows that exact label for an account it could
+        not name and every resolver reads it that way. Those guards only bind
+        writes made through them: a row stored before either shipped still
+        holds whatever it holds, and ``is_a_name`` stays byte-exact by design
+        (normalizing it would silently drop a real user-set name that happens
+        to equal the label) — so such a row keeps reading as a name and can
+        resolve a request for the reserved label to it. Not auto-fixable:
+        MoneyBin cannot guess the account's real name, only tell the user to
+        pick one.
+        """
+        name = "app_account_settings_reserved_display_name"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT account_id, display_name
+                FROM {ACCOUNT_SETTINGS.full_name}
+                WHERE display_name IS NOT NULL
+                ORDER BY account_id
+                """  # noqa: S608  # TableRef constant, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"reserved-label check unavailable: {e}",
+                affected_ids=[],
+            )
+        affected = [
+            str(account_id)
+            for account_id, display_name in rows
+            if is_reserved_account_name(display_name)
+        ]
+        if affected:
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} account(s) have a stored display_name that "
+                    f"folds onto the reserved {UNNAMED_ACCOUNT_LABEL!r} label. "
+                    "MoneyBin shows that label for an account it could not name, "
+                    "so a name-based lookup can resolve to this row instead of "
+                    "the account you mean; rename it with `moneybin accounts set "
+                    "<account> --display-name <new name>`."
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_dim_accounts_reserved_display_name(self) -> InvariantResult:
+        """Flag source-authored ``dim_accounts`` labels folding onto the reserved label.
+
+        The sibling check above covers the ``app.account_settings`` override.
+        The other human-authored rung is the source's own ``account_label`` — a
+        sheet's Account column, ``--account-name``, Plaid's per-account name —
+        and ``dim_accounts.sql`` filters that rung with a byte-exact
+        ``<> 'Unnamed account'``. SQL cannot NFKC-casefold, so a label reaching
+        it as ``unnamed account`` or ``Unnamed  account`` is promoted, arrives
+        with ``display_name_is_user_set = TRUE``, and collides with the label
+        MoneyBin displays for accounts it could not name — the same defect the
+        write-path guards reject, entered through a channel that never touches
+        ``app.*``. An export publishes that label as ``account_name`` and can be
+        re-imported, so this is an ordinary route, not a contrived one.
+
+        Scoped to rows with no settings override, so an account already
+        reported by the sibling check is not reported twice. Remediation is the
+        same rename: the override outranks the source label.
+
+        **The source label is read from ``prep``, never from the dim's own
+        snapshot.** ``core.dim_accounts`` is ``kind FULL`` — materialized, and
+        stale between refreshes — while ``app.account_settings`` is live, so
+        reading provenance from one and the override from the other reports a
+        state that never existed. ``--clear-display-name`` is the case that
+        proves it: ``AccountService.settings_update`` writes ``app.*`` alone, so
+        the moment a user clears a historically reserved override the dim row
+        still carries that override's text with ``display_name_is_user_set =
+        TRUE``, and the cleared row reads back as a source-authored collision.
+        The check the user just satisfied would fail them for satisfying it.
+        The two staging models that carry an ``account_label`` are views over
+        ``raw``, so the label they report is the one the next refresh will
+        promote, whatever ``app.*`` does in between.
+
+        ``ARG_MAX(account_label, extracted_at)`` mirrors the merge in
+        ``dim_accounts.sql`` rather than scanning every source row: an account
+        named twice keeps the newer spelling, so an older reserved label that
+        a later import already replaced is not a defect and must not be
+        reported as one. The byte-exact ``UNNAMED_ACCOUNT_LABEL`` is excluded
+        for the same reason the model excludes it — that rung is never
+        promoted, so it collides with nothing.
+
+        Detection only. Teaching the model to reject the fold would change
+        ``core.dim_accounts.display_name`` for rows that already have it, which
+        is a core-schema change, not a doctor check.
+        """
+        name = "dim_accounts_reserved_display_name"
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH source_labels AS (
+                    SELECT account_id, account_label, extracted_at
+                    FROM {STG_TABULAR_ACCOUNTS.full_name}
+                    UNION ALL
+                    SELECT account_id, account_label, extracted_at
+                    FROM {STG_PLAID_ACCOUNTS.full_name}
+                ), winning AS (
+                    SELECT
+                        account_id,
+                        ARG_MAX(account_label, extracted_at) FILTER(WHERE
+                          NOT account_label IS NULL) AS account_label
+                    FROM source_labels
+                    GROUP BY account_id
+                )
+                SELECT w.account_id, w.account_label
+                FROM winning AS w
+                LEFT JOIN {ACCOUNT_SETTINGS.full_name} AS s
+                  ON s.account_id = w.account_id
+                WHERE NOT w.account_label IS NULL
+                  AND w.account_label <> ?
+                  AND s.display_name IS NULL
+                ORDER BY w.account_id
+                """,  # noqa: S608  # TableRef constants; the label is a bound parameter
+                [UNNAMED_ACCOUNT_LABEL],
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — prep may not be built yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"reserved-label check unavailable: {e}",
+                affected_ids=[],
+            )
+        affected = [
+            str(account_id)
+            for account_id, account_label in rows
+            if is_reserved_account_name(account_label)
+        ]
+        if affected:
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} account(s) took their name from a source "
+                    f"label that folds onto the reserved {UNNAMED_ACCOUNT_LABEL!r} "
+                    "label. MoneyBin shows that label for an account it could not "
+                    "name, so a name-based lookup can resolve to one of these "
+                    "instead of the account you mean; override it with `moneybin "
+                    "accounts set <account> --display-name <new name>`."
                 ),
                 affected_ids=affected,
             )
