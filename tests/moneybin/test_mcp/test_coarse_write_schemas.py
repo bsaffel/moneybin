@@ -602,6 +602,30 @@ def test_split_subcategory_requires_category_in_model_and_schema() -> None:
         )
 
 
+def test_merchant_subcategory_requires_category_in_model_and_schema() -> None:
+    """The merchant default mapping advertises the rule `SplitTarget` does.
+
+    Same pair, same dim, same rule — so a client that reads the schema before
+    calling learns it in both places rather than discovering it as a runtime
+    refusal on one of them.
+    """
+    payload = {
+        "kind": "merchant",
+        "state": "present",
+        "raw_pattern": "ORPHAN",
+        "canonical_name": "Orphan",
+        "subcategory": "Dining",
+    }
+    with pytest.raises(ValidationError, match="category"):
+        MerchantStateRequest.model_validate(payload)
+    with pytest.raises(JSONSchemaValidationError):
+        validate_json_schema(
+            payload,
+            MerchantStateRequest.model_json_schema(),
+            cls=Draft202012Validator,
+        )
+
+
 def test_decimal_schema_advertises_json_numbers_not_strings() -> None:
     amount_schema = SplitTarget.model_json_schema()["properties"]["amount"]
     advertised_types = {

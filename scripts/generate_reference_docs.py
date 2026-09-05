@@ -514,6 +514,23 @@ def _property_rows(
 # fires on, the fixed value for a "must be" verdict).
 _Clause = tuple[str, str, list[object], object]
 
+#: The subschema for "supplied and not null", as the write contracts spell it.
+_NOT_NULL: Mapping[str, object] = {"not": {"type": "null"}}
+
+
+class _IsSet:
+    """Condition value for an ``if`` that tests presence instead of equality."""
+
+    def __repr__(self) -> str:
+        return "<is set>"
+
+
+#: A rule can key on another optional field having been supplied at all — the
+#: category/subcategory pair does, since a subcategory is only meaningful under
+#: a parent. No `const` expresses that, so the condition carries this instead of
+#: a value.
+_IS_SET = _IsSet()
+
 
 def _condition_field_value(
     param_name: str, variant_name: str, branch: Mapping[str, object]
@@ -530,11 +547,15 @@ def _condition_field_value(
             f"{param_name!r} variant {variant_name!r}: if must test exactly one property"
         )
     ((field, field_schema),) = properties.items()
-    if set(field_schema) != {"const"} or if_["required"] != [field]:
-        raise ValueError(
-            f"{param_name!r} variant {variant_name!r}: if.{field} is not a bare const test"
-        )
-    return field, field_schema["const"]
+    if if_["required"] == [field]:
+        if field_schema == _NOT_NULL:
+            return field, _IS_SET
+        if set(field_schema) == {"const"}:
+            return field, field_schema["const"]
+    raise ValueError(
+        f"{param_name!r} variant {variant_name!r}: if.{field} is neither a bare "
+        "const test nor a not-null test"
+    )
 
 
 def _forbidden_fields(
@@ -650,7 +671,7 @@ def _merge_clauses(clauses: list[_Clause]) -> list[_Clause]:
 def _render_clause(clause: _Clause) -> str:
     verdict, condition_field, values, must_be = clause
     condition = f"{_code(condition_field)} is " + " or ".join(
-        _code(value) for value in values
+        "set" if value is _IS_SET else _code(value) for value in values
     )
     if verdict == "required":
         return f"required when {condition}"
