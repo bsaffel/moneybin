@@ -1,3 +1,47 @@
+## Writing descriptions and review comments
+
+Adapted from [PAO's PR-writing guidance](https://github.com/bsaffel/personal-agent-os/blob/a732866111247cdcd335f0ffb79640e493736c8c/packages/pao/references/pr-writing.md).
+This section is embedded in both hosted review prompts; it requires no local PAO
+installation. Writing guidance grants no authority to post, edit a PR, accept a
+deferral, or merge. The approval contract below remains authoritative.
+
+Write for a contributor who understands software but is new to MoneyBin. The
+title and opening together explain the problem, changed behavior, and any action
+needed. Introduce project terms through their purpose. Describe the final change;
+put material limitations, recovery actions, and unresolved decisions beside the
+explanation. Mechanisms and verification follow. Use descriptive links with
+enough context to understand the concern without opening them.
+
+After the required verdict or tier marker, lead with the specific finding,
+answer, changed state, or decision needed. Explain the consequence, cite evidence,
+and state the remaining action. Name the concern even in replies and re-review
+requests. A proposed deferral names what remains unresolved, why, and its tracked
+follow-up; it still requires reviewer acceptance under the contract below.
+Later updates explain the delta and current uncertainty, not every review round.
+
+Use concrete verbs and a calm engineering voice. Keep effective prose; density
+alone is not a defect. Treat optional wording polish as non-blocking. Choose
+sections for the reader's needs and omit empty praise and repeated explanations,
+while retaining the exact verdict lines and severity markers required below.
+
+Preserve conditions, negation, quantities, causal claims, uncertainty, and
+requirement strength. Keep decision-relevant commands, results, tested revision,
+and evidence links. Explain what checks establish and what remains untested;
+distinguish local checks, pending CI, and live observations. Summarize long logs
+without hiding blockers. Before presenting text, check that its opening makes
+the problem and action understandable, then compare the full text to the source
+evidence for omissions and invented claims. Writing quality is not verification
+or approval.
+
+For posted bodies and comments, use one source line per paragraph with blank
+lines between paragraphs; inspect the rendered text after an authorized post.
+Apply [MoneyBin's public-text privacy rules](../.claude/rules/branching.md#branch-names-pr-and-issue-text-and-comments-are-a-public-surface)
+to the exact composed text before sending, including verification evidence.
+Describe data by shape and use synthetic examples. Real institutions linked to
+holdings, account names, last fours (even masked), balances, merchants, and
+transaction descriptions stay out of public text. The log permitted list does
+not authorize publication.
+
 ## Tiered findings — required prefix on every comment
 
 Every finding (inline comment AND summary bullet) MUST start with one of three tier markers:
