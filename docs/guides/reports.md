@@ -9,7 +9,7 @@ Every transcript below is real output from the family demo persona, trimmed only
 uv run moneybin demo --persona family
 ```
 
-That build ends with `✅ Demo profile 'demo' ready (4 accounts, 2886 transactions, 2473 categorized).` — three years ending on the last complete year, two bank accounts and two credit cards, seed 42. Rerun it and you get the same figures.
+That build ends with `✅ Demo profile 'demo' ready (4 accounts, 2886 transactions, 2473 categorized).` — three calendar years ending on the last complete one, two bank accounts and two credit cards, seed 42. The seed fixes the figures within one calendar year: the window ends on the last complete year and `demo` has no option to pin it, so a rerun after January 1 shifts every date-bound number a year forward while the shapes hold.
 
 ## The eight built-in reports
 
@@ -408,7 +408,7 @@ Using profile: demo
 └───────────────┴───────────────┴──────────┘
 ```
 
-You never declare privacy classes. MoneyBin derives them from the SQL at save time — a column read from `core.fct_transactions.merchant_name` is a `merchant_name`, a sum over `amount` is a `txn_amount` — and stores them, so a saved report masks exactly as a built-in does on every surface:
+You never declare privacy classes. MoneyBin derives them from the SQL at save time — a column read from `core.fct_transactions.merchant_name` is a `merchant_name`, a sum over `amount` is a `txn_amount` — and stores them, so on `run`, `explain`, and the MCP tool a saved report masks exactly as a built-in does. A redacted export goes further, because a saved report's column names, parameter names, and SQL are your own text; the [Export](#export) section says what it withholds:
 
 ```console
 $ uv run moneybin reports explain coffee --param "category=Food & Drink"
@@ -500,4 +500,4 @@ The `reports` MCP tool is the same catalog. Called with no `report_id` it return
 
 ## Export
 
-`moneybin export report REPORT_ID` writes any catalog report — built-in or saved, `--param` bound the same way — as CSV, Parquet, or XLSX to a named local destination or a Google Sheet. Masking applies on the way out; `--unredacted` is an explicit per-run choice. The [export section of the CLI reference](cli-reference.md#export) and the [Google Sheets guide](connect-gsheet.md) cover destinations.
+`moneybin export report REPORT_ID` writes any catalog report — built-in or saved, `--param` bound the same way — as CSV, Parquet, or XLSX to a named local destination or a Google Sheet. Masking applies on the way out; `--unredacted` is an explicit per-run choice. A redacted export of a saved report also withholds what you authored: its columns become `redacted_column_1`, `redacted_column_2`, and so on, its parameters `redacted_parameter_*`, and its SQL is left out of the receipt, while a built-in's export keeps its real names and SQL. The [export section of the CLI reference](cli-reference.md#export) and the [Google Sheets guide](connect-gsheet.md) cover destinations.
