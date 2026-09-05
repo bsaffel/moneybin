@@ -108,6 +108,7 @@ ledger.
 | Term | Meaning |
 |---|---|
 | Source observation | One immutable Raw revision of a manual or aggregator claim. |
+| Native reference | Stable upstream transaction identifier; with Source type and Source origin, it forms the version-free native source-row identity. |
 | Observation version | A SHA-256 digest truncated to 16 hex characters over the source values that can affect comparison or Golden projection. |
 | Comparison adapter | A source-specific translator that emits the source-neutral comparison event and leg contract. |
 | Comparison leg | One normalized investment-transaction row used as matching evidence. |
@@ -201,10 +202,11 @@ to `capital_gain_distribution`; their resolved Account, Security, and effective
 currency must agree; their dates must be no more than 3 calendar days apart;
 their income and acquisition cash must
 reconcile within the approved amount and fee tolerances; and neither leg may
-have another eligible pairing. Its source-event key derives from the two exact
-observation identities. A missing leg or any alternative pairing leaves the
-observations as singletons, so they cannot partially match a manual reinvest
-event.
+have another eligible pairing. Its source-event key derives from the two stable
+native source-row identities `(source_type, source_origin, native_reference)`
+and excludes `observation_version`. A missing leg or any alternative pairing
+leaves the observations as singletons, so they cannot partially match a manual
+reinvest event.
 
 M1J.7 treats ordinary normalized `transfer_in` and `transfer_out` observations
 as one-leg Source events. A Proposal may compare a manual and aggregator event
@@ -240,8 +242,9 @@ silently after review.
 
 ### Source observation revisions
 
-Every comparison adapter identifies a source row by its Source type, Source
-origin, Native reference, and `observation_version`. The version is a SHA-256
+Every comparison adapter identifies a stable upstream source row by its Source
+type, Source origin, and Native reference. An immutable Source observation
+revision is that identity plus `observation_version`. The version is a SHA-256
 digest truncated to 16 hex characters over every captured source value that can
 affect comparison or Golden projection; ingestion metadata such as job id and
 load time is excluded. An identical re-delivery reuses the version. A changed
@@ -411,9 +414,9 @@ candidate-graph fingerprint, confidence band, evidence summary, timestamps, and
 actor. It also stores the planner's immutable `auto_eligible` boolean at
 Proposal creation. The flag is deterministic from the persisted evidence and
 `algorithm_version`; changing that version produces a new Proposal. The flag
-has no mutation authority; precision is the share of reviewed `auto_eligible`
-Proposals whose first audited human decision is `accepted` rather than
-`rejected`; `stale` and still-pending Proposals are excluded. Rejected
+has no mutation authority; first-decision review quality is the share of reviewed
+`auto_eligible` Proposals whose first audited human decision is `accepted` rather
+than `rejected`; `stale` and still-pending Proposals are excluded. Rejected
 fingerprints suppress unchanged Proposals; a materially
 different member or connected-graph fingerprint is a new Proposal.
 
@@ -772,8 +775,9 @@ Account-level withholding is not part of the current guard or this initial
 matcher delivery.
 
 Automatic acceptance is also a separate promotion. The first release may
-record which Proposals would have been auto-eligible so precision can be
-measured without granting them mutation authority.
+record which Proposals would have been auto-eligible so first-decision review
+quality can be measured as one input to that later decision without granting
+them mutation authority.
 
 ## Observability
 
@@ -793,8 +797,10 @@ An accepted or rejected outcome emits exactly once for the first audited human
 decision with the Proposal's immutable flag. A later reversal may emit
 `decision="reversed"` but never rewrites or recounts that first outcome. The
 accepted and rejected counters where `auto_eligible="true"` therefore provide
-the promotion precision numerator and denominator without including pending or
-stale Proposals.
+the numerator and denominator for first-decision review quality without including
+pending or stale Proposals. They are not a current-state precision measure and
+do not set or authorize a future auto-accept promotion; reversals remain
+separately audited and counted without rewriting that first-decision measure.
 
 Logs may include counts, opaque event ids, status codes, event types, and
 operation names. They must not include descriptions, security names, monetary
@@ -816,7 +822,7 @@ fixtures and expected Golden-ledger outcomes.
 | Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; manual correction is unavailable in M1J.7 |
-| Revisions | Identical aggregator re-delivery reuses a version; an unreviewed Plaid reinvest whose revised leg retains the same unique partner advances with stable Golden ids, while a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
+| Revisions | Identical aggregator re-delivery reuses a version; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
 | Opening lots | A reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
 | Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency; an equivalence merge follows aliases and stales pending Proposals only; before a non-equivalent rebind, unlink, or split becomes visible, pending and accepted or multi-source Matches stale while a structurally unchanged standalone membership advances with stable Golden ids and a now-unresolved or structurally changed standalone retires; Raw remains unchanged |
@@ -829,7 +835,7 @@ fixtures and expected Golden-ledger outcomes.
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
 | Recovery | A fresh profile and a newly added comparison-input model bootstrap only pre-match views before membership; bootstrap or membership failure prevents the dependent transform and its SQLMesh acknowledgement; committed decision plus crash or failed rebuild remains pending in transform freshness and every dependent read until a successful rebuild |
 | Guard coverage | Manual history overlapping Plaid transactions or holdings-derived bootstrap rows emits the same visible warning and doctor finding |
-| Measurement | An `auto_eligible` Proposal remains pending, records the flag immutably, and contributes to measured precision only after its first human accept or reject decision |
+| Measurement | An `auto_eligible` Proposal remains pending, records the flag immutably, and contributes to first-decision review quality only after its first human accept or reject decision; a later reversal emits its separate outcome without rewriting that historical measure or becoming auto-accept authority |
 
 ## Verification
 
@@ -845,7 +851,9 @@ fixtures and expected Golden-ledger outcomes.
   is deterministic for the persisted evidence and algorithm version, cannot
   authorize a mutation, and uses bounded decision-metric labels emitted once
   for first human accepted or rejected decisions while excluding pending and
-  stale outcomes and never recounting that decision after reversal.
+  stale outcomes. Acceptance followed by reversal emits the separate reversal
+  outcome without changing the first-decision measure or treating it as a
+  current-state precision or promotion gate.
 - Reinvest Source-event tests proving the Plaid comparison adapter groups one
   normalized `reinvest` acquisition with an income leg only for the explicit
   `dividend` to `dividend`, `interest` to `interest`, or `capital_gain` to
@@ -875,11 +883,13 @@ fixtures and expected Golden-ledger outcomes.
 - Membership tests proving an unreviewed adapter event advances to one active
   latest revision with stable Golden ids only when its source-event key and
   complete source-row-to-semantic-leg correspondence are unchanged. Plaid
-  reinvest fixtures cover loss and switching of a unique partner, including the
-  displaced former partner, and assert normal identity retirement or forwarding,
-  no reused id for a changed semantic leg, and one active membership per rebuilt
-  Source event. Accepted and multi-source controls instead stale and retain their
-  last-reviewed exact revisions.
+  reinvest fixtures prove that a changed observation version with unchanged
+  native identities and semantic roles preserves the key and exact-id lineage,
+  while a changed Native reference does not. They also cover loss and switching
+  of a unique partner, including the displaced former partner, and assert normal
+  identity retirement or forwarding, no reused id for a changed semantic leg,
+  and one active membership per rebuilt Source event. Accepted and multi-source
+  controls instead stale and retain their last-reviewed exact revisions.
 - Opening-lot reconstruction tests proving stable-key identity, exact-input and
   algorithm-version provenance, revision advance, retirement, stable surviving
   lot ids when canonical identity and acquisition inputs are unchanged, audited
@@ -969,8 +979,10 @@ accepted contract and must be reconciled to it before delivery begins.
    commit its decision, exact revision membership, field resolutions, and
    complete remapped selection sets in one transaction. Undo restores those
    selection sets from the same audit chain and blocks on later overlapping
-   curation. Advance an unreviewed aggregator singleton to a newer revision
-   atomically without rotating its Golden ids or creating a Proposal. Make
+   curation. Reconstruct affected Source events before an unreviewed aggregator
+   revision advances; preserve Golden ids only when the stable source-event key
+   and complete semantic membership survive, otherwise retire and register the
+   rebuilt events normally. Make
    equivalence merges follow the canonical alias path, and make a
    non-equivalent rebind, unlink, or split invalidate affected pending and
    accepted or multi-source Matches before publishing the new mapping.
@@ -980,8 +992,9 @@ accepted contract and must be reconciled to it before delivery begins.
 
 ## Deferred decisions
 
-- The precision threshold, eligible bands, and safeguards for a future
-  auto-accept promotion.
+- The current-state precision metric and reversal treatment, threshold, eligible
+  bands, and safeguards for a future auto-accept promotion. The shipped
+  first-decision review-quality counters do not decide it.
 - The exact state and read rule for a future guard-promotion decision.
 - Plaid split matching, owned by M1J.5.
 - Source-specific comparison adapters beyond manual and Plaid.
