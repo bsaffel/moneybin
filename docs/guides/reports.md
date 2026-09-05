@@ -326,7 +326,7 @@ Reads: reports.spending_trend
 Graduation: already_materialized
 ```
 
-The SQL that follows is trimmed here; it is the same query you can run yourself with `moneybin sql query` against the `reports.spending_trend` view, which the [data model](../reference/data-model.md) documents column by column. The `class` column is what decides masking when the report leaves the machine through MCP or an export. `Graduation` says whether the report could be materialized as a view of its own; `Fingerprint`, on a saved report, is the hash of its derived privacy classes, and a run that finds the SQL no longer matches it re-derives them before serving anything.
+The SQL that follows is trimmed here. It reads the `reports.spending_trend` view, which the [data model](../reference/data-model.md) documents column by column, and you can run it yourself with `moneybin sql query` once you replace each `?` with a literal: the date bounds stay withheld as `?` because their values carry a privacy class, and `sql query` binds nothing. The `class` column is what decides masking when the report leaves the machine through MCP or an export. `Graduation` says whether the report could be materialized as a view of its own; `Fingerprint`, on a saved report, is the hash of its derived privacy classes, and a run that finds the SQL no longer matches it re-derives them before serving anything.
 
 ## JSON
 

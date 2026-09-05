@@ -394,18 +394,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **A getting-started guide and a reports guide, built from real transcripts.**
   `docs/guides/getting-started.md` walks a clean machine to a first report
-  and a first MCP question — install from source, the synthetic demo,
-  `profile create` and the `profile switch` it does not do for you, one OFX
-  import, `system status` and `system doctor`, the first reports, why a
-  fresh profile categorizes nothing, and `mcp install` — with every
-  transcript captured from a fresh profile holding one synthetic statement.
-  `docs/guides/reports.md` runs all eight built-in reports against the
-  `family` demo persona and covers default columns and `--wide`, signs and
-  per-currency segmentation, `list` / `run` / `explain`, the JSON envelope,
-  the saved-report lifecycle, the `--display-currency` fallback, the
-  `reports` MCP tool, and `export report`. Both are linked from the docs
-  index and the README; the reports guide is linked from the features page
-  and the CLI reference as well. (#542)
+  and a first MCP question, and `docs/guides/reports.md` runs all eight
+  built-in reports on the `family` demo persona and covers the JSON
+  envelope, the saved-report lifecycle, `--display-currency`, the `reports`
+  MCP tool, and `export report`; both are linked from the docs index and the
+  README. (#542)
 - **Three references are generated from the code and pinned by a test.**
   `make generate-docs` renders `docs/reference/cli/` (one page per top-level
   command plus an index) from the Typer command tree,
