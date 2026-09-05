@@ -33,7 +33,7 @@ referenceable by ``app.lot_selections``.
 
 import hashlib
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -136,6 +136,15 @@ class LedgerEvent:
     currency_code: str | None
 
 
+@dataclass(frozen=True)
+class PairedTransfer:
+    """Two ledger legs that move lot slices between positions atomically."""
+
+    transfer_id: str
+    source_transaction_id: str
+    destination_transaction_id: str
+
+
 @dataclass
 class Lot:
     """An open (or closed) tax lot. Mutated in place as disposals consume it."""
@@ -153,6 +162,7 @@ class Lot:
     currency_code: str | None
     source_transaction_id: str
     basis_incomplete: bool
+    source_transfer_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +195,7 @@ class _Slice:
     quantity: Decimal
     cost_basis: Decimal
     basis_incomplete: bool
+    source_transaction_id: str
     proceeds: Decimal = _ZERO_MONEY
 
 
@@ -214,6 +225,15 @@ class _Pool:
     basis_incomplete: bool = False
 
 
+@dataclass
+class _GroupState:
+    """Mutable lots and optional average pool for one ledger position."""
+
+    method: str
+    lots: list[Lot]
+    pool: _Pool | None
+
+
 def _money(value: Decimal) -> Decimal:
     """Quantize a monetary value to two places, rounding half up."""
     return value.quantize(_CENTS, rounding=ROUND_HALF_UP)
@@ -229,8 +249,12 @@ def _lot_id(
     security_id: str,
     acquisition_date: date,
     source_transaction_id: str,
+    *,
+    source_transfer_id: str | None = None,
 ) -> str:
     raw = f"{account_id}|{security_id}|{acquisition_date.isoformat()}|{source_transaction_id}"
+    if source_transfer_id is not None:
+        raw = f"{raw}|{source_transfer_id}"
     return "lot_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -385,31 +409,15 @@ def _consumption_plan(
     return selected_plan + fifo_plan
 
 
-def _consume(
+def _draw_slices(
     event: LedgerEvent,
-    account_id: str,
-    security_id: str,
     lots: list[Lot],
     method: str,
     selections_for: Callable[[str], list[tuple[str, Decimal]]],
     pool: _Pool | None,
-) -> list[RealizedGain]:
-    """Consume open lots for a disposal (sell or transfer_out).
-
-    ``sell`` produces one realized-gain row per consumed slice with proceeds
-    allocated pro-rata by quantity (penny-conserved). ``transfer_out`` consumes
-    lots without producing any gains. Consumption order (and, for
-    specific-ID, the per-lot cap) is determined by ``method`` (see
-    ``_consumption_plan``).
-
-    ``pool`` is non-``None`` only for the average-cost method. When set, each
-    slice's basis is drawn from the pooled average (captured before the pool is
-    reduced) instead of the consumed lot's own basis, and the pool is drawn down
-    by the disposal's matched quantity and blended basis.
-    """
+) -> tuple[list[_Slice], Decimal]:
+    """Draw attributable lot slices and return any unmatched quantity."""
     disposal_quantity = _abs_or_zero(event.quantity)
-    disposal_date = event.trade_date
-    is_sell = event.type == "sell"
 
     # Average cost: capture the pooled per-unit basis BEFORE the pool is reduced
     # (every prior acquisition has already shifted it). Zero when the pool is
@@ -466,6 +474,7 @@ def _consume(
                 # own contribution was complete.
                 basis_incomplete=lot.basis_incomplete
                 or (pool is not None and pool.basis_incomplete),
+                source_transaction_id=lot.source_transaction_id,
             )
         )
         remaining -= take
@@ -491,6 +500,42 @@ def _consume(
                 pool.units = pool.units - matched_quantity
             _allocate_basis(slices, disposal_basis, matched_quantity)
 
+    return slices, remaining
+
+
+def _consume(
+    event: LedgerEvent,
+    account_id: str,
+    security_id: str,
+    lots: list[Lot],
+    method: str,
+    selections_for: Callable[[str], list[tuple[str, Decimal]]],
+    pool: _Pool | None,
+) -> list[RealizedGain]:
+    """Consume open lots for a disposal (sell or transfer_out).
+
+    ``sell`` produces one realized-gain row per consumed slice with proceeds
+    allocated pro-rata by quantity (penny-conserved). ``transfer_out`` consumes
+    lots without producing any gains. Consumption order (and, for
+    specific-ID, the per-lot cap) is determined by ``method`` (see
+    ``_consumption_plan``).
+
+    ``pool`` is non-``None`` only for the average-cost method. When set, each
+    slice's basis is drawn from the pooled average (captured before the pool is
+    reduced) instead of the consumed lot's own basis, and the pool is drawn down
+    by the disposal's matched quantity and blended basis.
+    """
+    disposal_quantity = _abs_or_zero(event.quantity)
+    disposal_date = event.trade_date
+    is_sell = event.type == "sell"
+    slices, remaining = _draw_slices(
+        event,
+        lots,
+        method,
+        selections_for,
+        pool,
+    )
+
     # transfer_out never realizes a gain; drop any unmatched remainder silently.
     if not is_sell:
         return []
@@ -505,6 +550,7 @@ def _consume(
                 quantity=remaining,
                 cost_basis=_ZERO_MONEY,
                 basis_incomplete=True,
+                source_transaction_id=event.investment_transaction_id,
             )
         )
 
@@ -564,6 +610,7 @@ def _merge_slices_by_lot(slices: list[_Slice]) -> list[_Slice]:
                 quantity=s.quantity,
                 cost_basis=s.cost_basis,
                 basis_incomplete=s.basis_incomplete,
+                source_transaction_id=s.source_transaction_id,
             )
         else:
             existing.quantity += s.quantity
@@ -739,40 +786,13 @@ def _apply_return_of_capital(
     last.cost_basis_remaining = _money(last.cost_basis_remaining - last_share)
 
 
-def compute_lots_and_gains(
+def _compute_independent_groups(
     events: Sequence[LedgerEvent],
     *,
     method_for: Callable[[str, str], str],
     selections_for: Callable[[str], list[tuple[str, Decimal]]],
 ) -> tuple[list[Lot], list[RealizedGain]]:
-    """Derive tax lots and realized gains from a ledger.
-
-    Events are processed independently per ``(account_id, security_id)`` group,
-    sorted within a group by ``(trade_date, same-day-type-order,
-    investment_transaction_id)`` — corporate actions apply before same-day
-    trades and acquisitions before disposals (see ``_SAME_DAY_TYPE_ORDER``).
-    Acquisitions (``buy``, ``transfer_in``, ``reinvest``) open lots; disposals
-    (``sell``, ``transfer_out``) consume them per the elected method; the
-    corporate actions ``split`` and ``return_of_capital`` adjust the group's open
-    lots in place without realizing a gain. Cash-only events and any event with
-    ``security_id is None`` are ignored, as is any type the engine does not model
-    (skipped, never raised on).
-
-    Args:
-        events: The ledger events to process. Order is not assumed; the engine
-            sorts within each group.
-        method_for: ``(account_id, security_id) -> method`` returning the
-            elected cost-basis method for a position (e.g. ``"fifo"``).
-        selections_for: ``disposal_txn_id -> [(lot_id, quantity), ...]`` for
-            specific-identification, called once per disposal with the
-            disposing event's ``investment_transaction_id``. FIFO and HIFO
-            never call it.
-
-    Returns:
-        A ``(lots, gains)`` tuple. ``lots`` includes fully-closed lots
-        (``remaining_quantity == 0``); ``gains`` has one row per consumed slice
-        of each ``sell`` (``transfer_out`` yields none).
-    """
+    """Run the original independent-position engine path."""
     groups: dict[tuple[str, str], list[LedgerEvent]] = {}
     for event in events:
         if event.security_id is None:
@@ -833,3 +853,232 @@ def compute_lots_and_gains(
         all_lots.extend(lots)
 
     return all_lots, all_gains
+
+
+def _add_lot_to_state(state: _GroupState, lot: Lot) -> None:
+    """Append a lot and contribute it to an average-cost pool when present."""
+    state.lots.append(lot)
+    if state.pool is None:
+        return
+    state.pool.units += lot.original_quantity
+    if lot.original_quantity > 0:
+        state.pool.cost += lot.cost_basis_total
+    if lot.basis_incomplete:
+        state.pool.basis_incomplete = True
+
+
+def _compute_paired_groups(
+    events: Sequence[LedgerEvent],
+    *,
+    method_for: Callable[[str, str], str],
+    selections_for: Callable[[str], list[tuple[str, Decimal]]],
+    paired_transfers: Sequence[PairedTransfer],
+) -> tuple[list[Lot], list[RealizedGain]]:
+    """Run a cross-position timeline with each declared Transfer as one event."""
+    event_by_id = {
+        event.investment_transaction_id: event
+        for event in events
+        if event.security_id is not None
+    }
+    valid_pairs: list[tuple[PairedTransfer, LedgerEvent, LedgerEvent]] = []
+    paired_event_ids: set[str] = set()
+    for pair in paired_transfers:
+        source = event_by_id.get(pair.source_transaction_id)
+        destination = event_by_id.get(pair.destination_transaction_id)
+        if (
+            source is None
+            or destination is None
+            or source.type != "transfer_out"
+            or destination.type != "transfer_in"
+            or source.security_id != destination.security_id
+            or source.account_id == destination.account_id
+        ):
+            continue
+        valid_pairs.append((pair, source, destination))
+        paired_event_ids.update((
+            pair.source_transaction_id,
+            pair.destination_transaction_id,
+        ))
+
+    timeline: list[
+        tuple[
+            date,
+            int,
+            str,
+            LedgerEvent | tuple[PairedTransfer, LedgerEvent, LedgerEvent],
+        ]
+    ] = []
+    for event in event_by_id.values():
+        if event.investment_transaction_id in paired_event_ids:
+            continue
+        order = _SAME_DAY_TYPE_ORDER.get(event.type, _DEFAULT_SAME_DAY_ORDER)
+        if event.type in _DISPOSAL_TYPES:
+            order = 3
+        timeline.append((
+            event.trade_date,
+            order,
+            event.investment_transaction_id,
+            event,
+        ))
+    for pair, source, destination in valid_pairs:
+        timeline.append((
+            max(source.trade_date, destination.trade_date),
+            2,
+            pair.transfer_id,
+            (pair, source, destination),
+        ))
+    timeline.sort(key=lambda item: item[:3])
+
+    states: dict[tuple[str, str], _GroupState] = {}
+
+    def state_for(account_id: str, security_id: str) -> _GroupState:
+        key = (account_id, security_id)
+        if key not in states:
+            method = method_for(account_id, security_id)
+            states[key] = _GroupState(
+                method=method,
+                lots=[],
+                pool=_Pool() if method == "average" else None,
+            )
+        return states[key]
+
+    all_gains: list[RealizedGain] = []
+    for event_date, _order, _event_id, item in timeline:
+        if isinstance(item, LedgerEvent):
+            security_id = item.security_id
+            if security_id is None:
+                continue
+            state = state_for(item.account_id, security_id)
+            if item.type in _ACQUISITION_TYPES:
+                _add_lot_to_state(
+                    state,
+                    _open_lot(item, item.account_id, security_id, state.method),
+                )
+            elif item.type in _DISPOSAL_TYPES:
+                all_gains.extend(
+                    _consume(
+                        item,
+                        item.account_id,
+                        security_id,
+                        state.lots,
+                        state.method,
+                        selections_for,
+                        state.pool,
+                    )
+                )
+            elif item.type == "split":
+                _apply_split(state.lots, item.quantity, state.pool)
+            elif item.type == "return_of_capital":
+                _apply_return_of_capital(
+                    state.lots,
+                    _money(_abs_or_zero(item.amount)),
+                    state.pool,
+                )
+            continue
+
+        pair, source, destination = item
+        security_id = source.security_id
+        if security_id is None:
+            continue
+        source_state = state_for(source.account_id, security_id)
+        destination_state = state_for(destination.account_id, security_id)
+        transfer_quantity = _abs_or_zero(destination.quantity)
+        draw_event = replace(
+            source,
+            trade_date=event_date,
+            quantity=-transfer_quantity,
+        )
+        slices, unmatched = _draw_slices(
+            draw_event,
+            source_state.lots,
+            source_state.method,
+            selections_for,
+            source_state.pool,
+        )
+        for slice_ in _merge_slices_by_lot(slices):
+            _add_lot_to_state(
+                destination_state,
+                Lot(
+                    lot_id=_lot_id(
+                        destination.account_id,
+                        security_id,
+                        slice_.acquisition_date,
+                        slice_.source_transaction_id,
+                        source_transfer_id=pair.transfer_id,
+                    ),
+                    account_id=destination.account_id,
+                    security_id=security_id,
+                    acquisition_date=slice_.acquisition_date,
+                    acquisition_type="transfer",
+                    original_quantity=slice_.quantity,
+                    remaining_quantity=slice_.quantity,
+                    cost_basis_total=slice_.cost_basis,
+                    cost_basis_remaining=slice_.cost_basis,
+                    cost_basis_method=destination_state.method,
+                    currency_code=destination.currency_code,
+                    source_transaction_id=slice_.source_transaction_id,
+                    basis_incomplete=slice_.basis_incomplete,
+                    source_transfer_id=pair.transfer_id,
+                ),
+            )
+        if unmatched > 0:
+            _add_lot_to_state(
+                destination_state,
+                Lot(
+                    lot_id=_lot_id(
+                        destination.account_id,
+                        security_id,
+                        event_date,
+                        destination.investment_transaction_id,
+                        source_transfer_id=pair.transfer_id,
+                    ),
+                    account_id=destination.account_id,
+                    security_id=security_id,
+                    acquisition_date=event_date,
+                    acquisition_type="transfer",
+                    original_quantity=unmatched,
+                    remaining_quantity=unmatched,
+                    cost_basis_total=_ZERO_MONEY,
+                    cost_basis_remaining=_ZERO_MONEY,
+                    cost_basis_method=destination_state.method,
+                    currency_code=destination.currency_code,
+                    source_transaction_id=destination.investment_transaction_id,
+                    basis_incomplete=True,
+                    source_transfer_id=pair.transfer_id,
+                ),
+            )
+
+    all_lots: list[Lot] = []
+    for state in states.values():
+        if state.pool is not None:
+            _reconcile_average_lots(state.lots, state.pool)
+        all_lots.extend(state.lots)
+    return all_lots, all_gains
+
+
+def compute_lots_and_gains(
+    events: Sequence[LedgerEvent],
+    *,
+    method_for: Callable[[str, str], str],
+    selections_for: Callable[[str], list[tuple[str, Decimal]]],
+    paired_transfers: Sequence[PairedTransfer] = (),
+) -> tuple[list[Lot], list[RealizedGain]]:
+    """Derive lots and gains, optionally moving basis across paired positions.
+
+    Without ``paired_transfers``, events retain the original independent
+    ``(account_id, security_id)`` processing behavior. A declared pair removes
+    its two transfer legs from independent processing and applies one atomic
+    basis movement on the later posting date.
+    """
+    if not paired_transfers:
+        return _compute_independent_groups(
+            events,
+            method_for=method_for,
+            selections_for=selections_for,
+        )
+    return _compute_paired_groups(
+        events,
+        method_for=method_for,
+        selections_for=selections_for,
+        paired_transfers=paired_transfers,
+    )
