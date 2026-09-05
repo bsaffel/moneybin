@@ -34,7 +34,7 @@ referenceable by ``app.lot_selections``.
 import hashlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 # Event types the engine models. Acquisitions open lots (``reinvest`` is a buy
@@ -134,6 +134,7 @@ class LedgerEvent:
     amount: Decimal | None
     fees: Decimal | None
     currency_code: str | None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +165,7 @@ class Lot:
     basis_incomplete: bool
     source_transfer_id: str | None = None
     transfer_lineage: tuple[str, ...] = ()
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +187,7 @@ class RealizedGain:
     cost_basis_method: str
     basis_incomplete: bool
     currency_code: str | None
+    updated_at: datetime | None = None
 
 
 @dataclass
@@ -199,6 +202,7 @@ class _Slice:
     source_transaction_id: str
     transfer_lineage: tuple[str, ...] = ()
     proceeds: Decimal = _ZERO_MONEY
+    updated_at: datetime | None = None
 
 
 @dataclass
@@ -225,6 +229,7 @@ class _Pool:
     units: Decimal = Decimal("0")
     cost: Decimal = _ZERO_MONEY
     basis_incomplete: bool = False
+    updated_at: datetime | None = None
 
 
 @dataclass
@@ -246,6 +251,12 @@ def _abs_or_zero(value: Decimal | None) -> Decimal:
     return abs(value) if value is not None else Decimal("0")
 
 
+def _latest_timestamp(*values: datetime | None) -> datetime | None:
+    """Return the latest present timestamp."""
+    present = [value for value in values if value is not None]
+    return max(present) if present else None
+
+
 def _lot_id(
     account_id: str,
     security_id: str,
@@ -253,10 +264,13 @@ def _lot_id(
     source_transaction_id: str,
     *,
     source_transfer_id: str | None = None,
+    predecessor_lot_id: str | None = None,
 ) -> str:
     raw = f"{account_id}|{security_id}|{acquisition_date.isoformat()}|{source_transaction_id}"
     if source_transfer_id is not None:
         raw = f"{raw}|{source_transfer_id}"
+    if predecessor_lot_id is not None:
+        raw = f"{raw}|{predecessor_lot_id}"
     return "lot_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -341,6 +355,7 @@ def _open_lot(
         currency_code=event.currency_code,
         source_transaction_id=event.investment_transaction_id,
         basis_incomplete=event.amount is None,
+        updated_at=event.updated_at,
     )
 
 
@@ -462,6 +477,12 @@ def _draw_slices(
             )
             lot.cost_basis_remaining = _money(lot.cost_basis_remaining - slice_basis)
             lot.remaining_quantity = lot.remaining_quantity - take
+        slice_updated_at = _latest_timestamp(
+            event.updated_at,
+            lot.updated_at,
+            pool.updated_at if pool is not None else None,
+        )
+        lot.updated_at = slice_updated_at
         slices.append(
             _Slice(
                 lot_id=lot.lot_id,
@@ -478,6 +499,7 @@ def _draw_slices(
                 or (pool is not None and pool.basis_incomplete),
                 source_transaction_id=lot.source_transaction_id,
                 transfer_lineage=lot.transfer_lineage,
+                updated_at=slice_updated_at,
             )
         )
         remaining -= take
@@ -497,10 +519,12 @@ def _draw_slices(
                 # Pool fully drains: no outstanding incomplete contribution
                 # remains, so the next acquisition into this group starts clean.
                 pool.basis_incomplete = False
+                pool.updated_at = None
             else:
                 disposal_basis = _money(matched_quantity * avg)
                 pool.cost = _money(pool.cost - disposal_basis)
                 pool.units = pool.units - matched_quantity
+                pool.updated_at = _latest_timestamp(pool.updated_at, event.updated_at)
             _allocate_basis(slices, disposal_basis, matched_quantity)
 
     return slices, remaining
@@ -554,6 +578,7 @@ def _consume(
                 cost_basis=_ZERO_MONEY,
                 basis_incomplete=True,
                 source_transaction_id=event.investment_transaction_id,
+                updated_at=event.updated_at,
             )
         )
 
@@ -585,6 +610,7 @@ def _consume(
             cost_basis_method=method,
             basis_incomplete=s.basis_incomplete,
             currency_code=event.currency_code,
+            updated_at=_latest_timestamp(event.updated_at, s.updated_at),
         )
         for s in slices
     ]
@@ -615,10 +641,12 @@ def _merge_slices_by_lot(slices: list[_Slice]) -> list[_Slice]:
                 basis_incomplete=s.basis_incomplete,
                 source_transaction_id=s.source_transaction_id,
                 transfer_lineage=s.transfer_lineage,
+                updated_at=s.updated_at,
             )
         else:
             existing.quantity += s.quantity
             existing.cost_basis = _money(existing.cost_basis + s.cost_basis)
+            existing.updated_at = _latest_timestamp(existing.updated_at, s.updated_at)
     return list(merged.values())
 
 
@@ -687,6 +715,8 @@ def _reconcile_average_lots(lots: list[Lot], pool: _Pool) -> None:
     if pool.basis_incomplete:
         for lot in open_lots:
             lot.basis_incomplete = True
+    for lot in open_lots:
+        lot.updated_at = _latest_timestamp(lot.updated_at, pool.updated_at)
     # pool.units == sum of the open lots' remaining quantities, so this is
     # exactly the remaining pooled average and the residual below is <= a cent.
     avg = pool.cost / pool.units
@@ -699,7 +729,10 @@ def _reconcile_average_lots(lots: list[Lot], pool: _Pool) -> None:
 
 
 def _apply_split(
-    lots: list[Lot], multiplier: Decimal | None, pool: _Pool | None
+    lots: list[Lot],
+    multiplier: Decimal | None,
+    pool: _Pool | None,
+    updated_at: datetime | None,
 ) -> None:
     """Apply a stock split to every open lot of the group's security.
 
@@ -720,18 +753,23 @@ def _apply_split(
     pooled average per unit divides by ``M`` too. Closed lots (already fully
     consumed pre-split) are left untouched as historical record.
     """
-    if multiplier is None:
+    if multiplier is None or multiplier == 1:
         return
     for lot in lots:
         if lot.remaining_quantity > 0:
             lot.original_quantity = lot.original_quantity * multiplier
             lot.remaining_quantity = lot.remaining_quantity * multiplier
-    if pool is not None:
+            lot.updated_at = _latest_timestamp(lot.updated_at, updated_at)
+    if pool is not None and pool.units > 0:
         pool.units = pool.units * multiplier
+        pool.updated_at = _latest_timestamp(pool.updated_at, updated_at)
 
 
 def _apply_return_of_capital(
-    lots: list[Lot], roc_amount: Decimal, pool: _Pool | None
+    lots: list[Lot],
+    roc_amount: Decimal,
+    pool: _Pool | None,
+    updated_at: datetime | None,
 ) -> None:
     """Reduce cost basis for a return-of-capital distribution (no disposal).
 
@@ -767,7 +805,10 @@ def _apply_return_of_capital(
     lots at group end. Lots are not touched directly here.
     """
     if pool is not None:
-        pool.cost = pool.cost - min(roc_amount, pool.cost)
+        reduction = min(roc_amount, pool.cost)
+        pool.cost = pool.cost - reduction
+        if reduction > 0:
+            pool.updated_at = _latest_timestamp(pool.updated_at, updated_at)
         return
     open_lots = [lot for lot in lots if lot.remaining_quantity > 0]
     if not open_lots:
@@ -776,6 +817,10 @@ def _apply_return_of_capital(
     total_basis = sum((lot.cost_basis_remaining for lot in open_lots), _ZERO_MONEY)
     # Aggregate clamp: never reduce more than the position holds in basis.
     target = min(roc_amount, total_basis)
+    if target <= 0:
+        return
+    for lot in open_lots:
+        lot.updated_at = _latest_timestamp(lot.updated_at, updated_at)
     allocated = _ZERO_MONEY
     for lot in open_lots[:-1]:
         share = min(
@@ -835,6 +880,7 @@ def _compute_independent_groups(
                         pool.cost = pool.cost + lot.cost_basis_total
                     if lot.basis_incomplete:
                         pool.basis_incomplete = True
+                    pool.updated_at = _latest_timestamp(pool.updated_at, lot.updated_at)
             elif event.type in _DISPOSAL_TYPES:
                 all_gains.extend(
                     _consume(
@@ -848,9 +894,14 @@ def _compute_independent_groups(
                     )
                 )
             elif event.type == "split":
-                _apply_split(lots, event.quantity, pool)
+                _apply_split(lots, event.quantity, pool, event.updated_at)
             elif event.type == "return_of_capital":
-                _apply_return_of_capital(lots, _money(_abs_or_zero(event.amount)), pool)
+                _apply_return_of_capital(
+                    lots,
+                    _money(_abs_or_zero(event.amount)),
+                    pool,
+                    event.updated_at,
+                )
             # Any other (unknown / out-of-scope) type is intentionally skipped.
         if pool is not None:
             _reconcile_average_lots(lots, pool)
@@ -869,6 +920,7 @@ def _add_lot_to_state(state: _GroupState, lot: Lot) -> None:
         state.pool.cost += lot.cost_basis_total
     if lot.basis_incomplete:
         state.pool.basis_incomplete = True
+    state.pool.updated_at = _latest_timestamp(state.pool.updated_at, lot.updated_at)
 
 
 def _compute_paired_groups(
@@ -971,12 +1023,13 @@ def _compute_paired_groups(
                     )
                 )
             elif item.type == "split":
-                _apply_split(state.lots, item.quantity, state.pool)
+                _apply_split(state.lots, item.quantity, state.pool, item.updated_at)
             elif item.type == "return_of_capital":
                 _apply_return_of_capital(
                     state.lots,
                     _money(_abs_or_zero(item.amount)),
                     state.pool,
+                    item.updated_at,
                 )
             continue
 
@@ -1009,6 +1062,7 @@ def _compute_paired_groups(
                         slice_.acquisition_date,
                         slice_.source_transaction_id,
                         source_transfer_id=pair.transfer_id,
+                        predecessor_lot_id=slice_.lot_id,
                     ),
                     account_id=destination.account_id,
                     security_id=security_id,
@@ -1024,6 +1078,11 @@ def _compute_paired_groups(
                     basis_incomplete=slice_.basis_incomplete,
                     source_transfer_id=pair.transfer_id,
                     transfer_lineage=(*slice_.transfer_lineage, pair.transfer_id),
+                    updated_at=_latest_timestamp(
+                        slice_.updated_at,
+                        source.updated_at,
+                        destination.updated_at,
+                    ),
                 ),
             )
         if unmatched > 0:
@@ -1051,6 +1110,10 @@ def _compute_paired_groups(
                     basis_incomplete=True,
                     source_transfer_id=pair.transfer_id,
                     transfer_lineage=(pair.transfer_id,),
+                    updated_at=_latest_timestamp(
+                        source.updated_at,
+                        destination.updated_at,
+                    ),
                 ),
             )
 

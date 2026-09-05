@@ -342,6 +342,39 @@ def test_chained_currency_transfer_replaces_immediate_transfer_provenance() -> N
     assert final_lot.cost_basis_total == D("50.00")
 
 
+def test_split_currency_transfers_reconverge_with_unique_lot_ids() -> None:
+    first = _transfer(quantity=D("40.00"))
+    second = _transfer(
+        transfer_id="transfer-eur-2",
+        source_transaction_id="eur-transfer-out-2",
+        destination_transaction_id="eur-transfer-in-2",
+        source_date=date(2026, 2, 2),
+        destination_date=date(2026, 2, 2),
+        quantity=D("40.00"),
+    )
+    final = _transfer(
+        transfer_id="transfer-eur-3",
+        source_transaction_id="eur-transfer-out-3",
+        destination_transaction_id="eur-transfer-in-3",
+        source_account_id="acct-eur-2",
+        destination_account_id="acct-eur-3",
+        source_date=date(2026, 3, 1),
+        destination_date=date(2026, 3, 1),
+        quantity=D("80.00"),
+        updated_at=T3,
+    )
+
+    result = _derive(_conversion(), transfers=(first, second, final))
+
+    final_lots = [lot for lot in result.lots if lot.account_id == "acct-eur-3"]
+    assert len(final_lots) == 2
+    assert len({lot.currency_lot_id for lot in final_lots}) == 2
+    assert sum((lot.original_quantity for lot in final_lots), D("0")) == D("80.00")
+    assert sum((lot.cost_basis_total or D("0") for lot in final_lots), D("0")) == D(
+        "100.00"
+    )
+
+
 def test_chained_currency_transfer_retains_unsupported_coverage() -> None:
     second = _transfer(
         transfer_id="transfer-eur-2",
@@ -388,6 +421,70 @@ def test_transferred_lot_freshness_includes_destination_method_change() -> None:
 
     transferred = next(lot for lot in result.lots if lot.account_id == "acct-eur-2")
     assert transferred.updated_at == T5
+
+
+def test_average_pool_contributor_freshness_crosses_two_transfers() -> None:
+    source = _conversion(
+        from_amount=D("100.00"),
+        to_amount=D("10.00"),
+        home_value=D("100.00"),
+    )
+    intermediate = _conversion(
+        conversion_id="fxc_intermediate",
+        transfer_pair_id="decision-intermediate",
+        from_transaction_id="usd-out-intermediate",
+        to_transaction_id="eur-in-intermediate",
+        to_account_id="acct-eur-2",
+        from_date=date(2026, 1, 15),
+        to_date=date(2026, 1, 15),
+        from_amount=D("300.00"),
+        to_amount=D("10.00"),
+        home_value=D("300.00"),
+        updated_at=T5,
+    )
+    first = _transfer(quantity=D("10.00"), updated_at=T2)
+    second = _transfer(
+        transfer_id="transfer-eur-2",
+        source_transaction_id="eur-transfer-out-2",
+        destination_transaction_id="eur-transfer-in-2",
+        source_account_id="acct-eur-2",
+        destination_account_id="acct-eur-3",
+        source_date=date(2026, 3, 1),
+        destination_date=date(2026, 3, 1),
+        quantity=D("10.00"),
+        updated_at=T3,
+    )
+    disposal = _conversion(
+        conversion_id="fxc_dispose",
+        transfer_pair_id="decision-dispose",
+        from_transaction_id="eur-out",
+        to_transaction_id="usd-in-dispose",
+        from_account_id="acct-eur-3",
+        to_account_id="acct-usd",
+        from_date=date(2026, 4, 1),
+        to_date=date(2026, 4, 1),
+        from_amount=D("10.00"),
+        from_currency="EUR",
+        to_amount=D("250.00"),
+        to_currency="USD",
+        home_value=D("250.00"),
+        updated_at=T4,
+    )
+
+    result = _derive(
+        source,
+        intermediate,
+        disposal,
+        transfers=(first, second),
+        methods={"acct-eur-2": "average"},
+    )
+
+    final_lot = next(lot for lot in result.lots if lot.account_id == "acct-eur-3")
+    assert final_lot.cost_basis_total == D("200.00")
+    assert final_lot.updated_at == T5
+    assert result.gains[0].cost_basis == D("200.00")
+    assert result.gains[0].gain_loss == D("50.00")
+    assert result.gains[0].updated_at == T5
 
 
 def test_home_currency_transfer_stays_out_of_currency_lots() -> None:

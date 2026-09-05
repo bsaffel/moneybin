@@ -10,7 +10,7 @@ under test.
 
 import hashlib
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -64,6 +64,7 @@ def _event(
     amount: Decimal | None = None,
     fees: Decimal | None = None,
     currency_code: str | None = "USD",
+    updated_at: datetime | None = None,
 ) -> LedgerEvent:
     return LedgerEvent(
         investment_transaction_id=txn_id,
@@ -77,6 +78,7 @@ def _event(
         amount=amount,
         fees=fees,
         currency_code=currency_code,
+        updated_at=updated_at,
     )
 
 
@@ -552,6 +554,77 @@ def test_same_day_paired_transfers_are_atomic_and_ordered_by_transfer_id() -> No
     assert gains[0].gain_loss == D("10.00")
 
 
+def test_split_transfers_reconverge_as_distinct_lots() -> None:
+    events = [
+        _event(
+            "origin",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "first-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-5"),
+        ),
+        _event(
+            "first-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            account_id="acct2",
+            quantity=D("5"),
+        ),
+        _event(
+            "second-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 2, 2),
+            quantity=D("-5"),
+        ),
+        _event(
+            "second-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 2),
+            account_id="acct2",
+            quantity=D("5"),
+        ),
+        _event(
+            "final-out",
+            event_type="transfer_out",
+            trade_date=date(2024, 3, 1),
+            account_id="acct2",
+            quantity=D("-10"),
+        ),
+        _event(
+            "final-in",
+            event_type="transfer_in",
+            trade_date=date(2024, 3, 1),
+            account_id="acct3",
+            quantity=D("10"),
+        ),
+    ]
+    pairs = [
+        cost_basis_module.PairedTransfer("first", "first-out", "first-in"),
+        cost_basis_module.PairedTransfer("second", "second-out", "second-in"),
+        cost_basis_module.PairedTransfer("final", "final-out", "final-in"),
+    ]
+
+    lots, gains = compute_lots_and_gains(
+        events,
+        method_for=_fifo,
+        selections_for=_no_selections,
+        paired_transfers=pairs,
+    )
+
+    final_lots = [lot for lot in lots if lot.account_id == "acct3"]
+    assert gains == []
+    assert len(final_lots) == 2
+    assert len({lot.lot_id for lot in final_lots}) == 2
+    assert sum((lot.original_quantity for lot in final_lots), D("0")) == D("10")
+    assert sum((lot.cost_basis_total for lot in final_lots), D("0")) == D("100.00")
+
+
 def test_underfunded_paired_transfer_moves_known_basis_and_marks_remainder() -> None:
     events = [
         _event(
@@ -671,6 +744,56 @@ def test_paired_transfer_moves_average_cost_between_account_pools() -> None:
     assert source_open_basis + destination_open_basis + gains[0].cost_basis == D(
         "500.00"
     )
+
+
+@pytest.mark.parametrize(
+    ("event_type", "quantity", "amount"),
+    [("split", D("2"), None), ("return_of_capital", None, D("10.00"))],
+)
+def test_empty_average_pool_action_does_not_timestamp_later_lot(
+    event_type: str,
+    quantity: Decimal | None,
+    amount: Decimal | None,
+) -> None:
+    events = [
+        _event(
+            "old-buy",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+            updated_at=datetime(2026, 1, 1),
+        ),
+        _event(
+            "full-sale",
+            event_type="sell",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-10"),
+            amount=D("100.00"),
+            updated_at=datetime(2026, 2, 1),
+        ),
+        _event(
+            "empty-action",
+            event_type=event_type,
+            trade_date=date(2024, 2, 15),
+            quantity=quantity,
+            amount=amount,
+            updated_at=datetime(2026, 5, 1),
+        ),
+        _event(
+            "new-buy",
+            event_type="buy",
+            trade_date=date(2024, 3, 1),
+            quantity=D("10"),
+            amount=D("-200.00"),
+            updated_at=datetime(2026, 3, 1),
+        ),
+    ]
+
+    lots, _gains = _run(events, method_for=_average)
+
+    new_lot = next(lot for lot in lots if lot.source_transaction_id == "new-buy")
+    assert new_lot.updated_at == datetime(2026, 3, 1)
 
 
 @pytest.mark.parametrize(

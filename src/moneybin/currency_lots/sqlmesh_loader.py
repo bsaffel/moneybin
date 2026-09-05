@@ -11,7 +11,7 @@ import hashlib
 import re
 import typing as t
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -821,10 +821,13 @@ def _public_lot_id(
     source_event_id: str,
     *,
     source_transfer_id: str | None = None,
+    engine_lot_id: str | None = None,
 ) -> str:
     raw = f"{account_id}|{currency}|{source_event_id}"
     if source_transfer_id is not None:
         raw = f"{raw}|{source_transfer_id}"
+    if engine_lot_id is not None:
+        raw = f"{raw}|{engine_lot_id}"
     return "clot_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -1218,7 +1221,16 @@ def _derive_currency_accounting(
     engine_lots, engine_gains = ([], [])
     if event_rows:
         engine_lots, engine_gains = compute_lots_and_gains(
-            [event for event, _metadata in event_rows],
+            [
+                replace(
+                    event,
+                    updated_at=_latest(
+                        metadata.updated_at,
+                        account_method_updated_at.get(metadata.account_id),
+                    ),
+                )
+                for event, metadata in event_rows
+            ],
             method_for=lambda account_id, _security_id: _method(
                 account_id, account_methods
             ),
@@ -1238,6 +1250,7 @@ def _derive_currency_accounting(
             metadata.currency_code,
             lot.source_transaction_id,
             source_transfer_id=lot.source_transfer_id,
+            engine_lot_id=lot.lot_id if lot.source_transfer_id is not None else None,
         )
         engine_lot_ids[lot.lot_id] = public_lot_id
         reason = (
@@ -1256,6 +1269,7 @@ def _derive_currency_accounting(
             group_updated_at.get((lot.account_id, metadata.currency_code)),
             group_updated_at.get((metadata.account_id, metadata.currency_code)),
             metadata.updated_at,
+            getattr(lot, "updated_at", None),
             *(
                 transfer_updated_at_by_id.get(transfer_id)
                 for transfer_id in transfer_lineage
@@ -1334,6 +1348,7 @@ def _derive_currency_accounting(
                         metadata.currency_code,
                     )),
                     engine_lot_updated_at.get(gain.lot_id),
+                    getattr(gain, "updated_at", None),
                 ),
             )
         )
