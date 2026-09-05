@@ -165,10 +165,18 @@ application code.
 
 ### Source event construction
 
-Each adapter emits a source event key and one or more typed legs. When the
-source already provides a trustworthy group reference, the adapter uses it.
-Manual grouped rows use their authored group. An ungrouped transaction becomes
-a singleton source event.
+Each adapter emits a source event key and one or more typed legs. It may use a
+source group reference only when the adapter defines and validates the complete
+event shape.
+
+M1J.7 removes caller-authored `event_group_id` from `investments add` and
+`investments_record`. The manual reinvest convenience submits one complete
+event and MoneyBin mints its opaque Source group reference internally. Every
+other supported manual entry is a singleton. A future manual compound shape
+must arrive as one atomic, structurally validated event; reusing a string across
+calls never appends a leg. Pre-M1J.7 group strings are untrusted migration hints:
+only a complete supported shape groups, while every other row remains a
+singleton and retains the original string as provenance.
 
 Each event header carries:
 
@@ -204,10 +212,15 @@ currency, type, relationship, or description appends another Raw revision.
 
 M1J.7 migrates `raw.plaid_investment_transactions` from its shipped current-row
 upsert grain to append-only revisions. The migration records each existing row
-as its first revision. Manual correction follows the same contract: it appends
-a revision rather than rewriting the reviewed claim. Staging exposes the latest
-revision per source-row identity for new planning, while accepted membership
-and provenance join the exact historical Raw revision they name.
+as its first revision. Staging exposes the latest revision per source-row
+identity for new planning, while accepted membership and provenance join the
+exact historical Raw revision they name.
+
+M1J.7 adds no manual correction operation. `investments add` and
+`investments_record` remain create-only, and their Raw observations are
+immutable. A future manual-correction feature requires its own accepted
+contract and a distinct whole-event correction operation; it is not implicit
+in `investments_record` and is not prerequisite machinery for matching.
 
 Raw remains the canonical home for source observations. M1J.7 adds no parallel
 Core or App state observation table.
@@ -295,6 +308,23 @@ observation versions, normalized members, and match-relevant fields. Acceptance
 rereads the latest versions, recomputes the fingerprint, and refuses a stale
 Proposal. Re-running the planner must not create another pending review for an
 unchanged pending, accepted, or rejected fingerprint.
+
+The fingerprint also binds each leg's canonical-identity dependency: terminal
+Account and Security ids, the relevant accepted Link or merge decision
+generation, and any canonical Account currency used for effective currency.
+Broad entity `updated_at` values are excluded so display-only edits do not stale
+a Proposal. Planning and acceptance recompute the dependency tuple.
+
+Canonical identity operations never rewrite Raw observations after M1J.7. An
+audited equivalence merge changes Link or alias routing and forwards the prior
+canonical id to its survivor. It stales pending Proposals because the candidate
+graph may change, but an accepted Match remains accepted: the identity decision
+itself establishes equivalence, while exact source evidence and event membership
+are unchanged. A rebind, unlink, or split that changes an observation's identity
+equivalence class is different: it atomically stales affected pending and
+accepted or multi-source Matches before the new mapping becomes visible. The
+prior bound identity remains resolvable for the last-reviewed projection until
+a replacement Match is accepted or reversed.
 
 ## Durable state
 
@@ -408,6 +438,10 @@ contributing source row, including observations whose value was not selected.
 Golden projection reads the exact observation versions named by active
 membership, never whichever revision happens to be latest in staging. A source
 correction therefore cannot silently change a reviewed Golden field.
+
+In M1J.7 this lifecycle covers aggregator revisions and source-native
+correction or reversal relationships. Manual observations do not revise because
+the create-only manual surface has no correction operation.
 
 When a source row receives a new revision:
 
@@ -573,9 +607,10 @@ fixtures and expected Golden-ledger outcomes.
 | Transfers | Both account directions and quantities agree; one-sided or mismatched transfers remain ineligible |
 | Repetition | Unique two-to-two assignment of identical same-day trades; ambiguous one-to-two assignment remains competing |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
-| Corrections | Native or remembered correction/reversal accepted; fuzzy-only similarity rejected |
-| Revisions | Identical re-delivery reuses a version; an unreviewed singleton advances without rotating Golden ids; changed accepted or multi-source evidence stales without silently changing Golden fields |
-| Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency |
+| Corrections | Aggregator or source-native correction/reversal accepted; fuzzy-only similarity rejected; manual correction is unavailable in M1J.7 |
+| Revisions | Identical aggregator re-delivery reuses a version; an unreviewed aggregator singleton advances without rotating Golden ids; changed accepted or multi-source evidence stales without silently changing Golden fields |
+| Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
+| Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency; an equivalence merge follows aliases and stales pending Proposals only, while a non-equivalent rebind, unlink, or split atomically stales pending and accepted or multi-source Matches before the new mapping is visible; Raw remains unchanged |
 | Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; only later retired Golden ids enter the public forwarding bridge |
 | Splits | Normalized contract fixtures pass for supported adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
@@ -595,12 +630,21 @@ fixtures and expected Golden-ledger outcomes.
 - Pure global-assignment tests, including competing and repeated-event graphs.
 - DuckDB repository tests for atomic membership, rejection suppression, aliases,
   field resolutions, observation-version binding, audit records, and reversal.
-- Raw-loader tests proving identical re-delivery is idempotent and a changed
-  match-relevant or Golden-projected value appends a new observation revision.
+- Raw-loader tests proving identical Plaid re-delivery is idempotent and a
+  changed match-relevant or Golden-projected value appends a new observation
+  revision.
+- Manual grouping tests proving caller-authored grouping is absent from public
+  inputs, reinvest grouping is system-minted and atomic, and invalid
+  pre-M1J.7 group hints do not group observations.
 - SQLMesh tests for comparison views, Golden projection, provenance, and stable
   identities.
-- Membership tests proving an unreviewed singleton advances to one active latest
-  revision with stable Golden ids while preserving its prior history.
+- Membership tests proving an unreviewed aggregator singleton advances to one
+  active latest revision with stable Golden ids while preserving its prior
+  history.
+- Identity-dependency tests proving an equivalence merge follows aliases
+  without staling accepted Matches, a non-equivalent rebind, unlink, or split
+  stales affected Matches before its mapping becomes visible, and neither path
+  rewrites Raw.
 - Scenario tests for every row in the matrix, including exact downstream tax-lot
   outputs.
 - CLI and MCP parity tests for plan, inspect, accept, reject, stale, failure, and
@@ -621,12 +665,17 @@ only after this contract is accepted.
 
 1. **Comparison foundation.** Add manual and Plaid adapters, event/leg comparison
    views, normalization, tolerances, explicit inactive split capability, and
-   the Raw transaction-revision migration. Expand the existing overlap detector
+   the Plaid Raw transaction-revision migration. Remove caller-authored
+   `event_group_id` from CLI and MCP inputs, mint reinvest grouping internally,
+   and validate pre-M1J.7 group hints before using them as event structure. Stop
+   canonical identity changes from rewriting Raw observations and resolve them
+   through Link or alias routing instead. Expand the existing overlap detector
    to cover Plaid transactions and holdings/bootstrap evidence before any later
    slice relies on that guard.
 2. **Review-only planner.** Add whole-event assignment, versioned fingerprints,
-   competing detection, Proposal-issued conflict and choice ids, and pending
-   Proposals without changing the core ledger.
+   canonical-identity dependency tuples, competing detection, Proposal-issued
+   conflict and choice ids, and pending Proposals without changing the core
+   ledger.
 3. **Decision workflow.** Persist pending, rejected, and stale lifecycle state
    plus rejection suppression; add identical CLI/MCP field-choice request
    validation, audit integration, and metrics. Acceptance remains unavailable
@@ -637,8 +686,11 @@ only after this contract is accepted.
    cut, preserving existing source-group references only as provenance. Enable
    acceptance after validating the complete Golden event, then commit its
    decision, exact revision membership, and field resolutions in one
-   transaction. Advance an unreviewed singleton to a newer revision atomically
-   without rotating its Golden ids or creating a Proposal.
+   transaction. Advance an unreviewed aggregator singleton to a newer revision
+   atomically without rotating its Golden ids or creating a Proposal. Make
+   equivalence merges follow the canonical alias path, and make a
+   non-equivalent rebind, unlink, or split invalidate affected pending and
+   accepted or multi-source Matches before publishing the new mapping.
 5. **Lifecycle proof.** Complete the scenario matrix, repeated-sync and failure
    recovery tests, labeled real-data validation, and evidence for a later
    guard-promotion decision.
@@ -651,3 +703,5 @@ only after this contract is accepted.
 - Plaid split matching, owned by M1J.5.
 - Source-specific adapters beyond manual and Plaid.
 - Event shapes not represented by the current ledger taxonomy.
+- Manual investment-event correction and its distinct whole-event interface.
+- Compound manual event shapes beyond the atomic reinvest operation.

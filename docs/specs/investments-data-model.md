@@ -615,12 +615,14 @@ provider-identifier resolution rung all exist because of this validation.
 > "Future: UNION ALL from staging" comment — its resolver mints synced
 > securities into `app.securities` (merchant precedent), so the dim stays a
 > catalog view. M1J.7 supersedes the earlier staging-content-hash refinement
-> for `event_group_id`: manual entry keeps an authored source-group reference
-> in Raw, while Plaid staging leaves `event_group_id` NULL because the
-> aggregator supplies no trustworthy group reference. M1J.7 constructs Source
-> events from evidence and persists a MoneyBin-owned Golden `event_group_id` in
-> app membership; staging never synthesizes that identity from mutable
-> financial fields. Finally, the Taxonomy
+> for `event_group_id`: pre-M1J.7 manual entry may retain an authored
+> source-group reference in Raw as provenance, while Plaid staging leaves
+> `event_group_id` NULL because the aggregator supplies no trustworthy group
+> reference. M1J.7 removes caller-authored grouping from public writes,
+> constructs Source events only from validated complete shapes or evidence,
+> and persists a MoneyBin-owned Golden `event_group_id` in app membership;
+> staging never synthesizes that identity from mutable financial fields.
+> Finally, the Taxonomy
 > mapping table below is **one subtype short**: `stock distribution`
 > (`InvestmentTransactionSubtype.STOCK_DISTRIBUTION`, verified in the Plaid
 > Python SDK 2026-07-10) is a real security-bearing inflow the "48 subtypes,
@@ -707,6 +709,14 @@ moneybin investments add --account <id|name> --security <ticker|name> \
   `--subtype interest|capital_gain` selects the income type), both sharing a
   minted `event_group_id` — one command, two ledger rows, mirroring how brokers
   and Plaid report the event.
+
+> **M1J.7 pre-launch amendment:** delivery removes the caller-authored
+> `--event-group` option and MCP `event_group_id` input. A reinvest request is a
+> complete whole event and MoneyBin mints its Source group internally; other
+> supported manual entries are singletons. A future compound manual shape must
+> be submitted and validated atomically rather than assembled by reusing a
+> string across calls. The manual write surface remains create-only in M1J.7;
+> manual event correction is a separate future contract, not part of matching.
 
 ```
 moneybin investments list [--account <id|name>] [--security <ticker|name>] \
@@ -869,15 +879,17 @@ broker-carried valuation fields.
 Per `surface-design.md` — one tool per operation shape, no polymorphic `*_set` catch-all.
 
 **`investments_record`** — Shape 3 (discrete batch event). Record one or more investment
-events; resolves securities, reports unresolved refs in `error_details`. Accepts
-`subtype` and `event_group_id` per event; a `reinvest` event expands to the
-acquisition + income row pair exactly like the CLI convenience (same outcomes,
-per functional parity). The batch is **atomic**: all events are validated and
-resolved before any write, then written in a single transaction under one
-`import_log` batch — a hard-validation or infra failure leaves nothing written
-so a retry cannot double-insert. The one soft exception is an unresolved or
-ambiguous *security* ref: that event is skipped and reported in `error_details`,
-and the rest of the batch still commits.
+events; resolves securities, reports unresolved refs in `error_details`. The
+shipped surface accepts `subtype` and `event_group_id` per event; M1J.7 removes
+the caller-authored grouping input. A `reinvest` event expands to the acquisition
+and income row pair exactly like the CLI convenience and receives an internally
+minted Source group (same outcomes, per functional parity). The batch is
+**atomic**: all events are validated and resolved before any write, then written
+in a single transaction under one `import_log` batch — a hard-validation or
+infra failure leaves nothing written so a retry cannot double-insert. The one
+soft exception is an unresolved or ambiguous *security* ref: that event is
+skipped and reported in `error_details`, and the rest of the batch still
+commits.
 
 Registered top-level schema: `investments_record(events=[...])`. `events` is
 the sole required top-level field and must be an array; no other top-level
