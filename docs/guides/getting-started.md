@@ -190,7 +190,7 @@ Transaction query returned 5 of 20 rows (has_more=True)
 5 of 20 shown · raise --limit for more · 5 uncategorized
 ```
 
-Negative is money out, positive is money in, on every surface — the CLI, JSON, SQL, and the MCP tools all use the same sign. `reports cashflow` and `reports spending` run too, but on one uncategorized month they show a single row with an empty category. The [reports guide](reports.md) walks all eight built-in reports on a populated profile and shows how to save your own.
+Negative is money out, positive is money in, for every transaction-level amount — the CLI, JSON, SQL, and the MCP tools all carry the same sign on a row. The reports that total outflow (`reports spending`, `merchants`, `recurring`) print it as a positive absolute figure; the [Signs bullet](reports.md#reading-the-output) in the reports guide lists which is which. `reports cashflow` and `reports spending` run too, but on one uncategorized month they show a single row with an empty category. The [reports guide](reports.md) walks all eight built-in reports on a populated profile and shows how to save your own.
 
 ## 7. Categorize
 
@@ -226,7 +226,7 @@ Restart the client fully, then ask in your own words:
 - *"What did I spend at Whole Foods in January?"*
 - *"Show me the SQL behind that number."*
 
-The assistant calls the same catalog the CLI reads — `reports`, `transactions`, `accounts`, `sql_query`, and 46 other tools — over local stdio, so an answer is a query you can rerun with `moneybin sql query`. Tools that write are flagged as such to the client, and the ones that delete or merge ask for MoneyBin's own exact confirmation; read a prompt before approving it. The [Claude Desktop guide](setting-up-claude-desktop.md) is the happy path, the [MCP clients guide](mcp-clients.md) covers the other seven clients and carries the troubleshooting table, and [What the AI provider sees](what-the-ai-sees.md) states exactly what leaves the machine.
+The assistant calls the same catalog the CLI reads — `reports`, `transactions`, `accounts`, `sql_query`, and 46 other tools — over local stdio. An answer that came through `sql_query` or a SQL-backed report is a query you can rerun with `moneybin sql query`; the net-worth answer is the exception, because `core:networth` runs through a service, and `reports explain core:networth` shows its lineage rather than SQL. Tools that write are flagged as such to the client, and the ones that delete or merge ask for MoneyBin's own exact confirmation; read a prompt before approving it. The [Claude Desktop guide](setting-up-claude-desktop.md) is the happy path, the [MCP clients guide](mcp-clients.md) covers the other seven clients and carries the troubleshooting table, and [What the AI provider sees](what-the-ai-sees.md) states exactly what leaves the machine.
 
 ## Next
 
