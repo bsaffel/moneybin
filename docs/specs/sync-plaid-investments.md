@@ -154,12 +154,12 @@ immutable point-in-time snapshots under their existing keys.
 M1J.7 slice 1 migrates each existing investment transaction row into its first
 append-only observation revision. The Raw grain becomes
 `(investment_transaction_id, source_origin, observation_version)`, where
-`observation_version` is a full SHA-256 digest over every captured transaction
-value that can affect matching or Golden projection. Job id, `source_file`,
-extraction time, and load time are lineage rather than version inputs. An
-identical overlapping-window delivery reuses the existing revision; a changed
-date, description, quantity, amount, price, fee, currency, type, or subtype
-appends a new revision instead of replacing reviewed evidence.
+`observation_version` is a SHA-256 digest truncated to 16 hex characters over
+every captured transaction value that can affect matching or Golden projection.
+Job id, `source_file`, extraction time, and load time are lineage rather than
+version inputs. An identical overlapping-window delivery reuses the existing
+revision; a changed date, description, quantity, amount, price, fee, currency,
+type, or subtype appends a new revision instead of replacing reviewed evidence.
 
 Staging selects the latest revision for new matching plans. Accepted Golden
 membership and field provenance bind the exact historical revision reviewed by

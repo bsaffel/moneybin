@@ -102,9 +102,10 @@ plausible but incorrect tax ledger.
 | Term | Meaning |
 |---|---|
 | Source observation | One immutable Raw revision of a manual or aggregator claim. |
-| Observation version | A full SHA-256 digest of the source values that can affect comparison or Golden projection. |
+| Observation version | A SHA-256 digest truncated to 16 hex characters over the source values that can affect comparison or Golden projection. |
 | Comparison adapter | A source-specific translator that emits the source-neutral comparison event and leg contract. |
 | Comparison leg | One normalized investment-transaction row used as matching evidence. |
+| Source group reference | Source-authored or MoneyBin-minted evidence that several observations form one Source event; it is structural only when the comparison adapter validates the complete shape. |
 | Source event | One or more comparison legs that one source says form one economic event. |
 | Opening-lot reconstruction | A MoneyBin-derived one-leg Golden event representing a pre-window Plaid position. It is not a Source observation, Source event, Proposal, or match candidate. |
 | Proposal | One inferred set of source events that may represent the same real event. |
@@ -213,12 +214,12 @@ silently after review.
 ### Source observation revisions
 
 Every comparison adapter identifies a source row by its Source type, Source
-origin, Native reference, and `observation_version`. The version is a full
-SHA-256 digest over every captured source value that can affect comparison or
-Golden projection; ingestion metadata such as job id and load time is excluded.
-An identical re-delivery reuses the version. A changed date, quantity, amount,
-fee, price, currency, type, relationship, or description appends another Raw
-revision.
+origin, Native reference, and `observation_version`. The version is a SHA-256
+digest truncated to 16 hex characters over every captured source value that can
+affect comparison or Golden projection; ingestion metadata such as job id and
+load time is excluded. An identical re-delivery reuses the version. A changed
+date, quantity, amount, fee, price, currency, type, relationship, or description
+appends another Raw revision.
 
 M1J.7 migrates `raw.plaid_investment_transactions` from its shipped current-row
 upsert grain to append-only revisions. The migration records each existing row
