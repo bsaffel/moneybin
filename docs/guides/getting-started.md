@@ -150,7 +150,7 @@ Using profile: personal
 61 invariants checked across 20 transactions — 60 passing, 1 warn, 0 skipped
 ```
 
-The one warning is expected on a first import and is step 7. The `💡` lines throughout the CLI name the MCP tool call an assistant would make next; the equivalent flag is on each command's [reference page](../reference/cli/README.md).
+The one warning is expected on a first import and is step 7. The `💡` lines under a doctor check or a report name the MCP tool call an assistant would make next, with the equivalent flag on each command's [reference page](../reference/cli/README.md); elsewhere a `💡` line is a plain hint, such as the command to run next.
 
 ## 6. First reports
 
@@ -207,7 +207,7 @@ Using profile: personal
 Three ways to raise coverage, in the order most people use them:
 
 1. **Rules.** `transactions categorize rules create` matches description text to a category and applies on the next refresh; a rule outranks every automated source.
-2. **An assistant proposes, you commit.** Through MCP, `transactions_categorize_assist` hands the model, per uncategorized row, the scrubbed description and memo, the transaction id, the source and transaction types, the check number as stored, the transfer flag and pair id, the payment channel, and the sign of the amount — never the amount itself, the date, or an account id. The scrub is pattern-based and best-effort. It strips the shapes it recognizes — emails, phone-shaped numbers, dates written `MM/DD`, `#`-prefixed and starred tokens, a trailing `City, ST` or zip code, an all-caps city followed by a two-letter state code and any bare state code, the recipient after `PAYMENT`, `ZELLE`, `VENMO`, or `CASHAPP` `TO`/`FROM`, standalone runs of three to five digits, and a trailing reference number — and anything else reaches the model as written: a run of six or more digits mid-description, a title-case city mid-description, a recipient after any other provider's name. The [what the AI provider sees](what-the-ai-sees.md#not-masked-stated-plainly) guide is the full statement. `transactions_categorize_commit` writes what you approve.
+2. **An assistant proposes, you commit.** Through MCP, `transactions_categorize_assist` hands the model, per uncategorized row, the scrubbed description and memo, the transaction id, the source and transaction types, the check number as stored, the transfer flag and pair id, the payment channel, and the sign of the amount — never the amount itself, the date, or an account id. The scrub is pattern-based and best-effort. It strips the shapes it recognizes — emails, phone-shaped numbers, dates written `MM/DD`, `#`-prefixed numbers and starred tokens, a trailing `City, ST` or zip code, an all-caps city followed by a two-letter state code and any bare state code, the recipient after `PAYMENT`, `ZELLE`, `VENMO`, or `CASHAPP` `TO`/`FROM`, standalone runs of three to five digits, and a trailing reference number — and anything else reaches the model as written: a run of six or more digits mid-description, a title-case city mid-description, a recipient after any other provider's name. The [what the AI provider sees](what-the-ai-sees.md#not-masked-stated-plainly) guide is the full statement. `transactions_categorize_commit` writes what you approve.
 3. **Auto-rule learning.** Your own edits become proposed rules; accept them and the next import categorizes itself.
 
 The [categorization guide](categorization.md) has the precedence ladder, the bulk-commit hazard, and the migration path for categories curated in another tool.
