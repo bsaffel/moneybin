@@ -477,7 +477,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no description, the `gsheet auth` help named a retired MCP tool, and ten tool
   descriptions spelled the undo hint as a positional call — and the CLI
   reference guide now keeps its prose and links each group's generated page in
-  place of its command tables.
+  place of its command tables. (#525)
 - **`core.bridge_merchant_entities`** — a new queryable core view mapping each
   transaction to the merchant identifier its source system assigned, alongside
   the source that issued it and the merchant name that source stated. Available
