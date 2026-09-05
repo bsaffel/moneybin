@@ -260,16 +260,20 @@ then writes two Raw records in the same database transaction: the immutable
 content revision if it does not already exist, and an idempotent per-pull row in
 `raw.plaid_investment_transaction_receipts` at grain
 `(investment_transaction_id, source_origin, source_file)`. The receipt names the
-delivered `observation_version`, `extracted_at`, and `loaded_at`.
+delivered `observation_version`, `extracted_at`, `loaded_at`, and a local
+monotonic `ingestion_sequence` allocated only when that receipt is first
+inserted. Replaying the same `source_file` preserves its sequence.
 
 Staging exposes the version named by the latest receipt under the deterministic
-order `extracted_at DESC, source_file DESC` for each stable source-row
-identity. An A→B→A delivery sequence therefore reuses the immutable A revision
-but records a new receipt that makes A current again; B remains available for
-history and exact membership. Reprocessing the same sync job reuses its receipt,
-and an absent row writes no receipt and does not imply cancellation. Accepted
-membership and provenance continue to join the exact historical Raw revision
-they name.
+order `extracted_at DESC, ingestion_sequence DESC` for each stable source-row
+identity. The sequence is the final delivery-order tie-breaker when distinct
+sync jobs report the same extraction timestamp; sequence gaps are harmless. An
+A→B→A delivery sequence therefore reuses the immutable A revision but records a
+new receipt that makes A current again; B remains available for history and
+exact membership. Reprocessing the same sync job reuses its receipt without
+making an old job current, and an absent row writes no receipt and does not imply
+cancellation. Accepted membership and provenance continue to join the exact
+historical Raw revision they name.
 
 M1J.7 adds no manual correction operation. `investments add` and
 `investments_record` remain create-only, and their Raw observations are
@@ -402,11 +406,14 @@ audited equivalence merge changes Link or alias routing and forwards the prior
 canonical id to its survivor. It stales pending Proposals because the candidate
 graph may change, but an accepted Match remains accepted: the identity decision
 itself establishes equivalence, while exact source evidence and event membership
-are unchanged. A rebind, unlink, or split that changes an observation's identity
-equivalence class is different: it atomically stales affected pending and
-accepted or multi-source Matches before the new mapping becomes visible. The
-prior bound identity remains resolvable for the last-reviewed projection until
-a replacement Match is accepted or reversed.
+are unchanged. Before the new alias route becomes visible, that audited
+transaction advances `projection_changed_at` for every affected active
+membership because live canonical ids in the Golden projection may change. A
+rebind, unlink, or split that changes an observation's identity equivalence
+class is different: it atomically stales affected pending and accepted or
+multi-source Matches before the new mapping becomes visible. The prior bound
+identity remains resolvable for the last-reviewed projection until a replacement
+Match is accepted or reversed.
 
 The same pre-publication transaction handles every affected standalone
 membership. When the proposed identity change still yields one complete event
@@ -460,7 +467,17 @@ Every projection-affecting membership transition records one
 `projection_changed_at` value on the history rows it activates or retires. The
 value is written in the same transaction as a membership registration,
 replacement, reversal, reconstruction advance, or reconstruction retirement.
-Planning, rejection, and a stale transition that deliberately retains the
+The same watermark advances on affected active membership rows, without
+changing their decision or evidence, when a canonical dependency changes the
+live Golden projection without a membership transition. This includes an
+equivalence merge that changes Account or Security alias routing and a canonical
+Account-currency correction used by an unreviewed standalone or opening-lot
+membership. The audited identity or Account update and the watermark advance
+commit in one transaction before the new dependency is visible. An accepted or
+multi-source Match retains its exact reviewed effective currency when an Account
+currency changes; that operation stales the Match but does not advance the
+watermark until replacement or reversal changes the projection. Planning,
+rejection, and any other stale transition that deliberately retains the
 last-reviewed projection do not write it.
 
 An opening-lot reconstruction uses the stable key `(plaid, source_origin,
@@ -567,14 +584,17 @@ Golden fields follow this order:
 
 1. preserve an explicit user resolution or curation;
 2. normalize harmless representational differences;
-3. require an explicit field choice for a normalized date or numeric difference
+3. exclude missing values from default selection when any eligible member has a
+   present value; a nullable field remains `NULL` only when every eligible exact
+   revision has `NULL`, unless explicit curation deliberately clears it;
+4. require an explicit field choice for a normalized date or numeric difference
    beyond its applicable tolerance; and
-4. otherwise choose field provenance through the deterministic source
+5. otherwise choose field provenance through the deterministic source
    precedence below.
 
 Objective fields include dates, quantities, prices, amounts, fees, currencies,
 and aggregator-native references. For a field with no explicit resolution,
-prefer an aggregator observation over a manual observation, then use the
+prefer a present aggregator value over a present manual value, then use the
 lexicographically smallest
 `(source_type, source_origin, native_reference)` as the final tie-breaker. The
 active exact revision of that stable row supplies the value and provenance.
@@ -584,9 +604,9 @@ conflict. Aggregator preference is not a claim that aggregator data is
 infallible. A manually curated field that was explicitly chosen remains
 authoritative when another observation joins the event.
 
-Description follows the same explicit-curation-first and deterministic source
-precedence. Different descriptions do not create a material field conflict
-because they are not accounting evidence.
+Description follows the same explicit-curation-first, present-value, and
+deterministic source precedence. Different descriptions do not create a
+material field conflict because they are not accounting evidence.
 
 Every Golden field exposes provenance to its chosen source observation or
 explicit resolution. Event membership provenance separately retains every
@@ -758,10 +778,13 @@ Investment-event membership is a materialization input. Transform freshness is
 pending when either Raw landing data or the latest
 `app.investment_event_members.projection_changed_at` is newer than the oldest
 SQLMesh execution timestamp across the Golden ledger and every registered
-dependent rebuild model. The decision transaction persists that timestamp
-before returning. A successful transform is the acknowledgement; SQLMesh's
-existing execution state clears the comparison without a second mutable
-generation or completion record.
+dependent rebuild model. That watermark includes both membership transitions
+and the dependency-only alias or Account-currency advances defined above, so no
+projection-affecting identity change can become visible without making the
+dependent ledger stale. The decision, identity, or Account transaction persists
+the applicable timestamp before returning. A successful transform is the
+acknowledgement; SQLMesh's existing execution state clears the comparison
+without a second mutable generation or completion record.
 
 Decision state commits before the rebuild it requires. If the decision commits
 and the subsequent rebuild fails or the process crashes, `system_status`
@@ -848,22 +871,22 @@ fixtures and expected Golden-ledger outcomes.
 | Dates | Same date and both sides of every type-specific boundary; trade date matched to settlement date |
 | Precision | Exact decimal normalization plus inside/outside quantity, amount, fee, and price thresholds |
 | Reinvestment | Manual and Plaid two-leg shapes match only when the Plaid comparison adapter finds one normalized `reinvest` acquisition and an income leg using the explicit `dividend` to `dividend`, `interest` to `interest`, or `capital_gain` to `capital_gain_distribution` compatibility mapping within 3 calendar days, with one complete unambiguous cash/fee-reconciled pairing; a 4-day Plaid-internal pair remains singleton, while already-constructed manual and Plaid Source events may cross-source match at 4 or 5 days but not 6; both legs move atomically, and a missing or multiply paired leg is not accepted |
-| Transfers | Same-direction one-leg manual and Plaid `transfer_in` or `transfer_out` events match only when Account, Security, effective currency, quantity, and the 7-day candidate window agree; opposing legs are never inferred as an internal-transfer pair, and merger, spin-off, or trade legs remain ineligible for partial matching |
+| Transfers | Same-direction one-leg manual and Plaid `transfer_in` or `transfer_out` events match only when Account, Security, effective currency, quantity, and the 7-day candidate window agree; when manual supplies `original_acquisition_date` or basis and Plaid has `NULL`, the present manual value and its exact provenance project instead of being erased; opposing legs are never inferred as an internal-transfer pair, and merger, spin-off, or trade legs remain ineligible for partial matching |
 | Source diversity | A manual-to-Plaid or other distinct-origin Proposal may be eligible; two manual/user events or two events from one Plaid connection never consolidate through this review matcher, while multiple legs already validated inside one Source event remain atomic |
 | Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; manual correction is unavailable in M1J.7 |
-| Revisions | Identical aggregator re-delivery reuses a version and per-job receipt; A→B→A content reuses the immutable A revision but a new receipt makes A current while retaining B in history; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
+| Revisions | Identical aggregator re-delivery reuses a version and per-job receipt while preserving its first-ingestion sequence; A→B→A content reuses the immutable A revision but a new receipt makes A current while retaining B in history, including when two jobs share an extraction timestamp; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
 | Opening lots | A reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
-| Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency; an equivalence merge follows aliases and stales pending Proposals only; before a non-equivalent rebind, unlink, or split becomes visible, pending and accepted or multi-source Matches stale while a structurally unchanged standalone membership advances with stable Golden ids and a now-unresolved or structurally changed standalone retires; Raw remains unchanged |
+| Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency; an equivalence merge follows aliases, stales pending Proposals only, and advances projection freshness for affected active membership before the route is visible; an Account-currency correction likewise advances freshness for affected unreviewed projection while an accepted or multi-source Match retains reviewed currency and stales; before a non-equivalent rebind, unlink, or split becomes visible, pending and accepted or multi-source Matches stale while a structurally unchanged standalone membership advances with stable Golden ids and a now-unresolved or structurally changed standalone retires; Raw remains unchanged |
 | Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; consolidation-retired event and leg ids forward through the two derived Core views, ids retired without a successor return a terminal `retired` status and null active id, and undo reactivates prior ids as self-maps |
 | Splits | Normalized contract fixtures pass for supported comparison adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
 | Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
 | Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo; multiple collections converging on one disposal write once only when their complete remapped sets are identical, otherwise acceptance blocks; ambiguous remapping blocks acceptance and later overlapping curation blocks undo |
 | Field choices | A date or numeric difference at its tolerance takes the deterministic aggregator default, while an otherwise-eligible native or ratified candidate beyond tolerance requires a choice; missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
-| Field provenance | Explicit curation outranks the default; otherwise aggregator beats manual and the stable source tuple breaks an aggregator tie, so differing descriptions from two Plaid origins and input reordering produce one unchanged value and exact provenance without affecting assignment |
+| Field provenance | Explicit curation outranks the default; otherwise present values outrank missing values, aggregator beats manual, and the stable source tuple breaks an aggregator tie, so a basis-bearing manual transfer is not erased by aggregator `NULL` and differing descriptions from two Plaid origins plus input reordering produce one unchanged value and exact provenance without affecting assignment |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
 | Recovery | A fresh profile and a newly added comparison-input model bootstrap only pre-match views before membership; bootstrap or membership failure prevents the dependent transform and its SQLMesh acknowledgement; committed decision plus crash or failed rebuild remains pending in transform freshness and every dependent read until a successful rebuild |
 | Guard coverage | Manual history overlapping Plaid transactions or holdings-derived bootstrap rows emits the same visible warning and doctor finding |
@@ -898,8 +921,9 @@ fixtures and expected Golden-ledger outcomes.
   and 5 days but not 6.
 - Transfer tests proving same-direction one-leg events match only across
   distinct Source tuples with Account, Security, currency, quantity, and date
-  agreement; no in/out counterpart is inferred; and merger, spin-off, and trade
-  legs cannot enter a partial Proposal.
+  agreement; a manual basis or `original_acquisition_date` projects when the
+  aggregator field is `NULL`; no in/out counterpart is inferred; and merger,
+  spin-off, and trade legs cannot enter a partial Proposal.
 - Source-diversity tests proving same-manual and same-Plaid-origin duplicates do
   not produce Proposals, while validated multi-leg observations remain one
   Source event.
@@ -910,18 +934,20 @@ fixtures and expected Golden-ledger outcomes.
   changed match-relevant or Golden-projected value appends a new observation
   revision. A→B→A across three sync jobs writes three delivery receipts, reuses
   the immutable A content revision, exposes A as current, retains B for history,
-  and reprocessing one job creates no duplicate receipt. Migration backfills one
-  receipt per legacy current row, and a failed revision/receipt write exposes
-  neither half.
+  and still selects the third receipt when extraction timestamps tie;
+  reprocessing one job creates no duplicate receipt or new
+  `ingestion_sequence`. Migration backfills one receipt per legacy current row,
+  and a failed revision/receipt write exposes neither half.
 - Manual grouping tests proving caller-authored grouping is absent from public
   inputs, reinvest grouping is system-minted and atomic, and invalid
   pre-M1J.7 group hints do not group observations.
 - SQLMesh tests for comparison views, Golden projection, provenance, and stable
   identities.
-- Field-provenance tests proving explicit curation wins, and otherwise
-  aggregator-over-manual plus the stable source tuple selects one exact value
-  and provenance across multiple aggregator origins, differing descriptions,
-  input reordering, and an added observation without changing assignment.
+- Field-provenance tests proving explicit curation wins, present values outrank
+  missing values, and otherwise aggregator-over-manual plus the stable source
+  tuple selects one exact value and provenance across multiple aggregator
+  origins, differing descriptions, input reordering, and an added observation
+  without changing assignment.
 - Membership tests proving an unreviewed adapter event advances to one active
   latest revision with stable Golden ids only when its source-event key and
   complete source-row-to-semantic-leg correspondence are unchanged. Plaid
@@ -968,7 +994,10 @@ fixtures and expected Golden-ledger outcomes.
 - Identity-dependency tests proving an equivalence merge follows aliases
   without staling accepted Matches, a non-equivalent rebind, unlink, or split
   stales affected Matches before its mapping becomes visible, and neither path
-  rewrites Raw.
+  rewrites Raw. They also prove equivalence alias publication and unreviewed
+  Account-currency projection changes advance the shared freshness watermark in
+  the same transaction, while an accepted or multi-source currency change
+  retains reviewed projection and stales without a watermark advance.
 - Standalone-identity tests proving a non-equivalent rebind, unlink, or split
   atomically replaces or retires affected membership before mapping publication,
   records projection freshness, preserves Golden ids only for unambiguous

@@ -166,16 +166,19 @@ type, or subtype appends a new revision instead of replacing reviewed evidence.
 
 Every delivered row also writes an idempotent Raw receipt at
 `(investment_transaction_id, source_origin, source_file)` that names its
-`observation_version`, `extracted_at`, and `loaded_at`, in the same database
-transaction as any new revision. Staging selects the version named by the latest
-receipt under `extracted_at DESC, source_file DESC`. Thus A→B→A across three
-pulls reuses the immutable A revision but the third receipt makes A current
-again; B remains historical. Reprocessing one job reuses its receipt, and an
-absent row writes no receipt and does not imply retraction. Accepted Golden
-membership and field provenance bind the exact historical revision reviewed by
-the person, so a later aggregator correction makes the Match stale without
-silently changing its fields. The full lifecycle and atomic replacement contract
-live in [`investment-event-matching.md`](investment-event-matching.md).
+`observation_version`, `extracted_at`, `loaded_at`, and a local monotonic
+`ingestion_sequence`, in the same database transaction as any new revision. The
+sequence is allocated only on first insertion; replaying the same `source_file`
+preserves it. Staging selects the version named by the latest receipt under
+`extracted_at DESC, ingestion_sequence DESC`. Thus A→B→A across three pulls
+reuses the immutable A revision but the third receipt makes A current again,
+including when extraction timestamps tie; B remains historical. Reprocessing
+one job reuses its receipt without making an old job current, and an absent row
+writes no receipt and does not imply retraction. Accepted Golden membership and
+field provenance bind the exact historical revision reviewed by the person, so
+a later aggregator correction makes the Match stale without silently changing
+its fields. The full lifecycle and atomic replacement contract lives in
+[`investment-event-matching.md`](investment-event-matching.md).
 
 ---
 
@@ -395,6 +398,9 @@ per-delivery occurrence table below. The migration backfills one receipt for
 each legacy current row using its existing `source_file` and `extracted_at`.
 
 ```sql
+CREATE SEQUENCE IF NOT EXISTS raw.plaid_investment_transaction_receipt_sequence
+    START 1;
+
 /* One idempotent occurrence per delivered Plaid transaction and sync job. */
 CREATE TABLE IF NOT EXISTS raw.plaid_investment_transaction_receipts (
     investment_transaction_id VARCHAR NOT NULL,
@@ -404,14 +410,19 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_transaction_receipts (
     source_origin VARCHAR NOT NULL,
     extracted_at TIMESTAMP NOT NULL,
     loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ingestion_sequence BIGINT NOT NULL DEFAULT nextval(
+        'raw.plaid_investment_transaction_receipt_sequence'
+    ),
     PRIMARY KEY (investment_transaction_id, source_origin, source_file)
 );
 ```
 
 The loader writes the revision and receipt in one database transaction. A new
 `source_file` appends a receipt; replaying that source file replaces only its
-same-grain receipt and cannot create a new occurrence. Revision rows never
-change when an old content version reappears.
+same-grain receipt, preserves its original `ingestion_sequence`, and cannot
+create a new occurrence or make an old job current. Sequence gaps are harmless;
+the column supplies a unique final tie-breaker, not a contiguous count. Revision
+rows never change when an old content version reappears.
 
 #### `raw.plaid_investment_holdings`
 
@@ -1174,7 +1185,7 @@ data still loads.
 | Test area | What's tested |
 |---|---|
 | `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Re-load dedup: same payload twice AND the same provider row re-delivered under a **different** `job_id` both replace, never duplicate (PK scoped by `source_origin`). |
-| M1J.7 transaction revision migration | Future matching slice 1: existing rows become first revisions and receipts; identical content reuses a revision while every distinct sync job records one idempotent receipt; changing any matching or Golden-projected value appends a revision; A→B→A selects A from the third receipt without deleting B; lineage-only changes do not create content revisions. |
+| M1J.7 transaction revision migration | Future matching slice 1: existing rows become first revisions and receipts with monotonic ingestion sequences; identical content reuses a revision while every distinct sync job records one idempotent receipt; replay preserves the original sequence; changing any matching or Golden-projected value appends a revision; A→B→A selects A from the third receipt without deleting B even when extraction timestamps tie; lineage-only changes do not create content revisions. |
 | `PlaidInvestmentsLoader.load()` — multi-item scoping | A **two-item** golden payload: (1) each item's own `transactions_window_start` (from its per-institution `metadata` result) is stamped onto **that item's** holdings rows, matched by `source_origin` — never one item's window flattened onto another's; (2) two items that share a provider-local `(account_id, security_id)` produce **distinct, non-colliding** `raw.plaid_investment_holdings` and `raw.plaid_investment_holding_lots` rows (PK includes `source_origin`), so neither newest-snapshot reconciliation nor the opening-lot bootstrap conflates them. |
 | `SecurityResolver` | Each ladder rung: adopt existing binding; CUSIP/ISIN exact → auto-bind (exchange irrelevant); ticker match with MIC normalization (`"NASDAQ"`↔`"XNAS"` normalize equal → bind; both-absent → bind on unique ticker; unnormalizable free-text exchange → treated as absent, binds not reviews; both-present-different-MIC → rung 3); **identifier tie** (one CUSIP/ISIN/ticker matching **more than one** catalog entry — exercised at two and at three) → provisional mint + one pending merge decision **per tied candidate** (`identifier_tie`), never auto-pick; **stripped-ticker hit** (`VOD.L`→`VOD`, share-class `HEI.A`→`HEI`, preferred `BAC-PL`→`BAC`) never auto-binds — provisional mint + `ticker_suffix_strip` decision per stem candidate, and a batch carrying both stem and share class mints **two** securities regardless of `security_id` order; fuzzy → provisional mint + bind + pending **merge** decision **per** equally-named catalog entry (a duplicate name never collapses to one); an in-batch provisional mint is an auto-bind target but is **never offered as a merge candidate** to a later row; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
 | Taxonomy mapping | Parametrized over the full mapping table — every Plaid (type, subtype) pair → expected (`type`, `subtype`), including every excluded-at-staging row. |
