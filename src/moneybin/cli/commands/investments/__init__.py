@@ -312,12 +312,14 @@ those numbers rather than the answer itself, so `--wide` carries them. Chosen
 by hand, not by width: a fit that measures columns would drop `market value` —
 the figure the command exists to report — because it sits in the middle.
 
-`status` stays because it is the only thing separating two different facts that
-both render `-`: `unpriced` (no close resolved) and `withheld` (a known-wrong
-share count), whose remedies are a price refresh and a position fix
-respectively. `InvestmentService.holdings` warns by telling the reader to see
-each row's `valuation_status`, so a default view without it names something not
-on screen — and that warning is a `render_note`, which `-q` drops.
+`status` stays because it is the only thing separating three different facts
+that all render `-`: `unpriced` (no close resolved), `withheld` (a known-wrong
+share count), and `source_overlap` (the account's ledger arrives from two
+sources at once), whose remedies are a price refresh, a position fix, and
+dropping one of the two feeds respectively. `InvestmentService.holdings` warns
+by telling the reader to see each row's `valuation_status`, so a default view
+without it names something not on screen — and that warning is a `render_note`,
+which `-q` drops.
 """
 
 
@@ -333,9 +335,10 @@ def investments_holdings(
     """Current positions: what you hold, what it is worth, and whether you are up.
 
     Market value and unrealized gain come from the most recent close at or
-    before today. A position with no usable price, or one whose share count is
-    known wrong, shows ``-`` rather than a zero, and the ``status`` column
-    beside it says which — it prints by default, because the two cases have
+    before today. A position with no usable price, one whose share count is
+    known wrong, or one in an account whose investment ledger arrives from two
+    sources at once shows ``-`` rather than a zero, and the ``status`` column
+    beside it says which — it prints by default, because the three cases have
     different remedies. ``--wide`` adds the cost basis, the average cost, and
     the date the price was observed.
 
@@ -355,7 +358,11 @@ def investments_holdings(
         # (HIGH) fields; render_or_json derives the tier from the typed
         # payload's Annotated metadata — identical to the MCP tool.
         render_or_json(
-            build_envelope(data=InvestmentHoldingsPayload.from_result(result)),
+            build_envelope(
+                data=InvestmentHoldingsPayload.from_result(result),
+                degraded=result.degraded_reason is not None,
+                degraded_reason=result.degraded_reason,
+            ),
             output,
             cli_actor="investments_holdings",
         )

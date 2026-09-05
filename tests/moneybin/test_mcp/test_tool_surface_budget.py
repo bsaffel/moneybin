@@ -142,8 +142,12 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # tools it replaced. One further byte says what `withheld` actually means:
     # it covered only a wrong share count, and a position is also withheld when
     # its lots disagree on currency — an agent reading the old wording sends the
-    # user to reconcile shares that are already right.
-    "investments": (1_762, 4_908),
+    # user to reconcile shares that are already right. The last 8 bytes name
+    # `source_overlap`, the status a position carries when its account's ledger
+    # arrives from two sources at once: it nulls its money exactly like
+    # `unpriced` does, so an agent that cannot read it from the description
+    # reports a double-counted portfolio as an incomplete one.
+    "investments": (1_770, 4_908),
     "transactions": (1_287, 2_383),
     "transactions_categorize_rules": (564, 318),
     "reviews": (703, 8_687),

@@ -232,6 +232,53 @@ def _seed_broker_snapshot(
     )
 
 
+def _seed_plaid_buy(
+    db: Database,
+    *,
+    account_id: str,
+    security_id: str = _DEFAULT_SECURITY_ID,
+    source_origin: str = "item_1",
+    trade_date: date = _POSITION_TRADE_DATE,
+    quantity: str = "10",
+) -> None:
+    """A Plaid buy that REACHES the ledger, on the canonical account id.
+
+    Distinct from ``_seed_split_reject``, whose split subtype is routed to review
+    and never lands in ``core.fct_investment_transactions`` — a reject cannot
+    double-count anything, so it is not a source overlap. This one carries
+    ``buy``/``buy``, which staging maps and includes.
+
+    ``account_id`` is written as the canonical id directly:
+    prep.stg_plaid__investment_transactions COALESCEs to the source-native id
+    when no account_link resolves, so this needs no binding. ``amount`` is
+    POSITIVE, Plaid's own convention for cash out; staging owns the one sign
+    flip and the ledger sees -1000.00. ``security_id`` is passed as the provider
+    key so ``_seed_price``'s ``plaid_security_id`` link resolves it onto the
+    canonical security — the position then double-counts on one grain, which is
+    the failure under test rather than two unrelated rows.
+    """
+    db.execute(
+        """
+        INSERT INTO raw.plaid_investment_transactions (
+            investment_transaction_id, account_id, security_id,
+            investment_transaction_type, investment_transaction_subtype,
+            transaction_date, quantity, price, amount, fees, iso_currency_code,
+            source_file, source_type, source_origin, extracted_at, loaded_at
+        ) VALUES (?, ?, ?, 'buy', 'buy', ?,
+                  ?, 100.00, 1000.00, 0.00, 'USD', 'sync_test', 'plaid', ?,
+                  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [
+            f"itx_buy_{account_id}",
+            account_id,
+            _provider_key(security_id),
+            trade_date,
+            quantity,
+            source_origin,
+        ],
+    )
+
+
 def _seed_liquidated_snapshot(db: Database, *, source_origin: str) -> None:
     """A snapshot receipt reporting ZERO holdings — the pull where the broker holds nothing.
 
@@ -686,6 +733,72 @@ def valuation_cases_template(
         amount="-450.00",
     )
     _seed_price(db, security_id=unknown_security, price_date=anchor, close="120.00")
+
+    # Source overlap: one account whose investment ledger arrives from BOTH a
+    # manual import and a Plaid sync, on one security. Both feeds price cleanly
+    # and the close resolves, so a blank figure here can only come from the
+    # withhold — not from a missing price.
+    for case_id in ("source_overlap", "overlap_beats_withheld"):
+        _seed_position(
+            db,
+            account_id=account(case_id),
+            security_id=security(case_id),
+            transaction_id=f"{origin(case_id)}_buy",
+        )
+        _seed_price(
+            db, security_id=security(case_id), price_date=anchor, close="120.00"
+        )
+        _seed_plaid_buy(
+            db,
+            account_id=account(case_id),
+            security_id=security(case_id),
+            source_origin=origin(case_id),
+        )
+    # ...and a broker snapshot contradicting the (now doubled) share count, so
+    # both withhold reasons hold at once and the precedence is observable.
+    _seed_broker_snapshot(
+        db,
+        account_id=account("overlap_beats_withheld"),
+        quantity="7",
+        security_id=_provider_key(security("overlap_beats_withheld")),
+        source_file="sync_job_overlap",
+        source_origin=origin("overlap_beats_withheld"),
+    )
+
+    # A manual ledger beside a broker SNAPSHOT (no Plaid transaction). The snapshot
+    # makes the opening-lot bootstrap synthesize a plaid-sourced transfer_in, so the
+    # ledger carries two source_types — but the bootstrap reconstructs a pre-window
+    # position rather than re-reporting an event, so this is not an overlap.
+    _seed_security(db, security_id=security("bootstrap_only"))
+    _seed_price(
+        db, security_id=security("bootstrap_only"), price_date=anchor, close="120.00"
+    )
+    _seed_broker_snapshot(
+        db,
+        account_id=account("bootstrap_only"),
+        quantity="10",
+        security_id=_provider_key(security("bootstrap_only")),
+        source_origin=origin("bootstrap_only"),
+    )
+    _seed_position(
+        db,
+        account_id=account("bootstrap_only"),
+        security_id=security("bootstrap_only"),
+        transaction_id=f"{origin('bootstrap_only')}_buy",
+    )
+
+    # The control: a Plaid-only account is ONE source and values normally. The
+    # withhold keys on a second source, not on the presence of a connector.
+    _seed_security(db, security_id=security("plaid_only"))
+    _seed_price(
+        db, security_id=security("plaid_only"), price_date=anchor, close="120.00"
+    )
+    _seed_plaid_buy(
+        db,
+        account_id=account("plaid_only"),
+        security_id=security("plaid_only"),
+        source_origin=origin("plaid_only"),
+    )
 
     mixed_security = security("mixed_currency")
     mixed_account = account("mixed_currency")
@@ -1359,3 +1472,111 @@ def test_mixed_currency_lots_withhold_the_value(
     assert _resolved_close(db, case_security, anchor) == Decimal("120.0000000000"), (
         "a close resolved; the NULLs above are the currency withhold, not an absent price"
     )
+
+
+@pytest.mark.slow
+def test_two_source_ledgers_withhold_every_figure(
+    valuation_cases: _ValuationCases,
+) -> None:
+    """A position whose account carries two source ledgers publishes nothing.
+
+    The double-count reaches quantity, cost basis, market value and gain alike,
+    so the row makes no valuation claim at all — and says ``source_overlap``
+    rather than ``withheld``, because the remedy is to remove one of the two
+    feeds, not to reconcile a share count.
+    """
+    db = valuation_cases.db
+    market_value, gain, price_date, source, days, status = _holding(
+        db, _case_account("source_overlap")
+    )
+
+    assert status == "source_overlap"
+    assert market_value is None
+    assert gain is None
+    assert price_date is None, "a held-back row must not advertise a price date"
+    assert source is None, "a held-back row must not advertise a price source"
+    assert days is None, "a held-back row must not advertise price freshness"
+    # Proves the blank is the withhold and not an absent price: the close is
+    # sitting in core.fct_security_prices, resolved, one model over.
+    assert (
+        _resolved_close(db, _case_security("source_overlap"), valuation_cases.anchor)
+        is not None
+    )
+
+
+@pytest.mark.slow
+def test_source_overlap_outranks_a_quantity_divergence(
+    valuation_cases: _ValuationCases,
+) -> None:
+    """When both hold, the account-level fault is the one reported.
+
+    A quantity that disagrees with the broker is a *symptom* here — the ledger
+    counted every buy twice, so of course the count is wrong. Reporting
+    ``withheld`` would send the user to reconcile a share count that reconciling
+    cannot fix.
+    """
+    db = valuation_cases.db
+    *_, status = _holding(db, _case_account("overlap_beats_withheld"))
+
+    assert status == "source_overlap"
+
+
+@pytest.mark.slow
+def test_a_single_source_ledger_still_values(
+    valuation_cases: _ValuationCases,
+) -> None:
+    """One source is one ledger, whichever source it is.
+
+    The withhold keys on a SECOND source, not on the presence of a connector: a
+    Plaid-only account has nothing to interleave with and values like any other.
+    """
+    db = valuation_cases.db
+    anchor = valuation_cases.anchor
+    elapsed = (_db_today(db) - anchor).days
+    market_value, _gain, _pd, _source, _days, status = _holding(
+        db, _case_account("plaid_only")
+    )
+
+    assert status == _expected_status(elapsed)
+    assert market_value == Decimal("1200.00")
+
+
+@pytest.mark.slow
+def test_an_opening_bootstrap_is_not_a_second_source_ledger(
+    valuation_cases: _ValuationCases,
+) -> None:
+    """A reconstructed pre-window lot must not read as a second ledger.
+
+    The opening-lot bootstrap synthesizes a plaid-sourced ``transfer_in`` from the
+    broker's first snapshot precisely BECAUSE no transaction covers that position
+    — it fills the gap the in-window transactions leave, so it re-reports nothing
+    and double-counts nothing. Counting its ``source_type`` would withhold every
+    broker-covered account that also holds a manual entry.
+
+    It would also put this model at odds with the check that reports the state:
+    ``investment_source_overlap`` joins the two raw TRANSACTION tables, so a
+    holdings snapshot alone is not an overlap there. A user would be left holding
+    a withheld portfolio with a passing doctor and no remedy named anywhere.
+    """
+    db = valuation_cases.db
+    account_id = _case_account("bootstrap_only")
+
+    rows = db.execute(
+        """
+        SELECT COUNT(DISTINCT source_type),
+               COUNT(*) FILTER (WHERE subtype = 'opening_bootstrap')
+        FROM core.fct_investment_transactions
+        WHERE account_id = ?
+        """,
+        [account_id],
+    ).fetchall()
+    distinct_sources, bootstrap_rows = rows[0]
+    # The precondition the test would silently pass without: the ledger really
+    # does carry two source_types, and the second one is only the bootstrap.
+    assert distinct_sources == 2, (
+        "fixture no longer reproduces the two-source ledger this guards"
+    )
+    assert bootstrap_rows >= 1, "no opening-bootstrap row was synthesized"
+
+    *_, status = _holding(db, account_id)
+    assert status != "source_overlap"

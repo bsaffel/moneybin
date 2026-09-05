@@ -29,10 +29,13 @@ import pytest
 from moneybin.audits.recipes import (
     categorization_coverage,
     dedup_reconciliation,
+    investment_source_overlap,
     orphan_app_state,
     registry,
 )
+from moneybin.mcp.tools.import_tools import import_revert_coarse
 from moneybin.mcp.tools.refresh import refresh_run
+from moneybin.mcp.tools.sync import sync_disconnect
 from moneybin.mcp.tools.system import system_status_coarse
 from moneybin.mcp.tools.transactions import transactions_annotate_coarse
 from moneybin.mcp.tools.transactions_categorize import transactions_categorize_run
@@ -45,6 +48,8 @@ _TOOLS: dict[str, Callable[..., Any]] = {
     "transactions_categorize_run": transactions_categorize_run,
     "refresh_run": refresh_run,
     "system_status": system_status_coarse,
+    "import_revert": import_revert_coarse,
+    "sync_disconnect": sync_disconnect,
 }
 
 
@@ -103,6 +108,10 @@ _RECIPE_CASES = [
     ),
     pytest.param("categorization_coverage", [], id="categorization_coverage"),
     pytest.param("dedup_reconciliation", [], id="dedup_reconciliation"),
+    pytest.param("investment_source_overlap", [], id="investment_source_overlap-empty"),
+    pytest.param(
+        "investment_source_overlap", ["acc_1"], id="investment_source_overlap"
+    ),
 ]
 
 
@@ -186,6 +195,7 @@ def test_every_explicit_recipe_module_is_registered() -> None:
     modules_to_audit_names = {
         categorization_coverage: "categorization_coverage",
         dedup_reconciliation: "dedup_reconciliation",
+        investment_source_overlap: "investment_source_overlap",
         orphan_app_state: "orphan_app_state",
     }
     for module, name in modules_to_audit_names.items():
@@ -205,3 +215,26 @@ def test_dedup_reconciliation_requests_full_doctor_detail() -> None:
         "sections": ["doctor"],
         "detail": "full",
     }
+
+
+def test_source_overlap_offers_both_exits_without_guessing_a_target() -> None:
+    """The two remedies are alternatives, and neither invents its target.
+
+    ``import_revert`` and ``sync_disconnect`` both destroy state, and both are
+    gated on a payload-bound confirmation that would bind to whatever target
+    the action names. The audit knows account ids and neither an ``import_id``
+    nor an institution, so the identifying argument is named in the rationale
+    instead of guessed — the shape ``RecoveryAction`` prescribes.
+    """
+    actions = investment_source_overlap.recipe(
+        ["acc_1"], registry.RecipeContext(db=None)
+    )
+
+    assert [a.tool for a in actions] == ["import_revert", "sync_disconnect"]
+    assert all(a.confidence == "suggested" for a in actions)
+    assert not any(a.idempotent for a in actions)
+    revert, disconnect = actions
+    assert "import_id" not in revert.arguments
+    assert "import_id" in revert.rationale
+    assert "institution" not in disconnect.arguments
+    assert "institution" in disconnect.rationale

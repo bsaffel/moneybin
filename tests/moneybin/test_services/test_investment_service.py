@@ -2000,6 +2000,48 @@ class TestHoldings:
         assert "unpriced" in warning
         assert "withheld" in warning
 
+    def test_source_overlap_is_warned_and_degrades_the_read(self, db: Database) -> None:
+        """A mixed-source account gets its own warning and a machine-readable code.
+
+        Counted in the no-market-value warning like any other blank row, so the
+        count matches what is on screen — but with a second warning of its own,
+        because the remedy shares nothing with the other two. `unpriced` wants a
+        price feed and `withheld` wants a share count reconciled; this one wants
+        a whole feed removed, and no re-run of the pipeline will clear it.
+        """
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(security_id="sec_1", valuation_status="unpriced"),
+                _Holding(security_id="sec_2", valuation_status="source_overlap"),
+            ],
+        )
+        result = db_service(db).holdings()
+
+        assert len(result.warnings) == 2
+        assert "2 position(s) report no market value" in result.warnings[0]
+        overlap = result.warnings[1]
+        assert "1 position(s)" in overlap
+        assert "two sources" in overlap
+        assert result.degraded_reason is not None
+        assert result.degraded_reason.startswith("investment_source_overlap:")
+
+    def test_no_degraded_reason_without_a_source_overlap(self, db: Database) -> None:
+        """The code is set only when the state it names is present.
+
+        A `degraded` flag that rides along on every unpriced portfolio is a flag
+        no consumer can act on.
+        """
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db, [_Holding(security_id="sec_1", valuation_status="withheld")]
+        )
+        result = db_service(db).holdings()
+
+        assert result.degraded_reason is None
+        assert len(result.warnings) == 1
+
     def test_the_withheld_warning_names_currency_as_a_reason(
         self, db: Database
     ) -> None:
