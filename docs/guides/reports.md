@@ -165,7 +165,7 @@ $ uv run moneybin reports recurring
 Using profile: demo
 ```
 
-Empty. `--status` defaults to `active`, and a stream counts as active while its last charge is within 60 days or two cadence intervals, whichever is longer; the demo's data ends on the last December 31, and this transcript was captured in September, when every stream had lapsed — rerun the demo in January or February and the same command lists them as active. On live data the default is what you want. Here, ask for everything:
+Empty. `--status` defaults to `active`, and a stream counts as active while its last charge is within 60 days or two cadence intervals, whichever is longer; the demo's data ends on the last December 31, and this transcript was captured in September, when every stream had lapsed — rerun the demo in January and the same command lists them as active. On live data the default is what you want. Here, ask for everything:
 
 ```console
 $ uv run moneybin reports recurring --status all
@@ -271,7 +271,7 @@ Empty on the demo, because drift needs an assertion: a balance you typed from a 
 - **Currency.** Every row carries a `currency_code`, and a report never blends two known currencies into one figure. Rows with no currency at all pool into one unknown segment and are summed together, because nothing can tell two unknowns apart; `system doctor` fails on any such account and `accounts set --currency` is the fix, so set them before trusting a total. A multi-currency profile gets its rows interleaved per currency, best-ranked first within each, so a capped result holds every currency that fits inside the cap — a `--limit` smaller than the number of currencies still drops some, and `summary.has_more` is the signal that later pages may carry currencies the first did not. See [One display currency](#one-display-currency).
 - **The `💡` lines.** Each one is the MCP tool call an assistant would make next, written out so you can read it as the CLI's own next move. The parameter it names maps to a flag on the dedicated command, not always under the same name (`from_date` is `--from`), and the [reference page](../reference/cli/reports.md) lists each command's flags.
 - **Freshness.** Every report reads views over the canonical tables, so it reflects the last import or `moneybin refresh` the moment that finishes, and nothing is cached between runs. The one deferral is an import run with `--no-refresh`, whose rows reach the reports only after `moneybin refresh` or `moneybin transform apply`.
-- **Rows, not aggregates.** When the question is "show me the transactions", `moneybin transactions list` filters by `--account`, `--from`/`--to`, `--category`, `--amount-min`/`--amount-max`, and `--description`, and `moneybin sql query` takes any read-only SQL.
+- **Rows, not aggregates.** When the question is "show me the transactions", `moneybin transactions list` filters by `--account`, `--from`/`--to`, `--category`, `--amount-min`/`--amount-max`, and `--description`, and `moneybin sql query` takes a `SELECT`, `WITH`, `DESCRIBE`, or `SHOW` over the `core`, `app`, `reports`, `raw`, and `prep` schemas.
 
 ## Any report by id: list, run, explain
 
