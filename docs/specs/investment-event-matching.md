@@ -419,20 +419,25 @@ of truth for event existence or source evidence.
 
 ### `core.alias_investment_event_ids`
 
-A derived resolver maps every currently or formerly published Golden
-`event_group_id` from historical membership to its active Golden id. It exposes
-`requested_event_group_id` and `active_event_group_id`; active ids map to
-themselves. Pre-M1J.7 source-group references are provenance, not inputs to this
-resolver.
+A derived resolver exposes every currently or formerly published Golden
+`event_group_id` from historical membership. It returns
+`requested_event_group_id`, nullable `active_event_group_id`, and
+`resolution_status` (`active`, `forwarded`, or `retired`). Active ids map to
+themselves, consolidation-retired ids forward to their active successor, and an
+id retired without a successor—such as a vanished opening-lot reconstruction—
+has status `retired` and a null active id. Pre-M1J.7 source-group references are
+provenance, not inputs to this resolver.
 
 ### `core.alias_investment_transaction_ids`
 
-A derived resolver maps every currently or formerly published Golden
-`investment_transaction_id` from historical membership to its active Golden
-leg id. It exposes `requested_investment_transaction_id` and
-`active_investment_transaction_id`; active ids map to themselves. Resolution
-contains no cycles or inactive target, and ambiguous leg correspondence blocks
-acceptance instead of producing a mapping.
+A derived resolver exposes every currently or formerly published Golden
+`investment_transaction_id` from historical membership. It returns
+`requested_investment_transaction_id`, nullable
+`active_investment_transaction_id`, and the same `resolution_status`. Active ids
+self-map, consolidation-retired ids forward, and ids retired without a successor
+return `retired` with a null active id. Active and forwarded outcomes contain no
+cycles or inactive target, and ambiguous leg correspondence blocks acceptance
+instead of producing a mapping.
 
 Both resolvers derive from the same active and historical membership authority.
 No separately mutable investment alias table, validity flag, or deactivation
@@ -465,11 +470,12 @@ source-group reference.
 
 When acceptance joins existing Golden events, the oldest established Golden
 event identity remains canonical, with the opaque id as the deterministic
-tie-breaker. The two Core id resolvers derive current forwarding for every
-post-M1J.7 retired Golden event or leg id from membership history. Golden leg
-ids follow the corresponding established semantic leg where one exists. Adding
-a third observation to an existing event therefore changes neither the event id
-nor its leg ids.
+tie-breaker. The two Core id resolvers derive the current resolution outcome for
+every post-M1J.7 retired Golden event or leg id from membership history, with
+forwarding only when an active successor exists. Golden leg ids follow the
+corresponding established semantic leg where one exists. Adding a third
+observation to an existing event therefore changes neither the event id nor its
+leg ids.
 
 A material change to leg structure stales the existing decision. The system
 does not silently repurpose a leg id for a different semantic role. When an
@@ -659,10 +665,11 @@ generation or completion record.
 Decision state commits before the rebuild it requires. If the decision commits
 and the subsequent rebuild fails or the process crashes, `system_status`
 remains pending. One shared investment-ledger freshness guard covers CLI and MCP
-investment lists, investment-dependent reports, and SQL queries whose resolved
-lineage reaches the affected ledger models. Those reads refuse to render stale
-values; MCP and JSON forms return a standard `transform_stale` error envelope
-with `moneybin refresh --step transform` and
+investment lists, investment-dependent reports, canonical bundle preparation
+that includes investment datasets, and SQL queries whose resolved lineage
+reaches the affected ledger models. Those reads and exports refuse to render or
+publish stale values; MCP and JSON forms return a standard `transform_stale`
+error envelope with `moneybin refresh --step transform` and
 `refresh_run(steps=["transform"])` retry actions. `system_status`, refresh,
 review and decision history, provenance, and reads unrelated to the investment
 ledger remain available. No surface presents the pre-decision projection as
@@ -737,7 +744,7 @@ fixtures and expected Golden-ledger outcomes.
 | Opening lots | A reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
 | Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency; an equivalence merge follows aliases and stales pending Proposals only, while a non-equivalent rebind, unlink, or split atomically stales pending and accepted or multi-source Matches before the new mapping is visible; Raw remains unchanged |
-| Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; later retired event and leg ids resolve through the two derived Core views; undo reactivates prior ids as self-maps |
+| Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; consolidation-retired event and leg ids forward through the two derived Core views, ids retired without a successor return a terminal `retired` status and null active id, and undo reactivates prior ids as self-maps |
 | Splits | Normalized contract fixtures pass for supported comparison adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
 | Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
@@ -778,17 +785,18 @@ fixtures and expected Golden-ledger outcomes.
   correction using last-reviewed transaction revisions for gap quantity and
   basis until replacement or reversal, and non-current output for an impossible
   stored selection.
-- Core id-resolution tests proving current and retired event and leg ids resolve
-  from membership history, and accept followed by undo makes reactivated ids
-  self-resolve without stale forwarding.
+- Core id-resolution tests proving current ids self-resolve,
+  consolidation-retired event and leg ids forward, terminally retired ids return
+  `retired` with a null active id, and accept followed by undo makes reactivated
+  ids self-resolve without stale forwarding.
 - Lot-selection tests proving acceptance remaps and undo exactly restores a
   complete selection set, ambiguous remapping blocks acceptance, and newer user
   curation blocks undo.
 - Freshness and read-guard tests proving a committed membership change followed
   by a crash or failed rebuild remains pending and blocks investment-dependent
-  CLI, MCP, report, and SQL reads until every dependent model rebuilds
-  successfully, while status, recovery, audit, provenance, and unrelated reads
-  remain available.
+  CLI, MCP, report, canonical bundle export, and SQL reads until every dependent
+  model rebuilds successfully, while status, recovery, audit, provenance, and
+  unrelated reads remain available.
 - Refresh-orchestration tests proving any `investment_match` error prevents the
   dependent transform and SQLMesh timestamp advancement, and proving a direct
   transform-only selector expands the dependency so a later retry completes

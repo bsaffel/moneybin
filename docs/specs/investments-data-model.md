@@ -565,11 +565,14 @@ derived lots and 1099-B therefore never depend on the order events were recorded
   value — a taxable disposal plus an acquisition, which is the US-tax-correct
   treatment.
 
-v1 supports these via manual entry of the legs (the CLI/MCP accept
-`--event-group` to link them); importer children automate the decomposition in
-their staging models. No dedicated `exchange`/`spin_off` enum values until real
-import experience demands them — the `event_group_id` linkage is the durable
-primitive.
+Before M1J.7, manual entry accepted separate legs linked by caller-authored
+`--event-group`; importer children automate the decomposition in their staging
+models. M1J.7 supersedes that manual workflow: after slice 1, a two-security
+manual action is unavailable until a future interface can submit and validate
+the complete compound event atomically. Existing rows retain their Source group
+as provenance, while the Golden `event_group_id` remains the durable ledger
+identity. No dedicated `exchange`/`spin_off` enum values exist until real import
+experience demands them.
 
 ### Oversold lots and incomplete acquisitions
 
