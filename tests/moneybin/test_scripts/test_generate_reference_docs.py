@@ -215,6 +215,92 @@ SURFACE: dict[str, Any] = {
                             "anyOf": [{"type": "string"}, {"type": "null"}],
                             "default": None,
                         },
+                        "scope": {
+                            "anyOf": [
+                                {
+                                    "oneOf": [
+                                        {
+                                            "description": "Every thing.",
+                                            "properties": {
+                                                "kind": {
+                                                    "const": "everything",
+                                                    "type": "string",
+                                                }
+                                            },
+                                            "required": ["kind"],
+                                            "type": "object",
+                                        },
+                                        {
+                                            "description": "One thing.",
+                                            "properties": {
+                                                "kind": {
+                                                    "const": "one",
+                                                    "type": "string",
+                                                },
+                                                "thing_id": {"type": "string"},
+                                            },
+                                            "required": ["kind", "thing_id"],
+                                            "type": "object",
+                                        },
+                                    ]
+                                },
+                                {"type": "null"},
+                            ],
+                            "default": None,
+                        },
+                        "target": {
+                            "oneOf": [
+                                {
+                                    "description": "A widget target.",
+                                    "properties": {
+                                        "kind": {"const": "widget", "type": "string"},
+                                        "widget_id": {"type": "string"},
+                                    },
+                                    "required": ["kind", "widget_id"],
+                                    "type": "object",
+                                },
+                                {
+                                    "description": "A gadget target.",
+                                    "properties": {
+                                        "kind": {"const": "gadget", "type": "string"},
+                                        "gadget_id": {"type": "string"},
+                                    },
+                                    "required": ["kind", "gadget_id"],
+                                    "type": "object",
+                                },
+                            ]
+                        },
+                        "requests": {
+                            "items": {
+                                "oneOf": [
+                                    {
+                                        "description": "Add a thing.",
+                                        "properties": {
+                                            "kind": {
+                                                "const": "thing_add",
+                                                "type": "string",
+                                            },
+                                            "name": {"type": "string"},
+                                        },
+                                        "required": ["kind", "name"],
+                                        "type": "object",
+                                    },
+                                    {
+                                        "description": "Remove a thing.",
+                                        "properties": {
+                                            "kind": {
+                                                "const": "thing_remove",
+                                                "type": "string",
+                                            },
+                                            "name": {"type": "string"},
+                                        },
+                                        "required": ["kind", "name"],
+                                        "type": "object",
+                                    },
+                                ]
+                            },
+                            "type": "array",
+                        },
                     },
                     "required": ["view"],
                     "type": "object",
@@ -257,6 +343,400 @@ def test_mcp_page_words_the_declared_tier_as_the_bound_it_actually_is() -> None:
     assert "Sensitivity: at least `low`." in page
     assert "at least `critical`" not in page
     assert "up to `low`" not in page
+
+
+def test_mcp_page_renders_oneof_variants_by_discriminator() -> None:
+    """A ``oneOf`` parameter names each variant and lists its fields below."""
+    page = render_mcp_tools(
+        SURFACE, {"accounts": ("critical", True), "zeta": ("low", False)}
+    )
+    assert "| `target` | one of `widget`, `gadget` |  |  |" in page
+    assert "| `requests` | array of one of `thing_add`, `thing_remove` |  |  |" in page
+    assert "#### Variants of `target`" in page
+    assert "##### `widget`" in page
+    assert "A widget target." in page
+    assert "| `widget_id` | string |  | required |" in page
+    assert "##### `gadget`" in page
+    assert "A gadget target." in page
+    assert "| `gadget_id` | string |  | required |" in page
+    assert "#### Variants of `requests`" in page
+    assert "##### `thing_add`" in page
+    assert "Add a thing." in page
+    assert "##### `thing_remove`" in page
+    assert "Remove a thing." in page
+    assert (
+        page.index("### accounts")
+        < page.index("| `target` |")
+        < page.index("#### Variants of `target`")
+        < page.index("#### Variants of `requests`")
+        < page.index("### zeta")
+    )
+
+
+def test_mcp_page_renders_variants_of_a_nullable_oneof() -> None:
+    """An optional discriminated union gets the same variants block as a required one."""
+    page = render_mcp_tools(
+        SURFACE, {"accounts": ("critical", True), "zeta": ("low", False)}
+    )
+    assert "| `scope` | one of `everything`, `one` |" in page
+    assert "#### Variants of `scope`" in page
+    assert "##### `everything`" in page
+    assert "Every thing." in page
+    assert "##### `one`" in page
+    assert "One thing." in page
+    assert "| `thing_id` | string |  | required |" in page
+    assert page.index("#### Variants of `scope`") < page.index("### zeta")
+
+
+def test_mcp_page_names_oneof_variant_by_title_without_a_const() -> None:
+    """A variant with no ``const``-bearing property falls back to its ``title``."""
+    surface: dict[str, Any] = {
+        "tool_count": 1,
+        "tools": [
+            {
+                "name": "titled",
+                "definition": {
+                    "description": "Has titled variants.",
+                    "annotations": {"readOnlyHint": True},
+                    "inputSchema": {
+                        "properties": {
+                            "target": {
+                                "oneOf": [
+                                    {
+                                        "title": "Widget Variant",
+                                        "description": "A widget target.",
+                                        "properties": {"widget_id": {"type": "string"}},
+                                        "required": ["widget_id"],
+                                        "type": "object",
+                                    },
+                                    {
+                                        "title": "Gadget Variant",
+                                        "description": "A gadget target.",
+                                        "properties": {"gadget_id": {"type": "string"}},
+                                        "required": ["gadget_id"],
+                                        "type": "object",
+                                    },
+                                ]
+                            },
+                        },
+                        "type": "object",
+                    },
+                },
+            },
+        ],
+    }
+    page = render_mcp_tools(surface, {"titled": ("low", False)})
+    assert "| `target` | one of `Widget Variant`, `Gadget Variant` |  |  |" in page
+    assert "##### `Widget Variant`" in page
+    assert "##### `Gadget Variant`" in page
+
+
+def test_mcp_page_names_oneof_variant_by_position_without_a_title() -> None:
+    """A variant with neither ``const`` nor ``title`` falls back to its position."""
+    surface: dict[str, Any] = {
+        "tool_count": 1,
+        "tools": [
+            {
+                "name": "untitled",
+                "definition": {
+                    "description": "Has untitled variants.",
+                    "annotations": {"readOnlyHint": True},
+                    "inputSchema": {
+                        "properties": {
+                            "target": {
+                                "oneOf": [
+                                    {
+                                        "description": "First option.",
+                                        "properties": {"value": {"type": "string"}},
+                                        "required": ["value"],
+                                        "type": "object",
+                                    },
+                                    {
+                                        "description": "Second option.",
+                                        "properties": {"value": {"type": "string"}},
+                                        "required": ["value"],
+                                        "type": "object",
+                                    },
+                                ]
+                            },
+                        },
+                        "type": "object",
+                    },
+                },
+            },
+        ],
+    }
+    page = render_mcp_tools(surface, {"untitled": ("low", False)})
+    assert "| `target` | one of `variant 1`, `variant 2` |  |  |" in page
+    assert "##### `variant 1`" in page
+    assert "##### `variant 2`" in page
+
+
+def test_mcp_page_renders_conditional_required_and_else_forbidden() -> None:
+    """A ``state``-conditioned field states when it is required, and ``else`` forbidden."""
+    surface: dict[str, Any] = {
+        "tool_count": 1,
+        "tools": [
+            {
+                "name": "widget_target_set",
+                "definition": {
+                    "description": "Set one widget target.",
+                    "annotations": {"readOnlyHint": False},
+                    "inputSchema": {
+                        "properties": {
+                            "target": {
+                                "oneOf": [
+                                    {
+                                        "description": "A local target.",
+                                        "properties": {
+                                            "kind": {
+                                                "const": "local",
+                                                "type": "string",
+                                            },
+                                            "state": {"type": "string"},
+                                            "local_path": {
+                                                "type": "string",
+                                                "minLength": 1,
+                                            },
+                                        },
+                                        "required": ["kind", "state"],
+                                        "type": "object",
+                                        "allOf": [
+                                            {
+                                                "if": {
+                                                    "properties": {
+                                                        "state": {"const": "present"}
+                                                    },
+                                                    "required": ["state"],
+                                                },
+                                                "then": {
+                                                    "required": ["local_path"],
+                                                    "properties": {
+                                                        "local_path": {
+                                                            "not": {"type": "null"}
+                                                        }
+                                                    },
+                                                },
+                                                "else": {
+                                                    "not": {
+                                                        "anyOf": [
+                                                            {"required": ["local_path"]}
+                                                        ]
+                                                    }
+                                                },
+                                            }
+                                        ],
+                                    },
+                                ]
+                            },
+                        },
+                        "type": "object",
+                    },
+                },
+            },
+        ],
+    }
+    page = render_mcp_tools(surface, {"widget_target_set": ("low", False)})
+    assert (
+        "| `local_path` | string |  | min length 1; required when `state` is "
+        "`present`; forbidden unless `state` is `present` |" in page
+    )
+
+
+def test_mcp_page_merges_conditional_forbidden_clauses_across_branches() -> None:
+    """Two branches forbidding the same field on the same discriminator merge with ``or``."""
+    surface: dict[str, Any] = {
+        "tool_count": 1,
+        "tools": [
+            {
+                "name": "taxonomy_set",
+                "definition": {
+                    "description": "Set one taxonomy target.",
+                    "annotations": {"readOnlyHint": False},
+                    "inputSchema": {
+                        "properties": {
+                            "items": {
+                                "oneOf": [
+                                    {
+                                        "description": "A category target.",
+                                        "properties": {
+                                            "kind": {
+                                                "const": "category",
+                                                "type": "string",
+                                            },
+                                            "state": {"type": "string"},
+                                            "category": {"type": "string"},
+                                        },
+                                        "required": ["kind", "state"],
+                                        "type": "object",
+                                        "allOf": [
+                                            {
+                                                "if": {
+                                                    "properties": {
+                                                        "state": {"const": "present"}
+                                                    },
+                                                    "required": ["state"],
+                                                },
+                                                "then": {"required": ["category"]},
+                                            },
+                                            {
+                                                "if": {
+                                                    "properties": {
+                                                        "state": {"const": "inactive"}
+                                                    },
+                                                    "required": ["state"],
+                                                },
+                                                "then": {
+                                                    "not": {
+                                                        "anyOf": [
+                                                            {"required": ["category"]}
+                                                        ]
+                                                    }
+                                                },
+                                            },
+                                            {
+                                                "if": {
+                                                    "properties": {
+                                                        "state": {"const": "absent"}
+                                                    },
+                                                    "required": ["state"],
+                                                },
+                                                "then": {
+                                                    "not": {
+                                                        "anyOf": [
+                                                            {"required": ["category"]}
+                                                        ]
+                                                    }
+                                                },
+                                            },
+                                        ],
+                                    },
+                                ]
+                            },
+                        },
+                        "type": "object",
+                    },
+                },
+            },
+        ],
+    }
+    page = render_mcp_tools(surface, {"taxonomy_set": ("low", False)})
+    assert (
+        "| `category` | string |  | required when `state` is `present`; "
+        "forbidden when `state` is `inactive` or `absent` |" in page
+    )
+
+
+def test_mcp_page_renders_conditional_must_be_const() -> None:
+    """A discriminator branch that fixes a field's value states it as ``must be``."""
+    surface: dict[str, Any] = {
+        "tool_count": 1,
+        "tools": [
+            {
+                "name": "reviews_decide",
+                "definition": {
+                    "description": "Decide one review proposal.",
+                    "annotations": {"readOnlyHint": False},
+                    "inputSchema": {
+                        "properties": {
+                            "decisions": {
+                                "oneOf": [
+                                    {
+                                        "description": "An auto-rule decision.",
+                                        "properties": {
+                                            "kind": {
+                                                "const": "auto_rule",
+                                                "type": "string",
+                                            },
+                                            "decision": {"type": "string"},
+                                            "allow_broad": {"type": "boolean"},
+                                        },
+                                        "required": ["kind", "decision"],
+                                        "type": "object",
+                                        "allOf": [
+                                            {
+                                                "if": {
+                                                    "properties": {
+                                                        "decision": {"const": "reject"}
+                                                    },
+                                                    "required": ["decision"],
+                                                },
+                                                "then": {
+                                                    "properties": {
+                                                        "allow_broad": {"const": False}
+                                                    }
+                                                },
+                                            },
+                                        ],
+                                    },
+                                ]
+                            },
+                        },
+                        "type": "object",
+                    },
+                },
+            },
+        ],
+    }
+    page = render_mcp_tools(surface, {"reviews_decide": ("low", False)})
+    assert (
+        "| `allow_broad` | boolean |  | must be `false` when `decision` is "
+        "`reject` |" in page
+    )
+
+
+def test_mcp_page_conditional_tripwire_raises_on_unrecognized_if() -> None:
+    """An ``if`` outside the closed vocabulary fails loudly, naming param and variant."""
+    surface: dict[str, Any] = {
+        "tool_count": 1,
+        "tools": [
+            {
+                "name": "widget_set",
+                "definition": {
+                    "description": "Set one widget.",
+                    "annotations": {"readOnlyHint": False},
+                    "inputSchema": {
+                        "properties": {
+                            "target": {
+                                "oneOf": [
+                                    {
+                                        "description": "A weird target.",
+                                        "properties": {
+                                            "kind": {
+                                                "const": "weird",
+                                                "type": "string",
+                                            },
+                                            "a": {"type": "string"},
+                                            "b": {"type": "string"},
+                                        },
+                                        "required": ["kind"],
+                                        "type": "object",
+                                        "allOf": [
+                                            {
+                                                "if": {
+                                                    "properties": {
+                                                        "a": {"const": "x"},
+                                                        "b": {"const": "y"},
+                                                    },
+                                                    "required": ["a", "b"],
+                                                },
+                                                "then": {"required": ["a"]},
+                                            },
+                                        ],
+                                    },
+                                ]
+                            },
+                        },
+                        "type": "object",
+                    },
+                },
+            },
+        ],
+    }
+    with pytest.raises(ValueError) as exc_info:
+        render_mcp_tools(surface, {"widget_set": ("low", False)})
+    assert "target" in str(exc_info.value)
+    assert "weird" in str(exc_info.value)
 
 
 def test_mcp_page_refuses_a_tool_without_a_registered_sensitivity() -> None:
