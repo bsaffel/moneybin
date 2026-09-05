@@ -301,7 +301,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to a surviving source and its annotations follow. Where the trail is genuinely
   ambiguous — every id the transaction ever used is gone, or several are still in
   use — the rows are left where they are and `moneybin doctor` reports them
-  rather than the guess being made for you. Splits get the same treatment for a
+  rather than the guess being made for you. Undoing a merge
+  (`moneybin transactions matches undo`) puts every annotation back on the
+  transaction it was written against, including a category or a tag that the
+  merge had to delete because the two halves each carried one — so the merge
+  stays as reversible as it is advertised to be. The old → new pointer itself
+  stays: anything still holding the superseded id keeps resolving through it.
+  Splits get the same treatment for a
   second reason: when both halves of a merge were already split, each allocation
   stays where it is, because a survivor holding both would publish twice the
   transaction's amount to every spending report and deleting either side would

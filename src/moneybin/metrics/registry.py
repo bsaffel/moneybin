@@ -302,6 +302,15 @@ TRANSACTION_CURATION_FORWARDED_TOTAL = Counter(
     "Curation rows moved onto a transaction's new canonical id after a re-key",
 )
 
+# The inverse of the counter above, and its own metric rather than a decrement:
+# a re-key that carries curation and a reversal that hands it back are different
+# events, and netting them to zero would hide a merge/undo loop that is losing
+# rows on one of the two legs.
+TRANSACTION_CURATION_RESTORED_TOTAL = Counter(
+    "moneybin_transaction_curation_restored_total",
+    "Curation rows returned to their own transaction when a merge was reversed",
+)
+
 # The only counter here that measures an *undo* of something the user decided,
 # which is why it exists separately from DEDUP_MATCHES_TOTAL: a regression that
 # starts retiring more often is invisible in the match counts and shows up only

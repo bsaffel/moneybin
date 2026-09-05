@@ -17,10 +17,13 @@ import duckdb
 from moneybin import error_codes
 from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
-from moneybin.errors import RecoveryAction, UserError
+from moneybin.errors import RecoveryAction, UserError, exception_origin
 from moneybin.matching.aliasing import (
     forward_rekeyed_transaction_ids,
+    live_superseded_ids,
     record_committed_alias_forwarding,
+    record_committed_curation_restore,
+    restore_forwarded_curation,
 )
 from moneybin.matching.application import (
     MatchDecisionApplication,
@@ -199,14 +202,37 @@ class MatchingService:
         # leaves the user a red `app_transaction_categories_fk` and vanished
         # notes, tags and splits until some later run happens to succeed. The
         # pass is idempotent, so running it on the way out of a failure is safe.
+        #
+        # The `finally` must not become the *reporter* of a failure, though: an
+        # exception raised out of it replaces the one in flight, and `refresh`,
+        # the CLI and the MCP surface all catch `MatchRunError` specifically to
+        # report the counts it carries. A forwarding failure that displaced it
+        # would turn merges the user can already see in the ledger into a
+        # generic error with those counts lost, so it is logged instead. With no
+        # matcher error to protect, it is still the caller's to handle.
+        in_flight: BaseException | None = None
         try:
             return TransactionMatcher(self._db, self._settings, actor=actor).run(
                 auto_accept_transfers=auto_accept_transfers
             )
+        except BaseException as exc:
+            in_flight = exc
+            raise
         finally:
-            record_committed_alias_forwarding(
-                forward_rekeyed_transaction_ids(self._db, actor=actor)
-            )
+            try:
+                record_committed_alias_forwarding(
+                    forward_rekeyed_transaction_ids(self._db, actor=actor)
+                )
+            except Exception as forwarding_error:
+                if in_flight is None:
+                    raise
+                logger.warning(
+                    f"⚠️ Transaction-id alias forwarding failed at "
+                    f"{exception_origin(forwarding_error)} while a matching run "
+                    f"was already failing; reporting the run's own error. Any "
+                    f"curation left on a superseded id is repaired by the next "
+                    f"successful run."
+                )
 
     def seed_priority(self) -> None:
         """Seed ``app.seed_source_priority`` from current MatchingSettings.
@@ -221,7 +247,7 @@ class MatchingService:
     def undo(
         self, match_id: str, *, reversed_by: str = "user", actor: str = "system"
     ) -> None:
-        """Reverse a match decision (audited via ``MatchDecisionsRepo``).
+        """Reverse a match decision and give each side its curation back.
 
         ``reversed_by`` is the domain column (``user``/``system``); ``actor`` is
         the audit *surface* (``cli``/``mcp``/``system``), defaulting to
@@ -229,8 +255,38 @@ class MatchingService:
         actor taxonomy (``user`` is a ``decided_by`` value, not a surface).
         Surfaces pass their own (``cli``/``mcp``). Raises ``ValueError`` when no
         match with this id exists.
+
+        Accepting a merge re-keys the group (ADR-015) and moves the superseded
+        id's curation onto the survivor, deleting one side outright where the
+        primary key cannot hold both. Reversing the decision alone would leave
+        that edit on a transaction the user never edited and the deleted half
+        gone for good — from the one operation the matcher advertises as
+        reversible. So the reversal and the restore are one transaction.
+        ``prep.int_transactions__matched`` reads ``app.match_decisions`` through
+        a view, so the ids this reversal hands back are simply the aliased ids
+        that were not live before it and are live after.
         """
-        self._match_repo().reverse(match_id, reversed_by=reversed_by, actor=actor)
+        self._db.begin()
+        try:
+            superseded_before = live_superseded_ids(self._db)
+            self._match_repo().reverse(
+                match_id, reversed_by=reversed_by, actor=actor, in_outer_txn=True
+            )
+            restored = restore_forwarded_curation(
+                self._db,
+                revived_ids=live_superseded_ids(self._db) - superseded_before,
+                actor=actor,
+            )
+        except BaseException:
+            self._db.rollback()
+            raise
+        self._db.commit()
+        if restored:
+            logger.info(
+                f"↩️  Returned {restored} curation row(s) to the transaction they "
+                f"were written on"
+            )
+        record_committed_curation_restore(restored)
 
     def get_log(
         self, *, limit: int | None = 50, match_type: str | None = None

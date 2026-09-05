@@ -142,16 +142,23 @@ def _insert_source_row(
     )
 
 
-def _curate(db: Database, transaction_id: str) -> None:
-    """Attach one of every kind of user curation to ``transaction_id``."""
+def _categorize(
+    db: Database, transaction_id: str, *, category: str, by: str = "user"
+) -> None:
+    """Categorize one transaction, naming the authority that wrote it."""
     TransactionCategoriesRepo(db).set(
         transaction_id,
-        category="Food & Drink",
+        category=category,
         subcategory="Coffee",
         category_id=None,
-        categorized_by="user",
+        categorized_by=by,
         actor="cli",
     )
+
+
+def _curate(db: Database, transaction_id: str) -> None:
+    """Attach one of every kind of user curation to ``transaction_id``."""
+    _categorize(db, transaction_id, category="Food & Drink")
     TransactionNotesRepo(db).add(
         transaction_id=transaction_id,
         note_id="note00000001",
@@ -172,6 +179,14 @@ def _curate(db: Database, transaction_id: str) -> None:
     )
 
 
+_CURATION_TABLES = (
+    "transaction_categories",
+    "transaction_notes",
+    "transaction_tags",
+    "transaction_splits",
+)
+
+
 def _curation_ids(db: Database) -> dict[str, list[str]]:
     """Every transaction id each curation table currently points at."""
     return {
@@ -181,12 +196,28 @@ def _curation_ids(db: Database) -> dict[str, list[str]]:
                 f"SELECT transaction_id FROM app.{table} ORDER BY transaction_id"  # noqa: S608  # code-supplied table names
             ).fetchall()
         ]
-        for table in (
-            "transaction_categories",
-            "transaction_notes",
-            "transaction_tags",
-            "transaction_splits",
-        )
+        for table in _CURATION_TABLES
+    }
+
+
+def _categories(db: Database) -> dict[str, tuple[str, str]]:
+    """``transaction_id -> (category, categorized_by)`` for every categorized row."""
+    return {
+        str(txn): (str(category), str(by))
+        for txn, category, by in db.execute(
+            "SELECT transaction_id, category, categorized_by "
+            "FROM app.transaction_categories"
+        ).fetchall()
+    }
+
+
+def _tags(db: Database) -> set[tuple[str, str]]:
+    """Every ``(transaction_id, tag)`` pair currently stored."""
+    return {
+        (str(txn), str(tag))
+        for txn, tag in db.execute(
+            "SELECT transaction_id, tag FROM app.transaction_tags"
+        ).fetchall()
     }
 
 
@@ -380,42 +411,6 @@ class TestMergeRekeyForwardsCuration:
         }
 
     @pytest.mark.unit
-    def test_undoing_a_merge_leaves_the_curation_on_a_live_transaction(
-        self, matched_db: Database
-    ) -> None:
-        """Reversing a merge splits the group; the anchor keeps both id and curation.
-
-        A split can never orphan curation: the group's id is the anchor's own
-        hash, so the anchor carries it out of the split unchanged. The alias
-        written by the merge stays — the map is append-only by design, and the
-        merge, not the alias row, is the undoable unit.
-        """
-        _insert_source_row(
-            matched_db,
-            source_transaction_id="csv_1234",
-            source_type="tabular",
-            source_file="export.csv",
-        )
-        old_id = _canonical_id("tabular", "csv_1234")
-        _curate(matched_db, old_id)
-        _insert_source_row(
-            matched_db,
-            source_transaction_id="ofx_5678",
-            source_type="ofx",
-            source_file="statement.qfx",
-        )
-        _seed_pending_dedup(matched_db, match_id="match0000009")
-        service = MatchingService(matched_db)
-        service.set_status("match0000009", status="accepted", actor="cli")
-        new_id = _canonical_id("ofx", "ofx_5678")
-
-        service.undo("match0000009", actor="cli")
-
-        assert _canonical_ids(matched_db) == {old_id, new_id}
-        assert _curation_ids(matched_db)["transaction_categories"] == [new_id]
-        assert _aliases(matched_db) == {old_id: new_id}
-
-    @pytest.mark.unit
     def test_audit_undo_of_the_merge_operation_still_reverses_the_decision(
         self, matched_db: Database
     ) -> None:
@@ -482,6 +477,212 @@ class TestMergeRekeyForwardsCuration:
 
         assert _aliases(matched_db) == {}
         assert len(_canonical_ids(matched_db)) == 2
+
+
+class TestUndoingAMergeRestoresCuration:
+    """Reversing a merge must hand each transaction back the curation it carried.
+
+    A merge moves the superseded id's curation onto the survivor, and the two
+    collision branches *delete* a row outright when both halves carried a
+    category, or the same tag. Reversing the merge revives both transactions, so
+    leaving the curation where the merge put it strands the user's edit on a
+    transaction they never edited and loses the deleted half for good — from an
+    operation the product advertises as reversible.
+
+    The alias rows are not part of that: the map is append-only by design, and
+    every assertion below re-checks that they survive the undo untouched.
+    """
+
+    @pytest.mark.unit
+    def test_undoing_a_merge_returns_curation_to_the_id_it_was_written_on(
+        self, matched_db: Database
+    ) -> None:
+        """The CSV row loses the anchor election, so its curation moved — and returns.
+
+        Categories, notes, tags and splits all rode onto the OFX anchor when the
+        merge was confirmed. Reversing it revives the CSV transaction, and the
+        edits the user made against *that* transaction come back with it.
+        """
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="csv_1234",
+            source_type="tabular",
+            source_file="export.csv",
+        )
+        old_id = _canonical_id("tabular", "csv_1234")
+        _curate(matched_db, old_id)
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="ofx_5678",
+            source_type="ofx",
+            source_file="statement.qfx",
+        )
+        _seed_pending_dedup(matched_db, match_id="match0000009")
+        service = MatchingService(matched_db)
+        service.set_status("match0000009", status="accepted", actor="cli")
+        new_id = _canonical_id("ofx", "ofx_5678")
+        assert _curation_ids(matched_db) == dict.fromkeys(_CURATION_TABLES, [new_id])
+
+        service.undo("match0000009", actor="cli")
+
+        assert _canonical_ids(matched_db) == {old_id, new_id}
+        assert _curation_ids(matched_db) == dict.fromkeys(_CURATION_TABLES, [old_id])
+        assert _aliases(matched_db) == {old_id: new_id}
+
+    @pytest.mark.unit
+    def test_a_category_the_tiebreak_dropped_from_the_anchor_is_restored(
+        self, matched_db: Database
+    ) -> None:
+        """Two ``user`` edits tie, so the anchor's row is deleted to make room.
+
+        ``transaction_id`` is the whole primary key of
+        ``app.transaction_categories``, so only one of the two survives the
+        merge. Nothing but the undo can bring the other back.
+        """
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="csv_1234",
+            source_type="tabular",
+            source_file="export.csv",
+        )
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="ofx_5678",
+            source_type="ofx",
+            source_file="statement.qfx",
+        )
+        old_id = _canonical_id("tabular", "csv_1234")
+        new_id = _canonical_id("ofx", "ofx_5678")
+        _categorize(matched_db, old_id, category="Food & Drink", by="user")
+        _categorize(matched_db, new_id, category="Travel", by="user")
+
+        service = MatchingService(matched_db)
+        _seed_pending_dedup(matched_db, match_id="match0000030")
+        service.set_status("match0000030", status="accepted", actor="cli")
+        assert _categories(matched_db) == {new_id: ("Food & Drink", "user")}
+
+        service.undo("match0000030", actor="cli")
+
+        assert _categories(matched_db) == {
+            old_id: ("Food & Drink", "user"),
+            new_id: ("Travel", "user"),
+        }
+        assert _aliases(matched_db) == {old_id: new_id}
+
+    @pytest.mark.unit
+    def test_a_category_the_tiebreak_dropped_from_the_superseded_id_is_restored(
+        self, matched_db: Database
+    ) -> None:
+        """The other collision branch: the anchor outranks, so the old row is dropped.
+
+        ``provider_native`` sits below ``user`` on the ``SOURCE_PRIORITY``
+        ladder, so the merge deletes the superseded row rather than moving it —
+        a delete the undo has to reverse just the same.
+        """
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="csv_1234",
+            source_type="tabular",
+            source_file="export.csv",
+        )
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="ofx_5678",
+            source_type="ofx",
+            source_file="statement.qfx",
+        )
+        old_id = _canonical_id("tabular", "csv_1234")
+        new_id = _canonical_id("ofx", "ofx_5678")
+        _categorize(matched_db, old_id, category="Food & Drink", by="provider_native")
+        _categorize(matched_db, new_id, category="Travel", by="user")
+
+        service = MatchingService(matched_db)
+        _seed_pending_dedup(matched_db, match_id="match0000031")
+        service.set_status("match0000031", status="accepted", actor="cli")
+        assert _categories(matched_db) == {new_id: ("Travel", "user")}
+
+        service.undo("match0000031", actor="cli")
+
+        assert _categories(matched_db) == {
+            old_id: ("Food & Drink", "provider_native"),
+            new_id: ("Travel", "user"),
+        }
+        assert _aliases(matched_db) == {old_id: new_id}
+
+    @pytest.mark.unit
+    def test_an_identical_tag_collapsed_by_the_merge_is_restored(
+        self, matched_db: Database
+    ) -> None:
+        """``(transaction_id, tag)`` is the PK, so one of two identical tags is deleted.
+
+        The surviving pair is indistinguishable from either original, which is
+        exactly why the undo cannot infer the deleted one back — it has to
+        reverse the delete.
+        """
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="csv_1234",
+            source_type="tabular",
+            source_file="export.csv",
+        )
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="ofx_5678",
+            source_type="ofx",
+            source_file="statement.qfx",
+        )
+        old_id = _canonical_id("tabular", "csv_1234")
+        new_id = _canonical_id("ofx", "ofx_5678")
+        TransactionTagsRepo(matched_db).add(
+            transaction_id=old_id, tag="work", actor="cli"
+        )
+        TransactionTagsRepo(matched_db).add(
+            transaction_id=new_id, tag="work", actor="cli"
+        )
+
+        service = MatchingService(matched_db)
+        _seed_pending_dedup(matched_db, match_id="match0000032")
+        service.set_status("match0000032", status="accepted", actor="cli")
+        assert _tags(matched_db) == {(new_id, "work")}
+
+        service.undo("match0000032", actor="cli")
+
+        assert _tags(matched_db) == {(old_id, "work"), (new_id, "work")}
+        assert _aliases(matched_db) == {old_id: new_id}
+
+    @pytest.mark.unit
+    def test_curation_written_on_the_anchor_is_untouched_by_the_undo(
+        self, matched_db: Database
+    ) -> None:
+        """The anchor keeps its id through the merge, so no repoint ever runs.
+
+        Not a regression test for the restore — nothing moved, so there is
+        nothing to move back. It pins the other half of the contract: the undo
+        must not drag an untouched edit off the transaction that owns it.
+        """
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="ofx_5678",
+            source_type="ofx",
+            source_file="statement.qfx",
+        )
+        anchor_id = _canonical_id("ofx", "ofx_5678")
+        _curate(matched_db, anchor_id)
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="csv_1234",
+            source_type="tabular",
+            source_file="export.csv",
+        )
+        _seed_pending_dedup(matched_db, match_id="match0000033")
+        service = MatchingService(matched_db)
+        service.set_status("match0000033", status="accepted", actor="cli")
+        assert _curation_ids(matched_db) == dict.fromkeys(_CURATION_TABLES, [anchor_id])
+
+        service.undo("match0000033", actor="cli")
+
+        assert _curation_ids(matched_db) == dict.fromkeys(_CURATION_TABLES, [anchor_id])
+        assert _aliases(matched_db) == {_canonical_id("tabular", "csv_1234"): anchor_id}
 
 
 class TestPendingPostedRekeyForwardsCuration:

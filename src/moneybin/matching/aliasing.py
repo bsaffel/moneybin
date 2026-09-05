@@ -37,6 +37,16 @@ corrected. :func:`_heal_stranded_curation` repairs that from the orphan side:
 it walks the alias map *undirected* to find every id that has ever named the
 transaction, and moves the curation onto the one that is live.
 
+**A reversed merge takes the curation back, but not the alias.** `matches undo`
+revives both sides of a merge as transactions of their own, so an edit written
+against the superseded one has to return to it — and a category or tag the
+collision branch *deleted* has to come back, which nothing but the audit trail
+can reconstruct. :func:`restore_forwarded_curation` replays that re-key's own
+audit rows backwards; :func:`live_superseded_ids` is how the caller names the
+ids the reversal handed back, since only the map plus the matched view know.
+The alias row stands either way: the map is append-only, and a consumer holding
+the superseded id must keep resolving through it.
+
 Decision history is deliberately *not* forwarded. ``app.categorization_decisions``
 keys its ``decision_id`` on ``(transaction_id, attempt_number)`` and
 ``app.audit_log`` records the id as it stood; both describe what happened, and
@@ -48,6 +58,7 @@ events that already occurred.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -55,9 +66,10 @@ from moneybin.database import Database
 from moneybin.errors import exception_origin
 from moneybin.metrics.registry import (
     TRANSACTION_CURATION_FORWARDED_TOTAL,
+    TRANSACTION_CURATION_RESTORED_TOTAL,
     TRANSACTION_ID_ALIASES_WRITTEN_TOTAL,
 )
-from moneybin.services.audit_service import AuditEvent
+from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.services.mutation_context import operation
 from moneybin.tables import (
     FCT_TRANSACTIONS,
@@ -204,6 +216,20 @@ ORDER BY c.stranded_id
 """  # noqa: S608  # TableRef constants only
 
 
+#: The audit action every alias row is written under; the anchor `matches undo`
+#: walks back from a revived id to the curation that re-key carried away.
+_ALIAS_INSERT_ACTION = "transaction_id_alias.insert"
+
+# An aliased id that the matched view still serves. Normally empty: an id is in
+# the map because it stopped being canonical. A reversed merge puts one back.
+_LIVE_SUPERSEDED_IDS_SQL = f"""
+SELECT DISTINCT a.old_transaction_id
+FROM {TRANSACTION_ID_ALIASES.full_name} AS a
+JOIN {INT_TRANSACTIONS_MATCHED.full_name} AS m
+  ON m.transaction_id = a.old_transaction_id
+"""  # noqa: S608  # TableRef constants only
+
+
 @dataclass(frozen=True, slots=True)
 class AliasForwardResult:
     """What one forwarding pass wrote, for the caller to report after it commits."""
@@ -240,17 +266,7 @@ def forward_rekeyed_transaction_ids(
     if not in_outer_txn:
         db.begin()
     try:
-        # Its own operation id, deliberately not the caller's. `system_audit_undo`
-        # reverses an operation as a whole, and `TransactionIdAliasesRepo` refuses
-        # to undo an alias row (the map is append-only) — so folding these rows
-        # into the merge's operation would make the merge itself un-undoable,
-        # which is a regression on the reversibility the matcher already
-        # promises. Splitting them also matches what `matches undo` leaves
-        # behind: it reverses the decision and lets the alias and the forwarded
-        # curation stand, because the surviving id is the anchor's own and is
-        # still live after the split.
-        with operation():
-            result = _forward(db, actor=actor)
+        result = _forward(db, actor=actor)
     except BaseException:
         if not in_outer_txn:
             db.rollback()
@@ -272,6 +288,104 @@ def record_committed_alias_forwarding(result: AliasForwardResult) -> None:
             f"Could not record committed alias-forwarding metric "
             f"at {exception_origin(exc)}"
         )
+
+
+def record_committed_curation_restore(rows_restored: int) -> None:
+    """Record the committed restore count; never let telemetry escape."""
+    if not rows_restored:
+        return
+    try:
+        TRANSACTION_CURATION_RESTORED_TOTAL.inc(rows_restored)
+    except Exception as exc:  # noqa: BLE001  # metrics must not escape post-commit
+        logger.warning(
+            f"Could not record committed curation-restore metric "
+            f"at {exception_origin(exc)}"
+        )
+
+
+def live_superseded_ids(db: Database) -> frozenset[str]:
+    """Aliased ids the matched view is currently serving under their own name.
+
+    An id in the map is normally *not* live — being superseded is what put it
+    there. It comes back when the merge that superseded it is reversed, so
+    reading this set on either side of a reversal names exactly the transactions
+    that reversal handed back, without the caller having to re-derive an
+    identity hash the decision row does not carry.
+    """
+    if not _relations_exist(db, INT_TRANSACTIONS_MATCHED, TRANSACTION_ID_ALIASES):
+        # Same first-load precondition the derivation guards, asked of the
+        # catalog rather than the view so a failed statement cannot poison the
+        # caller's transaction.
+        logger.debug("Superseded-id liveness skipped: the alias map or view is absent")
+        return frozenset()
+    return frozenset(
+        str(row[0]) for row in db.execute(_LIVE_SUPERSEDED_IDS_SQL).fetchall()
+    )
+
+
+def restore_forwarded_curation(
+    db: Database, *, revived_ids: Iterable[str], actor: str
+) -> int:
+    """Give each revived id back the curation its re-key moved away.
+
+    Called when a reversal hands a superseded id back as a transaction of its
+    own. Every row the forwarding touched is chained to that id's alias by
+    ``parent_audit_id``, and each of those audit rows carries the full
+    before/after image, so replaying them backwards through
+    :meth:`BaseRepo.undo_event` restores the *exact* prior state — including the
+    row a collision deleted outright, which nothing else can reconstruct: two
+    identical tags, or two categorizations of equal authority, are
+    indistinguishable once one of them is gone.
+
+    **The alias itself is deliberately not reversed.** The map is append-only,
+    and a consumer still holding the superseded id has to keep resolving through
+    it. Only the curation moves back.
+
+    Must run inside the caller's transaction, so the reversal and the restore
+    are one atomic act. Returns the number of rows it put back.
+    """
+    # Deferred import: the dispatch registry imports every repository module,
+    # whose base → services.audit_service chain re-enters `services.__init__`
+    # and back into this package. Same cycle the forwarding defers around.
+    from moneybin.services.undo_dispatch import repo_for  # noqa: PLC0415
+
+    audit = AuditService(db)
+    restored = 0
+    for old_id in sorted(revived_ids):
+        alias_events = audit.list_events(
+            action_pattern=_ALIAS_INSERT_ACTION,
+            target_table=TRANSACTION_ID_ALIASES.name,
+            target_id=old_id,
+            limit=1,
+        )
+        if not alias_events:
+            continue  # live and aliased, but nothing here re-keyed it
+        alias_event = alias_events[0]
+        moves = [
+            event
+            for event in audit.events_for_operation(alias_event.operation_id)
+            if event.parent_audit_id == alias_event.audit_id
+            and event.target_id is not None
+        ]
+        if not moves:
+            continue  # the re-key carried no curation
+        # Its own operation, mirroring the forwarding it reverses: the caller's
+        # operation stays a plain, still-undoable reversal rather than becoming
+        # half an undo, which `UndoService.history` would then hide.
+        with operation():
+            # Reverse write order: the arrival is undone before the departure is
+            # restored, so a primary-key move never collides with itself.
+            for event in reversed(moves):
+                repo = repo_for(
+                    event.target_schema or "",
+                    event.target_table or "",
+                    db,
+                    audit=audit,
+                )
+                if repo.undo_event(event, actor=actor, in_outer_txn=True) is not None:
+                    restored += 1
+        logger.debug(f"Restored curation onto a revived transaction id: {old_id}")
+    return restored
 
 
 def _relations_exist(db: Database, *refs: TableRef) -> bool:
@@ -318,24 +432,39 @@ def _forward(db: Database, *, actor: str) -> AliasForwardResult:
     )
     forwarded = 0
     for old_id, new_id, cause in rows:
-        alias_event = aliases.insert(
-            old_transaction_id=str(old_id),
-            new_transaction_id=str(new_id),
-            actor=actor,
-            in_outer_txn=True,
-        )
-        for repo in curation:
-            forwarded += _rows_landed(
-                repo.repoint_transaction(
-                    old_transaction_id=str(old_id),
-                    new_transaction_id=str(new_id),
-                    actor=actor,
-                    # Chains every moved curation row back to the alias that
-                    # caused it, so undo can walk one re-key as a unit.
-                    parent_audit_id=alias_event.audit_id,
-                    in_outer_txn=True,
-                )
+        # One operation per re-key, never one per pass — and never the caller's.
+        #
+        # Not the caller's, because `system_audit_undo` reverses an operation as
+        # a whole and `TransactionIdAliasesRepo` refuses to undo an alias row
+        # (the map is append-only): folding these into the merge's operation
+        # would make the merge itself un-undoable.
+        #
+        # One per re-key, because `matches undo` reverses exactly one merge and
+        # :func:`restore_forwarded_curation` reverses that merge's curation
+        # moves. Those inverse rows name their operation in
+        # ``undoes_operation_id``, and `UndoService` reads that at operation
+        # grain — so a pass-wide operation would be marked undone by a restore
+        # that only touched one of its re-keys, and the *other* re-keys would
+        # stop blocking undo of the edits they moved.
+        with operation():
+            alias_event = aliases.insert(
+                old_transaction_id=str(old_id),
+                new_transaction_id=str(new_id),
+                actor=actor,
+                in_outer_txn=True,
             )
+            for repo in curation:
+                forwarded += _rows_landed(
+                    repo.repoint_transaction(
+                        old_transaction_id=str(old_id),
+                        new_transaction_id=str(new_id),
+                        actor=actor,
+                        # Chains every moved curation row back to the alias that
+                        # caused it, so undo can walk one re-key as a unit.
+                        parent_audit_id=alias_event.audit_id,
+                        in_outer_txn=True,
+                    )
+                )
         logger.debug(f"Forwarded transaction id ({cause}): {old_id} -> {new_id}")
 
     # Second pass, deliberately after the derivation: the ids it just moved
@@ -393,14 +522,17 @@ def _heal_stranded_curation(
                 f"{live_count} live transaction ids"
             )
             continue
-        for repo in curation:
-            forwarded += _rows_landed(
-                repo.repoint_transaction(
-                    old_transaction_id=str(stranded_id),
-                    new_transaction_id=str(live_id),
-                    actor=actor,
-                    in_outer_txn=True,
+        # One operation per healed id, for the same reason the derivation takes
+        # one per re-key: an operation is the unit `system_audit_undo` reverses.
+        with operation():
+            for repo in curation:
+                forwarded += _rows_landed(
+                    repo.repoint_transaction(
+                        old_transaction_id=str(stranded_id),
+                        new_transaction_id=str(live_id),
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
                 )
-            )
         logger.debug(f"Healed stranded curation: {stranded_id} -> {live_id}")
     return forwarded
