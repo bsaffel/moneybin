@@ -470,8 +470,19 @@ def _access(annotations: Mapping[str, object]) -> str:
     return ", ".join(parts)
 
 
+def _sensitivity_phrase(tier: str, dynamic: bool) -> str:
+    """Render a declared tier as the bound it actually is.
+
+    The one registered value means opposite things either side of the flag: a
+    dynamic tool classifies per call and declares a ceiling, while a static
+    tool derives a tier its envelope may only ever raise. Publishing both as
+    "maximum" made the static half a promise the floor could break (MB-157).
+    """
+    return f"up to {_code(tier)}" if dynamic else f"at least {_code(tier)}"
+
+
 def render_mcp_tools(
-    surface: Mapping[str, object], sensitivities: Mapping[str, str]
+    surface: Mapping[str, object], sensitivities: Mapping[str, tuple[str, bool]]
 ) -> str:
     """Render the MCP tool reference from the client-visible surface and runtime tiers."""
     tools = sorted(
@@ -515,7 +526,7 @@ def render_mcp_tools(
             f"[{_code(name)}](#{_slug(name)})",
             first_sentence(str(definition.get("description", "")).strip()),
             _access(annotations),
-            sensitivities[name],
+            _sensitivity_phrase(*sensitivities[name]),
         ])
     lines += _table(["Tool", "Purpose", "Access", "Sensitivity"], summary_rows)
     lines.append("")
@@ -533,7 +544,8 @@ def render_mcp_tools(
         lines += [f"### {name}", ""]
         lines += [_escape_angles(str(definition.get("description", "")).strip()), ""]
         lines += [
-            f"Access: {_access(annotations)}. Sensitivity: {sensitivities[name]}.",
+            f"Access: {_access(annotations)}. Sensitivity: "
+            f"{_sensitivity_phrase(*sensitivities[name])}.",
             "",
         ]
         if properties:
@@ -547,8 +559,8 @@ def render_mcp_tools(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def live_mcp_surface() -> tuple[dict[str, object], dict[str, str]]:
-    """The tool list a connecting client receives, and each tool's declared sensitivity.
+def live_mcp_surface() -> tuple[dict[str, object], dict[str, tuple[str, bool]]]:
+    """The tool list a client receives, and each tool's declared tier and kind.
 
     One in-process boot of the standard registry serves both: the client list
     is what ``moneybin mcp serve`` would hand a client (the same inventory
@@ -567,21 +579,18 @@ def live_mcp_surface() -> tuple[dict[str, object], dict[str, str]]:
             return SurfaceInventory.from_tools(await client.list_tools()).to_dict()
 
     surface = asyncio.run(inventory())
-    sensitivities: dict[str, str] = {}
+    sensitivities: dict[str, tuple[str, bool]] = {}
     for tool in asyncio.run(mcp.list_tools(run_middleware=False)):
         fn = getattr(tool, "fn", None)
         sensitivity = getattr(fn, "_mcp_declared_sensitivity", None)
         if sensitivity is None:
             raise ValueError(f"tool {tool.name} carries no _mcp_declared_sensitivity")
-        value = _code(str(getattr(sensitivity, "value", sensitivity)))
-        # The declared tier means opposite things either side of this flag: a
-        # dynamic tool classifies per call and declares a ceiling, while a
-        # static tool derives one tier that the envelope may only ever raise.
-        # Publishing both as "maximum" made the static half a false promise.
-        if getattr(fn, "_mcp_dynamic_classification", False):
-            sensitivities[tool.name] = f"up to {value}"
-        else:
-            sensitivities[tool.name] = f"at least {value}"
+        # The kind travels with the tier because it decides which bound the
+        # tier is; _sensitivity_phrase turns the pair into words.
+        sensitivities[tool.name] = (
+            str(getattr(sensitivity, "value", sensitivity)),
+            bool(getattr(fn, "_mcp_dynamic_classification", False)),
+        )
     return surface, sensitivities
 
 

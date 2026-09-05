@@ -226,12 +226,14 @@ SURFACE: dict[str, Any] = {
 
 
 def test_mcp_page_sorts_tools_and_renders_schema_rows() -> None:
-    page = render_mcp_tools(SURFACE, {"accounts": "critical", "zeta": "low"})
+    page = render_mcp_tools(
+        SURFACE, {"accounts": ("critical", True), "zeta": ("low", False)}
+    )
     assert page.index("### accounts") < page.index("### zeta")
     assert "The standard registry exposes 2 tools." in page
     assert (
-        "| [`zeta`](#zeta) | Second sentence first. | write, destructive, not idempotent | `low` |"
-        in page
+        "| [`zeta`](#zeta) | Second sentence first. | write, destructive, "
+        "not idempotent | at least `low` |" in page
     )
     assert "| `limit` | integer | `100` | ≥ 1 |" in page
     assert "| `view` | one of `list`, `detail` | `list` | required |" in page
@@ -239,9 +241,27 @@ def test_mcp_page_sorts_tools_and_renders_schema_rows() -> None:
     assert "No parameters." in page
 
 
+def test_mcp_page_words_the_declared_tier_as_the_bound_it_actually_is() -> None:
+    """A static tier is a floor, a dynamic one a ceiling; the page must say which.
+
+    Both phrasings render from the same registered value, so a renderer that
+    dropped the distinction would still produce a plausible-looking page —
+    which is how the reference came to advertise every tool's tier as a
+    "maximum" that nothing enforced (MB-157).
+    """
+    page = render_mcp_tools(
+        SURFACE, {"accounts": ("critical", True), "zeta": ("low", False)}
+    )
+
+    assert "Sensitivity: up to `critical`." in page
+    assert "Sensitivity: at least `low`." in page
+    assert "at least `critical`" not in page
+    assert "up to `low`" not in page
+
+
 def test_mcp_page_refuses_a_tool_without_a_registered_sensitivity() -> None:
     with pytest.raises(ValueError, match="zeta"):
-        render_mcp_tools(SURFACE, {"accounts": "critical"})
+        render_mcp_tools(SURFACE, {"accounts": ("critical", False)})
 
 
 def test_live_mcp_surface_lists_every_tool_with_a_registered_tier() -> None:
@@ -256,6 +276,10 @@ def test_live_mcp_surface_lists_every_tool_with_a_registered_tier() -> None:
     assert tools
     assert surface["tool_count"] == len(tools)
     assert {str(tool["name"]) for tool in tools} <= set(sensitivities)
+    for name, entry in sensitivities.items():
+        tier, dynamic = entry
+        assert tier in {"low", "medium", "high", "critical"}, f"{name}: {tier}"
+        assert isinstance(dynamic, bool), f"{name}: {dynamic!r}"
 
 
 class Nested(BaseModel):
