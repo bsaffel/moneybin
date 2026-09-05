@@ -596,17 +596,19 @@ def mcp_tool(
             await asyncio.to_thread(write_privacy_event, event)
 
         def _stamp_sensitivity(env: ResponseEnvelope[Any]) -> ResponseEnvelope[Any]:
-            """Override summary.sensitivity with the decorator-derived tier.
+            """Floor summary.sensitivity at the decorator-derived tier.
 
             Error envelopes from build_error_envelope hardcode "low"; without
             this a CRITICAL-tier tool (e.g. accounts_get) that raises would
             report summary.sensitivity="low" in its error response and audit
-            row, understating the tier. Applied on every return path that
-            reaches _emit_privacy_event — including the two crash/cancellation
-            paths that build their envelope inline rather than through one of
-            the classify/timeout helpers above (MB-157: _emit_privacy_event's
-            static branch now reads sensitivity off the envelope, so any path
-            that skipped this stamp would under-report its audit row).
+            row, understating the tier. It raises and never lowers, so a call
+            that already derived a higher tier keeps it. Applied on every
+            return path that reaches _emit_privacy_event — including the two
+            crash/cancellation paths that build their envelope inline rather
+            than through one of the classify/timeout helpers above (MB-157:
+            _emit_privacy_event's static branch now reads sensitivity off the
+            envelope, so any path that skipped this stamp would under-report
+            its audit row).
 
             No-op for dynamic_classification tools: their sensitivity is decided
             per call (the static ``sensitivity`` here is only a HIGH placeholder),
