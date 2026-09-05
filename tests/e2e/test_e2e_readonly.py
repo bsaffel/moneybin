@@ -321,6 +321,12 @@ class TestDBReadOnlyCommands:
         result = run_cli("transactions", "categorize", "rules", "list", env=e2e_profile)
         result.assert_success()
 
+    def test_categorize_rules_list_conflicts(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli(
+            "transactions", "categorize", "rules", "list-conflicts", env=e2e_profile
+        )
+        result.assert_success()
+
     # ── privacy (read paths) ─────────────────────────────────────────────
 
     def test_privacy_status(self, e2e_profile: dict[str, str]) -> None:

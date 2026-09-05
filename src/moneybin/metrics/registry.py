@@ -481,6 +481,29 @@ RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL = Counter(
     "unless the caller passes allow_broad.",
 )
 
+RULE_CREATE_CONFLICT_BLOCKED_TOTAL = Counter(
+    "moneybin_rule_create_conflict_blocked_total",
+    "Rule-creation attempts refused because an active rule already owns the "
+    "same canonical matcher and assigns a different category. The proposal is "
+    "recorded in app.rule_conflicts rather than activated. surface names the "
+    "creation path that was refused.",
+    ["surface"],
+)
+
+RULE_CONFLICTS_PENDING = Gauge(
+    "moneybin_rule_conflicts_pending",
+    "Rule conflicts awaiting a user decision. Set on each review() call and "
+    "after any resolution or undo.",
+)
+
+RULE_CONFLICT_RESOLVED_TOTAL = Counter(
+    "moneybin_rule_conflict_resolved_total",
+    "Rule conflicts settled by an explicit user decision, by resolution: "
+    "replace supersedes the existing rule, reprioritize activates the proposal "
+    "beside it, cancel keeps live state.",
+    ["resolution"],
+)
+
 CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL = Counter(
     "moneybin_categorize_skipped_confidence_total",
     "Provider-native categorizations skipped at the confidence gate. "

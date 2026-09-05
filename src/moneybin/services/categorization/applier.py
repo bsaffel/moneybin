@@ -29,7 +29,7 @@ import logging
 import unicodedata
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal, cast
 
@@ -43,7 +43,10 @@ from moneybin.metrics.registry import (
     MERCHANT_EXEMPLAR_COUNT,
     RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL,
 )
-from moneybin.privacy.payloads.categorize import RulesCreatePayload
+from moneybin.privacy.payloads.categorize import (
+    RuleConflictDetail,
+    RulesCreatePayload,
+)
 from moneybin.repositories.base import quote_ident
 from moneybin.repositories.budgets_repo import BudgetsRepo
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
@@ -63,8 +66,17 @@ from moneybin.services.categorization._shared import (
     SOURCE_PRIORITY,
     CategorizationRuleInput,
     InternalMatchType,
+    MatcherKey,
+    canonical_matcher_key,
     is_unselective_contains,
     resolve_category_id,
+)
+from moneybin.services.categorization.conflicts import (
+    ActiveRule,
+    RuleConflict,
+    detect_conflict,
+    load_active_rules,
+    record_conflicts,
 )
 from moneybin.services.entity_reference import (
     AmbiguousEntity,
@@ -111,13 +123,23 @@ class WriteOutcome:
 
 @dataclass(slots=True)
 class RuleCreationResult:
-    """Typed result for ``MatchApplier.create_rules_core``."""
+    """Typed result for ``MatchApplier.create_rules_core``.
+
+    ``conflicts`` counts proposals refused because an active rule already owns
+    the same canonical matcher and assigns a different category. They are not
+    ``skipped``: a skip is a rule that failed, a conflict is a rule awaiting a
+    decision — recorded in ``app.rule_conflicts`` and resolvable through the
+    review surface.
+    """
 
     created: int
     existing: int
     skipped: int
     error_details: list[dict[str, str]]
     rule_ids: list[str]
+    conflicts: int = 0
+    conflict_ids: list[str] = field(default_factory=list)
+    conflict_details: list[RuleConflictDetail] = field(default_factory=list)
 
     def to_payload(self) -> RulesCreatePayload:
         """Return a typed payload for the MCP/CLI envelope boundary."""
@@ -127,6 +149,9 @@ class RuleCreationResult:
             skipped=self.skipped,
             rule_ids=list(self.rule_ids),
             error_details=list(self.error_details),
+            conflicts=self.conflicts,
+            conflict_ids=list(self.conflict_ids),
+            conflict_details=list(self.conflict_details),
         )
 
     def merge_parse_errors(self, parse_errors: list[dict[str, str]]) -> None:
@@ -165,9 +190,16 @@ class RuleTargetPlanItem:
 
 @dataclass(frozen=True, slots=True)
 class RuleTargetPlan:
-    """Complete no-write preflight for an atomic rule target batch."""
+    """Complete no-write preflight for an atomic rule target batch.
+
+    ``conflicts`` is non-empty when a target would activate a matcher an
+    active rule already owns under a different category. The batch is refused
+    whole: an atomic target-state declaration that silently dropped the
+    conflicting member would report success for a rule that never took effect.
+    """
 
     items: tuple[RuleTargetPlanItem, ...]
+    conflicts: tuple[RuleConflict, ...] = ()
 
     @property
     def changed(self) -> tuple[RuleTargetPlanItem, ...]:
@@ -628,10 +660,14 @@ class MatchApplier:
         12-char UUID hex ``rule_id`` with ``is_active=true`` and
         ``created_by='ai'``.
 
-        Same matcher with a *different* category output is currently
-        treated as a new rule, not a conflict — see
-        ``docs/specs/moneybin-mcp.md`` "Rule-conflict detection
-        (follow-up)" for the deferred conflict-resolution work.
+        Same matcher with a *different* category output is a **conflict**:
+        the proposal is not activated, the refusal is recorded in
+        ``app.rule_conflicts``, and the user decides through
+        ``reviews(kind='rule_conflicts')`` or
+        ``moneybin transactions categorize rules resolve``. Sameness is
+        decided by ``canonical_matcher_key``, so a case variant of an
+        existing pattern is the same matcher rather than a second rule that
+        shadows the first.
 
         Per-row insertion failures are caught so a single bad row does
         not abort the batch — they appear in ``error_details``.
@@ -651,45 +687,43 @@ class MatchApplier:
         skipped = 0
         error_details: list[dict[str, str]] = []
         rule_ids: list[str] = []
+        conflicts: list[RuleConflict] = []
+        # Re-read after every insert so a batch that proposes two outputs for
+        # one matcher conflicts against its own first row, not just against
+        # rules that predate the call.
+        active: list[ActiveRule] = load_active_rules(self._db)
 
         for item in items:
             try:
-                # DuckDB IS NOT DISTINCT FROM treats NULL = NULL as true,
-                # so optional fields (min/max_amount, account_id, subcategory)
-                # match on NULL across calls.
-                found = self._db.execute(
-                    f"""
-                    SELECT rule_id FROM {CATEGORIZATION_RULES.full_name}
-                    WHERE is_active = true
-                      AND merchant_pattern = ?
-                      AND match_type = ?
-                      AND min_amount IS NOT DISTINCT FROM ?
-                      AND max_amount IS NOT DISTINCT FROM ?
-                      AND account_id IS NOT DISTINCT FROM ?
-                      AND category = ?
-                      AND subcategory IS NOT DISTINCT FROM ?
-                    LIMIT 1
-                    """,  # noqa: S608  # TableRef constant, no user input interpolated
-                    [
-                        item.merchant_pattern,
-                        item.match_type,
-                        item.min_amount,
-                        item.max_amount,
-                        item.account_id,
-                        item.category,
-                        item.subcategory,
-                    ],
-                ).fetchone()
-                if found is not None:
+                key = canonical_matcher_key(
+                    merchant_pattern=item.merchant_pattern,
+                    match_type=item.match_type,
+                    min_amount=item.min_amount,
+                    max_amount=item.max_amount,
+                    account_id=item.account_id,
+                )
+                twin = next(
+                    (
+                        rule
+                        for rule in active
+                        if rule.key == key
+                        and rule.category == item.category
+                        and rule.subcategory == item.subcategory
+                    ),
+                    None,
+                )
+                if twin is not None:
                     existing += 1
-                    rule_ids.append(found[0])
+                    rule_ids.append(twin.rule_id)
                     continue
-                # The specificity gate only guards the INSERT path: an
-                # already-active rule with this exact matcher+output found
-                # above short-circuits to `existing` before we ever get
-                # here, so re-submitting a previously allow_broad'd (or
-                # pre-guard) rule stays idempotent instead of being refused
+                # The specificity gate runs after the idempotency short-circuit and
+                # before conflict detection. After, so re-submitting a
+                # previously allow_broad'd (or pre-guard) rule stays
+                # idempotent instead of being refused
                 # (docs/specs/moneybin-mcp.md "Idempotent" contract).
+                # Before, because a conflict is resolvable: queueing an
+                # unselective pattern would let `replace` activate it
+                # later without anyone passing allow_broad.
                 if not allow_broad and is_unselective_contains(
                     item.merchant_pattern, item.match_type
                 ):
@@ -705,6 +739,23 @@ class MatchApplier:
                             "re-run with allow_broad=True to accept the risk."
                         ),
                     })
+                    continue
+                conflict = detect_conflict(
+                    active,
+                    key=key,
+                    name=item.name,
+                    merchant_pattern=item.merchant_pattern,
+                    match_type=item.match_type,
+                    min_amount=item.min_amount,
+                    max_amount=item.max_amount,
+                    account_id=item.account_id,
+                    category=item.category,
+                    subcategory=item.subcategory,
+                    priority=item.priority,
+                    created_by="ai",
+                )
+                if conflict is not None:
+                    conflicts.append(conflict)
                     continue
                 # Phase 1 dual-write: resolve the FK alongside the text snapshot
                 # (read; stays in the service per Req 2). `None` is a permitted
@@ -733,6 +784,7 @@ class MatchApplier:
                     raise RuntimeError("CategorizationRulesRepo.insert returned no id")
                 created += 1
                 rule_ids.append(rule_id)
+                active = load_active_rules(self._db)
             except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
                 skipped += 1
                 logger.exception(f"create_rules failed for rule {item.name!r}")
@@ -741,12 +793,24 @@ class MatchApplier:
                     "reason": "Failed to create rule — check logs for details.",
                 })
 
+        record_conflicts(self._db, conflicts, actor=actor, surface="create_rules")
         return RuleCreationResult(
             created=created,
             existing=existing,
             skipped=skipped,
             error_details=error_details,
             rule_ids=rule_ids,
+            conflicts=len(conflicts),
+            conflict_ids=[conflict.conflict_id for conflict in conflicts],
+            conflict_details=[
+                RuleConflictDetail(
+                    conflict_id=conflict.conflict_id,
+                    name=conflict.proposed_name,
+                    existing_rule_id=conflict.existing_rule_id,
+                    reason=conflict.why(),
+                )
+                for conflict in conflicts
+            ],
         )
 
     def deactivate_rule_core(self, rule_id: str, *, actor: str = "system") -> bool:
@@ -822,7 +886,100 @@ class MatchApplier:
                     self._rule_row_digest(row),
                 )
             )
-        return RuleTargetPlan(items=tuple(items))
+        return RuleTargetPlan(
+            items=tuple(items),
+            conflicts=tuple(self._rule_target_conflicts(items)),
+        )
+
+    def _rule_target_conflicts(
+        self, items: Sequence[RuleTargetPlanItem]
+    ) -> list[RuleConflict]:
+        """Return every canonical-matcher conflict a target batch would create.
+
+        Judged against the state the batch *commits*, not the state it read.
+        Only ``create`` and ``set`` activate a matcher, and every rule the
+        batch changes leaves its recorded matcher behind — a ``set`` rewrites
+        it, a deactivate or delete removes it — so those rules cannot shadow
+        anything afterwards and are excluded. What remains is the set of live
+        rules the batch leaves standing, which is what a target has to clear.
+        """
+        activating = [
+            item
+            for item in items
+            if item.action in {"create", "set"}
+            and item.target.merchant_pattern is not None
+            and item.target.match_type is not None
+            and item.target.category is not None
+        ]
+        if not activating:
+            return []
+        keyed = [
+            (
+                item,
+                canonical_matcher_key(
+                    merchant_pattern=cast(str, item.target.merchant_pattern),
+                    match_type=cast(str, item.target.match_type),
+                    min_amount=item.target.min_amount,
+                    max_amount=item.target.max_amount,
+                    account_id=item.target.account_id,
+                ),
+            )
+            for item in activating
+        ]
+        self._refuse_intra_batch_shadow(keyed)
+        changed_ids = {
+            item.rule_id
+            for item in items
+            if item.action != "noop" and item.rule_id is not None
+        }
+        survivors = [
+            rule
+            for rule in load_active_rules(self._db)
+            if rule.rule_id not in changed_ids
+        ]
+        conflicts: list[RuleConflict] = []
+        for item, key in keyed:
+            target = item.target
+            conflict = detect_conflict(
+                survivors,
+                key=key,
+                name=self._rule_target_name(target),
+                merchant_pattern=cast(str, target.merchant_pattern),
+                match_type=cast(str, target.match_type),
+                min_amount=target.min_amount,
+                max_amount=target.max_amount,
+                account_id=target.account_id,
+                category=cast(str, target.category),
+                subcategory=target.subcategory,
+                priority=target.priority if target.priority is not None else 100,
+                created_by="mcp",
+            )
+            if conflict is not None:
+                conflicts.append(conflict)
+        return conflicts
+
+    @staticmethod
+    def _refuse_intra_batch_shadow(
+        keyed: Sequence[tuple[RuleTargetPlanItem, MatcherKey]],
+    ) -> None:
+        """Refuse a batch whose own members shadow each other.
+
+        Not a recordable conflict: ``app.rule_conflicts`` queues a decision
+        *about an active rule*, and here neither side exists yet — the batch is
+        atomic, so nothing is written and there is no winner to reason about.
+        A malformed request is refused outright, like the duplicate-target
+        check above it, rather than queued for a review that has no subject.
+        """
+        outputs: dict[MatcherKey, tuple[str, str | None]] = {}
+        for item, key in keyed:
+            output = (cast(str, item.target.category), item.target.subcategory)
+            if outputs.get(key, output) != output:
+                raise UserError(
+                    "Two rule targets in this batch match the same "
+                    "transactions and assign different categories.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
+            outputs[key] = output
 
     @staticmethod
     def _rule_target_natural_key(target: RuleStateTarget) -> tuple[object, ...]:
@@ -949,6 +1106,17 @@ class MatchApplier:
             live_plan = self.plan_rule_targets([item.target for item in plan.items])
             if verify is not None:
                 verify(live_plan)
+            if live_plan.conflicts:
+                # The tool refuses ahead of this on the preflight; this guard
+                # catches a conflict that appeared between preflight and commit.
+                raise UserError(
+                    "A rule in this batch matches the same transactions as an "
+                    "active rule and assigns a different category.",
+                    code=error_codes.TAXONOMY_RULE_CONFLICT,
+                    details={
+                        "conflict_ids": [c.conflict_id for c in live_plan.conflicts]
+                    },
+                )
             if not live_plan.changed:
                 raise UserError(
                     "Every categorization rule already has its requested state.",

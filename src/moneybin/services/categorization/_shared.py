@@ -10,8 +10,11 @@ collaborators. Lives at the package leaves so any collaborator (and
 from __future__ import annotations
 
 import difflib
+import hashlib
+import json
 import logging
 import re
+from decimal import Decimal
 from functools import lru_cache
 from typing import Any, Literal, NamedTuple
 
@@ -24,6 +27,8 @@ from moneybin.limits import (
     IDENTIFIER_MAX_LEN,
     MERCHANT_NAME_MAX_LEN,
     MERCHANT_PATTERN_MAX_LEN,
+    RULE_PRIORITY_MAX,
+    RULE_PRIORITY_MIN,
 )
 from moneybin.tables import CATEGORIES
 from moneybin.vocabulary import (
@@ -148,6 +153,95 @@ def is_unselective_contains(pattern: str, match_type: str) -> bool:
     return len(pattern) < min_len
 
 
+class MatcherKey(NamedTuple):
+    """Canonical identity of a rule's matcher — what "the same rule" means.
+
+    Two rules whose keys compare equal fire on exactly the same transactions,
+    so they may not disagree about the category. Built only by
+    :func:`canonical_matcher_key`; every creation and activation path compares
+    rules through it rather than re-deriving its own notion of sameness.
+
+    Amount bounds are rendered at the storage grain (``DECIMAL(18,2)``) as
+    strings so ``5``, ``5.0`` and ``Decimal("5.00")`` collapse to one value,
+    and ``None`` (no bound) stays distinct from ``0``.
+    """
+
+    merchant_pattern: str
+    match_type: str
+    min_amount: str | None
+    max_amount: str | None
+    account_id: str | None
+
+
+# app.categorization_rules stores both bounds as DECIMAL(18,2).
+_AMOUNT_GRAIN = Decimal("0.01")
+
+
+def _canonical_amount(value: Decimal | float | int | None) -> str | None:
+    """Render an amount bound at the column's grain, or ``None`` for unbounded."""
+    if value is None:
+        return None
+    return str(Decimal(str(value)).quantize(_AMOUNT_GRAIN))
+
+
+def canonical_matcher_key(
+    *,
+    merchant_pattern: str,
+    match_type: str,
+    min_amount: Decimal | float | int | None = None,
+    max_amount: Decimal | float | int | None = None,
+    account_id: str | None = None,
+) -> MatcherKey:
+    r"""Return the canonical matcher identity for one rule.
+
+    ``name`` and ``priority`` are metadata, not identity, so they are absent:
+    two rules differing only in those fire on the same rows.
+
+    Every normalization here mirrors ``matches_pattern`` exactly, because the
+    invariant is that equal keys fire on equal rows:
+
+    - ``.lower()``, not ``.casefold()``. ``matches_pattern`` lowercases both
+      sides; casefold is stricter and maps ``ß`` onto ``ss``, so it would merge
+      two patterns the matcher keeps apart.
+    - The pattern is **not** stripped. ``matches_pattern`` compares the stored
+      pattern as written, so ``contains "CAFE "`` matches strictly fewer
+      descriptions than ``contains "CAFE"`` — they are different matchers, not
+      two spellings of one. (``create_rules`` still strips at its Pydantic
+      boundary; the declarative target contract does not.)
+    - ``account_id`` is compared exactly, as ``match_first_rule`` compares it.
+
+    Case folding applies to ``contains`` and ``exact`` only. ``matches_pattern``
+    compiles a regex with ``re.IGNORECASE``, so a regex is case-insensitive at
+    match time too — but lowercasing the *pattern* rewrites its escapes: ``\D``
+    (non-digit) becomes ``\d`` (digit), silently inverting the character class
+    and making two opposite rules look identical. Regex patterns are compared
+    verbatim.
+    """
+    normalized_type = match_type.strip().casefold()
+    return MatcherKey(
+        merchant_pattern=merchant_pattern
+        if normalized_type == "regex"
+        else merchant_pattern.lower(),
+        match_type=normalized_type,
+        min_amount=_canonical_amount(min_amount),
+        max_amount=_canonical_amount(max_amount),
+        account_id=account_id,
+    )
+
+
+def matcher_digest(key: MatcherKey) -> str:
+    """Return a stable 64-char SHA-256 over a canonical matcher key.
+
+    The storable form of matcher identity: ``app.rule_conflicts`` keys a
+    recorded conflict by this digest, and the review surface joins on it. JSON
+    encoding keeps the fields unambiguous — no separator can be forged from
+    inside a pattern, and ``None`` (unbounded) is distinct from any string.
+    """
+    return hashlib.sha256(
+        json.dumps(list(key), ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def validate_match_type(match_type: str) -> MatchType:
     """Validate and narrow a match_type string at a service-boundary call site."""
     if match_type not in _VALID_MATCH_TYPES:
@@ -226,7 +320,7 @@ class CategorizationRuleInput(BaseModel):
         min_length=1,
         max_length=IDENTIFIER_MAX_LEN,
     )
-    priority: int = Field(default=100, ge=0, le=10_000)
+    priority: int = Field(default=100, ge=RULE_PRIORITY_MIN, le=RULE_PRIORITY_MAX)
 
 
 def _validate_items[T: BaseModel](

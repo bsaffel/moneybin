@@ -23,6 +23,8 @@ from moneybin.limits import (
     MERCHANT_NAME_MAX_LEN,
     MERCHANT_PATTERN_MAX_LEN,
     NOTE_MAX_LEN,
+    RULE_PRIORITY_MAX,
+    RULE_PRIORITY_MIN,
     SLUG_MAX_LEN,
 )
 from moneybin.vocabulary import CategorizationMatchType, ConsentFeatureCategory
@@ -313,11 +315,61 @@ class AutoRuleDecisionRequest(_StrictRequest):
         return self
 
 
+class RuleConflictDecisionRequest(_StrictRequest):
+    """Resolve one categorization-rule conflict.
+
+    Not an accept/reject axis: two active rules claim the same matcher, so the
+    caller says which one survives. ``replace`` supersedes the existing rule
+    with the proposal, ``reprioritize`` activates the proposal beside it at an
+    explicit priority, ``cancel`` leaves live state alone.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra=_conditional_schema_extra(
+            _conditional_schema_branch(
+                "decision",
+                "reprioritize",
+                required=("priority",),
+            ),
+            _conditional_schema_branch(
+                "decision",
+                "replace",
+                forbidden=("priority",),
+            ),
+            _conditional_schema_branch(
+                "decision",
+                "cancel",
+                forbidden=("priority",),
+            ),
+        ),
+    )
+
+    kind: Literal["rule_conflict"]
+    decision_id: IdentifierString
+    decision: Literal["replace", "reprioritize", "cancel"]
+    priority: (
+        Annotated[int, Field(strict=True, ge=RULE_PRIORITY_MIN, le=RULE_PRIORITY_MAX)]
+        | None
+    ) = None
+
+    @model_validator(mode="after")
+    def _validate_decision(self) -> Self:
+        if self.decision == "reprioritize" and self.priority is None:
+            raise ValueError("Reprioritize requires priority")
+        if self.decision != "reprioritize" and self.priority is not None:
+            raise ValueError("Only reprioritize accepts priority")
+        return self
+
+
 OrdinaryReviewDecisionRequest = CategorizationDecisionRequest | MatchDecisionRequest
 
 
 ReviewDecisionRequest = Annotated[
-    OrdinaryReviewDecisionRequest | AutoRuleDecisionRequest,
+    OrdinaryReviewDecisionRequest
+    | AutoRuleDecisionRequest
+    | RuleConflictDecisionRequest,
     Field(discriminator="kind"),
 ]
 
@@ -582,7 +634,9 @@ class CategorizationRuleTarget(_StrictRequest):
     matcher: CategorizationRuleMatch | None = None
     category: CategoryName | None = None
     subcategory: CategoryName | None = None
-    priority: int | None = Field(default=None, ge=0, le=10_000)
+    priority: int | None = Field(
+        default=None, ge=RULE_PRIORITY_MIN, le=RULE_PRIORITY_MAX
+    )
 
     @model_validator(mode="after")
     def _validate_state(self) -> Self:

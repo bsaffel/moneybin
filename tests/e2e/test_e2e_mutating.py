@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -2086,3 +2087,88 @@ class TestDemo:
         payload = json.loads(second.stdout)["data"]
         assert payload["transaction_count"] > 0
         assert payload["doctor_failing"] == 0, payload["doctor_failing_names"]
+
+
+class TestCategorizeRulesResolveCLI:
+    """`moneybin transactions categorize rules resolve` — decide a rule conflict."""
+
+    @staticmethod
+    def _create(env: dict[str, str], name: str, category: str) -> dict[str, Any]:
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            name,
+            "--pattern",
+            "CONFLICTPATTERN",
+            "--category",
+            category,
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        return json.loads(result.stdout)
+
+    def test_second_category_is_refused_then_replaced(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "rulesresolve-replace", _mutating_profile_template
+        )
+        first = self._create(env, "conflict-a", "Other")
+        assert first["status"] == "ok"
+        second = self._create(env, "conflict-b", "Shopping")
+
+        assert second["status"] == "conflict"
+        assert second["data"]["created"] == 0
+        conflict_id = str(second["data"]["conflict_ids"][0])
+
+        listed = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "list-conflicts",
+            "--output",
+            "json",
+            env=env,
+        )
+        listed.assert_success()
+        assert json.loads(listed.stdout)["data"][0]["conflict_id"] == conflict_id
+
+        resolved = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "resolve",
+            conflict_id,
+            "--replace",
+            "--yes",
+            "--output",
+            "json",
+            env=env,
+        )
+        resolved.assert_success()
+        row = json.loads(resolved.stdout)["data"][0]
+        assert row["resolution"] == "replace"
+        assert row["superseded_rule_ids"] == [first["data"]["rule_ids"][0]]
+
+    def test_resolve_refuses_a_missing_batch_file(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "rulesresolve-nofile", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "resolve",
+            "--from-file",
+            str(tmp_path / "absent.json"),
+            "--yes",
+            env=env,
+        )
+        assert result.exit_code == 2, result.output
+        assert "Traceback (most recent call last)" not in result.stderr

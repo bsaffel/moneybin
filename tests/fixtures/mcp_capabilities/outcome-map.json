@@ -662,18 +662,21 @@
       "merchants links pending",
       "merchants links history",
       "investments securities links pending",
-      "investments securities links history"
+      "investments securities links history",
+      "transactions categorize rules list-conflicts"
     ],
     "service_methods": [
       "moneybin.services.review_service.ReviewService.status",
       "moneybin.services.matching_service.MatchingService.get_log",
       "moneybin.services.categorization.CategorizationService.list_uncategorized_transactions",
       "moneybin.services.auto_rule_service.AutoRuleService.review",
-      "moneybin.services.auto_rule_service.AutoRuleService.list_proposal_history"
+      "moneybin.services.auto_rule_service.AutoRuleService.list_proposal_history",
+      "moneybin.services.categorization.CategorizationService.list_rule_conflicts"
     ],
     "observable_outcomes": [
       "pending queues preserve current IDs, statuses, counts, confidence, and auto-rule blast-radius fields",
-      "auto-rule history preserves terminal proposal IDs, statuses, and promoted rule IDs"
+      "auto-rule history preserves terminal proposal IDs, statuses, and promoted rule IDs",
+      "rule-conflict queues name both rules, the shared matcher, and the category each assigns"
     ],
     "exemption": null
   },
@@ -684,16 +687,19 @@
     ],
     "cli_commands": [
       "transactions matches set",
-      "transactions categorize auto accept"
+      "transactions categorize auto accept",
+      "transactions categorize rules resolve"
     ],
     "service_methods": [
       "moneybin.services.review_decisions_service.ReviewDecisionsService.apply_ordinary",
       "moneybin.services.auto_rule_service.AutoRuleService.accept",
-      "moneybin.services.auto_rule_service.AutoRuleService.decide"
+      "moneybin.services.auto_rule_service.AutoRuleService.decide",
+      "moneybin.services.categorization.CategorizationService.resolve_rule_conflicts"
     ],
     "observable_outcomes": [
       "ordinary match or auto-rule decisions reach the same accepted/rejected state and audit operation",
-      "auto-rule decisions preserve approved, rejected, skipped, newly-categorized, and rule-ID aggregate impact"
+      "auto-rule decisions preserve approved, rejected, skipped, newly-categorized, and rule-ID aggregate impact",
+      "rule-conflict resolutions reach the same replaced, reprioritized, or cancelled rule state and audit operation, and refuse a stale conflict"
     ],
     "exemption": null
   },

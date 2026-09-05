@@ -29,6 +29,7 @@ from moneybin.privacy.payloads.categorize import (
     AutoAcceptPayload,
     AutoReviewPayload,
     AutoStatsPayload,
+    CategorizationRuleConflictSummary,
     CategorizationRulesCoarsePayload,
     CategorizationRulesCurrentView,
     CategorizationRulesHistoryView,
@@ -166,6 +167,38 @@ def _apply_rule_targets(
     ]
 
 
+def _rule_conflict_envelope(
+    plan: RuleTargetPlan,
+) -> ResponseEnvelope[CategorizationRulesSetPayload]:
+    """Record the refused targets and return the conflict-status envelope."""
+    with get_database(read_only=False) as db:
+        CategorizationService(db).record_rule_conflicts(plan.conflicts, actor="mcp")
+    return build_envelope(
+        data=CategorizationRulesSetPayload(
+            results=[],
+            operation_id=current_operation_id(),
+            conflicts=[
+                CategorizationRuleConflictSummary(
+                    conflict_id=conflict.conflict_id,
+                    existing_rule_id=conflict.existing_rule_id,
+                    existing_category=conflict.existing_category,
+                    existing_subcategory=conflict.existing_subcategory,
+                    proposed_category=conflict.proposed_category,
+                    proposed_subcategory=conflict.proposed_subcategory,
+                    reason=conflict.why(),
+                )
+                for conflict in plan.conflicts
+            ],
+        ),
+        conflict=True,
+        actions=[
+            "Use reviews(kind='rule_conflicts') to inspect the conflict",
+            "Use reviews_decide with kind='rule_conflict' to replace, "
+            "reprioritize, or cancel",
+        ],
+    )
+
+
 @mcp_tool(domain="categorize", read_only=False, destructive=True, idempotent=True)
 async def transactions_categorize_rules_set_coarse(
     rules: list[CategorizationRuleTarget],
@@ -178,6 +211,11 @@ async def transactions_categorize_rules_set_coarse(
             code=error_codes.MUTATION_INVALID_INPUT,
         )
     plan = await asyncio.to_thread(_preview_rule_targets, rules)
+    if plan.conflicts:
+        # Refuse the batch whole and record the conflicts for review. Dropping
+        # only the conflicting member would report a target state that was
+        # never applied, and this tool's contract is atomic.
+        return await asyncio.to_thread(_rule_conflict_envelope, plan)
     expected_binding = _rule_targets_binding(rules, plan)
     if confirmation_token is not None and not plan.destructive:
         raise UserError(
@@ -264,7 +302,10 @@ def register_categorization_coarse_writes(mcp: FastMCP) -> None:
         "require rule_id and forbid replacement fields. The tool advertises its "
         "maximum destructive risk, but asks for exact payload-bound confirmation "
         "only before a present rule is hard-deleted. Rule removal is recoverable "
-        "with system_audit_undo(operation_id=...).",
+        "with system_audit_undo(operation_id=...). A target matching the same "
+        "transactions as an active rule under a different category refuses the "
+        "whole batch: status='conflict', nothing written, and data.conflicts "
+        "names each one for reviews(kind='rule_conflicts').",
         privacy_actor="transactions_categorize_rules_set",
     )
 
@@ -471,6 +512,12 @@ def transactions_categorize_rules_create(
     explained in ``error_details``. Fix by using ``match_type="exact"`` for
     a short pattern, or pass ``allow_broad=True`` to accept the risk.
 
+    A rule matching the same transactions as an active rule under a different
+    category is a **conflict**: it is not created, the envelope carries
+    ``status="conflict"``, and the refusal is queued for
+    ``reviews(kind='rule_conflicts')``. Sameness is canonical — a case
+    variant of an existing pattern is the same matcher.
+
     Args:
         rules: List of rule dicts.
         reapply: If True, retroactively apply the new rules to all
@@ -488,12 +535,21 @@ def transactions_categorize_rules_create(
             validated, reapply=reapply, actor="mcp", allow_broad=allow_broad
         )
     result.merge_parse_errors(parse_errors)
+    actions = ["Use transactions_categorize_rules to review all rules"]
+    if result.conflicts:
+        actions.insert(
+            0,
+            "Use reviews(kind='rule_conflicts') to decide the refused rule(s)",
+        )
     return build_envelope(
         data=result.to_payload(),
         total_count=len(rules),
-        actions=[
-            "Use transactions_categorize_rules to review all rules",
-        ],
+        # `status="conflict"` promises the call changed nothing. This batch
+        # routes each row independently, so one call can create a rule *and*
+        # refuse another; the status only claims the refusal when nothing was
+        # written, and `data.conflicts` reports it either way.
+        conflict=result.conflicts > 0 and result.created == 0,
+        actions=actions,
     )
 
 

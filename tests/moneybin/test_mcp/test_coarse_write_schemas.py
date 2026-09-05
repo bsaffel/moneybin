@@ -381,7 +381,10 @@ def test_annotation_schema_requires_variant_fields() -> None:
 @pytest.mark.parametrize(
     ("contract", "tags"),
     [
-        (ReviewDecisionRequest, {"auto_rule", "categorization", "match"}),
+        (
+            ReviewDecisionRequest,
+            {"auto_rule", "categorization", "match", "rule_conflict"},
+        ),
         (
             IdentityDecisionRequest,
             {"account_link", "merchant_link", "security_link"},
@@ -896,6 +899,7 @@ async def test_live_standard_write_discriminators_render_exactly() -> None:
         "auto_rule": {"kind", "decision_id", "decision"},
         "categorization": {"kind", "decision_id", "decision"},
         "match": {"kind", "decision_id", "decision"},
+        "rule_conflict": {"kind", "decision_id", "decision"},
     }
     assert _rendered_variants(identities.inputSchema, collection="decisions") == {
         "account_link": {"kind", "decision_id", "decision"},

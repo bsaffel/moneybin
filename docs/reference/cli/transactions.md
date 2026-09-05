@@ -135,7 +135,7 @@ Usage: `moneybin transactions categorize [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin transactions categorize improve-ai`](#moneybin-transactions-categorize-improve-ai) | Re-categorize AI-guessed transactions to confident Plaid provider categories. |
 | [`moneybin transactions categorize assist`](#moneybin-transactions-categorize-assist) | Return uncategorized transactions as PII-scrubbed records for LLM categorization. |
 | [`moneybin transactions categorize stats`](#moneybin-transactions-categorize-stats) | Show categorization coverage summary. |
-| [`moneybin transactions categorize rules`](#moneybin-transactions-categorize-rules) | Rule management (list, apply, create, delete) |
+| [`moneybin transactions categorize rules`](#moneybin-transactions-categorize-rules) | Rule management (list, apply, create, delete, resolve conflicts) |
 | [`moneybin transactions categorize auto`](#moneybin-transactions-categorize-auto) | Auto-rule proposal workflow |
 
 ## moneybin transactions categorize export-uncategorized
@@ -350,7 +350,7 @@ Usage: `moneybin transactions categorize stats [OPTIONS]`
 
 ## moneybin transactions categorize rules
 
-Rule management (list, apply, create, delete)
+Rule management (list, apply, create, delete, resolve conflicts)
 
 Usage: `moneybin transactions categorize rules [OPTIONS] COMMAND [ARGS]...`
 
@@ -362,6 +362,8 @@ Usage: `moneybin transactions categorize rules [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin transactions categorize rules apply`](#moneybin-transactions-categorize-rules-apply) | Run all active rules against uncategorized transactions. |
 | [`moneybin transactions categorize rules create`](#moneybin-transactions-categorize-rules-create) | Create one or more categorization rules. |
 | [`moneybin transactions categorize rules delete`](#moneybin-transactions-categorize-rules-delete) | Soft-delete (deactivate) a categorization rule by ID. |
+| [`moneybin transactions categorize rules list-conflicts`](#moneybin-transactions-categorize-rules-list-conflicts) | Show categorization rules refused because another rule owns the matcher. |
+| [`moneybin transactions categorize rules resolve`](#moneybin-transactions-categorize-rules-resolve) | Resolve categorization rule conflicts. |
 
 ## moneybin transactions categorize rules list
 
@@ -439,6 +441,51 @@ Usage: `moneybin transactions categorize rules delete [OPTIONS] RULE_ID`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--reapply` | flag |  | Re-evaluate transactions previously categorized by this rule |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+
+## moneybin transactions categorize rules list-conflicts
+
+Show categorization rules refused because another rule owns the matcher.
+
+Usage: `moneybin transactions categorize rules list-conflicts [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--wide` | flag |  | Render every column, not just the default set. |
+
+## moneybin transactions categorize rules resolve
+
+Resolve categorization rule conflicts.
+
+Single conflict: pass CONFLICT_ID with exactly one of --replace,
+--reprioritize N, or --cancel. Batch: pass --from-file pointing at a JSON
+list of resolution dicts; the whole batch applies atomically or not at all.
+
+A conflict recorded against a rule that has since been edited is refused
+as stale — re-read the queue with `rules list-conflicts` and decide again.
+
+Usage: `moneybin transactions categorize rules resolve [OPTIONS] [CONFLICT_ID]`
+
+**Arguments**
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `[CONFLICT_ID]` | text | no | Conflict ID to resolve (omit when --from-file is used) |
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--replace` | flag |  | Deactivate the existing rule and activate the refused one |
+| `--reprioritize` | int (≥ 0, ≤ 10000) |  | Activate the refused rule beside the existing one at this priority (0-10000, lower runs first) |
+| `--cancel` | flag |  | Discard the refused rule and keep live state |
+| `--from-file` | path |  | JSON file with a list of {"conflict_id", "resolution", "priority"} dicts |
+| `--yes, -y` | flag |  | Skip confirmation |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 

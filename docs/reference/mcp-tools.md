@@ -37,7 +37,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`refresh_run`](#refresh_run) | Run the post-load refresh pipeline. | write, idempotent | at least `medium` |
 | [`reports`](#reports) | Browse registered financial reports or run one by stable report ID. | read-only, idempotent | up to `critical` |
 | [`reviews`](#reviews) | Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. | read-only, idempotent | up to `high` |
-| [`reviews_decide`](#reviews_decide) | Accept or reject an atomic batch of transaction, match, or auto-rule review decisions. | write, idempotent | at least `low` |
+| [`reviews_decide`](#reviews_decide) | Accept or reject an atomic batch of transaction, match, auto-rule, or rule-conflict review decisions. | write, idempotent | at least `low` |
 | [`sql_query`](#sql_query) | Execute a read-only SQL query against the database. | read-only, idempotent | up to `critical` |
 | [`sql_schema`](#sql_schema) | Return the curated database schema. | read-only, idempotent | up to `critical` |
 | [`sync_disconnect`](#sync_disconnect) | Disconnect one institution or clear profile-scoped sync credentials. | write, destructive, not idempotent, open world | at least `low` |
@@ -541,26 +541,26 @@ Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 ### reviews
 
-Return exact review counts or one normalized pending/history queue with deterministic cursor pagination.
+Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. kind='rule_conflicts' holds categorization rules refused because an active rule already matches the same transactions under a different category; each row names the rule deciding today and the category the refused rule wanted.
 
 Access: read-only, idempotent. Sensitivity: up to `high`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `kind` | one of `summary`, `categorization`, `auto_rules`, `matches`, `account_links`, `merchant_links`, `security_links` | `summary` |  |
+| `kind` | one of `summary`, `categorization`, `auto_rules`, `matches`, `rule_conflicts`, `account_links`, `merchant_links`, `security_links` | `summary` |  |
 | `status` | one of `pending`, `history` | `pending` |  |
 | `limit` | integer | `100` | ≥ 1 |
 | `cursor` | string |  |  |
 
 ### reviews_decide
 
-Accept or reject an atomic batch of transaction, match, or auto-rule review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; keep auto-rule and ordinary decisions in separate calls. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed — an accept that loses that tiebreak reads 'reversed'.
+Accept or reject an atomic batch of transaction, match, auto-rule, or rule-conflict review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; kind='rule_conflict' takes replace (supersede the existing rule), reprioritize (activate beside it at an explicit priority), or cancel, writing app.categorization_rules and app.rule_conflicts — reverse either with system_audit_undo. Keep each kind in its own call. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed — an accept that loses that tiebreak reads 'reversed'.
 
 Access: write, idempotent. Sensitivity: at least `low`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `decisions` | array of one of `categorization`, `match`, `auto_rule` |  | required |
+| `decisions` | array of one of `categorization`, `match`, `auto_rule`, `rule_conflict` |  | required |
 
 #### Variants of `decisions`
 
@@ -597,6 +597,22 @@ Accept or reject one auto-generated categorization-rule proposal.
 | `decision_id` | string |  | required; min length 1; max length 64 |
 | `decision` | one of `accept`, `reject` |  | required |
 | `allow_broad` | boolean | `false` | must be `false` when `decision` is `reject` |
+
+##### `rule_conflict`
+
+Resolve one categorization-rule conflict.
+
+Not an accept/reject axis: two active rules claim the same matcher, so the
+caller says which one survives. ``replace`` supersedes the existing rule
+with the proposal, ``reprioritize`` activates the proposal beside it at an
+explicit priority, ``cancel`` leaves live state alone.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `rule_conflict` |  | required |
+| `decision_id` | string |  | required; min length 1; max length 64 |
+| `decision` | one of `replace`, `reprioritize`, `cancel` |  | required |
+| `priority` | integer |  | ≥ 0; ≤ 10000; required when `decision` is `reprioritize`; forbidden when `decision` is `replace` or `cancel` |
 
 ### sql_query
 
@@ -878,7 +894,7 @@ Access: read-only, idempotent. Sensitivity: at least `high`.
 
 ### transactions_categorize_rules_set
 
-Atomically declare categorization rules present, inactive, or absent. Present requires matcher, category, and priority; inactive and absent require rule_id and forbid replacement fields. The tool advertises its maximum destructive risk, but asks for exact payload-bound confirmation only before a present rule is hard-deleted. Rule removal is recoverable with system_audit_undo(operation_id=...).
+Atomically declare categorization rules present, inactive, or absent. Present requires matcher, category, and priority; inactive and absent require rule_id and forbid replacement fields. The tool advertises its maximum destructive risk, but asks for exact payload-bound confirmation only before a present rule is hard-deleted. Rule removal is recoverable with system_audit_undo(operation_id=...). A target matching the same transactions as an active rule under a different category refuses the whole batch: status='conflict', nothing written, and data.conflicts names each one for reviews(kind='rule_conflicts').
 
 Access: write, destructive, idempotent. Sensitivity: at least `low`.
 

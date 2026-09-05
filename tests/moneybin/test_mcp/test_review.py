@@ -41,6 +41,7 @@ from moneybin.protocol.write_contracts import (
     MatchDecisionRequest,
     MerchantLinkDecisionRequest,
     OrdinaryReviewDecisionRequest,
+    RuleConflictDecisionRequest,
     SecurityLinkDecisionRequest,
 )
 from moneybin.repositories.categorization_decisions_repo import (
@@ -427,6 +428,7 @@ def _seed_identity_merchant_transaction(
         "categorization",
         "auto_rules",
         "matches",
+        "rule_conflicts",
         "account_links",
         "merchant_links",
         "security_links",
@@ -467,6 +469,7 @@ async def test_review_summary_returns_exact_kind_status_matrix() -> None:
             "categorization",
             "auto_rules",
             "matches",
+            "rule_conflicts",
             "account_links",
             "merchant_links",
             "security_links",
@@ -825,6 +828,7 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
             "categorization",
             "auto_rules",
             "matches",
+            "rule_conflicts",
             "account_links",
             "merchant_links",
             "security_links",
@@ -881,6 +885,23 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
             "matches",
             "low",
             ["aggregate", "record_id", "timestamp_observability", "txn_type"],
+        ),
+        (
+            "rule_conflicts",
+            # TXN_AMOUNT via the matcher's amount bounds: they are part of
+            # matcher identity, so the queue cannot explain the collision
+            # without them.
+            "high",
+            [
+                "aggregate",
+                "category",
+                "merchant_name",
+                "record_id",
+                "timestamp_observability",
+                "txn_amount",
+                "txn_type",
+                "user_note",
+            ],
         ),
         (
             "account_links",
@@ -3575,3 +3596,123 @@ async def test_identity_preview_describes_no_merge_for_a_reject(
     ])
 
     assert preview.merges == ()
+
+
+# --- rule conflicts (MB-124) ------------------------------------------------
+
+
+def _seed_rule_conflict() -> tuple[str, str]:
+    """Create a rule, then refuse a twin that assigns a different category."""
+    from moneybin.services.categorization import (
+        CategorizationRuleInput,
+        CategorizationService,
+    )
+
+    with get_database(read_only=False) as db:
+        service = CategorizationService(db)
+        created = service.create_rules([
+            CategorizationRuleInput(
+                name="Coffee",
+                merchant_pattern="STARBUCKS",
+                category="Food & Drink",
+            )
+        ])
+        refused = service.create_rules([
+            CategorizationRuleInput(
+                name="Coffee travel",
+                merchant_pattern="STARBUCKS",
+                category="Travel",
+            )
+        ])
+    return created.rule_ids[0], refused.conflict_ids[0]
+
+
+async def test_rule_conflict_queue_names_both_sides() -> None:
+    existing_rule_id, conflict_id = _seed_rule_conflict()
+
+    response = await reviews_coarse(kind="rule_conflicts", status="pending")
+
+    assert response.data.kind == "rule_conflicts"
+    [row] = response.data.rows
+    assert row.decision_id == conflict_id
+    assert row.details.existing_rule_id == existing_rule_id
+    assert row.details.state == "pending"
+    assert row.details.existing_category == "Food & Drink"
+    assert row.details.proposed_category == "Travel"
+    assert row.details.winner_rule_id == existing_rule_id
+
+
+async def test_rule_conflict_queue_points_at_the_right_decision_tool() -> None:
+    _seed_rule_conflict()
+
+    response = await reviews_coarse(kind="rule_conflicts", status="pending")
+
+    assert any("reviews_decide" in action for action in response.actions)
+
+
+async def test_rule_conflict_decision_replaces_the_existing_rule() -> None:
+    existing_rule_id, conflict_id = _seed_rule_conflict()
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            RuleConflictDecisionRequest(
+                kind="rule_conflict", decision_id=conflict_id, decision="replace"
+            )
+        ]
+    )
+
+    assert response.error is None
+    assert response.data.results[0].decision == "replace"
+    assert response.data.results[0].status == "resolved"
+    impact = response.data.rule_conflict_impact
+    assert impact is not None
+    assert impact.resolved == 1
+    assert impact.superseded_rule_ids == [existing_rule_id]
+    assert len(impact.activated_rule_ids) == 1
+
+
+async def test_rule_conflict_history_records_the_decision() -> None:
+    _existing_rule_id, conflict_id = _seed_rule_conflict()
+    await reviews_decide_coarse(
+        decisions=[
+            RuleConflictDecisionRequest(
+                kind="rule_conflict", decision_id=conflict_id, decision="cancel"
+            )
+        ]
+    )
+
+    response = await reviews_coarse(kind="rule_conflicts", status="history")
+
+    [row] = response.data.rows
+    assert row.details.state == "history"
+    assert row.details.resolution == "cancel"
+    assert row.details.resolved_rule_id is None
+
+
+async def test_rule_conflict_batch_refuses_a_mixed_kind() -> None:
+    _existing_rule_id, conflict_id = _seed_rule_conflict()
+    _transaction_id, _categorization_id, match_id, _category = (
+        _seed_ordinary_decisions()
+    )
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            RuleConflictDecisionRequest(
+                kind="rule_conflict", decision_id=conflict_id, decision="cancel"
+            ),
+            MatchDecisionRequest(kind="match", decision_id=match_id, decision="accept"),
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.code == error_codes.MUTATION_INVALID_INPUT
+
+
+async def test_rule_conflict_summary_counts_the_queue() -> None:
+    _seed_rule_conflict()
+
+    response = await reviews_coarse()
+
+    counts = {(count.kind, count.status): count.count for count in response.data.counts}
+    assert counts[("rule_conflicts", "pending")] == 1
+    assert counts[("rule_conflicts", "history")] == 0

@@ -289,6 +289,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **A categorization rule can no longer be created into a shadow.** Two rules
+  sharing a matcher fire on exactly the same transactions, so when they
+  disagreed about the category, priority and creation order silently picked a
+  winner while creation still reported success — sameness is now decided once by
+  a canonical matcher key shared by every activation path, and a same-matcher
+  proposal assigning a different category activates nothing and returns the new
+  `status="conflict"` envelope instead. The proposal is recorded in the new
+  `app.rule_conflicts` table and resolved explicitly — `replace`,
+  `reprioritize`, or `cancel` — through `reviews`/`reviews_decide` or
+  `moneybin transactions categorize rules list-conflicts`/`resolve`. (#540)
+
 - **A missing or locked keychain entry no longer prints a stack trace.**
   `moneybin db info`, `db unlock` and the DuckDB init-script builder read the
   encryption key directly, and the secret-store exceptions had no branch in the

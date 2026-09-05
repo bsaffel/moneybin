@@ -384,6 +384,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   |   |                  --from-file --reapply --allow-broad]
 |   |   |   +-- apply               -- Run rules against uncategorized
 |   |   |   +-- delete <rule_id> [--reapply]
+|   |   |   +-- list-conflicts      -- Rules refused because another rule owns the matcher
+|   |   |   +-- resolve [<conflict_id>] [--replace | --reprioritize N | --cancel]
+|   |   |   |           [--from-file] [--yes]
 |   |   +-- auto                    -- Auto-rule proposals workflow
 |   |   |   +-- review [--limit N]
 |   |   |   +-- accept [--accept ID ...] [--reject ID ...] [--accept-all] [--reject-all]

@@ -1,4 +1,4 @@
-"""Dependency-neutral field-length caps.
+"""Dependency-neutral field bounds.
 
 A cap belongs to two layers at once: the request contract declares it as a
 ``max_length``, and the service validator enforces it on the way to DuckDB,
@@ -6,6 +6,9 @@ whose ``VARCHAR`` is unbounded. Homed beside ``vocabulary`` so both can read
 the same number without either importing the other — a contract that reached
 into ``services`` for its own bounds would invert the layering, and a second
 copy of the number is how the two spellings drift apart.
+
+The same argument holds for a numeric range that more than one boundary has to
+enforce, so those live here too.
 """
 
 IDENTIFIER_MAX_LEN = 64
@@ -36,3 +39,8 @@ REPORT_PARAMS_MAX_LEN = 4_000
 #: around sixty ordinary one-sentence ones — well past any report that has had a
 #: human confirm a downgrade per column.
 REPORT_DOWNGRADES_MAX_LEN = 8_000
+#: Categorization-rule priority, lower runs first. Declared once because four
+#: boundaries enforce it — the rule-creation model, the declarative target
+#: contract, the MCP conflict-resolution request, and both CLI resolution paths.
+RULE_PRIORITY_MIN = 0
+RULE_PRIORITY_MAX = 10_000
