@@ -17,7 +17,11 @@ from decimal import ROUND_HALF_UP, Decimal
 
 import pandas as pd
 
-from moneybin.investments.cost_basis import LedgerEvent, compute_lots_and_gains
+from moneybin.investments.cost_basis import (
+    LedgerEvent,
+    PairedTransfer,
+    compute_lots_and_gains,
+)
 from moneybin.services.currency_service import last_publication_day
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
@@ -96,6 +100,23 @@ class ForeignSecuritySale:
 
 
 @dataclass(frozen=True)
+class CurrencyTransfer:
+    """One accepted same-currency movement between two Accounts."""
+
+    transfer_id: str
+    source_transaction_id: str
+    destination_transaction_id: str
+    source_account_id: str
+    destination_account_id: str
+    source_date: date
+    destination_date: date
+    quantity: Decimal
+    currency_code: str
+    home_currency: str | None
+    updated_at: datetime | None
+
+
+@dataclass(frozen=True)
 class CurrencyLotRow:
     """One public Currency-lot row derived from the private engine key."""
 
@@ -103,6 +124,7 @@ class CurrencyLotRow:
     account_id: str
     source_conversion_id: str | None
     source_investment_transaction_id: str | None
+    source_transfer_id: str | None
     currency_code: str | None
     acquisition_type: str
     cost_basis_method: str
@@ -793,8 +815,16 @@ def _load_materialized_conversions(
     ]
 
 
-def _public_lot_id(account_id: str, currency: str | None, source_event_id: str) -> str:
+def _public_lot_id(
+    account_id: str,
+    currency: str | None,
+    source_event_id: str,
+    *,
+    source_transfer_id: str | None = None,
+) -> str:
     raw = f"{account_id}|{currency}|{source_event_id}"
+    if source_transfer_id is not None:
+        raw = f"{raw}|{source_transfer_id}"
     return "clot_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -1001,6 +1031,7 @@ def _incomplete_lot(
         home_currency=metadata.home_currency,
         source_conversion_id=metadata.source_conversion_id,
         source_investment_transaction_id=metadata.source_investment_transaction_id,
+        source_transfer_id=None,
         basis_incomplete=True,
         coverage_status="incomplete",
         coverage_reason=reason,
@@ -1044,12 +1075,15 @@ def derive_currency_accounting(
     conversions: Sequence[CurrencyConversionRow],
     security_sales: Sequence[ForeignSecuritySale],
     account_methods: Mapping[str, str | None],
+    *,
+    transfers: Sequence[CurrencyTransfer] = (),
 ) -> CurrencyAccountingResult:
-    """Adapt Currency events to the unchanged cost-basis engine."""
+    """Adapt Currency events and accepted Transfers to the cost-basis engine."""
     return _derive_currency_accounting(
         conversions,
         security_sales,
         account_methods,
+        transfers=transfers,
         account_method_updated_at={},
     )
 
@@ -1059,9 +1093,11 @@ def _derive_currency_accounting(
     security_sales: Sequence[ForeignSecuritySale],
     account_methods: Mapping[str, str | None],
     *,
+    transfers: Sequence[CurrencyTransfer] = (),
     account_method_updated_at: Mapping[str, datetime],
 ) -> CurrencyAccountingResult:
     event_rows: list[tuple[LedgerEvent, _EventMetadata]] = []
+    engine_transfers: list[PairedTransfer] = []
     incomplete_sales: list[tuple[LedgerEvent, _EventMetadata, str]] = []
     for conversion in conversions:
         event_rows.extend(_conversion_events(conversion))
@@ -1080,6 +1116,73 @@ def _derive_currency_accounting(
             incomplete_sales.append((event, metadata, reason))
         else:
             event_rows.append((event, metadata))
+    for transfer in transfers:
+        if not _valid_currency(transfer.currency_code) or (
+            _valid_currency(transfer.home_currency)
+            and transfer.currency_code == transfer.home_currency
+        ):
+            continue
+        source_event = _event(
+            transfer.source_transaction_id,
+            account_id=transfer.source_account_id,
+            currency=transfer.currency_code,
+            home_currency=transfer.home_currency,
+            trade_date=transfer.source_date,
+            event_type="transfer_out",
+            quantity=-transfer.quantity,
+            home_value=None,
+        )
+        destination_event = _event(
+            transfer.destination_transaction_id,
+            account_id=transfer.destination_account_id,
+            currency=transfer.currency_code,
+            home_currency=transfer.home_currency,
+            trade_date=transfer.destination_date,
+            event_type="transfer_in",
+            quantity=transfer.quantity,
+            home_value=None,
+        )
+        source_metadata = _EventMetadata(
+            account_id=transfer.source_account_id,
+            currency_code=transfer.currency_code,
+            home_currency=transfer.home_currency,
+            source_conversion_id=None,
+            source_investment_transaction_id=None,
+            acquisition_type=None,
+            quantity=transfer.quantity,
+            home_value=None,
+            coverage_reason=None,
+            valuation_rate=None,
+            valuation_rate_date=None,
+            valuation_source_type=None,
+            updated_at=transfer.updated_at,
+        )
+        destination_metadata = _EventMetadata(
+            account_id=transfer.destination_account_id,
+            currency_code=transfer.currency_code,
+            home_currency=transfer.home_currency,
+            source_conversion_id=None,
+            source_investment_transaction_id=None,
+            acquisition_type="transfer",
+            quantity=transfer.quantity,
+            home_value=None,
+            coverage_reason="incomplete_history",
+            valuation_rate=None,
+            valuation_rate_date=None,
+            valuation_source_type=None,
+            updated_at=transfer.updated_at,
+        )
+        event_rows.extend((
+            (source_event, source_metadata),
+            (destination_event, destination_metadata),
+        ))
+        engine_transfers.append(
+            PairedTransfer(
+                transfer_id=transfer.transfer_id,
+                source_transaction_id=transfer.source_transaction_id,
+                destination_transaction_id=transfer.destination_transaction_id,
+            )
+        )
 
     group_updated_at: dict[tuple[str, str | None], datetime] = {}
     for _event_row, metadata in event_rows:
@@ -1096,6 +1199,22 @@ def _derive_currency_accounting(
     metadata_for = {
         event.investment_transaction_id: metadata for event, metadata in event_rows
     }
+    unsupported_transfer_ids = {
+        transfer.transfer_id
+        for transfer in transfers
+        if _method(transfer.source_account_id, account_methods)
+        not in {"fifo", "average"}
+        or _method(transfer.destination_account_id, account_methods)
+        not in {"fifo", "average"}
+    }
+    transfer_updated_at_by_id = {
+        transfer.transfer_id: _latest(
+            transfer.updated_at,
+            account_method_updated_at.get(transfer.source_account_id),
+            account_method_updated_at.get(transfer.destination_account_id),
+        )
+        for transfer in transfers
+    }
     engine_lots, engine_gains = ([], [])
     if event_rows:
         engine_lots, engine_gains = compute_lots_and_gains(
@@ -1104,23 +1223,45 @@ def _derive_currency_accounting(
                 account_id, account_methods
             ),
             selections_for=lambda _disposal_id: [],
+            paired_transfers=engine_transfers,
         )
 
     lots: list[CurrencyLotRow] = []
     engine_lot_ids: dict[str, str] = {}
+    engine_lot_reasons: dict[str, str | None] = {}
+    engine_lot_updated_at: dict[str, datetime | None] = {}
     for lot in engine_lots:
         metadata = metadata_for[lot.source_transaction_id]
+        transfer_lineage = getattr(lot, "transfer_lineage", ())
         public_lot_id = _public_lot_id(
-            lot.account_id, metadata.currency_code, lot.source_transaction_id
+            lot.account_id,
+            metadata.currency_code,
+            lot.source_transaction_id,
+            source_transfer_id=lot.source_transfer_id,
         )
         engine_lot_ids[lot.lot_id] = public_lot_id
         reason = (
             "unsupported_method"
             if lot.cost_basis_method not in {"fifo", "average"}
+            or any(
+                transfer_id in unsupported_transfer_ids
+                for transfer_id in transfer_lineage
+            )
             else metadata.coverage_reason
         )
         if reason is None and lot.basis_incomplete:
             reason = "incomplete_history"
+        engine_lot_reasons[lot.lot_id] = reason
+        lot_updated_at = _latest(
+            group_updated_at.get((lot.account_id, metadata.currency_code)),
+            group_updated_at.get((metadata.account_id, metadata.currency_code)),
+            metadata.updated_at,
+            *(
+                transfer_updated_at_by_id.get(transfer_id)
+                for transfer_id in transfer_lineage
+            ),
+        )
+        engine_lot_updated_at[lot.lot_id] = lot_updated_at
         incomplete = reason is not None
         lots.append(
             CurrencyLotRow(
@@ -1128,7 +1269,11 @@ def _derive_currency_accounting(
                 account_id=lot.account_id,
                 currency_code=metadata.currency_code,
                 acquisition_date=lot.acquisition_date,
-                acquisition_type=t.cast("str", metadata.acquisition_type),
+                acquisition_type=(
+                    "transfer"
+                    if lot.source_transfer_id is not None
+                    else t.cast("str", metadata.acquisition_type)
+                ),
                 original_quantity=lot.original_quantity,
                 remaining_quantity=lot.remaining_quantity,
                 cost_basis_total=None if incomplete else lot.cost_basis_total,
@@ -1139,13 +1284,11 @@ def _derive_currency_accounting(
                 source_investment_transaction_id=(
                     metadata.source_investment_transaction_id
                 ),
+                source_transfer_id=lot.source_transfer_id,
                 basis_incomplete=incomplete,
                 coverage_status="incomplete" if incomplete else "complete",
                 coverage_reason=reason,
-                updated_at=group_updated_at.get((
-                    metadata.account_id,
-                    metadata.currency_code,
-                )),
+                updated_at=lot_updated_at,
             )
         )
 
@@ -1157,6 +1300,11 @@ def _derive_currency_accounting(
         conversion_id = t.cast("str", metadata.source_conversion_id)
         public_lot_id = engine_lot_ids.get(gain.lot_id)
         reason = metadata.coverage_reason
+        if (
+            reason is None
+            and engine_lot_reasons.get(gain.lot_id) == "unsupported_method"
+        ):
+            reason = engine_lot_reasons.get(gain.lot_id)
         if reason is None and gain.basis_incomplete:
             reason = "negative_inventory" if gain.lot_id == "" else "incomplete_history"
         gains.append(
@@ -1180,10 +1328,13 @@ def _derive_currency_accounting(
                 valuation_source_type=metadata.valuation_source_type,
                 coverage_status="incomplete" if reason else "complete",
                 coverage_reason=reason,
-                updated_at=group_updated_at.get((
-                    metadata.account_id,
-                    metadata.currency_code,
-                )),
+                updated_at=_latest(
+                    group_updated_at.get((
+                        metadata.account_id,
+                        metadata.currency_code,
+                    )),
+                    engine_lot_updated_at.get(gain.lot_id),
+                ),
             )
         )
 
@@ -1290,6 +1441,86 @@ def _load_security_sales(
     return sales
 
 
+def _load_same_currency_transfers(
+    context: ExecutionContext,
+    *,
+    home_currency: str | None,
+    home_updated_at: datetime | None,
+) -> list[CurrencyTransfer]:
+    """Load exact accepted same-currency Transfers from canonical rows."""
+    bridge = context.resolve_table(BRIDGE_TRANSFERS.full_name)
+    transactions = context.resolve_table(FCT_TRANSACTIONS.full_name)
+    match_decisions = MATCH_DECISIONS.full_name
+    audit_log = AUDIT_LOG.full_name
+    frame = context.fetchdf(
+        f"""
+        SELECT bt.transfer_id,
+               debit.transaction_id AS source_transaction_id,
+               credit.transaction_id AS destination_transaction_id,
+               debit.account_id AS source_account_id,
+               credit.account_id AS destination_account_id,
+               debit.transaction_date::VARCHAR AS source_date,
+               credit.transaction_date::VARCHAR AS destination_date,
+               ABS(credit.amount)::VARCHAR AS quantity,
+               debit.currency_code,
+               GREATEST(
+                 debit.updated_at,
+                 credit.updated_at,
+                 COALESCE(decision_audit.mutation_updated_at, md.decided_at)
+               )::VARCHAR AS transfer_updated_at
+        FROM {bridge} AS bt
+        JOIN {transactions} AS debit
+          ON bt.debit_transaction_id = debit.transaction_id
+        JOIN {transactions} AS credit
+          ON bt.credit_transaction_id = credit.transaction_id
+        JOIN {match_decisions} AS md
+          ON bt.transfer_id = md.match_id
+        LEFT JOIN (
+          SELECT target_id, MAX(occurred_at) AS mutation_updated_at
+          FROM {audit_log}
+          WHERE target_schema = 'app'
+            AND target_table = 'match_decisions'
+          GROUP BY target_id
+        ) AS decision_audit
+          ON decision_audit.target_id = md.match_id
+        WHERE debit.currency_code = credit.currency_code
+          AND debit.amount < 0
+          AND credit.amount > 0
+          AND debit.amount + credit.amount = 0
+        ORDER BY bt.transfer_id
+        """  # noqa: S608  # registered/resolved table names, not user input
+    )
+    transfers: list[CurrencyTransfer] = []
+    for record in _records(frame):
+        currency_code = _opt_str(record["currency_code"])
+        if not _valid_currency(currency_code) or currency_code == home_currency:
+            continue
+        source_date = _opt_date(record["source_date"])
+        destination_date = _opt_date(record["destination_date"])
+        quantity = _opt_decimal(record["quantity"])
+        if source_date is None or destination_date is None or quantity is None:
+            continue
+        transfers.append(
+            CurrencyTransfer(
+                transfer_id=str(record["transfer_id"]),
+                source_transaction_id=str(record["source_transaction_id"]),
+                destination_transaction_id=str(record["destination_transaction_id"]),
+                source_account_id=str(record["source_account_id"]),
+                destination_account_id=str(record["destination_account_id"]),
+                source_date=source_date,
+                destination_date=destination_date,
+                quantity=quantity,
+                currency_code=currency_code,
+                home_currency=home_currency,
+                updated_at=_latest(
+                    _opt_timestamp(record["transfer_updated_at"]),
+                    home_updated_at,
+                ),
+            )
+        )
+    return transfers
+
+
 def _load_account_methods(
     context: ExecutionContext,
 ) -> tuple[dict[str, str | None], dict[str, datetime]]:
@@ -1333,9 +1564,15 @@ def load_currency_accounting(
         stored_rate=stored_rate,
     )
     account_methods, account_method_updated_at = _load_account_methods(context)
+    transfers = _load_same_currency_transfers(
+        context,
+        home_currency=home_currency,
+        home_updated_at=home_updated_at,
+    )
     return _derive_currency_accounting(
         conversions,
         sales,
         account_methods,
+        transfers=transfers,
         account_method_updated_at=account_method_updated_at,
     )

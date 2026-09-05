@@ -79,15 +79,35 @@ def _sale(**changes: object) -> sqlmesh_loader.ForeignSecuritySale:
     return sqlmesh_loader.ForeignSecuritySale(**values)
 
 
+def _transfer(**changes: object) -> t.Any:
+    values: dict[str, t.Any] = {
+        "transfer_id": "transfer-eur",
+        "source_transaction_id": "eur-transfer-out",
+        "destination_transaction_id": "eur-transfer-in",
+        "source_account_id": "acct-eur",
+        "destination_account_id": "acct-eur-2",
+        "source_date": date(2026, 2, 1),
+        "destination_date": date(2026, 2, 1),
+        "quantity": D("40.00"),
+        "currency_code": "EUR",
+        "home_currency": "USD",
+        "updated_at": T2,
+    }
+    values.update(changes)
+    return sqlmesh_loader.CurrencyTransfer(**values)
+
+
 def _derive(
     *conversions: t.Any,
     sales: tuple[t.Any, ...] = (),
+    transfers: tuple[t.Any, ...] = (),
     methods: Mapping[str, str | None] | None = None,
 ) -> t.Any:
     return sqlmesh_loader.derive_currency_accounting(
         conversions,
         sales,
         methods or {},
+        transfers=transfers,
     )
 
 
@@ -196,6 +216,185 @@ def test_partial_then_full_foreign_to_home_disposals_use_fifo() -> None:
     ]
     assert all(gain.fee_amount == D("0.00") for gain in result.gains)
     assert all(gain.updated_at == T3 for gain in result.gains)
+
+
+def test_same_currency_transfer_preserves_basis_for_destination_disposal() -> None:
+    disposal = _conversion(
+        conversion_id="fxc_destination_disposal",
+        transfer_pair_id="decision-destination-disposal",
+        from_transaction_id="eur-out-destination",
+        to_transaction_id="usd-in-destination",
+        from_account_id="acct-eur-2",
+        to_account_id="acct-usd",
+        from_date=date(2026, 3, 1),
+        to_date=date(2026, 3, 1),
+        from_amount=D("20.00"),
+        from_currency="EUR",
+        to_amount=D("30.00"),
+        to_currency="USD",
+        executed_rate=D("1.50000000"),
+        home_value=D("30.00"),
+        valuation_rate=D("1.50000000"),
+        valuation_rate_date=date(2026, 3, 1),
+        updated_at=T3,
+    )
+
+    result = _derive(_conversion(), disposal, transfers=(_transfer(),))
+
+    transferred = next(lot for lot in result.lots if lot.account_id == "acct-eur-2")
+    assert transferred.acquisition_date == date(2026, 1, 1)
+    assert transferred.acquisition_type == "transfer"
+    assert transferred.original_quantity == D("40.00")
+    assert transferred.remaining_quantity == D("20.00")
+    assert transferred.cost_basis_total == D("50.00")
+    assert transferred.cost_basis_remaining == D("25.00")
+    assert transferred.source_conversion_id == "fxc_acquire"
+    assert transferred.source_investment_transaction_id is None
+    assert transferred.source_transfer_id == "transfer-eur"
+
+    assert len(result.gains) == 1
+    gain = result.gains[0]
+    assert gain.account_id == "acct-eur-2"
+    assert gain.conversion_id == "fxc_destination_disposal"
+    assert gain.cost_basis == D("25.00")
+    assert gain.gain_loss == D("5.00")
+
+
+@pytest.mark.parametrize("source_method", ["hifo", "specific"])
+def test_same_currency_transfer_preserves_unsupported_source_coverage(
+    source_method: str,
+) -> None:
+    disposal = _conversion(
+        conversion_id="fxc_destination_disposal",
+        from_account_id="acct-eur-2",
+        to_account_id="acct-usd",
+        from_date=date(2026, 3, 1),
+        to_date=date(2026, 3, 1),
+        from_amount=D("20.00"),
+        from_currency="EUR",
+        to_amount=D("30.00"),
+        to_currency="USD",
+        home_value=D("30.00"),
+        updated_at=T3,
+    )
+
+    result = _derive(
+        _conversion(),
+        disposal,
+        transfers=(_transfer(),),
+        methods={"acct-eur": source_method},
+    )
+
+    transferred = next(lot for lot in result.lots if lot.account_id == "acct-eur-2")
+    assert transferred.coverage_reason == "unsupported_method"
+    assert transferred.cost_basis_total is None
+    assert transferred.cost_basis_remaining is None
+    assert result.gains[0].coverage_reason == "unsupported_method"
+    assert result.gains[0].cost_basis is None
+    assert result.gains[0].gain_loss is None
+
+
+def test_underfunded_currency_transfer_keeps_known_slice_and_unknown_remainder() -> (
+    None
+):
+    result = _derive(
+        _conversion(),
+        transfers=(_transfer(quantity=D("100.00")),),
+    )
+
+    destination_lots = [lot for lot in result.lots if lot.account_id == "acct-eur-2"]
+    assert [lot.original_quantity for lot in destination_lots] == [
+        D("80.00"),
+        D("20.00"),
+    ]
+    known = next(lot for lot in destination_lots if lot.coverage_status == "complete")
+    unknown = next(
+        lot for lot in destination_lots if lot.coverage_reason == "incomplete_history"
+    )
+    assert known.cost_basis_total == D("100.00")
+    assert known.source_conversion_id == "fxc_acquire"
+    assert unknown.cost_basis_total is None
+    assert unknown.cost_basis_remaining is None
+    assert unknown.source_conversion_id is None
+    assert unknown.source_transfer_id == "transfer-eur"
+    assert result.gains == ()
+
+
+def test_chained_currency_transfer_replaces_immediate_transfer_provenance() -> None:
+    second = _transfer(
+        transfer_id="transfer-eur-2",
+        source_transaction_id="eur-transfer-out-2",
+        destination_transaction_id="eur-transfer-in-2",
+        source_account_id="acct-eur-2",
+        destination_account_id="acct-eur-3",
+        source_date=date(2026, 3, 1),
+        destination_date=date(2026, 3, 1),
+        quantity=D("40.00"),
+        updated_at=T3,
+    )
+
+    result = _derive(_conversion(), transfers=(_transfer(), second))
+
+    final_lot = next(lot for lot in result.lots if lot.account_id == "acct-eur-3")
+    assert final_lot.source_transfer_id == "transfer-eur-2"
+    assert final_lot.source_conversion_id == "fxc_acquire"
+    assert final_lot.acquisition_date == date(2026, 1, 1)
+    assert final_lot.cost_basis_total == D("50.00")
+
+
+def test_chained_currency_transfer_retains_unsupported_coverage() -> None:
+    second = _transfer(
+        transfer_id="transfer-eur-2",
+        source_transaction_id="eur-transfer-out-2",
+        destination_transaction_id="eur-transfer-in-2",
+        source_account_id="acct-eur-2",
+        destination_account_id="acct-eur-3",
+        source_date=date(2026, 3, 1),
+        destination_date=date(2026, 3, 1),
+        quantity=D("40.00"),
+        updated_at=T3,
+    )
+
+    result = _derive(
+        _conversion(),
+        transfers=(_transfer(), second),
+        methods={"acct-eur": "hifo"},
+    )
+
+    final_lot = next(lot for lot in result.lots if lot.account_id == "acct-eur-3")
+    assert final_lot.coverage_reason == "unsupported_method"
+    assert final_lot.cost_basis_total is None
+    assert final_lot.cost_basis_remaining is None
+
+
+def test_transferred_lot_freshness_includes_corrected_origin() -> None:
+    result = _derive(
+        _conversion(updated_at=T5),
+        transfers=(_transfer(updated_at=T2),),
+    )
+
+    transferred = next(lot for lot in result.lots if lot.account_id == "acct-eur-2")
+    assert transferred.updated_at == T5
+
+
+def test_transferred_lot_freshness_includes_destination_method_change() -> None:
+    result = sqlmesh_loader._derive_currency_accounting(  # pyright: ignore[reportPrivateUsage]
+        (_conversion(updated_at=T1),),
+        (),
+        {"acct-eur-2": "average"},
+        transfers=(_transfer(updated_at=T2),),
+        account_method_updated_at={"acct-eur-2": T5},
+    )
+
+    transferred = next(lot for lot in result.lots if lot.account_id == "acct-eur-2")
+    assert transferred.updated_at == T5
+
+
+def test_home_currency_transfer_stays_out_of_currency_lots() -> None:
+    result = _derive(transfers=(_transfer(currency_code="USD", quantity=D("50.00")),))
+
+    assert result.lots == ()
+    assert result.gains == ()
 
 
 def test_multiple_rates_fifo_consumes_oldest_basis() -> None:
@@ -441,6 +640,7 @@ def test_nonempty_incomplete_engine_lot_maps_to_incomplete_history(
                 "cost_basis_method": "fifo",
                 "source_transaction_id": "fxc_acquire:acquire",
                 "basis_incomplete": True,
+                "source_transfer_id": None,
             },
         )(),
     )
@@ -800,6 +1000,53 @@ class _FakeContext:
         return self.frames.pop(0)
 
 
+def test_same_currency_transfer_loader_reads_exact_foreign_bridge_rows() -> None:
+    context = _FakeContext(
+        pd.DataFrame({
+            "transfer_id": ["transfer-eur", "transfer-usd"],
+            "source_transaction_id": ["eur-out", "usd-out"],
+            "destination_transaction_id": ["eur-in", "usd-in"],
+            "source_account_id": ["acct-eur", "acct-usd"],
+            "destination_account_id": ["acct-eur-2", "acct-usd-2"],
+            "source_date": ["2026-02-01", "2026-02-01"],
+            "destination_date": ["2026-02-02", "2026-02-02"],
+            "quantity": ["40.00", "50.00"],
+            "currency_code": ["EUR", "USD"],
+            "transfer_updated_at": [str(T5), str(T5)],
+        })
+    )
+
+    transfers = sqlmesh_loader._load_same_currency_transfers(  # pyright: ignore[reportPrivateUsage]
+        t.cast(t.Any, context),
+        home_currency="USD",
+        home_updated_at=T1,
+    )
+
+    assert transfers == [
+        sqlmesh_loader.CurrencyTransfer(
+            transfer_id="transfer-eur",
+            source_transaction_id="eur-out",
+            destination_transaction_id="eur-in",
+            source_account_id="acct-eur",
+            destination_account_id="acct-eur-2",
+            source_date=date(2026, 2, 1),
+            destination_date=date(2026, 2, 2),
+            quantity=D("40.00"),
+            currency_code="EUR",
+            home_currency="USD",
+            updated_at=T5,
+        )
+    ]
+    query = context.queries[0].lower()
+    assert "from core.bridge_transfers" in query
+    assert query.count("join core.fct_transactions") == 2
+    assert "debit.currency_code = credit.currency_code" in query
+    assert "debit.amount + credit.amount = 0" in query
+    assert "debit.amount < 0" in query
+    assert "credit.amount > 0" in query
+    assert "http" not in query
+
+
 def test_deleted_account_method_uses_audit_freshness() -> None:
     context = _FakeContext(
         pd.DataFrame(
@@ -841,6 +1088,7 @@ def test_materialized_accounting_reads_follow_registered_table_refs(
         sqlmesh_loader, "FCT_INVESTMENT_TRANSACTIONS", investments, raising=False
     )
     context = _FakeContext(
+        pd.DataFrame(),
         pd.DataFrame(),
         pd.DataFrame(),
         pd.DataFrame(),
@@ -923,7 +1171,7 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
         pd.DataFrame(),
         pd.DataFrame(),
     )
-    accounting_context = _FakeContext(*(pd.DataFrame() for _ in range(9)))
+    accounting_context = _FakeContext(*(pd.DataFrame() for _ in range(10)))
 
     assert sqlmesh_loader.load_conversion_rows(t.cast(t.Any, conversion_context)) == []
     assert sqlmesh_loader.load_currency_accounting(
@@ -991,6 +1239,7 @@ def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -
             "method_updated_at": [str(T4)],
         }),
         pd.DataFrame(columns=t.cast(t.Any, ["target_id", "mutation_updated_at"])),
+        pd.DataFrame(),
     )
 
     result = sqlmesh_loader.load_currency_accounting(t.cast(t.Any, context))
@@ -1004,9 +1253,34 @@ def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -
     assert "http" not in query_text
 
 
+def _empty_transfer_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=t.cast(
+            t.Any,
+            [
+                "transfer_id",
+                "source_transaction_id",
+                "destination_transaction_id",
+                "source_account_id",
+                "destination_account_id",
+                "source_date",
+                "destination_date",
+                "quantity",
+                "currency_code",
+                "transfer_updated_at",
+            ],
+        )
+    )
+
+
 class _RoutingContext:
-    def __init__(self, conversion_frame: pd.DataFrame) -> None:
+    def __init__(
+        self,
+        conversion_frame: pd.DataFrame,
+        transfer_frame: pd.DataFrame | None = None,
+    ) -> None:
         self.conversion_frame = conversion_frame
+        self.transfer_frame = transfer_frame
         self.queries: list[str] = []
         self.resolved_tables: list[str] = []
 
@@ -1019,6 +1293,15 @@ class _RoutingContext:
         normalized = " ".join(sql.lower().split())
         if "from core.bridge_currency_conversions" in normalized:
             return self.conversion_frame
+        if (
+            "from core.bridge_transfers" in normalized
+            and "join core.fct_transactions" in normalized
+        ):
+            return (
+                self.transfer_frame
+                if self.transfer_frame is not None
+                else _empty_transfer_frame()
+            )
         if "from core.bridge_transfers" in normalized:
             return _empty_conversion_frame()
         if "from app.match_decisions" in normalized:
@@ -1111,3 +1394,37 @@ def test_load_currency_accounting_reads_typed_materialized_conversion_rows() -> 
     conversion_query = context.queries[0].lower()
     assert "from_amount::varchar" in conversion_query
     assert "updated_at::varchar as conversion_updated_at" in conversion_query
+
+
+def test_load_currency_accounting_applies_materialized_same_currency_transfer() -> None:
+    conversion = dataclasses.asdict(_conversion())
+    conversion["from_date"] = str(conversion["from_date"])
+    conversion["to_date"] = str(conversion["to_date"])
+    conversion["from_amount"] = str(conversion["from_amount"])
+    conversion["to_amount"] = str(conversion["to_amount"])
+    conversion["executed_rate"] = str(conversion["executed_rate"])
+    conversion["home_value"] = str(conversion["home_value"])
+    conversion["valuation_rate"] = str(conversion["valuation_rate"])
+    conversion["valuation_rate_date"] = str(conversion["valuation_rate_date"])
+    conversion["conversion_updated_at"] = str(conversion.pop("updated_at"))
+    transfer = pd.DataFrame({
+        "transfer_id": ["transfer-eur"],
+        "source_transaction_id": ["eur-transfer-out"],
+        "destination_transaction_id": ["eur-transfer-in"],
+        "source_account_id": ["acct-eur"],
+        "destination_account_id": ["acct-eur-2"],
+        "source_date": ["2026-02-01"],
+        "destination_date": ["2026-02-01"],
+        "quantity": ["40.00"],
+        "currency_code": ["EUR"],
+        "transfer_updated_at": [str(T2)],
+    })
+    context = _RoutingContext(pd.DataFrame([conversion]), transfer)
+
+    result = sqlmesh_loader.load_currency_accounting(t.cast(t.Any, context))
+
+    moved = next(lot for lot in result.lots if lot.account_id == "acct-eur-2")
+    assert moved.source_transfer_id == "transfer-eur"
+    assert moved.source_conversion_id == "fxc_acquire"
+    assert moved.cost_basis_total == D("50.00")
+    assert moved.updated_at == T2

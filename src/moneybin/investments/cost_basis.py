@@ -163,6 +163,7 @@ class Lot:
     source_transaction_id: str
     basis_incomplete: bool
     source_transfer_id: str | None = None
+    transfer_lineage: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,7 @@ class _Slice:
     cost_basis: Decimal
     basis_incomplete: bool
     source_transaction_id: str
+    transfer_lineage: tuple[str, ...] = ()
     proceeds: Decimal = _ZERO_MONEY
 
 
@@ -475,6 +477,7 @@ def _draw_slices(
                 basis_incomplete=lot.basis_incomplete
                 or (pool is not None and pool.basis_incomplete),
                 source_transaction_id=lot.source_transaction_id,
+                transfer_lineage=lot.transfer_lineage,
             )
         )
         remaining -= take
@@ -611,6 +614,7 @@ def _merge_slices_by_lot(slices: list[_Slice]) -> list[_Slice]:
                 cost_basis=s.cost_basis,
                 basis_incomplete=s.basis_incomplete,
                 source_transaction_id=s.source_transaction_id,
+                transfer_lineage=s.transfer_lineage,
             )
         else:
             existing.quantity += s.quantity
@@ -1019,6 +1023,7 @@ def _compute_paired_groups(
                     source_transaction_id=slice_.source_transaction_id,
                     basis_incomplete=slice_.basis_incomplete,
                     source_transfer_id=pair.transfer_id,
+                    transfer_lineage=(*slice_.transfer_lineage, pair.transfer_id),
                 ),
             )
         if unmatched > 0:
@@ -1045,6 +1050,7 @@ def _compute_paired_groups(
                     source_transaction_id=destination.investment_transaction_id,
                     basis_incomplete=True,
                     source_transfer_id=pair.transfer_id,
+                    transfer_lineage=(pair.transfer_id,),
                 ),
             )
 
