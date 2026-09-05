@@ -1,6 +1,6 @@
 ## Writing descriptions and review comments
 
-Adapted from [PAO's PR-writing guidance](https://github.com/bsaffel/personal-agent-os/blob/a732866111247cdcd335f0ffb79640e493736c8c/packages/pao/references/pr-writing.md).
+Adapted from Personal Agent OS (PAO) PR-writing guidance.
 This section is embedded in both hosted review prompts; it requires no local PAO
 installation. Writing guidance grants no authority to post, edit a PR, accept a
 deferral, or merge. The approval contract below remains authoritative.
