@@ -484,6 +484,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 
 ### Added
+- **A getting-started guide and a reports guide, built from real transcripts.**
+  `docs/guides/getting-started.md` walks a clean machine to a first report
+  and a first MCP question, and `docs/guides/reports.md` runs all eight
+  built-in reports on the `family` demo persona and covers the JSON
+  envelope, the saved-report lifecycle, `--display-currency`, the `reports`
+  MCP tool, and `export report`; both are linked from the docs index and the
+  README. (#542)
 - **Three references are generated from the code and pinned by a test.**
   `make generate-docs` renders `docs/reference/cli/` (one page per top-level
   command plus an index) from the Typer command tree,
