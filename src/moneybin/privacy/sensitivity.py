@@ -19,10 +19,13 @@ logger = logging.getLogger(__name__)
 class Sensitivity(StrEnum):
     """Data sensitivity tier a classified response declares.
 
-    Every MCP tool declares its maximum, and the privacy middleware uses it
-    to enforce consent gates and response filtering. The same four values
-    reach the CLI and the reports framework, which read them off
-    ``summary.sensitivity`` on the shared envelope.
+    Every MCP tool declares one of these, and the privacy middleware uses it
+    to enforce consent gates and response filtering. What the declaration
+    binds differs by kind: a statically classified tool declares a floor its
+    response may raise but never lower, while a tool that classifies per call
+    declares a ceiling. The same four values reach the CLI and the reports
+    framework, which read them off ``summary.sensitivity`` on the shared
+    envelope.
 
     See ``mcp-architecture.md`` section 5 for tier definitions.
     """
@@ -40,10 +43,28 @@ _TIER_TO_SENSITIVITY: dict[Tier, Sensitivity] = {
     Tier.CRITICAL: Sensitivity.CRITICAL,
 }
 
+# Sensitivity itself is a StrEnum (its values are the wire literals), so it
+# carries no numeric ordering of its own. Tier is already the codebase's one
+# canonical severity ordering (`privacy/taxonomy.py`) — reuse it instead of
+# defining a second ranking here.
+_SENSITIVITY_TO_TIER: dict[Sensitivity, Tier] = {
+    v: k for k, v in _TIER_TO_SENSITIVITY.items()
+}
+
 
 def tier_to_sensitivity(tier: Tier) -> Sensitivity:
     """Map a privacy ``Tier`` (numeric) to the MCP ``Sensitivity`` enum."""
     return _TIER_TO_SENSITIVITY[tier]
+
+
+def sensitivity_to_tier(sensitivity: Sensitivity) -> Tier:
+    """Map a ``Sensitivity`` back to its ``Tier`` for ordering comparisons.
+
+    Used to floor (never override) one sensitivity value against another —
+    e.g. an envelope's derived sensitivity against a static tool's declared
+    floor — without inventing a second severity ranking beside ``Tier``.
+    """
+    return _SENSITIVITY_TO_TIER[sensitivity]
 
 
 def log_tool_call(tool_name: str, sensitivity: Sensitivity) -> None:
