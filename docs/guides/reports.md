@@ -490,7 +490,7 @@ Accounts:    4
 💡 Run accounts(include_closed=True) to inspect closed or excluded accounts
 ```
 
-Between the table and the hints the command prints the reason, trimmed from the transcript above: `⚠️  no stored USD->EUR rates at all; run 'moneybin refresh' to gather them, and record one with 'moneybin fx set' if refresh reports the pair unsupported`. In JSON the same sentence is `summary.degraded_reason`.
+Between the table and the hints the command prints the reason, trimmed from the transcript above: `⚠️  no stored USD->EUR rates at all; run 'moneybin refresh' to gather them, and record one with 'moneybin fx set' if refresh reports the pair unsupported`. In JSON the same sentence is `summary.degraded_reason`. On this profile that advice does not get you there: `refresh` gathers rates only into a home currency, and only for the currencies your rows hold, so the demo, with no home currency and USD rows alone, never fetches USD to EUR. Either make EUR the home currency (`profile set home_currency EUR`, then `moneybin refresh`) or record the pair yourself with `moneybin fx set`.
 
 Three reports convert, because each of their rows is one event on one date: `large-transactions` at the transaction date, `balance-drift` at the assertion date, `networth` at the balance date. The other five aggregate with the currency in their grouping key, so a row is already a per-currency subtotal and stays one. A single-currency profile never needs any of this; [Features](../features.md#reading-a-report-in-one-currency) has the full rule set, including which anomaly columns a converted read blanks and why.
 
