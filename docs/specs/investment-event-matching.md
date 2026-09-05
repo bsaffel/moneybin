@@ -498,6 +498,13 @@ source_account_key, source_security_key, first_snapshot_source_file, lot_key)`.
 `lot_key` is the existing positional/institution-lot key or the reserved
 residual or position sentinel. The key excludes quantity, basis, and the
 derived reconstruction revision, and mints one stable Golden event and leg id.
+`first_snapshot_source_file` comes from the holdings receipt ranked by
+`(extracted_at ASC, ingestion_sequence ASC)` for the Source origin. The local
+monotonic sequence, not job-id lexical order, breaks equal extraction
+timestamps, so later pulls cannot rotate the retained first-snapshot key.
+Existing holdings receipts receive a one-time deterministic sequence backfill
+in their prior `(source_origin, extracted_at, source_file)` order; this freezes
+the pre-M1J.7 choice without claiming unavailable historical chronology.
 Its revision digests the reconstruction-algorithm version, exact retained first
 snapshot receipt/holding/lot inputs, exact in-window transaction observation
 revisions used to calculate the gap, and canonical-identity dependencies that
@@ -750,13 +757,25 @@ membership set, every required field resolution, and every affected complete
 lot-selection set in one database transaction. Any validation or write failure
 leaves all four unchanged. A stale Proposal cannot be confirmed.
 
-Undo restores the prior active membership and field resolutions and reverses
-each child lot-selection audit event inside the same transaction, recovering
-the exact pre-accept selection sets. A later user mutation of an affected
-selection blocks undo instead of overwriting newer curation. The two Core id
-resolvers change only because active membership changed: ids reactivated by
-undo self-resolve, and no stale forwarding remains. Undo then rebuilds the same
-dependency set.
+Undo never blindly reactivates a historical membership binding. Before any
+write, it reconstructs each pre-accept standalone Source event from its current
+observation revisions and current canonical dependencies, then applies the same
+complete one-to-one semantic correspondence and curation-remap rules as normal
+standalone advancement. When that mapping is complete and unambiguous, undo
+activates a new successor membership revision with the former standalone Golden
+ids, current exact source revisions, and current Account, Security, effective
+currency, and dependency bindings. An unresolved dependency, changed event
+shape, ambiguous semantic-leg mapping, or incomplete curation remap blocks the
+entire undo until the current state can be resolved; obsolete bindings are never
+republished.
+
+The same transaction restores field resolutions and reverses each child
+lot-selection audit event against those successor ids, recovering the exact
+pre-accept selection sets only when they still map completely. A later user
+mutation of an affected selection blocks undo instead of overwriting newer
+curation. The two Core id resolvers change only because the newly bound
+successor memberships became active: those restored ids self-resolve, and no
+stale forwarding remains. Undo then rebuilds the same dependency set.
 
 ### Refresh and failure semantics
 
@@ -891,14 +910,14 @@ fixtures and expected Golden-ledger outcomes.
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; manual correction is unavailable in M1J.7 |
 | Revisions | Identical aggregator re-delivery reuses a version and per-job receipt while preserving its first-ingestion sequence; A→B→A content reuses the immutable A revision but a new receipt makes A current while retaining B in history, including when two jobs share an extraction timestamp; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
-| Opening lots | A reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
+| Opening lots | The retained first holdings snapshot is chosen by `(extracted_at ASC, ingestion_sequence ASC)`, so two pulls with the same extraction timestamp cannot rotate `first_snapshot_source_file`; a reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
 | Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; every active membership stores exact bound Account, Security, effective-currency, and dependency-generation values that Golden projection reads instead of live Raw routing; omitted source currency inherits the canonical account currency; an equivalence merge activates a dependency-only successor binding with stable Golden ids and projection freshness before the route is visible; an Account-currency correction does likewise for affected unreviewed projection while an accepted or multi-source Match retains reviewed bindings and stales; before a non-equivalent rebind, unlink, or split becomes visible, pending and accepted or multi-source Matches stale while a structurally unchanged standalone membership advances with stable Golden ids and a now-unresolved or structurally changed standalone retires; Raw remains unchanged |
-| Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; consolidation-retired event and leg ids forward through the two derived Core views, ids retired without a successor return a terminal `retired` status and null active id, and undo reactivates prior ids as self-maps |
+| Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; consolidation-retired event and leg ids forward through the two derived Core views, ids retired without a successor return a terminal `retired` status and null active id, and undo reactivates prior ids only through new successor memberships rebound to current exact revisions and canonical dependencies; unresolved or ambiguous current bindings block undo |
 | Splits | Normalized contract fixtures pass for supported comparison adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
 | Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
-| Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo; multiple collections converging on one disposal write once only when their complete remapped sets are identical, otherwise acceptance blocks; ambiguous remapping blocks acceptance and later overlapping curation blocks undo |
+| Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo; undo restores against newly bound current-dependency successor memberships rather than obsolete historical bindings; multiple collections converging on one disposal write once only when their complete remapped sets are identical, otherwise acceptance blocks; ambiguous current membership or curation remapping blocks undo, and later overlapping curation blocks undo |
 | Field choices | A date or numeric difference at its tolerance takes the deterministic aggregator default, while an otherwise-eligible native or ratified candidate beyond tolerance requires a choice; missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
 | Field provenance | Explicit curation outranks the default; otherwise present values outrank missing values, aggregator beats manual, and the stable source tuple breaks an aggregator tie, so a basis-bearing manual transfer is not erased by aggregator `NULL` and differing descriptions from two Plaid origins plus input reordering produce one unchanged value and exact provenance without affecting assignment |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
@@ -978,16 +997,22 @@ fixtures and expected Golden-ledger outcomes.
   complete-selection remap after a canonical identity rekey, accepted-Match
   correction using last-reviewed transaction revisions for gap quantity and
   basis until replacement or reversal, and non-current output for an impossible
-  stored selection.
+  stored selection. Two distinct holdings pulls with equal `extracted_at` prove
+  `ingestion_sequence` keeps the first-snapshot key and evidence stable, while
+  same-job replay preserves its sequence.
 - Core id-resolution tests proving current ids self-resolve,
   consolidation-retired event and leg ids forward, terminally retired ids return
-  `retired` with a null active id, and accept followed by undo makes reactivated
-  ids self-resolve without stale forwarding.
+  `retired` with a null active id, and accept followed by undo creates
+  current-dependency successor membership whose restored ids self-resolve
+  without stale forwarding. A non-equivalent identity change after acceptance
+  proves undo never republishes the obsolete binding and blocks when current
+  dependencies or semantic correspondence are unresolved.
 - Lot-selection tests proving acceptance remaps and undo exactly restores a
   complete selection set, identical collections converging on one disposal are
   written once with every before-image retained, differing collections block
   acceptance, ambiguous id remapping blocks acceptance, and newer user curation
-  blocks undo.
+  blocks undo. Undo also blocks atomically when a current-dependency successor
+  membership or its complete curation remap cannot be constructed.
 - Freshness and read-guard tests proving a committed membership change followed
   by a crash or failed rebuild remains pending and blocks investment-dependent
   CLI, MCP, report, canonical bundle export, and SQL reads until every dependent

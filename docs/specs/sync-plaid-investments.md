@@ -490,6 +490,9 @@ newest-snapshot consumer depends on: **no holdings row exists whose
 `(source_origin, source_file)` has no receipt.**
 
 ```sql
+CREATE SEQUENCE IF NOT EXISTS raw.plaid_investment_holdings_snapshot_receipt_sequence
+    START 1;
+
 /* Receipt that an item's holdings were FETCHED, one row per (item, pull) — written even when the item returns ZERO positions. */
 CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings_snapshots (
     source_origin VARCHAR NOT NULL,           -- Plaid item_id; the item that reported (part of the PK)
@@ -503,12 +506,28 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings_snapshots (
         DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
+    ingestion_sequence BIGINT NOT NULL DEFAULT nextval(
+        'raw.plaid_investment_holdings_snapshot_receipt_sequence'
+    ),                                        -- Local monotonic tie-breaker, preserved on replay
     PRIMARY KEY (source_origin, source_file)
 );
 ```
 
 Staged as `prep.stg_plaid__investment_holdings_snapshots` (passthrough — the grain
 is the item and the snapshot, so there is no account or security id to resolve).
+A new receipt receives `ingestion_sequence` only on first insertion; replaying
+the same `(source_origin, source_file)` preserves it. Every consumer selects the
+first snapshot by `(extracted_at ASC, ingestion_sequence ASC)` and the newest by
+`(extracted_at DESC, ingestion_sequence DESC)`. The local sequence is the final
+chronological tie-breaker when distinct pulls share `metadata.synced_at`; job-id
+lexical order never chooses a snapshot.
+
+M1J.7 backfills existing receipts once in deterministic
+`(source_origin, extracted_at, source_file)` order and starts the sequence above
+the assigned maximum. This preserves the shipped deterministic first-snapshot
+choice where history lacks a monotonic order; it does not pretend to recover an
+unknowable delivery order for old equal timestamps. After the cut, the stored
+sequence is authoritative and immutable.
 
 #### `raw.plaid_investment_holding_lots`
 
@@ -966,7 +985,11 @@ from the *newest* snapshot never retroactively rewrites a pre-window lot whose
 basis was known at connect. (The `dim_holdings` reconciliation join, by
 contrast, reads the *newest* snapshot — current position and connect-time
 reconstruction are deliberately different anchors.) `W` is always known, even
-for a security with zero transactions in that first window.
+for a security with zero transactions in that first window. The retained first
+snapshot is the receipt ranked by
+`(extracted_at ASC, ingestion_sequence ASC)` for its `source_origin`, then joined
+to holdings and lots through its `source_file`; tied extraction timestamps
+cannot rotate the anchor.
 
 **Algorithm.** On an account's first successful investments sync, for each
 `(account, security)` the synthetic rows are **opening `transfer_in`**s in
@@ -1113,7 +1136,7 @@ exact for held shares and flagged only where genuinely unrecoverable.
 |---|---|
 | `core.dim_securities` | **None** (stays a catalog view over `app.securities`). The v1 model's `-- Future: UNION ALL resolved securities from prep.stg_plaid__securities` comment is superseded — minting puts every synced security *in* the catalog, so a union would double-count. Update the comment in place. |
 | `core.fct_investment_transactions` | Add **two** Plaid CTEs — `plaid_investment_transactions` (from `prep.stg_plaid__investment_transactions`) **and** `plaid_opening_lots` (from `prep.stg_plaid__opening_lots`, the Requirement 13 bootstrap `transfer_in`s) — both `UNION ALL`'d with the manual staging model (the extension point foundation Requirement 7 reserved). Without the `plaid_opening_lots` branch the bootstrap model is built but never reaches the ledger, so pre-window sells still take the oversold zero-basis path. **New nullable columns** `provider_type VARCHAR`, `provider_subtype VARCHAR` (NULL for manual rows). Plaid transaction rows use Plaid's `investment_transaction_id` as the canonical id; bootstrap rows use their content-hash id (both source-provided, per the column contract). |
-| `core.dim_holdings` | **New nullable reconciliation columns** — `provider_reported_quantity`, `provider_reported_cost_basis`, `provider_reported_value`, `provider_reported_as_of` (= the joined snapshot's `extracted_at`) — LEFT JOINed from `prep.stg_plaid__investment_holdings` **bounded to each item's newest *snapshot***, never "latest row per position" or "latest holdings_date". Which snapshot is newest comes from `prep.stg_plaid__investment_holdings_snapshots` (the `source_file` with `MAX(extracted_at)` per `source_origin`), **not** from the holdings rows themselves — a pull that returns zero positions writes no holdings rows, so a row-derived newest snapshot cannot see it and would keep serving the last non-empty one (see that table). Because the join scopes to one whole snapshot, a position present in an earlier snapshot but omitted from the newest full snapshot — even one pulled the same UTC day, and including the empty snapshot of a fully-liquidated item — has no row in it and correctly shows NULL `provider_reported_*` (itself the reconciliation signal against a nonzero ledger position), instead of a stale survivor masquerading as current. Column comments mark all four explicitly non-authoritative. |
+| `core.dim_holdings` | **New nullable reconciliation columns** — `provider_reported_quantity`, `provider_reported_cost_basis`, `provider_reported_value`, `provider_reported_as_of` (= the joined snapshot's `extracted_at`) — LEFT JOINed from `prep.stg_plaid__investment_holdings` **bounded to each item's newest *snapshot***, never "latest row per position" or "latest holdings_date". Which snapshot is newest comes from `prep.stg_plaid__investment_holdings_snapshots` ranked by `(extracted_at DESC, ingestion_sequence DESC)` per `source_origin`, **not** from the holdings rows themselves — a pull that returns zero positions writes no holdings rows, so a row-derived newest snapshot cannot see it and would keep serving the last non-empty one (see that table). Because the join scopes to one whole snapshot, a position present in an earlier snapshot but omitted from the newest full snapshot — even one pulled the same UTC day, and including the empty snapshot of a fully-liquidated item — has no row in it and correctly shows NULL `provider_reported_*` (itself the reconciliation signal against a nonzero ledger position), instead of a stale survivor masquerading as current. Column comments mark all four explicitly non-authoritative. |
 | `core.fct_investment_lots` / `core.fct_realized_gains` | **No changes.** Derived from the unioned ledger; Plaid rows flow through the existing four-method engine automatically. |
 
 **Cross-source dedup is out of scope here (deferred, with a guard).** The
@@ -1186,6 +1209,7 @@ data still loads.
 |---|---|
 | `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Re-load dedup: same payload twice AND the same provider row re-delivered under a **different** `job_id` both replace, never duplicate (PK scoped by `source_origin`). |
 | M1J.7 transaction revision migration | Future matching slice 1: existing rows become first revisions and receipts with monotonic ingestion sequences; identical content reuses a revision while every distinct sync job records one idempotent receipt; replay preserves the original sequence; changing any matching or Golden-projected value appends a revision; A→B→A selects A from the third receipt without deleting B even when extraction timestamps tie; lineage-only changes do not create content revisions. |
+| Holdings snapshot receipt order | Distinct pulls with equal `metadata.synced_at` receive increasing `ingestion_sequence` values; first-snapshot bootstrap selects the first sequence and newest-snapshot reconciliation selects the last, while same-job replay preserves the stored sequence and cannot rotate either anchor. |
 | `PlaidInvestmentsLoader.load()` — multi-item scoping | A **two-item** golden payload: (1) each item's own `transactions_window_start` (from its per-institution `metadata` result) is stamped onto **that item's** holdings rows, matched by `source_origin` — never one item's window flattened onto another's; (2) two items that share a provider-local `(account_id, security_id)` produce **distinct, non-colliding** `raw.plaid_investment_holdings` and `raw.plaid_investment_holding_lots` rows (PK includes `source_origin`), so neither newest-snapshot reconciliation nor the opening-lot bootstrap conflates them. |
 | `SecurityResolver` | Each ladder rung: adopt existing binding; CUSIP/ISIN exact → auto-bind (exchange irrelevant); ticker match with MIC normalization (`"NASDAQ"`↔`"XNAS"` normalize equal → bind; both-absent → bind on unique ticker; unnormalizable free-text exchange → treated as absent, binds not reviews; both-present-different-MIC → rung 3); **identifier tie** (one CUSIP/ISIN/ticker matching **more than one** catalog entry — exercised at two and at three) → provisional mint + one pending merge decision **per tied candidate** (`identifier_tie`), never auto-pick; **stripped-ticker hit** (`VOD.L`→`VOD`, share-class `HEI.A`→`HEI`, preferred `BAC-PL`→`BAC`) never auto-binds — provisional mint + `ticker_suffix_strip` decision per stem candidate, and a batch carrying both stem and share class mints **two** securities regardless of `security_id` order; fuzzy → provisional mint + bind + pending **merge** decision **per** equally-named catalog entry (a duplicate name never collapses to one); an in-batch provisional mint is an auto-bind target but is **never offered as a merge candidate** to a later row; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
 | Taxonomy mapping | Parametrized over the full mapping table — every Plaid (type, subtype) pair → expected (`type`, `subtype`), including every excluded-at-staging row. |
@@ -1228,13 +1252,13 @@ transactions), which also seed the golden files.
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_transaction_receipts.sql` | DDL — provider-owned raw; per-row, per-pull receipt naming the delivered immutable observation version and sole source of which revision is current |
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings.sql` | DDL — provider-owned raw |
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holding_lots.sql` | DDL — provider-owned raw (per-lot `tax_lots[]` — basis/acquisition source for bootstrap) |
-| `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings_snapshots.sql` | DDL — provider-owned raw; per-item, per-pull holdings receipt, written even when the item reports ZERO positions (the sole source of "which snapshot is newest") |
+| `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings_snapshots.sql` | DDL — provider-owned raw; per-item, per-pull holdings receipt with a replay-stable monotonic ingestion sequence, written even when the item reports ZERO positions (the sole source of first/newest snapshot order) |
 | `src/moneybin/sql/schema/app_security_links.sql` | DDL — cross-cutting `app.*`, registered in `_NON_PROVIDER_SCHEMA_FILES` |
 | `src/moneybin/sql/schema/app_security_link_decisions.sql` | DDL — cross-cutting `app.*` |
 | `src/moneybin/sqlmesh/models/prep/stg_plaid__securities.sql` | Staging view |
 | `src/moneybin/sqlmesh/models/prep/stg_plaid__investment_transactions.sql` | Staging view (incl. split-multiplier conversion, basis→NULL) |
 | `src/moneybin/sqlmesh/models/prep/stg_plaid__investment_holdings.sql` | Staging view |
-| `src/moneybin/sqlmesh/models/prep/stg_plaid__investment_holdings_snapshots.sql` | Staging view (passthrough) — the newest-snapshot source for `core.dim_holdings` and the doctor's holdings checks |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__investment_holdings_snapshots.sql` | Staging view (passthrough) — the sequence-ordered first-snapshot source for opening-lot reconstruction and newest-snapshot source for `core.dim_holdings` and the doctor's holdings checks |
 | `src/moneybin/sqlmesh/models/prep/stg_plaid__opening_lots.sql` | Opening-lot bootstrap anchored to the **first** snapshot per `(account, source_origin)` (`MIN(extracted_at)`): draw the gap `G` from pre-window `tax_lots[]` (dated `< transactions_window_start`) oldest-first, residual `basis_incomplete` dated before `W`, dual-date (trade before `W`, real acquisition date), guards for short/split → synthetic `opening_bootstrap` `transfer_in`s into the ledger union |
 | `seeds/exchange_mic_map.csv` (+ SQLMesh seed model) | MIC↔common-name registry for exchange normalization; the few dozen exchanges a personal portfolio touches, extensible |
 | Migration (next free `V0xx`) | `app.securities.created_by`; new app tables; core column additions |
