@@ -165,7 +165,7 @@ $ uv run moneybin reports recurring
 Using profile: demo
 ```
 
-Empty. `--status` defaults to `active`, and a stream counts as active while its last charge is within 60 days or two cadence intervals, whichever is longer; the demo's data ends on 2025-12-31, so by now every stream has lapsed. On live data the default is what you want. Here, ask for everything:
+Empty. `--status` defaults to `active`, and a stream counts as active while its last charge is within 60 days or two cadence intervals, whichever is longer; the demo's data ends on the last December 31, and this transcript was captured in September, when every stream had lapsed — rerun the demo in January or February and the same command lists them as active. On live data the default is what you want. Here, ask for everything:
 
 ```console
 $ uv run moneybin reports recurring --status all
