@@ -448,7 +448,7 @@ def mcp_tool(
         maximum_sensitivity: Required ceiling for a dynamic-classification tool.
             This is a declared contract for documentation and admission review;
             it does not replace the tool's per-call classification. Static tools
-            derive their maximum from their typed response and must not set it.
+            derive a floor from their typed response and must not set this.
         discloses: Tier this tool shows the caller *outside* its typed response —
             in practice, the text of a confirmation elicitation. The derived tier
             walks the payload, so a prompt rendering transaction dates or a
@@ -571,8 +571,12 @@ def mcp_tool(
             (`classes_for_log`), which is a fixed function of the return type
             with no per-call analogue to floor against (MB-157).
             """
+            # Both kinds read sensitivity off the envelope now: a dynamic tool
+            # set it per call, and a static tool's has been floored by
+            # _stamp_sensitivity on every path that reaches here. Only the data
+            # classes still branch.
+            ev_sensitivity = env.summary.sensitivity
             if dynamic_classification:
-                ev_sensitivity = env.summary.sensitivity
                 # Only an absent (None) field falls back; an explicit empty list
                 # is a real "no data classes" signal and is preserved as-is.
                 ev_classes = (
@@ -581,7 +585,6 @@ def mcp_tool(
                     else ["unclassified"]
                 )
             else:
-                ev_sensitivity = env.summary.sensitivity
                 ev_classes = classes_for_log
             event = build_tool_call_event(
                 actor=f"mcp.{_public_privacy_actor.get() or fn.__name__}",
@@ -857,7 +860,14 @@ def mcp_tool(
             return envelope
 
         wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]
-        wrapper._mcp_maximum_sensitivity = sensitivity  # type: ignore[attr-defined]
+        # One attribute, two meanings, and the docs must not blur them: for a
+        # dynamic tool this is the declared ceiling (`maximum_sensitivity=`),
+        # which nothing enforces at runtime; for a static tool it is the tier
+        # derived from the return type, which `_stamp_envelope_sensitivity`
+        # treats as a floor the envelope may only raise. It was named
+        # `_mcp_maximum_sensitivity` until MB-157, when publishing the static
+        # half as a "maximum" became a promise the floor can break.
+        wrapper._mcp_declared_sensitivity = sensitivity  # type: ignore[attr-defined]
         wrapper._mcp_dynamic_classification = dynamic_classification  # type: ignore[attr-defined]
         wrapper._mcp_domain = domain  # type: ignore[attr-defined]
         wrapper._mcp_read_only = read_only  # type: ignore[attr-defined]

@@ -75,14 +75,12 @@ def test_stamp_floors_a_higher_derived_sensitivity_instead_of_overriding_it() ->
     assert envelope.summary.sensitivity == "high"
 
 
-def test_stamp_still_raises_a_lower_derived_sensitivity_to_the_declared_ceiling() -> (
-    None
-):
+def test_stamp_still_raises_a_lower_derived_sensitivity_to_the_declared_floor() -> None:
     """The legitimate direction of the floor must keep working.
 
     The payload type derives HIGH; the call itself never raises
     ``summary.sensitivity`` above ``build_envelope``'s "low" default. The
-    decorator's static ceiling must still apply.
+    decorator's static floor must still apply.
     """
 
     @mcp_tool()
@@ -122,8 +120,8 @@ def test_audit_row_carries_the_floored_sensitivity_when_derived_exceeds_declared
     assert captured[0]["sensitivity"] == "high"
 
 
-def test_error_path_audit_row_still_reports_the_declared_ceiling_not_low() -> None:
-    """The legitimate raise-to-ceiling direction must still hold on the audit row.
+def test_error_path_audit_row_still_reports_the_declared_floor_not_low() -> None:
+    """The legitimate raise-to-floor direction must still hold on the audit row.
 
     ``build_error_envelope`` hardcodes "low"; ``_stamp_sensitivity`` raises it
     to the CRITICAL declared tier before ``_emit_privacy_event`` reads it off
@@ -145,7 +143,7 @@ def test_error_path_audit_row_still_reports_the_declared_ceiling_not_low() -> No
     assert captured[0]["sensitivity"] == "critical"
 
 
-def test_cancellation_audit_row_reports_the_declared_ceiling_not_low() -> None:
+def test_cancellation_audit_row_reports_the_declared_floor_not_low() -> None:
     """The cancellation crash-escape path must also stamp before emitting.
 
     Tracing every ``_emit_privacy_event`` call site found two — this one and

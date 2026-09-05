@@ -5,7 +5,7 @@ Usage:
 
 Writes ``docs/reference/cli/<command>.md`` and its ``README.md`` from the Typer
 command tree, ``docs/reference/mcp-tools.md`` from the tool list the MCP server
-hands a connecting client plus each registered tool's maximum sensitivity, and
+hands a connecting client plus each registered tool's declared sensitivity, and
 ``docs/reference/configuration.md`` from ``MoneyBinSettings``. ``--check``
 exits non-zero when a checked-in page differs from the render; CI runs the
 same comparison through
@@ -493,11 +493,12 @@ def render_mcp_tools(
         "",
         f"The standard registry exposes {count} tools. Each entry below is the "
         "tool's client-visible definition — its description, parameters, and "
-        "MCP annotations — plus the maximum sensitivity the server derives from "
-        "its typed response. Every tool returns the response envelope described "
-        "in [`architecture.md`](../architecture.md): `status`, `summary`, "
-        "`data`, `actions`, with `error` on failure and `next_cursor` when more "
-        "rows remain. How the server is installed and driven: "
+        "MCP annotations — plus the sensitivity the server declares for it. A "
+        "static tool's is a floor its envelope may only raise; a dynamic tool's "
+        "is a ceiling it classifies beneath. Every tool returns the response "
+        "envelope described in [`architecture.md`](../architecture.md): `status`, "
+        "`summary`, `data`, `actions`, with `error` on failure and `next_cursor` "
+        "when more rows remain. How the server is installed and driven: "
         "[MCP server](../guides/mcp-server.md).",
         "",
         "## Tools",
@@ -514,9 +515,9 @@ def render_mcp_tools(
             f"[{_code(name)}](#{_slug(name)})",
             first_sentence(str(definition.get("description", "")).strip()),
             _access(annotations),
-            _code(sensitivities[name]),
+            sensitivities[name],
         ])
-    lines += _table(["Tool", "Purpose", "Access", "Max sensitivity"], summary_rows)
+    lines += _table(["Tool", "Purpose", "Access", "Sensitivity"], summary_rows)
     lines.append("")
     for tool in tools:
         name = str(tool["name"])
@@ -532,8 +533,7 @@ def render_mcp_tools(
         lines += [f"### {name}", ""]
         lines += [_escape_angles(str(definition.get("description", "")).strip()), ""]
         lines += [
-            f"Access: {_access(annotations)}. Maximum sensitivity: "
-            f"{_code(sensitivities[name])}.",
+            f"Access: {_access(annotations)}. Sensitivity: {sensitivities[name]}.",
             "",
         ]
         if properties:
@@ -548,7 +548,7 @@ def render_mcp_tools(
 
 
 def live_mcp_surface() -> tuple[dict[str, object], dict[str, str]]:
-    """The tool list a connecting client receives, and each tool's maximum sensitivity.
+    """The tool list a connecting client receives, and each tool's declared sensitivity.
 
     One in-process boot of the standard registry serves both: the client list
     is what ``moneybin mcp serve`` would hand a client (the same inventory
@@ -570,10 +570,18 @@ def live_mcp_surface() -> tuple[dict[str, object], dict[str, str]]:
     sensitivities: dict[str, str] = {}
     for tool in asyncio.run(mcp.list_tools(run_middleware=False)):
         fn = getattr(tool, "fn", None)
-        sensitivity = getattr(fn, "_mcp_maximum_sensitivity", None)
+        sensitivity = getattr(fn, "_mcp_declared_sensitivity", None)
         if sensitivity is None:
-            raise ValueError(f"tool {tool.name} carries no _mcp_maximum_sensitivity")
-        sensitivities[tool.name] = str(getattr(sensitivity, "value", sensitivity))
+            raise ValueError(f"tool {tool.name} carries no _mcp_declared_sensitivity")
+        value = _code(str(getattr(sensitivity, "value", sensitivity)))
+        # The declared tier means opposite things either side of this flag: a
+        # dynamic tool classifies per call and declares a ceiling, while a
+        # static tool derives one tier that the envelope may only ever raise.
+        # Publishing both as "maximum" made the static half a false promise.
+        if getattr(fn, "_mcp_dynamic_classification", False):
+            sensitivities[tool.name] = f"up to {value}"
+        else:
+            sensitivities[tool.name] = f"at least {value}"
     return surface, sensitivities
 
 

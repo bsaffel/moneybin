@@ -42,7 +42,7 @@ def test_dynamic_classification_declares_a_maximum_sensitivity() -> None:
         mcp_tool(dynamic_classification=True)
     with pytest.raises(ValueError, match="only valid with dynamic_classification"):
         mcp_tool(maximum_sensitivity=Sensitivity.HIGH)
-    assert _dyn_tool._mcp_maximum_sensitivity is Sensitivity.HIGH  # type: ignore[attr-defined]
+    assert _dyn_tool._mcp_declared_sensitivity is Sensitivity.HIGH  # type: ignore[attr-defined]
 
 
 @pytest.mark.unit
