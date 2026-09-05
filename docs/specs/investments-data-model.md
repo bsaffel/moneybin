@@ -291,7 +291,7 @@ Columns:
   original_acquisition_date  DATE             -- transfer_in only: original acquisition date; lot uses COALESCE(this, trade_date)
   type                       VARCHAR          -- Closed taxonomy (see Requirement 5)
   subtype                    VARCHAR          -- Per-type refinement (tax character, reinvest source); nullable
-  event_group_id             VARCHAR          -- Links legs of one decomposed economic event; nullable
+  event_group_id             VARCHAR          -- MoneyBin-owned Golden event ID; required on every M1J.7 row, including singletons
   quantity                   DECIMAL(28,10)   -- Signed units: + acquire, − dispose, NULL cash-only
   price                      DECIMAL(28,10)   -- Per-unit price; NULL for non-priced events
   amount                     DECIMAL(18,2)    -- Signed cash effect: − out (buy), + in (sell/dividend)
@@ -652,7 +652,11 @@ provider-identifier resolution rung all exist because of this validation.
 > `investment_transaction_id` values in app membership; staging never
 > synthesizes those identities from mutable financial fields. Pre-M1J.7
 > source-derived transaction ids remain provenance and do not become Golden
-> resolver inputs. For a multi-source Golden leg, the singular source and
+> resolver inputs. After the pre-launch migration, Core projects a non-NULL
+> Golden `event_group_id` on every row, including singleton events. Any physical
+> nullability exists only inside the migration/backfill boundary; Raw and staging
+> may still carry NULL source-group references as provenance. For a multi-source
+> Golden leg, the singular source and
 > provider columns copy together from one deterministic representative member;
 > complete contributor attribution remains in source-row provenance.
 
