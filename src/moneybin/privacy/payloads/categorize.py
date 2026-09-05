@@ -12,8 +12,8 @@ Tier derivation summary:
   - ``RuleRow``                    → Tier.HIGH (TXN_AMOUNT via min/max_amount;
                                     account_id = RECORD_ID per spec D6)
   - ``CategorizeRulesPayload``     → Tier.HIGH (via RuleRow)
-  - ``RulesCreatePayload``         → Tier.LOW  (counts, IDs, and the category
-                                    pair a conflict reason names — all LOW)
+  - ``RulesCreatePayload``         → Tier.MEDIUM (USER_NOTE via
+                                    RuleConflictDetail.name)
   - ``RulesDeletePayload``         → Tier.LOW  (RECORD_ID — rule_id only)
   - ``PendingTxnRow``              → Tier.HIGH (TXN_AMOUNT via amount;
                                     account_id = RECORD_ID per spec D6)
@@ -252,6 +252,22 @@ class CategorizeCommitPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class RuleConflictDetail:
+    """One refused proposal, explained where the caller submitted it.
+
+    Typed rather than a ``dict[str, str]`` so each field carries its own class:
+    ``name`` is the rule name its author wrote — USER_NOTE, exactly as
+    ``RuleRow.name`` and ``app.rule_conflicts.proposed_name`` are — while the
+    ids and the category-naming ``reason`` stay LOW.
+    """
+
+    conflict_id: Annotated[str, DataClass.RECORD_ID]
+    name: Annotated[str, DataClass.USER_NOTE]
+    existing_rule_id: Annotated[str, DataClass.RECORD_ID]
+    reason: Annotated[str, DataClass.CATEGORY]
+
+
+@dataclass(frozen=True, slots=True)
 class RulesCreatePayload:
     """Payload for transactions_categorize_rules_create — creation result."""
 
@@ -264,11 +280,7 @@ class RulesCreatePayload:
     conflict_ids: Annotated[list[str], DataClass.RECORD_ID] = field(
         default_factory=list
     )
-    # CATEGORY, not AGGREGATE: each entry's `reason` names both categories in
-    # the disagreement, which is the whole point of showing it.
-    conflict_details: Annotated[list[dict[str, str]], DataClass.CATEGORY] = field(
-        default_factory=list
-    )
+    conflict_details: list[RuleConflictDetail] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

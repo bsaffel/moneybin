@@ -27,6 +27,8 @@ from moneybin.limits import (
     IDENTIFIER_MAX_LEN,
     MERCHANT_NAME_MAX_LEN,
     MERCHANT_PATTERN_MAX_LEN,
+    RULE_PRIORITY_MAX,
+    RULE_PRIORITY_MIN,
 )
 from moneybin.tables import CATEGORIES
 from moneybin.vocabulary import (
@@ -195,23 +197,35 @@ def canonical_matcher_key(
     ``name`` and ``priority`` are metadata, not identity, so they are absent:
     two rules differing only in those fire on the same rows.
 
+    Every normalization here mirrors ``matches_pattern`` exactly, because the
+    invariant is that equal keys fire on equal rows:
+
+    - ``.lower()``, not ``.casefold()``. ``matches_pattern`` lowercases both
+      sides; casefold is stricter and maps ``ß`` onto ``ss``, so it would merge
+      two patterns the matcher keeps apart.
+    - The pattern is **not** stripped. ``matches_pattern`` compares the stored
+      pattern as written, so ``contains "CAFE "`` matches strictly fewer
+      descriptions than ``contains "CAFE"`` — they are different matchers, not
+      two spellings of one. (``create_rules`` still strips at its Pydantic
+      boundary; the declarative target contract does not.)
+    - ``account_id`` is compared exactly, as ``match_first_rule`` compares it.
+
     Case folding applies to ``contains`` and ``exact`` only. ``matches_pattern``
     compiles a regex with ``re.IGNORECASE``, so a regex is case-insensitive at
-    match time too — but casefolding the *pattern* rewrites its escapes: ``\D``
+    match time too — but lowercasing the *pattern* rewrites its escapes: ``\D``
     (non-digit) becomes ``\d`` (digit), silently inverting the character class
     and making two opposite rules look identical. Regex patterns are compared
     verbatim.
     """
-    stripped = merchant_pattern.strip()
     normalized_type = match_type.strip().casefold()
     return MatcherKey(
-        merchant_pattern=stripped
+        merchant_pattern=merchant_pattern
         if normalized_type == "regex"
-        else stripped.casefold(),
+        else merchant_pattern.lower(),
         match_type=normalized_type,
         min_amount=_canonical_amount(min_amount),
         max_amount=_canonical_amount(max_amount),
-        account_id=account_id.strip() if account_id is not None else None,
+        account_id=account_id,
     )
 
 
@@ -306,7 +320,7 @@ class CategorizationRuleInput(BaseModel):
         min_length=1,
         max_length=IDENTIFIER_MAX_LEN,
     )
-    priority: int = Field(default=100, ge=0, le=10_000)
+    priority: int = Field(default=100, ge=RULE_PRIORITY_MIN, le=RULE_PRIORITY_MAX)
 
 
 def _validate_items[T: BaseModel](

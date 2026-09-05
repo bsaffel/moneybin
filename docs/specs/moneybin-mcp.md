@@ -213,11 +213,13 @@ and confirmation contracts.
 - **Rule conflicts are refused, queued, and decided.** Two categorization rules
   whose *canonical matcher* is equal fire on exactly the same transactions;
   when they also disagree about the category, priority and creation order pick
-  the winner and the loser has no effect. The canonical matcher normalizes the
-  pattern (case and surrounding whitespace, except for `regex`, where case
-  folding would rewrite `\D` into `\d`), the amount bounds at the rule column's
-  grain, the match type, and the account scope; `name` and `priority` are
-  metadata, not identity. Same matcher **and** same category is still
+  the winner and the loser has no effect. The canonical matcher normalizes
+  exactly what the runtime matcher normalizes and no more — the pattern's case
+  (except for `regex`, where lower-casing would rewrite `\D` into `\d`) and the
+  amount bounds at the rule column's grain — alongside the match type and the
+  account scope; `name` and `priority` are metadata, not identity. Surrounding
+  whitespace is significant, because `matches_pattern` compares the stored
+  pattern as written. Same matcher **and** same category is still
   idempotent and returns the existing rule. Same matcher, different category is
   refused: no rule is activated, the proposal is recorded in
   `app.rule_conflicts`, and the response carries `status="conflict"` — from
@@ -226,9 +228,10 @@ and confirmation contracts.
   would report a state that was never applied. `reviews(kind='rule_conflicts')`
   reads the queue with both rules, the shared matcher, the category each
   assigns, and which rule decides today; `reviews_decide` with
-  `kind='rule_conflict'` takes `replace` (supersede the existing rule),
-  `reprioritize` (activate the proposal beside it at an explicit `priority`),
-  or `cancel` (change nothing). A conflict binds to the existing rule's
+  `kind='rule_conflict'` takes `replace` (supersede every active rule sharing
+  the matcher, revalidated at resolution time because a prior `reprioritize`
+  can have left more than one), `reprioritize` (activate the proposal beside it
+  at an explicit `priority`), or `cancel` (change nothing). A conflict binds to the existing rule's
   `updated_at`: editing that rule invalidates the recorded conflict, which then
   leaves the queue, and a resolution quoting it is refused as stale. Every
   mutation is audited and reversible with `system_audit_undo`.

@@ -456,6 +456,7 @@ Usage: `moneybin transactions categorize rules list-conflicts [OPTIONS]`
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--wide` | flag |  | Render every column, not just the default set. |
 
 ## moneybin transactions categorize rules resolve
 
@@ -481,7 +482,7 @@ Usage: `moneybin transactions categorize rules resolve [OPTIONS] [CONFLICT_ID]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--replace` | flag |  | Deactivate the existing rule and activate the refused one |
-| `--reprioritize` | int |  | Activate the refused rule beside the existing one at this priority (lower runs first) |
+| `--reprioritize` | int (≥ 0, ≤ 10000) |  | Activate the refused rule beside the existing one at this priority (0-10000, lower runs first) |
 | `--cancel` | flag |  | Discard the refused rule and keep live state |
 | `--from-file` | path |  | JSON file with a list of {"conflict_id", "resolution", "priority"} dicts |
 | `--yes, -y` | flag |  | Skip confirmation |

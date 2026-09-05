@@ -1158,9 +1158,9 @@ def reviews_decide_coarse(
                     item.rule_id for item in resolutions if item.rule_id is not None
                 ],
                 superseded_rule_ids=[
-                    item.superseded_rule_id
+                    rule_id
                     for item in resolutions
-                    if item.superseded_rule_id is not None
+                    for rule_id in item.superseded_rule_ids
                 ],
             )
             outcomes = [

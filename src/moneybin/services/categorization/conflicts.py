@@ -66,6 +66,10 @@ class ActiveRule:
     category: str
     subcategory: str | None
     priority: int
+    #: The matcher's own tie-break: ``fetch_active_rules`` orders
+    #: ``priority ASC, created_at ASC``, so this is what decides between twins
+    #: at equal priority. ``rule_id`` is a random uuid4 hex and orders nothing.
+    created_at: datetime
     updated_at: datetime
     key: MatcherKey
 
@@ -157,7 +161,8 @@ def load_active_rules(
     """
     sql = (
         "SELECT rule_id, name, merchant_pattern, match_type, min_amount, "
-        "max_amount, account_id, category, subcategory, priority, updated_at "
+        "max_amount, account_id, category, subcategory, priority, updated_at, "
+        "created_at "
         f"FROM {CATEGORIZATION_RULES.full_name} WHERE is_active = true"  # noqa: S608  # TableRef constant
     )
     params: list[object] = []
@@ -173,6 +178,7 @@ def load_active_rules(
             subcategory=str(row[8]) if row[8] is not None else None,
             priority=int(row[9] or 0),
             updated_at=row[10],
+            created_at=row[11],
             key=canonical_matcher_key(
                 merchant_pattern=str(row[2]),
                 match_type=str(row[3]),
@@ -207,9 +213,10 @@ def detect_conflict(
     case (no active rule owns the matcher). Only a matcher twin that assigns a
     different category is a conflict.
 
-    When several active rules already share the matcher, the lowest-priority
-    number is reported — it is the one currently deciding the category, so it
-    is the rule the user has to reason about.
+    When several active rules already share the matcher, the one the matcher
+    itself would pick is reported — lowest priority number, then oldest — so
+    the rule named is the one currently deciding the category. ``rule_id``
+    only breaks a same-timestamp tie the matcher leaves open.
     """
     twins = [rule for rule in active if rule.key == key]
     if not twins:
@@ -218,7 +225,7 @@ def detect_conflict(
         rule.category == category and rule.subcategory == subcategory for rule in twins
     ):
         return None
-    winner = min(twins, key=lambda rule: (rule.priority, rule.rule_id))
+    winner = min(twins, key=lambda rule: (rule.priority, rule.created_at, rule.rule_id))
     digest = matcher_digest(key)
     return RuleConflict(
         conflict_id=conflict_identity(
@@ -310,12 +317,18 @@ class ConflictDecision:
 
 @dataclass(frozen=True, slots=True)
 class ConflictDecisionResult:
-    """What one resolution committed."""
+    """What one resolution committed.
+
+    ``superseded_rule_ids`` is a list because ``replace`` clears every rule
+    that can still shadow the proposal, not only the one the conflict was
+    recorded against — a prior ``reprioritize`` can leave several active rules
+    sharing the matcher.
+    """
 
     conflict_id: str
     resolution: ConflictResolution
     rule_id: str | None
-    superseded_rule_id: str | None
+    superseded_rule_ids: list[str]
 
 
 class RuleConflictsService:
@@ -448,17 +461,13 @@ class RuleConflictsService:
         conflicts_repo = RuleConflictsRepo(self._db)
         rules_repo = CategorizationRulesRepo(self._db)
         rule_id: str | None = None
-        superseded: str | None = None
+        superseded: list[str] = []
 
         if decision.resolution != "cancel":
             if decision.resolution == "replace":
-                event = rules_repo.deactivate(
-                    str(live["existing_rule_id"]),
-                    actor=actor,
-                    context={"reason": "rule_conflict_replaced"},
-                    in_outer_txn=True,
+                superseded = self._deactivate_matcher_twins(
+                    rules_repo, live, actor=actor
                 )
-                superseded = str(live["existing_rule_id"]) if event else None
             priority = (
                 decision.priority
                 if decision.priority is not None
@@ -494,8 +503,44 @@ class RuleConflictsService:
             conflict_id=decision.conflict_id,
             resolution=decision.resolution,
             rule_id=rule_id,
-            superseded_rule_id=superseded,
+            superseded_rule_ids=superseded,
         )
+
+    def _deactivate_matcher_twins(
+        self,
+        rules_repo: CategorizationRulesRepo,
+        live: dict[str, Any],
+        *,
+        actor: str,
+    ) -> list[str]:
+        """Deactivate every active rule that can still shadow the proposal.
+
+        The recorded conflict names one winner, but a prior ``reprioritize``
+        deliberately leaves several active rules sharing a matcher. Replacing
+        only the recorded winner would activate a proposal an older twin still
+        shadows — the exact outcome this module exists to refuse — so the live
+        set is re-read here rather than trusted from detection time.
+        """
+        key = canonical_matcher_key(
+            merchant_pattern=str(live["proposed_merchant_pattern"]),
+            match_type=str(live["proposed_match_type"]),
+            min_amount=live["proposed_min_amount"],
+            max_amount=live["proposed_max_amount"],
+            account_id=live["proposed_account_id"],
+        )
+        superseded: list[str] = []
+        for twin in load_active_rules(self._db):
+            if twin.key != key:
+                continue
+            event = rules_repo.deactivate(
+                twin.rule_id,
+                actor=actor,
+                context={"reason": "rule_conflict_replaced"},
+                in_outer_txn=True,
+            )
+            if event is not None:
+                superseded.append(twin.rule_id)
+        return superseded
 
 
 def _conflict_row(row: tuple[Any, ...]) -> dict[str, Any]:

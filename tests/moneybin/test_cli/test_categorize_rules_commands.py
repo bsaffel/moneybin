@@ -9,12 +9,15 @@ this test only pins the CLI-to-service wiring, which had no boundary test.
 """
 
 import json
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.transactions.categorize import app
+from moneybin.privacy.payloads.categorize import RuleConflictDetail
 from moneybin.services.categorization import (
     CategorizationRuleInput,
     ConflictDecision,
@@ -121,7 +124,7 @@ def _resolution(
         conflict_id=conflict_id,
         resolution=resolution,  # pyright: ignore[reportArgumentType]  # test literal
         rule_id=rule_id,
-        superseded_rule_id="r1" if resolution == "replace" else None,
+        superseded_rule_ids=["r1"] if resolution == "replace" else [],
     )
 
 
@@ -304,12 +307,12 @@ def test_rules_create_reports_a_conflict_without_failing(
         conflicts=1,
         conflict_ids=["conf_aaaaaaaaaaaaaaaa"],
         conflict_details=[
-            {
-                "conflict_id": "conf_aaaaaaaaaaaaaaaa",
-                "name": "Transfer TO",
-                "existing_rule_id": "r1",
-                "reason": "Rule r1 already matches this pattern.",
-            }
+            RuleConflictDetail(
+                conflict_id="conf_aaaaaaaaaaaaaaaa",
+                name="Transfer TO",
+                existing_rule_id="r1",
+                reason="Rule r1 already matches this pattern.",
+            )
         ],
     )
 
@@ -319,3 +322,173 @@ def test_rules_create_reports_a_conflict_without_failing(
     payload = json.loads(result.stdout)
     assert payload["status"] == "conflict"
     assert payload["data"]["conflicts"] == 1
+
+
+_CONFLICT_ROW: dict[str, object] = {
+    "conflict_id": "conf_aaaaaaaaaaaaaaaa",
+    "proposed_merchant_pattern": "PRIVATEMERCHANTPATTERN",
+    "proposed_match_type": "contains",
+    "existing_rule_id": "r1",
+    "existing_category": "Shopping",
+    "existing_subcategory": None,
+    "proposed_name": "Bait Shop Weekly",
+    "proposed_category": "Food & Drink",
+    "proposed_subcategory": None,
+    "proposed_priority": 100,
+}
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_list_conflicts_keeps_merchant_text_out_of_the_log(
+    mock_get_db: MagicMock,
+    mock_svc_cls: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The log pipeline persists to disk and cannot mask a merchant pattern."""
+    monkeypatch.setenv("COLUMNS", "240")
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_svc_cls.return_value.list_rule_conflicts.return_value = [_CONFLICT_ROW]
+
+    with caplog.at_level(logging.DEBUG):
+        result = runner.invoke(app, ["rules", "list-conflicts", "--wide"])
+
+    assert result.exit_code == 0, result.output
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "PRIVATEMERCHANTPATTERN" not in logged
+    assert "Bait Shop Weekly" not in logged
+    # The reader still gets the row — this is a routing fix, not a redaction.
+    assert "PRIVATEMERCHANTPATTERN" in result.stdout
+    assert "Bait Shop Weekly" in result.stdout
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_partial_write_is_not_a_conflict_status(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """`status='conflict'` promises nothing changed; one row was created."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = RuleCreationResult(
+        created=1,
+        existing=0,
+        skipped=0,
+        error_details=[],
+        rule_ids=["r2"],
+        conflicts=1,
+        conflict_ids=["conf_aaaaaaaaaaaaaaaa"],
+        conflict_details=[
+            RuleConflictDetail(
+                conflict_id="conf_aaaaaaaaaaaaaaaa",
+                name="Transfer TO",
+                existing_rule_id="r1",
+                reason="Rule r1 already matches this pattern.",
+            )
+        ],
+    )
+
+    result = runner.invoke(app, [*_ARGS, "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    assert payload["data"]["created"] == 1
+    assert payload["data"]["conflicts"] == 1
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_resolve_refuses_a_negative_priority(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+    result = runner.invoke(
+        app,
+        [
+            "rules",
+            "resolve",
+            "conf_aaaaaaaaaaaaaaaa",
+            "--reprioritize=-1",
+            "--yes",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    mock_svc_cls.return_value.resolve_rule_conflicts.assert_not_called()
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_resolve_refuses_a_priority_above_the_ceiling(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+    result = runner.invoke(
+        app,
+        [
+            "rules",
+            "resolve",
+            "conf_aaaaaaaaaaaaaaaa",
+            "--reprioritize",
+            "10001",
+            "--yes",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    mock_svc_cls.return_value.resolve_rule_conflicts.assert_not_called()
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_resolve_batch_file_refuses_an_out_of_range_priority(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock, tmp_path: Path
+) -> None:
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    batch = tmp_path / "resolutions.json"
+    batch.write_text(
+        json.dumps([
+            {
+                "conflict_id": "conf_aaaaaaaaaaaaaaaa",
+                "resolution": "reprioritize",
+                "priority": 999999999,
+            }
+        ])
+    )
+
+    result = runner.invoke(
+        app, ["rules", "resolve", "--from-file", str(batch), "--yes"]
+    )
+
+    assert result.exit_code == 2, result.output
+    mock_svc_cls.return_value.resolve_rule_conflicts.assert_not_called()
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_resolve_batch_file_refuses_a_boolean_priority(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock, tmp_path: Path
+) -> None:
+    """`isinstance(True, int)` is True — a bare int check lets a bool through."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    batch = tmp_path / "resolutions.json"
+    batch.write_text(
+        json.dumps([
+            {
+                "conflict_id": "conf_aaaaaaaaaaaaaaaa",
+                "resolution": "reprioritize",
+                "priority": True,
+            }
+        ])
+    )
+
+    result = runner.invoke(
+        app, ["rules", "resolve", "--from-file", str(batch), "--yes"]
+    )
+
+    assert result.exit_code == 2, result.output
+    mock_svc_cls.return_value.resolve_rule_conflicts.assert_not_called()

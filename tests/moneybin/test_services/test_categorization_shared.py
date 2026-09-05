@@ -9,6 +9,7 @@ from moneybin.services.categorization._shared import (
     SOURCE_PRIORITY,
     canonical_matcher_key,
     matcher_digest,
+    matches_pattern,
     plaid_confidence_to_numeric,
     priority_case_sql,
 )
@@ -63,13 +64,41 @@ class TestCanonicalMatcherKey:
     """One matcher identity, shared by rule creation and target-state resolution."""
 
     @pytest.mark.unit
-    def test_case_and_surrounding_whitespace_normalize_to_one_key(self) -> None:
+    def test_case_normalizes_to_one_key(self) -> None:
         assert canonical_matcher_key(
-            merchant_pattern="  Coffee Shop ",
+            merchant_pattern="Coffee Shop",
             match_type="contains",
         ) == canonical_matcher_key(
             merchant_pattern="COFFEE SHOP",
             match_type="contains",
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("left", "right", "text"),
+        [
+            # `matches_pattern` compares the stored pattern unstripped, so a
+            # trailing space is a narrower matcher, not a spelling of the same one.
+            ("COFFEE SHOP ", "COFFEE SHOP", "THE COFFEE SHOP"),
+            (" COFFEE SHOP", "COFFEE SHOP", "COFFEE SHOP DOWNTOWN"),
+            # `.casefold()` maps ß onto "ss" and `.lower()` does not, so a
+            # casefolded key would merge two patterns matching different rows.
+            ("STRASSE", "Straße", "STRASSE 12 BAKERY"),
+        ],
+    )
+    def test_equal_keys_fire_on_exactly_the_same_transactions(
+        self, left: str, right: str, text: str
+    ) -> None:
+        """The module's stated invariant, checked against the runtime matcher."""
+        same_key = canonical_matcher_key(
+            merchant_pattern=left, match_type="contains"
+        ) == canonical_matcher_key(merchant_pattern=right, match_type="contains")
+        same_match = matches_pattern(text, left, "contains") == matches_pattern(
+            text, right, "contains"
+        )
+        assert not (same_key and not same_match), (
+            f"{left!r} and {right!r} share a canonical key but match "
+            f"{text!r} differently"
         )
 
     @pytest.mark.unit

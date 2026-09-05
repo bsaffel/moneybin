@@ -233,7 +233,7 @@ A top-level JSON array. Each item:
 
 - **`commit-from-file` re-runs.** Re-running the same `proposals.json` is safe: each row attempts a write at `ai`-priority. The first run lands; the second run finds an existing row already at `ai`-priority and the SQL precedence guard (`<=`) lets it overwrite with identical values — no new exemplars accrue because the merchant accumulator only creates a new merchant or appends a new exemplar when the row's `match_text` isn't already covered (`list_distinct(list_append(...))`). Net effect: idempotent.
 - **Re-running after a higher-source write has happened.** If a rule or `user` write covered a row between two `commit-from-file` runs, the second `ai` write is rejected and surfaces as a per-row `lower_priority_source` skip — no overwrite, no error. See [Error taxonomy](#error-taxonomy).
-- **`rules create` dedup.** Active rules are deduped by their *canonical matcher* — `merchant_pattern`, `match_type`, `min_amount`, `max_amount`, `account_id` — plus `category` and `subcategory`; `name` and `priority` are metadata. The matcher is canonical, not literal: `contains` and `exact` patterns compare case-insensitively and ignore surrounding whitespace (matching the matcher's own behavior), amount bounds compare at the stored `DECIMAL(18,2)` grain, and a `regex` pattern compares verbatim. Retrying the same payload returns the existing `rule_id` and creates no new rows. Same matcher with a *different* category is a conflict, not a second rule — see [Rule conflicts](#rule-conflicts). The result envelope reports `created`, `existing`, `skipped`, and `conflicts` separately.
+- **`rules create` dedup.** Active rules are deduped by their *canonical matcher* — `merchant_pattern`, `match_type`, `min_amount`, `max_amount`, `account_id` — plus `category` and `subcategory`; `name` and `priority` are metadata. The matcher is canonical, not literal: `contains` and `exact` patterns compare case-insensitively (matching the matcher's own behavior, which lower-cases both sides), amount bounds compare at the stored `DECIMAL(18,2)` grain, and a `regex` pattern compares verbatim. Retrying the same payload returns the existing `rule_id` and creates no new rows. Same matcher with a *different* category is a conflict, not a second rule — see [Rule conflicts](#rule-conflicts). The result envelope reports `created`, `existing`, `skipped`, and `conflicts` separately. A batch that creates one rule and refuses another reports both counts and keeps `status="ok"`: `status="conflict"` is reserved for a call that wrote nothing.
 - **`run` / `rules apply` re-invocation.** `run` executes its selected deterministic engines; `rules apply` executes only rules. Both are idempotent against a stable database: a second run with no new uncategorized rows writes nothing.
 
 ## Error taxonomy
@@ -300,10 +300,13 @@ creation reports success. MoneyBin refuses that.
   changed nothing — not an error), and the CLI prints a `👀` line naming the
   conflict id.
 
-Sameness is canonical, so a case- or whitespace-variant of an existing pattern
-is the same rule, not a second one. A `regex` pattern is the exception and is
-compared verbatim: case-folding it would rewrite `\D` (non-digit) into `\d`
-(digit) and invert what it matches.
+Sameness is canonical, so a case variant of an existing pattern is the same
+rule, not a second one. It mirrors the matcher exactly, which is why
+surrounding whitespace is *significant*: `contains "CAFE "` matches strictly
+fewer descriptions than `contains "CAFE"`, so they are two matchers rather than
+two spellings of one. A `regex` pattern is the exception and is compared
+verbatim: lower-casing it would rewrite `\D` (non-digit) into `\d` (digit) and
+invert what it matches.
 
 Inspect and decide:
 
@@ -316,7 +319,7 @@ moneybin transactions categorize rules resolve <conflict_id> --cancel
 
 | Resolution | Effect |
 |---|---|
-| `replace` | Deactivates the existing rule and activates the refused one at its own priority. |
+| `replace` | Deactivates *every* active rule sharing the matcher — a prior `reprioritize` can have left more than one — and activates the refused rule at its own priority. |
 | `reprioritize N` | Activates the refused rule *beside* the existing one at priority `N`. Both stay active, so the lower number decides. |
 | `cancel` | Discards the refused rule. Live state is unchanged. |
 

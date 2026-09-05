@@ -9,6 +9,7 @@ the recorded conflict, and each of the three resolutions.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 import pytest
 from prometheus_client import REGISTRY
@@ -21,6 +22,12 @@ from moneybin.services.categorization import (
     CategorizationService,
     ConflictDecision,
     RuleStateTarget,
+)
+from moneybin.services.categorization._shared import canonical_matcher_key
+from moneybin.services.categorization.conflicts import (
+    ActiveRule,
+    detect_conflict,
+    load_active_rules,
 )
 from tests.moneybin.db_helpers import create_core_tables
 
@@ -246,7 +253,7 @@ class TestConflictResolution:
             actor="cli",
         )
 
-        assert result.superseded_rule_id == existing_id
+        assert result.superseded_rule_ids == [existing_id]
         assert result.rule_id is not None
         row = db.execute(
             "SELECT is_active FROM app.categorization_rules WHERE rule_id = ?",
@@ -277,7 +284,7 @@ class TestConflictResolution:
             actor="cli",
         )
 
-        assert result.superseded_rule_id is None
+        assert result.superseded_rule_ids == []
         row = db.execute(
             "SELECT priority, is_active FROM app.categorization_rules "
             "WHERE rule_id = ?",
@@ -578,3 +585,241 @@ class TestRefusalMetric:
         service.record_rule_conflicts(plan.conflicts, actor="mcp")
 
         assert self._blocked("rule_targets") == before + 1
+
+
+class TestTieBreakMatchesTheRuntimeMatcher:
+    """Which twin the conflict names must be the one that decides the category."""
+
+    @pytest.mark.unit
+    def test_equal_priority_ties_break_on_created_at(self) -> None:
+        """`fetch_active_rules` orders `priority ASC, created_at ASC`.
+
+        `rule_id` is a random uuid4 hex, so ordering on it names an arbitrary
+        twin as the rule deciding today — and `replace` then deactivates it.
+        """
+        key = canonical_matcher_key(merchant_pattern="STARBUCKS", match_type="contains")
+        # rule_ids chosen so `min` on rule_id picks the *newer* rule.
+        older = ActiveRule(
+            rule_id="zzzzzzzzzzzz",
+            name="Older",
+            category="Food & Drink",
+            subcategory=None,
+            priority=100,
+            created_at=datetime(2026, 1, 1, 12, 0, 0),
+            updated_at=datetime(2026, 1, 1, 12, 0, 0),
+            key=key,
+        )
+        newer = ActiveRule(
+            rule_id="aaaaaaaaaaaa",
+            name="Newer",
+            category="Travel",
+            subcategory=None,
+            priority=100,
+            created_at=datetime(2026, 6, 1, 12, 0, 0),
+            updated_at=datetime(2026, 6, 1, 12, 0, 0),
+            key=key,
+        )
+
+        conflict = detect_conflict(
+            [newer, older],
+            key=key,
+            name="Proposal",
+            merchant_pattern="STARBUCKS",
+            match_type="contains",
+            min_amount=None,
+            max_amount=None,
+            account_id=None,
+            category="Shopping",
+            subcategory=None,
+            priority=100,
+            created_by="ai",
+        )
+
+        assert conflict is not None
+        assert conflict.existing_rule_id == "zzzzzzzzzzzz"
+
+    @pytest.mark.unit
+    def test_load_active_rules_carries_created_at(self, db: Database) -> None:
+        """The tie-break is only as good as the column it reads."""
+        CategorizationService(db).create_rules([_rule("Coffee")])
+
+        [loaded] = load_active_rules(db)
+
+        assert loaded.created_at is not None
+
+
+class TestBatchFinalState:
+    """A target batch must be judged against the state it will leave behind."""
+
+    @pytest.mark.unit
+    def test_two_present_targets_sharing_a_matcher_are_refused(
+        self, db: Database
+    ) -> None:
+        """Neither exists yet, so pre-batch state alone sees no twin.
+
+        Refused rather than queued: `app.rule_conflicts` records a decision
+        about an *active* rule, and here neither side would exist.
+        """
+        service = CategorizationService(db)
+
+        with pytest.raises(UserError) as exc:
+            service.plan_rule_targets([
+                RuleStateTarget(
+                    rule_id=None,
+                    state="present",
+                    merchant_pattern="STARBUCKS",
+                    match_type="contains",
+                    category="Food & Drink",
+                    priority=100,
+                ),
+                RuleStateTarget(
+                    rule_id=None,
+                    state="present",
+                    merchant_pattern="STARBUCKS",
+                    match_type="contains",
+                    category="Travel",
+                    priority=200,
+                ),
+            ])
+
+        assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
+        assert _active_rule_count(db) == 0
+
+    @pytest.mark.unit
+    def test_a_case_variant_target_pair_is_refused_too(self, db: Database) -> None:
+        """The duplicate-natural-key check compares raw text; this one canonicalizes."""
+        service = CategorizationService(db)
+
+        with pytest.raises(UserError) as exc:
+            service.plan_rule_targets([
+                RuleStateTarget(
+                    rule_id=None,
+                    state="present",
+                    merchant_pattern="STARBUCKS",
+                    match_type="contains",
+                    category="Food & Drink",
+                    priority=100,
+                ),
+                RuleStateTarget(
+                    rule_id=None,
+                    state="present",
+                    merchant_pattern="starbucks",
+                    match_type="contains",
+                    category="Travel",
+                    priority=200,
+                ),
+            ])
+
+        assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
+
+    @pytest.mark.unit
+    def test_a_target_does_not_conflict_with_a_rule_the_batch_deactivates(
+        self, db: Database
+    ) -> None:
+        """The twin is gone by the time the new rule is live."""
+        service = CategorizationService(db)
+        created = service.create_rules([_rule("Coffee", category="Food & Drink")])
+
+        plan = service.plan_rule_targets([
+            RuleStateTarget(rule_id=created.rule_ids[0], state="inactive"),
+            RuleStateTarget(
+                rule_id=None,
+                state="present",
+                merchant_pattern="STARBUCKS",
+                match_type="contains",
+                category="Travel",
+                priority=100,
+            ),
+        ])
+
+        assert plan.conflicts == ()
+
+
+class TestReplaceClearsEveryLiveTwin:
+    """`reprioritize` leaves two active twins; `replace` must clear both."""
+
+    @staticmethod
+    def _two_active_twins(db: Database) -> tuple[str, str]:
+        """Return (older_rule_id, reprioritized_rule_id) sharing one matcher."""
+        service = CategorizationService(db)
+        first = service.create_rules([
+            _rule("Coffee", category="Food & Drink", priority=100)
+        ])
+        queued = service.create_rules([
+            _rule("Coffee travel", category="Travel", priority=100)
+        ])
+        [second] = service.resolve_rule_conflicts(
+            [
+                ConflictDecision(
+                    conflict_id=queued.conflict_ids[0],
+                    resolution="reprioritize",
+                    priority=50,
+                )
+            ],
+            actor="cli",
+        )
+        assert second.rule_id is not None
+        return first.rule_ids[0], second.rule_id
+
+    @pytest.mark.unit
+    def test_replace_deactivates_every_rule_that_could_still_shadow(
+        self, db: Database
+    ) -> None:
+        older_id, reprioritized_id = self._two_active_twins(db)
+        service = CategorizationService(db)
+        # priority 200 loses to the older twin at 100 — if that twin survives
+        # the replace, the rule the user was told won is fully shadowed.
+        queued = service.create_rules([
+            _rule("Coffee shopping", category="Shopping", priority=200)
+        ])
+        assert queued.conflicts == 1
+
+        [result] = service.resolve_rule_conflicts(
+            [
+                ConflictDecision(
+                    conflict_id=queued.conflict_ids[0], resolution="replace"
+                )
+            ],
+            actor="cli",
+        )
+
+        assert result.rule_id is not None
+        active = {
+            str(row[0])
+            for row in db.execute(
+                "SELECT rule_id FROM app.categorization_rules WHERE is_active"
+            ).fetchall()
+        }
+        assert active == {result.rule_id}
+        assert set(result.superseded_rule_ids) == {older_id, reprioritized_id}
+
+
+class TestStalePruningKeepsHistory:
+    """`reviews(kind='rule_conflicts', status='history')` advertises settled rows."""
+
+    @pytest.mark.unit
+    def test_resolved_rows_survive_a_later_stale_prune(self, db: Database) -> None:
+        service = CategorizationService(db)
+        created = service.create_rules([_rule("Coffee", category="Food & Drink")])
+        first = service.create_rules([_rule("Coffee travel", category="Travel")])
+        service.resolve_rule_conflicts(
+            [ConflictDecision(conflict_id=first.conflict_ids[0], resolution="cancel")],
+            actor="cli",
+        )
+        assert service.count_rule_conflict_history() == 1
+
+        # Edit the existing rule, then queue a fresh conflict against it. The
+        # stale prune fires for the new row and must not take the settled one.
+        db.execute(
+            "UPDATE app.categorization_rules "
+            "SET priority = 50, updated_at = updated_at + INTERVAL 1 SECOND "
+            "WHERE rule_id = ?",
+            [created.rule_ids[0]],
+        )
+        second = service.create_rules([_rule("Coffee travel", category="Travel")])
+
+        assert second.conflicts == 1
+        assert service.count_rule_conflict_history() == 1
+        assert [row["resolution"] for row in service.list_rule_conflict_history()] == [
+            "cancel"
+        ]

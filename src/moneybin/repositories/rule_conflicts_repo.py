@@ -210,12 +210,17 @@ class RuleConflictsRepo(BaseRepo):
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> list[AuditEvent]:
-        """Delete conflicts recorded against an older version of one rule.
+        """Delete *pending* conflicts recorded against an older version of one rule.
 
         A conflict describes a decision about a rule *as it then was*. Editing
-        that rule moves its ``updated_at``, and the recorded row stops
+        that rule moves its ``updated_at``, and a still-undecided row stops
         describing anything live — so it is removed rather than left to be
         filtered out on every read.
+
+        A resolved row is not stale, it is settled: it records a decision the
+        user actually made, and ``reviews(kind='rule_conflicts',
+        status='history')`` publishes it. Pruning without the status predicate
+        deleted that history whenever the rule was later edited and re-queued.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             stale_ids = [
@@ -223,6 +228,7 @@ class RuleConflictsRepo(BaseRepo):
                 for row in self._db.execute(
                     f"SELECT conflict_id FROM {RULE_CONFLICTS.full_name} "  # noqa: S608  # TableRef + parameterized values
                     "WHERE existing_rule_id = ? "
+                    "AND status = 'pending' "
                     "AND existing_rule_updated_at IS DISTINCT FROM ? "
                     "ORDER BY conflict_id",
                     [existing_rule_id, keep_updated_at],

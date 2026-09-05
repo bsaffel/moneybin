@@ -2152,7 +2152,7 @@ class TestCategorizeRulesResolveCLI:
         resolved.assert_success()
         row = json.loads(resolved.stdout)["data"][0]
         assert row["resolution"] == "replace"
-        assert row["superseded_rule_id"] == first["data"]["rule_ids"][0]
+        assert row["superseded_rule_ids"] == [first["data"]["rule_ids"][0]]
 
     def test_resolve_refuses_a_missing_batch_file(
         self, _mutating_profile_template: Path, tmp_path: Path

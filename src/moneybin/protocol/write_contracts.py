@@ -23,6 +23,8 @@ from moneybin.limits import (
     MERCHANT_NAME_MAX_LEN,
     MERCHANT_PATTERN_MAX_LEN,
     NOTE_MAX_LEN,
+    RULE_PRIORITY_MAX,
+    RULE_PRIORITY_MIN,
     SLUG_MAX_LEN,
 )
 from moneybin.vocabulary import CategorizationMatchType, ConsentFeatureCategory
@@ -347,7 +349,10 @@ class RuleConflictDecisionRequest(_StrictRequest):
     kind: Literal["rule_conflict"]
     decision_id: IdentifierString
     decision: Literal["replace", "reprioritize", "cancel"]
-    priority: Annotated[int, Field(strict=True, ge=0, le=10_000)] | None = None
+    priority: (
+        Annotated[int, Field(strict=True, ge=RULE_PRIORITY_MIN, le=RULE_PRIORITY_MAX)]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def _validate_decision(self) -> Self:
@@ -629,7 +634,9 @@ class CategorizationRuleTarget(_StrictRequest):
     matcher: CategorizationRuleMatch | None = None
     category: CategoryName | None = None
     subcategory: CategoryName | None = None
-    priority: int | None = Field(default=None, ge=0, le=10_000)
+    priority: int | None = Field(
+        default=None, ge=RULE_PRIORITY_MIN, le=RULE_PRIORITY_MAX
+    )
 
     @model_validator(mode="after")
     def _validate_state(self) -> Self:

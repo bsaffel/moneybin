@@ -43,7 +43,10 @@ from moneybin.metrics.registry import (
     MERCHANT_EXEMPLAR_COUNT,
     RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL,
 )
-from moneybin.privacy.payloads.categorize import RulesCreatePayload
+from moneybin.privacy.payloads.categorize import (
+    RuleConflictDetail,
+    RulesCreatePayload,
+)
 from moneybin.repositories.base import quote_ident
 from moneybin.repositories.budgets_repo import BudgetsRepo
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
@@ -63,6 +66,7 @@ from moneybin.services.categorization._shared import (
     SOURCE_PRIORITY,
     CategorizationRuleInput,
     InternalMatchType,
+    MatcherKey,
     canonical_matcher_key,
     is_unselective_contains,
     resolve_category_id,
@@ -135,7 +139,7 @@ class RuleCreationResult:
     rule_ids: list[str]
     conflicts: int = 0
     conflict_ids: list[str] = field(default_factory=list)
-    conflict_details: list[dict[str, str]] = field(default_factory=list)
+    conflict_details: list[RuleConflictDetail] = field(default_factory=list)
 
     def to_payload(self) -> RulesCreatePayload:
         """Return a typed payload for the MCP/CLI envelope boundary."""
@@ -661,9 +665,9 @@ class MatchApplier:
         ``app.rule_conflicts``, and the user decides through
         ``reviews(kind='rule_conflicts')`` or
         ``moneybin transactions categorize rules resolve``. Sameness is
-        decided by ``canonical_matcher_key``, so a case- or
-        whitespace-variant of an existing pattern is the same matcher rather
-        than a second rule that shadows the first.
+        decided by ``canonical_matcher_key``, so a case variant of an
+        existing pattern is the same matcher rather than a second rule that
+        shadows the first.
 
         Per-row insertion failures are caught so a single bad row does
         not abort the batch — they appear in ``error_details``.
@@ -799,12 +803,12 @@ class MatchApplier:
             conflicts=len(conflicts),
             conflict_ids=[conflict.conflict_id for conflict in conflicts],
             conflict_details=[
-                {
-                    "conflict_id": conflict.conflict_id,
-                    "name": conflict.proposed_name,
-                    "existing_rule_id": conflict.existing_rule_id,
-                    "reason": conflict.why(),
-                }
+                RuleConflictDetail(
+                    conflict_id=conflict.conflict_id,
+                    name=conflict.proposed_name,
+                    existing_rule_id=conflict.existing_rule_id,
+                    reason=conflict.why(),
+                )
                 for conflict in conflicts
             ],
         )
@@ -892,9 +896,12 @@ class MatchApplier:
     ) -> list[RuleConflict]:
         """Return every canonical-matcher conflict a target batch would create.
 
-        Only ``create`` and ``set`` can activate a matcher, and a ``set`` is
-        compared against the *other* active rules — a rule never conflicts with
-        the row it is replacing.
+        Judged against the state the batch *commits*, not the state it read.
+        Only ``create`` and ``set`` activate a matcher, and every rule the
+        batch changes leaves its recorded matcher behind — a ``set`` rewrites
+        it, a deactivate or delete removes it — so those rules cannot shadow
+        anything afterwards and are excluded. What remains is the set of live
+        rules the batch leaves standing, which is what a target has to clear.
         """
         activating = [
             item
@@ -906,20 +913,36 @@ class MatchApplier:
         ]
         if not activating:
             return []
-        active = load_active_rules(self._db)
-        conflicts: list[RuleConflict] = []
-        for item in activating:
-            target = item.target
-            others = [rule for rule in active if rule.rule_id != item.rule_id]
-            conflict = detect_conflict(
-                others,
-                key=canonical_matcher_key(
-                    merchant_pattern=cast(str, target.merchant_pattern),
-                    match_type=cast(str, target.match_type),
-                    min_amount=target.min_amount,
-                    max_amount=target.max_amount,
-                    account_id=target.account_id,
+        keyed = [
+            (
+                item,
+                canonical_matcher_key(
+                    merchant_pattern=cast(str, item.target.merchant_pattern),
+                    match_type=cast(str, item.target.match_type),
+                    min_amount=item.target.min_amount,
+                    max_amount=item.target.max_amount,
+                    account_id=item.target.account_id,
                 ),
+            )
+            for item in activating
+        ]
+        self._refuse_intra_batch_shadow(keyed)
+        changed_ids = {
+            item.rule_id
+            for item in items
+            if item.action != "noop" and item.rule_id is not None
+        }
+        survivors = [
+            rule
+            for rule in load_active_rules(self._db)
+            if rule.rule_id not in changed_ids
+        ]
+        conflicts: list[RuleConflict] = []
+        for item, key in keyed:
+            target = item.target
+            conflict = detect_conflict(
+                survivors,
+                key=key,
                 name=self._rule_target_name(target),
                 merchant_pattern=cast(str, target.merchant_pattern),
                 match_type=cast(str, target.match_type),
@@ -934,6 +957,29 @@ class MatchApplier:
             if conflict is not None:
                 conflicts.append(conflict)
         return conflicts
+
+    @staticmethod
+    def _refuse_intra_batch_shadow(
+        keyed: Sequence[tuple[RuleTargetPlanItem, MatcherKey]],
+    ) -> None:
+        """Refuse a batch whose own members shadow each other.
+
+        Not a recordable conflict: ``app.rule_conflicts`` queues a decision
+        *about an active rule*, and here neither side exists yet — the batch is
+        atomic, so nothing is written and there is no winner to reason about.
+        A malformed request is refused outright, like the duplicate-target
+        check above it, rather than queued for a review that has no subject.
+        """
+        outputs: dict[MatcherKey, tuple[str, str | None]] = {}
+        for item, key in keyed:
+            output = (cast(str, item.target.category), item.target.subcategory)
+            if outputs.get(key, output) != output:
+                raise UserError(
+                    "Two rule targets in this batch match the same "
+                    "transactions and assign different categories.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
+            outputs[key] = output
 
     @staticmethod
     def _rule_target_natural_key(target: RuleStateTarget) -> tuple[object, ...]:

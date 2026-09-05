@@ -515,8 +515,8 @@ def transactions_categorize_rules_create(
     A rule matching the same transactions as an active rule under a different
     category is a **conflict**: it is not created, the envelope carries
     ``status="conflict"``, and the refusal is queued for
-    ``reviews(kind='rule_conflicts')``. Sameness is canonical — a case or
-    whitespace variant of an existing pattern is the same matcher.
+    ``reviews(kind='rule_conflicts')``. Sameness is canonical — a case
+    variant of an existing pattern is the same matcher.
 
     Args:
         rules: List of rule dicts.
@@ -544,7 +544,11 @@ def transactions_categorize_rules_create(
     return build_envelope(
         data=result.to_payload(),
         total_count=len(rules),
-        conflict=result.conflicts > 0,
+        # `status="conflict"` promises the call changed nothing. This batch
+        # routes each row independently, so one call can create a rule *and*
+        # refuse another; the status only claims the refusal when nothing was
+        # written, and `data.conflicts` reports it either way.
+        conflict=result.conflicts > 0 and result.created == 0,
         actions=actions,
     )
 

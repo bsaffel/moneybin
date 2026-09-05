@@ -14,13 +14,18 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
     render_or_json,
+    wide_option,
 )
+from moneybin.cli.render import column_view, render_note, render_rows
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
+from moneybin.limits import RULE_PRIORITY_MAX, RULE_PRIORITY_MIN
 from moneybin.protocol.envelope import build_envelope
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
     from moneybin.services.categorization import ConflictDecision
 
 logger = logging.getLogger(__name__)
@@ -243,7 +248,11 @@ def rules_create(
             data=result.to_payload(),
             sensitivity="low",
             total_count=len(rules),
-            conflict=result.conflicts > 0,
+            # `status="conflict"` promises the call changed nothing. This batch
+            # routes each row independently, so one call can create a rule
+            # *and* refuse another; the status only claims the refusal when
+            # nothing was written, and `data.conflicts` reports it either way.
+            conflict=result.conflicts > 0 and result.created == 0,
             actions=actions,
         )
         render_or_json(envelope, output, cli_actor="rules_create")
@@ -254,16 +263,22 @@ def rules_create(
             f"conflicts {result.conflicts}"
         )
 
-    # Per-row failure warnings always surface — they're diagnostic, not informational.
+    # Per-row failure warnings always surface — they're diagnostic, not
+    # informational — so neither takes `quiet`. Both go to stderr through
+    # `render_note` rather than the logger: each names the rule its author
+    # named, and the log pipeline persists to disk where `SanitizedLogFormatter`
+    # cannot recognize user-authored text.
     for err in result.error_details:
-        logger.warning(
-            f"⚠️  {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}"
+        render_note(
+            f"⚠️  {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}",
+            warn=True,
         )
     for conflict in result.conflict_details:
-        logger.warning(
-            f"👀 {conflict['name']}: {conflict['reason']} "
+        render_note(
+            f"👀 {conflict.name}: {conflict.reason} "
             f"Decide it with `moneybin transactions categorize rules resolve "
-            f"{conflict['conflict_id']} --replace|--reprioritize N|--cancel`."
+            f"{conflict.conflict_id} --replace|--reprioritize N|--cancel`.",
+            warn=True,
         )
 
     if result.skipped > 0:
@@ -316,10 +331,39 @@ def rules_delete(
         logger.info(f"✅ Rule {rule_id} deactivated")
 
 
+_CONFLICT_COLUMNS: tuple[
+    tuple[str, "Callable[[Mapping[str, object]], object]"], ...
+] = (
+    ("conflict", lambda row: str(row["conflict_id"])),
+    ("pattern", lambda row: str(row["proposed_merchant_pattern"])),
+    ("match", lambda row: str(row["proposed_match_type"])),
+    ("existing rule", lambda row: str(row["existing_rule_id"])),
+    (
+        "assigns",
+        lambda row: _label(row["existing_category"], row["existing_subcategory"]),
+    ),
+    ("proposed rule", lambda row: str(row["proposed_name"])),
+    (
+        "wants",
+        lambda row: _label(row["proposed_category"], row["proposed_subcategory"]),
+    ),
+    ("priority", lambda row: row["proposed_priority"]),
+)
+
+_CONFLICT_DEFAULT = ("conflict", "pattern", "assigns", "wants")
+"""The id is what `rules resolve` takes, so it is never the column dropped.
+
+A conflict id is 21 characters, which leaves an 80-column terminal room for
+the pattern and the two categories in disagreement — the question the queue
+exists to answer. Which rule and which proposal follow under `--wide`.
+"""
+
+
 @app.command("list-conflicts")
 def rules_list_conflicts(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    wide: bool = wide_option,
 ) -> None:
     """Show categorization rules refused because another rule owns the matcher."""
     from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
@@ -355,20 +399,17 @@ def rules_list_conflicts(
         return
 
     if not conflicts:
-        if not quiet:
-            logger.info("No rule conflicts awaiting a decision.")
+        render_note("No rule conflicts awaiting a decision.", quiet=quiet)
         return
 
-    if not quiet:
-        logger.info("Rule conflicts awaiting a decision:")
-    for row in conflicts:
-        logger.info(
-            f"  👀 [{row['conflict_id']}] '{row['proposed_merchant_pattern']}' "
-            f"({row['proposed_match_type']}): rule {row['existing_rule_id']} "
-            f"assigns {_label(row['existing_category'], row['existing_subcategory'])}, "
-            f"'{row['proposed_name']}' wanted "
-            f"{_label(row['proposed_category'], row['proposed_subcategory'])}"
-        )
+    # Rows go to stdout through `render_rows`, never through `logger`: the
+    # pattern is merchant text and the proposed name is text its author wrote,
+    # and the log pipeline persists to disk where `SanitizedLogFormatter`
+    # cannot recognize either.
+    view = column_view(
+        _CONFLICT_COLUMNS, conflicts, default=_CONFLICT_DEFAULT, wide=wide
+    )
+    render_rows(view.names, view.rows, numeric=("priority",), total_columns=view.total)
 
 
 def _label(category: object, subcategory: object) -> str:
@@ -420,8 +461,19 @@ def _decision_from_row(index: int, row: object) -> "ConflictDecision":
             f"Row {index} resolution must be one of {', '.join(_RESOLUTIONS)}"
         )
     narrowed = cast('Literal["replace", "reprioritize", "cancel"]', resolution)
-    if priority is not None and not isinstance(priority, int):
+    # `isinstance(True, int)` is True, so the bool arm has to come first or a
+    # JSON `true` reaches the repository as priority 1.
+    if priority is not None and (
+        isinstance(priority, bool) or not isinstance(priority, int)
+    ):
         raise typer.BadParameter(f"Row {index} priority must be an integer")
+    if priority is not None and not (
+        RULE_PRIORITY_MIN <= priority <= RULE_PRIORITY_MAX
+    ):
+        raise typer.BadParameter(
+            f"Row {index} priority must be between {RULE_PRIORITY_MIN} and "
+            f"{RULE_PRIORITY_MAX}"
+        )
     return ConflictDecision(
         conflict_id=conflict_id,
         resolution=narrowed,
@@ -466,9 +518,11 @@ def rules_resolve(
     reprioritize: int | None = typer.Option(
         None,
         "--reprioritize",
+        min=RULE_PRIORITY_MIN,
+        max=RULE_PRIORITY_MAX,
         help=(
             "Activate the refused rule beside the existing one at this priority "
-            "(lower runs first)"
+            f"({RULE_PRIORITY_MIN}-{RULE_PRIORITY_MAX}, lower runs first)"
         ),
     ),
     cancel: bool = typer.Option(
@@ -554,7 +608,7 @@ def rules_resolve(
                         "conflict_id": item.conflict_id,
                         "resolution": item.resolution,
                         "rule_id": item.rule_id,
-                        "superseded_rule_id": item.superseded_rule_id,
+                        "superseded_rule_ids": item.superseded_rule_ids,
                     }
                     for item in results
                 ],
@@ -568,10 +622,10 @@ def rules_resolve(
         )
         return
 
-    if not quiet:
-        activated = sum(1 for item in results if item.rule_id is not None)
-        superseded = sum(1 for item in results if item.superseded_rule_id is not None)
-        logger.info(
-            f"✅ Resolved {len(results)} conflict(s); "
-            f"activated {activated}, superseded {superseded}"
-        )
+    activated = sum(1 for item in results if item.rule_id is not None)
+    superseded = sum(len(item.superseded_rule_ids) for item in results)
+    render_note(
+        f"✅ Resolved {len(results)} conflict(s); "
+        f"activated {activated}, superseded {superseded}",
+        quiet=quiet,
+    )

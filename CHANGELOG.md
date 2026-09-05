@@ -291,7 +291,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `status="conflict"` envelope instead. The proposal is recorded in the new
   `app.rule_conflicts` table and resolved explicitly — `replace`,
   `reprioritize`, or `cancel` — through `reviews`/`reviews_decide` or
-  `moneybin transactions categorize rules list-conflicts`/`resolve`. (#TBD)
+  `moneybin transactions categorize rules list-conflicts`/`resolve`. (#540)
 
 - **A missing or locked keychain entry no longer prints a stack trace.**
   `moneybin db info`, `db unlock` and the DuckDB init-script builder read the
