@@ -26,6 +26,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `summary.degraded_reason` on the CLI and the `investments` MCP tool alike,
   and a withheld holdings answer caveats the two views it points at. (#541)
 
+- **MCP tools publish a sensitivity floor, not a ceiling, and the reference now
+  says which.** A statically classified tool's declared tier could overwrite a
+  higher tier the response had already derived, understating both the response
+  and its privacy audit row; it now raises but never lowers, matching how
+  `discloses=` already behaved. Every entry in the tool reference and the
+  contract matrix reads `at least <tier>` for a statically classified tool and
+  `up to <tier>` for one that classifies per call. (#535)
 - **The public docs have one index, one reference directory, and a test that
   every command they cite exists.** `docs/architecture/` and `docs/tech/` are
   folded into `docs/reference/`; `docs/guides/README.md` and
