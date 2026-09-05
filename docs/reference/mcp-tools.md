@@ -144,9 +144,51 @@ Access: write, not idempotent, open world. Maximum sensitivity: `medium`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `subject` | any |  | required |
-| `destination` | any |  | required |
+| `subject` | one of `bundle`, `report` |  | required |
+| `destination` | one of `local`, `sheets` |  | required |
 | `redaction_mode` | one of `redacted`, `unredacted` |  |  |
+
+#### Variants of `subject`
+
+##### `bundle`
+
+The closed canonical portability bundle.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `bundle` |  | required |
+
+##### `report`
+
+One registered report and typed parameter binding.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `report` |  | required |
+| `report_id` | string |  | required; min length 1 |
+| `parameters` | object of any |  |  |
+
+#### Variants of `destination`
+
+##### `local`
+
+One named local delivery target and its local-only options.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `local` |  | required |
+| `name` | string |  | required; min length 1 |
+| `format` | one of `csv`, `parquet`, `xlsx` | `csv` |  |
+| `compression` | `zip` |  |  |
+
+##### `sheets`
+
+One named Sheets delivery target with native format semantics.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `sheets` |  | required |
+| `name` | string |  | required; min length 1 |
 
 ### exports_set
 
@@ -156,8 +198,33 @@ Access: write, destructive, idempotent, open world. Maximum sensitivity: `medium
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `target` | any |  | required |
+| `target` | one of `local`, `sheets` |  | required |
 | `confirmation_token` | string |  |  |
+
+#### Variants of `target`
+
+##### `local`
+
+Present or absent target state for one named local destination.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `local` |  | required |
+| `state` | one of `present`, `absent` |  | required |
+| `name` | string |  | required; min length 1 |
+| `local_path` | string |  | min length 1; required when `state` is `present`; forbidden unless `state` is `present` |
+
+##### `sheets`
+
+Present or absent target state for one named Sheets destination.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `sheets` |  | required |
+| `state` | one of `present`, `absent` |  | required |
+| `name` | string |  | required; min length 1 |
+| `spreadsheet_id` | string |  | min length 1; required when `state` is `present`; forbidden unless `state` is `present` |
+| `managed_tab_prefix` | string |  | min length 1; forbidden unless `state` is `present` |
 
 ### gsheet
 
@@ -220,8 +287,43 @@ Access: write, destructive, idempotent. Maximum sensitivity: `medium`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `decisions` | array of any |  | required |
+| `decisions` | array of one of `account_link`, `merchant_link`, `security_link` |  | required |
 | `confirmation_token` | string |  |  |
+
+#### Variants of `decisions`
+
+##### `account_link`
+
+Accept or reject one account-link proposal.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `decision_id` | string |  | required; min length 1; max length 64 |
+| `decision` | one of `accept`, `reject` |  | required |
+| `target_id` | string |  | min length 1; max length 64; required when `decision` is `accept`; forbidden when `decision` is `reject` |
+| `kind` | `account_link` |  | required |
+
+##### `merchant_link`
+
+Accept or reject one merchant-link proposal.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `decision_id` | string |  | required; min length 1; max length 64 |
+| `decision` | one of `accept`, `reject` |  | required |
+| `target_id` | string |  | min length 1; max length 64; required when `decision` is `accept`; forbidden when `decision` is `reject` |
+| `kind` | `merchant_link` |  | required |
+
+##### `security_link`
+
+Accept or reject one security-link proposal.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `decision_id` | string |  | required; min length 1; max length 64 |
+| `decision` | one of `accept`, `reject` |  | required |
+| `target_id` | string |  | min length 1; max length 64; required when `decision` is `accept`; forbidden when `decision` is `reject` |
+| `kind` | `security_link` |  | required |
 
 ### import_confirm
 
@@ -458,7 +560,43 @@ Access: write, idempotent. Maximum sensitivity: `low`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `decisions` | array of any |  | required |
+| `decisions` | array of one of `categorization`, `match`, `auto_rule` |  | required |
+
+#### Variants of `decisions`
+
+##### `categorization`
+
+Accept or reject one categorization proposal.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `categorization` |  | required |
+| `decision_id` | string |  | required; min length 1; max length 64 |
+| `decision` | one of `accept`, `reject` |  | required |
+| `category` | string |  | min length 1; max length 100; required when `decision` is `accept`; forbidden when `decision` is `reject` |
+| `subcategory` | string |  | min length 1; max length 100; forbidden when `decision` is `reject` |
+| `canonical_merchant_name` | string |  | min length 1; max length 200; forbidden when `decision` is `reject` |
+
+##### `match`
+
+Accept or reject one transaction-match proposal.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `match` |  | required |
+| `decision_id` | string |  | required; min length 1; max length 64 |
+| `decision` | one of `accept`, `reject` |  | required |
+
+##### `auto_rule`
+
+Accept or reject one auto-generated categorization-rule proposal.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `auto_rule` |  | required |
+| `decision_id` | string |  | required; min length 1; max length 64 |
+| `decision` | one of `accept`, `reject` |  | required |
+| `allow_broad` | boolean | `false` | must be `false` when `decision` is `reject` |
 
 ### sql_query
 
@@ -581,8 +719,39 @@ Access: write, destructive, idempotent. Maximum sensitivity: `low`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `items` | array of any |  | required |
+| `items` | array of one of `category`, `merchant` |  | required |
 | `confirmation_token` | string |  |  |
+
+#### Variants of `items`
+
+##### `category`
+
+Declare one category's target state.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `category` |  | required |
+| `state` | one of `present`, `inactive`, `absent` |  | required |
+| `category_id` | string |  | min length 1; max length 64; required when `state` is `inactive` or `absent` |
+| `category` | string |  | min length 1; max length 100; required when `state` is `present`; forbidden when `state` is `inactive` or `absent` |
+| `subcategory` | string |  | min length 1; max length 100; forbidden when `state` is `inactive` or `absent` |
+| `description` | string |  | max length 2000; forbidden when `state` is `inactive` or `absent` |
+| `force` | boolean | `false` | must be `false` when `state` is `present` or `inactive` |
+
+##### `merchant`
+
+Declare one merchant mapping's target state.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `merchant` |  | required |
+| `state` | one of `present`, `absent` |  | required |
+| `merchant_id` | string |  | min length 1; max length 64; required when `state` is `absent` |
+| `raw_pattern` | string |  | min length 1; max length 500; required when `state` is `present`; forbidden when `state` is `absent` |
+| `canonical_name` | string |  | min length 1; max length 200; required when `state` is `present`; forbidden when `state` is `absent` |
+| `match_type` | one of `exact`, `contains`, `regex` |  | forbidden when `state` is `absent` |
+| `category` | string |  | min length 1; max length 100; forbidden when `state` is `absent` |
+| `subcategory` | string |  | min length 1; max length 100; forbidden when `state` is `absent` |
 
 ### transactions
 
@@ -611,8 +780,69 @@ Access: write, destructive, not idempotent. Maximum sensitivity: `low`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `requests` | array of any |  | required |
+| `requests` | array of one of `note_add`, `note_edit`, `note_delete`, `tags_set`, `splits_set`, `tag_rename` |  | required |
 | `confirmation_token` | string |  |  |
+
+#### Variants of `requests`
+
+##### `note_add`
+
+Append one independently addressable note to a transaction.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `note_add` |  | required |
+| `transaction_id` | string |  | required; min length 1; max length 64 |
+| `text` | string |  | required; max length 2000 |
+
+##### `note_edit`
+
+Replace the text of one note without changing its identity.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `note_edit` |  | required |
+| `note_id` | string |  | required; min length 1; max length 64 |
+| `text` | string |  | required; max length 2000 |
+
+##### `note_delete`
+
+Delete one note by its stable identity.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `note_delete` |  | required |
+| `note_id` | string |  | required; min length 1; max length 64 |
+
+##### `tags_set`
+
+Replace the complete tag collection on one transaction.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `tags_set` |  | required |
+| `transaction_id` | string |  | required; min length 1; max length 64 |
+| `tags` | array of string |  | required |
+
+##### `splits_set`
+
+Replace the complete split collection on one transaction.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `splits_set` |  | required |
+| `transaction_id` | string |  | required; min length 1; max length 64 |
+| `splits` | array of object |  | required |
+
+##### `tag_rename`
+
+Rename one tag everywhere.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `tag_rename` |  | required |
+| `old_name` | string |  | required; min length 1; max length 100 |
+| `new_name` | string |  | required; min length 1; max length 100 |
 
 ### transactions_categorize_assist
 
