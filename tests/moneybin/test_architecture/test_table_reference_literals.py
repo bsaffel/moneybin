@@ -686,6 +686,13 @@ def _locally_bound_names(
                 definitely_rebound |= _target_names(target)
         elif isinstance(body_node, (ast.AnnAssign, ast.AugAssign)):
             definitely_rebound |= _target_names(body_node.target)
+        elif isinstance(body_node, (ast.With, ast.AsyncWith)):
+            # `with cm as query:` at body level rebinds before any later
+            # sink just as an assignment does. A `for` target does NOT
+            # qualify — an empty iterable leaves the outer binding intact.
+            for item in body_node.items:
+                if item.optional_vars is not None:
+                    definitely_rebound |= _target_names(item.optional_vars)
     for scope_node in nodes:
         if isinstance(scope_node, (ast.Global, ast.Nonlocal)):
             declared_outer.update(scope_node.names)
@@ -702,6 +709,20 @@ def _locally_bound_names(
             for item in scope_node.items:
                 if item.optional_vars is not None:
                     bound |= _target_names(item.optional_vars)
+        elif isinstance(scope_node, ast.Match):
+            # Structural pattern matching binds through the PATTERN, not a
+            # target expression — `case {"q": query}`, `case str() as query`,
+            # `case [*rest]`. Every capture is a `MatchAs`/`MatchStar` `name`
+            # or a `MatchMapping` `rest`, at any nesting depth, so walk the
+            # pattern rather than enumerate its shapes.
+            for match_case in scope_node.cases:
+                for pattern_node in ast.walk(match_case.pattern):
+                    if isinstance(pattern_node, (ast.MatchAs, ast.MatchStar)):
+                        if pattern_node.name is not None:
+                            bound.add(pattern_node.name)
+                    elif isinstance(pattern_node, ast.MatchMapping):
+                        if pattern_node.rest is not None:
+                            bound.add(pattern_node.rest)
         elif isinstance(scope_node, ast.ExceptHandler):
             if scope_node.name is not None:
                 bound.add(scope_node.name)
@@ -2222,3 +2243,94 @@ def test_conditionally_assigned_local_does_not_report_the_module_literal(
         "    db.execute(query)\n"
     )
     assert _scan_source(tmp_path, source) == []
+
+
+@pytest.mark.parametrize(
+    ("label", "pattern"),
+    [
+        ("mapping_capture", '        case {"q": query}:\n'),
+        ("as_capture", "        case str() as query:\n"),
+        ("star_capture", "        case [_, *query]:\n"),
+    ],
+)
+def test_match_capture_shadows_a_same_named_module_literal(
+    tmp_path: Path, label: str, pattern: str
+) -> None:
+    """Structural pattern matching binds names, and those bindings are local.
+
+    `match` binds through the PATTERN rather than a target expression, so it
+    matched none of the enumerated binder shapes and every capture named
+    `query` resolved to the module literal instead. Found by auditing the
+    binder enumeration against the language rather than by waiting for the
+    shape to be reported — the same under-enumeration as the round-11
+    parameter case, one category further out.
+    """
+    source = (
+        'query = "SELECT * FROM core.foo"\n'  # noqa: S608  # fixture, never executed
+        "\n"
+        "def f(db, v):\n"
+        "    match v:\n"
+        f"{pattern}"
+        "            db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == [], label
+
+
+def test_match_without_a_capture_still_resolves_the_module_literal(
+    tmp_path: Path,
+) -> None:
+    """A `case` binding nothing must not suppress the module literal.
+
+    Control for the three above: walking a pattern for captures must find
+    none here, so the name still resolves. Without this, treating every
+    `ast.Match` as binding would pass those tests just as well.
+    """
+    source = (
+        'query = "SELECT * FROM core.foo"\n'
+        "\n"
+        "def f(db, v):\n"
+        "    match v:\n"
+        "        case 1:\n"
+        "            db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
+
+
+def test_global_rebound_by_a_body_level_with_is_a_definite_overwrite(
+    tmp_path: Path,
+) -> None:
+    """`with cm as query:` at body level rebinds before any later sink.
+
+    Definiteness is about whether the binding is guaranteed to run, not
+    about which statement performs it — an assignment and a body-level
+    `with` are equally certain.
+    """
+    source = (
+        'query = "SELECT * FROM core.foo"\n'
+        "\n"
+        "def f(db, cm):\n"
+        "    global query\n"
+        "    with cm as query:\n"
+        "        pass\n"
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == []
+
+
+def test_global_rebound_by_a_loop_target_is_not_definite(tmp_path: Path) -> None:
+    """A `for` target is NOT a definite overwrite — an empty iterable skips it.
+
+    Paired with the `with` test above to pin where the line falls. Treating
+    every body-level binder as definite would silence the module literal
+    here, where an empty `rows` leaves it live and executing.
+    """
+    source = (
+        'query = "SELECT * FROM core.foo"\n'
+        "\n"
+        "def f(db, rows):\n"
+        "    global query\n"
+        "    for query in rows:\n"
+        "        pass\n"
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
