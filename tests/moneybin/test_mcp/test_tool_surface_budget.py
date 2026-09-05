@@ -146,7 +146,11 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "investments": (1_762, 4_908),
     "transactions": (1_287, 2_383),
     "transactions_categorize_rules": (564, 318),
-    "reviews": (703, 8_687),
+    # Grew 244 bytes for the rule-conflict queue: one more `kind` enum member
+    # plus the sentence saying what that queue holds. A caller who cannot read
+    # from the description that `rule_conflicts` names both rules and the
+    # category each assigns has to open the queue to find out what it is.
+    "reviews": (947, 8_687),
     "taxonomy": (669, 620),
     "import_status": (642, 1_236),
     "gsheet": (441, 1_016),
@@ -158,18 +162,26 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # makes each description public text.
     "accounts_balance_assert": (1_420, 1_679),
     "transactions_annotate": (3_457, 3_653),
-    "transactions_categorize_rules_set": (3_047, 2_670),
+    # Plus 216 bytes stating the conflict refusal: a target claiming an active
+    # rule's matcher under a different category refuses the *whole* batch with
+    # `status="conflict"`. An agent that reads the refusal as a partial failure
+    # retries the batch instead of opening the conflict queue.
+    "transactions_categorize_rules_set": (3_263, 2_670),
     # The one cohort whose candidate now costs more than the four tools it
-    # replaced (2,727 vs 2,566). The overrun is a disclosure the replaced
-    # tools never owed: accepting a match can reverse a transfer the user
-    # accepted, and an agent that cannot read that from the description
-    # reports the reversal as a clean accept. Registry-wide the consolidation
-    # still stands at -34.3% — 59,577 bytes against the baseline's 90,734, both
-    # readable as `total_bytes` in the two fixtures this test loads. (The figure
-    # has drifted twice before — recorded as -38.0%, then -37.0% — because
-    # nothing fails when a comment goes stale. Recompute it from the fixtures
-    # rather than trusting this line.)
-    "reviews_decide": (2_727, 2_566),
+    # replaced (4,127 vs 2,566). The overrun is two disclosures the replaced
+    # tools never owed. First: accepting a match can reverse a transfer the
+    # user accepted, and an agent that cannot read that from the description
+    # reports the reversal as a clean accept. Then 1,400 more for the
+    # rule-conflict variant — its own request schema plus the three
+    # resolutions, which are not the accept/reject axis every other kind uses,
+    # so an agent given only `kind="rule_conflict"` would guess "accept" and
+    # get a validation error. Registry-wide the consolidation still stands at
+    # -32.0% — 61,735 bytes against the baseline's 90,734, both readable as
+    # `total_bytes` in the two fixtures this test loads. (The figure has
+    # drifted three times before — recorded as -38.0%, -37.0%, then -34.3% —
+    # because nothing fails when a comment goes stale. Recompute it from the
+    # fixtures rather than trusting this line.)
+    "reviews_decide": (4_127, 2_566),
     # Grew by the same disclosure, for the same reason: accepting an account
     # decision re-runs matching, which can reverse a transfer the user
     # accepted. Still less than half the cohort it replaced.

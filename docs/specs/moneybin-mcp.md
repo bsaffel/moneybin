@@ -72,9 +72,9 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `transactions_categorize_commit` | `items` | Commit reviewed categorizations | Confirmed write / maximum low |
 | `transactions_categorize_run` | `methods`, `operation` | Run categorization engines | Audited workflow / maximum low |
 | `transactions_categorize_rules` | `view` | Current categorization rules | Read / maximum high |
-| `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state | Confirmed write / maximum low |
-| `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows | Read / dynamic / maximum high / queue-derived |
-| `reviews_decide` | `decisions` | Resolve ordinary or auto-rule review items; `kind='auto_rule'` carries proposal-scoped `allow_broad` | Confirmed write / maximum low |
+| `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state; refuses the whole batch with `status="conflict"` when a target claims an active rule's matcher under a different category | Confirmed write / maximum low |
+| `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows and both sides of each `kind='rule_conflicts'` row | Read / dynamic / maximum high / queue-derived |
+| `reviews_decide` | `decisions` | Resolve ordinary, auto-rule, or rule-conflict review items; `kind='auto_rule'` carries proposal-scoped `allow_broad`, `kind='rule_conflict'` takes `replace` / `reprioritize` / `cancel` | Confirmed write / maximum low |
 | `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / maximum medium (prompt-disclosed) |
 | `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / maximum medium / view-derived |
 | `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / maximum low |
@@ -134,7 +134,11 @@ resumable `accounts_balances` views retain immutable-key cursors.
 ## Response contract
 
 Every tool returns canonical JSON text and equivalent structured content with a
-`summary`, `data`, and `actions` envelope. Amounts use the accounting
+`summary`, `data`, and `actions` envelope. `status` is `"ok"`, `"error"`, or
+`"conflict"`. `"conflict"` is a **successful** outcome, not a failure: the
+operation ran, deliberately changed nothing because live state disagrees with
+the request, and `data` carries what disagreed. `error` stays null on it, and
+an actual failure still outranks it. Amounts use the accounting
 convention (negative expense, positive income) unless the tool explicitly
 states a presentation override; currency-bearing responses name their currency
 in `summary.display_currency`. Current registry tools advertise zero output
@@ -206,6 +210,28 @@ and confirmation contracts.
   and `gsheet` expose typed views or filters under one domain identity. Their
   paired `_set`, `_decide`, or domain verb tools retain material write and
   confirmation boundaries.
+- **Rule conflicts are refused, queued, and decided.** Two categorization rules
+  whose *canonical matcher* is equal fire on exactly the same transactions;
+  when they also disagree about the category, priority and creation order pick
+  the winner and the loser has no effect. The canonical matcher normalizes the
+  pattern (case and surrounding whitespace, except for `regex`, where case
+  folding would rewrite `\D` into `\d`), the amount bounds at the rule column's
+  grain, the match type, and the account scope; `name` and `priority` are
+  metadata, not identity. Same matcher **and** same category is still
+  idempotent and returns the existing rule. Same matcher, different category is
+  refused: no rule is activated, the proposal is recorded in
+  `app.rule_conflicts`, and the response carries `status="conflict"` — from
+  `transactions_categorize_rules_set` the whole batch is refused, because an
+  atomic target-state declaration that dropped only the conflicting member
+  would report a state that was never applied. `reviews(kind='rule_conflicts')`
+  reads the queue with both rules, the shared matcher, the category each
+  assigns, and which rule decides today; `reviews_decide` with
+  `kind='rule_conflict'` takes `replace` (supersede the existing rule),
+  `reprioritize` (activate the proposal beside it at an explicit `priority`),
+  or `cancel` (change nothing). A conflict binds to the existing rule's
+  `updated_at`: editing that rule invalidates the recorded conflict, which then
+  leaves the queue, and a resolution quoting it is refused as stale. Every
+  mutation is audited and reversible with `system_audit_undo`.
 - **An account merge is confirmed by prompt only.** `identity_links_decide`
   accepting an `account_link`, and `accounts_links_set` with `action="accept"`,
   are the one exception to the opaque-token fallback: they refuse a supplied

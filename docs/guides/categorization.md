@@ -77,6 +77,8 @@ All commands live under `moneybin transactions categorize ...`. Every read comma
 | `rules create` | Single rule: `NAME --pattern X --category Y [--match-type contains\|exact\|regex] [--priority N] [--min-amount/--max-amount] [--account-id ID]`. Batch: `--from-file rules.json`. `--reapply` re-evaluates uncategorized rows. A `contains` pattern shorter than 4 characters is refused unless `--allow-broad` — see [Auto-rule safety guards](#auto-rule-safety-guards). |
 | `rules delete <rule_id>` | Soft-deletes a rule (`is_active=false`). `--reapply` strips categorizations the rule wrote and re-evaluates those rows against remaining matchers. |
 | `rules apply` | Runs only active rules, equivalent to `run --methods rules`. Merchant and provider-native passes are not invoked. |
+| `rules list-conflicts` | Lists rules that were refused because an active rule already matches the same transactions under a different category. Shows both rules, the shared pattern, and the category each assigns. |
+| `rules resolve` | Decides a conflict: `CONFLICT_ID` with exactly one of `--replace` (supersede the existing rule), `--reprioritize N` (activate the refused rule beside it at priority N), or `--cancel`. Batch: `--from-file` with a JSON list of `{conflict_id, resolution, priority}`; the batch applies atomically. `--yes` skips the confirmation. |
 | `auto review` | Lists pending auto-rule proposals with sample transactions, trigger counts, and estimated match counts; flags broad proposals. |
 | `auto accept` | Batch-accept/reject proposals: `--accept <id>...`, `--reject <id>...`, `--accept-all`, `--reject-all`. Explicit rejects override `--accept-all`. `--allow-broad` is required to accept a proposal flagged broad — see [Auto-rule safety guards](#auto-rule-safety-guards). |
 | `auto stats` | Counts: active auto-rules, pending proposals, transactions auto-ruled. |
@@ -96,8 +98,8 @@ MCP uses the bounded standard surface rather than one tool for every CLI subcomm
 | `transactions_categorize_rules_set` | Set the complete reviewed rule target state. |
 | `transactions_categorize_run` | `operation="categorize"` (default) runs the deterministic engines (`methods=["rules","merchants"]`). `operation="improve_ai"` runs the `improve-ai` upgrade pass instead (forbids `methods`). |
 | `system_status` | Return categorization coverage and queue counts with `sections=["categorization"]`. |
-| `reviews` | Read the pending categorization or auto-rule queue with `kind="categorization"` or `kind="auto_rules"`. |
-| `reviews_decide` | Accept or reject reviewed categorization proposals or auto-rule proposals in one `decisions` batch. `kind="auto_rule"` decisions may set a per-decision `allow_broad` field — see [Auto-rule safety guards](#auto-rule-safety-guards). |
+| `reviews` | Read the pending categorization, auto-rule, or rule-conflict queue with `kind="categorization"`, `kind="auto_rules"`, or `kind="rule_conflicts"`. |
+| `reviews_decide` | Accept or reject reviewed categorization proposals or auto-rule proposals in one `decisions` batch. `kind="auto_rule"` decisions may set a per-decision `allow_broad` field — see [Auto-rule safety guards](#auto-rule-safety-guards). `kind="rule_conflict"` decisions take `replace`, `reprioritize` (with `priority`), or `cancel` — see [Rule conflicts](#rule-conflicts). |
 | `taxonomy` / `taxonomy_set` | Read or declare category and merchant target state with `view="categories"` or `view="merchants"`. |
 
 Every tool returns the standard response envelope (`summary`, `data`, `actions`). `summary.display_currency` carries the currency for any amount-bearing data; amounts follow the accounting convention (negative = expense, positive = income; transfers exempt).
@@ -120,9 +122,10 @@ category items with `kind="category"` and `state="present" | "inactive" |
 `note_add`, `note_edit`, `note_delete`, `tags_set`, `splits_set`, or
 `tag_rename`.
 
-Submit categorization and auto-rule decisions in separate `reviews_decide`
-calls. An atomic decision batch may contain ordinary review kinds together, or
-only `kind="auto_rule"` items; it cannot mix the two.
+Submit categorization, auto-rule, and rule-conflict decisions in separate
+`reviews_decide` calls. An atomic decision batch may contain ordinary review
+kinds together, or only `kind="auto_rule"` items, or only
+`kind="rule_conflict"` items; it cannot mix them.
 
 ## A typical session
 
@@ -230,7 +233,7 @@ A top-level JSON array. Each item:
 
 - **`commit-from-file` re-runs.** Re-running the same `proposals.json` is safe: each row attempts a write at `ai`-priority. The first run lands; the second run finds an existing row already at `ai`-priority and the SQL precedence guard (`<=`) lets it overwrite with identical values — no new exemplars accrue because the merchant accumulator only creates a new merchant or appends a new exemplar when the row's `match_text` isn't already covered (`list_distinct(list_append(...))`). Net effect: idempotent.
 - **Re-running after a higher-source write has happened.** If a rule or `user` write covered a row between two `commit-from-file` runs, the second `ai` write is rejected and surfaces as a per-row `lower_priority_source` skip — no overwrite, no error. See [Error taxonomy](#error-taxonomy).
-- **`rules create` dedup.** Active rules are deduped by `(merchant_pattern, match_type, min_amount, max_amount, account_id, category, subcategory)`; `name` and `priority` are metadata. Retrying the same payload returns the existing `rule_id` and creates no new rows. The result envelope reports `created`, `existing`, and `skipped` separately.
+- **`rules create` dedup.** Active rules are deduped by their *canonical matcher* — `merchant_pattern`, `match_type`, `min_amount`, `max_amount`, `account_id` — plus `category` and `subcategory`; `name` and `priority` are metadata. The matcher is canonical, not literal: `contains` and `exact` patterns compare case-insensitively and ignore surrounding whitespace (matching the matcher's own behavior), amount bounds compare at the stored `DECIMAL(18,2)` grain, and a `regex` pattern compares verbatim. Retrying the same payload returns the existing `rule_id` and creates no new rows. Same matcher with a *different* category is a conflict, not a second rule — see [Rule conflicts](#rule-conflicts). The result envelope reports `created`, `existing`, `skipped`, and `conflicts` separately.
 - **`run` / `rules apply` re-invocation.** `run` executes its selected deterministic engines; `rules apply` executes only rules. Both are idempotent against a stable database: a second run with no new uncategorized rows writes nothing.
 
 ## Error taxonomy
@@ -266,7 +269,7 @@ A rule has:
 3. Strip trailing store IDs / reference numbers
 4. Collapse multiple spaces, trim
 
-Casing is preserved (matching is case-sensitive against the normalized form). If you want case-insensitive matching, use `regex` with `(?i)`.
+Matching is **case-insensitive**: `exact` and `contains` compare both sides lowercased, and `regex` patterns compile with `re.IGNORECASE`. A `(?i)` prefix on a regex is therefore redundant, not required.
 
 **Worked example — regex with case-insensitive flag:**
 
@@ -281,6 +284,56 @@ moneybin transactions categorize rules create "Spotify subscription" \
 **Match outcome.** The first rule that matches in priority order wins. Tie-break for equal `priority` is `created_at ASC` — older rules win ties. Rules write `categorized_by='rule'` (or `auto_rule` for system-promoted rules); the source-precedence guard means a rule write can replace `auto_rule`, `migration`, `ml`, `provider_native`, and `ai` writes, but never a `user` edit.
 
 **Soft delete.** `rules delete` sets `is_active=false`; the row stays in the table. `--reapply` additionally strips categorizations the rule wrote (`categorized_by IN ('rule', 'auto_rule')` with this `rule_id`) and re-runs the deterministic cascade so the affected rows fall back to other matchers. Higher-precedence writes (`user`, `migration`, etc.) that happen to reference this `rule_id` are left intact.
+
+## Rule conflicts
+
+Two rules whose canonical matcher is equal fire on exactly the same
+transactions. If they also disagree about the category, priority and creation
+order silently pick the winner and the other rule has no effect — while
+creation reports success. MoneyBin refuses that.
+
+- **Same matcher, same category** → idempotent. You get the existing
+  `rule_id` back and nothing is written.
+- **Same matcher, different category or subcategory** → a conflict. No rule is
+  activated. The refused proposal is recorded in `app.rule_conflicts`, the
+  response carries `status="conflict"` (a successful call that deliberately
+  changed nothing — not an error), and the CLI prints a `👀` line naming the
+  conflict id.
+
+Sameness is canonical, so a case- or whitespace-variant of an existing pattern
+is the same rule, not a second one. A `regex` pattern is the exception and is
+compared verbatim: case-folding it would rewrite `\D` (non-digit) into `\d`
+(digit) and invert what it matches.
+
+Inspect and decide:
+
+```bash
+moneybin transactions categorize rules list-conflicts
+moneybin transactions categorize rules resolve <conflict_id> --replace
+moneybin transactions categorize rules resolve <conflict_id> --reprioritize 50
+moneybin transactions categorize rules resolve <conflict_id> --cancel
+```
+
+| Resolution | Effect |
+|---|---|
+| `replace` | Deactivates the existing rule and activates the refused one at its own priority. |
+| `reprioritize N` | Activates the refused rule *beside* the existing one at priority `N`. Both stay active, so the lower number decides. |
+| `cancel` | Discards the refused rule. Live state is unchanged. |
+
+Agents use the same queue and decisions through
+`reviews(kind="rule_conflicts")` and `reviews_decide` with
+`kind="rule_conflict"`. `--from-file` (CLI) and one `decisions` batch (MCP)
+apply several resolutions atomically.
+
+**Conflicts go stale on purpose.** A recorded conflict binds to the existing
+rule's `updated_at`. Edit or deactivate that rule and the comparison no longer
+describes anything live: the conflict leaves the queue, and a resolution
+quoting it is refused rather than applied against a rule you never saw.
+Re-read `rules list-conflicts` and decide again.
+
+Every write — the recorded conflict, the deactivation, the new rule — is
+audited, so a resolution is reversible with `moneybin system audit` /
+`system_audit_undo`.
 
 ## Auto-rule safety guards
 
@@ -356,7 +409,6 @@ There is no `categorize revert` command today. To investigate or undo a batch:
 - **Audit-based revert.** No `categorize revert` or `commit-from-file --undo`; bulk paths are also audit-silent, so an "undo last batch" tool would need both audit coverage and a revert primitive.
 - **Category-rename cascades** beyond the FK-resolved view path. Renaming a category surfaces immediately on read because `core.dim_categories` resolves through the FK, but the text snapshots on writer tables aren't rewritten yet.
 - **Cross-row pattern conditions.** Rules today match per-row. Rules that consider sequences (e.g., "this transaction is a refund of an earlier one") would need a new condition primitive.
-- **Rule-conflict detection.** Idempotency dedupes the exact same matcher; rules with the same matcher but a *different* category still create a new row. Detecting and surfacing the conflict at create-time is tracked as follow-up work.
 
 ## Related
 

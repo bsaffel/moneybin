@@ -227,8 +227,9 @@ class ResponseEnvelope[T]:
     error: ErrorDetail | None = None
     next_cursor: str | None = None
     recovery_actions: list[RecoveryAction] | None = None
-    # Derived in __post_init__, never caller-supplied — see the method's docstring.
-    status: Literal["ok", "error"] = "ok"
+    # Derived in __post_init__ — see the method's docstring for the one value a
+    # caller may declare.
+    status: Literal["ok", "conflict", "error"] = "ok"
     # Internal observability only: per-call DataClass names for dynamic-SQL
     # tools, read by the @mcp_tool decorator to log accurate classes_returned.
     # NOT part of the wire contract — `to_dict()` omits it, and `to_dict()` is
@@ -240,10 +241,20 @@ class ResponseEnvelope[T]:
 
         `status` is a real field rather than a `to_dict()` computation so that
         every consumer of the envelope — the wire, direct dataclass readers,
-        and tests — sees one value from one source. Any caller-supplied value
-        is overwritten on purpose.
+        and tests — sees one value from one source.
+
+        `"conflict"` is the one value a caller may declare: an operation that
+        ran to completion and deliberately changed nothing because live state
+        disagrees with the request, and the response carries what disagreed.
+        That is not a failure — `error` stays null, `data` is the conflict —
+        so it cannot be spelled as an `ErrorDetail`. `error` still wins:
+        anything genuinely broken reads as `"error"`, and every other supplied
+        value normalizes to `"ok"`.
         """
-        self.status = "error" if self.error is not None else "ok"
+        if self.error is not None:
+            self.status = "error"
+        elif self.status != "conflict":
+            self.status = "ok"
 
     def with_error(self, error: ErrorDetail) -> ResponseEnvelope[T]:
         """Return a copy carrying `error`, with `status` re-derived.
@@ -314,6 +325,7 @@ def build_envelope(
     recovery_actions: list[RecoveryAction] | None = None,
     classes_returned: list[str] | None = None,
     applied_rates: list[dict[str, Any]] | None = None,
+    conflict: bool = False,
 ) -> ResponseEnvelope[Any]:
     """Build a ResponseEnvelope with computed metadata.
 
@@ -366,6 +378,10 @@ def build_envelope(
             for dynamic-SQL tools that self-classify per call (``dynamic_classification``
             mode). Read by the ``@mcp_tool`` decorator for privacy audit logging.
             NOT serialized to the wire: ``to_dict()`` never emits this field.
+        conflict: The operation completed and deliberately changed nothing
+            because live state disagrees with the request; ``data`` carries
+            what disagreed. Sets ``status="conflict"``. Not a failure — pass
+            an ``ErrorDetail`` for that instead.
 
     Returns:
         A fully populated ResponseEnvelope.
@@ -424,6 +440,7 @@ def build_envelope(
         next_cursor=next_cursor,
         recovery_actions=recovery_actions,
         classes_returned=classes_returned,
+        status="conflict" if conflict else "ok",
     )
 
 

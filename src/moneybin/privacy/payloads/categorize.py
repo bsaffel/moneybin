@@ -12,7 +12,8 @@ Tier derivation summary:
   - ``RuleRow``                    → Tier.HIGH (TXN_AMOUNT via min/max_amount;
                                     account_id = RECORD_ID per spec D6)
   - ``CategorizeRulesPayload``     → Tier.HIGH (via RuleRow)
-  - ``RulesCreatePayload``         → Tier.LOW  (AGGREGATE only — counts + IDs)
+  - ``RulesCreatePayload``         → Tier.LOW  (counts, IDs, and the category
+                                    pair a conflict reason names — all LOW)
   - ``RulesDeletePayload``         → Tier.LOW  (RECORD_ID — rule_id only)
   - ``PendingTxnRow``              → Tier.HIGH (TXN_AMOUNT via amount;
                                     account_id = RECORD_ID per spec D6)
@@ -34,7 +35,7 @@ middleware must not mask further.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Annotated, Literal
 
@@ -80,11 +81,29 @@ class CategorizationRuleStateResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CategorizationRuleConflictSummary:
+    """One target refused because an active rule owns the same matcher."""
+
+    conflict_id: Annotated[str, DataClass.RECORD_ID]
+    existing_rule_id: Annotated[str, DataClass.RECORD_ID]
+    existing_category: Annotated[str, DataClass.CATEGORY]
+    existing_subcategory: Annotated[str | None, DataClass.CATEGORY]
+    proposed_category: Annotated[str, DataClass.CATEGORY]
+    proposed_subcategory: Annotated[str | None, DataClass.CATEGORY]
+    reason: Annotated[str, DataClass.CATEGORY]
+
+
+@dataclass(frozen=True, slots=True)
 class CategorizationRulesSetPayload:
-    """Result of atomically declaring one or more rule target states."""
+    """Result of atomically declaring one or more rule target states.
+
+    ``conflicts`` is non-empty only on a ``status="conflict"`` envelope, where
+    ``results`` is empty because nothing was written.
+    """
 
     results: list[CategorizationRuleStateResult]
     operation_id: Annotated[str, DataClass.RECORD_ID]
+    conflicts: list[CategorizationRuleConflictSummary] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +260,15 @@ class RulesCreatePayload:
     skipped: Annotated[int, DataClass.AGGREGATE]
     rule_ids: Annotated[list[str], DataClass.RECORD_ID]
     error_details: Annotated[list[dict[str, str]], DataClass.AGGREGATE]
+    conflicts: Annotated[int, DataClass.AGGREGATE] = 0
+    conflict_ids: Annotated[list[str], DataClass.RECORD_ID] = field(
+        default_factory=list
+    )
+    # CATEGORY, not AGGREGATE: each entry's `reason` names both categories in
+    # the disagreement, which is the whole point of showing it.
+    conflict_details: Annotated[list[dict[str, str]], DataClass.CATEGORY] = field(
+        default_factory=list
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -57,6 +57,7 @@ from moneybin.tables import (
     PLAID_SECURITIES,
     PROFILE_SETTINGS,
     PROPOSED_RULES,
+    RULE_CONFLICTS,
     SECURITIES,
     SECURITY_LINKS,
     SECURITY_PRICE_OVERRIDES,
@@ -105,7 +106,10 @@ _EXCHANGE_RATE_OVERRIDES_PK_EXPR = (
 # hard-coded constant from these sets — a runtime guard that enforces the
 # code-supplied-literal contract per `.claude/rules/security.md` (allowlist
 # dynamic SQL), closing the door before a future caller passes a tainted value.
-_ALLOWED_UPDATED_EXPRS = frozenset({"GREATEST(decided_at, reversed_at)"})
+_ALLOWED_UPDATED_EXPRS = frozenset({
+    "GREATEST(decided_at, reversed_at)",
+    "GREATEST(detected_at, resolved_at)",
+})
 _ALLOWED_PK_EXPRS = frozenset({
     _BALANCE_ASSERTIONS_PK_EXPR,
     _SECURITY_PRICE_OVERRIDES_PK_EXPR,
@@ -375,6 +379,7 @@ class DoctorService:
 
         Covers ``user_categories``, ``category_overrides``, ``gsheet_connections``,
         ``user_merchants``, ``categorization_rules``, ``proposed_rules``,
+        ``rule_conflicts``,
         ``transaction_categories``, ``account_settings``, ``balance_assertions``,
         ``budgets``, ``profile_settings``, plus the edge writers
         ``tabular_formats``, ``match_decisions``, ``imports``, the
@@ -393,7 +398,8 @@ class DoctorService:
 
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
-        ``categorized_at``, ``match_decisions`` →
+        ``categorized_at``, ``rule_conflicts`` →
+        ``GREATEST(detected_at, resolved_at)``, ``match_decisions`` →
         ``GREATEST(decided_at, reversed_at)`` (the latest of any mutation, so a
         bypass insert, status update, *or* reversal is caught) — the
         ``account_links`` / ``account_link_decisions`` link tables use the same
@@ -417,6 +423,12 @@ class DoctorService:
                 PROPOSED_RULES,
                 "proposed_rule_id",
                 updated_col="proposed_at",
+                full=full,
+            ),
+            self._run_app_audit_coverage(
+                RULE_CONFLICTS,
+                "conflict_id",
+                updated_expr="GREATEST(detected_at, resolved_at)",
                 full=full,
             ),
             self._run_app_audit_coverage(

@@ -135,6 +135,21 @@ from moneybin.services.categorization.assist import (
     AssistBridge,
     RedactedTransaction,
 )
+from moneybin.services.categorization.conflicts import (
+    ConflictDecision as ConflictDecision,
+)
+from moneybin.services.categorization.conflicts import (
+    ConflictDecisionResult as ConflictDecisionResult,
+)
+from moneybin.services.categorization.conflicts import (
+    RuleConflict as RuleConflict,
+)
+from moneybin.services.categorization.conflicts import (
+    RuleConflictsService as RuleConflictsService,
+)
+from moneybin.services.categorization.conflicts import (
+    record_conflicts as record_conflicts,
+)
 from moneybin.services.categorization.matcher import (
     CategorizationMatcher,
     UncategorizedRow,
@@ -191,6 +206,7 @@ class CategorizationService:
         ``category.set`` / ``category.clear`` audit events alongside the
         ``app.transaction_categories`` mutation.
         """
+        self._db = db
         self._audit = audit if audit is not None else AuditService(db)
         self._matcher = CategorizationMatcher(db)
         self._review_decisions = CategorizationDecisionsRepo(db)
@@ -458,6 +474,43 @@ class CategorizationService:
             self._applier.delete_rule_categorizations(rule_id, actor=actor)
             self.categorize_pending()
         return deactivated
+
+    # -- Rule conflicts --
+
+    def list_rule_conflicts(self) -> list[dict[str, Any]]:
+        """Return rule conflicts awaiting a decision, oldest first."""
+        return RuleConflictsService(self._db).list_pending()
+
+    def list_rule_conflict_history(self) -> list[dict[str, Any]]:
+        """Return settled rule conflicts, newest decision first."""
+        return RuleConflictsService(self._db).list_history()
+
+    def count_rule_conflicts(self) -> int:
+        """Return the exact number of rule conflicts awaiting a decision."""
+        return RuleConflictsService(self._db).count_pending()
+
+    def count_rule_conflict_history(self) -> int:
+        """Return the exact number of settled rule conflicts."""
+        return RuleConflictsService(self._db).count_history()
+
+    def resolve_rule_conflicts(
+        self,
+        decisions: Sequence[ConflictDecision],
+        *,
+        actor: str = "system",
+    ) -> list[ConflictDecisionResult]:
+        """Apply an atomic batch of rule-conflict resolutions."""
+        return RuleConflictsService(self._db).decide(decisions, actor=actor)
+
+    def record_rule_conflicts(
+        self,
+        conflicts: Sequence[RuleConflict],
+        *,
+        actor: str = "system",
+        surface: str = "rule_targets",
+    ) -> None:
+        """Persist conflicts a preflight found so review can offer a decision."""
+        record_conflicts(self._db, conflicts, actor=actor, surface=surface)
 
     def plan_rule_targets(self, targets: Sequence[RuleStateTarget]) -> RuleTargetPlan:
         """Preflight a complete categorization-rule target-state batch."""

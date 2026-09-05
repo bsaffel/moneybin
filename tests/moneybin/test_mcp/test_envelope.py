@@ -197,6 +197,27 @@ class TestResponseEnvelope:
         assert d["error"]["code"] == error_codes.INFRA_DATABASE_LOCKED
 
     @pytest.mark.unit
+    def test_conflict_is_a_successful_outcome(self) -> None:
+        """An operation that ran and deliberately changed nothing is not an error."""
+        envelope = build_envelope(data={"conflicts": 1}, conflict=True)
+        assert envelope.status == "conflict"
+        assert envelope.error is None
+        assert envelope.to_dict()["status"] == "conflict"
+
+    @pytest.mark.unit
+    def test_error_outranks_a_declared_conflict(self) -> None:
+        from moneybin.errors import ErrorDetail
+
+        envelope = build_envelope(data={"conflicts": 1}, conflict=True).with_error(
+            ErrorDetail(message="DB locked", code=error_codes.INFRA_DATABASE_LOCKED)
+        )
+        assert envelope.status == "error"
+
+    @pytest.mark.unit
+    def test_build_envelope_defaults_to_ok(self) -> None:
+        assert build_envelope(data={"n": 1}).status == "ok"
+
+    @pytest.mark.unit
     def test_to_json_includes_status(self) -> None:
         import json
 

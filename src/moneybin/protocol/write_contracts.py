@@ -313,11 +313,58 @@ class AutoRuleDecisionRequest(_StrictRequest):
         return self
 
 
+class RuleConflictDecisionRequest(_StrictRequest):
+    """Resolve one categorization-rule conflict.
+
+    Not an accept/reject axis: two active rules claim the same matcher, so the
+    caller says which one survives. ``replace`` supersedes the existing rule
+    with the proposal, ``reprioritize`` activates the proposal beside it at an
+    explicit priority, ``cancel`` leaves live state alone.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra=_conditional_schema_extra(
+            _conditional_schema_branch(
+                "decision",
+                "reprioritize",
+                required=("priority",),
+            ),
+            _conditional_schema_branch(
+                "decision",
+                "replace",
+                forbidden=("priority",),
+            ),
+            _conditional_schema_branch(
+                "decision",
+                "cancel",
+                forbidden=("priority",),
+            ),
+        ),
+    )
+
+    kind: Literal["rule_conflict"]
+    decision_id: IdentifierString
+    decision: Literal["replace", "reprioritize", "cancel"]
+    priority: Annotated[int, Field(strict=True, ge=0, le=10_000)] | None = None
+
+    @model_validator(mode="after")
+    def _validate_decision(self) -> Self:
+        if self.decision == "reprioritize" and self.priority is None:
+            raise ValueError("Reprioritize requires priority")
+        if self.decision != "reprioritize" and self.priority is not None:
+            raise ValueError("Only reprioritize accepts priority")
+        return self
+
+
 OrdinaryReviewDecisionRequest = CategorizationDecisionRequest | MatchDecisionRequest
 
 
 ReviewDecisionRequest = Annotated[
-    OrdinaryReviewDecisionRequest | AutoRuleDecisionRequest,
+    OrdinaryReviewDecisionRequest
+    | AutoRuleDecisionRequest
+    | RuleConflictDecisionRequest,
     Field(discriminator="kind"),
 ]
 

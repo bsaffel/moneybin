@@ -1,5 +1,5 @@
 {
-  "sha256": "2db17b883f84fb1132069376ec74e46e83a070d3a46a5c59a05b5ae71b48851b",
+  "sha256": "b7893e3dc6ca17c24af46408e0293af93472d90ef25aab0f9e32b010413c3240",
   "tool_count": 50,
   "tools": [
     {
@@ -2796,7 +2796,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Return exact review counts or one normalized pending/history queue with deterministic cursor pagination.",
+        "description": "Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. kind='rule_conflicts' holds categorization rules refused because an active rule already matches the same transactions under a different category; each row names the rule deciding today and the category the refused rule wanted.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2818,6 +2818,7 @@
                 "categorization",
                 "auto_rules",
                 "matches",
+                "rule_conflicts",
                 "account_links",
                 "merchant_links",
                 "security_links"
@@ -2847,12 +2848,12 @@
         },
         "name": "reviews"
       },
-      "description_bytes": 104,
-      "input_schema_bytes": 414,
+      "description_bytes": 331,
+      "input_schema_bytes": 431,
       "name": "reviews",
       "other_bytes": 49,
       "output_schema_bytes": 0,
-      "total_bytes": 703
+      "total_bytes": 947
     },
     {
       "annotation_bytes": 90,
@@ -2863,7 +2864,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Accept or reject an atomic batch of transaction, match, or auto-rule review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; keep auto-rule and ordinary decisions in separate calls. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed \u2014 an accept that loses that tiebreak reads 'reversed'.",
+        "description": "Accept or reject an atomic batch of transaction, match, auto-rule, or rule-conflict review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; kind='rule_conflict' takes replace (supersede the existing rule), reprioritize (activate beside it at an explicit priority), or cancel, writing app.categorization_rules and app.rule_conflicts \u2014 reverse either with system_audit_undo. Keep each kind in its own call. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed \u2014 an accept that loses that tiebreak reads 'reversed'.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3076,6 +3077,120 @@
                       "decision"
                     ],
                     "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "reprioritize"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "priority": {
+                              "not": {
+                                "type": "null"
+                              }
+                            }
+                          },
+                          "required": [
+                            "priority"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "replace"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "priority"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "cancel"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "priority"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "description": "Resolve one categorization-rule conflict.\n\nNot an accept/reject axis: two active rules claim the same matcher, so the\ncaller says which one survives. ``replace`` supersedes the existing rule\nwith the proposal, ``reprioritize`` activates the proposal beside it at an\nexplicit priority, ``cancel`` leaves live state alone.",
+                    "properties": {
+                      "decision": {
+                        "enum": [
+                          "replace",
+                          "reprioritize",
+                          "cancel"
+                        ],
+                        "type": "string"
+                      },
+                      "decision_id": {
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "rule_conflict",
+                        "type": "string"
+                      },
+                      "priority": {
+                        "anyOf": [
+                          {
+                            "maximum": 10000,
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "decision_id",
+                      "decision"
+                    ],
+                    "type": "object"
                   }
                 ]
               },
@@ -3094,12 +3209,12 @@
         },
         "name": "reviews_decide"
       },
-      "description_bytes": 492,
-      "input_schema_bytes": 2039,
+      "description_bytes": 717,
+      "input_schema_bytes": 3211,
       "name": "reviews_decide",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 2727
+      "total_bytes": 4127
     },
     {
       "annotation_bytes": 89,
@@ -4665,7 +4780,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically declare categorization rules present, inactive, or absent. Present requires matcher, category, and priority; inactive and absent require rule_id and forbid replacement fields. The tool advertises its maximum destructive risk, but asks for exact payload-bound confirmation only before a present rule is hard-deleted. Rule removal is recoverable with system_audit_undo(operation_id=...).",
+        "description": "Atomically declare categorization rules present, inactive, or absent. Present requires matcher, category, and priority; inactive and absent require rule_id and forbid replacement fields. The tool advertises its maximum destructive risk, but asks for exact payload-bound confirmation only before a present rule is hard-deleted. Rule removal is recoverable with system_audit_undo(operation_id=...). A target matching the same transactions as an active rule under a different category refuses the whole batch: status='conflict', nothing written, and data.conflicts names each one for reviews(kind='rule_conflicts').",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -4980,12 +5095,12 @@
         },
         "name": "transactions_categorize_rules_set"
       },
-      "description_bytes": 396,
+      "description_bytes": 612,
       "input_schema_bytes": 2428,
       "name": "transactions_categorize_rules_set",
       "other_bytes": 87,
       "output_schema_bytes": 0,
-      "total_bytes": 3047
+      "total_bytes": 3263
     },
     {
       "annotation_bytes": 90,
@@ -5088,5 +5203,5 @@
       "total_bytes": 568
     }
   ],
-  "total_bytes": 59875
+  "total_bytes": 61735
 }
