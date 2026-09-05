@@ -516,11 +516,14 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings_snapshots (
 Staged as `prep.stg_plaid__investment_holdings_snapshots` (passthrough — the grain
 is the item and the snapshot, so there is no account or security id to resolve).
 A new receipt receives `ingestion_sequence` only on first insertion; replaying
-the same `(source_origin, source_file)` preserves it. Every consumer selects the
-first snapshot by `(extracted_at ASC, ingestion_sequence ASC)` and the newest by
-`(extracted_at DESC, ingestion_sequence DESC)`. The local sequence is the final
-chronological tie-breaker when distinct pulls share `metadata.synced_at`; job-id
-lexical order never chooses a snapshot.
+the same `(source_origin, source_file)` preserves it. Snapshot order is always
+`(extracted_at, ingestion_sequence)`, ascending for first and descending for
+newest. Item-level consumers apply that order per `source_origin`.
+Account-scoped consumers first join receipts to the holdings they account for
+and apply it per `(account_id, source_origin)`, considering only snapshots that
+contain that account. The local sequence is the final chronological tie-breaker
+when distinct pulls share `metadata.synced_at`; job-id lexical order never
+chooses a snapshot.
 
 M1J.7 backfills existing receipts once in deterministic
 `(source_origin, extracted_at, source_file)` order and starts the sequence above
@@ -979,17 +982,18 @@ and its **transaction-window start** `W` (`transactions_window_start`, the
 date-range start the server queried from, delivered on the response and
 persisted on `raw.plaid_investment_holdings`; § Server contract). Because
 `raw.plaid_investment_holdings` retains **every** snapshot (its `source_file` is
-part of the PK), that first snapshot stays available forever, so the bootstrap
-is deterministically recomputable and **stable**: a later sale that drops a lot
-from the *newest* snapshot never retroactively rewrites a pre-window lot whose
-basis was known at connect. (The `dim_holdings` reconciliation join, by
+part of the PK), that first account snapshot stays available forever, so the
+bootstrap is deterministically recomputable and **stable**: a later sale that
+drops a lot from the *newest* snapshot never retroactively rewrites a pre-window
+lot whose basis was known at connect. (The `dim_holdings` reconciliation join, by
 contrast, reads the *newest* snapshot — current position and connect-time
 reconstruction are deliberately different anchors.) `W` is always known, even
 for a security with zero transactions in that first window. The retained first
-snapshot is the receipt ranked by
-`(extracted_at ASC, ingestion_sequence ASC)` for its `source_origin`, then joined
-to holdings and lots through its `source_file`; tied extraction timestamps
-cannot rotate the anchor.
+snapshot is chosen after joining receipts to holdings through `source_file`: for
+each `(account_id, source_origin)`, rank only receipts containing that account by
+`(extracted_at ASC, ingestion_sequence ASC)`. Tied extraction timestamps cannot
+rotate the anchor, and an account first delivered by a later pull cannot be
+anchored to an earlier item receipt that contains no holdings for it.
 
 **Algorithm.** On an account's first successful investments sync, for each
 `(account, security)` the synthetic rows are **opening `transfer_in`**s in

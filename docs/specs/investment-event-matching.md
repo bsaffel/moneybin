@@ -1,6 +1,6 @@
 # Investment Event Matching
 
-> Last updated: 2026-09-04
+> Last updated: 2026-09-05
 > Status: ready
 > Address: M1J.7 (Investments — cross-source event matching)
 > Type: Feature
@@ -299,6 +299,15 @@ transfer observations.
 A missing or unresolved identity routes to its existing account- or
 security-identity review; the event matcher does not guess it.
 
+The supported singleton shapes are `buy`, `sell`, `dividend`, `interest`,
+`capital_gain_distribution`, `fee`, `return_of_capital`, `transfer_in`,
+`transfer_out`, `deposit`, and `withdrawal`. A `split` singleton is supported
+only when both comparison adapters declare split support. An `other` singleton,
+an unpaired `reinvest` leg, and the unsupported compound observations above are
+ineligible: their semantics are not specific enough for a safe cross-source
+match. Adding or removing a supported shape requires its own tolerance and
+scenario fixtures in the same change.
+
 After account identity resolves, each leg's effective currency is
 `COALESCE(source currency, canonical account currency)`, matching the shipped
 investment ledger. A candidate is ineligible only when an effective currency is
@@ -338,14 +347,15 @@ These thresholds admit review candidates; they do not authorize acceptance.
 | Evidence | Candidate threshold |
 |---|---|
 | Buy, sell, or reinvest date | Same date or within 5 calendar days across trade and settlement dates; the 3-day rule in Source event construction is the earlier Plaid-internal reinvest-leg pairing window, not this cross-source candidate window |
-| Dividend, interest, or fee date | Same date or within 3 calendar days |
-| Transfer date | Same date or within 7 calendar days |
+| Dividend, interest, capital-gain-distribution, return-of-capital, or fee date | Same date or within 3 calendar days |
+| Security-transfer, deposit, or withdrawal date | Same date or within 7 calendar days |
 | Quantity | Exact at 10 decimal places, or difference no greater than `max(0.000001, abs(quantity) * 0.00000001)` |
 | Amount | Difference no greater than `0.01` after sign normalization |
 | Fees | Gross/net reconciliation differs by no more than `0.01` |
 | Price | Difference no greater than `max(0.01, abs(price) * 0.0001)`, or the quantity/cash equation reconciles within `0.01` |
 | Correction or reversal | Comparison-adapter-delivered and validated native relationship, or remembered relationship, only |
-| Split | Exact normalized ratio and supported comparison adapters only |
+| Split | Same date, exact normalized ratio, and supported comparison adapters only |
+| Other or unpaired reinvest | Ineligible |
 
 The scenario suite owns the boundary examples for every threshold. A threshold
 change is a behavior change and must update those examples.
@@ -504,9 +514,12 @@ source_account_key, source_security_key, first_snapshot_source_file, lot_key)`.
 residual or position sentinel. The key excludes quantity, basis, and the
 derived reconstruction revision, and mints one stable Golden event and leg id.
 `first_snapshot_source_file` comes from the holdings receipt ranked by
-`(extracted_at ASC, ingestion_sequence ASC)` for the Source origin. The local
-monotonic sequence, not job-id lexical order, breaks equal extraction
-timestamps, so later pulls cannot rotate the retained first-snapshot key.
+`(extracted_at ASC, ingestion_sequence ASC)` for
+`(source_account_key, source_origin)`, considering only receipts that contain a
+holding for that Source account. The local monotonic sequence, not job-id
+lexical order, breaks equal extraction timestamps, so later pulls cannot rotate
+the retained first-snapshot key and an account first delivered by a later pull
+still receives its own opening reconstruction.
 Existing holdings receipts receive a one-time deterministic sequence backfill
 in their prior `(source_origin, extracted_at, source_file)` order; this freezes
 the pre-M1J.7 choice without claiming unavailable historical chronology.
@@ -915,7 +928,7 @@ fixtures and expected Golden-ledger outcomes.
 
 | Area | Required scenarios |
 |---|---|
-| Simple events | Exact and fuzzy buy, sell, dividend, interest, and fee matches; legitimate unmatched neighbors remain separate |
+| Simple events | Exact and fuzzy buy, sell, dividend, interest, capital-gain-distribution, return-of-capital, fee, deposit, and withdrawal matches; `other` and an unpaired `reinvest` leg remain ineligible; legitimate unmatched neighbors remain separate |
 | Dates | Same date and both sides of every type-specific boundary; trade date matched to settlement date |
 | Precision | Exact decimal normalization plus inside/outside quantity, amount, fee, and price thresholds |
 | Reinvestment | Manual and Plaid two-leg shapes match only when the Plaid comparison adapter finds one normalized `reinvest` acquisition and an income leg using the explicit `dividend` to `dividend`, `interest` to `interest`, or `capital_gain` to `capital_gain_distribution` compatibility mapping within 3 calendar days, with one complete unambiguous cash/fee-reconciled pairing; a 4-day Plaid-internal pair remains singleton, while already-constructed manual and Plaid Source events may cross-source match at 4 or 5 days but not 6; both legs move atomically, and a missing or multiply paired leg is not accepted |
@@ -925,7 +938,7 @@ fixtures and expected Golden-ledger outcomes.
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; after evidence or identity changes, reversal activates current-revision/current-dependency standalone successor memberships or blocks atomically rather than restoring obsolete rows; manual correction is unavailable in M1J.7 |
 | Revisions | Identical aggregator re-delivery reuses a version and per-job receipt while preserving its first-ingestion sequence; A→B→A content reuses the immutable A revision but a new receipt makes A current while retaining B in history, including when two jobs share an extraction timestamp; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
-| Opening lots | The retained first holdings snapshot is chosen by `(extracted_at ASC, ingestion_sequence ASC)`, so two pulls with the same extraction timestamp cannot rotate `first_snapshot_source_file`; a reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
+| Opening lots | The retained first holdings snapshot is chosen independently for each `(source_account_key, source_origin)` by `(extracted_at ASC, ingestion_sequence ASC)`, so two pulls with the same extraction timestamp cannot rotate `first_snapshot_source_file` and an account first appearing in a later pull is not joined to an earlier file that lacks it; a reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
 | Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; every active membership stores exact bound Account, Security, effective-currency, and dependency-generation values that Golden projection reads instead of live Raw routing; omitted source currency inherits the canonical account currency; an equivalence merge activates a dependency-only successor binding with stable Golden ids and projection freshness before the route is visible; an Account-currency correction does likewise for affected unreviewed projection while an accepted or multi-source Match retains reviewed bindings and stales; before a non-equivalent rebind, unlink, or split becomes visible, pending and accepted or multi-source Matches stale while a structurally unchanged standalone membership advances with stable Golden ids and a now-unresolved or structurally changed standalone retires; Raw remains unchanged |
 | Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; consolidation-retired event and leg ids forward through the two derived Core views, ids retired without a successor return a terminal `retired` status and null active id, and undo reactivates prior ids only through new successor memberships rebound to current exact revisions and canonical dependencies; unresolved or ambiguous current bindings block undo |
@@ -942,7 +955,8 @@ fixtures and expected Golden-ledger outcomes.
 
 ## Verification
 
-- Pure normalization and tolerance tests for every supported event type,
+- Pure normalization, eligibility, and tolerance tests for every ledger event
+  type, including explicit ineligibility for `other` and an unpaired `reinvest`,
   proving each within-tolerance boundary takes the aggregator default and each
   beyond-tolerance native or ratified candidate requires a field choice. Field
   choice tests also prove present `qualified`/`non_qualified` and
