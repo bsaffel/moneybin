@@ -215,6 +215,19 @@ MIGRATIONS_DIR = SRC_ROOT / "sql" / "migrations"
 # `.execute()`/`.executemany()` but reaching the same DuckDB connection.
 EXECUTE_METHOD_NAMES = frozenset({"execute", "executemany", "sql"})
 
+# Method names treated as table-name-argument sinks — structurally different
+# from EXECUTE_METHOD_NAMES: the recognized argument (first positional, or
+# the `table=` keyword) is a bare `schema.table` string, NOT SQL text.
+# `Database.ingest_dataframe(table, df, ...)` (`database.py`) interpolates
+# `table` straight into `INSERT INTO {safe_ref} ...` / `CREATE OR REPLACE
+# TABLE {safe_ref} ...`, so a hardcoded literal here is exactly the same
+# defect this guard exists to catch — but running it through `_tables_in_text`
+# (the sqlglot-based SQL matcher) would not reliably parse a bare dotted
+# identifier to an `exp.Table` and would silently stop catching anything.
+# `_table_arg_match` below tests the string directly against `_SCHEMA_NAMES`
+# instead. See the Call-node handling in `_collect_scope`.
+TABLE_ARG_METHOD_NAMES = frozenset({"ingest_dataframe"})
+
 _SCHEMA_NAMES = (
     "raw",
     "prep",
@@ -225,6 +238,33 @@ _SCHEMA_NAMES = (
     "seeds",
     "synthetic",
 )
+
+# The clause_type reported for a TABLE_ARG_METHOD_NAMES violation. Not a SQL
+# clause (there is no SQL here) — a fixed label distinguishing this sink
+# family from the FROM/JOIN/... clause types the execute-sink path reports,
+# shared by every member of TABLE_ARG_METHOD_NAMES rather than the method
+# name itself, so the allowlist key shape doesn't have to change if a second
+# member is ever added.
+_TABLE_ARG_CLAUSE_TYPE = "TABLE_ARG"
+
+# `ingest_dataframe`'s `table` argument is a bare `schema.table` string, not
+# SQL — quoting doesn't apply the way it does in `_FALLBACK_SCHEMA_TABLE_PATTERN`,
+# and the match must consume the WHOLE string (`fullmatch`, not `search`) since
+# there is no surrounding SQL for a partial match to be extracted from.
+_TABLE_ARG_PATTERN = re.compile(
+    r"(" + "|".join(_SCHEMA_NAMES) + r")\.([a-z][a-z0-9_]+)"
+)
+
+
+def _table_arg_match(text: str) -> str | None:
+    """Direct (non-SQL) match of a `schema.table` string against `_SCHEMA_NAMES`.
+
+    Used for `TABLE_ARG_METHOD_NAMES` sinks only — see that constant's
+    comment for why this does NOT go through `_tables_in_text`/sqlglot.
+    """
+    match = _TABLE_ARG_PATTERN.fullmatch(text.strip())
+    return f"{match.group(1)}.{match.group(2)}" if match else None
+
 
 # Fallback matcher for text sqlglot's structural walk can't see into — NOT
 # the primary matcher. Two round-4 findings share one root cause a
@@ -523,8 +563,21 @@ def _direct_scope_nodes(root: ast.AST) -> list[ast.AST]:
 
 def _collect_scope(
     nodes: list[ast.AST],
-) -> tuple[_ScopeLiterals, _ScopeAliases, set[str], list[tuple[int, str]]]:
-    """Collect literal bindings, name aliases, execute()-seed names, and direct literal args.
+) -> tuple[
+    _ScopeLiterals,
+    _ScopeAliases,
+    set[str],
+    list[tuple[int, str]],
+    set[str],
+    list[tuple[int, str]],
+]:
+    """Collect literal bindings, name aliases, sink-seed names, and direct literal args.
+
+    Returns `(var_literals, var_aliases, seed_names, scanned,
+    table_arg_seed_names, table_arg_scanned)`. The last two mirror the two
+    before them but for `TABLE_ARG_METHOD_NAMES` sinks (`ingest_dataframe`)
+    instead of `EXECUTE_METHOD_NAMES` sinks — see the Call-node handling
+    below for why they need separate collection.
 
     `nodes` is one lexical scope's node list from `_direct_scope_nodes` — the
     module body, or one function/method body. Enumeration of AST nodes that
@@ -550,7 +603,20 @@ def _collect_scope(
                                              file-local-heuristic limit as
                                              module docstring point 1)
       - ast.NamedExpr     (x := "...")     or  (x := y)   (walrus; target is
-                                             always a plain Name per grammar)
+                                             always a plain Name per grammar).
+                                             This records the binding for ANY
+                                             NamedExpr node in this scope's
+                                             node list, including one nested
+                                             inside a sink call's own
+                                             arguments (`db.execute(query :=
+                                             "...")`)  —  `_direct_scope_nodes`
+                                             does not stop descending at a
+                                             Call node, only at a nested
+                                             function boundary. That binding
+                                             alone does not make `query`
+                                             reach the sink, though: seeding
+                                             is a separate step, handled in
+                                             the Call-node branch below.
 
     CONSCIOUSLY EXCLUDED — no realistic or in-scope path to a hardcoded
     literal:
@@ -589,6 +655,10 @@ def _collect_scope(
     var_aliases: _ScopeAliases = {}
     seed_names: set[str] = set()
     scanned: list[tuple[int, str]] = []  # (lineno, text) reaching execute()
+    table_arg_seed_names: set[str] = set()
+    table_arg_scanned: list[
+        tuple[int, str]
+    ] = []  # reaching a TABLE_ARG_METHOD_NAMES sink
 
     for node in nodes:
         if isinstance(node, ast.Assign):
@@ -626,18 +696,57 @@ def _collect_scope(
                 if isinstance(func, ast.Name)
                 else None
             )
-            if name not in EXECUTE_METHOD_NAMES:
-                continue
-            for arg in (*node.args, *(kw.value for kw in node.keywords)):
+            if name in EXECUTE_METHOD_NAMES:
+                for arg in (*node.args, *(kw.value for kw in node.keywords)):
+                    if isinstance(arg, ast.Name):
+                        seed_names.add(arg.id)
+                        continue
+                    if isinstance(arg, ast.NamedExpr):
+                        # `db.execute(query := "...")` — the walrus target,
+                        # not the NamedExpr node itself, is what a bare-Name
+                        # argument would look like; seed it the same way.
+                        # The literal binding itself is already recorded by
+                        # this same scope's node walk, above, via the
+                        # `elif isinstance(node, ast.NamedExpr)` branch — a
+                        # NamedExpr nested inside a Call's arguments is still
+                        # a direct child of this scope's node list
+                        # (`_direct_scope_nodes` only stops descending at a
+                        # nested function boundary), so that branch already
+                        # fires on it independently of this one.
+                        seed_names.add(arg.target.id)
+                        continue
+                    text = _literal_text(arg)
+                    if text is not None:
+                        scanned.append((arg.lineno, text))
+                        seed_names |= _embedded_names(arg)
+            elif name in TABLE_ARG_METHOD_NAMES:
+                # Unlike EXECUTE_METHOD_NAMES, only ONE argument position is
+                # the table name — the rest (`df`, `on_conflict`) are never
+                # SQL/table text, so scanning every arg the way the execute
+                # loop does would be wrong, not just unnecessary.
+                arg = (
+                    node.args[0]
+                    if node.args
+                    else next(
+                        (kw.value for kw in node.keywords if kw.arg == "table"),
+                        None,
+                    )
+                )
                 if isinstance(arg, ast.Name):
-                    seed_names.add(arg.id)
-                    continue
-                text = _literal_text(arg)
-                if text is not None:
-                    scanned.append((arg.lineno, text))
-                    seed_names |= _embedded_names(arg)
+                    table_arg_seed_names.add(arg.id)
+                elif arg is not None:
+                    text = _literal_text(arg)
+                    if text is not None:
+                        table_arg_scanned.append((arg.lineno, text))
 
-    return var_literals, var_aliases, seed_names, scanned
+    return (
+        var_literals,
+        var_aliases,
+        seed_names,
+        scanned,
+        table_arg_seed_names,
+        table_arg_scanned,
+    )
 
 
 def _resolve_worklist(
@@ -829,23 +938,49 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
     except SyntaxError:
         return []
 
-    module_literals, module_aliases, module_seeds, all_scanned = _collect_scope(
-        _direct_scope_nodes(tree)
-    )
+    (
+        module_literals,
+        module_aliases,
+        module_seeds,
+        all_scanned,
+        module_table_arg_seeds,
+        all_table_arg_scanned,
+    ) = _collect_scope(_direct_scope_nodes(tree))
     all_scanned = list(all_scanned)
     all_scanned.extend(
         _resolve_worklist(module_seeds, module_literals, module_aliases, {}, {})
     )
+    all_table_arg_scanned = list(all_table_arg_scanned)
+    all_table_arg_scanned.extend(
+        _resolve_worklist(
+            module_table_arg_seeds, module_literals, module_aliases, {}, {}
+        )
+    )
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            local_literals, local_aliases, local_seeds, local_scanned = _collect_scope(
-                _direct_scope_nodes(node)
-            )
+            (
+                local_literals,
+                local_aliases,
+                local_seeds,
+                local_scanned,
+                local_table_arg_seeds,
+                local_table_arg_scanned,
+            ) = _collect_scope(_direct_scope_nodes(node))
             all_scanned.extend(local_scanned)
             all_scanned.extend(
                 _resolve_worklist(
                     local_seeds,
+                    local_literals,
+                    local_aliases,
+                    module_literals,
+                    module_aliases,
+                )
+            )
+            all_table_arg_scanned.extend(local_table_arg_scanned)
+            all_table_arg_scanned.extend(
+                _resolve_worklist(
+                    local_table_arg_seeds,
                     local_literals,
                     local_aliases,
                     module_literals,
@@ -857,6 +992,10 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
     for lineno, text in all_scanned:
         for clause, table in _tables_in_text(text):
             violations.append((lineno, clause, table))
+    for lineno, text in all_table_arg_scanned:
+        table = _table_arg_match(text)
+        if table is not None:
+            violations.append((lineno, _TABLE_ARG_CLAUSE_TYPE, table))
     # Sort by lineno so occurrence indices (assigned by the caller) reflect
     # top-to-bottom source order rather than scan-order — see
     # TABLE_LITERAL_ALLOWLIST's key-shape comment. `find_all` walks
@@ -1289,3 +1428,88 @@ def test_fstring_interpolation_placeholder_does_not_hide_adjacent_literal(
         'FROM core.fct_transactions")\n'
     )
     assert _scan_source(tmp_path, source) == [(2, "FROM", "core.fct_transactions")]
+
+
+# --- TABLE_ARG_METHOD_NAMES (ingest_dataframe) sink -------------------------
+
+
+def test_ingest_dataframe_hardcoded_literal_is_flagged(tmp_path: Path) -> None:
+    """A hardcoded `schema.table` string reaching `ingest_dataframe` is a violation.
+
+    `Database.ingest_dataframe(table, df, ...)` interpolates `table` straight
+    into `INSERT INTO`/`CREATE OR REPLACE TABLE` — the same hardcoding defect
+    this guard exists to catch, but the argument is a bare dotted identifier,
+    not SQL, so it must be recognized directly rather than via `_tables_in_text`.
+    """
+    source = 'db.ingest_dataframe("raw.new_table", df)\n'
+    assert _scan_source(tmp_path, source) == [(1, "TABLE_ARG", "raw.new_table")]
+
+
+def test_ingest_dataframe_table_keyword_is_flagged(tmp_path: Path) -> None:
+    """The `table=` keyword form is recognized the same way as the positional form."""
+    source = 'db.ingest_dataframe(df=df, table="raw.new_table")\n'
+    assert _scan_source(tmp_path, source) == [(1, "TABLE_ARG", "raw.new_table")]
+
+
+def test_ingest_dataframe_tableref_full_name_is_not_flagged(tmp_path: Path) -> None:
+    """A `TableRef.full_name` call site — the required pattern — is NOT flagged (negative control).
+
+    `RAW_NEW_TABLE.full_name` is an `ast.Attribute`, neither an `ast.Name`
+    (which would be tracked as a seed) nor a string literal — the same shape
+    every real `ingest_dataframe` call site in the tree uses today.
+    """
+    source = "db.ingest_dataframe(RAW_NEW_TABLE.full_name, df)\n"
+    assert _scan_source(tmp_path, source) == []
+
+
+def test_ingest_dataframe_variable_bound_literal_is_flagged(tmp_path: Path) -> None:
+    """A hardcoded literal reaching `ingest_dataframe` through a local variable is still caught.
+
+    `t = "raw.foo"; db.ingest_dataframe(t, df)` reuses the same worklist
+    machinery as the execute-sink path (`_resolve_worklist` over the scope's
+    `var_literals`/`var_aliases`) — NOT `_tables_in_text` — to resolve `t`
+    back to its literal text before testing it against `_TABLE_ARG_PATTERN`.
+    """
+    source = 'def f(db, df):\n    t = "raw.foo"\n    db.ingest_dataframe(t, df)\n'
+    assert _scan_source(tmp_path, source) == [(2, "TABLE_ARG", "raw.foo")]
+
+
+def test_ingest_dataframe_other_positional_args_are_not_scanned(tmp_path: Path) -> None:
+    """Only the first positional / `table=` argument is inspected — not every argument.
+
+    Unlike an EXECUTE_METHOD_NAMES sink, `ingest_dataframe`'s later positional
+    arguments (`df`, `on_conflict`) are never table names; a Name there must
+    not be seeded, and a schema-shaped string there must not be flagged.
+    """
+    source = 'db.ingest_dataframe(RAW_NEW_TABLE.full_name, df, "raw.decoy")\n'
+    assert _scan_source(tmp_path, source) == []
+
+
+# --- Walrus used directly as a call argument (not just a statement) --------
+
+
+def test_walrus_statement_binding_reaches_execute(tmp_path: Path) -> None:
+    """A walrus bound in a statement (e.g. an `if` test), then passed by name, is caught.
+
+    Positive control: proves the ordinary walrus-binding path already works
+    before testing the narrower inline-argument gap below.
+    """
+    source = (
+        "def f(db):\n"
+        '    if (query := "SELECT * FROM core.fct_transactions"):\n'
+        "        db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(2, "FROM", "core.fct_transactions")]
+
+
+def test_walrus_used_directly_as_call_argument_is_flagged(tmp_path: Path) -> None:
+    """`db.execute(query := "...")` — the walrus target used inline as the argument — is caught.
+
+    Before this fix, the argument loop only recognized a bare `ast.Name` or a
+    literal (`_literal_text`) — an `ast.NamedExpr` argument matched neither
+    branch and fell through unseeded, even though the binding itself (the
+    `elif isinstance(node, ast.NamedExpr)` branch a few lines above the
+    argument loop) was already recorded.
+    """
+    source = 'db.execute(query := "SELECT * FROM core.fct_transactions")\n'
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
