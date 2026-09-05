@@ -925,6 +925,13 @@ curation. The two Core id resolvers change only because the newly bound
 successor memberships became active: those restored ids self-resolve, and no
 stale forwarding remains. Undo then rebuilds the same dependency set.
 
+`system_audit_undo` remains the public bridge, but M1J.7 routes an
+investment-Match operation to a domain-aware reversal handler before generic
+row-image undo. In one transaction, that handler performs and validates the
+complete reconstruction above; it either writes the complete successor topology
+and dependent curation or returns a blocking error without writing. Generic
+`BaseRepo.undo_event` is not a valid fallback for an investment-Match operation.
+
 ### Refresh and failure semantics
 
 The refresh registry gains an `investment_match` step after source staging and
@@ -1218,6 +1225,10 @@ fixtures and expected Golden-ledger outcomes.
   current-evidence and dependency rules. Changed evidence returns the prior
   Match stale with reviewed bindings and reservations; any incomplete topology
   or decision linkage blocks without decomposing the prior Match.
+- Undo-dispatch tests proving `system_audit_undo` recognizes an investment-Match
+  operation before generic row-image reversal, reconstructs current successors
+  instead of restoring historical rows, and blocks atomically when current
+  evidence, dependencies, or curation are incomplete.
 - Freshness and read-guard tests proving a committed membership change followed
   by a crash or failed rebuild remains pending and blocks investment-dependent
   CLI, MCP, report, canonical bundle export, and SQL reads until every dependent
@@ -1301,10 +1312,12 @@ accepted contract and must be reconciled to it before delivery begins.
    commit its decision, exact revision membership, field resolutions, and
    complete remapped selection sets in one transaction. Undo restores those
    selection sets from the same audit chain and blocks on later overlapping
-   curation. Reconstruct affected Source events before an unreviewed aggregator
-   revision advances; preserve Golden ids only when the stable source-event key
-   and complete semantic membership survive, otherwise retire and register the
-   rebuilt events normally. Make
+   curation. Before acceptance and undo are enabled, route investment-Match
+   operations from `system_audit_undo` through the domain-aware reversal handler;
+   never fall back to generic row-image undo. Reconstruct affected Source events
+   before an unreviewed aggregator revision advances; preserve Golden ids only
+   when the stable source-event key and complete semantic membership survive,
+   otherwise retire and register the rebuilt events normally. Make
    equivalence merges follow the canonical alias path, and make a
    non-equivalent rebind, unlink, or split invalidate affected pending and
    accepted or multi-source Matches before publishing the new mapping.

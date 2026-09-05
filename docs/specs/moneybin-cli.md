@@ -771,9 +771,6 @@ selectors to preserve bounded agent context.
 | Net worth now | `reports networth` | `reports(report_id="core:networth")` | `GET /reports/networth` |
 | Pending matches | `transactions matches pending` | `reviews(kind="matches", status="pending")` | `GET /transactions/matches/pending` |
 | Match history | `transactions matches history` | `reviews(kind="matches", status="history")` | `GET /transactions/matches` |
-| Pending investment matches | `investments matches pending` | `reviews(kind="investment_matches", status="pending")` | Not exposed in M1J.7 |
-| Investment match history | `investments matches history` | `reviews(kind="investment_matches", status="history")` | Not exposed in M1J.7 |
-| Decide an investment match | `review --type investment-matches --confirm/--reject` | `reviews_decide(decisions=[{"kind":"investment_match", "decision_id":"<id>", "decision":"accept|reject", "field_choices":[...]}])` (`field_choices` omitted on reject) | Not exposed in M1J.7 |
 | Locate an accepted match operation | `transactions matches history` | `system_audit(view="history", ...)` or `system_audit(view="events", ...)` | `GET /transactions/matches` |
 | Undo a match | `transactions matches undo <match_id>` | `system_audit_undo(operation_id=<operation_id>)` after locating the audit operation | `POST /transactions/matches/{match_id}/undo` |
 | Run matching | `transactions matches run` | `refresh_run(steps=["match"])` | `POST /refresh/match` |
@@ -1027,8 +1024,6 @@ ADR-016 and the archived MCP catalog. Current sibling mappings are:
 | `accounts balance show/history/list/reconcile` | `accounts_balances(view=..., reference=...)` |
 | `reports *` | `reports(report_id=..., parameters=...)` |
 | `transactions matches pending/history` | `reviews(kind="matches", status=...)` |
-| `investments matches pending/history` | `reviews(kind="investment_matches", status=...)` |
-| `review --type investment-matches --confirm/--reject` | `reviews_decide(decisions=[{"kind":"investment_match", "decision_id":"<id>", "decision":"accept|reject", "field_choices":[...]}])`; omit `field_choices` on reject |
 | `transactions categorize pending` | `reviews(kind="categorization", status="pending")` |
 | `categories list`, `merchants list` | `taxonomy(view=...)` |
 | `transactions matches run` | `refresh_run(steps=["match"])` |
