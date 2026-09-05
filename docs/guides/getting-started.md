@@ -23,7 +23,7 @@ cd moneybin
 make setup
 ```
 
-`make setup` checks the Python version, creates `.venv`, locks and syncs the dependencies with `uv`, and installs the pre-commit hooks. Every command from here on is `uv run moneybin …`, run from inside the checkout. The [CLI command tree](../reference/cli/README.md) is one generated page per command group; `--help` on any command prints the same text and never touches a database.
+`make setup` checks that a `python3` is installed, creates `.venv` on the pinned interpreter, locks and syncs the dependencies with `uv`, and installs the pre-commit hooks. Every command from here on is `uv run moneybin …`, run from inside the checkout. The [CLI command tree](../reference/cli/README.md) is one generated page per command group; `--help` on any command prints the same text and never touches a database.
 
 ## 2. Try it on synthetic data
 
@@ -44,7 +44,7 @@ $ uv run moneybin profile create personal
 ⚙️  Initializing MoneyBin schema...
 ```
 
-About 200 lines of schema-migration and transform-plan output follow, then `✅ Created profile personal at …` naming the profile directory — `.moneybin/profiles/personal` inside the checkout when you run from it, as this guide does, and `~/.moneybin/profiles/personal` from anywhere else. Everything the profile owns lives under that directory: the encrypted database file, its config, logs, and backups. [Moving it to another machine](profiles.md#multi-machine-workflows) is a copy plus the key.
+About 200 lines of schema-migration and transform-plan output follow, then `✅ Created profile personal at …` naming the profile directory — `.moneybin/profiles/personal` inside the checkout when you run from it, as this guide does, and `~/.moneybin/profiles/personal` from anywhere else. The encrypted database file, its config, logs, and backups live under that directory. The import inbox is the one thing that does not: accept the prompt and `~/Documents/MoneyBin/personal/{inbox,processed,failed}` is created for files you drop in, so [moving the profile to another machine](profiles.md#multi-machine-workflows) is a copy plus the key, plus that directory if you use it.
 
 The database exists and is encrypted from this moment: a random 256-bit key is generated and stored in the OS keychain under the service name `moneybin-personal`, and you never type a passphrase. On Linux the keychain is Secret Service (GNOME Keyring or KWallet); a headless box or container with no keyring takes the key from an environment variable instead — see [Headless and cron](database-security.md#headless-and-cron-deployments). `profile create` has no passphrase option, so to type a passphrase instead, decide now while the database is empty: switch to the profile, delete its database file, and run `moneybin db init --passphrase`. [Passphrase mode](database-security.md#passphrase-mode) says what the passphrase protects, and the same guide's Switching modes section wraps that sequence in a backup and a restore, because once data has landed there is no in-place conversion.
 

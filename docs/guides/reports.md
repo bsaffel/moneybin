@@ -49,7 +49,7 @@ Accounts:    4
 💡 Run accounts(include_closed=True) to inspect closed or excluded accounts
 ```
 
-`--as-of 2025-06-30` moves the date; the balance shown is the last one on or before it. `--account` narrows the breakdown without changing the totals' meaning. An account excluded from net worth (`accounts set <id> --exclude`) drops out of both. Holdings in investment accounts do not count toward net worth yet.
+`--as-of 2025-06-30` moves the date; the balance shown is the last one on or before it. `--account` narrows the breakdown without changing the totals' meaning. An account excluded from net worth (`accounts set <id> --exclude`) drops out of both after the next `moneybin refresh` or `moneybin transform apply`, because the exclusion is a setting the canonical account table picks up when it is rebuilt. Holdings in investment accounts do not count toward net worth yet.
 
 ### Net worth over time
 
@@ -270,7 +270,7 @@ Empty on the demo, because drift needs an assertion: a balance you typed from a 
 - **Signs.** `spending`, `merchants`, and `recurring` report outflow as positive absolute amounts. `cashflow`, `large-transactions`, and every transaction listing are signed: negative is money out.
 - **Currency.** Every row carries a `currency_code`, and a report never blends two known currencies into one figure. Rows with no currency at all pool into one unknown segment and are summed together, because nothing can tell two unknowns apart; `system doctor` fails on any such account and `accounts set --currency` is the fix, so set them before trusting a total. A multi-currency profile gets its rows interleaved per currency, best-ranked first within each, so a capped result holds every currency that fits inside the cap — a `--limit` smaller than the number of currencies still drops some, and `summary.has_more` is the signal that later pages may carry currencies the first did not. See [One display currency](#one-display-currency).
 - **The `💡` lines.** Each one is the MCP tool call an assistant would make next, written out so you can read it as the CLI's own next move. The parameter it names maps to a flag on the dedicated command, not always under the same name (`from_date` is `--from`), and the [reference page](../reference/cli/reports.md) lists each command's flags.
-- **Freshness.** Every report reads views over the canonical tables, so it reflects the last import or `moneybin refresh` the moment that finishes, and nothing is cached between runs. The one deferral is an import run with `--no-refresh`, whose rows reach the reports only after `moneybin refresh` or `moneybin transform apply`.
+- **Freshness.** Every built-in reads views over the canonical tables, so it reflects the last import or `moneybin refresh` the moment that finishes, and nothing is cached between runs. The one deferral is an import run with `--no-refresh`, whose rows reach the canonical tables only after `moneybin refresh` or `moneybin transform apply`. A saved report is as fresh as what it reads: over `raw.*` or the `prep.*` views it sees an import at once, over `core.*` or `reports.*` it waits for that same transform.
 - **Rows, not aggregates.** When the question is "show me the transactions", `moneybin transactions list` filters by `--account`, `--from`/`--to`, `--category`, `--amount-min`/`--amount-max`, and `--description`, and `moneybin sql query` takes a `SELECT`, `WITH`, `DESCRIBE`, or `SHOW` over the `core`, `app`, `reports`, `raw`, and `prep` schemas.
 
 ## Any report by id: list, run, explain
@@ -326,7 +326,7 @@ Reads: reports.spending_trend
 Graduation: already_materialized
 ```
 
-The SQL that follows is trimmed here. It reads the `reports.spending_trend` view, which the [data model](../reference/data-model.md) documents column by column, and you can run it yourself with `moneybin sql query` once you replace each `?` with a literal: the date bounds stay withheld as `?` because their values carry a privacy class, and `sql query` binds nothing. The `class` column is what decides masking when the report leaves the machine through MCP or an export. `Graduation` says whether the report could be materialized as a view of its own; `Fingerprint`, on a saved report, is the hash of its derived privacy classes, and a run that finds the SQL no longer matches it re-derives them before serving anything.
+The SQL that follows is trimmed here. It reads the `reports.spending_trend` view, which the [data model](../reference/data-model.md) documents column by column, and you can run it yourself with `moneybin sql query` once you replace each `?` with a literal: the date bounds stay withheld as `?` because their values carry a privacy class, and `sql query` binds nothing. The `class` column is what decides masking when the report leaves the machine through MCP or an export. `Graduation` says whether the report could be materialized as a view of its own; `Fingerprint`, on a saved report, is a hash over the SQL text, the classes of every column it reads, and the current masking policy for each of those classes; a run whose recomputed hash differs — the SQL was rewritten, even to the same shape, or a policy moved — re-derives the classes before serving anything.
 
 ## JSON
 
