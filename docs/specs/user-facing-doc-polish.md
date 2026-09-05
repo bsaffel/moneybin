@@ -185,7 +185,7 @@ another hand pass is not.
 **Generated references.** `scripts/generate_reference_docs.py` renders
 `docs/reference/cli/` (one page per top-level command plus an index, from the
 Typer command tree), `docs/reference/mcp-tools.md` (from the MCP surface
-snapshot plus each tool's registered maximum sensitivity), and
+snapshot plus each tool's registered sensitivity), and
 `docs/reference/configuration.md` (from `MoneyBinSettings`). `make
 generate-docs` rewrites them, and `test_generated_references_are_current`
 fails while a checked-in page differs from the render. The CLI reference
@@ -202,11 +202,11 @@ deliberately shows a wrong or absent command carries
 **Remaining scope.** The structure above, the broken commands, the
 `categorize assist` privacy statement, shipped-as-planned drift, and the guard
 shipped on `docs/public-docs-structure`; the generated references on
-`docs/generated-references`. What's left: `account-identifiers.md` and
-`data-pipeline.md` rewrites;
+`docs/generated-references`; `getting-started.md` and the reports guide on
+`docs/getting-started-and-reports-guides`. What's left: `account-identifiers.md`
+and `data-pipeline.md` rewrites;
 `system-overview.md` folded into `docs/architecture.md`; storefront and guide
-rewrites plus a `getting-started.md`; and reports, investments, and
-multi-currency guides.
+rewrites; and the investments and multi-currency guides.
 
 **Site.** GitHub-only until the release trigger — see ADR-011's 2026-09-02
 amendment.

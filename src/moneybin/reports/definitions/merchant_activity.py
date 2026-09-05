@@ -164,6 +164,11 @@ def merchant_activity(
         raise ValueError(f"Unknown sort: {sort}")
     if top < 1:
         raise ValueError(f"top must be >= 1, got {top!r}")
+    # `BETWEEN 1 AND ?`, not `<= ?`: DuckDB 1.5.4 and 1.5.5 rewrite a
+    # `ROW_NUMBER() ... <= n` filter into a top-N and push it through the
+    # recursive match-group CTE behind core.bridge_transfers, where it fails
+    # with "Type mismatch for SET OPERATION". The BETWEEN spelling is the same
+    # predicate and escapes the rewrite; tests/scenarios pins it on real views.
     sql = f"""
         SELECT merchant_id, merchant_normalized, currency_code, top_category,
                first_seen, last_seen, txn_count, active_months, account_count,
@@ -179,7 +184,7 @@ def merchant_activity(
                    ) AS rank_in_currency
             FROM {REPORTS_MERCHANT_ACTIVITY.full_name}
         )
-        WHERE rank_in_currency <= ?
+        WHERE rank_in_currency BETWEEN 1 AND ?
         ORDER BY rank_in_currency, currency_code
     """  # noqa: S608  # TableRef + MERCHANTS_SORTS allowlists
     return ReportQuery(sql, [Binding(top, DataClass.AGGREGATE)])

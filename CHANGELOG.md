@@ -11,6 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **MCP tools publish a sensitivity floor, not a ceiling, and the reference now
+  says which.** A statically classified tool's declared tier could overwrite a
+  higher tier the response had already derived, understating both the response
+  and its privacy audit row; it now raises but never lowers, matching how
+  `discloses=` already behaved. Every entry in the tool reference and the
+  contract matrix reads `at least <tier>` for a statically classified tool and
+  `up to <tier>` for one that classifies per call. (#535)
 - **The public docs have one index, one reference directory, and a test that
   every command they cite exists.** `docs/architecture/` and `docs/tech/` are
   folded into `docs/reference/`; `docs/guides/README.md` and
@@ -313,6 +320,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transaction's amount to every spending report and deleting either side would
   discard a split you entered. `moneybin doctor` reports the splits left behind.
   (#532)
+- **`reports merchants` and `reports large-transactions` run again.** Both
+  failed on every profile with "The report's query could not run against the
+  current schema", and the `reports` MCP tool failed the same way for
+  `core:merchants` and `core:large_transactions`: DuckDB rewrites their
+  `ROW_NUMBER() … <= n` filter into a top-N and pushes it through the recursive
+  match-group CTE behind `core.bridge_transfers`, where the plan fails. The
+  filter is now spelled `BETWEEN 1 AND n`, and the scenario suite executes
+  every built-in report over the real views so a runner shape that only fails
+  there cannot reach `main` green. (#539)
 
 - **A missing or locked keychain entry no longer prints a stack trace.**
   `moneybin db info`, `db unlock` and the DuckDB init-script builder read the
@@ -322,6 +338,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   read reports `infra_permission_denied` with an unlock hint, and a missing
   secret or absent keyring backend reports `infra_setup_required` naming the
   command that stores it. (#522)
+
+- **A category of spaces no longer counts as a category.** An imported
+  transaction whose category cell held only whitespace was hidden from
+  `core.uncategorized_queue` (which selects `WHERE category IS NULL`) while
+  claiming to carry a category; `category` and `subcategory` now arrive `NULL`
+  from every source when blank. Blank means what the write path means by it —
+  a non-breaking space pasted from a spreadsheet and an ideographic space
+  typed in CJK input both count — while a padded `'  Groceries  '` still
+  arrives as `Groceries`. (#517)
+
+- **`transactions splits add --category "   "` is refused rather than
+  stored.** MCP already refused a whitespace-only category while the CLI
+  stored it; both now refuse, naming the field — `subcategory must be
+  non-empty`, or `splits[2].subcategory …` when setting a batch — so a caller
+  is pointed at the flag they got wrong. A split already carrying one is
+  backfilled to `NULL` on the next migration, and a blanked category takes its
+  subcategory with it, since a subcategory without its category would render
+  under the parent transaction's instead. (#517)
+
+- **A subcategory with no category is refused everywhere, not just on MCP.**
+  A subcategory is a child of a category here, so a lone one never resolves to
+  a `category_id` and renders under the parent transaction's category instead
+  — `splits add`, `splits set`, `transactions create`, and merchant creation
+  now refuse it the way MCP's split contract always has. Manual entry was the
+  quietest of them: a lone subcategory was dropped from the batch without a
+  word and the call still reported success, and a blank subcategory beside a
+  real category was stored against a `NULL` category_id. The import path stops
+  producing one too: a category blanked on the way in takes its subcategory
+  with it, while a blank subcategory under a real category still nulls only
+  itself. `docs/reference/mcp-tools.md` states the rule as well, so an agent
+  reading the reference learns it before calling rather than as a refusal.
+  (#517)
+
+- **`merchants create --default-category "   "` is refused rather than
+  stored.** A merchant's stored default is copied verbatim into a
+  transaction's category by the auto-categorization sweep, which skipped only
+  a missing value, so whitespace reached `core.fct_transactions` through the
+  one write path the earlier sweep left open. It now takes the same blank-text
+  and hierarchy rules a split takes, and a merchant already holding a blank
+  default is backfilled to `NULL` on the next migration — along with the blank
+  categories it already copied, so those transactions return to the
+  uncategorized queue instead of staying hidden. (#517)
+
+- **`categories create "   "` and `budgets set --category "   "` are refused
+  rather than stored.** The taxonomy is the one surface that stores a category
+  instead of a reference to one, so a blank name reached `categories list` and
+  gave category resolution a row nothing can usefully match; a blank budget
+  category stored a target reporting against nothing. Both now take the same
+  blank-text and length rules every other category write takes. (#517)
+
+- **`transactions create --category "   "` is refused rather than absorbed.**
+  It stored nothing wrong — the row simply landed uncategorized — but
+  `splits add` and `merchants create` refuse the identical string, so one
+  input had two answers depending on which command you reached for. Passing no
+  category at all remains the way to create an uncategorized transaction.
+  (#517)
+
+- **A blank category is removed from the taxonomy, along with everything
+  pointing at it.** The backfills above null a category's display snapshot,
+  but `category_id` is the canonical reference and every reader prefers it — a
+  split, merchant or categorization still pointing at a blank taxonomy row
+  rendered the whitespace anyway, and would have kept doing so once the
+  snapshot columns are dropped. The next migration clears those references
+  across all seven tables that carry one, then deletes the blank categories
+  themselves, so an empty-named category no longer appears in
+  `categories list`. Rows that merely *referenced* one keep their data and
+  lose only the unusable default; a budget or rule whose own category text was
+  blank named nothing and is removed. (#517)
+
+- **A rejected category reports a write error, not an infrastructure one.**
+  `transactions splits add`, `splits set` and merchant creation classified a
+  blank, over-long, or wrong-typed category as `infra_invalid_input`, so a
+  script or agent branching on the error family read bad user input as a
+  broken system. Splits now report `transaction_invalid_input` and merchant
+  writes `mutation_invalid_input`. (#517)
 
 - **A Plaid transaction's `category` no longer holds Plaid's own category
   code.** `prep.int_transactions__unioned` had aliased the raw
@@ -424,6 +515,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 
 ### Added
+- **A getting-started guide and a reports guide, built from real transcripts.**
+  `docs/guides/getting-started.md` walks a clean machine to a first report
+  and a first MCP question, and `docs/guides/reports.md` runs all eight
+  built-in reports on the `family` demo persona and covers the JSON
+  envelope, the saved-report lifecycle, `--display-currency`, the `reports`
+  MCP tool, and `export report`; both are linked from the docs index and the
+  README. (#542)
 - **Three references are generated from the code and pinned by a test.**
   `make generate-docs` renders `docs/reference/cli/` (one page per top-level
   command plus an index) from the Typer command tree,

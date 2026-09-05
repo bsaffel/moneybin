@@ -131,11 +131,11 @@ def transactions_splits_list(
             logger.info(f"No splits on {transaction_id}")
         return
     for s in splits:
-        # NULL only, matching the `Placeholder` rule `transactions list` uses:
-        # absent means absent, and a stored blank is a value someone wrote.
-        # `add_split` applies no non-empty check, so `--category ""` is stored
-        # verbatim, and a falsy `or` here would report that blank as a gap the
-        # curator never left.
+        # NULL only, matching the `Placeholder` rule `transactions list` uses.
+        # The service refuses a blank category outright, so NULL is the only
+        # absence that reaches here and a falsy `or` would differ from this on
+        # no input at all — keep the explicit test rather than reintroduce a
+        # second reading of what absent means.
         cat = UNCATEGORIZED_LABEL if s.category is None else s.category
         typer.echo(f"  [{s.split_id}] {s.amount} {cat}")
 

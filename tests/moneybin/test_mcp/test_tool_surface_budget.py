@@ -164,11 +164,15 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # tools never owed: accepting a match can reverse a transfer the user
     # accepted, and an agent that cannot read that from the description
     # reports the reversal as a clean accept. Registry-wide the consolidation
-    # still stands at -34.3% — 59,577 bytes against the baseline's 90,734, both
+    # still stands at -33.8% — 60,083 bytes against the baseline's 90,734, both
     # readable as `total_bytes` in the two fixtures this test loads. (The figure
-    # has drifted twice before — recorded as -38.0%, then -37.0% — because
-    # nothing fails when a comment goes stale. Recompute it from the fixtures
-    # rather than trusting this line.)
+    # has drifted four times before — recorded as -38.0%, then -37.0%, then
+    # -34.3% against a 59,577 the fixture had already left behind, then -33.9%
+    # that went stale in the single merge between being written and being read
+    # — because nothing fails when a comment goes stale. The governing spec's
+    # equivalent figures are derived from the snapshot in
+    # `test_mcp_surface_docs.py` and so cannot drift; this line cannot be, being
+    # a comment. Recompute it from the fixtures rather than trusting it.)
     "reviews_decide": (2_727, 2_566),
     # Grew by the same disclosure, for the same reason: accepting an account
     # decision re-runs matching, which can reverse a transfer the user
@@ -181,7 +185,17 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # would have the agent retry a merge with a token, read the refusal as a
     # bug, and route around the confirmation this exists to enforce.
     "identity_links_decide": (3_497, 5_762),
-    "taxonomy_set": (3_480, 3_223),
+    # Grew 172 bytes advertising the rule its model validator already enforced:
+    # a merchant subcategory requires a category. `SplitTarget` has carried the
+    # same conditional in its JSON schema all along, so a client that validates
+    # before calling saw the constraint for splits and not for merchants, and
+    # could build a payload the schema promised was valid and the server then
+    # refused.
+    #
+    # 36 of those bytes came back when the condition dropped its redundant
+    # `state` test: the `absent` branch already forbids `subcategory`, so
+    # naming `state` narrowed the `if` without narrowing what validates.
+    "taxonomy_set": (3_652, 3_223),
     "privacy_consent_set": (1_217, 2_188),
 }
 

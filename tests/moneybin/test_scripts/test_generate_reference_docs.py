@@ -312,12 +312,14 @@ SURFACE: dict[str, Any] = {
 
 
 def test_mcp_page_sorts_tools_and_renders_schema_rows() -> None:
-    page = render_mcp_tools(SURFACE, {"accounts": "critical", "zeta": "low"})
+    page = render_mcp_tools(
+        SURFACE, {"accounts": ("critical", True), "zeta": ("low", False)}
+    )
     assert page.index("### accounts") < page.index("### zeta")
     assert "The standard registry exposes 2 tools." in page
     assert (
-        "| [`zeta`](#zeta) | Second sentence first. | write, destructive, not idempotent | `low` |"
-        in page
+        "| [`zeta`](#zeta) | Second sentence first. | write, destructive, "
+        "not idempotent | at least `low` |" in page
     )
     assert "| `limit` | integer | `100` | ≥ 1 |" in page
     assert "| `view` | one of `list`, `detail` | `list` | required |" in page
@@ -325,9 +327,29 @@ def test_mcp_page_sorts_tools_and_renders_schema_rows() -> None:
     assert "No parameters." in page
 
 
+def test_mcp_page_words_the_declared_tier_as_the_bound_it_actually_is() -> None:
+    """A static tier is a floor, a dynamic one a ceiling; the page must say which.
+
+    Both phrasings render from the same registered value, so a renderer that
+    dropped the distinction would still produce a plausible-looking page —
+    which is how the reference came to advertise every tool's tier as a
+    "maximum" that nothing enforced (MB-157).
+    """
+    page = render_mcp_tools(
+        SURFACE, {"accounts": ("critical", True), "zeta": ("low", False)}
+    )
+
+    assert "Sensitivity: up to `critical`." in page
+    assert "Sensitivity: at least `low`." in page
+    assert "at least `critical`" not in page
+    assert "up to `low`" not in page
+
+
 def test_mcp_page_renders_oneof_variants_by_discriminator() -> None:
     """A ``oneOf`` parameter names each variant and lists its fields below."""
-    page = render_mcp_tools(SURFACE, {"accounts": "critical", "zeta": "low"})
+    page = render_mcp_tools(
+        SURFACE, {"accounts": ("critical", True), "zeta": ("low", False)}
+    )
     assert "| `target` | one of `widget`, `gadget` |  |  |" in page
     assert "| `requests` | array of one of `thing_add`, `thing_remove` |  |  |" in page
     assert "#### Variants of `target`" in page
@@ -353,7 +375,9 @@ def test_mcp_page_renders_oneof_variants_by_discriminator() -> None:
 
 def test_mcp_page_renders_variants_of_a_nullable_oneof() -> None:
     """An optional discriminated union gets the same variants block as a required one."""
-    page = render_mcp_tools(SURFACE, {"accounts": "critical", "zeta": "low"})
+    page = render_mcp_tools(
+        SURFACE, {"accounts": ("critical", True), "zeta": ("low", False)}
+    )
     assert "| `scope` | one of `everything`, `one` |" in page
     assert "#### Variants of `scope`" in page
     assert "##### `everything`" in page
@@ -401,7 +425,7 @@ def test_mcp_page_names_oneof_variant_by_title_without_a_const() -> None:
             },
         ],
     }
-    page = render_mcp_tools(surface, {"titled": "low"})
+    page = render_mcp_tools(surface, {"titled": ("low", False)})
     assert "| `target` | one of `Widget Variant`, `Gadget Variant` |  |  |" in page
     assert "##### `Widget Variant`" in page
     assert "##### `Gadget Variant`" in page
@@ -442,7 +466,7 @@ def test_mcp_page_names_oneof_variant_by_position_without_a_title() -> None:
             },
         ],
     }
-    page = render_mcp_tools(surface, {"untitled": "low"})
+    page = render_mcp_tools(surface, {"untitled": ("low", False)})
     assert "| `target` | one of `variant 1`, `variant 2` |  |  |" in page
     assert "##### `variant 1`" in page
     assert "##### `variant 2`" in page
@@ -512,7 +536,7 @@ def test_mcp_page_renders_conditional_required_and_else_forbidden() -> None:
             },
         ],
     }
-    page = render_mcp_tools(surface, {"widget_target_set": "low"})
+    page = render_mcp_tools(surface, {"widget_target_set": ("low", False)})
     assert (
         "| `local_path` | string |  | min length 1; required when `state` is "
         "`present`; forbidden unless `state` is `present` |" in page
@@ -596,7 +620,7 @@ def test_mcp_page_merges_conditional_forbidden_clauses_across_branches() -> None
             },
         ],
     }
-    page = render_mcp_tools(surface, {"taxonomy_set": "low"})
+    page = render_mcp_tools(surface, {"taxonomy_set": ("low", False)})
     assert (
         "| `category` | string |  | required when `state` is `present`; "
         "forbidden when `state` is `inactive` or `absent` |" in page
@@ -654,11 +678,76 @@ def test_mcp_page_renders_conditional_must_be_const() -> None:
             },
         ],
     }
-    page = render_mcp_tools(surface, {"reviews_decide": "low"})
+    page = render_mcp_tools(surface, {"reviews_decide": ("low", False)})
     assert (
         "| `allow_broad` | boolean |  | must be `false` when `decision` is "
         "`reject` |" in page
     )
+
+
+def test_mcp_page_renders_a_conditional_keyed_on_another_field_being_set() -> None:
+    """An ``if`` testing presence rather than a constant renders as "is set".
+
+    The category/subcategory rule is shaped this way — a subcategory is only
+    meaningful under a parent — so the condition is "the other field was
+    supplied", which no ``const`` can express.
+    """
+    surface: dict[str, Any] = {
+        "tool_count": 1,
+        "tools": [
+            {
+                "name": "widget_label_set",
+                "definition": {
+                    "description": "Label one widget.",
+                    "annotations": {"readOnlyHint": False},
+                    "inputSchema": {
+                        "properties": {
+                            "target": {
+                                "oneOf": [
+                                    {
+                                        "description": "A labelled target.",
+                                        "properties": {
+                                            "kind": {
+                                                "const": "label",
+                                                "type": "string",
+                                            },
+                                            "category": {"type": "string"},
+                                            "subcategory": {"type": "string"},
+                                        },
+                                        "required": ["kind"],
+                                        "type": "object",
+                                        "allOf": [
+                                            {
+                                                "if": {
+                                                    "properties": {
+                                                        "subcategory": {
+                                                            "not": {"type": "null"}
+                                                        }
+                                                    },
+                                                    "required": ["subcategory"],
+                                                },
+                                                "then": {
+                                                    "required": ["category"],
+                                                    "properties": {
+                                                        "category": {
+                                                            "not": {"type": "null"}
+                                                        }
+                                                    },
+                                                },
+                                            }
+                                        ],
+                                    },
+                                ]
+                            },
+                        },
+                        "type": "object",
+                    },
+                },
+            },
+        ],
+    }
+    page = render_mcp_tools(surface, {"widget_label_set": ("low", False)})
+    assert "| `category` | string |  | required when `subcategory` is set |" in page
 
 
 def test_mcp_page_conditional_tripwire_raises_on_unrecognized_if() -> None:
@@ -710,14 +799,14 @@ def test_mcp_page_conditional_tripwire_raises_on_unrecognized_if() -> None:
         ],
     }
     with pytest.raises(ValueError) as exc_info:
-        render_mcp_tools(surface, {"widget_set": "low"})
+        render_mcp_tools(surface, {"widget_set": ("low", False)})
     assert "target" in str(exc_info.value)
     assert "weird" in str(exc_info.value)
 
 
 def test_mcp_page_refuses_a_tool_without_a_registered_sensitivity() -> None:
     with pytest.raises(ValueError, match="zeta"):
-        render_mcp_tools(SURFACE, {"accounts": "critical"})
+        render_mcp_tools(SURFACE, {"accounts": ("critical", False)})
 
 
 def test_live_mcp_surface_lists_every_tool_with_a_registered_tier() -> None:
@@ -732,6 +821,10 @@ def test_live_mcp_surface_lists_every_tool_with_a_registered_tier() -> None:
     assert tools
     assert surface["tool_count"] == len(tools)
     assert {str(tool["name"]) for tool in tools} <= set(sensitivities)
+    for name, entry in sensitivities.items():
+        tier, dynamic = entry
+        assert tier in {"low", "medium", "high", "critical"}, f"{name}: {tier}"
+        assert isinstance(dynamic, bool), f"{name}: {dynamic!r}"
 
 
 class Nested(BaseModel):

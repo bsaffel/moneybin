@@ -1010,6 +1010,95 @@ class TestCreateMerchantDualWrite:
         assert row == (None, None)
 
     @pytest.mark.unit
+    def test_create_merchant_refuses_a_subcategory_without_a_category(
+        self, db: Database
+    ) -> None:
+        """A merchant's default mapping is the same pair, under the same rule.
+
+        Unlike the two tests around it, this text is not merely unresolved-for-
+        now: ``resolve_category_id`` short-circuits on a NULL category, so no
+        later ``create_category`` can ever back this subcategory. The lookup
+        that reuses a merchant (``_find_merchant``) also keys on
+        ``category = ?``, which no NULL category satisfies — so the row is
+        unreachable by the code meant to find it.
+        """
+        svc = CategorizationService(db)
+        with pytest.raises(UserError, match="subcategory requires a category") as exc:
+            svc.create_merchant(
+                raw_pattern="ORPHAN PATTERN",
+                canonical_name="Orphan Merchant",
+                match_type="contains",
+                subcategory="Coffee",
+                created_by="user",
+            )
+        assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("field", ["category", "subcategory"])
+    def test_create_merchant_refuses_blank_category_text(
+        self, db: Database, field: str
+    ) -> None:
+        """The blank-text rule reaches the merchant default, not just splits.
+
+        A merchant's stored default is copied verbatim into
+        ``app.transaction_categories`` by the ``categorize_pending`` sweep,
+        which skips only on ``None`` — so whitespace text survives into
+        ``core.fct_transactions.category``, where it renders as an empty cell
+        that ``core.uncategorized_queue``'s ``category IS NULL`` filter cannot
+        see. That is the defect this PR closes elsewhere, and
+        ``merchants create --default-category '   '`` reaches it unstripped.
+        """
+        svc = CategorizationService(db)
+        kwargs: dict[str, Any] = (
+            {"category": "Coffee"} if field == "subcategory" else {}
+        )
+        kwargs[field] = "   "
+        with pytest.raises(UserError, match=f"{field} must be non-empty") as exc:
+            svc.create_merchant(
+                raw_pattern="BLANK PATTERN",
+                canonical_name="Blank Merchant",
+                match_type="contains",
+                created_by="user",
+                **kwargs,
+            )
+        assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("category", "subcategory", "message"),
+        [
+            ("   ", None, "category must be non-empty"),
+            ("x" * 101, None, "category exceeds 100 chars"),
+            ("Food", "   ", "subcategory must be non-empty"),
+            ("Food", "x" * 101, "subcategory exceeds 100 chars"),
+        ],
+    )
+    def test_create_category_refuses_unusable_category_text(
+        self,
+        db: Database,
+        category: str,
+        subcategory: str | None,
+        message: str,
+    ) -> None:
+        """The taxonomy itself is the surface this rule most has to hold on.
+
+        Every other guarded write stores a category *reference*; this one
+        stores the category. A blank row reaches ``core.dim_categories``, so
+        ``categories list`` renders an empty name and
+        ``resolve_category_id`` gains a row nothing can usefully match. The
+        CLI turns ``--parent`` into the category and the argument into the
+        subcategory, so ``categories create Coffee --parent '   '`` is the
+        blank-parent shape and lands here as a blank ``category``.
+        """
+        svc = CategorizationService(db)
+        with pytest.raises(UserError, match=message) as exc:
+            svc.create_category(category, subcategory=subcategory, actor="cli")
+        assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
+        remaining = db.execute("SELECT COUNT(*) FROM app.user_categories").fetchone()
+        assert remaining is not None
+        assert remaining[0] == 0
+
+    @pytest.mark.unit
     def test_create_merchant_with_unresolved_text_leaves_fk_null(
         self, db: Database
     ) -> None:

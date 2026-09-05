@@ -144,7 +144,9 @@ uv run moneybin reports spending
 ```
 
 Imports are idempotent — re-import an overlapping month and source IDs plus
-content matching keep the count right. Coming from Tiller, Mint, or YNAB, the
+content matching keep the count right. The [getting-started
+guide](docs/guides/getting-started.md) walks this path with a transcript at
+every step. Coming from Tiller, Mint, or YNAB, the
 [data import guide](docs/guides/data-import.md) has a migration path per tool,
 and documents how to revert a batch.
 
@@ -159,6 +161,7 @@ use it before migrating.
 
 - [What works today](docs/features.md) — the shipped capability boundary
 - [Data import](docs/guides/data-import.md) — files, Plaid, Sheets, migrations
+- [Reports](docs/guides/reports.md) — the eight built-ins with their output, saved reports, one display currency
 - [MCP server](docs/guides/mcp-server.md) — tool catalog, envelope, redaction
 - [Database and security](docs/guides/database-security.md) — encryption, backups, profiles
 - [Architecture](docs/architecture.md) — the data layers and the contracts they keep
