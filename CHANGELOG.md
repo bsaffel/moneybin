@@ -11,6 +11,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **An investment account fed by two sources at once no longer publishes wrong
+  numbers.** A broker import and a connector sync covering one account leave two
+  interleaved ledgers rather than one — every event exists twice, so lots
+  double-count and cost basis mixes two accountings — and investment dedup
+  across sources does not exist yet, so `core.dim_holdings` now withholds every
+  figure for such a position (`market_value`, `unrealized_gain`, `price_date`,
+  `price_source` and `days_since_observed` all NULL, never zero) under a new
+  `valuation_status` value, `source_overlap`. `system doctor`'s
+  `investment_source_overlap` check moves from `warn` to `fail` and names the
+  only two exits — revert the imported batch, or disconnect the duplicate
+  connection — while the holdings read discloses the state through a
+  `warnings[]` entry and `summary.degraded_reason` on both the CLI and the
+  `investments` MCP tool. (#TBD)
+
 - **The public docs have one index, one reference directory, and a test that
   every command they cite exists.** `docs/architecture/` and `docs/tech/` are
   folded into `docs/reference/`; `docs/guides/README.md` and

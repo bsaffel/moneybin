@@ -76,9 +76,10 @@ Usage: `moneybin investments list [OPTIONS]`
 Current positions: what you hold, what it is worth, and whether you are up.
 
 Market value and unrealized gain come from the most recent close at or
-before today. A position with no usable price, or one whose share count is
-known wrong, shows ``-`` rather than a zero, and the ``status`` column
-beside it says which — it prints by default, because the two cases have
+before today. A position with no usable price, one whose share count is
+known wrong, or one in an account whose investment ledger arrives from two
+sources at once shows ``-`` rather than a zero, and the ``status`` column
+beside it says which — it prints by default, because the three cases have
 different remedies. ``--wide`` adds the cost basis, the average cost, and
 the date the price was observed.
 

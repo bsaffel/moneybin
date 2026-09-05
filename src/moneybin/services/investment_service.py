@@ -310,8 +310,8 @@ class HoldingRow:
     """One current position — cost basis plus the Pillar-C valuation.
 
     ``market_value``/``unrealized_gain`` are NULL — never zero — whenever
-    ``valuation_status`` is ``unpriced`` or ``withheld``; a zero is
-    indistinguishable from a worthless position. ``unrealized_gain`` is
+    ``valuation_status`` is ``unpriced``, ``withheld`` or ``source_overlap``;
+    a zero is indistinguishable from a worthless position. ``unrealized_gain`` is
     signed (negative below cost); ``market_value`` is not.
     """
 
@@ -358,6 +358,12 @@ class HoldingsResult:
     ``summary.applied_rates``. Empty whenever nothing was converted, because
     "no conversion happened" and "converted at a rate nobody recorded" must not
     look alike to a reader.
+
+    ``degraded_reason`` is the machine-readable half of the warning above it:
+    set only when a ``source_overlap`` position is in the result, so the flag
+    means one thing and a consumer can branch on it. Both CLI and MCP put it on
+    ``summary.degraded_reason``, which is where an agent reads "this answer is
+    less than you asked for" without parsing prose.
     """
 
     rows: list[HoldingRow]
@@ -367,6 +373,7 @@ class HoldingsResult:
     total_market_value_currency: str | None = None
     market_value_by_currency: dict[str, Decimal] = field(default_factory=dict)
     applied_rates: tuple[ResolvedRate, ...] = ()
+    degraded_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1702,7 +1709,18 @@ class InvestmentService:
 
     # Statuses that publish no market value. Mirrors dim_holdings.sql's
     # valuation_status vocabulary; 'valued'/'carried_forward' both carry a number.
-    _UNVALUED_STATUSES: frozenset[str] = frozenset({"unpriced", "withheld"})
+    _UNVALUED_STATUSES: frozenset[str] = frozenset({
+        "unpriced",
+        "withheld",
+        "source_overlap",
+    })
+    # The one status whose remedy is outside the pipeline: an account fed by two
+    # sources at once has two interleaved ledgers, and no refresh, price pull or
+    # reconciliation clears it — one of the feeds has to go. Named as a code
+    # rather than only in prose so a consumer can branch on it; the doctor's
+    # invariant of the same name is the surface that blocks on it.
+    _SOURCE_OVERLAP_STATUS: str = "source_overlap"
+    _SOURCE_OVERLAP_CODE: str = "investment_source_overlap"
     _VALID_TERMS: frozenset[str] = frozenset({"short", "long"})
 
     def _resolve_filters(
@@ -1813,9 +1831,11 @@ class InvestmentService:
 
         Each row carries cost basis and — when a close resolved — market value,
         unrealized gain, the date of the close used, and how many days old it
-        is. A position whose value is ``unpriced`` or ``withheld`` reports NULL
-        rather than zero; the count of those rows is named in a warning, the
-        same shape ``lots()`` uses for ``basis_incomplete``.
+        is. A position whose value is ``unpriced``, ``withheld`` or
+        ``source_overlap`` reports NULL rather than zero; the count of those
+        rows is named in a warning, the same shape ``lots()`` uses for
+        ``basis_incomplete``. ``source_overlap`` adds a second warning and sets
+        ``degraded_reason``, because its remedy is outside the pipeline.
 
         ``max_days_since_observed`` carries the age of the stalest close behind
         any published figure — always present, never a warning.
@@ -1874,9 +1894,31 @@ class InvestmentService:
         if unvalued:
             warnings.append(
                 f"{unvalued} position(s) report no market value — see each row's "
-                "valuation_status: 'unpriced' (no close resolved) or 'withheld' "
-                "(a known-wrong share count, or lots that disagree on currency)."
+                "valuation_status: 'unpriced' (no close resolved), 'withheld' "
+                "(a known-wrong share count, or lots that disagree on currency), "
+                "or 'source_overlap' (the account's investment ledger arrives "
+                "from two sources at once)."
             )
+        # A second warning rather than a third clause in the first: the count
+        # above says how many figures are missing, and this says which repair
+        # brings one class of them back. Folding them would send a reader whose
+        # only blank row is an unpriced one to disconnect a working sync.
+        overlapping = sum(
+            1
+            for row in holding_rows
+            if row.valuation_status == self._SOURCE_OVERLAP_STATUS
+        )
+        degraded_reason: str | None = None
+        if overlapping:
+            degraded_reason = (
+                f"{self._SOURCE_OVERLAP_CODE}: {overlapping} position(s) are "
+                "held back because their account's investment ledger arrives "
+                "from two sources at once — the two ledgers interleave, so lots "
+                "double-count and cost basis mixes two accountings. Revert the "
+                "redundant import batch, or disconnect the duplicate sync "
+                "connection, then run 'moneybin system doctor' to confirm."
+            )
+            warnings.append(degraded_reason)
         # Scope the age to the rows carrying a figure: it discloses how old the
         # published numbers are, not how old an absent one would have been.
         observed_ages = [
@@ -1925,6 +1967,7 @@ class InvestmentService:
             total_market_value_currency=total_currency,
             market_value_by_currency=by_currency,
             applied_rates=applied_rates,
+            degraded_reason=degraded_reason,
         )
 
     def _portfolio_total(

@@ -1485,6 +1485,38 @@ class TestHoldingsValuation:
         assert "1" in result.data.warnings[0]
 
     @pytest.mark.unit
+    async def test_source_overlap_degrades_the_envelope(self, mcp_db: Path) -> None:
+        """The state an agent must branch on rides `summary`, not only prose.
+
+        A `source_overlap` row nulls its money like `unpriced` does, so an agent
+        reading rows alone cannot tell "no price yet" from "these numbers would
+        double-count". `summary.degraded_reason` carries the code that separates
+        them, and its remedy is outside the pipeline.
+        """
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([
+            _Holding(_ACCOUNT, sec, valuation_status="source_overlap")
+        ])
+        result = await investments_coarse(view="holdings")
+
+        assert result.summary.degraded is True
+        assert result.summary.degraded_reason is not None
+        assert result.summary.degraded_reason.startswith("investment_source_overlap:")
+        assert result.data.rows[0].market_value is None
+
+    @pytest.mark.unit
+    async def test_a_valued_holdings_read_is_not_degraded(self, mcp_db: Path) -> None:
+        """`degraded` means one thing, so an ordinary read never sets it."""
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([_Holding(_ACCOUNT, sec, valuation_status="unpriced")])
+        result = await investments_coarse(view="holdings")
+
+        assert result.summary.degraded is False
+        assert result.summary.degraded_reason is None
+
+    @pytest.mark.unit
     async def test_stale_portfolio_discloses_its_age_not_a_warning(
         self, mcp_db: Path
     ) -> None:

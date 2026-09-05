@@ -1032,9 +1032,18 @@ class DoctorService:
     def _run_investment_source_overlap(self) -> InvariantResult:
         """Accounts carrying BOTH manual and Plaid investment history.
 
-        Lots and gains double-count until one source is chosen per account
-        (investment dedup across sources is a future matching child, unlike
-        transactions which already have ``prep.int_transactions__matched``).
+        ``fail``, not ``warn``: every position in such an account is derived
+        from two interleaved ledgers, so lots double-count and cost basis
+        mixes two accountings — numbers nobody should read. Investment dedup
+        across sources is a future matching child, unlike transactions which
+        already have ``prep.int_transactions__matched``, so nothing the
+        pipeline can re-run resolves it; one of the two feeds has to go.
+
+        ``core.dim_holdings`` already withholds every figure for these
+        positions (``valuation_status = 'source_overlap'``). This check is what
+        says so out loud and blocks the release gate, and it reads the RAW
+        tables rather than the ledger so it still fires before a first
+        transform — the point at which the withhold does not yet exist.
         """
         name = "investment_source_overlap"
         try:
@@ -1061,13 +1070,16 @@ class DoctorService:
         if rows:
             return InvariantResult(
                 name=name,
-                status="warn",
+                status="fail",
                 detail=(
                     f"{len(rows)} account(s) have both manual and Plaid "
-                    "investment rows — lots and gains double-count until one "
-                    "source is chosen per account; delete or stop importing the "
-                    "redundant manual entries (investment dedup is a future "
-                    "matching child)"
+                    "investment rows — the two ledgers interleave, so lots and "
+                    "gains double-count and cost basis mixes two accountings; "
+                    "core.dim_holdings withholds every figure for these "
+                    "positions (valuation_status 'source_overlap') until one "
+                    "source is left. Revert the redundant import batch, or "
+                    "disconnect the duplicate sync connection (investment dedup "
+                    "across sources is a future matching child)"
                 ),
                 affected_ids=[str(r[0]) for r in rows],
             )
@@ -1428,9 +1440,10 @@ class DoctorService:
         place users go to ask "is anything wrong with my data?". A position whose
         feed key never bound simply reads blank forever.
 
-        Scoped to ``unpriced`` alone. ``withheld`` also publishes no value, but
-        its remedy is reconciling a share count, not adding a price source, and
-        routing it here would send the user to fix something that was never
+        Scoped to ``unpriced`` alone. ``withheld`` and ``source_overlap`` also
+        publish no value, but their remedies are reconciling a share count and
+        removing one of two source ledgers — not adding a price source — and
+        routing either here would send the user to fix something that was never
         broken. ``carried_forward`` has a usable price whose age the staleness
         surface carries.
 
@@ -1484,8 +1497,9 @@ class DoctorService:
         so that reporting an age is not mistaken for judging one.
 
         Scoped to ``carried_forward``. ``valued`` means the close is dated today
-        and can never be stale; ``unpriced`` and ``withheld`` publish no value,
-        and their remedies — a price source, a reconciled share count — are owned
+        and can never be stale; ``unpriced``, ``withheld`` and ``source_overlap``
+        publish no value, and their remedies — a price source, a reconciled
+        share count, one fewer source ledger — are owned
         by their own checks.
 
         The threshold resolves per security type rather than globally: markets

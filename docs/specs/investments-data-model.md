@@ -377,7 +377,7 @@ Columns:
   price_date        DATE             -- Date of the close used, which may be earlier than today; NULL when no close resolved
   price_source      VARCHAR          -- Which source supplied the close (see core.fct_security_prices); NULL when no close resolved
   days_since_observed INT            -- Calendar days between price_date and today; 0 on a same-day close; NULL when no close resolved
-  valuation_status  VARCHAR          -- valued | carried_forward | unpriced | withheld
+  valuation_status  VARCHAR          -- valued | carried_forward | unpriced | withheld | source_overlap
   updated_at        TIMESTAMP        -- Row freshness
 ```
 
@@ -385,10 +385,15 @@ Columns:
 > (`investments-price-feeds.md`), computed against the close a connected broker
 > already sends. `valuation_status` says which figure the reader is holding:
 > `valued` (the close is today's), `carried_forward` (the most recent close is
-> older), `unpriced` (no close resolved), or `withheld` (the share count is known
-> wrong — an unreconciled split or broker divergence). The last two publish NULL
+> older), `unpriced` (no close resolved), `withheld` (the share count is known
+> wrong — an unreconciled split or broker divergence), or `source_overlap` (the
+> account's investment ledger arrives from two sources at once, so every figure
+> derived from it double-counts). The last three publish NULL
 > rather than zero, so a total never silently absorbs a position it could not
-> value. External feeds and manual overrides (C.2) and the daily valued series
+> value. `source_overlap` is kept distinct from `withheld` because its remedy is
+> outside the pipeline: `system doctor`'s `investment_source_overlap` check
+> fails on it, and only reverting the redundant import batch or disconnecting
+> the duplicate sync connection clears it. External feeds and manual overrides (C.2) and the daily valued series
 > `core.fct_holdings_daily` (C.3) remain designed.
 
 ## Cost-Basis Engine
@@ -797,7 +802,7 @@ $ moneybin investments holdings --account fidelity_brokerage
 6 of 9 columns shown — --wide for all
 portfolio market_value=27,850.00 USD max_days_since_observed=3
 
-⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved) or 'withheld' (a known-wrong share count, or lots that disagree on currency).
+⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved), 'withheld' (a known-wrong share count, or lots that disagree on currency), or 'source_overlap' (the account's investment ledger arrives from two sources at once).
 ```
 
 The first column is `security_id` (a 12-hex catalog id), not a ticker. Each row

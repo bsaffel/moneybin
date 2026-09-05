@@ -808,7 +808,7 @@ PRICE_RESOLUTION_STATUS_TOTAL = Counter(
     # securities. Recorded per full holdings read, so read it as a ratio between
     # statuses over a window, not as an absolute count of positions.
     "Holdings valuation outcomes by status (valued / carried_forward / "
-    "unpriced / unreconstructable / withheld)",
+    "unpriced / unreconstructable / withheld / source_overlap)",
     ["status"],
 )
 

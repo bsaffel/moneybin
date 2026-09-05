@@ -692,6 +692,41 @@ class TestHoldingsAndGains:
         assert "valuation_status" not in result.stderr
 
     @pytest.mark.unit
+    def test_holdings_json_degrades_on_a_source_overlap(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """CLI JSON carries the same machine-readable state the MCP tool does.
+
+        Both surfaces read one service, so the code that says "these numbers
+        would double-count" must reach both envelopes — a caller scripting the
+        CLI is as entitled to branch on it as an agent driving MCP.
+        """
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_2' AS security_id,
+                   20::DECIMAL(28,10) AS quantity,
+                   2000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   NULL::DECIMAL(18,2) AS market_value,
+                   NULL::DECIMAL(18,2) AS unrealized_gain,
+                   NULL::DATE AS price_date, NULL AS price_source,
+                   NULL::INT AS days_since_observed,
+                   'source_overlap' AS valuation_status
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+
+        result = runner.invoke(app, ["investments", "holdings", "--output", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["summary"]["degraded"] is True
+        assert payload["summary"]["degraded_reason"].startswith(
+            "investment_source_overlap:"
+        )
+
+    @pytest.mark.unit
     def test_holdings_text_reports_the_stalest_close_as_a_number(
         self, runner: CliRunner, db: Database
     ) -> None:

@@ -167,10 +167,16 @@ def investments_holdings(
     cost), the `price_date` of the close used, and `days_since_observed`.
     `valuation_status` is one of `valued` (close is today's),
     `carried_forward` (the most recent close is older), `unpriced` (no close
-    resolved), or `withheld` (a known-wrong share count, or lots that
-    disagree on currency). The last two
+    resolved), `withheld` (a known-wrong share count, or lots that
+    disagree on currency), or `source_overlap` (the account's investment
+    ledger arrives from two sources at once, so every figure derived from it
+    would double-count). The last three
     report `market_value`/`unrealized_gain` as null, never zero, and
-    `data.warnings` names how many rows those are.
+    `data.warnings` names how many rows those are. A `source_overlap` row also
+    sets `summary.degraded_reason` to `investment_source_overlap: ...` — its
+    remedy is outside the pipeline (revert the redundant import batch with
+    `import_revert`, or drop the duplicate connection with `sync_disconnect`),
+    so no refresh or price pull will clear it.
 
     `data.max_days_since_observed` is the age in days of the stalest close any
     published figure rests on — the largest `days_since_observed` across the
@@ -192,6 +198,8 @@ def investments_holdings(
         result = InvestmentService(db).holdings(account_ref=account)
     return build_envelope(
         data=InvestmentHoldingsPayload.from_result(result),
+        degraded=result.degraded_reason is not None,
+        degraded_reason=result.degraded_reason,
         actions=[
             "Use investments(view='lots') for per-lot basis",
             "Use investments(view='gains') for realized gain/loss",
@@ -1294,6 +1302,7 @@ def _investment_coarse_envelope(
     next_cursor: str | None,
     period: str | None,
     actions: list[str],
+    degraded_reason: str | None = None,
 ) -> ResponseEnvelope[InvestmentsCoarsePayload]:
     """Build a runtime-classified investment envelope."""
     return build_classified_envelope(
@@ -1303,6 +1312,8 @@ def _investment_coarse_envelope(
         next_cursor=next_cursor,
         period=period,
         actions=actions,
+        degraded=degraded_reason is not None,
+        degraded_reason=degraded_reason,
         has_more=next_cursor is not None,
     )
 
@@ -1370,6 +1381,9 @@ def investments_coarse(
             else None
         )
 
+        # Only holdings can degrade, and only for one reason; every other view
+        # leaves it None so `summary.degraded` keeps meaning one thing.
+        degraded_reason: str | None = None
         if view == "events":
             result = service.list_events(
                 account_ref=account_id,
@@ -1379,11 +1393,12 @@ def investments_coarse(
             )
             all_rows = InvestmentEventsPayload.from_result(result)
         elif view == "holdings":
-            result = service.holdings(
+            holdings_result = service.holdings(
                 account_ref=account_id,
                 security_ref=security_id,
             )
-            all_rows = InvestmentHoldingsPayload.from_result(result)
+            degraded_reason = holdings_result.degraded_reason
+            all_rows = InvestmentHoldingsPayload.from_result(holdings_result)
         elif view == "lots":
             result = service.lots(
                 account_ref=account_id,
@@ -1455,6 +1470,7 @@ def investments_coarse(
         total_count=total_count,
         next_cursor=next_cursor,
         period=_investment_period(start, end),
+        degraded_reason=degraded_reason,
         actions=_investment_actions(
             view,
             account=account,
@@ -1474,24 +1490,24 @@ def register_investment_coarse_reads(mcp: FastMCP) -> None:
         mcp,
         investments_coarse,
         "investments",
-        # 895 of the 900-character budget. `data.applied_rates` cost 61 and was
-        # paid for by tightening the prose around it rather than by dropping a
-        # field: an agent that cannot read a field from the description never
-        # asks for it, so a converted total would stay unauditable in practice.
-        "Return investment events, holdings, open or full tax-lot history, "
-        "realized gains, or securities in one typed view. Amounts use the "
-        "investment ledger sign convention; currency is summary.display_currency "
-        "except holdings rows, which keep their own currency_code. For holdings, "
-        "valuation_status marks each row valued, carried_forward, unpriced, or "
-        "withheld; the last two null market_value/unrealized_gain (never zero) "
-        "and data.warnings counts them, withheld means a wrong share count "
-        "or currency. Do not sum market_value across rows: read "
-        "data.total_market_value, in data.total_market_value_currency — mixed "
-        "currencies price into home at each position's own close, both null when "
-        "no stored rate covers a pair; data.market_value_by_currency gives the "
-        "split in original units and data.applied_rates names each rate behind "
-        "the total. data.max_days_since_observed is the stalest close behind any "
-        "figure.",
+        # 899 of the 900-character budget. source_overlap cost 60 and was paid
+        # for by tightening everywhere else rather than by dropping a field: an
+        # agent that cannot read a status from the description reads its null
+        # market_value as a pricing gap and reports a portfolio short.
+        "Return investment events, holdings, tax lots (open or all), realized "
+        "gains, or securities in one view. Amounts use the ledger sign "
+        "convention; currency is summary.display_currency except holdings rows, "
+        "which keep their own currency_code. For holdings, valuation_status is "
+        "valued, carried_forward, unpriced, withheld (wrong share count or "
+        "currency), or source_overlap (two source ledgers on one account — see "
+        "summary.degraded_reason); the last three null "
+        "market_value/unrealized_gain (never zero), counted in data.warnings. "
+        "Never sum market_value across rows: read data.total_market_value in "
+        "data.total_market_value_currency — mixed currencies price into home at "
+        "each position's close, both null when no rate covers a pair; "
+        "data.market_value_by_currency gives the original-unit split and "
+        "data.applied_rates names each rate behind it. "
+        "data.max_days_since_observed is the stalest close behind a figure.",
         privacy_actor="investments",
     )
 

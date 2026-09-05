@@ -821,17 +821,27 @@ Every valued row carries `valuation_status`:
 | `unpriced` | No usable price. `market_value` is NULL. |
 | `unreconstructable` | Quantity is unknown for this date. `market_value` is NULL. |
 | `withheld` | Quantity is known to be wrong; see "Split desync". |
+| `source_overlap` | The account's investment ledger arrives from more than one source at once, so every derived figure double-counts. `market_value` is NULL. |
 
-`unpriced`, `unreconstructable`, and `withheld` set `market_value` to NULL, never
+`unpriced`, `unreconstructable`, `withheld`, and `source_overlap` set
+`market_value` to NULL, never
 zero. A zero is indistinguishable from a genuinely worthless position and
 silently understates every aggregate that sums it. Consumers reporting a
 portfolio total report the count of non-`valued` positions alongside it.
 
-The three non-`valued` NULL statuses are distinct on purpose, because each has a
+The four non-`valued` NULL statuses are distinct on purpose, because each has a
 different remedy: `unpriced` wants a price feed, `unreconstructable` wants
-earlier transaction history, and `withheld` wants a split reconciled. Collapsing
+earlier transaction history, `withheld` wants a split reconciled, and
+`source_overlap` wants one of the two feeds removed. Collapsing
 them into one "no value" state would tell the user something is missing without
 telling them what to do about it.
+
+`source_overlap` is the only one whose remedy is outside the pipeline entirely,
+and the only one a `system doctor` check `fail`s on
+(`investment_source_overlap`, whose recipe names `import_revert` and
+`sync_disconnect` as the two exits). It is also the only one keyed on the
+ACCOUNT rather than the position: it withholds every position in the account,
+because the double-count reaches all of them.
 
 Every status either carries a number the user can rely on or carries none at all.
 No status publishes a qualified figure, because a qualification the reader cannot
@@ -1219,7 +1229,7 @@ partially fail, so it is unobservable without them.
 | `price_refresh_duration_seconds` | Histogram | `source_type` | `PriceService.pull` | Per-adapter fetch latency; the signal that a provider is degrading before it fails. |
 | `price_refresh_securities_total` | Counter | `source_type`, `outcome` | `PriceService.pull` | `outcome` ∈ `written` / `failed` / `skipped`. Makes partial success countable rather than buried in a CLI string. |
 | `price_rows_written_total` | Counter | `source_type` | `PriceService._store` | Ingest volume, and the check that a backfill wrote what it claimed. |
-| `price_resolution_status_total` | Counter | `status` | `InvestmentService.holdings` | `status` ∈ `valued` / `carried_forward` / `unpriced` / `unreconstructable` / `withheld`. Coverage over time; a rise in `unpriced` is the first sign a feed stopped matching securities, and the `unreconstructable` share is how much history M1J.6 would recover. |
+| `price_resolution_status_total` | Counter | `status` | `InvestmentService.holdings` | `status` ∈ `valued` / `carried_forward` / `unpriced` / `unreconstructable` / `withheld` / `source_overlap`. Coverage over time; a rise in `unpriced` is the first sign a feed stopped matching securities, and the `unreconstructable` share is how much history M1J.6 would recover. |
 | `price_staleness_days` | Gauge | — | `InvestmentService.holdings` | Maximum `days_since_observed` across held securities carrying a value. One number answering "how old is the oldest price my net worth rests on." NaN when no position carries a value: `days_since_observed` is 0 on a same-day close, so publishing 0 for a total pricing outage would make it read as the freshest possible portfolio and leave a `> N days` alert unable to fire. |
 
 The label is `source_type`, not `source` — the canonical provenance column name
