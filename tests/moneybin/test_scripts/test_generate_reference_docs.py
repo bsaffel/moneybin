@@ -746,7 +746,7 @@ def test_mcp_page_renders_a_conditional_keyed_on_another_field_being_set() -> No
             },
         ],
     }
-    page = render_mcp_tools(surface, {"widget_label_set": "low"})
+    page = render_mcp_tools(surface, {"widget_label_set": ("low", False)})
     assert "| `category` | string |  | required when `subcategory` is set |" in page
 
 
