@@ -298,6 +298,9 @@ currency, and quantity. M1J.7 does not infer an account pair from separate
 transfer observations.
 A missing or unresolved identity routes to its existing account- or
 security-identity review; the event matcher does not guess it.
+Match ineligibility prevents a Source event from entering a Proposal; it never
+prevents an otherwise ledger-projectable observation from registering and
+projecting as its own standalone Golden event.
 
 The supported singleton shapes are `buy`, `sell`, `dividend`, `interest`,
 `capital_gain_distribution`, `fee`, `return_of_capital`, `transfer_in`,
@@ -384,6 +387,9 @@ must satisfy all of these invariants:
   event do not count as multiple sources;
 - every leg of every source event moves together;
 - the proposed leg correspondence is total for the supported event shape;
+- every pair of Source events in an N-way Proposal independently passes all
+  eligibility gates and applicable thresholds; connected edges cannot make
+  ineligible endpoints transitively compatible;
 - competing assignments remain visible rather than being broken by arbitrary
   row order; and
 - repeated identical events are solved globally, not greedily.
@@ -457,11 +463,17 @@ One audited Proposal decision with status `pending`, `accepted`, `rejected`,
 source-event keys, exact observation versions, normalized fingerprint,
 candidate-graph fingerprint, confidence band, evidence summary, timestamps, and
 actor. It also stores the planner's immutable `auto_eligible` boolean at
-Proposal creation. The flag is deterministic from the persisted evidence and
-`algorithm_version`; changing that version produces a new Proposal. The flag
-has no mutation authority; first-decision review quality is the share of reviewed
-`auto_eligible` Proposals whose first audited human decision is `accepted` rather
-than `rejected`; `stale` and still-pending Proposals are excluded. Rejected
+Proposal creation. The flag is `true` only when the Proposal is the unique
+global assignment for its connected component, every member pair passes the
+mutual-eligibility invariant, every member pair's candidate evidence is Native
+or exact economic identity rather than constrained fuzzy identity, and no
+material field conflict requires a choice. Otherwise it is `false`. The
+predicate is versioned by
+`algorithm_version` and evaluated only from the persisted Proposal evidence;
+changing that version produces a new Proposal. The flag has no mutation
+authority; first-decision review quality is the share of reviewed
+`auto_eligible` Proposals whose first audited human decision is `accepted`
+rather than `rejected`; `stale` and still-pending Proposals are excluded. Rejected
 fingerprints suppress unchanged Proposals; a changed member identity, exact
 revision, normalized scoring input, or connected-graph fingerprint is a new
 Proposal.
@@ -818,8 +830,9 @@ Golden-ledger freshness or clear the stale-read guard.
 
 Planning is safe to repeat. Unlike existing best-effort enrichment stages,
 `investment_match` is a fail-closed prerequisite to the dependent transform: it
-must register, advance, or retire every eligible Source event and opening-lot
-membership before returning success. Any bootstrap or `investment_match` error
+must register, advance, or retire every ledger-projectable Source event and
+opening-lot membership before returning success, including Source events that
+are ineligible to enter a Proposal. Any bootstrap or `investment_match` error
 prevents the full `TransformService.apply` from running, so SQLMesh cannot
 acknowledge Raw or App inputs that membership did not process. A later refresh
 retries from durable Raw evidence and membership history.
@@ -917,9 +930,9 @@ pending or stale Proposals. They are not a current-state precision measure and
 do not set or authorize a future auto-accept promotion; reversals remain
 separately audited and counted without rewriting that first-decision measure.
 
-Logs may include counts, opaque event ids, status codes, event types, and
-operation names. They must not include descriptions, security names, monetary
-values, quantities, account labels, or source payloads.
+Logs may include counts, opaque event ids, status codes, and operation names.
+They must not include event types, descriptions, security names, monetary values,
+quantities, account labels, or source payloads.
 
 ## Scenario matrix
 
@@ -934,7 +947,7 @@ fixtures and expected Golden-ledger outcomes.
 | Reinvestment | Manual and Plaid two-leg shapes match only when the Plaid comparison adapter finds one normalized `reinvest` acquisition and an income leg using the explicit `dividend` to `dividend`, `interest` to `interest`, or `capital_gain` to `capital_gain_distribution` compatibility mapping within 3 calendar days, with one complete unambiguous cash/fee-reconciled pairing; a 4-day Plaid-internal pair remains singleton, while already-constructed manual and Plaid Source events may cross-source match at 4 or 5 days but not 6; both legs move atomically, and a missing or multiply paired leg is not accepted |
 | Transfers | Same-direction one-leg manual and Plaid `transfer_in` or `transfer_out` events match only when Account, Security, effective currency, quantity, and the 7-day candidate window agree; when manual supplies `original_acquisition_date` or basis and Plaid has `NULL`, the present manual value and its exact provenance project instead of being erased; opposing legs are never inferred as an internal-transfer pair, and merger, spin-off, or trade legs remain ineligible for partial matching |
 | Source diversity | A manual-to-Plaid or other distinct-origin Proposal may be eligible; two manual/user events or two events from one Plaid connection never consolidate through this review matcher, while multiple legs already validated inside one Source event remain atomic |
-| Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
+| Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing; three otherwise-identical events whose endpoint dates exceed the applicable band cannot form one N-way Proposal through a chain of individually eligible neighbor edges; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; after evidence or identity changes, reversal activates current-revision/current-dependency standalone successor memberships or blocks atomically rather than restoring obsolete rows; manual correction is unavailable in M1J.7 |
 | Revisions | Identical aggregator re-delivery reuses a version and per-job receipt while preserving its first-ingestion sequence; A→B→A content reuses the immutable A revision but a new receipt makes A current while retaining B in history, including when two jobs share an extraction timestamp; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
@@ -951,7 +964,7 @@ fixtures and expected Golden-ledger outcomes.
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
 | Recovery | A fresh profile and a newly added comparison-input model bootstrap only pre-match views before membership; bootstrap or membership failure prevents the dependent transform and its SQLMesh acknowledgement; committed decision plus crash or failed rebuild remains pending in transform freshness and every dependent read until a successful rebuild |
 | Guard coverage | Manual history overlapping Plaid transactions or holdings-derived bootstrap rows emits the same visible warning and doctor finding |
-| Measurement | An `auto_eligible` Proposal remains pending, records the flag immutably, and contributes to first-decision review quality only after its first human accept or reject decision; a later reversal emits its separate outcome without rewriting that historical measure or becoming auto-accept authority |
+| Measurement | A unique Proposal whose every member pair has Native or exact evidence, mutual eligibility, and no material field choices records `auto_eligible=true`; a competing Proposal, a Proposal with any constrained-fuzzy or ineligible member pair, or one with a field choice records `false`; every Proposal remains pending, contributes to first-decision review quality only after its first human accept or reject decision, and emits a later reversal separately without rewriting that historical measure or becoming auto-accept authority |
 
 ## Verification
 
@@ -967,15 +980,19 @@ fixtures and expected Golden-ledger outcomes.
   Proposal.
 - Pure global-assignment tests, including repeated-event graphs with
   non-arbitrary distinguishing evidence, genuinely indistinguishable two-to-two
-  and one-to-two graphs, and an equally plausible event arriving after Proposal
+  and one-to-two graphs, an N-way chain whose endpoint pair is outside the
+  applicable threshold, and an equally plausible event arriving after Proposal
   planning.
 - Proposal-measurement tests proving `auto_eligible` is recorded at planning,
-  is deterministic for the persisted evidence and algorithm version, cannot
-  authorize a mutation, and uses bounded decision-metric labels emitted once
-  for first human accepted or rejected decisions while excluding pending and
-  stale outcomes. Acceptance followed by reversal emits the separate reversal
-  outcome without changing the first-decision measure or treating it as a
-  current-state precision or promotion gate.
+  is true only for a unique mutually eligible Proposal whose every member pair
+  has Native or exact evidence and no material field choices, is false for
+  competing, pairwise-incomplete, field-choice, and N-way mixed exact/fuzzy
+  cases, is deterministic for the persisted evidence and algorithm version,
+  cannot authorize a mutation, and uses bounded decision-metric labels emitted
+  once for first human accepted or rejected decisions while excluding pending
+  and stale outcomes. Acceptance followed by reversal emits the separate
+  reversal outcome without changing the first-decision measure or treating it
+  as a current-state precision or promotion gate.
 - Reinvest Source-event tests proving the Plaid comparison adapter groups one
   normalized `reinvest` acquisition with an income leg only for the explicit
   `dividend` to `dividend`, `interest` to `interest`, or `capital_gain` to
@@ -1053,7 +1070,9 @@ fixtures and expected Golden-ledger outcomes.
   CLI, MCP, report, canonical bundle export, and SQL reads until every dependent
   model rebuilds successfully, while status, recovery, audit, provenance, and
   unrelated reads remain available.
-- Refresh-orchestration tests proving any `investment_match` error prevents the
+- Refresh-orchestration tests proving match-ineligible but ledger-projectable
+  Source events still register as standalone membership, and any
+  `investment_match` error prevents the
   dependent transform and SQLMesh timestamp advancement, and proving a direct
   transform-only selector expands the dependency so a later retry completes
   membership processing before rebuilding.
