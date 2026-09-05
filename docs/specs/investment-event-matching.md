@@ -382,6 +382,11 @@ default defined under Field fidelity. A difference beyond that threshold is a
 material field conflict and requires an explicit choice when a validated native
 relationship or prior ratified membership otherwise keeps the Source events
 eligible.
+`trade_date` has a separate zero-safe rule when both values are explicit: any
+two present unequal explicit trade dates require a choice because the date
+controls lot ordering and holding period. An explicit date still outranks a
+`posting_fallback` within the candidate threshold; two posting fallbacks retain
+the ordinary threshold rule.
 Tax-character subtype disagreements are categorical material field conflicts:
 `qualified` versus `non_qualified` on a dividend and `short_term` versus
 `long_term` on a capital-gain distribution always require an explicit choice
@@ -698,10 +703,13 @@ Golden fields follow this order:
    revision has `NULL`, unless explicit curation deliberately clears it;
 4. require an explicit field choice for a normalized date or numeric difference
    beyond its applicable tolerance, or for conflicting present tax-character
-   subtypes; and
-5. for an eligible within-tolerance `trade_date` difference, prefer an
+   subtypes;
+5. require an explicit field choice for any two present unequal `trade_date`
+   values whose bases are both `explicit`;
+6. for an eligible within-tolerance `trade_date` difference with unlike bases,
+   prefer an
    `explicit` value over a `posting_fallback` value; and
-6. otherwise choose field provenance through the deterministic source
+7. otherwise choose field provenance through the deterministic source
    precedence below.
 
 Objective fields include trade, settlement, and original acquisition dates;
@@ -837,6 +845,12 @@ choice for every material field conflict. Missing, unknown, duplicate, or stale
 ids fail the request. Reject forbids field choices. A Proposal with no material
 field conflicts accepts with an empty choice set. This keeps CLI and MCP
 semantics identical without adding one tool per command.
+
+The CLI returns usage error 2 when `--field-choice` lacks both
+`--type investment-matches` and exactly one `--confirm`, including any use with
+`--reject` or a non-investment type. It also returns usage error 2 for
+`--confirm-all` with `--type investment-matches` or `--type all`; it never
+silently skips the mandatory-review queue inside a partial batch.
 
 During planning, the service constructs and validates the complete deterministic
 default projection. If individually within-tolerance defaults for quantity,
@@ -1057,7 +1071,7 @@ fixtures and expected Golden-ledger outcomes.
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
 | Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
 | Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo; undo of a third-source acceptance restores the complete prior topology, including its accepted two-source component and the removed source's appropriate standalone component, under each component's current lifecycle rather than decomposing everything into standalones; multiple collections converging on one disposal write once only when their complete remapped sets are identical, otherwise acceptance blocks; ambiguous current membership, dependency, decision linkage, or curation remapping blocks undo, and later overlapping curation blocks undo |
-| Field choices | A date or numeric difference at its tolerance takes the deterministic default, including explicit `trade_date` over a known posting fallback before source precedence, while an otherwise-eligible native or ratified candidate beyond tolerance requires a choice; any two present unequal `original_acquisition_date` values require a choice while present still outranks missing; present `qualified` versus `non_qualified` dividend subtypes and `short_term` versus `long_term` capital-gain-distribution subtypes always require a choice; if individually within-tolerance accounting-field defaults combine incoherently, the participating fields expose observed-value choices and a pending Proposal exists only when at least one complete choice combination validates; missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
+| Field choices | Candidate date bands do not become silent tax-lot field tolerances: any two present unequal explicit `trade_date` values require a choice, while an explicit date outranks a posting fallback within the candidate threshold and two fallbacks retain the ordinary threshold rule; an otherwise-eligible native or ratified candidate beyond tolerance requires a choice; any two present unequal `original_acquisition_date` values require a choice while present still outranks missing; present `qualified` versus `non_qualified` dividend subtypes and `short_term` versus `long_term` capital-gain-distribution subtypes always require a choice; if individually within-tolerance accounting-field defaults combine incoherently, the participating fields expose observed-value choices and a pending Proposal exists only when at least one complete choice combination validates; missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; CLI rejects `field-choice` outside one investment-match confirmation and rejects `confirm-all` for investment matches or all queues with exit 2; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
 | Field provenance | Explicit curation outranks the default; otherwise present values outrank missing values, an explicit trade date outranks a posting fallback, aggregator beats manual, and the stable source tuple breaks an aggregator tie, so a basis-bearing manual transfer is not erased by aggregator `NULL`, a manual actual trade date is not displaced by Plaid's posting fallback, and differing descriptions from two Plaid origins plus input reordering produce one unchanged value and exact provenance without affecting assignment |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
 | Recovery | A fresh profile and a newly added comparison-input model bootstrap only pre-match views before membership; bootstrap or membership failure prevents the dependent transform and its SQLMesh acknowledgement; committed decision plus crash or failed rebuild remains pending in transform freshness and every dependent read until a successful rebuild |
@@ -1073,10 +1087,11 @@ fixtures and expected Golden-ledger outcomes.
   choice tests also prove present `qualified`/`non_qualified` and
   `short_term`/`long_term` disagreements always require a choice, while a
   present tax-character subtype outranks a missing one. Trade-date tests prove
-  an explicit manual or aggregator date outranks a known posting fallback
-  within tolerance, while beyond-tolerance differences require a choice. Any
-  two present unequal original acquisition dates require a choice, while a
-  present value still outranks a missing one.
+  any two present unequal explicit values require a choice, an explicit manual
+  or aggregator date outranks a known posting fallback within tolerance, two
+  posting fallbacks retain the ordinary threshold rule, and beyond-tolerance
+  differences require a choice. Any two present unequal original acquisition
+  dates require a choice, while a present value still outranks a missing one.
 - Currency tests for explicit values, account inheritance, unknown or
   contradictory effective currency, and account-currency changes that stale a
   Proposal.
@@ -1241,7 +1256,9 @@ fixtures and expected Golden-ledger outcomes.
   outputs.
 - CLI and MCP parity tests for plan, inspect, accept, reject, stale, failure, and
   undo outcomes, including identical field-choice and complete Golden-event
-  invariant validation.
+  invariant validation. CLI usage tests prove `field-choice` outside exactly one
+  investment-match confirmation, and `confirm-all` for investment matches or all
+  queues, fail with exit 2 before any partial decision.
 - Property or invariant tests proving a source event has at most one active
   Golden membership and every accepted multi-leg event is complete.
 - Real mixed-history validation before any guard or auto-accept promotion.

@@ -218,9 +218,11 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   At most one explicit primary action among `--status`, `--interactive`, `--confirm`,
 |   `--reject`, and `--confirm-all` may be supplied; passing two is a usage error (exit 2),
 |   while omitting all of them selects the default status/counts read. `--field-choice` is a
-|   modifier, not a primary action, and accompanies exactly one `--confirm`; `--confirm-all`
-|   is unavailable for `investment-matches` because each Proposal requires review and may
-|   carry proposal-issued choices.
+|   modifier, not a primary action: it requires `--type investment-matches` and exactly one
+|   `--confirm`. Any other use, including with `--reject` or a non-investment type, is a usage
+|   error (exit 2). `--confirm-all` with `--type investment-matches` or `--type all` is also a
+|   usage error (exit 2), because silently skipping the mandatory-review queue would make a
+|   partial batch look complete.
 |
 +-- accounts
 |   +-- list                       -- List accounts [--include-archived] [--type TYPE]
@@ -370,8 +372,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     [--confirm-all]                   Non-interactive: confirm all items in scope
 |   |     [--limit N]                       Cap items per session
 |   |   Note: --confirm/--reject are defined for --type matches and investment-matches;
-|   |         --confirm-all is unavailable for investment-matches. --type categorize review
-|   |         is not yet wired (stub); categorize items use
+|   |         --confirm-all with investment-matches or all exits 2, as does --field-choice
+|   |         without both --type investment-matches and exactly one --confirm.
+|   |         --type categorize review is not yet wired (stub); categorize items use
 |   |         transactions categorize commit instead.
 |   +-- matches                    -- Transfer detection + dedup workflow (no review — see the top-level `review`)
 |   |   +-- list [--type dedup|transfer] [--limit N] [-o json|text]
