@@ -38,9 +38,10 @@ review-first launch posture:
 5. Every candidate remains pending until a person accepts or rejects it in the
    first production release. The engine may label a candidate `auto_eligible`
    for measurement, but that label has no mutation authority.
-6. Accepted membership binds exact Raw observation revisions. Proposal-issued
-   field choices, rejected fingerprints, provenance, and transaction-id aliases
-   are durable and reversible.
+6. Membership binds exact Raw observation revisions or exact opening-lot
+   reconstruction inputs. Proposal-issued field choices, rejected fingerprints,
+   provenance, Core id resolution, and audited curation remaps are durable and
+   reversible.
 7. The existing visible-collision guard remains in force until a separate
    promotion proves that matched history is safe enough to replace it.
 
@@ -87,6 +88,9 @@ plausible but incorrect tax ledger.
   `account_id` and `security_id` values.
 - Reconstructing a split ratio that a source did not provide. Plaid split
   matching remains disabled until M1J.5 supplies a trustworthy adapter.
+- Detecting or reversing Plaid canceled, retracted, or disappeared investment
+  transactions. M1J.7 receives neither an investment removal feed nor a native
+  cancellation-to-original relationship.
 - Repairing incomplete aggregator history, inventing missing event legs, or
   synthesizing a transfer counterpart.
 - Changing tax-lot policy, cost-basis elections, or wash-sale handling.
@@ -101,6 +105,7 @@ plausible but incorrect tax ledger.
 | Observation version | A full SHA-256 digest of the source values that can affect comparison or Golden projection. |
 | Comparison leg | One normalized investment-transaction row used as matching evidence. |
 | Source event | One or more comparison legs that one source says form one economic event. |
+| Opening-lot reconstruction | A MoneyBin-derived one-leg Golden event representing a pre-window Plaid position. It is not a Source observation, Source event, Proposal, or match candidate. |
 | Proposal | One inferred set of source events that may represent the same real event. |
 | Golden event | The ratified, canonical event exposed through the core ledger. |
 | Golden leg | One canonical investment transaction inside a Golden event. |
@@ -127,6 +132,8 @@ flowchart LR
     Q --> D["Audited decision application"]
     D --> M["Golden event membership"]
     D --> F["Explicit field resolutions"]
+    O["Retained first-snapshot and exact transaction evidence"] --> B["Opening-lot reconstruction"]
+    B --> M
     M --> G["SQL Golden ledger projection"]
     F --> G
     G --> T["Lots, holdings, gains, and reports"]
@@ -255,8 +262,8 @@ Plaid split cannot enter a matching Proposal in this increment.
 
 Candidates are evaluated in descending confidence:
 
-1. **Native identity.** A source-native relationship or an already-ratified
-   membership identifies the same event.
+1. **Native identity.** An adapter-delivered and validated source-native
+   relationship or an already-ratified membership identifies the same event.
 2. **Exact economic identity.** Shape, identities, dates, quantities, and cash
    values agree after harmless normalization.
 3. **Constrained fuzzy identity.** Required identities and shape agree, while
@@ -264,8 +271,8 @@ Candidates are evaluated in descending confidence:
 
 Descriptions explain a candidate but never establish it. A fuzzy trade must
 pass both quantity and cash evidence. A correction or reversal requires a
-native relationship or remembered ratified relationship; similarity alone is
-insufficient.
+native relationship that the adapter actually delivers and validates, or a
+remembered ratified relationship; similarity alone is insufficient.
 
 ### Initial tolerance matrix
 
@@ -280,7 +287,7 @@ These thresholds admit review candidates; they do not authorize acceptance.
 | Amount | Difference no greater than `0.01` after sign normalization |
 | Fees | Gross/net reconciliation differs by no more than `0.01` |
 | Price | Difference no greater than `max(0.01, abs(price) * 0.0001)`, or the quantity/cash equation reconciles within `0.01` |
-| Correction or reversal | Native or remembered relationship only |
+| Correction or reversal | Adapter-delivered and validated Native relationship, or remembered relationship, only |
 | Split | Exact normalized ratio and supported adapters only |
 
 The scenario suite owns the boundary examples for every threshold. A threshold
@@ -342,27 +349,74 @@ Proposal.
 
 ### `app.investment_event_members`
 
-The active and historical mapping from each exact source-event and source-leg
-revision to its Golden `event_group_id`, Golden `investment_transaction_id`,
-and semantic leg role. The refresh step registers a standalone membership the
-first time it sees a new source event, so even an unmatched singleton has a
-stable Golden event identity. Acceptance rewrites the entire affected
-membership set atomically. Reversal retires that accepted membership rather
-than deleting its history. Historical membership retains observation versions,
-prior Golden ids, and source-group references as provenance.
+The active and historical mapping from each member revision to its Golden
+`event_group_id`, Golden `investment_transaction_id`, and semantic leg role.
+`member_kind` is `source_event` or `opening_lot_reconstruction`. A Source-event
+member names its exact source-event and source-leg revisions. The refresh step
+registers a standalone membership the first time it sees a new Source event, so
+even an unmatched singleton has a stable Golden event identity. Acceptance
+rewrites the entire affected membership set atomically. Reversal retires that
+accepted membership rather than deleting its history. Historical membership
+retains observation versions, prior Golden ids, and source-group references as
+provenance.
+
+Every projection-affecting membership transition records one
+`projection_changed_at` value on the history rows it activates or retires. The
+value is written in the same transaction as a membership registration,
+replacement, reversal, reconstruction advance, or reconstruction retirement.
+Planning, rejection, and a stale transition that deliberately retains the
+last-reviewed projection do not write it.
+
+An opening-lot reconstruction uses the stable key `(plaid, source_origin,
+source_account_key, source_security_key, first_snapshot_source_file, lot_key)`.
+`lot_key` is the existing positional/institution-lot key or the reserved
+residual or position sentinel. The key excludes quantity, basis, and the
+derived reconstruction revision, and mints one stable Golden event and leg id.
+Its revision digests the reconstruction-algorithm version, exact retained first
+snapshot receipt/holding/lot inputs, exact in-window transaction observation
+revisions used to calculate the gap, and canonical-identity dependencies that
+affect Golden projection. Provenance exposes those inputs and the algorithm
+version.
+
+An opening-lot reconstruction never becomes a Proposal or cross-source Match.
+When its inputs change, active membership advances atomically to the new
+reconstruction revision while retaining Golden ids when the stable key
+survives. If the key no longer produces a row, active membership retires. No
+superseded reconstruction continues to project. A surviving stable Golden leg
+preserves its derived lot id across reconstruction-evidence revisions while its
+canonical Account, Security, and acquisition inputs remain unchanged. A
+canonical-identity rekey may rotate that existing content-derived lot id and
+uses the same audited complete-selection remap as an accepted Match. A retired
+reconstruction or impossible stored lot selection keeps dependent output
+non-current until resolved rather than retaining a phantom lot.
 
 There is no separate mutable `app.investment_events` registry or App state
 observation snapshot. An active Golden event exists because it has active
 membership, and its source values remain in Raw. This avoids parallel sources
 of truth for event existence or source evidence.
 
-### `core.bridge_investment_event_id_aliases`
+### `core.alias_investment_event_ids`
 
-A derived public bridge maps a retired post-M1J.7 Golden `event_group_id` to its
-active Golden id. It is projected from historical membership, not maintained as
-another mutable registry. Public consumers can therefore resolve an id retired
-by a later accepted Match. Pre-M1J.7 source-group references are provenance,
-not aliases in this bridge.
+A derived resolver maps every currently or formerly published Golden
+`event_group_id` from historical membership to its active Golden id. It exposes
+`requested_event_group_id` and `active_event_group_id`; active ids map to
+themselves. Pre-M1J.7 source-group references are provenance, not inputs to this
+resolver.
+
+### `core.alias_investment_transaction_ids`
+
+A derived resolver maps every currently or formerly published Golden
+`investment_transaction_id` from historical membership to its active Golden
+leg id. It exposes `requested_investment_transaction_id` and
+`active_investment_transaction_id`; active ids map to themselves. Resolution
+contains no cycles or inactive target, and ambiguous leg correspondence blocks
+acceptance instead of producing a mapping.
+
+Both resolvers derive from the same active and historical membership authority.
+No separately mutable investment alias table, validity flag, or deactivation
+write exists. Reversal reactivates prior membership, so its resurrected ids
+naturally self-resolve and superseded forwarding disappears from the current
+view.
 
 ### `app.investment_match_field_resolutions`
 
@@ -370,16 +424,6 @@ Only explicit user choices for material field conflicts. Deterministic defaults
 remain derived in SQL and do not become mutable copies. A resolution identifies
 the Golden event or leg, proposal-issued conflict and choice ids, field, chosen
 source observation revision, decision, and audit metadata.
-
-### `app.investment_transaction_id_aliases`
-
-Append-only mapping from a previously published investment transaction id to
-the active Golden leg id. Existing `app.lot_selections` and other curated
-references resolve through this alias path so acceptance does not silently
-orphan them. Decision application re-points both disposal references and
-derived acquisition `lot_id` references to their new canonical ids inside the
-same transaction. An accepted match is blocked when a selection cannot be
-mapped without ambiguity.
 
 All mutations use repositories under `src/moneybin/repositories/`. Services do
 not issue raw writes against these protected tables.
@@ -399,16 +443,16 @@ source-group reference.
 
 When acceptance joins existing Golden events, the oldest established Golden
 event identity remains canonical, with the opaque id as the deterministic
-tie-breaker. The public event-id bridge forwards every post-M1J.7 retired Golden
-event id to the result. Golden leg ids follow the corresponding established
-semantic leg where one exists; other previously published transaction ids
-become append-only aliases. Adding a third observation to an existing event
-therefore changes neither the event id nor its leg ids.
+tie-breaker. The two Core id resolvers derive current forwarding for every
+post-M1J.7 retired Golden event or leg id from membership history. Golden leg
+ids follow the corresponding established semantic leg where one exists. Adding
+a third observation to an existing event therefore changes neither the event id
+nor its leg ids.
 
 A material change to leg structure stales the existing decision. The system
 does not silently repurpose a leg id for a different semantic role. When an
 accepted match replaces previously published source-derived transaction ids,
-the alias table preserves continuity.
+the derived Core resolver preserves continuity.
 
 ### Field fidelity
 
@@ -439,9 +483,13 @@ Golden projection reads the exact observation versions named by active
 membership, never whichever revision happens to be latest in staging. A source
 correction therefore cannot silently change a reviewed Golden field.
 
-In M1J.7 this lifecycle covers aggregator revisions and source-native
-correction or reversal relationships. Manual observations do not revise because
-the create-only manual surface has no correction operation.
+M1J.7 covers delivered aggregator revisions. It does not support Plaid
+cancellation, retraction, or disappearance: the Plaid adapter supplies no
+native relationship to the original, so it creates no reversal candidate and
+does not stale or reverse existing membership on that signal. A future adapter
+that supplies a stable original-event relationship may opt into the generic
+correction/reversal rule. Manual observations do not revise because the
+create-only manual surface has no correction operation.
 
 When a source row receives a new revision:
 
@@ -524,14 +572,28 @@ prevents individually allowed field choices from creating a combination that
 no source asserted and the ledger cannot represent. An incoherent selection
 fails atomically and leaves the Proposal pending.
 
+Acceptance also preflights every affected `app.lot_selections` collection. Each
+disposal id and selected acquisition `lot_id` must map unambiguously to the
+selected Golden legs. The same audited transaction collection-replaces each
+affected selection set through `LotSelectionsRepo`, preserving quantities and
+linking every child audit event to the Match decision's parent operation. An
+ambiguous or incomplete mapping blocks acceptance before any write.
+
 Accept and reject operate on a whole Proposal. The confirmation copy states
 that acceptance rebuilds the investment ledger and its dependent lots,
 holdings, gains, and reports. Acceptance revalidates the Proposal fingerprint
 and exact observation versions, then persists the accepted decision, complete
-membership set, and every required field resolution in one database
-transaction. Any validation or write failure leaves all three unchanged. A
-stale Proposal cannot be confirmed. Undo restores the prior active membership
-and field resolutions and rebuilds the same dependency set.
+membership set, every required field resolution, and every affected complete
+lot-selection set in one database transaction. Any validation or write failure
+leaves all four unchanged. A stale Proposal cannot be confirmed.
+
+Undo restores the prior active membership and field resolutions and reverses
+each child lot-selection audit event inside the same transaction, recovering
+the exact pre-accept selection sets. A later user mutation of an affected
+selection blocks undo instead of overwriting newer curation. The two Core id
+resolvers change only because active membership changed: ids reactivated by
+undo self-resolve, and no stale forwarding remains. Undo then rebuilds the same
+dependency set.
 
 ### Refresh and failure semantics
 
@@ -539,11 +601,28 @@ The refresh registry gains an `investment_match` step after source staging and
 identity resolution but before the Golden investment ledger and its dependent
 models. Planning is safe to repeat.
 
+Investment-event membership is a materialization input. Transform freshness is
+pending when either Raw landing data or the latest
+`app.investment_event_members.projection_changed_at` is newer than the oldest
+SQLMesh execution timestamp across the Golden ledger and every registered
+dependent rebuild model. The decision transaction persists that timestamp
+before returning. A successful transform is the acknowledgement; SQLMesh's
+existing execution state clears the comparison without a second mutable
+generation or completion record.
+
 Decision state commits before the rebuild it requires. If the decision commits
-and the subsequent rebuild fails, the operation reports both facts: the
-decision is durable, derived surfaces are stale, and the visible-collision guard remains
-active. It must not claim rollback or expose the partially refreshed result as
-current. A later refresh retries the rebuild from the same durable decision.
+and the subsequent rebuild fails or the process crashes, `system_status`
+remains pending. One shared investment-ledger freshness guard covers CLI and MCP
+investment lists, investment-dependent reports, and SQL queries whose resolved
+lineage reaches the affected ledger models. Those reads refuse to render stale
+values; MCP and JSON forms return a standard `transform_stale` error envelope
+with `moneybin refresh --step transform` and
+`refresh_run(steps=["transform"])` retry actions. `system_status`, refresh,
+review and decision history, provenance, and reads unrelated to the investment
+ledger remain available. No surface presents the pre-decision projection as
+current. The operation reports that the decision is durable, derived surfaces
+are stale, and the visible-collision guard remains active. It must not claim
+rollback. A later refresh retries the rebuild from the same durable membership.
 
 ## Visible-collision guard and promotion
 
@@ -607,18 +686,19 @@ fixtures and expected Golden-ledger outcomes.
 | Transfers | Both account directions and quantities agree; one-sided or mismatched transfers remain ineligible |
 | Repetition | Unique two-to-two assignment of identical same-day trades; ambiguous one-to-two assignment remains competing |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
-| Corrections | Aggregator or source-native correction/reversal accepted; fuzzy-only similarity rejected; manual correction is unavailable in M1J.7 |
+| Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; manual correction is unavailable in M1J.7 |
 | Revisions | Identical aggregator re-delivery reuses a version; an unreviewed aggregator singleton advances without rotating Golden ids; changed accepted or multi-source evidence stales without silently changing Golden fields |
+| Opening lots | A reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
 | Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency; an equivalence merge follows aliases and stales pending Proposals only, while a non-equivalent rebind, unlink, or split atomically stales pending and accepted or multi-source Matches before the new mapping is visible; Raw remains unchanged |
-| Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; only later retired Golden ids enter the public forwarding bridge |
+| Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; later retired event and leg ids resolve through the two derived Core views; undo reactivates prior ids as self-maps |
 | Splits | Normalized contract fixtures pass for supported adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
 | Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
-| Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo |
+| Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo; ambiguous remapping blocks acceptance and later overlapping curation blocks undo |
 | Field choices | Missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
-| Recovery | Stale Proposal refusal; committed decision plus failed rebuild reports durable decision and stale derived state |
+| Recovery | Stale Proposal refusal; committed decision plus crash or failed rebuild remains pending in transform freshness and every dependent read until a successful rebuild |
 | Guard coverage | Manual history overlapping Plaid transactions or holdings-derived bootstrap rows emits the same visible warning and doctor finding |
 
 ## Verification
@@ -628,8 +708,9 @@ fixtures and expected Golden-ledger outcomes.
   contradictory effective currency, and account-currency changes that stale a
   Proposal.
 - Pure global-assignment tests, including competing and repeated-event graphs.
-- DuckDB repository tests for atomic membership, rejection suppression, aliases,
-  field resolutions, observation-version binding, audit records, and reversal.
+- DuckDB repository tests for atomic membership, rejection suppression, field
+  resolutions, observation-version binding, projection-change timestamps, audit
+  records, and reversal.
 - Raw-loader tests proving identical Plaid re-delivery is idempotent and a
   changed match-relevant or Golden-projected value appends a new observation
   revision.
@@ -641,6 +722,22 @@ fixtures and expected Golden-ledger outcomes.
 - Membership tests proving an unreviewed aggregator singleton advances to one
   active latest revision with stable Golden ids while preserving its prior
   history.
+- Opening-lot reconstruction tests proving stable-key identity, exact-input and
+  algorithm-version provenance, revision advance, retirement, stable surviving
+  lot ids when canonical identity and acquisition inputs are unchanged, audited
+  complete-selection remap after a canonical identity rekey, and non-current
+  output for an impossible stored selection.
+- Core id-resolution tests proving current and retired event and leg ids resolve
+  from membership history, and accept followed by undo makes reactivated ids
+  self-resolve without stale forwarding.
+- Lot-selection tests proving acceptance remaps and undo exactly restores a
+  complete selection set, ambiguous remapping blocks acceptance, and newer user
+  curation blocks undo.
+- Freshness and read-guard tests proving a committed membership change followed
+  by a crash or failed rebuild remains pending and blocks investment-dependent
+  CLI, MCP, report, and SQL reads until every dependent model rebuilds
+  successfully, while status, recovery, audit, provenance, and unrelated reads
+  remain available.
 - Identity-dependency tests proving an equivalence merge follows aliases
   without staling accepted Matches, a non-equivalent rebind, unlink, or split
   stales affected Matches before its mapping becomes visible, and neither path
@@ -660,8 +757,9 @@ approved real-data validation set, with ambiguous cases remaining visible.
 
 ## Delivery slices
 
-Each slice is independently reviewable. Public implementation issues are opened
-only after this contract is accepted.
+Each slice is independently reviewable. Public implementation issues may be
+pre-staged alongside the design PR for review, but remain subordinate to the
+accepted contract and must be reconciled to it before delivery begins.
 
 1. **Comparison foundation.** Add manual and Plaid adapters, event/leg comparison
    views, normalization, tolerances, explicit inactive split capability, and
@@ -670,8 +768,8 @@ only after this contract is accepted.
    and validate pre-M1J.7 group hints before using them as event structure. Stop
    canonical identity changes from rewriting Raw observations and resolve them
    through Link or alias routing instead. Expand the existing overlap detector
-   to cover Plaid transactions and holdings/bootstrap evidence before any later
-   slice relies on that guard.
+   to also cover holdings/bootstrap evidence before any later slice relies on
+   that guard.
 2. **Review-only planner.** Add whole-event assignment, versioned fingerprints,
    canonical-identity dependency tuples, competing detection, Proposal-issued
    conflict and choice ids, and pending Proposals without changing the core
@@ -680,13 +778,16 @@ only after this contract is accepted.
    plus rejection suppression; add identical CLI/MCP field-choice request
    validation, audit integration, and metrics. Acceptance remains unavailable
    until slice 4 can apply the whole transition atomically.
-4. **Golden materialization.** Add stable event and leg identities, membership,
-   the public event-id bridge, transaction aliases, field resolution,
-   provenance, and the dependent rebuild. Perform the pre-launch Golden-id hard
-   cut, preserving existing source-group references only as provenance. Enable
-   acceptance after validating the complete Golden event, then commit its
-   decision, exact revision membership, and field resolutions in one
-   transaction. Advance an unreviewed aggregator singleton to a newer revision
+4. **Golden materialization.** Add stable event and leg identities, Source-event
+   and opening-lot-reconstruction membership, the two derived Core id
+   resolvers, field resolution, exact provenance, `projection_changed_at`, and
+   the dependent rebuild. Perform the pre-launch Golden-id hard cut, preserving
+   existing source-group references only as provenance. Enable acceptance after
+   validating the complete Golden event and every lot-selection mapping, then
+   commit its decision, exact revision membership, field resolutions, and
+   complete remapped selection sets in one transaction. Undo restores those
+   selection sets from the same audit chain and blocks on later overlapping
+   curation. Advance an unreviewed aggregator singleton to a newer revision
    atomically without rotating its Golden ids or creating a Proposal. Make
    equivalence merges follow the canonical alias path, and make a
    non-equivalent rebind, unlink, or split invalidate affected pending and
@@ -705,3 +806,4 @@ only after this contract is accepted.
 - Event shapes not represented by the current ledger taxonomy.
 - Manual investment-event correction and its distinct whole-event interface.
 - Compound manual event shapes beyond the atomic reinvest operation.
+- Plaid investment cancellation, retraction, and removal ingestion.

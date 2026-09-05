@@ -1146,7 +1146,7 @@ data still loads.
 
 | Test area | What's tested |
 |---|---|
-| `stg_plaid__investment_transactions` | Sign flip (`2145.50` → `-2145.50`; quantity untouched); fee-convention handling per the validated branch (+ drift-guard fires on a row reconciling under neither); `trade_date` prefers `transaction_datetime`, falls back to posting date; lifecycle exclusion; aggregator string passthrough; canonical id resolution; Plaid `event_group_id` remains NULL pending M1J.7. |
+| `stg_plaid__investment_transactions` | Sign flip (`2145.50` → `-2145.50`; quantity untouched); fee-convention handling per the validated branch (+ drift-guard fires on a row reconciling under neither); `trade_date` prefers `transaction_datetime`, falls back to posting date; lifecycle exclusion; `provider_type`/`provider_subtype` string passthrough; canonical id resolution; Plaid `event_group_id` remains NULL pending M1J.7. |
 | `stg_plaid__securities` / `__investment_holdings` | Currency `COALESCE`; MIC → `exchange`; defensive type mapping; both-id resolution on holdings. |
 | Core union | Plaid rows in `fct_investment_transactions` with correct sign + provider columns; manual rows carry NULL provider columns; Plaid buys/sells produce lots and realized gains through the **unmodified** engine; `dim_holdings` reconciliation columns join only each account's newest snapshot — a position absent from it (sold elsewhere, broker stopped reporting) shows NULL `provider_reported_*`, and manual-only positions stay NULL throughout. |
 | Reinvest pairing | Shipped behavior: separately delivered Plaid legs retain NULL source grouping while their independent lot and income effects remain intact; whole-event matching is tested by M1J.7. |
