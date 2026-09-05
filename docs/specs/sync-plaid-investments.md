@@ -155,7 +155,7 @@ investment event matching begins; the holdings and holding-lot tables remain
 immutable point-in-time snapshots under their existing keys.
 
 M1J.7 slice 1 migrates each existing investment transaction row into its first
-append-only observation revision. The Raw grain becomes
+append-only observation revision and first delivery receipt. The revision grain becomes
 `(investment_transaction_id, source_origin, observation_version)`, where
 `observation_version` is a SHA-256 digest truncated to 16 hex characters over
 every captured transaction value that can affect matching or Golden projection.
@@ -164,11 +164,18 @@ version inputs. An identical overlapping-window delivery reuses the existing
 revision; a changed date, description, quantity, amount, price, fee, currency,
 type, or subtype appends a new revision instead of replacing reviewed evidence.
 
-Staging selects the latest revision for new matching plans. Accepted Golden
+Every delivered row also writes an idempotent Raw receipt at
+`(investment_transaction_id, source_origin, source_file)` that names its
+`observation_version`, `extracted_at`, and `loaded_at`, in the same database
+transaction as any new revision. Staging selects the version named by the latest
+receipt under `extracted_at DESC, source_file DESC`. Thus A→B→A across three
+pulls reuses the immutable A revision but the third receipt makes A current
+again; B remains historical. Reprocessing one job reuses its receipt, and an
+absent row writes no receipt and does not imply retraction. Accepted Golden
 membership and field provenance bind the exact historical revision reviewed by
 the person, so a later aggregator correction makes the Match stale without
-silently changing its fields. The full lifecycle and atomic replacement
-contract live in [`investment-event-matching.md`](investment-event-matching.md).
+silently changing its fields. The full lifecycle and atomic replacement contract
+live in [`investment-event-matching.md`](investment-event-matching.md).
 
 ---
 
@@ -381,6 +388,30 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
     PRIMARY KEY (investment_transaction_id, source_origin)
 );
 ```
+
+M1J.7 changes the table above to the revision grain declared in the
+[raw-observation amendment](#m1j7-raw-observation-amendment) and adds the
+per-delivery occurrence table below. The migration backfills one receipt for
+each legacy current row using its existing `source_file` and `extracted_at`.
+
+```sql
+/* One idempotent occurrence per delivered Plaid transaction and sync job. */
+CREATE TABLE IF NOT EXISTS raw.plaid_investment_transaction_receipts (
+    investment_transaction_id VARCHAR NOT NULL,
+    observation_version VARCHAR NOT NULL,
+    source_file VARCHAR NOT NULL,
+    source_type VARCHAR NOT NULL DEFAULT 'plaid',
+    source_origin VARCHAR NOT NULL,
+    extracted_at TIMESTAMP NOT NULL,
+    loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (investment_transaction_id, source_origin, source_file)
+);
+```
+
+The loader writes the revision and receipt in one database transaction. A new
+`source_file` appends a receipt; replaying that source file replaces only its
+same-grain receipt and cannot create a new occurrence. Revision rows never
+change when an old content version reappears.
 
 #### `raw.plaid_investment_holdings`
 
@@ -1094,7 +1125,8 @@ Data flow:
 flowchart LR
     A[raw.plaid_securities] --> R[SecurityResolver<br/>adopt / bind / review / mint]
     R --> C[app.securities +<br/>app.security_links]
-    B[raw.plaid_investment_transactions] --> S[prep.stg_plaid__<br/>investment_transactions]
+    B[raw.plaid_investment_transactions<br/>immutable revisions] --> S[prep.stg_plaid__<br/>investment_transactions]
+    BR[raw.plaid_investment_transaction_receipts<br/>current occurrence] --> S
     C -.resolution join.-> S
     S --> F[core.fct_investment_transactions]
     F --> L[lots / realized gains / holdings<br/>existing engine, unchanged]
@@ -1142,7 +1174,7 @@ data still loads.
 | Test area | What's tested |
 |---|---|
 | `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Re-load dedup: same payload twice AND the same provider row re-delivered under a **different** `job_id` both replace, never duplicate (PK scoped by `source_origin`). |
-| M1J.7 transaction revision migration | Future matching slice 1: existing rows become first revisions; identical delivery is idempotent; changing any matching or Golden-projected value appends a revision; lineage-only changes do not. |
+| M1J.7 transaction revision migration | Future matching slice 1: existing rows become first revisions and receipts; identical content reuses a revision while every distinct sync job records one idempotent receipt; changing any matching or Golden-projected value appends a revision; A→B→A selects A from the third receipt without deleting B; lineage-only changes do not create content revisions. |
 | `PlaidInvestmentsLoader.load()` — multi-item scoping | A **two-item** golden payload: (1) each item's own `transactions_window_start` (from its per-institution `metadata` result) is stamped onto **that item's** holdings rows, matched by `source_origin` — never one item's window flattened onto another's; (2) two items that share a provider-local `(account_id, security_id)` produce **distinct, non-colliding** `raw.plaid_investment_holdings` and `raw.plaid_investment_holding_lots` rows (PK includes `source_origin`), so neither newest-snapshot reconciliation nor the opening-lot bootstrap conflates them. |
 | `SecurityResolver` | Each ladder rung: adopt existing binding; CUSIP/ISIN exact → auto-bind (exchange irrelevant); ticker match with MIC normalization (`"NASDAQ"`↔`"XNAS"` normalize equal → bind; both-absent → bind on unique ticker; unnormalizable free-text exchange → treated as absent, binds not reviews; both-present-different-MIC → rung 3); **identifier tie** (one CUSIP/ISIN/ticker matching **more than one** catalog entry — exercised at two and at three) → provisional mint + one pending merge decision **per tied candidate** (`identifier_tie`), never auto-pick; **stripped-ticker hit** (`VOD.L`→`VOD`, share-class `HEI.A`→`HEI`, preferred `BAC-PL`→`BAC`) never auto-binds — provisional mint + `ticker_suffix_strip` decision per stem candidate, and a batch carrying both stem and share class mints **two** securities regardless of `security_id` order; fuzzy → provisional mint + bind + pending **merge** decision **per** equally-named catalog entry (a duplicate name never collapses to one); an in-batch provisional mint is an auto-bind target but is **never offered as a merge candidate** to a later row; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
 | Taxonomy mapping | Parametrized over the full mapping table — every Plaid (type, subtype) pair → expected (`type`, `subtype`), including every excluded-at-staging row. |
@@ -1182,6 +1214,7 @@ transactions), which also seed the golden files.
 | `src/moneybin/repositories/security_links_repo.py` | Binding + decision writes (Invariant 10; audit-emitting); merge-accept also migrates `app.lot_selections` |
 | `src/moneybin/extractors/plaid/schema/raw_plaid_securities.sql` | DDL — provider-owned raw, in the Plaid extractor's schema dir (auto-discovered) |
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_transactions.sql` | DDL — provider-owned raw |
+| `src/moneybin/extractors/plaid/schema/raw_plaid_investment_transaction_receipts.sql` | DDL — provider-owned raw; per-row, per-pull receipt naming the delivered immutable observation version and sole source of which revision is current |
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings.sql` | DDL — provider-owned raw |
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holding_lots.sql` | DDL — provider-owned raw (per-lot `tax_lots[]` — basis/acquisition source for bootstrap) |
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings_snapshots.sql` | DDL — provider-owned raw; per-item, per-pull holdings receipt, written even when the item reports ZERO positions (the sole source of "which snapshot is newest") |

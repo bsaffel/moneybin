@@ -116,6 +116,7 @@ ledger.
 | Source event | One or more comparison legs that one source says form one economic event. |
 | Opening-lot reconstruction | A MoneyBin-derived one-leg Golden event representing a pre-window Plaid position. It is not a Source observation, Source event, Proposal, or match candidate. |
 | Proposal | One inferred set of source events that may represent the same real event. |
+| Match | An accepted Proposal and its resulting audited multi-source Golden membership; it may later become stale or reversed. |
 | Golden event | The ratified, canonical event exposed through the core ledger. |
 | Golden leg | One canonical investment transaction inside a Golden event. |
 | Event fingerprint | A versioned digest of normalized member identities and match-relevant values. |
@@ -233,7 +234,8 @@ references, and the original Golden identity when one exists.
 
 Normalization may remove representational differences such as sign convention,
 decimal scale, case, and trade-date-versus-settlement-date placement. It must
-not erase a material disagreement.
+not erase a date or numeric difference outside the applicable tolerance or a
+categorical eligibility contradiction.
 
 Descriptions are projection-only context: they can help a person understand a
 Proposal but never contribute match evidence or confidence. They remain
@@ -253,9 +255,21 @@ appends another Raw revision.
 
 M1J.7 migrates `raw.plaid_investment_transactions` from its shipped current-row
 upsert grain to append-only revisions. The migration records each existing row
-as its first revision. Staging exposes the latest revision per source-row
-identity for new planning, while accepted membership and provenance join the
-exact historical Raw revision they name.
+as its first revision and first delivery receipt. Every delivered transaction
+then writes two Raw records in the same database transaction: the immutable
+content revision if it does not already exist, and an idempotent per-pull row in
+`raw.plaid_investment_transaction_receipts` at grain
+`(investment_transaction_id, source_origin, source_file)`. The receipt names the
+delivered `observation_version`, `extracted_at`, and `loaded_at`.
+
+Staging exposes the version named by the latest receipt under the deterministic
+order `extracted_at DESC, source_file DESC` for each stable source-row
+identity. An A→B→A delivery sequence therefore reuses the immutable A revision
+but records a new receipt that makes A current again; B remains available for
+history and exact membership. Reprocessing the same sync job reuses its receipt,
+and an absent row writes no receipt and does not imply cancellation. Accepted
+membership and provenance continue to join the exact historical Raw revision
+they name.
 
 M1J.7 adds no manual correction operation. `investments add` and
 `investments_record` remain create-only, and their Raw observations are
@@ -331,6 +345,14 @@ These thresholds admit review candidates; they do not authorize acceptance.
 
 The scenario suite owns the boundary examples for every threshold. A threshold
 change is a behavior change and must update those examples.
+
+The same date and numeric thresholds define field-choice materiality. A
+normalized difference within its applicable threshold takes the deterministic
+aggregator default. A difference beyond that threshold is a material field
+conflict and requires an explicit choice when a validated native relationship
+or prior ratified membership otherwise keeps the Source events eligible.
+Account, Security, effective currency, normalized event shape, and semantic leg
+roles are eligibility or structural conditions, not field-choice conflicts.
 
 ## Whole-event assignment
 
@@ -417,8 +439,9 @@ Proposal creation. The flag is deterministic from the persisted evidence and
 has no mutation authority; first-decision review quality is the share of reviewed
 `auto_eligible` Proposals whose first audited human decision is `accepted` rather
 than `rejected`; `stale` and still-pending Proposals are excluded. Rejected
-fingerprints suppress unchanged Proposals; a materially
-different member or connected-graph fingerprint is a new Proposal.
+fingerprints suppress unchanged Proposals; a changed member identity, exact
+revision, normalized scoring input, or connected-graph fingerprint is a new
+Proposal.
 
 ### `app.investment_event_members`
 
@@ -533,10 +556,10 @@ corresponding established semantic leg where one exists. Adding a third
 observation to an existing event therefore changes neither the event id nor its
 leg ids.
 
-A material change to leg structure stales the existing decision. The system
-does not silently repurpose a leg id for a different semantic role. When an
-accepted match replaces previously published source-derived transaction ids,
-the derived Core resolver preserves continuity.
+A change to leg count or complete semantic leg correspondence stales the
+existing decision. The system does not silently repurpose a leg id for a
+different semantic role. When an accepted Match replaces previously published
+source-derived transaction ids, the derived Core resolver preserves continuity.
 
 ### Field fidelity
 
@@ -544,18 +567,26 @@ Golden fields follow this order:
 
 1. preserve an explicit user resolution or curation;
 2. normalize harmless representational differences;
-3. prefer the aggregator observation for objective financial fields; and
-4. require an explicit field choice for a material conflict.
+3. require an explicit field choice for a normalized date or numeric difference
+   beyond its applicable tolerance; and
+4. otherwise choose field provenance through the deterministic source
+   precedence below.
 
 Objective fields include dates, quantities, prices, amounts, fees, currencies,
-and aggregator-native references. Aggregator preference is a default, not a
-claim that aggregator data is infallible. A manually curated field that was
-explicitly chosen remains authoritative when another observation joins the
-event.
+and aggregator-native references. For a field with no explicit resolution,
+prefer an aggregator observation over a manual observation, then use the
+lexicographically smallest
+`(source_type, source_origin, native_reference)` as the final tie-breaker. The
+active exact revision of that stable row supplies the value and provenance.
+This identity tie-breaker only selects among values already eligible for the
+deterministic default; it never breaks candidate assignment or bypasses a field
+conflict. Aggregator preference is not a claim that aggregator data is
+infallible. A manually curated field that was explicitly chosen remains
+authoritative when another observation joins the event.
 
-Description follows the same explicit-curation-first rule and otherwise uses
-the aggregator observation. Different descriptions do not create a material
-field conflict because they are not accounting evidence.
+Description follows the same explicit-curation-first and deterministic source
+precedence. Different descriptions do not create a material field conflict
+because they are not accounting evidence.
 
 Every Golden field exposes provenance to its chosen source observation or
 explicit resolution. Event membership provenance separately retains every
@@ -651,10 +682,10 @@ The new decision-item shape is:
 ```
 
 The CLI flag is repeatable. Accept requires exactly one currently allowed
-choice for every material conflict. Missing, unknown, duplicate, or stale ids
-fail the request. Reject forbids field choices. A Proposal with no material
-conflicts accepts with an empty choice set. This keeps CLI and MCP semantics
-identical without adding one tool per command.
+choice for every material field conflict. Missing, unknown, duplicate, or stale
+ids fail the request. Reject forbids field choices. A Proposal with no material
+field conflicts accepts with an empty choice set. This keeps CLI and MCP
+semantics identical without adding one tool per command.
 
 Before committing acceptance, the service constructs every complete selected
 Golden leg and validates it against the existing investment-ledger contract.
@@ -822,7 +853,7 @@ fixtures and expected Golden-ledger outcomes.
 | Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; manual correction is unavailable in M1J.7 |
-| Revisions | Identical aggregator re-delivery reuses a version; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
+| Revisions | Identical aggregator re-delivery reuses a version and per-job receipt; A→B→A content reuses the immutable A revision but a new receipt makes A current while retaining B in history; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
 | Opening lots | A reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
 | Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency; an equivalence merge follows aliases and stales pending Proposals only; before a non-equivalent rebind, unlink, or split becomes visible, pending and accepted or multi-source Matches stale while a structurally unchanged standalone membership advances with stable Golden ids and a now-unresolved or structurally changed standalone retires; Raw remains unchanged |
@@ -831,7 +862,8 @@ fixtures and expected Golden-ledger outcomes.
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
 | Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
 | Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo; multiple collections converging on one disposal write once only when their complete remapped sets are identical, otherwise acceptance blocks; ambiguous remapping blocks acceptance and later overlapping curation blocks undo |
-| Field choices | Missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
+| Field choices | A date or numeric difference at its tolerance takes the deterministic aggregator default, while an otherwise-eligible native or ratified candidate beyond tolerance requires a choice; missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
+| Field provenance | Explicit curation outranks the default; otherwise aggregator beats manual and the stable source tuple breaks an aggregator tie, so differing descriptions from two Plaid origins and input reordering produce one unchanged value and exact provenance without affecting assignment |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
 | Recovery | A fresh profile and a newly added comparison-input model bootstrap only pre-match views before membership; bootstrap or membership failure prevents the dependent transform and its SQLMesh acknowledgement; committed decision plus crash or failed rebuild remains pending in transform freshness and every dependent read until a successful rebuild |
 | Guard coverage | Manual history overlapping Plaid transactions or holdings-derived bootstrap rows emits the same visible warning and doctor finding |
@@ -839,7 +871,9 @@ fixtures and expected Golden-ledger outcomes.
 
 ## Verification
 
-- Pure normalization and tolerance tests for every supported event type.
+- Pure normalization and tolerance tests for every supported event type,
+  proving each within-tolerance boundary takes the aggregator default and each
+  beyond-tolerance native or ratified candidate requires a field choice.
 - Currency tests for explicit values, account inheritance, unknown or
   contradictory effective currency, and account-currency changes that stale a
   Proposal.
@@ -874,12 +908,20 @@ fixtures and expected Golden-ledger outcomes.
   records, and reversal.
 - Raw-loader tests proving identical Plaid re-delivery is idempotent and a
   changed match-relevant or Golden-projected value appends a new observation
-  revision.
+  revision. A→B→A across three sync jobs writes three delivery receipts, reuses
+  the immutable A content revision, exposes A as current, retains B for history,
+  and reprocessing one job creates no duplicate receipt. Migration backfills one
+  receipt per legacy current row, and a failed revision/receipt write exposes
+  neither half.
 - Manual grouping tests proving caller-authored grouping is absent from public
   inputs, reinvest grouping is system-minted and atomic, and invalid
   pre-M1J.7 group hints do not group observations.
 - SQLMesh tests for comparison views, Golden projection, provenance, and stable
   identities.
+- Field-provenance tests proving explicit curation wins, and otherwise
+  aggregator-over-manual plus the stable source tuple selects one exact value
+  and provenance across multiple aggregator origins, differing descriptions,
+  input reordering, and an added observation without changing assignment.
 - Membership tests proving an unreviewed adapter event advances to one active
   latest revision with stable Golden ids only when its source-event key and
   complete source-row-to-semantic-leg correspondence are unchanged. Plaid
@@ -954,7 +996,8 @@ accepted contract and must be reconciled to it before delivery begins.
 
 1. **Comparison foundation.** Add manual and Plaid comparison adapters,
    event/leg comparison views, normalization, tolerances, explicit inactive
-   split capability, and the Plaid Raw transaction-revision migration. Remove
+   split capability, and the Plaid Raw transaction-revision and per-delivery
+   receipt migration. Remove
    caller-authored `event_group_id` from CLI and MCP inputs, mint reinvest
    grouping internally, and validate pre-M1J.7 group hints before using them as
    event structure. Stop canonical identity changes from rewriting Raw
