@@ -45,8 +45,8 @@ review-first launch posture:
 7. The existing visible-collision guard remains in force until a separate
    promotion proves that matched history is safe enough to replace it.
 
-The contract starts with manual and Plaid adapters, but no table, decision key,
-or service contract treats Plaid as the generic source.
+The contract starts with manual and Plaid comparison adapters, but no table,
+decision key, or service contract treats Plaid as the generic source.
 
 ## Why this exists
 
@@ -68,7 +68,7 @@ plausible but incorrect tax ledger.
 
 - Match manual and Plaid observations of the same economic investment event.
 - Make the matching contract source-neutral so another Source type adds an
-  adapter rather than a parallel matching system.
+  comparison adapter rather than a parallel matching system.
 - Preserve every source observation revision in Raw.
 - Give each accepted event and leg a stable MoneyBin-owned identity.
 - Preserve explicit user curation when a better source observation joins an
@@ -87,7 +87,7 @@ plausible but incorrect tax ledger.
 - Inferring account or security identity. Matching consumes already-ratified
   `account_id` and `security_id` values.
 - Reconstructing a split ratio that a source did not provide. Plaid split
-  matching remains disabled until M1J.5 supplies a trustworthy adapter.
+  matching remains disabled until M1J.5 supplies a trustworthy comparison adapter.
 - Detecting or reversing Plaid canceled, retracted, or disappeared investment
   transactions. M1J.7 receives neither an investment removal feed nor a native
   cancellation-to-original relationship.
@@ -103,6 +103,7 @@ plausible but incorrect tax ledger.
 |---|---|
 | Source observation | One immutable Raw revision of a manual or aggregator claim. |
 | Observation version | A full SHA-256 digest of the source values that can affect comparison or Golden projection. |
+| Comparison adapter | A source-specific translator that emits the source-neutral comparison event and leg contract. |
 | Comparison leg | One normalized investment-transaction row used as matching evidence. |
 | Source event | One or more comparison legs that one source says form one economic event. |
 | Opening-lot reconstruction | A MoneyBin-derived one-leg Golden event representing a pre-window Plaid position. It is not a Source observation, Source event, Proposal, or match candidate. |
@@ -122,7 +123,7 @@ Golden event.
 
 ```mermaid
 flowchart LR
-    R["Append-only Raw revisions"] --> A["Source-neutral adapters"]
+    R["Append-only Raw revisions"] --> A["Comparison adapters"]
     A --> H["Comparison event headers"]
     A --> L["Comparison event legs"]
     H --> C["SQL candidate evidence"]
@@ -172,9 +173,9 @@ application code.
 
 ### Source event construction
 
-Each adapter emits a source event key and one or more typed legs. It may use a
-source group reference only when the adapter defines and validates the complete
-event shape.
+Each comparison adapter emits a source event key and one or more typed legs. It
+may use a source group reference only when the comparison adapter defines and
+validates the complete event shape.
 
 M1J.7 removes caller-authored `event_group_id` from `investments add` and
 `investments_record`. The manual reinvest convenience submits one complete
@@ -192,7 +193,8 @@ Each event header carries:
 - resolved account set and security set;
 - normalized event type and date interval;
 - member count and event fingerprint; and
-- adapter capability flags, including whether split semantics are supported.
+- comparison-adapter capability flags, including whether split semantics are
+  supported.
 
 Each comparison leg carries the source-row identity and exact observation
 version plus normalized type, subtype, semantic leg role, account, security,
@@ -210,12 +212,13 @@ silently after review.
 
 ### Source observation revisions
 
-Every adapter identifies a source row by its Source type, Source origin, Native
-reference, and `observation_version`. The version is a full SHA-256 digest over
-every captured source value that can affect comparison or Golden projection;
-ingestion metadata such as job id and load time is excluded. An identical
-re-delivery reuses the version. A changed date, quantity, amount, fee, price,
-currency, type, relationship, or description appends another Raw revision.
+Every comparison adapter identifies a source row by its Source type, Source
+origin, Native reference, and `observation_version`. The version is a full
+SHA-256 digest over every captured source value that can affect comparison or
+Golden projection; ingestion metadata such as job id and load time is excluded.
+An identical re-delivery reuses the version. A changed date, quantity, amount,
+fee, price, currency, type, relationship, or description appends another Raw
+revision.
 
 M1J.7 migrates `raw.plaid_investment_transactions` from its shipped current-row
 upsert grain to append-only revisions. The migration records each existing row
@@ -239,7 +242,7 @@ A candidate is ineligible unless all applicable legs agree on:
 - ratified canonical account identity;
 - ratified canonical security identity;
 - effective currency for every compared monetary field; and
-- an event shape supported by both adapters.
+- an event shape supported by both comparison adapters.
 
 A transfer compares the entire account pair, direction, security, and quantity.
 A missing or unresolved identity routes to its existing account- or
@@ -253,17 +256,19 @@ fingerprint includes the resolved account identity, effective currency, and the
 canonical account-currency value used to derive it. Acceptance rereads those
 inputs, so an account-currency correction stales the old eligibility result.
 
-Splits require an exact normalized ratio and an adapter that declares split
-support. The manual adapter may support that contract. The Plaid adapter must
-declare splits unsupported until M1J.5 resolves aggregator split semantics, so a
-Plaid split cannot enter a matching Proposal in this increment.
+Splits require an exact normalized ratio and a comparison adapter that declares
+split support. The manual comparison adapter may support that contract. The
+Plaid comparison adapter must declare splits unsupported until M1J.5 resolves
+aggregator split semantics, so a Plaid split cannot enter a matching Proposal in
+this increment.
 
 ### Candidate bands
 
 Candidates are evaluated in descending confidence:
 
-1. **Native identity.** An adapter-delivered and validated source-native
-   relationship or an already-ratified membership identifies the same event.
+1. **Native identity.** A comparison-adapter-delivered and validated
+   source-native relationship or an already-ratified membership identifies the
+   same event.
 2. **Exact economic identity.** Shape, identities, dates, quantities, and cash
    values agree after harmless normalization.
 3. **Constrained fuzzy identity.** Required identities and shape agree, while
@@ -271,8 +276,9 @@ Candidates are evaluated in descending confidence:
 
 Descriptions explain a candidate but never establish it. A fuzzy trade must
 pass both quantity and cash evidence. A correction or reversal requires a
-native relationship that the adapter actually delivers and validates, or a
-remembered ratified relationship; similarity alone is insufficient.
+native relationship that the comparison adapter actually delivers and
+validates, or a remembered ratified relationship; similarity alone is
+insufficient.
 
 ### Initial tolerance matrix
 
@@ -287,8 +293,8 @@ These thresholds admit review candidates; they do not authorize acceptance.
 | Amount | Difference no greater than `0.01` after sign normalization |
 | Fees | Gross/net reconciliation differs by no more than `0.01` |
 | Price | Difference no greater than `max(0.01, abs(price) * 0.0001)`, or the quantity/cash equation reconciles within `0.01` |
-| Correction or reversal | Adapter-delivered and validated Native relationship, or remembered relationship, only |
-| Split | Exact normalized ratio and supported adapters only |
+| Correction or reversal | Comparison-adapter-delivered and validated native relationship, or remembered relationship, only |
+| Split | Exact normalized ratio and supported comparison adapters only |
 
 The scenario suite owns the boundary examples for every threshold. A threshold
 change is a behavior change and must update those examples.
@@ -484,12 +490,12 @@ membership, never whichever revision happens to be latest in staging. A source
 correction therefore cannot silently change a reviewed Golden field.
 
 M1J.7 covers delivered aggregator revisions. It does not support Plaid
-cancellation, retraction, or disappearance: the Plaid adapter supplies no
-native relationship to the original, so it creates no reversal candidate and
-does not stale or reverse existing membership on that signal. A future adapter
-that supplies a stable original-event relationship may opt into the generic
-correction/reversal rule. Manual observations do not revise because the
-create-only manual surface has no correction operation.
+cancellation, retraction, or disappearance: the Plaid comparison adapter
+supplies no native relationship to the original, so it creates no reversal
+candidate and does not stale or reverse existing membership on that signal. A
+future comparison adapter that supplies a stable original-event relationship
+may opt into the generic correction/reversal rule. Manual observations do not
+revise because the create-only manual surface has no correction operation.
 
 When a source row receives a new revision:
 
@@ -599,7 +605,23 @@ dependency set.
 
 The refresh registry gains an `investment_match` step after source staging and
 identity resolution but before the Golden investment ledger and its dependent
-models. Planning is safe to repeat.
+models. Planning is safe to repeat. Unlike existing best-effort enrichment
+stages, `investment_match` is a fail-closed prerequisite to the dependent
+transform: it must register, advance, or retire every eligible Source event and
+opening-lot membership before returning success. Any step error prevents
+`TransformService.apply` from running, so SQLMesh cannot acknowledge Raw or App
+inputs that membership did not process. A later refresh retries from durable
+Raw evidence and membership history. The refresh selector treats
+`investment_match` as a transitive dependency of `transform`: every transform
+request, including `moneybin refresh --step transform` and
+`refresh_run(steps=["transform"])`, runs `investment_match` first. No CLI, MCP,
+or internal caller can request the dependent transform while skipping that
+prerequisite. The prerequisite-aware refresh path becomes the sole production
+entry point for a full transform: the existing transform CLI, MCP schema-drift
+self-heal, and import-service shim delegate to it rather than calling
+`TransformService.apply` directly. `TransformService.apply` remains the
+orchestrator's lower-level SQLMesh boundary, not a separately callable
+full-transform workflow.
 
 Investment-event membership is a materialization input. Transform freshness is
 pending when either Raw landing data or the latest
@@ -686,19 +708,19 @@ fixtures and expected Golden-ledger outcomes.
 | Transfers | Both account directions and quantities agree; one-sided or mismatched transfers remain ineligible |
 | Repetition | Unique two-to-two assignment of identical same-day trades; ambiguous one-to-two assignment remains competing |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
-| Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; manual correction is unavailable in M1J.7 |
+| Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; manual correction is unavailable in M1J.7 |
 | Revisions | Identical aggregator re-delivery reuses a version; an unreviewed aggregator singleton advances without rotating Golden ids; changed accepted or multi-source evidence stales without silently changing Golden fields |
 | Opening lots | A reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; invalid pre-M1J.7 group hints remain singleton provenance |
 | Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; omitted source currency inherits the canonical account currency; an equivalence merge follows aliases and stales pending Proposals only, while a non-equivalent rebind, unlink, or split atomically stales pending and accepted or multi-source Matches before the new mapping is visible; Raw remains unchanged |
 | Identity migration | Pre-M1J.7 source-group references remain provenance while every event receives a new Golden id; later retired event and leg ids resolve through the two derived Core views; undo reactivates prior ids as self-maps |
-| Splits | Normalized contract fixtures pass for supported adapters; Plaid split candidates stay disabled |
+| Splits | Normalized contract fixtures pass for supported comparison adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
 | Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
 | Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo; ambiguous remapping blocks acceptance and later overlapping curation blocks undo |
 | Field choices | Missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
-| Recovery | Stale Proposal refusal; committed decision plus crash or failed rebuild remains pending in transform freshness and every dependent read until a successful rebuild |
+| Recovery | Stale Proposal refusal; failed membership processing prevents the dependent transform and its SQLMesh acknowledgement; committed decision plus crash or failed rebuild remains pending in transform freshness and every dependent read until a successful rebuild |
 | Guard coverage | Manual history overlapping Plaid transactions or holdings-derived bootstrap rows emits the same visible warning and doctor finding |
 
 ## Verification
@@ -738,6 +760,14 @@ fixtures and expected Golden-ledger outcomes.
   CLI, MCP, report, and SQL reads until every dependent model rebuilds
   successfully, while status, recovery, audit, provenance, and unrelated reads
   remain available.
+- Refresh-orchestration tests proving any `investment_match` error prevents the
+  dependent transform and SQLMesh timestamp advancement, and proving a direct
+  transform-only selector expands the dependency so a later retry completes
+  membership processing before rebuilding.
+- Entry-point tests proving the transform CLI, MCP schema-drift self-heal, and
+  import-service shim use that prerequisite-aware route, plus a structural test
+  that rejects new production `TransformService.apply` callers outside the
+  refresh orchestrator.
 - Identity-dependency tests proving an equivalence merge follows aliases
   without staling accepted Matches, a non-equivalent rebind, unlink, or split
   stales affected Matches before its mapping becomes visible, and neither path
@@ -761,15 +791,15 @@ Each slice is independently reviewable. Public implementation issues may be
 pre-staged alongside the design PR for review, but remain subordinate to the
 accepted contract and must be reconciled to it before delivery begins.
 
-1. **Comparison foundation.** Add manual and Plaid adapters, event/leg comparison
-   views, normalization, tolerances, explicit inactive split capability, and
-   the Plaid Raw transaction-revision migration. Remove caller-authored
-   `event_group_id` from CLI and MCP inputs, mint reinvest grouping internally,
-   and validate pre-M1J.7 group hints before using them as event structure. Stop
-   canonical identity changes from rewriting Raw observations and resolve them
-   through Link or alias routing instead. Expand the existing overlap detector
-   to also cover holdings/bootstrap evidence before any later slice relies on
-   that guard.
+1. **Comparison foundation.** Add manual and Plaid comparison adapters,
+   event/leg comparison views, normalization, tolerances, explicit inactive
+   split capability, and the Plaid Raw transaction-revision migration. Remove
+   caller-authored `event_group_id` from CLI and MCP inputs, mint reinvest
+   grouping internally, and validate pre-M1J.7 group hints before using them as
+   event structure. Stop canonical identity changes from rewriting Raw
+   observations and resolve them through Link or alias routing instead. Expand
+   the existing overlap detector to also cover holdings/bootstrap evidence
+   before any later slice relies on that guard.
 2. **Review-only planner.** Add whole-event assignment, versioned fingerprints,
    canonical-identity dependency tuples, competing detection, Proposal-issued
    conflict and choice ids, and pending Proposals without changing the core
@@ -802,7 +832,7 @@ accepted contract and must be reconciled to it before delivery begins.
   auto-accept promotion.
 - The exact state and read rule for a future guard-promotion decision.
 - Plaid split matching, owned by M1J.5.
-- Source-specific adapters beyond manual and Plaid.
+- Source-specific comparison adapters beyond manual and Plaid.
 - Event shapes not represented by the current ledger taxonomy.
 - Manual investment-event correction and its distinct whole-event interface.
 - Compound manual event shapes beyond the atomic reinvest operation.
