@@ -160,8 +160,9 @@ immutable point-in-time snapshots under their existing keys.
 M1J.7 slice 1 migrates each existing investment transaction row into its first
 append-only observation revision and first delivery receipt. The revision grain becomes
 `(investment_transaction_id, source_origin, observation_version)`, where
-`observation_version` is a SHA-256 digest truncated to 16 hex characters over
-every captured transaction value that can affect matching or Golden projection.
+`observation_version` is `plaid_` plus a SHA-256 digest truncated to 16 hex
+characters over every captured transaction value that can affect matching or
+Golden projection.
 Job id, `source_file`, extraction time, and load time are lineage rather than
 version inputs. An identical overlapping-window delivery reuses the existing
 revision; a changed date, description, quantity, amount, price, fee, currency,
@@ -370,7 +371,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_securities (
 /* Immutable Plaid investment transaction content revisions. */
 CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
     investment_transaction_id VARCHAR NOT NULL, -- Plaid investment_transaction_id; stable unique identifier
-    observation_version VARCHAR NOT NULL,        -- SHA-256 content digest truncated to 16 hex characters
+    observation_version VARCHAR NOT NULL,        -- plaid_ plus a 16-hex SHA-256 content digest
     account_id VARCHAR NOT NULL,                -- Plaid account_id; foreign key to raw.plaid_accounts
     security_id VARCHAR,                        -- Plaid security_id; NULL for cash-only events (deposit, withdrawal, account fee)
     transaction_date DATE NOT NULL,             -- Plaid date; POSTING date ("typically the settlement date" per Plaid docs) — NOT the trade date; staging derives trade_date

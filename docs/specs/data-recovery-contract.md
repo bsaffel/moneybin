@@ -507,6 +507,13 @@ Deviations from the design as written, with rationale:
   the domain `reverse()` was dropped — it would mis-handle undo-of-insert and
   undo-of-status-change and re-trigger the double-reverse timestamp bug; the
   generic row-restore is strictly more correct.
+  M1J.7 does not reopen per-repository overrides: an investment-Match acceptance
+  is an operation-level, multi-row membership topology rather than one row to
+  restore. The central `system_audit_undo` dispatcher recognizes that operation
+  before row reversal and invokes one domain topology handler that validates and
+  writes every successor membership and dependent curation atomically. Once
+  claimed, failure blocks the operation; generic row restore is not a fallback.
+  Every operation whose audited unit is one row retains this generic reverser.
 - **Cascade excludes currently-reversed work (net liveness).** A later operation
   blocks only if it is a *live forward* mutation: undo rows (`is_undo=TRUE`) never
   block, and a forward op blocks only while its effect is *currently* live.

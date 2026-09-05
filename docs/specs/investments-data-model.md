@@ -89,9 +89,12 @@ Related specs:
      `fee`; `dividend`/`interest`/`capital_gain` on `reinvest` (funding source).
      Raw preserves the provider's original type string alongside. Extending the
      vocabulary is additive; consumers must tolerate NULL and unknown values.
-   - **`event_group_id`** (nullable) — links the rows of one decomposed economic
-     event (reinvest pair, merger legs, tax withholding on a dividend). Truncated
-     UUID4 minted at entry/staging time.
+   - **`event_group_id`** — after M1J.7's pre-launch migration, the required
+     MoneyBin-owned Golden event identity on every Core row, including a
+     singleton. The 12-hex UUID4 is minted in App membership when the event first
+     registers; all legs of one Golden event share it. Raw and staging retain
+     nullable source-group references as provenance but never mint or resolve
+     the Golden identity.
 6. **Sign conventions.** `quantity` is signed: positive for acquisitions
    (`buy`/`reinvest`/`transfer_in`), negative for disposals (`sell`/`transfer_out`),
    NULL for cash-only events (`deposit`, `withdrawal`, `dividend`, `interest`,
@@ -102,7 +105,9 @@ Related specs:
    So a buy's cost basis is `|amount|` and a sell's net proceeds is `amount`.
    **`reinvest` rows carry the acquisition leg only** — quantity, price, and the
    negative `amount` of cash redeployed; the income being reinvested is always its
-   own `dividend`/`interest` row sharing the `event_group_id`. This keeps semantics
+   own `dividend`/`interest` row in the same validated Source event; after Golden
+   registration, both Core legs share the required `event_group_id`. This keeps
+   semantics
    identical across manual entry, Plaid (which delivers the pair as two rows), and
    OFX, and means income reports sum income-typed rows only — reinvested income can
    never double-count or silently vanish.
@@ -202,7 +207,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_investment_transactions (
     security_ref VARCHAR,                      -- The user-supplied security reference as typed (audit trail for the resolution)
     type VARCHAR NOT NULL,                     -- Core taxonomy value (CLI/MCP validate at entry; manual rows arrive canonical)
     subtype VARCHAR,                           -- Per-type refinement (tax character, reinvest source); nullable
-    event_group_id VARCHAR,                    -- Links legs of one economic event (reinvest pair, merger legs); nullable
+    event_group_id VARCHAR,                    -- Nullable pre-M1J.7 source-group provenance; never a Golden identity
     trade_date DATE NOT NULL,                  -- Trade date (drives holding period); NOT settlement date
     settlement_date DATE,                      -- Settlement date if supplied; informational
     original_acquisition_date DATE,            -- For transfer_in: shares' original acquisition date (holding period transfers in); NULL otherwise
