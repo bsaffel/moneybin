@@ -67,7 +67,7 @@ plausible but incorrect tax ledger.
 ## Goals
 
 - Match manual and Plaid observations of the same economic investment event.
-- Make the matching contract source-neutral so another Source type adds an
+- Make the matching contract source-neutral so another Source type adds a
   comparison adapter rather than a parallel matching system.
 - Preserve every source observation revision in Raw.
 - Give each accepted event and leg a stable MoneyBin-owned identity.
@@ -317,10 +317,20 @@ assignment remains competing and cannot be accepted until the ambiguity is
 resolved.
 
 Every planned Proposal records a versioned fingerprint over its exact
-observation versions, normalized members, and match-relevant fields. Acceptance
-rereads the latest versions, recomputes the fingerprint, and refuses a stale
-Proposal. Re-running the planner must not create another pending review for an
-unchanged pending, accepted, or rejected fingerprint.
+observation versions, normalized members, and match-relevant fields. It also
+records a content-derived candidate-graph fingerprint for the connected
+candidate component containing those members. That graph fingerprint covers
+every candidate node and edge in the component, their relevant observation
+versions, normalized scoring inputs, and the matching-algorithm version; it is
+not a mutable global generation.
+
+Acceptance rereads the latest inputs, reconstructs that connected candidate
+component, recomputes both fingerprints, and reruns its global assignment in the
+same decision transaction before any membership write. A changed graph or
+assignment stales the Proposal, including when a newly arrived event creates an
+equally plausible alternative without changing the originally proposed members.
+Re-running the planner must not create another pending review for an unchanged
+pending, accepted, or rejected fingerprint.
 
 The fingerprint also binds each leg's canonical-identity dependency: terminal
 Account and Security ids, the relevant accepted Link or merge decision
@@ -349,9 +359,9 @@ semantic homes are fixed.
 One audited Proposal decision with status `pending`, `accepted`, `rejected`,
 `stale`, or `reversed`. It stores the Proposal identity, algorithm version,
 source-event keys, exact observation versions, normalized fingerprint,
-confidence band, evidence summary, timestamps, and actor. Rejected fingerprints
-suppress unchanged Proposals; a materially different fingerprint is a new
-Proposal.
+candidate-graph fingerprint, confidence band, evidence summary, timestamps, and
+actor. Rejected fingerprints suppress unchanged Proposals; a materially
+different member or connected-graph fingerprint is a new Proposal.
 
 ### `app.investment_event_members`
 
@@ -605,22 +615,30 @@ dependency set.
 
 The refresh registry gains an `investment_match` step after source staging and
 identity resolution but before the Golden investment ledger and its dependent
-models. Planning is safe to repeat. Unlike existing best-effort enrichment
-stages, `investment_match` is a fail-closed prerequisite to the dependent
-transform: it must register, advance, or retire every eligible Source event and
-opening-lot membership before returning success. Any step error prevents
-`TransformService.apply` from running, so SQLMesh cannot acknowledge Raw or App
-inputs that membership did not process. A later refresh retries from durable
-Raw evidence and membership history. The refresh selector treats
-`investment_match` as a transitive dependency of `transform`: every transform
-request, including `moneybin refresh --step transform` and
-`refresh_run(steps=["transform"])`, runs `investment_match` first. No CLI, MCP,
-or internal caller can request the dependent transform while skipping that
-prerequisite. The prerequisite-aware refresh path becomes the sole production
-entry point for a full transform: the existing transform CLI, MCP schema-drift
-self-heal, and import-service shim delegate to it rather than calling
-`TransformService.apply` directly. `TransformService.apply` remains the
-orchestrator's lower-level SQLMesh boundary, not a separately callable
+models. Before that step, SQLMesh performs a narrow pre-match bootstrap of only
+the comparison and opening-lot input views, plus dependencies required to
+evaluate them. This bootstrap creates those inputs for a fresh profile and
+applies newly added input-view models, but it cannot select the Golden ledger or
+any dependent model. Its SQLMesh executions therefore do not acknowledge
+Golden-ledger freshness or clear the stale-read guard.
+
+Planning is safe to repeat. Unlike existing best-effort enrichment stages,
+`investment_match` is a fail-closed prerequisite to the dependent transform: it
+must register, advance, or retire every eligible Source event and opening-lot
+membership before returning success. Any bootstrap or `investment_match` error
+prevents the full `TransformService.apply` from running, so SQLMesh cannot
+acknowledge Raw or App inputs that membership did not process. A later refresh
+retries from durable Raw evidence and membership history.
+
+The refresh selector treats the pre-match bootstrap and `investment_match` as
+transitive dependencies of `transform`: every transform request, including
+`moneybin refresh --step transform` and `refresh_run(steps=["transform"])`, runs
+them first. No CLI, MCP, or internal caller can request the dependent transform
+while skipping those prerequisites. The prerequisite-aware refresh path becomes
+the sole production entry point for a full transform: the existing transform
+CLI, MCP schema-drift self-heal, and import-service shim delegate to it rather
+than calling `TransformService.apply` directly. `TransformService.apply` remains
+the orchestrator's lower-level full SQLMesh boundary, not a separately callable
 full-transform workflow.
 
 Investment-event membership is a materialization input. Transform freshness is
@@ -706,7 +724,7 @@ fixtures and expected Golden-ledger outcomes.
 | Precision | Exact decimal normalization plus inside/outside quantity, amount, fee, and price thresholds |
 | Reinvestment | Manual and aggregator multi-leg shapes; income and acquisition move atomically; a missing leg is not accepted |
 | Transfers | Both account directions and quantities agree; one-sided or mismatched transfers remain ineligible |
-| Repetition | Unique two-to-two assignment of identical same-day trades; ambiguous one-to-two assignment remains competing |
+| Repetition | Unique two-to-two assignment of identical same-day trades; ambiguous one-to-two assignment remains competing; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; manual correction is unavailable in M1J.7 |
 | Revisions | Identical aggregator re-delivery reuses a version; an unreviewed aggregator singleton advances without rotating Golden ids; changed accepted or multi-source evidence stales without silently changing Golden fields |
@@ -720,7 +738,7 @@ fixtures and expected Golden-ledger outcomes.
 | Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo; ambiguous remapping blocks acceptance and later overlapping curation blocks undo |
 | Field choices | Missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
-| Recovery | Stale Proposal refusal; failed membership processing prevents the dependent transform and its SQLMesh acknowledgement; committed decision plus crash or failed rebuild remains pending in transform freshness and every dependent read until a successful rebuild |
+| Recovery | A fresh profile and a newly added comparison-input model bootstrap only pre-match views before membership; bootstrap or membership failure prevents the dependent transform and its SQLMesh acknowledgement; committed decision plus crash or failed rebuild remains pending in transform freshness and every dependent read until a successful rebuild |
 | Guard coverage | Manual history overlapping Plaid transactions or holdings-derived bootstrap rows emits the same visible warning and doctor finding |
 
 ## Verification
@@ -729,7 +747,8 @@ fixtures and expected Golden-ledger outcomes.
 - Currency tests for explicit values, account inheritance, unknown or
   contradictory effective currency, and account-currency changes that stale a
   Proposal.
-- Pure global-assignment tests, including competing and repeated-event graphs.
+- Pure global-assignment tests, including competing and repeated-event graphs
+  and an equally plausible event arriving after Proposal planning.
 - DuckDB repository tests for atomic membership, rejection suppression, field
   resolutions, observation-version binding, projection-change timestamps, audit
   records, and reversal.
@@ -764,6 +783,10 @@ fixtures and expected Golden-ledger outcomes.
   dependent transform and SQLMesh timestamp advancement, and proving a direct
   transform-only selector expands the dependency so a later retry completes
   membership processing before rebuilding.
+- Bootstrap tests proving a fresh profile and a newly added comparison-input
+  model create only the required pre-match views before membership processing,
+  never execute a Golden or dependent model, and cannot clear dependent
+  freshness.
 - Entry-point tests proving the transform CLI, MCP schema-drift self-heal, and
   import-service shim use that prerequisite-aware route, plus a structural test
   that rejects new production `TransformService.apply` callers outside the
@@ -811,8 +834,9 @@ accepted contract and must be reconciled to it before delivery begins.
 4. **Golden materialization.** Add stable event and leg identities, Source-event
    and opening-lot-reconstruction membership, the two derived Core id
    resolvers, field resolution, exact provenance, `projection_changed_at`, and
-   the dependent rebuild. Perform the pre-launch Golden-id hard cut, preserving
-   existing source-group references only as provenance. Enable acceptance after
+   the pre-match input-view bootstrap and dependent rebuild. Perform the
+   pre-launch Golden-id hard cut, preserving existing source-group references
+   only as provenance. Enable acceptance after
    validating the complete Golden event and every lot-selection mapping, then
    commit its decision, exact revision membership, field resolutions, and
    complete remapped selection sets in one transaction. Undo restores those
