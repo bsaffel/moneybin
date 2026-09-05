@@ -111,7 +111,7 @@ both failure modes while preserving original-currency facts.
 |---|---|---|---|
 | **M1K.1** | Currency capture & integrity (no conversion) | nothing | Independent of investments; **may be pulled into the first public release** (see [`roadmap.md`](../roadmap.md) §"The first public release"). Closes the live silent-blend bug. Requirements 1, 2, 3, 8 (capture, schema, account-currency inheritance) implemented 2026-07-17; Requirements 4–7 (home currency, no-silent-blend guard, doctor check, report guard) implemented 2026-07-25, and Requirement 3's account-grain `'USD'` fallback removed 2026-07-26 — **M1K.1 closed**, except the first-run-wizard locale default explicitly descoped under Requirement 4. |
 | **M1K.2** | Display conversion (auditable rates) | M1K.1 + **investments (M1J)** | The unifying conversion layer over both cash and investment grains. Sequenced after investments so it converts *everything* in one coherent pass. |
-| **M1K.3** | Realized FX gain/loss | M1K.2 + investments cost-basis engine | Initial Core conversion, Currency-lot, and realized-FX foundation implemented 2026-09-04. Before that foundation is merge-ready, the approved completion extends the engine with optional paired Transfers so same-currency movement preserves basis. The report and deliberate EUR/USD statement tie-out remain open. |
+| **M1K.3** | Realized FX gain/loss | M1K.2 + investments cost-basis engine | Core conversion, Currency-lot, and realized-FX accounting implemented 2026-09-04, including optional paired Transfers that preserve same-currency basis across Accounts. The report and deliberate EUR/USD statement tie-out remain open. |
 
 **Sequencing rule:** investments (M1J) lands before M1K.2/M1K.3. The dependency runs
 one direction only — realized FX gain/loss is currency-lot accounting, i.e. the same
@@ -745,13 +745,15 @@ Numbered, testable. Tagged by phase.
     or restores Home-currency and cost-basis settings or restores or re-keys an
     accepted Transfer Decision. Account timestamps cover inherited Currency clears
     on canonical cash transactions, both conversion legs, and Security sales. A
-    implemented slice's cache-only loader adapts completed conversions and eligible
-    foreign-Security sale proceeds to the then-unchanged investments cost-basis
-    engine, producing `core.fct_currency_lots` and
+    implemented slice's cache-only loader adapts completed conversions, eligible
+    foreign-Security sale proceeds, and accepted exact same-currency Transfers to
+    the investments cost-basis engine, producing `core.fct_currency_lots` and
     `core.fct_realized_fx_gains`; unsupported methods and missing Home currency still
     preserve known quantities while basis and gain remain visibly uncovered. The
-    approved completion design adds the optional paired-transfer input above before
-    this foundation is merge-ready. Inherited Account Currency changes, including
+    engine's optional paired-transfer input atomically moves attributable source
+    slices into the destination Account, preserves original acquisition provenance,
+    records immediate `source_transfer_id`, and leaves an underfunded remainder
+    visibly incomplete without realizing gain. Inherited Account Currency changes, including
     clearing the value, advance conversion freshness. Rate backfill includes the
     received leg of materialized conversions,
     so a single-row conversion can obtain a Home valuation when that Currency appears
