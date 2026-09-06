@@ -7,7 +7,9 @@ from decimal import Decimal
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.privacy.payloads.budget import (
     BudgetCategoryStatusRow,
     BudgetSetPayload,
@@ -63,6 +65,34 @@ def budget_db(db: Database) -> Database:
 
 class TestSetBudget:
     """Tests for BudgetService.set_budget()."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("category", "message"),
+        [
+            ("   ", "category must be non-empty"),
+            ("x" * 101, "category exceeds 100 chars"),
+        ],
+    )
+    def test_set_budget_refuses_unusable_category_text(
+        self, budget_db: Database, category: str, message: str
+    ) -> None:
+        """A budget names a category, so it takes the category text rule.
+
+        ``resolve_category_id`` matches no dim row for a blank, so the budget
+        stores the whitespace as its display snapshot with a ``NULL``
+        ``category_id`` — an orphan that reports against nothing and renders as
+        an empty cell in budget status. The length half matters for the same
+        reason it does elsewhere: ``app.budgets.category`` is an unbounded
+        ``VARCHAR`` with no CHECK.
+        """
+        service = BudgetService(budget_db)
+        with pytest.raises(UserError, match=message) as exc:
+            service.set_budget(category, Decimal("200.00"), actor="cli")
+        assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
+        remaining = budget_db.execute("SELECT COUNT(*) FROM app.budgets").fetchone()
+        assert remaining is not None
+        assert remaining[0] == 0
 
     @pytest.mark.unit
     def test_creates_new_budget(self, budget_db: Database) -> None:

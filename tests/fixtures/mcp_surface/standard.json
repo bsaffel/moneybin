@@ -1,5 +1,5 @@
 {
-  "sha256": "ba2df4f80a4974772d8318daeda1821166cac0129e6322506f81cd7b5544b9b8",
+  "sha256": "a0e38f22dfaad984fd7f8645667cc5314942e7b5a440f648781fbbd596daf01c",
   "tool_count": 50,
   "tools": [
     {
@@ -3930,6 +3930,32 @@
                             "merchant_id"
                           ]
                         }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "subcategory": {
+                              "not": {
+                                "type": "null"
+                              }
+                            }
+                          },
+                          "required": [
+                            "subcategory"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "category": {
+                              "not": {
+                                "type": "null"
+                              }
+                            }
+                          },
+                          "required": [
+                            "category"
+                          ]
+                        }
                       }
                     ],
                     "description": "Declare one merchant mapping's target state.",
@@ -4051,11 +4077,11 @@
         "name": "taxonomy_set"
       },
       "description_bytes": 205,
-      "input_schema_bytes": 3085,
+      "input_schema_bytes": 3257,
       "name": "taxonomy_set",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 3480
+      "total_bytes": 3652
     },
     {
       "annotation_bytes": 89,
@@ -5088,5 +5114,5 @@
       "total_bytes": 568
     }
   ],
-  "total_bytes": 59880
+  "total_bytes": 60052
 }
