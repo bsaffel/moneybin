@@ -298,7 +298,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `status="conflict"` envelope instead. The proposal is recorded in the new
   `app.rule_conflicts` table and resolved explicitly — `replace`,
   `reprioritize`, or `cancel` — through `reviews`/`reviews_decide` or
-  `moneybin transactions categorize rules list-conflicts`/`resolve`. (#540)
+  `moneybin transactions categorize rules list-conflicts`/`resolve`. Amount
+  bounds now reach DuckDB as `Decimal` on every write path, so a bound stores at
+  one grain no matter which surface wrote it and the matcher key can name the
+  value the row actually holds. **Behavior change:** a bound carrying more than
+  two decimal places now rounds half-up, so `5.015` stores `5.02` where the
+  float path previously stored `5.01`. (#540)
 - **`reports merchants` and `reports large-transactions` run again.** Both
   failed on every profile with "The report's query could not run against the
   current schema", and the `reports` MCP tool failed the same way for

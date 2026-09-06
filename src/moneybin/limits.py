@@ -11,6 +11,8 @@ The same argument holds for a numeric range that more than one boundary has to
 enforce, so those live here too.
 """
 
+from decimal import ROUND_HALF_UP, Decimal
+
 IDENTIFIER_MAX_LEN = 64
 CATEGORY_NAME_MAX_LEN = 100
 MERCHANT_NAME_MAX_LEN = 200
@@ -44,3 +46,32 @@ REPORT_DOWNGRADES_MAX_LEN = 8_000
 #: contract, the MCP conflict-resolution request, and both CLI resolution paths.
 RULE_PRIORITY_MIN = 0
 RULE_PRIORITY_MAX = 10_000
+
+
+#: The grain ``app.categorization_rules`` and ``app.rule_conflicts`` store an
+#: amount bound at (``DECIMAL(18,2)``).
+AMOUNT_GRAIN = Decimal("0.01")
+
+
+def to_amount_grain(value: Decimal | float | int | None) -> Decimal | None:
+    """Coerce an amount bound to the grain DuckDB will store it at.
+
+    Every write path calls this before binding, so the column only ever sees a
+    value already at its own scale and DuckDB never rounds. That collapse is
+    load-bearing, not tidiness: DuckDB's ``DECIMAL(18,2)`` cast rounds a
+    ``DOUBLE`` and a ``DECIMAL`` differently at a half cent — ``5.015`` bound as
+    a float scales through ``5.015 * 100`` and stores ``5.01``, bound as a
+    ``Decimal`` it stores ``5.02`` — so a bound's stored value used to depend on
+    which surface wrote it, and no single rounding mode could reproduce both.
+    With one path, matcher identity can round the same way and match, instead of
+    canonicalizing a rule to a bound it does not actually store.
+
+    ``Decimal(str(value))`` reads a float's shortest round-trip text, as
+    ``write_contracts._coerce_finite_json_number`` does, so ``5.005`` is read as
+    ``"5.005"`` rather than its ``5.00499…`` binary expansion. ``ROUND_HALF_UP``
+    is the house money mode (``CurrencyService``, ``cost_basis``) and is what
+    DuckDB's decimal cast does.
+    """
+    if value is None:
+        return None
+    return Decimal(str(value)).quantize(AMOUNT_GRAIN, rounding=ROUND_HALF_UP)

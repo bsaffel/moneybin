@@ -26,6 +26,7 @@ from moneybin.services.categorization import (
 from moneybin.services.categorization._shared import canonical_matcher_key
 from moneybin.services.categorization.conflicts import (
     ActiveRule,
+    conflict_identity,
     detect_conflict,
     load_active_rules,
 )
@@ -45,6 +46,7 @@ def _rule(
     subcategory: str | None = None,
     match_type: str = "contains",
     priority: int = 100,
+    min_amount: float | None = None,
 ) -> CategorizationRuleInput:
     return CategorizationRuleInput(
         name=name,
@@ -53,6 +55,7 @@ def _rule(
         subcategory=subcategory,
         match_type=match_type,  # pyright: ignore[reportArgumentType]  # test literals
         priority=priority,
+        min_amount=min_amount,
     )
 
 
@@ -823,3 +826,138 @@ class TestStalePruningKeepsHistory:
         assert [row["resolution"] for row in service.list_rule_conflict_history()] == [
             "cancel"
         ]
+
+
+def _identity(category: str, subcategory: str | None) -> str:
+    """One conflict id against a fixed rule, timestamp and matcher."""
+    return conflict_identity(
+        existing_rule_id="rule_111122223333",
+        existing_rule_updated_at=datetime(2026, 1, 1, 12, 0, 0),
+        digest="a" * 64,
+        proposed_category=category,
+        proposed_subcategory=subcategory,
+    )
+
+
+class TestConflictIdentityEncoding:
+    """The id is a content hash, so its inputs must not be forgeable."""
+
+    @pytest.mark.unit
+    def test_a_pipe_in_category_text_does_not_alias_two_proposals(self) -> None:
+        """Nothing forbids ``|`` in a category, so it must not act as a separator.
+
+        ``a|b``/``c`` and ``a``/``b|c`` are different proposals against the same
+        rule and matcher. Sharing an id would send the second one's category to
+        an ``ON CONFLICT DO UPDATE`` that never refreshes ``proposed_category``,
+        so ``replace`` would activate a category nobody asked for.
+        """
+        assert _identity("a|b", "c") != _identity("a", "b|c")
+
+    @pytest.mark.unit
+    def test_absent_subcategory_is_distinct_from_a_pipe_bearing_one(self) -> None:
+        assert _identity("a", None) != _identity("a", "|")
+
+    @pytest.mark.unit
+    def test_the_same_proposal_lands_on_the_same_id(self) -> None:
+        """Re-submitting a refused rule must reach the queued row, not a new one."""
+        assert _identity("Food & Drink", None) == _identity("Food & Drink", None)
+
+
+class TestAmountBoundGrain:
+    """A bound is canonicalized at the grain it will actually be stored at."""
+
+    @pytest.mark.unit
+    def test_a_half_cent_bound_conflicts_with_its_stored_twin(
+        self, db: Database
+    ) -> None:
+        """The defect: ``5.005`` stored as one cent and canonicalized as another.
+
+        Both rules store ``5.01``, so they fire on exactly the same
+        transactions. Before the write path coerced to ``Decimal`` and the key
+        rounded to match, the proposal canonicalized to ``5.00`` (banker's
+        rounding) while the reload read ``5.01`` — the keys never met, no
+        conflict was raised, and a fully shadowed second rule was created.
+        """
+        service = CategorizationService(db)
+        service.create_rules([
+            _rule("Coffee", category="Food & Drink", min_amount=5.005)
+        ])
+        result = service.create_rules([
+            _rule("Coffee travel", category="Travel", min_amount=5.005)
+        ])
+
+        assert result.conflicts == 1
+        assert result.created == 0
+        assert _active_rule_count(db) == 1
+
+    @pytest.mark.unit
+    def test_bounds_differing_only_past_the_grain_are_one_matcher(
+        self, db: Database
+    ) -> None:
+        """``5.005`` and ``5.0051`` both store ``5.01``, so they are one matcher."""
+        service = CategorizationService(db)
+        service.create_rules([
+            _rule("Coffee", category="Food & Drink", min_amount=5.005)
+        ])
+        result = service.create_rules([
+            _rule("Coffee travel", category="Travel", min_amount=5.0051)
+        ])
+
+        assert result.conflicts == 1
+        assert _active_rule_count(db) == 1
+
+    @pytest.mark.unit
+    def test_the_stored_bound_matches_the_canonical_key(self, db: Database) -> None:
+        """One storage path: what DuckDB holds is what the key was built from."""
+        service = CategorizationService(db)
+        service.create_rules([
+            _rule("Coffee", category="Food & Drink", min_amount=5.005)
+        ])
+
+        row = db.execute("SELECT min_amount FROM app.categorization_rules").fetchone()
+        assert row is not None
+        assert str(row[0]) == "5.01"
+        [rule] = load_active_rules(db)
+        assert rule.key.min_amount == "5.01"
+
+
+class TestQueueShowsTheLiveWinner:
+    """A sibling `reprioritize` changes who wins without touching the anchor."""
+
+    @pytest.mark.unit
+    def test_a_reprioritized_sibling_becomes_the_reported_existing_rule(
+        self, db: Database
+    ) -> None:
+        """The staleness join guards the anchor rule, not the matcher.
+
+        Resolving one conflict with ``reprioritize`` activates a new rule ahead
+        of the anchor on the *same* matcher. The anchor stays active and
+        unedited, so the join keeps every sibling conflict pending — still
+        describing the anchor as the rule that assigns the category. It no
+        longer does, and a reviewer deciding from that row is reading a
+        comparison against a rule the matcher no longer consults.
+        """
+        service = CategorizationService(db)
+        service.create_rules([_rule("Coffee", category="Food & Drink")])
+        first = service.create_rules([_rule("Coffee travel", category="Travel")])
+        second = service.create_rules([_rule("Coffee shops", category="Shopping")])
+        assert service.count_rule_conflicts() == 2
+
+        service.resolve_rule_conflicts(
+            [
+                ConflictDecision(
+                    conflict_id=first.conflict_ids[0],
+                    resolution="reprioritize",
+                    priority=10,
+                )
+            ],
+            actor="cli",
+        )
+
+        [remaining] = service.list_rule_conflicts()
+        assert remaining["conflict_id"] == second.conflict_ids[0]
+        assert remaining["existing_category"] == "Travel", (
+            "the reprioritized rule now decides the category, not the anchor"
+        )
+        assert remaining["existing_priority"] == 10
+        assert remaining["proposed_category"] == "Shopping"

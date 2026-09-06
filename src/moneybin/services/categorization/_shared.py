@@ -29,6 +29,7 @@ from moneybin.limits import (
     MERCHANT_PATTERN_MAX_LEN,
     RULE_PRIORITY_MAX,
     RULE_PRIORITY_MIN,
+    to_amount_grain,
 )
 from moneybin.tables import CATEGORIES
 from moneybin.vocabulary import (
@@ -163,7 +164,9 @@ class MatcherKey(NamedTuple):
 
     Amount bounds are rendered at the storage grain (``DECIMAL(18,2)``) as
     strings so ``5``, ``5.0`` and ``Decimal("5.00")`` collapse to one value,
-    and ``None`` (no bound) stays distinct from ``0``.
+    and ``None`` (no bound) stays distinct from ``0``. The grain and its
+    rounding are shared with every write path via
+    :func:`moneybin.limits.to_amount_grain`, so the key names the stored value.
     """
 
     merchant_pattern: str
@@ -173,15 +176,16 @@ class MatcherKey(NamedTuple):
     account_id: str | None
 
 
-# app.categorization_rules stores both bounds as DECIMAL(18,2).
-_AMOUNT_GRAIN = Decimal("0.01")
-
-
 def _canonical_amount(value: Decimal | float | int | None) -> str | None:
-    """Render an amount bound at the column's grain, or ``None`` for unbounded."""
-    if value is None:
-        return None
-    return str(Decimal(str(value)).quantize(_AMOUNT_GRAIN))
+    """Render an amount bound at the column's grain, or ``None`` for unbounded.
+
+    Shares :func:`moneybin.limits.to_amount_grain` with the write paths on
+    purpose: the key must name the value the row actually stores, or a rule
+    canonicalizes to a bound it does not have and its shadowed twin goes
+    undetected.
+    """
+    grained = to_amount_grain(value)
+    return None if grained is None else str(grained)
 
 
 def canonical_matcher_key(

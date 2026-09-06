@@ -218,6 +218,46 @@ class TestResponseEnvelope:
         assert build_envelope(data={"n": 1}).status == "ok"
 
     @pytest.mark.unit
+    def test_rules_set_counts_results_not_its_conflict_diagnostics(self) -> None:
+        """`conflicts` reports what could NOT be written, not a second row set.
+
+        Both fields are lists, so without an auxiliary declaration the generic
+        counter sees two collections, declines to pick one, and reports
+        `returned_count=1` for a batch that declared N target states.
+        """
+        from moneybin.privacy.payloads.categorize import (
+            CategorizationRulesSetPayload,
+            CategorizationRuleStateResult,
+        )
+
+        payload = CategorizationRulesSetPayload(
+            results=[
+                CategorizationRuleStateResult(
+                    rule_id=f"rule_{n:012d}", state="present", changed=True
+                )
+                for n in range(5)
+            ],
+            operation_id="op_111122223333",
+        )
+
+        assert build_envelope(data=payload).summary.returned_count == 5
+
+    @pytest.mark.unit
+    def test_rules_create_counts_rule_ids_not_its_conflict_diagnostics(self) -> None:
+        """Same root cause with three lists: `rule_ids` is the written set."""
+        from moneybin.privacy.payloads.categorize import RulesCreatePayload
+
+        payload = RulesCreatePayload(
+            created=3,
+            existing=0,
+            skipped=0,
+            rule_ids=["rule_111122223333", "rule_444455556666", "rule_777788889999"],
+            error_details=[],
+        )
+
+        assert build_envelope(data=payload).summary.returned_count == 3
+
+    @pytest.mark.unit
     def test_to_json_includes_status(self) -> None:
         import json
 

@@ -483,6 +483,16 @@ AUXILIARY_LIST_FIELDS = frozenset({
     # payload; without it the heuristic saw two lists and reported
     # `returned_count=1` for a pull covering N institutions.
     "investment_source_overlap_accounts",
+    # The rule-conflict diagnostics on `CategorizationRulesSetPayload`
+    # (`conflicts`) and `RulesCreatePayload` (`conflict_ids`,
+    # `conflict_details`). Same rationale as `error_details` above: they name
+    # the targets that were REFUSED, beside each payload's actual written set
+    # (`results`, `rule_ids`). Without them a 5-target `rules_set` saw two
+    # lists and reported `returned_count=1`, and a 3-rule `rules_create` saw
+    # three and reported the same.
+    "conflicts",
+    "conflict_ids",
+    "conflict_details",
 })
 
 

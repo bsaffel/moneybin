@@ -19,6 +19,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any, Literal
 
+from moneybin.limits import to_amount_grain
 from moneybin.metrics.registry import RULE_CONFLICTS_PENDING
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
@@ -141,8 +142,10 @@ class RuleConflictsRepo(BaseRepo):
                     proposed_name,
                     proposed_merchant_pattern,
                     proposed_match_type,
-                    proposed_min_amount,
-                    proposed_max_amount,
+                    # Same grain as the rule column this proposal will become,
+                    # so a recorded conflict and its rule compare equal.
+                    to_amount_grain(proposed_min_amount),
+                    to_amount_grain(proposed_max_amount),
                     proposed_account_id,
                     proposed_category,
                     proposed_subcategory,

@@ -52,7 +52,7 @@ def _insert(db: Database, columns: tuple[str, ...], **overrides: object) -> None
     )
 
 
-def test_v054_creates_rule_conflicts(db: Database) -> None:
+def test_v057_creates_rule_conflicts(db: Database) -> None:
     """The migration creates the conflict queue with its full shape."""
     run_migration(db, migrate)
 
@@ -89,7 +89,7 @@ def test_v054_creates_rule_conflicts(db: Database) -> None:
     ]
 
 
-def test_v054_defaults_leave_a_conflict_pending(db: Database) -> None:
+def test_v057_defaults_leave_a_conflict_pending(db: Database) -> None:
     """A detection that states no decision is queued, not silently settled."""
     run_migration(db, migrate)
 
@@ -101,7 +101,7 @@ def test_v054_defaults_leave_a_conflict_pending(db: Database) -> None:
     ).fetchone() == ("pending", None, None, None)
 
 
-def test_v054_amount_bounds_store_at_the_rule_grain(db: Database) -> None:
+def test_v057_amount_bounds_store_at_the_rule_grain(db: Database) -> None:
     """The bounds are part of matcher identity, so they match the rule column."""
     run_migration(db, migrate)
 
@@ -120,7 +120,7 @@ def test_v054_amount_bounds_store_at_the_rule_grain(db: Database) -> None:
     assert str(row[1]) == "50.00"
 
 
-def test_v054_refuses_two_rows_for_one_conflict(db: Database) -> None:
+def test_v057_refuses_two_rows_for_one_conflict(db: Database) -> None:
     """Re-detection must land on the queued row, not queue a second decision."""
     run_migration(db, migrate)
     _insert(db, _REQUIRED)
@@ -140,7 +140,7 @@ def test_v054_refuses_two_rows_for_one_conflict(db: Database) -> None:
         "proposed_category",
     ],
 )
-def test_v054_requires_every_side_of_the_comparison(db: Database, omitted: str) -> None:
+def test_v057_requires_every_side_of_the_comparison(db: Database, omitted: str) -> None:
     """A row missing either side cannot explain the disagreement it records."""
     run_migration(db, migrate)
 
@@ -150,7 +150,7 @@ def test_v054_requires_every_side_of_the_comparison(db: Database, omitted: str) 
         _insert(db, kept)
 
 
-def test_v054_is_idempotent(db: Database) -> None:
+def test_v057_is_idempotent(db: Database) -> None:
     """Fresh installs and migration upgrades may both invoke the DDL."""
     run_migration(db, migrate)
     run_migration(db, migrate)

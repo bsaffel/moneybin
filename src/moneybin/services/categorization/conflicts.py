@@ -15,6 +15,7 @@ import it without a cycle through the applier.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -139,14 +140,27 @@ def conflict_identity(
     existing rule's ``updated_at`` is part of the input, so editing that rule
     yields a different id — the recorded conflict describes a rule state that
     no longer exists and is superseded rather than silently reused.
+
+    JSON-encoded, exactly as :func:`_shared.matcher_digest` encodes a matcher
+    key, because nothing forbids ``|`` in a category name. Under a delimiter
+    join, category ``"a|b"`` with subcategory ``"c"`` and category ``"a"`` with
+    subcategory ``"b|c"`` produce one id for the same rule and matcher, and
+    ``RuleConflictsRepo.set`` never refreshes ``proposed_category`` on the
+    resulting upsert — so the second proposal's category is dropped and
+    ``replace`` activates one the caller never asked for. JSON also keeps an
+    absent subcategory distinct from any string.
     """
-    raw = "|".join([
-        existing_rule_id,
-        str(existing_rule_updated_at),
-        digest,
-        proposed_category,
-        proposed_subcategory or "",
-    ])
+    raw = json.dumps(
+        [
+            existing_rule_id,
+            str(existing_rule_updated_at),
+            digest,
+            proposed_category,
+            proposed_subcategory,
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     return f"conf_{hashlib.sha256(raw.encode()).hexdigest()[:16]}"
 
 
@@ -346,6 +360,15 @@ class RuleConflictsService:
         The join on ``updated_at`` is the staleness filter: a conflict recorded
         against a rule that has since been edited describes a comparison that
         no longer holds, so it never reaches a reviewer.
+
+        That join guards the anchor rule, not the matcher, so the recorded
+        ``existing_*`` columns can go stale while the anchor sits untouched: a
+        *sibling* conflict on the same matcher resolved by ``reprioritize``
+        activates a new rule ahead of the anchor, which stays active and
+        unedited. ``_with_live_winner`` re-derives the winner across every live
+        twin and overlays it onto the display columns, so a reviewer decides
+        against the rule that actually assigns the category today. The anchor
+        the staleness join uses is deliberately left alone.
         """
         rows = self._db.execute(
             f"""
@@ -361,7 +384,42 @@ class RuleConflictsService:
             ORDER BY c.detected_at ASC, c.conflict_id ASC
             """  # noqa: S608  # TableRef constants, no user input interpolated
         ).fetchall()
-        return [_conflict_row(row) for row in rows]
+        conflicts = [_conflict_row(row) for row in rows]
+        if not conflicts:
+            return conflicts
+        by_digest: dict[str, list[ActiveRule]] = {}
+        for rule in load_active_rules(self._db):
+            by_digest.setdefault(matcher_digest(rule.key), []).append(rule)
+        return [self._with_live_winner(row, by_digest) for row in conflicts]
+
+    @staticmethod
+    def _with_live_winner(
+        row: dict[str, Any], by_digest: dict[str, list[ActiveRule]]
+    ) -> dict[str, Any]:
+        """Overlay ``existing_*`` with the live winner among the matcher's twins.
+
+        Tie-break matches :func:`detect_conflict` exactly — lowest priority
+        number, then oldest ``created_at``, then ``rule_id`` — so the queue
+        names the rule the runtime matcher would consult. A row whose recorded
+        anchor is still the winner is returned unchanged.
+        """
+        twins = by_digest.get(row["matcher_digest"], [])
+        if not twins:
+            return row
+        winner = min(
+            twins, key=lambda rule: (rule.priority, rule.created_at, rule.rule_id)
+        )
+        if winner.rule_id == row["existing_rule_id"]:
+            return row
+        return {
+            **row,
+            "existing_rule_id": winner.rule_id,
+            "existing_name": winner.name,
+            "existing_category": winner.category,
+            "existing_subcategory": winner.subcategory,
+            "existing_priority": winner.priority,
+            "existing_rule_updated_at": winner.updated_at,
+        }
 
     def list_history(self) -> list[dict[str, Any]]:
         """Return settled conflicts, newest decision first."""

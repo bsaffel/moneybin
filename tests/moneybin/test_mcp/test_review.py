@@ -3716,3 +3716,43 @@ async def test_rule_conflict_summary_counts_the_queue() -> None:
     counts = {(count.kind, count.status): count.count for count in response.data.counts}
     assert counts[("rule_conflicts", "pending")] == 1
     assert counts[("rule_conflicts", "history")] == 0
+
+
+async def test_rule_conflict_decision_reprioritizes_beside_the_existing_rule() -> None:
+    """`reprioritize` activates the proposal without superseding its twin.
+
+    The MCP layer had `replace` and `cancel` covered; this pins the third
+    decision's `rule_conflict_impact`, which is the only place a caller learns
+    that the existing rule deliberately stayed active.
+    """
+    existing_rule_id, conflict_id = _seed_rule_conflict()
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            RuleConflictDecisionRequest(
+                kind="rule_conflict",
+                decision_id=conflict_id,
+                decision="reprioritize",
+                priority=10,
+            )
+        ]
+    )
+
+    assert response.error is None
+    assert response.data.results[0].decision == "reprioritize"
+    assert response.data.results[0].status == "resolved"
+    impact = response.data.rule_conflict_impact
+    assert impact is not None
+    assert impact.resolved == 1
+    assert impact.superseded_rule_ids == [], (
+        "reprioritize must leave the existing rule active"
+    )
+    assert len(impact.activated_rule_ids) == 1
+    assert impact.activated_rule_ids[0] != existing_rule_id
+
+    with get_database(read_only=True) as db:
+        rows = db.execute(
+            "SELECT rule_id, priority FROM app.categorization_rules "
+            "WHERE is_active ORDER BY priority"
+        ).fetchall()
+    assert [row[1] for row in rows] == [10, 100]

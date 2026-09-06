@@ -114,8 +114,8 @@ class TestCanonicalMatcherKey:
     def test_regex_case_is_preserved(self) -> None:
         """Casefolding a regex would turn the non-digit class into the digit class."""
         assert canonical_matcher_key(
-            merchant_pattern=r"\\D+", match_type="regex"
-        ) != canonical_matcher_key(merchant_pattern=r"\\d+", match_type="regex")
+            merchant_pattern=r"\D+", match_type="regex"
+        ) != canonical_matcher_key(merchant_pattern=r"\d+", match_type="regex")
 
     @pytest.mark.unit
     def test_match_type_is_part_of_the_key(self) -> None:
