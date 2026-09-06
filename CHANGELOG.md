@@ -515,6 +515,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 
 ### Added
+- **`system doctor` now reports an account name that collides with the reserved
+  `Unnamed account` placeholder.** MoneyBin shows that exact label for an
+  account nothing could name, so a second account wearing a fold of it — a
+  case, padding, or Unicode variant — hijacks every lookup for that label:
+  `app_account_settings_reserved_display_name` finds one you stored and
+  `dim_accounts_reserved_display_name` one a source supplied, each reporting
+  the affected account ids and the rename that clears them. `moneybin import
+  --account-metadata display_name=…` now refuses such a name as `moneybin
+  accounts set --display-name` already did, so a rename survives re-importing
+  the same file. (#533)
 - **A getting-started guide and a reports guide, built from real transcripts.**
   `docs/guides/getting-started.md` walks a clean machine to a first report
   and a first MCP question, and `docs/guides/reports.md` runs all eight

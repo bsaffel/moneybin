@@ -61,9 +61,11 @@ from moneybin.services.account_display_name import (
     derived_last_four,
 )
 from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
     AccountProposalDict,
     ResolvedAccount,
     SourceAccount,
+    is_reserved_account_name,
     normalize_account_identifier,
 )
 from moneybin.services.account_resolver import AccountResolver
@@ -1320,6 +1322,19 @@ def _validate_account_metadata(metadata: dict[str, dict[str, str]] | None) -> No
             raise ValueError(
                 f"Unknown account_metadata field(s): {sorted(unknown)}. "
                 f"Valid: {sorted(_NEW_ACCOUNT_META_KEYS)}."
+            )
+        # The same reservation `AccountService.settings_update` enforces. This
+        # path does not go through it -- `_capture_new_account_metadata` writes
+        # the minted account's settings straight through `AccountSettingsRepo`,
+        # whose only validation is `AccountSettings.__post_init__` (lengths and
+        # shapes, not vocabulary) -- so without this an `--account-metadata`
+        # display_name folding onto the reserved label is stored, and the next
+        # import of the same file re-creates it after any rename.
+        if is_reserved_account_name(meta.get("display_name")):
+            raise ValueError(
+                f"{UNNAMED_ACCOUNT_LABEL!r} is reserved: MoneyBin shows it for "
+                "an account it could not name, so it cannot also be one. "
+                "Pick a different display name."
             )
         # Construct AccountSettings to trigger its __post_init__ field
         # validation (last_four 4-digits, display_name length, currency code).
